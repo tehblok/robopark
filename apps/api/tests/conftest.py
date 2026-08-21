@@ -79,6 +79,7 @@ def seed_royal(db_session):
         username="royal",
         password_hash=hash_password("secret"),
         role="royal",
+        access_status="approved",
         is_active=True,
     )
     db_session.add(user)
