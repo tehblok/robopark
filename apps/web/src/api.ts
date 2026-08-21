@@ -1,7 +1,15 @@
+export type Park = {
+  id: number
+  name: string
+  tag: string
+}
+
 export type User = {
   id: number
   username: string
   role: string
+  access_status: string
+  parks: Park[]
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -33,4 +41,9 @@ export const api = {
       body: JSON.stringify({ username, password }),
     }),
   logout: () => request<void>('/auth/logout', { method: 'POST' }),
+  register: (shared_password: string, username: string, password: string) =>
+    request<User>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ shared_password, username, password }),
+    }),
 }

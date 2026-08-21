@@ -62,6 +62,7 @@ def register(
         username=user.username,
         role=user.role,
         access_status=user.access_status,
+        parks=[],
     )
 
 

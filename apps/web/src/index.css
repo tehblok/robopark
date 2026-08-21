@@ -80,3 +80,13 @@ button:disabled {
   margin: 0;
   color: #b91c1c;
 }
+
+.success {
+  margin: 0;
+  color: #15803d;
+}
+
+.form-link {
+  margin: 0;
+  text-align: center;
+}

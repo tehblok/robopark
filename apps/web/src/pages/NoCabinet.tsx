@@ -1,14 +1,14 @@
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../auth-context'
-import { hasCabinet, pathForRole } from '../routes'
+import { hasCabinet, pathForUser } from '../routes'
 
 export function NoCabinet() {
   const { user, loading, logout } = useAuth()
 
   if (loading) return null
   if (!user) return <Navigate to="/login" replace />
-  if (hasCabinet(user.role)) {
-    return <Navigate to={pathForRole(user.role)} replace />
+  if (hasCabinet(user)) {
+    return <Navigate to={pathForUser(user)} replace />
   }
 
   return (

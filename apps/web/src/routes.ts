@@ -1,12 +1,23 @@
+import type { User } from './api'
+
 export const NO_CABINET_PATH = '/no-cabinet'
 
-export function pathForRole(role: string) {
-  switch (role) {
+export function pathForUser(user: Pick<User, 'role' | 'access_status'>) {
+  switch (user.role) {
     case 'royal':
     case 'admin':
       return '/admin'
     case 'operator':
-      return '/operator'
+      switch (user.access_status) {
+        case 'pending':
+          return '/operator/pending'
+        case 'rejected':
+          return '/operator/rejected'
+        case 'approved':
+          return '/operator'
+        default:
+          return NO_CABINET_PATH
+      }
     case 'mechanic':
       return '/mechanic'
     default:
@@ -16,6 +27,6 @@ export function pathForRole(role: string) {
   }
 }
 
-export function hasCabinet(role: string) {
-  return pathForRole(role) !== NO_CABINET_PATH
+export function hasCabinet(user: Pick<User, 'role' | 'access_status'>) {
+  return pathForUser(user) !== NO_CABINET_PATH
 }

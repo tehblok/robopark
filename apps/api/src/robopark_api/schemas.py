@@ -12,17 +12,18 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
+class ParkOut(BaseModel):
+    id: int
+    name: str
+    tag: str
+
+
 class RegisterOut(BaseModel):
     id: int
     username: str
     role: str
     access_status: str
-
-
-class ParkOut(BaseModel):
-    id: int
-    name: str
-    tag: str
+    parks: list[ParkOut]
 
 
 class UserOut(BaseModel):
