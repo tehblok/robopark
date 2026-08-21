@@ -1,8 +1,10 @@
 from pathlib import Path
 
 from alembic import command
+from alembic.autogenerate import compare_metadata
 from alembic.config import Config
-from sqlalchemy import inspect
+from alembic.migration import MigrationContext
+from sqlalchemy import create_engine, inspect
 
 from robopark_api.models import AuthSession, Base, User
 
@@ -38,7 +40,6 @@ def test_create_all_builds_schema(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
 
     from robopark_api.config import Settings
-    from sqlalchemy import create_engine
 
     engine = create_engine(Settings().database_url, future=True)
     Base.metadata.create_all(engine)
@@ -55,8 +56,6 @@ def test_alembic_upgrade_with_percent_in_database_url(tmp_path, monkeypatch):
 
     command.upgrade(config, "head")
 
-    from sqlalchemy import create_engine
-
     engine = create_engine(database_url, future=True)
     assert set(inspect(engine).get_table_names()) >= {
         "alembic_version",
@@ -72,11 +71,53 @@ def test_alembic_upgrade_builds_schema(sqlite_database_url, monkeypatch):
 
     command.upgrade(config, "head")
 
-    from sqlalchemy import create_engine
-
     engine = create_engine(sqlite_database_url, future=True)
     assert set(inspect(engine).get_table_names()) >= {
         "alembic_version",
         "users",
         "sessions",
     }
+
+
+def test_migrated_schema_matches_models(sqlite_database_url, monkeypatch):
+    """A model change without a matching migration must fail here, not on deploy."""
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    api_dir = Path(__file__).parents[1]
+
+    command.upgrade(Config(api_dir / "alembic.ini"), "head")
+
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.connect() as connection:
+        context = MigrationContext.configure(connection)
+        difference = compare_metadata(context, Base.metadata)
+
+    assert difference == []
+
+
+def test_migrated_indexes_and_foreign_keys_match_models(
+    sqlite_database_url, monkeypatch
+):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    api_dir = Path(__file__).parents[1]
+
+    command.upgrade(Config(api_dir / "alembic.ini"), "head")
+
+    inspector = inspect(create_engine(sqlite_database_url, future=True))
+
+    unique_indexes = {
+        (table, index["name"])
+        for table in ("users", "sessions")
+        for index in inspector.get_indexes(table)
+        if index["unique"]
+    }
+    assert unique_indexes == {
+        ("users", "ix_users_username"),
+        ("sessions", "ix_sessions_token_hash"),
+    }
+
+    foreign_keys = inspector.get_foreign_keys("sessions")
+    assert len(foreign_keys) == 1
+    assert foreign_keys[0]["constrained_columns"] == ["user_id"]
+    assert foreign_keys[0]["referred_table"] == "users"
+    assert foreign_keys[0]["referred_columns"] == ["id"]
+    assert foreign_keys[0]["options"]["ondelete"] == "CASCADE"

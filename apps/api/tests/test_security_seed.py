@@ -1,4 +1,6 @@
+import pytest
 from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 
 from robopark_api.config import Settings
@@ -18,6 +20,14 @@ def test_password_roundtrip():
     assert password_hash != "secret-pass"
     assert verify_password("secret-pass", password_hash)
     assert not verify_password("wrong", password_hash)
+
+
+@pytest.mark.parametrize(
+    "stored_hash",
+    ["", "not-a-hash", "$2b$12$abcdefghijklmnopqrstuv", "$argon2id$v=19$truncated"],
+)
+def test_verify_password_rejects_unparsable_hash(stored_hash):
+    assert not verify_password("secret-pass", stored_hash)
 
 
 def test_session_token_hash_is_stable_sha256():
@@ -61,11 +71,35 @@ def test_ensure_seed_user_skips_incomplete_credentials(db_session, monkeypatch):
     assert db_session.scalars(select(User)).all() == []
 
 
+def test_ensure_seed_user_rejects_unknown_role(db_session):
+    settings = Settings(
+        _env_file=None,
+        seed_username="royal",
+        seed_password="change-me",
+        seed_role="Royal",
+    )
+
+    with pytest.raises(ValueError, match="SEED_ROLE"):
+        ensure_seed_user(db_session, settings)
+
+    assert db_session.scalars(select(User)).all() == []
+
+
+def test_settings_can_ignore_a_local_env_file(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("SEED_USERNAME=leaked\nSEED_PASSWORD=leaked\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SEED_USERNAME", raising=False)
+    monkeypatch.delenv("SEED_PASSWORD", raising=False)
+
+    assert Settings(_env_file=None).seed_username is None
+    assert Settings(_env_file=None).seed_password is None
+
+
 def test_app_lifespan_ensures_seed_user(monkeypatch):
     from robopark_api import main
 
     calls = []
-    settings = Settings(seed_username=None, seed_password=None)
+    settings = Settings(_env_file=None, seed_username=None, seed_password=None)
     db = object()
 
     class SessionContext:
@@ -90,3 +124,29 @@ def test_app_lifespan_ensures_seed_user(monkeypatch):
         pass
 
     assert calls == [(db, settings)]
+
+
+def test_app_lifespan_seeds_only_the_configured_database(
+    db_engine, db_session, monkeypatch
+):
+    from robopark_api import main
+
+    monkeypatch.setattr(main, "SessionLocal", sessionmaker(bind=db_engine, future=True))
+    monkeypatch.setattr(
+        main,
+        "get_settings",
+        lambda: Settings(
+            _env_file=None,
+            database_url=str(db_engine.url),
+            seed_username="seeded",
+            seed_password="seeded-pass",
+            seed_role="royal",
+        ),
+    )
+
+    with TestClient(main.create_app()):
+        pass
+
+    seeded = db_session.scalar(select(User).where(User.username == "seeded"))
+    assert seeded is not None
+    assert seeded.role == "royal"

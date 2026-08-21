@@ -2,7 +2,7 @@ import hashlib
 import secrets
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerificationError
 
 _password_hasher = PasswordHasher()
 
@@ -12,9 +12,11 @@ def hash_password(plain: str) -> str:
 
 
 def verify_password(plain: str, password_hash: str) -> bool:
+    # InvalidHashError is a ValueError, not a VerificationError, so a stored
+    # hash the app cannot parse needs its own arm to stay a 401 and not a 500.
     try:
         return _password_hasher.verify(password_hash, plain)
-    except VerifyMismatchError:
+    except (VerificationError, InvalidHashError):
         return False
 
 

@@ -5,7 +5,9 @@ import { Admin } from './pages/Admin'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Mechanic } from './pages/Mechanic'
+import { NoCabinet } from './pages/NoCabinet'
 import { Operator } from './pages/Operator'
+import { NO_CABINET_PATH } from './routes'
 
 function RequireRole({ roles, children }: { roles: string[]; children: ReactNode }) {
   const { user, loading } = useAuth()
@@ -20,6 +22,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Home />} />
       <Route path="/login" element={<Login />} />
+      <Route path={NO_CABINET_PATH} element={<NoCabinet />} />
       <Route
         path="/admin"
         element={

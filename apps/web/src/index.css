@@ -51,13 +51,15 @@ button:disabled {
   box-shadow: 0 20px 50px rgb(15 23 42 / 10%);
 }
 
-.login-card {
+.login-card,
+.cabinet {
   display: grid;
   gap: 1rem;
 }
 
 .login-card h1,
-.cabinet h1 {
+.cabinet h1,
+.cabinet p {
   margin: 0;
 }
 
