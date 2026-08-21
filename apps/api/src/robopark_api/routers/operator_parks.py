@@ -48,6 +48,33 @@ def list_assigned_parks(
     )
 
 
+@router.get("/available-parks", response_model=list[ParkOut])
+def list_available_parks(
+    operator: User = Depends(require_approved_operator),
+    db: Session = Depends(get_db),
+) -> list[Park]:
+    assigned = select(UserPark.user_id).where(
+        UserPark.user_id == operator.id,
+        UserPark.park_id == Park.id,
+    )
+    pending = select(ParkRequest.id).where(
+        ParkRequest.user_id == operator.id,
+        ParkRequest.park_id == Park.id,
+        ParkRequest.status == AccessStatus.pending.value,
+    )
+    return list(
+        db.scalars(
+            select(Park)
+            .where(
+                Park.is_active.is_(True),
+                ~assigned.exists(),
+                ~pending.exists(),
+            )
+            .order_by(Park.id)
+        ).all()
+    )
+
+
 @router.get("/park-requests", response_model=list[ParkRequestOut])
 def list_park_requests(
     operator: User = Depends(require_approved_operator),

@@ -17,7 +17,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -84,6 +85,64 @@ button:disabled {
 .success {
   margin: 0;
   color: #15803d;
+}
+
+.workspace {
+  width: min(100%, 60rem);
+  display: grid;
+  gap: 1.5rem;
+  padding: 2rem;
+  border-radius: 1rem;
+  background: white;
+  box-shadow: 0 20px 50px rgb(15 23 42 / 10%);
+}
+
+.workspace header,
+.action-row,
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.workspace h1,
+.workspace h2 {
+  margin: 0;
+}
+
+.workspace section,
+.inbox-item,
+.checks {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.workspace ul {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.inline-form input,
+.inline-form select {
+  min-width: 10rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+}
+
+.inbox-item {
+  padding: 1rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.5rem;
 }
 
 .form-link {

@@ -70,6 +70,25 @@ def test_existing_park_member_cannot_request_it(client: TestClient, db_session):
     assert [item["id"] for item in client.get("/operator/parks").json()] == [park.id]
 
 
+def test_operator_lists_only_available_parks(client: TestClient, db_session):
+    operator = add_operator(db_session, "operator-available")
+    available = add_park(db_session, "available")
+    assigned = add_park(db_session, "assigned")
+    pending = add_park(db_session, "pending")
+    add_park(db_session, "inactive", is_active=False)
+    db_session.add(UserPark(user_id=operator.id, park_id=assigned.id))
+    db_session.add(
+        ParkRequest(user_id=operator.id, park_id=pending.id, status="pending")
+    )
+    db_session.commit()
+    login_as(client, operator.username, "secret")
+
+    response = client.get("/operator/available-parks")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == [available.id]
+
+
 def test_admin_approves_request_and_assigns_park(
     client: TestClient, db_session, seed_royal
 ):
