@@ -57,17 +57,22 @@ The host runs the API, SQLite database, and web app:
 ```bash
 git clone <repository-url> robopark
 cd robopark/deploy
-cp host.env.example .env
+cp host.env.example host.env
 ```
 
-Edit `.env`, set a strong `SEED_PASSWORD`, keep `ROBOPARK_ROLE=host`, and then
-start the host profile:
+Edit `host.env`, set a strong `SEED_PASSWORD`, keep `ROBOPARK_ROLE=host`, and
+then start the host profile:
 
 ```bash
 export ROBOPARK_ROLE=host
-export HOST_ENV_FILE=./.env
+export HOST_ENV_FILE=./host.env
 docker compose --profile host up -d --build
 ```
+
+`host.env` is gitignored, like every other `*.env` file; only the `*.env.example`
+templates are tracked. `COOKIE_SECURE` defaults to `true`, so the session cookie
+is only sent over HTTPS — set it to `false` only while testing over plain HTTP on
+the LAN, and never on a published deployment.
 
 The web app is served on `http://<host>:8080`. The API container runs
 `alembic upgrade head` before Uvicorn starts, and stores SQLite data in the
@@ -81,17 +86,19 @@ VPS**.
 ```bash
 git clone <repository-url> robopark
 cd robopark/deploy
-cp vps.env.example .env
+cp vps.env.example vps.env
 ```
 
-Set `ROBOPARK_ROLE=vps`, `PUBLIC_HOST`, and `TUNNEL_UPSTREAM` in `.env`. Replace
-the placeholders in `Caddyfile.vps.example` and choose/configure a transport
-from `tunnel.env.example`; tunnel credentials must stay in untracked files.
-The tunnel itself is operator-managed and is not started by this Compose file.
+Set `ROBOPARK_ROLE=vps`, `PUBLIC_HOST`, and `TUNNEL_UPSTREAM` in `vps.env`.
+`TUNNEL_UPSTREAM` must point at the host's **web** container on port 8080, not
+at the API on 8000 — see [`deploy/README.md`](deploy/README.md). Replace the
+placeholders in `Caddyfile.vps.example` and choose/configure a transport from
+`tunnel.env.example`; tunnel credentials must stay in untracked files. The
+tunnel itself is operator-managed and is not started by this Compose file.
 
 ```bash
 export ROBOPARK_ROLE=vps
-export VPS_ENV_FILE=./.env
+export VPS_ENV_FILE=./vps.env
 docker compose --profile vps up -d
 ```
 
