@@ -11,6 +11,12 @@ from robopark_api.models import User
 from robopark_api.security import hash_password
 
 
+def login_as(client: TestClient, username: str, password: str):
+    return client.post(
+        "/auth/login", json={"username": username, "password": password}
+    )
+
+
 @pytest.fixture(autouse=True)
 def ignore_local_env_file(monkeypatch):
     """A developer's apps/api/.env must never change a test outcome.
@@ -80,6 +86,21 @@ def seed_royal(db_session):
         password_hash=hash_password("secret"),
         role="royal",
         access_status="approved",
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+    return user
+
+
+@pytest.fixture
+def seed_pending_operator(db_session):
+    user = User(
+        username="operator",
+        password_hash=hash_password("secret"),
+        role="operator",
+        access_status="pending",
         is_active=True,
     )
     db_session.add(user)

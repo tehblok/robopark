@@ -7,8 +7,14 @@ from sqlalchemy.orm import Session
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
 from robopark_api.deps import require_user
-from robopark_api.models import AccessStatus, AuthSession, User, UserRole
-from robopark_api.schemas import LoginRequest, RegisterOut, RegisterRequest, UserOut
+from robopark_api.models import AccessStatus, AuthSession, Park, User, UserPark, UserRole
+from robopark_api.schemas import (
+    LoginRequest,
+    ParkOut,
+    RegisterOut,
+    RegisterRequest,
+    UserOut,
+)
 from robopark_api.security import (
     hash_password,
     hash_session_token,
@@ -121,5 +127,17 @@ def logout(
 
 
 @router.get("/me", response_model=UserOut)
-def me(user: User = Depends(require_user)) -> User:
-    return user
+def me(
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> UserOut:
+    parks = db.scalars(
+        select(Park).join(UserPark).where(UserPark.user_id == user.id)
+    ).all()
+    return UserOut(
+        id=user.id,
+        username=user.username,
+        role=user.role,
+        access_status=user.access_status,
+        parks=[ParkOut(id=park.id, name=park.name, tag=park.tag) for park in parks],
+    )

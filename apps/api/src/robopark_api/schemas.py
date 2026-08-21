@@ -19,7 +19,15 @@ class RegisterOut(BaseModel):
     access_status: str
 
 
+class ParkOut(BaseModel):
+    id: int
+    name: str
+    tag: str
+
+
 class UserOut(BaseModel):
     id: int
     username: str
     role: str
+    access_status: str
+    parks: list[ParkOut]
