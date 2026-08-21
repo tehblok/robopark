@@ -11,3 +11,16 @@ Web-first fleet operations system (admin / operator / mechanic).
 Platform skeleton: FastAPI + React monorepo, session auth, empty role cabinets, SQLite on host, one Docker Compose with `ROBOPARK_ROLE=host|vps`.
 
 Design: [`docs/superpowers/specs/2026-08-21-robopark-platform-phase1-design.md`](docs/superpowers/specs/2026-08-21-robopark-platform-phase1-design.md)
+
+## Local development
+
+Run the API on `http://127.0.0.1:8000`, then start the web app:
+
+```bash
+cd apps/web
+npm install
+npm run dev
+```
+
+Vite serves the app on `http://localhost:5173` and proxies `/api/*` to the
+local API, stripping the `/api` prefix.
