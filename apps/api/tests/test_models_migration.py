@@ -46,6 +46,25 @@ def test_create_all_builds_schema(tmp_path, monkeypatch):
     assert set(inspect(engine).get_table_names()) >= {"users", "sessions"}
 
 
+def test_alembic_upgrade_with_percent_in_database_url(tmp_path, monkeypatch):
+    db_path = tmp_path / "user%40data.db"
+    database_url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    api_dir = Path(__file__).parents[1]
+    config = Config(api_dir / "alembic.ini")
+
+    command.upgrade(config, "head")
+
+    from sqlalchemy import create_engine
+
+    engine = create_engine(database_url, future=True)
+    assert set(inspect(engine).get_table_names()) >= {
+        "alembic_version",
+        "users",
+        "sessions",
+    }
+
+
 def test_alembic_upgrade_builds_schema(sqlite_database_url, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
     api_dir = Path(__file__).parents[1]
