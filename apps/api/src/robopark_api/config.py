@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     cookie_samesite: str = "lax"
     cors_origins: str = "http://localhost:5173"
+    operator_shared_password: str | None = None
     seed_username: str | None = None
     seed_password: str | None = None
     seed_role: str = "royal"
