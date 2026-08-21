@@ -1,0 +1,7 @@
+{$PUBLIC_HOST} {
+	encode zstd gzip
+
+	# Replace TUNNEL_UPSTREAM with the private DNS name exposed by your tunnel.
+	# The upstream is the host's web container (8080), never the API (8000).
+	reverse_proxy {$TUNNEL_UPSTREAM:host.tunnel:8080}
+}

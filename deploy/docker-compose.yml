@@ -1,0 +1,44 @@
+services:
+  api:
+    profiles: ["host"]
+    build:
+      context: ../apps/api
+    env_file:
+      - ${HOST_ENV_FILE:-./host.env.example}
+    environment:
+      DATABASE_URL: sqlite:////data/robopark.db
+    volumes:
+      - robopark_data:/data
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  web:
+    profiles: ["host"]
+    build:
+      context: ../apps/web
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+  caddy:
+    profiles: ["vps"]
+    image: caddy:2-alpine
+    env_file:
+      - ${VPS_ENV_FILE:-./vps.env.example}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile.vps.example:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  robopark_data:
+  caddy_data:
+  caddy_config:
