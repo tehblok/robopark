@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
 from robopark_api.deps import require_admin
-from robopark_api.models import AccessStatus, ParkRequest, User, UserPark
+from robopark_api.models import AccessStatus, Park, ParkRequest, User, UserPark
 from robopark_api.routers.operator_parks import ParkRequestOut
 
 router = APIRouter(
@@ -55,6 +55,10 @@ def approve_park_request(
     db: Session = Depends(get_db),
 ) -> None:
     park_request = _pending_request(db, request_id)
+    park = db.get(Park, park_request.park_id)
+    if park is None or not park.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
+
     _resolve(park_request, admin, AccessStatus.approved)
     db.add(
         UserPark(

@@ -63,6 +63,12 @@ export function Admin() {
     })
   }
 
+  const editPark = (parkId: number, changes: Partial<Pick<Park, 'name' | 'tag'>>) => {
+    setParks((current) => current.map((park) => (
+      park.id === parkId ? { ...park, ...changes } : park
+    )))
+  }
+
   const pendingAccess = accessRequests.filter(
     (request) => request.access_status === 'pending',
   )
@@ -99,7 +105,29 @@ export function Admin() {
           <ul>
             {parks.map((park) => (
               <li className="action-row" key={park.id}>
-                <span>{park.name} ({park.tag}) — {park.is_active ? 'active' : 'inactive'}</span>
+                <input
+                  aria-label={`Park ${park.id} name`}
+                  onChange={(event) => editPark(park.id, { name: event.target.value })}
+                  required
+                  value={park.name}
+                />
+                <input
+                  aria-label={`Park ${park.id} tag`}
+                  onChange={(event) => editPark(park.id, { tag: event.target.value })}
+                  required
+                  value={park.tag}
+                />
+                <span>{park.is_active ? 'active' : 'inactive'}</span>
+                <button
+                  disabled={!park.name || !park.tag}
+                  onClick={() => run(() => api.updatePark(park.id, {
+                    name: park.name,
+                    tag: park.tag,
+                  }))}
+                  type="button"
+                >
+                  Save
+                </button>
                 <button
                   onClick={() => run(() => api.updatePark(park.id, {
                     is_active: !park.is_active,

@@ -113,6 +113,27 @@ def test_admin_approves_request_and_assigns_park(
     assert db_session.get(UserPark, (operator.id, park.id)) is not None
 
 
+def test_admin_cannot_approve_request_after_park_is_deactivated(
+    client: TestClient, db_session, seed_royal
+):
+    operator = add_operator(db_session, "operator-inactive-park")
+    park = add_park(db_session, "became-inactive")
+    request = ParkRequest(user_id=operator.id, park_id=park.id, status="pending")
+    db_session.add(request)
+    db_session.commit()
+    db_session.refresh(request)
+    park.is_active = False
+    db_session.commit()
+    login_as(client, "royal", "secret")
+
+    response = client.post(f"/admin/park-requests/{request.id}/approve")
+
+    assert response.status_code == 400
+    db_session.refresh(request)
+    assert request.status == "pending"
+    assert db_session.get(UserPark, (operator.id, park.id)) is None
+
+
 def test_admin_rejects_request_without_assigning_park(
     client: TestClient, db_session, seed_royal
 ):
