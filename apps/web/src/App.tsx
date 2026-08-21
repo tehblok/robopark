@@ -1,38 +1,18 @@
-import { Navigate, Route, Routes, useNavigate } from 'react-router-dom'
+import { type ReactNode } from 'react'
+import { Navigate, Route, Routes } from 'react-router-dom'
 import { useAuth } from './auth-context'
+import { Admin } from './pages/Admin'
+import { Home } from './pages/Home'
 import { Login } from './pages/Login'
-import { pathForRole } from './routes'
+import { Mechanic } from './pages/Mechanic'
+import { Operator } from './pages/Operator'
 
-function Home() {
+function RequireRole({ roles, children }: { roles: string[]; children: ReactNode }) {
   const { user, loading } = useAuth()
-
-  if (loading) {
-    return <main className="page">Checking session…</main>
-  }
-
-  return <Navigate to={user ? pathForRole(user.role) : '/login'} replace />
-}
-
-function Cabinet({ title }: { title: string }) {
-  const { user, logout } = useAuth()
-  const navigate = useNavigate()
-
-  const handleLogout = async () => {
-    await logout()
-    navigate('/login', { replace: true })
-  }
-
-  return (
-    <main className="page">
-      <section className="cabinet">
-        <h1>{title}</h1>
-        <p>Signed in as {user?.username ?? 'user'}.</p>
-        <button onClick={handleLogout} type="button">
-          Sign out
-        </button>
-      </section>
-    </main>
-  )
+  if (loading) return null
+  if (!user) return <Navigate to="/login" replace />
+  if (!roles.includes(user.role)) return <Navigate to="/" replace />
+  return children
 }
 
 export default function App() {
@@ -40,9 +20,30 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Home />} />
       <Route path="/login" element={<Login />} />
-      <Route path="/admin" element={<Cabinet title="Admin cabinet" />} />
-      <Route path="/operator" element={<Cabinet title="Operator cabinet" />} />
-      <Route path="/mechanic" element={<Cabinet title="Mechanic cabinet" />} />
+      <Route
+        path="/admin"
+        element={
+          <RequireRole roles={['royal', 'admin']}>
+            <Admin />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/operator"
+        element={
+          <RequireRole roles={['operator']}>
+            <Operator />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/mechanic"
+        element={
+          <RequireRole roles={['mechanic']}>
+            <Mechanic />
+          </RequireRole>
+        }
+      />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
