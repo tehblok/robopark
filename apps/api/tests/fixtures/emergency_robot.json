@@ -1,0 +1,7 @@
+{
+  "name": "Robot 447",
+  "vin": "YASADR00000000447",
+  "isOnline": true,
+  "position": {"lat": 1.0, "lon": 2.0},
+  "errors": ["sensor timeout"]
+}

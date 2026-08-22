@@ -7,7 +7,7 @@ from robopark_api import main
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
 from robopark_api.models import Base
-from robopark_api.models import User
+from robopark_api.models import AccessStatus, Park, User, UserPark
 from robopark_api.security import hash_password
 
 
@@ -104,6 +104,38 @@ def seed_pending_operator(db_session):
         is_active=True,
     )
     db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+    return user
+
+
+@pytest.fixture
+def seed_park_with_tracker(db_session):
+    park = Park(
+        name="Alpha",
+        tag="Alpha",
+        is_active=True,
+        tracker_queue="ROBOPARK",
+        feature_blockers=True,
+    )
+    db_session.add(park)
+    db_session.commit()
+    db_session.refresh(park)
+    return park
+
+
+@pytest.fixture
+def seed_mechanic(db_session, seed_park_with_tracker):
+    user = User(
+        username="mech1",
+        password_hash=hash_password("secret"),
+        role="mechanic",
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.flush()
+    db_session.add(UserPark(user_id=user.id, park_id=seed_park_with_tracker.id))
     db_session.commit()
     db_session.refresh(user)
     return user

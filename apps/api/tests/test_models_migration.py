@@ -16,6 +16,7 @@ def test_metadata_has_required_tables():
         "parks",
         "user_parks",
         "park_requests",
+        "platform_settings",
     }
 
 

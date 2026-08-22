@@ -7,6 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from conftest import login_as
+
+from park_helpers import PARK_DEFAULTS
 from robopark_api.deps import require_admin, require_approved_operator
 from robopark_api.models import AuthSession, Park, User, UserPark
 from robopark_api.security import hash_session_token
@@ -127,7 +129,13 @@ def test_me_includes_assigned_parks(
 
     assert me.status_code == 200
     assert me.json()["parks"] == [
-        {"id": park.id, "name": "Central Park", "tag": "central"}
+        {
+            "id": park.id,
+            "name": "Central Park",
+            "tag": "central",
+            "is_active": True,
+            **PARK_DEFAULTS,
+        }
     ]
 
 

@@ -2,6 +2,8 @@ import { type FormEvent, useEffect, useState } from 'react'
 import {
   api,
   type AccessRequest,
+  type IntegrationSettings,
+  type Mechanic,
   type Park,
   type ParkRequest,
 } from '../api'
@@ -12,20 +14,33 @@ export function Admin() {
   const [parks, setParks] = useState<Park[]>([])
   const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([])
   const [parkRequests, setParkRequests] = useState<ParkRequest[]>([])
+  const [mechanics, setMechanics] = useState<Mechanic[]>([])
+  const [settings, setSettings] = useState<IntegrationSettings | null>(null)
   const [selections, setSelections] = useState<Record<number, number[]>>({})
   const [name, setName] = useState('')
   const [tag, setTag] = useState('')
+  const [trackerToken, setTrackerToken] = useState('')
+  const [emergencyCookie, setEmergencyCookie] = useState('')
+  const [mechanicUsername, setMechanicUsername] = useState('')
+  const [mechanicPassword, setMechanicPassword] = useState('')
+  const [mechanicParkId, setMechanicParkId] = useState('')
   const [error, setError] = useState('')
 
   const load = async () => {
-    const [parkList, accessInbox, parkInbox] = await Promise.all([
-      api.parks(),
-      api.accessRequests(),
-      api.adminParkRequests(),
-    ])
+    const [parkList, accessInbox, parkInbox, mechanicList, integration] =
+      await Promise.all([
+        api.parks(),
+        api.accessRequests(),
+        api.adminParkRequests(),
+        api.mechanics(),
+        api.integrationSettings(),
+      ])
     setParks(parkList)
     setAccessRequests(accessInbox)
     setParkRequests(parkInbox)
+    setMechanics(mechanicList)
+    setSettings(integration)
+    setMechanicParkId((current) => current || String(parkList.find((park) => park.is_active)?.id ?? ''))
   }
 
   useEffect(() => {
@@ -45,9 +60,36 @@ export function Admin() {
   const createPark = async (event: FormEvent) => {
     event.preventDefault()
     await run(async () => {
-      await api.createPark(name, tag)
+      await api.createPark({ name, tag })
       setName('')
       setTag('')
+    })
+  }
+
+  const createMechanic = async (event: FormEvent) => {
+    event.preventDefault()
+    await run(async () => {
+      await api.createMechanic(
+        mechanicUsername,
+        mechanicPassword,
+        Number(mechanicParkId),
+      )
+      setMechanicUsername('')
+      setMechanicPassword('')
+    })
+  }
+
+  const saveIntegration = async (event: FormEvent) => {
+    event.preventDefault()
+    await run(async () => {
+      if (trackerToken.trim()) {
+        await api.setTrackerToken(trackerToken.trim())
+        setTrackerToken('')
+      }
+      if (emergencyCookie.trim()) {
+        await api.setEmergencyCookie(emergencyCookie.trim())
+        setEmergencyCookie('')
+      }
     })
   }
 
@@ -63,7 +105,7 @@ export function Admin() {
     })
   }
 
-  const editPark = (parkId: number, changes: Partial<Pick<Park, 'name' | 'tag'>>) => {
+  const editPark = (parkId: number, changes: Partial<Park>) => {
     setParks((current) => current.map((park) => (
       park.id === parkId ? { ...park, ...changes } : park
     )))
@@ -82,6 +124,85 @@ export function Admin() {
         </header>
 
         {error && <p className="error">{error}</p>}
+
+        <section>
+          <h2>Integration settings</h2>
+          {settings && (
+            <p>
+              Tracker: {settings.tracker_token_masked ?? 'not set'}
+              {' · '}
+              Emergency: {settings.emergency_cookie_masked ?? 'not set'}
+              {' · '}
+              Cookie valid: {String(settings.emergency_cookie_valid ?? 'unknown')}
+            </p>
+          )}
+          <form className="inline-form" onSubmit={saveIntegration}>
+            <input
+              aria-label="Tracker token"
+              onChange={(event) => setTrackerToken(event.target.value)}
+              placeholder="Tracker OAuth token"
+              type="password"
+              value={trackerToken}
+            />
+            <input
+              aria-label="Emergency cookie"
+              onChange={(event) => setEmergencyCookie(event.target.value)}
+              placeholder="Emergency cookie"
+              type="password"
+              value={emergencyCookie}
+            />
+            <button type="submit">Save secrets</button>
+          </form>
+        </section>
+
+        <section>
+          <h2>Mechanics</h2>
+          <form className="inline-form" onSubmit={createMechanic}>
+            <input
+              aria-label="Mechanic username"
+              onChange={(event) => setMechanicUsername(event.target.value)}
+              placeholder="Username"
+              required
+              value={mechanicUsername}
+            />
+            <input
+              aria-label="Mechanic password"
+              onChange={(event) => setMechanicPassword(event.target.value)}
+              placeholder="Password"
+              required
+              type="password"
+              value={mechanicPassword}
+            />
+            <select
+              aria-label="Mechanic park"
+              onChange={(event) => setMechanicParkId(event.target.value)}
+              required
+              value={mechanicParkId}
+            >
+              {parks.filter((park) => park.is_active).map((park) => (
+                <option key={park.id} value={park.id}>{park.name}</option>
+              ))}
+            </select>
+            <button type="submit">Create mechanic</button>
+          </form>
+          <ul>
+            {mechanics.map((mechanic) => (
+              <li className="action-row" key={mechanic.id}>
+                <span>{mechanic.username}</span>
+                <span>{mechanic.park.name}</span>
+                <span>{mechanic.is_active ? 'active' : 'inactive'}</span>
+                <button
+                  onClick={() => run(() => api.updateMechanic(mechanic.id, {
+                    is_active: !mechanic.is_active,
+                  }))}
+                  type="button"
+                >
+                  {mechanic.is_active ? 'Deactivate' : 'Activate'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
 
         <section>
           <h2>Parks</h2>
@@ -117,12 +238,30 @@ export function Admin() {
                   required
                   value={park.tag}
                 />
+                <input
+                  aria-label={`Park ${park.id} tracker queue`}
+                  onChange={(event) => editPark(park.id, { tracker_queue: event.target.value })}
+                  placeholder="Tracker queue"
+                  value={park.tracker_queue ?? ''}
+                />
+                <label>
+                  <input
+                    checked={park.feature_blockers ?? true}
+                    onChange={(event) => editPark(park.id, {
+                      feature_blockers: event.target.checked,
+                    })}
+                    type="checkbox"
+                  />
+                  Blockers
+                </label>
                 <span>{park.is_active ? 'active' : 'inactive'}</span>
                 <button
                   disabled={!park.name || !park.tag}
                   onClick={() => run(() => api.updatePark(park.id, {
                     name: park.name,
                     tag: park.tag,
+                    tracker_queue: park.tracker_queue || null,
+                    feature_blockers: park.feature_blockers,
                   }))}
                   type="button"
                 >

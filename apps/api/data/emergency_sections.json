@@ -1,0 +1,120 @@
+{
+  "sections": {
+    "status": {
+      "title": "Статус",
+      "fields": [
+        {"path": "name", "label": "Имя"},
+        {"path": "vin", "label": "VIN"},
+        {"path": "roverName", "label": "Rover"},
+        {"path": "isOnline", "label": "Онлайн"},
+        {"path": "lifecycleStatus", "label": "Жизненный цикл"},
+        {"path": "profile", "label": "Профиль"},
+        {"path": "autoMode", "label": "Автоматический режим"},
+        {"path": "sadrMode", "label": "Режим SADR"},
+        {"path": "emergencyState", "label": "Аварийное состояние"},
+        {"path": "emergencyStatusCode", "label": "Код аварии"},
+        {"path": "blockageReason", "label": "Причина блокировки"},
+        {"path": "isCharging", "label": "Зарядка"},
+        {"path": "velocity", "label": "Скорость"},
+        {"path": "locksStatus", "label": "Блокировки"},
+        {"path": "selectorStatus", "label": "Селектор"}
+      ]
+    },
+    "position_route": {
+      "title": "Позиция и маршрут",
+      "fields": [
+        {"path": "position", "label": "Позиция"},
+        {"path": "referencePoint", "label": "Опорная точка"},
+        {"path": "routeName", "label": "Маршрут"},
+        {"path": "hasSmoothRoute", "label": "Плавный маршрут"},
+        {"path": "currentRouteEnd", "label": "Конец маршрута"}
+      ]
+    },
+    "batteries": {
+      "title": "Батареи и питание",
+      "fields": [
+        {"path": "batteriesStatus.battery1", "label": "Батарея 1"},
+        {"path": "batteriesStatus.battery2", "label": "Батарея 2"},
+        {"path": "batteriesStatus.chargePercents", "label": "Общий заряд"},
+        {"path": "fuel", "label": "Топливо"},
+        {"path": "fuelLevel", "label": "Уровень топлива"},
+        {"path": "voltageValue", "label": "Напряжение"},
+        {"path": "isCharging", "label": "Зарядка"}
+      ]
+    },
+    "errors": {
+      "title": "Ошибки и паники",
+      "formatter": "errors_classify",
+      "covered_top_level": [
+        "panics",
+        "errors",
+        "lastCritNotification",
+        "lastErrorNotification",
+        "notifications"
+      ]
+    },
+    "parktronics": {
+      "title": "Парктроники",
+      "fields": [
+        {"path": "parktronics", "label": "Датчики"}
+      ]
+    },
+    "wheels": {
+      "title": "Колёса",
+      "fields": [
+        {"path": "wheelsBroken", "label": "Неисправности"},
+        {"path": "wheelsCurrent", "label": "Токи"},
+        {"path": "robotHudData.wheelsCurrent", "label": "HUD токи и таймауты"}
+      ]
+    },
+    "logs_disk": {
+      "title": "Логи и диск",
+      "fields": [
+        {"path": "disk", "label": "Диск"},
+        {"path": "onStopSnapshotCountPercent", "label": "Снимки при остановке, %"},
+        {"path": "logId", "label": "ID лога"}
+      ]
+    },
+    "localization": {
+      "title": "Локализация",
+      "fields": [
+        {"path": "robotHudData.localizationSensors", "label": "Датчики"},
+        {"path": "robotHudData.gnss", "label": "GNSS"},
+        {"path": "robotHudData.localizationMonitor", "label": "Монитор"},
+        {"path": "icp", "label": "ICP"}
+      ]
+    },
+    "control": {
+      "title": "Управление",
+      "fields": [
+        {"path": "robotHudData.controlStatus", "label": "Состояние управления"}
+      ]
+    },
+    "hardware_hud": {
+      "title": "Оборудование и HUD",
+      "fields": [
+        {"path": "robotHudData.hardwareDiags", "label": "Диагностика оборудования"},
+        {"path": "robotHudData.sirenStatus", "label": "Сирена"},
+        {"path": "robotHudData.soundState", "label": "Звук"},
+        {"path": "lte", "label": "LTE"}
+      ]
+    },
+    "metadata": {
+      "title": "Метаданные",
+      "fields": [
+        {"path": "metadata", "label": "Версии и модель"},
+        {"path": "cloudInstance", "label": "Cloud instance"},
+        {"path": "featuresSupported", "label": "Возможности"}
+      ]
+    },
+    "service_raw": {
+      "title": "Служебные данные",
+      "formatter": "fields_and_top_level_leftovers",
+      "fields": [
+        {"path": "sdcOptions", "label": "SDC options"},
+        {"path": "strmConfig", "label": "STRM config"},
+        {"path": "trajectory", "label": "Траектория"}
+      ]
+    }
+  }
+}

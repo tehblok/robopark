@@ -1,37 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
 from robopark_api.deps import require_admin
 from robopark_api.models import Park
+from robopark_api.schemas import ParkCreate, ParkOut, ParkUpdate
 
 router = APIRouter(
     prefix="/parks",
     tags=["parks"],
     dependencies=[Depends(require_admin)],
 )
-
-
-class ParkCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=128)
-    tag: str = Field(min_length=1, max_length=64)
-
-
-class ParkUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=128)
-    tag: str | None = Field(default=None, min_length=1, max_length=64)
-    is_active: bool | None = None
-
-
-class ParkOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    name: str
-    tag: str
-    is_active: bool
 
 
 def _tag_exists(db: Session, tag: str, *, exclude_id: int | None = None) -> bool:
@@ -55,7 +35,7 @@ def create_park(payload: ParkCreate, db: Session = Depends(get_db)) -> Park:
     if _tag_exists(db, payload.tag):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT)
 
-    park = Park(name=payload.name, tag=payload.tag, is_active=True)
+    park = Park(**payload.model_dump(), is_active=True)
     db.add(park)
     db.commit()
     db.refresh(park)

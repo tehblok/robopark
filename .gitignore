@@ -33,6 +33,8 @@ coverage/
 
 # Local runtime / data
 data/
+!apps/api/data/
+!apps/api/data/emergency_sections.json
 *.log
 *.sqlite
 *.db

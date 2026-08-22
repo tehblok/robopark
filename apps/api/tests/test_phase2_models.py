@@ -37,6 +37,13 @@ def test_phase2_models_have_required_columns_and_foreign_keys():
         "tag",
         "is_active",
         "created_at",
+        "tracker_queue",
+        "group_id",
+        "chat_id",
+        "feature_reports",
+        "feature_blockers",
+        "feature_sla_repair",
+        "feature_backlog_alerts",
     }
     assert set(UserPark.__table__.columns.keys()) == {"user_id", "park_id"}
     assert set(ParkRequest.__table__.columns.keys()) == {
