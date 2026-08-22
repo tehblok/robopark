@@ -140,5 +140,5 @@ def me(
         username=user.username,
         role=user.role,
         access_status=user.access_status,
-        parks=[ParkOut(id=park.id, name=park.name, tag=park.tag) for park in parks],
+        parks=[ParkOut.model_validate(park) for park in parks],
     )

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
-from robopark_api.models import AccessStatus, AuthSession, User, UserRole
+from robopark_api.models import AccessStatus, AuthSession, Park, User, UserPark, UserRole
 from robopark_api.security import hash_session_token
 
 
@@ -46,3 +46,21 @@ def require_approved_operator(user: User = Depends(require_user)) -> User:
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return user
+
+
+def require_approved_mechanic(user: User = Depends(require_user)) -> User:
+    if (
+        user.role != UserRole.mechanic.value
+        or user.access_status != AccessStatus.approved.value
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    return user
+
+
+def get_mechanic_park(db: Session, user: User) -> Park | None:
+    parks = db.scalars(
+        select(Park).join(UserPark).where(UserPark.user_id == user.id)
+    ).all()
+    if len(parks) != 1:
+        return None
+    return parks[0]

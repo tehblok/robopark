@@ -40,6 +40,20 @@ closed. Never commit a real value.
 - Approved operators see assigned parks and may request additional parks; admin
   approves or rejects those requests in the same inbox.
 
+## Phase 3
+
+Mechanic flows: admin-created mechanic accounts (exactly one park, immediately
+approved), integration settings for Tracker token and Emergency cookie, extended
+park Tracker fields, and mechanic tools for own-park tasks, cross-park robot
+search, and Emergency VIN checks.
+
+Design: [`docs/superpowers/specs/2026-08-22-robopark-phase3-mechanic-flows-design.md`](docs/superpowers/specs/2026-08-22-robopark-phase3-mechanic-flows-design.md)
+
+Tracker token and Emergency cookie are stored in the database and configured from
+`/admin` — they are not environment variables. After creating a park with
+`tracker_queue` and a mechanic assigned to it, the mechanic cabinet exposes
+`/mechanic/tasks`, `/mechanic/robot-search`, and `/mechanic/emergency`.
+
 ## Local development
 
 ### API

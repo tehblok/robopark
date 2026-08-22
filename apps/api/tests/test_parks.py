@@ -2,6 +2,8 @@ from fastapi.testclient import TestClient
 
 from conftest import login_as
 
+from park_helpers import PARK_DEFAULTS
+
 
 def test_admin_creates_and_lists_park(client: TestClient, seed_royal):
     login_as(client, "royal", "secret")
@@ -14,6 +16,7 @@ def test_admin_creates_and_lists_park(client: TestClient, seed_royal):
         "name": "Next",
         "tag": "Next",
         "is_active": True,
+        **PARK_DEFAULTS,
     }
     listed = client.get("/parks")
     assert listed.status_code == 200
@@ -52,6 +55,7 @@ def test_admin_updates_park_and_lists_inactive(client: TestClient, seed_royal):
         "name": "New",
         "tag": "new",
         "is_active": False,
+        **PARK_DEFAULTS,
     }
     assert client.get("/parks").json() == [updated.json()]
 

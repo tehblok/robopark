@@ -2,7 +2,7 @@ import type { User } from './api'
 
 export const NO_CABINET_PATH = '/no-cabinet'
 
-export function pathForUser(user: Pick<User, 'role' | 'access_status'>) {
+export function pathForUser(user: Pick<User, 'role' | 'access_status' | 'parks'>) {
   switch (user.role) {
     case 'royal':
     case 'admin':
@@ -19,6 +19,7 @@ export function pathForUser(user: Pick<User, 'role' | 'access_status'>) {
           return NO_CABINET_PATH
       }
     case 'mechanic':
+      if (user.parks?.length !== 1) return '/mechanic/no-park'
       return '/mechanic'
     default:
       // Never '/login': Login redirects here for any signed-in user, so
@@ -27,6 +28,6 @@ export function pathForUser(user: Pick<User, 'role' | 'access_status'>) {
   }
 }
 
-export function hasCabinet(user: Pick<User, 'role' | 'access_status'>) {
+export function hasCabinet(user: Pick<User, 'role' | 'access_status' | 'parks'>) {
   return pathForUser(user) !== NO_CABINET_PATH
 }
