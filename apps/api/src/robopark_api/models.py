@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -68,8 +68,25 @@ class Park(Base):
     name: Mapped[str] = mapped_column(String(128))
     tag: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    tracker_queue: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    group_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    feature_reports: Mapped[bool] = mapped_column(Boolean, default=True)
+    feature_blockers: Mapped[bool] = mapped_column(Boolean, default=True)
+    feature_sla_repair: Mapped[bool] = mapped_column(Boolean, default=True)
+    feature_backlog_alerts: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class PlatformSetting(Base):
+    __tablename__ = "platform_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
