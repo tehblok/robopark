@@ -58,6 +58,7 @@ def test_ensure_seed_user_creates_once(db_session, monkeypatch):
     assert len(users) == 1
     assert users[0].username == "royal"
     assert users[0].role == "royal"
+    assert users[0].access_status == "approved"
     assert users[0].is_active
     assert verify_password("change-me", users[0].password_hash)
 
@@ -150,3 +151,4 @@ def test_app_lifespan_seeds_only_the_configured_database(
     seeded = db_session.scalar(select(User).where(User.username == "seeded"))
     assert seeded is not None
     assert seeded.role == "royal"
+    assert seeded.access_status == "approved"

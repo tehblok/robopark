@@ -2,7 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from robopark_api.config import Settings
-from robopark_api.models import User, UserRole
+from robopark_api.models import AccessStatus, User, UserRole
 from robopark_api.security import hash_password
 
 
@@ -21,6 +21,7 @@ def ensure_seed_user(db: Session, settings: Settings) -> None:
             username=settings.seed_username,
             password_hash=hash_password(settings.seed_password),
             role=role.value,
+            access_status=AccessStatus.approved.value,
             is_active=True,
         )
     )

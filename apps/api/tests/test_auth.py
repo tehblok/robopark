@@ -1,17 +1,19 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from robopark_api.models import AuthSession
+from conftest import login_as
+from robopark_api.deps import require_admin, require_approved_operator
+from robopark_api.models import AuthSession, Park, User, UserPark
 from robopark_api.security import hash_session_token
 
 
 def test_login_me_logout_flow(client: TestClient, seed_royal):
-    response = client.post(
-        "/auth/login", json={"username": "royal", "password": "secret"}
-    )
+    response = login_as(client, "royal", "secret")
     assert response.status_code == 204
     assert "robopark_session" in response.cookies
 
@@ -21,6 +23,8 @@ def test_login_me_logout_flow(client: TestClient, seed_royal):
         "id": seed_royal.id,
         "username": "royal",
         "role": "royal",
+        "access_status": "approved",
+        "parks": [],
     }
 
     logout = client.post("/auth/logout")
@@ -107,3 +111,71 @@ def test_expired_session_cannot_access_me(
 
 def test_me_without_cookie(client: TestClient):
     assert client.get("/auth/me").status_code == 401
+
+
+def test_me_includes_assigned_parks(
+    client: TestClient, db_session: Session, seed_royal
+):
+    park = Park(name="Central Park", tag="central", is_active=True)
+    db_session.add(park)
+    db_session.flush()
+    db_session.add(UserPark(user_id=seed_royal.id, park_id=park.id))
+    db_session.commit()
+    login_as(client, "royal", "secret")
+
+    me = client.get("/auth/me")
+
+    assert me.status_code == 200
+    assert me.json()["parks"] == [
+        {"id": park.id, "name": "Central Park", "tag": "central"}
+    ]
+
+
+@pytest.mark.parametrize("role", ["royal", "admin"])
+def test_require_admin_allows_admin_roles(role: str):
+    user = User(
+        username=role,
+        password_hash="hash",
+        role=role,
+        access_status="approved",
+    )
+
+    assert require_admin(user) is user
+
+
+def test_require_admin_rejects_non_admin(seed_pending_operator):
+    with pytest.raises(HTTPException) as exc_info:
+        require_admin(seed_pending_operator)
+
+    assert exc_info.value.status_code == 403
+
+
+def test_require_approved_operator_allows_approved_operator():
+    user = User(
+        username="operator",
+        password_hash="hash",
+        role="operator",
+        access_status="approved",
+    )
+
+    assert require_approved_operator(user) is user
+
+
+@pytest.mark.parametrize(
+    ("role", "access_status"),
+    [("operator", "pending"), ("operator", "rejected"), ("admin", "approved")],
+)
+def test_require_approved_operator_rejects_other_users(
+    role: str, access_status: str
+):
+    user = User(
+        username="user",
+        password_hash="hash",
+        role=role,
+        access_status=access_status,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        require_approved_operator(user)
+
+    assert exc_info.value.status_code == 403

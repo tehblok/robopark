@@ -1,24 +1,20 @@
 import { type FormEvent, useState } from 'react'
-import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useNavigate } from 'react-router-dom'
+import { api } from '../api'
 import { useAuth } from '../auth-context'
 import { pathForUser } from '../routes'
 
-export function Login() {
-  const { user, loading, login } = useAuth()
+export function Register() {
+  const { user, loading } = useAuth()
   const navigate = useNavigate()
-  const location = useLocation()
+  const [sharedPassword, setSharedPassword] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  if (loading) {
-    return <main className="page">Checking session…</main>
-  }
-
-  if (user) {
-    return <Navigate to={pathForUser(user)} replace />
-  }
+  if (loading) return null
+  if (user) return <Navigate to={pathForUser(user)} replace />
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -26,10 +22,21 @@ export function Login() {
     setSubmitting(true)
 
     try {
-      const authenticatedUser = await login(username, password)
-      navigate(pathForUser(authenticatedUser), { replace: true })
-    } catch {
-      setError('Invalid username or password')
+      await api.register(sharedPassword, username, password)
+      navigate('/login', {
+        replace: true,
+        state: { registrationSuccess: true },
+      })
+    } catch (registrationError) {
+      const status =
+        registrationError instanceof Error ? registrationError.message : ''
+      setError(
+        status === '403'
+          ? 'Invalid shared password'
+          : status === '409'
+            ? 'Username is already registered'
+            : 'Registration failed',
+      )
     } finally {
       setSubmitting(false)
     }
@@ -38,16 +45,22 @@ export function Login() {
   return (
     <main className="page">
       <form className="login-card" onSubmit={handleSubmit}>
-        <h1>Robopark</h1>
-        <p>Sign in to your cabinet</p>
-        {location.state?.registrationSuccess && (
-          <p className="success">Account created. Sign in to continue.</p>
-        )}
+        <h1>Register operator</h1>
+        <label>
+          Shared password
+          <input
+            autoComplete="off"
+            autoFocus
+            required
+            type="password"
+            value={sharedPassword}
+            onChange={(event) => setSharedPassword(event.target.value)}
+          />
+        </label>
         <label>
           Username
           <input
             autoComplete="username"
-            autoFocus
             required
             value={username}
             onChange={(event) => setUsername(event.target.value)}
@@ -56,7 +69,7 @@ export function Login() {
         <label>
           Password
           <input
-            autoComplete="current-password"
+            autoComplete="new-password"
             required
             type="password"
             value={password}
@@ -65,10 +78,10 @@ export function Login() {
         </label>
         {error && <p className="error">{error}</p>}
         <button disabled={submitting} type="submit">
-          {submitting ? 'Signing in…' : 'Sign in'}
+          {submitting ? 'Registering…' : 'Register'}
         </button>
         <p className="form-link">
-          Need an operator account? <Link to="/register">Register</Link>
+          Already registered? <Link to="/login">Sign in</Link>
         </p>
       </form>
     </main>

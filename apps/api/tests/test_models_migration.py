@@ -9,8 +9,14 @@ from sqlalchemy import create_engine, inspect
 from robopark_api.models import AuthSession, Base, User
 
 
-def test_metadata_has_users_and_sessions():
-    assert set(Base.metadata.tables) == {"users", "sessions"}
+def test_metadata_has_required_tables():
+    assert set(Base.metadata.tables) == {
+        "users",
+        "sessions",
+        "parks",
+        "user_parks",
+        "park_requests",
+    }
 
 
 def test_models_match_required_schema():
@@ -19,6 +25,7 @@ def test_models_match_required_schema():
         "username",
         "password_hash",
         "role",
+        "access_status",
         "is_active",
         "created_at",
     }

@@ -12,6 +12,34 @@ Platform skeleton: FastAPI + React monorepo, session auth, empty role cabinets, 
 
 Design: [`docs/superpowers/specs/2026-08-21-robopark-platform-phase1-design.md`](docs/superpowers/specs/2026-08-21-robopark-platform-phase1-design.md)
 
+## Phase 2
+
+Operator onboarding and parks: shared-password registration, admin/royal access
+approval with park assignment, minimal park CRUD, and operator park-request
+inbox.
+
+Design: [`docs/superpowers/specs/2026-08-22-robopark-phase2-operator-onboarding-design.md`](docs/superpowers/specs/2026-08-22-robopark-phase2-operator-onboarding-design.md)
+
+Set `OPERATOR_SHARED_PASSWORD` in `.env` (local) or `host.env` (deploy). When
+unset or empty, `POST /auth/register` returns 403 and the register page is
+closed. Never commit a real value.
+
+### Registration and access
+
+1. Operator opens `/register`, enters the shared password plus username and
+   password, then signs in at `/login`.
+2. New operators start as `access_status=pending` and land on `/operator/pending`.
+3. Admin or royal creates parks in `/admin`, then approves the access request
+   with at least one active park — the operator moves to `/operator`.
+4. Reject sets `access_status=rejected` and routes to `/operator/rejected`; there
+   is no self-serve re-apply.
+
+### Parks and park requests
+
+- Admin/royal manage parks (name, unique tag, active flag) from `/admin`.
+- Approved operators see assigned parks and may request additional parks; admin
+  approves or rejects those requests in the same inbox.
+
 ## Local development
 
 ### API
@@ -33,7 +61,8 @@ uvicorn robopark_api.main:app --reload --app-dir src
 Before the first start, set `SEED_USERNAME`, `SEED_PASSWORD`, and `SEED_ROLE`
 in `apps/api/.env`. The seed user is created only when it does not already
 exist; use a strong password and remove `SEED_PASSWORD` from the environment
-after the user has been created. The API is available at
+after the user has been created. To enable operator self-registration, also set
+`OPERATOR_SHARED_PASSWORD` in `apps/api/.env`. The API is available at
 `http://127.0.0.1:8000`; check it with
 `curl http://127.0.0.1:8000/health`.
 
@@ -60,8 +89,9 @@ cd robopark/deploy
 cp host.env.example host.env
 ```
 
-Edit `host.env`, set a strong `SEED_PASSWORD`, keep `ROBOPARK_ROLE=host`, and
-then start the host profile:
+Edit `host.env`, set a strong `SEED_PASSWORD`, set `OPERATOR_SHARED_PASSWORD` if
+operator registration should be open, keep `ROBOPARK_ROLE=host`, and then start
+the host profile:
 
 ```bash
 export ROBOPARK_ROLE=host

@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import secrets
 
 from argon2 import PasswordHasher
@@ -18,6 +19,12 @@ def verify_password(plain: str, password_hash: str) -> bool:
         return _password_hasher.verify(password_hash, plain)
     except (VerificationError, InvalidHashError):
         return False
+
+
+def shared_passwords_match(provided: str, expected: str | None) -> bool:
+    if not expected:
+        return False
+    return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
 
 
 def hash_session_token(raw: str) -> str:

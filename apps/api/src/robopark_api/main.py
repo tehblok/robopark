@@ -5,7 +5,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
-from robopark_api.routers import auth, health
+from robopark_api.routers import (
+    admin_access,
+    admin_park_requests,
+    auth,
+    health,
+    operator_parks,
+    parks,
+)
 from robopark_api.seed import ensure_seed_user
 
 
@@ -29,6 +36,10 @@ def create_app() -> FastAPI:
     )
     app.include_router(auth.router)
     app.include_router(health.router)
+    app.include_router(parks.router)
+    app.include_router(admin_access.router)
+    app.include_router(operator_parks.router)
+    app.include_router(admin_park_requests.router)
     return app
 
 
