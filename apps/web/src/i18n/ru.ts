@@ -59,6 +59,12 @@ export const ru = {
     emergency401: 'Cookie Emergency просрочен или недействителен.',
     emergency: 'Не удалось получить данные Emergency.',
     emergencySection: 'Не удалось загрузить раздел.',
+    details: {
+      tracker_token_not_configured: 'OAuth-токен Tracker не задан в настройках администратора.',
+      emergency_cookie_not_configured: 'Cookie Emergency не задан в настройках администратора.',
+      emergency_cookie_invalid: 'Cookie Emergency просрочен или недействителен.',
+      tasks_disabled_for_park: 'Задачи отключены: проверьте очередь Tracker и флаг blockers у парка.',
+    } as Record<string, string>,
   },
 }
 

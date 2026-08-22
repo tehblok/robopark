@@ -32,6 +32,9 @@ export function Admin() {
   const [mechanicUsername, setMechanicUsername] = useState('')
   const [mechanicPassword, setMechanicPassword] = useState('')
   const [mechanicParkId, setMechanicParkId] = useState('')
+  const [mechanicDrafts, setMechanicDrafts] = useState<
+    Record<number, { parkId: string; password: string }>
+  >({})
   const [error, setError] = useState('')
 
   const load = async () => {
@@ -48,6 +51,12 @@ export function Admin() {
     setParkRequests(parkInbox)
     setMechanics(mechanicList)
     setSettings(integration)
+    setMechanicDrafts(Object.fromEntries(
+      mechanicList.map((mechanic) => [
+        mechanic.id,
+        { parkId: String(mechanic.park.id), password: '' },
+      ]),
+    ))
     setMechanicParkId((current) => current || String(parkList.find((park) => park.is_active)?.id ?? ''))
   }
 
@@ -117,6 +126,34 @@ export function Admin() {
     setParks((current) => current.map((park) => (
       park.id === parkId ? { ...park, ...changes } : park
     )))
+  }
+
+  const editMechanicDraft = (
+    mechanicId: number,
+    changes: Partial<{ parkId: string; password: string }>,
+  ) => {
+    setMechanicDrafts((current) => ({
+      ...current,
+      [mechanicId]: { ...current[mechanicId], ...changes },
+    }))
+  }
+
+  const parseOptionalInt = (value: string) => {
+    const trimmed = value.trim()
+    if (!trimmed) return null
+    const parsed = Number(trimmed)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+
+  const saveMechanic = (mechanicId: number) => {
+    const draft = mechanicDrafts[mechanicId]
+    if (!draft) return
+    return run(async () => {
+      await api.updateMechanic(mechanicId, {
+        park_id: Number(draft.parkId),
+        ...(draft.password ? { password: draft.password } : {}),
+      })
+    })
   }
 
   const pendingAccess = accessRequests.filter(
@@ -202,23 +239,47 @@ export function Admin() {
         {mechanics.length ? (
           <ul className="card-list">
             {mechanics.map((mechanic) => (
-              <li className="card action-row" key={mechanic.id}>
-                <div>
-                  <div className="card-title">{mechanic.username}</div>
-                  <div className="card-meta">
-                    <span>Парк: {mechanic.park.name}</span>
-                    <Badge active={mechanic.is_active} />
-                  </div>
+              <li className="card" key={mechanic.id}>
+                <div className="card-title">{mechanic.username}</div>
+                <div className="card-meta">
+                  <Badge active={mechanic.is_active} />
                 </div>
-                <button
-                  className="btn btn-secondary"
-                  onClick={() => run(() => api.updateMechanic(mechanic.id, {
-                    is_active: !mechanic.is_active,
-                  }))}
-                  type="button"
-                >
-                  {mechanic.is_active ? ru.deactivate : ru.activate}
-                </button>
+                <div className="inline-form">
+                  <select
+                    aria-label={`Парк для ${mechanic.username}`}
+                    onChange={(event) => editMechanicDraft(mechanic.id, {
+                      parkId: event.target.value,
+                    })}
+                    value={mechanicDrafts[mechanic.id]?.parkId ?? String(mechanic.park.id)}
+                  >
+                    {parks.filter((park) => park.is_active).map((park) => (
+                      <option key={park.id} value={park.id}>{park.name}</option>
+                    ))}
+                  </select>
+                  <input
+                    aria-label={`Новый пароль для ${mechanic.username}`}
+                    onChange={(event) => editMechanicDraft(mechanic.id, {
+                      password: event.target.value,
+                    })}
+                    placeholder="Новый пароль (необязательно)"
+                    type="password"
+                    value={mechanicDrafts[mechanic.id]?.password ?? ''}
+                  />
+                </div>
+                <div className="actions">
+                  <button onClick={() => saveMechanic(mechanic.id)} type="button">
+                    {ru.save}
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => run(() => api.updateMechanic(mechanic.id, {
+                      is_active: !mechanic.is_active,
+                    }))}
+                    type="button"
+                  >
+                    {mechanic.is_active ? ru.deactivate : ru.activate}
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
@@ -267,16 +328,64 @@ export function Admin() {
                   placeholder="Очередь Tracker"
                   value={park.tracker_queue ?? ''}
                 />
-                <label>
-                  <input
-                    checked={park.feature_blockers ?? true}
-                    onChange={(event) => editPark(park.id, {
-                      feature_blockers: event.target.checked,
-                    })}
-                    type="checkbox"
-                  />
-                  Задачи (blockers)
-                </label>
+                <input
+                  aria-label={`Group ID ${park.id}`}
+                  onChange={(event) => editPark(park.id, {
+                    group_id: parseOptionalInt(event.target.value),
+                  })}
+                  placeholder="Group ID (Telegram)"
+                  value={park.group_id ?? ''}
+                />
+                <input
+                  aria-label={`Chat ID ${park.id}`}
+                  onChange={(event) => editPark(park.id, {
+                    chat_id: parseOptionalInt(event.target.value),
+                  })}
+                  placeholder="Chat ID"
+                  value={park.chat_id ?? ''}
+                />
+                <div className="checks">
+                  <label>
+                    <input
+                      checked={park.feature_blockers ?? true}
+                      onChange={(event) => editPark(park.id, {
+                        feature_blockers: event.target.checked,
+                      })}
+                      type="checkbox"
+                    />
+                    Задачи
+                  </label>
+                  <label>
+                    <input
+                      checked={park.feature_reports ?? true}
+                      onChange={(event) => editPark(park.id, {
+                        feature_reports: event.target.checked,
+                      })}
+                      type="checkbox"
+                    />
+                    Отчёты
+                  </label>
+                  <label>
+                    <input
+                      checked={park.feature_sla_repair ?? true}
+                      onChange={(event) => editPark(park.id, {
+                        feature_sla_repair: event.target.checked,
+                      })}
+                      type="checkbox"
+                    />
+                    SLA ремонт
+                  </label>
+                  <label>
+                    <input
+                      checked={park.feature_backlog_alerts ?? true}
+                      onChange={(event) => editPark(park.id, {
+                        feature_backlog_alerts: event.target.checked,
+                      })}
+                      type="checkbox"
+                    />
+                    Backlog alerts
+                  </label>
+                </div>
                 <Badge active={park.is_active ?? true} />
               </div>
               <div className="actions">
@@ -286,7 +395,12 @@ export function Admin() {
                     name: park.name,
                     tag: park.tag,
                     tracker_queue: park.tracker_queue || null,
+                    group_id: park.group_id ?? null,
+                    chat_id: park.chat_id ?? null,
                     feature_blockers: park.feature_blockers,
+                    feature_reports: park.feature_reports,
+                    feature_sla_repair: park.feature_sla_repair,
+                    feature_backlog_alerts: park.feature_backlog_alerts,
                   }))}
                   type="button"
                 >

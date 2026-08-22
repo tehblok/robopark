@@ -1,6 +1,6 @@
 import { type FormEvent, useState } from 'react'
 import { Link, Navigate, useNavigate } from 'react-router-dom'
-import { api } from '../api'
+import { ApiError, api } from '../api'
 import { Alert } from '../components/PageShell'
 import { ru } from '../i18n/ru'
 import { useAuth } from '../auth-context'
@@ -30,15 +30,13 @@ export function Register() {
         state: { registrationSuccess: true },
       })
     } catch (registrationError) {
-      const status =
-        registrationError instanceof Error ? registrationError.message : ''
-      setError(
-        status === '403'
-          ? ru.errors.register403
-          : status === '409'
-            ? ru.errors.register409
-            : ru.errors.register,
-      )
+      if (registrationError instanceof ApiError && registrationError.status === 403) {
+        setError(ru.errors.register403)
+      } else if (registrationError instanceof ApiError && registrationError.status === 409) {
+        setError(ru.errors.register409)
+      } else {
+        setError(ru.errors.register)
+      }
     } finally {
       setSubmitting(false)
     }

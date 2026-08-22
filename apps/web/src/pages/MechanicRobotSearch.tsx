@@ -1,6 +1,7 @@
 import { type FormEvent, useState } from 'react'
 import { api, type Blocker } from '../api'
 import { Alert, EmptyState, PageShell, Panel } from '../components/PageShell'
+import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
 
 export function MechanicRobotSearch() {
@@ -17,8 +18,7 @@ export function MechanicRobotSearch() {
       const data = await api.mechanicRobotTickets(query.trim())
       setItems(data.items)
     } catch (caught) {
-      const code = caught instanceof Error ? caught.message : ''
-      setError(code === '503' ? ru.errors.tasks503 : ru.errors.robotSearch)
+      setError(mapApiError(caught, ru.errors.robotSearch))
     }
   }
 

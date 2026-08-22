@@ -82,6 +82,29 @@ export type EmergencySectionDetail = {
   fields: { label: string; lines: string[] }[]
 }
 
+export class ApiError extends Error {
+  status: number
+  detail: string | null
+
+  constructor(status: number, detail: string | null = null) {
+    super(detail ?? String(status))
+    this.name = 'ApiError'
+    this.status = status
+    this.detail = detail
+  }
+}
+
+async function readErrorDetail(response: Response): Promise<string | null> {
+  try {
+    const body = await response.json() as { detail?: unknown }
+    if (typeof body.detail === 'string') return body.detail
+    if (Array.isArray(body.detail)) return body.detail.map(String).join('; ')
+  } catch {
+    return null
+  }
+  return null
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
     credentials: 'include',
@@ -93,7 +116,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
-    throw new Error(String(response.status))
+    const detail = await readErrorDetail(response)
+    throw new ApiError(response.status, detail)
   }
 
   if (response.status === 204) {

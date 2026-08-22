@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, type Blocker } from '../api'
 import { Alert, EmptyState, PageShell, Panel } from '../components/PageShell'
+import { mapApiError } from '../i18n/errors'
 import { ru, taskFilterLabel } from '../i18n/ru'
 
 const FILTERS = [
@@ -11,12 +12,6 @@ const FILTERS = [
   'waiting_parts',
   'other',
 ] as const
-
-function errorMessage(status: string) {
-  if (status === '503') return ru.errors.tasks503
-  if (status === '409') return ru.errors.tasks409
-  return ru.errors.tasks
-}
 
 export function MechanicTasks() {
   const [status, setStatus] = useState('all')
@@ -36,8 +31,7 @@ export function MechanicTasks() {
         setParkTag(data.park_tag)
       })
       .catch((loadError) => {
-        const code = loadError instanceof Error ? loadError.message : ''
-        setError(errorMessage(code))
+        setError(mapApiError(loadError, ru.errors.tasks))
       })
       .finally(() => setLoading(false))
   }, [status])

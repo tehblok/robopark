@@ -1,13 +1,8 @@
 import { type FormEvent, useState } from 'react'
 import { api, type EmergencySection, type EmergencySectionDetail } from '../api'
 import { Alert, EmptyState, PageShell, Panel } from '../components/PageShell'
+import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
-
-function emergencyError(code: string) {
-  if (code === '503') return ru.errors.emergency503
-  if (code === '401') return ru.errors.emergency401
-  return ru.errors.emergency
-}
 
 export function MechanicEmergency() {
   const [robotNumber, setRobotNumber] = useState('')
@@ -25,8 +20,7 @@ export function MechanicEmergency() {
       setVin(data.vin)
       setSections(data.sections)
     } catch (caught) {
-      const code = caught instanceof Error ? caught.message : ''
-      setError(emergencyError(code))
+      setError(mapApiError(caught, ru.errors.emergency))
     }
   }
 
@@ -35,8 +29,7 @@ export function MechanicEmergency() {
     try {
       setDetail(await api.mechanicEmergencySection(vin, sectionId))
     } catch (caught) {
-      const code = caught instanceof Error ? caught.message : ''
-      setError(code === '401' ? ru.errors.emergency401 : ru.errors.emergencySection)
+      setError(mapApiError(caught, ru.errors.emergencySection))
     }
   }
 
