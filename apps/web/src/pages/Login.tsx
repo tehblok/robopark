@@ -1,5 +1,7 @@
 import { type FormEvent, useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { Alert } from '../components/PageShell'
+import { ru } from '../i18n/ru'
 import { useAuth } from '../auth-context'
 import { pathForUser } from '../routes'
 
@@ -13,7 +15,7 @@ export function Login() {
   const [submitting, setSubmitting] = useState(false)
 
   if (loading) {
-    return <main className="page">Checking session…</main>
+    return <main className="page"><p className="empty-state">{ru.loading}</p></main>
   }
 
   if (user) {
@@ -29,7 +31,7 @@ export function Login() {
       const authenticatedUser = await login(username, password)
       navigate(pathForUser(authenticatedUser), { replace: true })
     } catch {
-      setError('Invalid username or password')
+      setError(ru.errors.login)
     } finally {
       setSubmitting(false)
     }
@@ -38,13 +40,14 @@ export function Login() {
   return (
     <main className="page">
       <form className="login-card" onSubmit={handleSubmit}>
-        <h1>Robopark</h1>
-        <p>Sign in to your cabinet</p>
+        <h1>{ru.brand}</h1>
+        <p>{ru.tagline}</p>
+        <p className="field-hint">Войдите в личный кабинет по логину и паролю.</p>
         {location.state?.registrationSuccess && (
-          <p className="success">Account created. Sign in to continue.</p>
+          <Alert tone="success">Аккаунт создан. Войдите, чтобы продолжить.</Alert>
         )}
-        <label>
-          Username
+        <label className="field">
+          <span className="field-label">Логин</span>
           <input
             autoComplete="username"
             autoFocus
@@ -53,8 +56,8 @@ export function Login() {
             onChange={(event) => setUsername(event.target.value)}
           />
         </label>
-        <label>
-          Password
+        <label className="field">
+          <span className="field-label">Пароль</span>
           <input
             autoComplete="current-password"
             required
@@ -63,12 +66,12 @@ export function Login() {
             onChange={(event) => setPassword(event.target.value)}
           />
         </label>
-        {error && <p className="error">{error}</p>}
+        {error && <Alert tone="error">{error}</Alert>}
         <button disabled={submitting} type="submit">
-          {submitting ? 'Signing in…' : 'Sign in'}
+          {submitting ? 'Вход…' : 'Войти'}
         </button>
         <p className="form-link">
-          Need an operator account? <Link to="/register">Register</Link>
+          Нужен доступ оператора? <Link to="/register">Регистрация</Link>
         </p>
       </form>
     </main>

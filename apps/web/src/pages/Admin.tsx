@@ -7,7 +7,15 @@ import {
   type Park,
   type ParkRequest,
 } from '../api'
+import { Alert, Badge, EmptyState, PageShell, Panel } from '../components/PageShell'
+import { ru } from '../i18n/ru'
 import { useAuth } from '../auth-context'
+
+function cookieBadge(valid: boolean | null | undefined) {
+  if (valid === true) return <span className="badge badge-ok">cookie действует</span>
+  if (valid === false) return <span className="badge badge-danger">cookie недействителен</span>
+  return <span className="badge badge-warn">не проверялся</span>
+}
 
 export function Admin() {
   const { logout } = useAuth()
@@ -44,7 +52,7 @@ export function Admin() {
   }
 
   useEffect(() => {
-    load().catch(() => setError('Could not load admin data.'))
+    load().catch(() => setError(ru.errors.load))
   }, [])
 
   const run = async (action: () => Promise<unknown>) => {
@@ -53,7 +61,7 @@ export function Admin() {
       await action()
       await load()
     } catch {
-      setError('The action could not be completed.')
+      setError(ru.errors.generic)
     }
   }
 
@@ -115,133 +123,148 @@ export function Admin() {
     (request) => request.access_status === 'pending',
   )
 
+  const parkName = (parkId: number) =>
+    parks.find((park) => park.id === parkId)?.name ?? `#${parkId}`
+
   return (
-    <main className="page">
-      <section className="workspace">
-        <header>
-          <h1>Admin</h1>
-          <button onClick={logout} type="button">Sign out</button>
-        </header>
+    <PageShell
+      onLogout={logout}
+      subtitle="Парки, доступы, механики и интеграции Tracker / Emergency."
+      title="Администрирование"
+    >
+      {error && <Alert tone="error">{error}</Alert>}
 
-        {error && <p className="error">{error}</p>}
+      <Panel hint="Секреты хранятся в базе; в интерфейсе показываются только маскированные значения." title="Интеграции">
+        {settings && (
+          <div className="stat-grid">
+            <div className="stat">
+              <span className="stat-label">Tracker OAuth</span>
+              <span className="stat-value">{settings.tracker_token_masked ?? 'не задан'}</span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">Emergency cookie</span>
+              <span className="stat-value">{settings.emergency_cookie_masked ?? 'не задан'}</span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">Статус cookie</span>
+              <span className="stat-value">{cookieBadge(settings.emergency_cookie_valid)}</span>
+            </div>
+          </div>
+        )}
+        <form className="inline-form" onSubmit={saveIntegration}>
+          <input
+            aria-label="Tracker token"
+            onChange={(event) => setTrackerToken(event.target.value)}
+            placeholder="OAuth-токен Tracker"
+            type="password"
+            value={trackerToken}
+          />
+          <input
+            aria-label="Emergency cookie"
+            onChange={(event) => setEmergencyCookie(event.target.value)}
+            placeholder="Cookie Emergency"
+            type="password"
+            value={emergencyCookie}
+          />
+          <button type="submit">Сохранить секреты</button>
+        </form>
+      </Panel>
 
-        <section>
-          <h2>Integration settings</h2>
-          {settings && (
-            <p>
-              Tracker: {settings.tracker_token_masked ?? 'not set'}
-              {' · '}
-              Emergency: {settings.emergency_cookie_masked ?? 'not set'}
-              {' · '}
-              Cookie valid: {String(settings.emergency_cookie_valid ?? 'unknown')}
-            </p>
-          )}
-          <form className="inline-form" onSubmit={saveIntegration}>
-            <input
-              aria-label="Tracker token"
-              onChange={(event) => setTrackerToken(event.target.value)}
-              placeholder="Tracker OAuth token"
-              type="password"
-              value={trackerToken}
-            />
-            <input
-              aria-label="Emergency cookie"
-              onChange={(event) => setEmergencyCookie(event.target.value)}
-              placeholder="Emergency cookie"
-              type="password"
-              value={emergencyCookie}
-            />
-            <button type="submit">Save secrets</button>
-          </form>
-        </section>
-
-        <section>
-          <h2>Mechanics</h2>
-          <form className="inline-form" onSubmit={createMechanic}>
-            <input
-              aria-label="Mechanic username"
-              onChange={(event) => setMechanicUsername(event.target.value)}
-              placeholder="Username"
-              required
-              value={mechanicUsername}
-            />
-            <input
-              aria-label="Mechanic password"
-              onChange={(event) => setMechanicPassword(event.target.value)}
-              placeholder="Password"
-              required
-              type="password"
-              value={mechanicPassword}
-            />
-            <select
-              aria-label="Mechanic park"
-              onChange={(event) => setMechanicParkId(event.target.value)}
-              required
-              value={mechanicParkId}
-            >
-              {parks.filter((park) => park.is_active).map((park) => (
-                <option key={park.id} value={park.id}>{park.name}</option>
-              ))}
-            </select>
-            <button type="submit">Create mechanic</button>
-          </form>
-          <ul>
+      <Panel hint="Механик получает ровно один активный парк и сразу одобренный доступ." title="Механики">
+        <form className="inline-form" onSubmit={createMechanic}>
+          <input
+            aria-label="Логин механика"
+            onChange={(event) => setMechanicUsername(event.target.value)}
+            placeholder="Логин"
+            required
+            value={mechanicUsername}
+          />
+          <input
+            aria-label="Пароль механика"
+            onChange={(event) => setMechanicPassword(event.target.value)}
+            placeholder="Пароль"
+            required
+            type="password"
+            value={mechanicPassword}
+          />
+          <select
+            aria-label="Парк механика"
+            onChange={(event) => setMechanicParkId(event.target.value)}
+            required
+            value={mechanicParkId}
+          >
+            {parks.filter((park) => park.is_active).map((park) => (
+              <option key={park.id} value={park.id}>{park.name}</option>
+            ))}
+          </select>
+          <button type="submit">Создать механика</button>
+        </form>
+        {mechanics.length ? (
+          <ul className="card-list">
             {mechanics.map((mechanic) => (
-              <li className="action-row" key={mechanic.id}>
-                <span>{mechanic.username}</span>
-                <span>{mechanic.park.name}</span>
-                <span>{mechanic.is_active ? 'active' : 'inactive'}</span>
+              <li className="card action-row" key={mechanic.id}>
+                <div>
+                  <div className="card-title">{mechanic.username}</div>
+                  <div className="card-meta">
+                    <span>Парк: {mechanic.park.name}</span>
+                    <Badge active={mechanic.is_active} />
+                  </div>
+                </div>
                 <button
+                  className="btn btn-secondary"
                   onClick={() => run(() => api.updateMechanic(mechanic.id, {
                     is_active: !mechanic.is_active,
                   }))}
                   type="button"
                 >
-                  {mechanic.is_active ? 'Deactivate' : 'Activate'}
+                  {mechanic.is_active ? ru.deactivate : ru.activate}
                 </button>
               </li>
             ))}
           </ul>
-        </section>
+        ) : (
+          <EmptyState>Механики ещё не созданы.</EmptyState>
+        )}
+      </Panel>
 
-        <section>
-          <h2>Parks</h2>
-          <form className="inline-form" onSubmit={createPark}>
-            <input
-              aria-label="Park name"
-              onChange={(event) => setName(event.target.value)}
-              placeholder="Name"
-              required
-              value={name}
-            />
-            <input
-              aria-label="Park tag"
-              onChange={(event) => setTag(event.target.value)}
-              placeholder="Tag"
-              required
-              value={tag}
-            />
-            <button type="submit">Create</button>
-          </form>
-          <ul>
-            {parks.map((park) => (
-              <li className="action-row" key={park.id}>
+      <Panel hint="Тег используется в Tracker; очередь нужна для задач и поиска." title="Парки">
+        <form className="inline-form" onSubmit={createPark}>
+          <input
+            aria-label="Название парка"
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Название"
+            required
+            value={name}
+          />
+          <input
+            aria-label="Тег парка"
+            onChange={(event) => setTag(event.target.value)}
+            placeholder="Тег"
+            required
+            value={tag}
+          />
+          <button type="submit">{ru.create}</button>
+        </form>
+        <ul className="card-list">
+          {parks.map((park) => (
+            <li className="card" key={park.id}>
+              <div className="inline-form">
                 <input
-                  aria-label={`Park ${park.id} name`}
+                  aria-label={`Название парка ${park.id}`}
                   onChange={(event) => editPark(park.id, { name: event.target.value })}
                   required
                   value={park.name}
                 />
                 <input
-                  aria-label={`Park ${park.id} tag`}
+                  aria-label={`Тег парка ${park.id}`}
                   onChange={(event) => editPark(park.id, { tag: event.target.value })}
                   required
                   value={park.tag}
                 />
                 <input
-                  aria-label={`Park ${park.id} tracker queue`}
+                  aria-label={`Очередь Tracker ${park.id}`}
                   onChange={(event) => editPark(park.id, { tracker_queue: event.target.value })}
-                  placeholder="Tracker queue"
+                  placeholder="Очередь Tracker"
                   value={park.tracker_queue ?? ''}
                 />
                 <label>
@@ -252,9 +275,11 @@ export function Admin() {
                     })}
                     type="checkbox"
                   />
-                  Blockers
+                  Задачи (blockers)
                 </label>
-                <span>{park.is_active ? 'active' : 'inactive'}</span>
+                <Badge active={park.is_active ?? true} />
+              </div>
+              <div className="actions">
                 <button
                   disabled={!park.name || !park.tag}
                   onClick={() => run(() => api.updatePark(park.id, {
@@ -265,7 +290,7 @@ export function Admin() {
                   }))}
                   type="button"
                 >
-                  Save
+                  {ru.save}
                 </button>
                 <button
                   onClick={() => run(() => api.updatePark(park.id, {
@@ -273,79 +298,85 @@ export function Admin() {
                   }))}
                   type="button"
                 >
-                  {park.is_active ? 'Deactivate' : 'Activate'}
+                  {park.is_active ? ru.deactivate : ru.activate}
                 </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </Panel>
+
+      <Panel hint="Одобрение требует выбора хотя бы одного активного парка." title="Заявки на доступ">
+        {pendingAccess.length ? pendingAccess.map((request) => (
+          <article className="inbox-item" key={request.id}>
+            <strong>{request.username}</strong>
+            <p className="field-hint">Выберите парки для назначения оператору.</p>
+            <div className="checks">
+              {parks.filter((park) => park.is_active).map((park) => (
+                <label key={park.id}>
+                  <input
+                    checked={(selections[request.id] ?? []).includes(park.id)}
+                    onChange={() => toggleSelection(request.id, park.id)}
+                    type="checkbox"
+                  />
+                  {park.name}
+                </label>
+              ))}
+            </div>
+            <div className="actions">
+              <button
+                disabled={!(selections[request.id]?.length)}
+                onClick={() => run(() => api.approveAccessRequest(
+                  request.id,
+                  selections[request.id] ?? [],
+                ))}
+                type="button"
+              >
+                {ru.approve}
+              </button>
+              <button
+                onClick={() => run(() => api.rejectAccessRequest(request.id))}
+                type="button"
+              >
+                {ru.reject}
+              </button>
+            </div>
+          </article>
+        )) : (
+          <EmptyState>Нет заявок на первичный доступ.</EmptyState>
+        )}
+      </Panel>
+
+      <Panel hint="Операторы запрашивают дополнительные парки из своего кабинета." title="Заявки на парки">
+        {parkRequests.length ? (
+          <ul className="card-list">
+            {parkRequests.map((request) => (
+              <li className="card action-row" key={request.id}>
+                <div>
+                  <div className="card-title">Пользователь #{request.user_id}</div>
+                  <div className="card-meta">Парк: {parkName(request.park_id)}</div>
+                </div>
+                <div className="actions">
+                  <button
+                    onClick={() => run(() => api.resolveParkRequest(request.id, 'approve'))}
+                    type="button"
+                  >
+                    {ru.approve}
+                  </button>
+                  <button
+                    onClick={() => run(() => api.resolveParkRequest(request.id, 'reject'))}
+                    type="button"
+                  >
+                    {ru.reject}
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
-        </section>
-
-        <section>
-          <h2>Access requests</h2>
-          {pendingAccess.length ? pendingAccess.map((request) => (
-            <article className="inbox-item" key={request.id}>
-              <strong>{request.username}</strong>
-              <div className="checks">
-                {parks.filter((park) => park.is_active).map((park) => (
-                  <label key={park.id}>
-                    <input
-                      checked={(selections[request.id] ?? []).includes(park.id)}
-                      onChange={() => toggleSelection(request.id, park.id)}
-                      type="checkbox"
-                    />
-                    {park.name}
-                  </label>
-                ))}
-              </div>
-              <div className="actions">
-                <button
-                  disabled={!(selections[request.id]?.length)}
-                  onClick={() => run(() => api.approveAccessRequest(
-                    request.id,
-                    selections[request.id] ?? [],
-                  ))}
-                  type="button"
-                >
-                  Approve
-                </button>
-                <button
-                  onClick={() => run(() => api.rejectAccessRequest(request.id))}
-                  type="button"
-                >
-                  Reject
-                </button>
-              </div>
-            </article>
-          )) : <p>No pending access requests.</p>}
-        </section>
-
-        <section>
-          <h2>Park requests</h2>
-          {parkRequests.length ? (
-            <ul>
-              {parkRequests.map((request) => (
-                <li className="action-row" key={request.id}>
-                  <span>User #{request.user_id} requests park #{request.park_id}</span>
-                  <div className="actions">
-                    <button
-                      onClick={() => run(() => api.resolveParkRequest(request.id, 'approve'))}
-                      type="button"
-                    >
-                      Approve
-                    </button>
-                    <button
-                      onClick={() => run(() => api.resolveParkRequest(request.id, 'reject'))}
-                      type="button"
-                    >
-                      Reject
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : <p>No pending park requests.</p>}
-        </section>
-      </section>
-    </main>
+        ) : (
+          <EmptyState>Нет заявок на дополнительные парки.</EmptyState>
+        )}
+      </Panel>
+    </PageShell>
   )
 }

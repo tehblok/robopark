@@ -1,6 +1,8 @@
 import { type FormEvent, useState } from 'react'
 import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { api } from '../api'
+import { Alert } from '../components/PageShell'
+import { ru } from '../i18n/ru'
 import { useAuth } from '../auth-context'
 import { pathForUser } from '../routes'
 
@@ -32,10 +34,10 @@ export function Register() {
         registrationError instanceof Error ? registrationError.message : ''
       setError(
         status === '403'
-          ? 'Invalid shared password'
+          ? ru.errors.register403
           : status === '409'
-            ? 'Username is already registered'
-            : 'Registration failed',
+            ? ru.errors.register409
+            : ru.errors.register,
       )
     } finally {
       setSubmitting(false)
@@ -45,9 +47,14 @@ export function Register() {
   return (
     <main className="page">
       <form className="login-card" onSubmit={handleSubmit}>
-        <h1>Register operator</h1>
-        <label>
-          Shared password
+        <h1>Регистрация оператора</h1>
+        <p className="field-hint">
+          После регистрации доступ будет в статусе «ожидает» — администратор
+          назначит парки и одобрит вход.
+        </p>
+        <label className="field">
+          <span className="field-label">Общий пароль</span>
+          <span className="field-hint">Выдаётся администратором парка.</span>
           <input
             autoComplete="off"
             autoFocus
@@ -57,8 +64,8 @@ export function Register() {
             onChange={(event) => setSharedPassword(event.target.value)}
           />
         </label>
-        <label>
-          Username
+        <label className="field">
+          <span className="field-label">Логин</span>
           <input
             autoComplete="username"
             required
@@ -66,8 +73,8 @@ export function Register() {
             onChange={(event) => setUsername(event.target.value)}
           />
         </label>
-        <label>
-          Password
+        <label className="field">
+          <span className="field-label">Пароль</span>
           <input
             autoComplete="new-password"
             required
@@ -76,12 +83,12 @@ export function Register() {
             onChange={(event) => setPassword(event.target.value)}
           />
         </label>
-        {error && <p className="error">{error}</p>}
+        {error && <Alert tone="error">{error}</Alert>}
         <button disabled={submitting} type="submit">
-          {submitting ? 'Registering…' : 'Register'}
+          {submitting ? 'Регистрация…' : 'Зарегистрироваться'}
         </button>
         <p className="form-link">
-          Already registered? <Link to="/login">Sign in</Link>
+          Уже есть аккаунт? <Link to="/login">Войти</Link>
         </p>
       </form>
     </main>
