@@ -54,6 +54,20 @@ Tracker token and Emergency cookie are stored in the database and configured fro
 `tracker_queue` and a mechanic assigned to it, the mechanic cabinet exposes
 `/mechanic/tasks`, `/mechanic/robot-search`, and `/mechanic/emergency`.
 
+## Phase 4
+
+Operator tools: approved operators use the hub at `/operator` for read-only
+Tracker workflows — blockers by assigned park, cross-park robot search, and the
+«Сейчас по Tracker» live metrics snapshot. Park assignment and park requests
+remain at `/operator/parks`.
+
+Design: [`docs/superpowers/specs/2026-08-22-robopark-phase4-operator-tools-design.md`](docs/superpowers/specs/2026-08-22-robopark-phase4-operator-tools-design.md)
+
+These tools require a platform Tracker OAuth token in `/admin` and, per park,
+`tracker_queue` plus feature flags: `feature_blockers` for the blockers list and
+`feature_reports` for the now-report. Parks missing queue or flags are skipped
+in the report with an inline reason.
+
 ## Local development
 
 ### API
