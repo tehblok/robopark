@@ -145,3 +145,24 @@ class EmergencySectionOut(BaseModel):
     id: str
     title: str
     fields: list[EmergencyFieldOut]
+
+
+class ParkMetricsOut(BaseModel):
+    park_id: int
+    park_name: str
+    park_tag: str
+    metrics: dict[str, int]
+
+
+class SkippedParkOut(BaseModel):
+    park_id: int
+    park_name: str
+    reason: str
+
+
+class NowReportOut(BaseModel):
+    generated_at: str
+    scope: str
+    totals: dict[str, int]
+    parks: list[ParkMetricsOut]
+    skipped_parks: list[SkippedParkOut]

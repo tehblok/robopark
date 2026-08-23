@@ -17,6 +17,7 @@ from robopark_api.routers import (
     mechanic_tasks,
     operator_blockers,
     operator_parks,
+    operator_report,
     operator_robots,
     parks,
 )
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_mechanics.router)
     app.include_router(operator_parks.router)
     app.include_router(operator_blockers.router)
+    app.include_router(operator_report.router)
     app.include_router(operator_robots.router)
     app.include_router(admin_park_requests.router)
     app.include_router(mechanic_tasks.router)
