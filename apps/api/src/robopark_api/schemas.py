@@ -109,6 +109,14 @@ class MechanicTasksOut(BaseModel):
     items: list[BlockerOut]
 
 
+class OperatorBlockersOut(BaseModel):
+    park_id: int
+    park_tag: str
+    status: str
+    counts: dict[str, int]
+    items: list[BlockerOut]
+
+
 class RobotTicketsOut(BaseModel):
     query: str
     items: list[BlockerOut]
