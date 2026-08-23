@@ -1,10 +1,12 @@
 import { type FormEvent, useState } from 'react'
 import { api, type Blocker } from '../api'
+import { useAuth } from '../auth-context'
 import { Alert, EmptyState, PageShell, Panel } from '../components/PageShell'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
 
-export function MechanicRobotSearch() {
+export function OperatorRobotSearch() {
+  const { logout } = useAuth()
   const [query, setQuery] = useState('')
   const [items, setItems] = useState<Blocker[]>([])
   const [error, setError] = useState('')
@@ -15,7 +17,7 @@ export function MechanicRobotSearch() {
     setError('')
     setSearched(true)
     try {
-      const data = await api.mechanicRobotTickets(query.trim())
+      const data = await api.operatorRobotTickets(query.trim())
       setItems(data.items)
     } catch (caught) {
       setError(mapApiError(caught, ru.errors.robotSearch))
@@ -24,7 +26,8 @@ export function MechanicRobotSearch() {
 
   return (
     <PageShell
-      backTo="/mechanic"
+      backTo="/operator"
+      onLogout={logout}
       subtitle="Поиск по номеру робота (447, a1517) или ключу тикета (ROBOPARK-123). Результаты без фильтра по парку."
       title="Поиск робота"
     >

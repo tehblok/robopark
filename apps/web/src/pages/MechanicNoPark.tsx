@@ -1,10 +1,11 @@
+import { PageShell, Panel } from '../components/PageShell'
+
 export function MechanicNoPark() {
   return (
-    <main className="page">
-      <section className="workspace">
-        <h1>No park assigned</h1>
-        <p>Contact an administrator to assign exactly one park to your account.</p>
-      </section>
-    </main>
+    <PageShell subtitle="Без привязки к парку инструменты недоступны." title="Парк не назначен">
+      <Panel hint="Администратор должен создать или обновить учётную запись механика и привязать ровно один активный парк." title="Что делать">
+        <p>После назначения парка выйдите и войдите снова — откроется полный кабинет.</p>
+      </Panel>
+    </PageShell>
   )
 }

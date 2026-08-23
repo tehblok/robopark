@@ -71,6 +71,27 @@ export type MechanicTasks = {
   items: Blocker[]
 }
 
+export type OperatorBlockers = {
+  park_id: number
+  park_tag: string
+  status: string
+  counts: Record<string, number>
+  items: Blocker[]
+}
+
+export type NowReport = {
+  generated_at: string
+  scope: string
+  totals: Record<string, number>
+  parks: Array<{
+    park_id: number
+    park_name: string
+    park_tag: string
+    metrics: Record<string, number>
+  }>
+  skipped_parks: Array<{ park_id: number; park_name: string; reason: string }>
+}
+
 export type EmergencySection = {
   id: string
   title: string
@@ -80,6 +101,29 @@ export type EmergencySectionDetail = {
   id: string
   title: string
   fields: { label: string; lines: string[] }[]
+}
+
+export class ApiError extends Error {
+  status: number
+  detail: string | null
+
+  constructor(status: number, detail: string | null = null) {
+    super(detail ?? String(status))
+    this.name = 'ApiError'
+    this.status = status
+    this.detail = detail
+  }
+}
+
+async function readErrorDetail(response: Response): Promise<string | null> {
+  try {
+    const body = await response.json() as { detail?: unknown }
+    if (typeof body.detail === 'string') return body.detail
+    if (Array.isArray(body.detail)) return body.detail.map(String).join('; ')
+  } catch {
+    return null
+  }
+  return null
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -93,7 +137,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
-    throw new Error(String(response.status))
+    const detail = await readErrorDetail(response)
+    throw new ApiError(response.status, detail)
   }
 
   if (response.status === 204) {
@@ -198,5 +243,19 @@ export const api = {
   mechanicEmergencySection: (vin: string, sectionId: string) =>
     request<EmergencySectionDetail>(
       `/mechanic/emergency/${encodeURIComponent(vin)}/sections/${encodeURIComponent(sectionId)}`,
+    ),
+  operatorBlockers: (parkId: number, status = 'all') =>
+    request<OperatorBlockers>(
+      `/operator/blockers?park_id=${parkId}&status=${encodeURIComponent(status)}`,
+    ),
+  operatorRobotTickets: (query: string) =>
+    request<{ query: string; items: Blocker[] }>(
+      `/operator/robots/${encodeURIComponent(query)}/tickets`,
+    ),
+  operatorNowReport: (parkId?: number) =>
+    request<NowReport>(
+      parkId == null
+        ? '/operator/now-report'
+        : `/operator/now-report?park_id=${parkId}`,
     ),
 }
