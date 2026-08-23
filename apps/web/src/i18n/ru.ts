@@ -60,7 +60,13 @@ export const ru = {
     emergency: 'Не удалось получить данные Emergency.',
     emergencySection: 'Не удалось загрузить раздел.',
     details: {
-      tracker_token_not_configured: 'OAuth-токен Tracker не задан в настройках администратора.',
+      blockers_disabled_for_park:
+        'Блокеры отключены для этого парка (очередь или feature_blockers).',
+      no_tracker_parks: 'Нет назначенных парков с очередью Tracker.',
+      no_report_parks:
+        'Нет парков для отчёта — назначьте парк или включите feature_reports.',
+      tracker_token_not_configured:
+        'Tracker не настроен — попросите администратора указать OAuth-токен.',
       emergency_cookie_not_configured: 'Cookie Emergency не задан в настройках администратора.',
       emergency_cookie_invalid: 'Cookie Emergency просрочен или недействителен.',
       tasks_disabled_for_park: 'Задачи отключены: проверьте очередь Tracker и флаг blockers у парка.',
