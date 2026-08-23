@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, type Blocker, type Park } from '../api'
 import { useAuth } from '../auth-context'
 import { Alert, EmptyState, PageShell, Panel } from '../components/PageShell'
@@ -24,6 +24,7 @@ export function OperatorBlockers() {
   const [parkTag, setParkTag] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const requestIdRef = useRef(0)
 
   useEffect(() => {
     api.operatorParks()
@@ -43,18 +44,27 @@ export function OperatorBlockers() {
       return
     }
 
+    const requestId = ++requestIdRef.current
     setLoading(true)
     setError('')
+    setItems([])
+    setCounts({})
+    setParkTag('')
     api.operatorBlockers(parkId, status)
       .then((data) => {
+        if (requestId !== requestIdRef.current) return
         setItems(data.items)
         setCounts(data.counts)
         setParkTag(data.park_tag)
       })
       .catch((loadError) => {
+        if (requestId !== requestIdRef.current) return
         setError(mapApiError(loadError, ru.errors.tasks))
       })
-      .finally(() => setLoading(false))
+      .finally(() => {
+        if (requestId !== requestIdRef.current) return
+        setLoading(false)
+      })
   }, [parkId, status])
 
   return (

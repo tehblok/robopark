@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type NowReport, type Park } from '../api'
 import { useAuth } from '../auth-context'
 import { Alert, EmptyState, PageShell, Panel } from '../components/PageShell'
@@ -81,6 +81,7 @@ export function OperatorNowReport() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [parksLoading, setParksLoading] = useState(true)
+  const requestIdRef = useRef(0)
 
   useEffect(() => {
     api.operatorParks()
@@ -92,15 +93,20 @@ export function OperatorNowReport() {
   }, [])
 
   const loadReport = useCallback(async () => {
+    const requestId = ++requestIdRef.current
     setLoading(true)
     setError('')
+    setReport(null)
     try {
       const data = await api.operatorNowReport(parkFilter ?? undefined)
+      if (requestId !== requestIdRef.current) return
       setReport(data)
     } catch (loadError) {
+      if (requestId !== requestIdRef.current) return
       setReport(null)
       setError(mapApiError(loadError, ru.errors.load))
     } finally {
+      if (requestId !== requestIdRef.current) return
       setLoading(false)
     }
   }, [parkFilter])

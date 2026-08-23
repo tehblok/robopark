@@ -40,19 +40,19 @@ TOTAL_FROM_PARK = {
 }
 
 
+def _all_parks_cache_key(user_id: int, parks: list) -> str:
+    fingerprint = ",".join(
+        f"{park.id}:{park.tracker_queue or ''}:{park.tag}" for park in parks
+    )
+    return f"now:{user_id}:all:{fingerprint}"
+
+
 @router.get("/now-report", response_model=NowReportOut)
 def operator_now_report(
     park_id: int | None = Query(default=None),
     user: User = Depends(require_approved_operator),
     db: Session = Depends(get_db),
 ) -> NowReportOut:
-    token = settings_svc.get_tracker_token(db)
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="tracker_token_not_configured",
-        )
-
     if park_id is not None:
         parks = [require_operator_park(park_id, db, user)]
         scope = "park"
@@ -60,12 +60,19 @@ def operator_now_report(
     else:
         parks = get_operator_parks(db, user)
         scope = "all"
-        cache_key = f"now:{user.id}:all"
+        cache_key = _all_parks_cache_key(user.id, parks)
 
     if not parks:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="no_report_parks",
+        )
+
+    token = settings_svc.get_tracker_token(db)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="tracker_token_not_configured",
         )
 
     cached = tracker_metrics.get_cached_now_report(cache_key)

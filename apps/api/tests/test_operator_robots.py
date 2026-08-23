@@ -85,3 +85,50 @@ def test_robot_search_merges_and_dedupes(client, db_session, seed_royal):
     keys = [i["key"] for i in r.json()["items"]]
     assert len(keys) == 2
     assert set(keys) == {"R-1", "R-2"}
+
+
+def test_robot_search_ticket_key_rejects_foreign_queue(client, db_session, seed_royal):
+    p1 = Park(name="Only", tag="Only", is_active=True, tracker_queue="Q1")
+    db_session.add(p1)
+    db_session.flush()
+    op = User(
+        username="op-q1",
+        password_hash=hash_password("secret"),
+        role="operator",
+        access_status="approved",
+        is_active=True,
+    )
+    db_session.add(op)
+    db_session.flush()
+    db_session.add(UserPark(user_id=op.id, park_id=p1.id))
+    db_session.commit()
+
+    login_as(client, "royal", "secret")
+    client.put("/admin/settings/tracker-token", json={"token": "fake"})
+    login_as(client, "op-q1", "secret")
+
+    def fake_search(*, token, queue, query):
+        if query.upper() == "FOREIGN-42":
+            return [
+                {
+                    "key": "FOREIGN-42",
+                    "summary": "foreign issue",
+                    "status": "queued",
+                    "created": "2026-01-01T10:00:00+00:00",
+                    "hours_created": "1.0",
+                    "robot": None,
+                    "in_relocation": "0",
+                    "status_key": "queued",
+                    "resolution": "",
+                    "queue": "Q2",
+                }
+            ]
+        return []
+
+    with patch(
+        "robopark_api.services.tracker_client.search_robot_tickets",
+        side_effect=fake_search,
+    ):
+        r = client.get("/operator/robots/FOREIGN-42/tickets")
+    assert r.status_code == 200
+    assert r.json()["items"] == []

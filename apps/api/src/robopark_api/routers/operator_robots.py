@@ -51,6 +51,7 @@ def operator_robot_tickets(
             detail="tracker_token_not_configured",
         )
 
+    allowed_queues = set(queues)
     merged: list[dict] = []
     keys: set[str] = set()
     try:
@@ -58,6 +59,9 @@ def operator_robot_tickets(
             for item in tracker_client.search_robot_tickets(
                 token=token, queue=queue, query=query
             ):
+                item_queue = (item.get("queue") or "").strip()
+                if item_queue and item_queue not in allowed_queues:
+                    continue
                 if item["key"] in keys:
                     continue
                 keys.add(item["key"])

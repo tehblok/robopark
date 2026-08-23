@@ -35,3 +35,9 @@ def test_metrics_cache_roundtrip():
     tracker_metrics.clear_metrics_cache()
     tracker_metrics.set_cached_now_report("k", {"totals": {"blocker": 1}}, ttl_sec=60)
     assert tracker_metrics.get_cached_now_report("k") == {"totals": {"blocker": 1}}
+
+
+def test_metrics_cache_expired_returns_none():
+    tracker_metrics.clear_metrics_cache()
+    tracker_metrics.set_cached_now_report("k", {"totals": {"blocker": 1}}, ttl_sec=0)
+    assert tracker_metrics.get_cached_now_report("k") is None

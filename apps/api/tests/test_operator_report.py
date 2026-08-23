@@ -80,8 +80,6 @@ def test_now_report_forbidden_foreign_park(client, db_session, seed_royal):
     foreign = Park(name="Z", tag="Z", is_active=True, tracker_queue="ROBOPARK")
     db_session.add(foreign)
     db_session.commit()
-    login_as(client, "royal", "secret")
-    client.put("/admin/settings/tracker-token", json={"token": "fake"})
     login_as(client, "op-report", "secret")
     r = client.get(f"/operator/now-report?park_id={foreign.id}")
     assert r.status_code == 403
