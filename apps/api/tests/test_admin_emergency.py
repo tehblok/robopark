@@ -124,3 +124,57 @@ def test_operator_gets_403_for_admin_emergency(client, db_session):
 
     assert client.get("/admin/emergency/sections").status_code == 403
     assert _create_section(client).status_code == 403
+
+
+def test_export_canonical_keys_override_meta(client, seed_royal):
+    login_as(client, "royal", "secret")
+    client.post(
+        "/admin/emergency/sections",
+        json={
+            "id": "status",
+            "title": "Статус",
+            "is_enabled": True,
+            "formatter": "errors_classify",
+            "meta": {
+                "title": "Meta title",
+                "fields": [{"path": "meta.path", "label": "Meta label"}],
+                "formatter": "meta_formatter",
+                "covered_top_level": ["vin"],
+            },
+            "roles": ["mechanic"],
+            "fields": [{"path": "vin", "label": "VIN"}],
+        },
+    )
+
+    exported = client.get("/admin/emergency/export")
+    assert exported.status_code == 200
+    assert exported.json()["sections"]["status"] == {
+        "title": "Статус",
+        "fields": [{"path": "vin", "label": "VIN"}],
+        "formatter": "errors_classify",
+        "covered_top_level": ["vin"],
+    }
+
+
+def test_patch_rejects_explicit_null_for_title_path_label(client, seed_royal):
+    login_as(client, "royal", "secret")
+    section = _create_section(client, "status").json()
+    field_id = section["fields"][0]["id"]
+
+    assert (
+        client.patch("/admin/emergency/sections/status", json={"title": None}).status_code
+        == 422
+    )
+    assert (
+        client.patch(f"/admin/emergency/fields/{field_id}", json={"path": None}).status_code
+        == 422
+    )
+    assert (
+        client.patch(f"/admin/emergency/fields/{field_id}", json={"label": None}).status_code
+        == 422
+    )
+
+    listed = client.get("/admin/emergency/sections").json()[0]
+    assert listed["title"] == "Статус"
+    assert listed["fields"][0]["path"] == "vin"
+    assert listed["fields"][0]["label"] == "VIN"

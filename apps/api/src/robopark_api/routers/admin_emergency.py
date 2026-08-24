@@ -243,7 +243,10 @@ def export_config(db: Session = Depends(get_db)) -> dict[str, Any]:
     ).all()
     exported: dict[str, dict[str, Any]] = {}
     for section in sections:
-        item: dict[str, Any] = {"title": section.title}
+        item: dict[str, Any] = {}
+        if meta := _parse_meta(section.meta_json):
+            item.update(meta)
+        item["title"] = section.title
         if section.fields:
             item["fields"] = [
                 {"path": field.path, "label": field.label}
@@ -253,7 +256,5 @@ def export_config(db: Session = Depends(get_db)) -> dict[str, Any]:
             ]
         if section.formatter:
             item["formatter"] = section.formatter
-        if meta := _parse_meta(section.meta_json):
-            item.update(meta)
         exported[section.id] = item
     return {"sections": exported}

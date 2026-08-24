@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class LoginRequest(BaseModel):
@@ -163,9 +163,22 @@ class EmergencyFieldCreate(BaseModel):
     label: str = Field(min_length=1, max_length=128)
 
 
+def _reject_explicit_nulls(data: Any, fields: tuple[str, ...]) -> Any:
+    if isinstance(data, dict):
+        for key in fields:
+            if key in data and data[key] is None:
+                raise ValueError(f"{key} must not be null")
+    return data
+
+
 class EmergencyFieldUpdate(BaseModel):
     path: str | None = Field(default=None, min_length=1, max_length=256)
     label: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_explicit_nulls(cls, data: Any) -> Any:
+        return _reject_explicit_nulls(data, ("path", "label"))
 
 
 class EmergencySectionAdminOut(BaseModel):
@@ -195,6 +208,11 @@ class EmergencySectionUpdate(BaseModel):
     formatter: str | None = Field(default=None, max_length=64)
     meta: dict[str, Any] | None = None
     roles: list[EmergencyViewerRole] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_explicit_nulls(cls, data: Any) -> Any:
+        return _reject_explicit_nulls(data, ("title",))
 
 
 class EmergencySectionsReorder(BaseModel):
