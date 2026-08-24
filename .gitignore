@@ -1,6 +1,6 @@
 # Secrets & env
 # Every *.env variant is operator-owned and untracked (deploy/host.env,
-# deploy/vps.env, deploy/tunnel.env, apps/api/.env); only examples are committed.
+# deploy/vps/wg.env, apps/api/.env); only examples are committed.
 .env
 .env.*
 *.env

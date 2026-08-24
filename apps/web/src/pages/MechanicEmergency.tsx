@@ -1,6 +1,8 @@
 import { type FormEvent, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { api, type EmergencySection, type EmergencySectionDetail } from '../api'
+import { Alert, EmptyState, PageShell, Panel } from '../components/PageShell'
+import { mapApiError } from '../i18n/errors'
+import { ru } from '../i18n/ru'
 
 export function MechanicEmergency() {
   const [robotNumber, setRobotNumber] = useState('')
@@ -17,8 +19,8 @@ export function MechanicEmergency() {
       const data = await api.mechanicEmergencyResolve(robotNumber.trim())
       setVin(data.vin)
       setSections(data.sections)
-    } catch {
-      setError('Emergency lookup failed. Check cookie configuration.')
+    } catch (caught) {
+      setError(mapApiError(caught, ru.errors.emergency))
     }
   }
 
@@ -26,55 +28,63 @@ export function MechanicEmergency() {
     setError('')
     try {
       setDetail(await api.mechanicEmergencySection(vin, sectionId))
-    } catch {
-      setError('Could not load section.')
+    } catch (caught) {
+      setError(mapApiError(caught, ru.errors.emergencySection))
     }
   }
 
   return (
-    <main className="page">
-      <section className="workspace">
-        <header>
-          <h1>Emergency</h1>
-          <Link to="/mechanic">Back</Link>
-        </header>
+    <PageShell
+      backTo="/mechanic"
+      subtitle="Номер робота → VIN → разделы данных Emergency API."
+      title="Emergency"
+    >
+      <Panel hint="Нужен cookie Emergency в настройках администратора." title="Поиск робота">
         <form className="inline-form" onSubmit={resolve}>
           <input
-            aria-label="Robot number"
+            aria-label="Номер робота"
             onChange={(event) => setRobotNumber(event.target.value)}
             placeholder="447"
             required
             value={robotNumber}
           />
-          <button type="submit">Resolve</button>
+          <button type="submit">Проверить</button>
         </form>
-        {error && <p className="error">{error}</p>}
-        {vin && (
-          <>
-            <p>VIN: {vin}</p>
-            <ul>
+      </Panel>
+
+      {error && <Alert tone="error">{error}</Alert>}
+
+      {vin && (
+        <Panel hint="Выберите раздел для просмотра полей." title={`VIN: ${vin}`}>
+          {sections.length ? (
+            <div className="actions">
               {sections.map((section) => (
-                <li key={section.id}>
-                  <button onClick={() => openSection(section.id)} type="button">
-                    {section.title}
-                  </button>
-                </li>
+                <button
+                  className="btn btn-filter"
+                  key={section.id}
+                  onClick={() => openSection(section.id)}
+                  type="button"
+                >
+                  {section.title}
+                </button>
               ))}
-            </ul>
-          </>
-        )}
-        {detail && (
-          <article>
-            <h2>{detail.title}</h2>
-            {detail.fields.map((field) => (
-              <div key={field.label}>
-                <strong>{field.label}</strong>
-                <pre>{field.lines.join('\n')}</pre>
-              </div>
-            ))}
-          </article>
-        )}
-      </section>
-    </main>
+            </div>
+          ) : (
+            <EmptyState>Разделы не найдены.</EmptyState>
+          )}
+        </Panel>
+      )}
+
+      {detail && (
+        <Panel title={detail.title}>
+          {detail.fields.map((field) => (
+            <div className="detail-block" key={field.label}>
+              <strong>{field.label}</strong>
+              <pre>{field.lines.join('\n')}</pre>
+            </div>
+          ))}
+        </Panel>
+      )}
+    </PageShell>
   )
 }

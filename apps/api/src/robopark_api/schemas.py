@@ -109,6 +109,14 @@ class MechanicTasksOut(BaseModel):
     items: list[BlockerOut]
 
 
+class OperatorBlockersOut(BaseModel):
+    park_id: int
+    park_tag: str
+    status: str
+    counts: dict[str, int]
+    items: list[BlockerOut]
+
+
 class RobotTicketsOut(BaseModel):
     query: str
     items: list[BlockerOut]
@@ -137,6 +145,27 @@ class EmergencySectionOut(BaseModel):
     id: str
     title: str
     fields: list[EmergencyFieldOut]
+
+
+class ParkMetricsOut(BaseModel):
+    park_id: int
+    park_name: str
+    park_tag: str
+    metrics: dict[str, int]
+
+
+class SkippedParkOut(BaseModel):
+    park_id: int
+    park_name: str
+    reason: str
+
+
+class NowReportOut(BaseModel):
+    generated_at: str
+    scope: str
+    totals: dict[str, int]
+    parks: list[ParkMetricsOut]
+    skipped_parks: list[SkippedParkOut]
 
 
 class TrackerIssueOut(BaseModel):
@@ -204,3 +233,4 @@ class TrackerPolicySettingsIn(BaseModel):
     operator_show_raw: bool | None = None
     operator_show_firmware_profile: bool | None = None
     mechanic_can_write: bool | None = None
+

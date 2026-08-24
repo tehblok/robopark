@@ -7,15 +7,16 @@ import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Mechanic } from './pages/Mechanic'
 import { MechanicEmergency } from './pages/MechanicEmergency'
+import { MechanicIssueWorkspace } from './pages/MechanicIssueWorkspace'
 import { MechanicNoPark } from './pages/MechanicNoPark'
 import { MechanicRobotSearch } from './pages/MechanicRobotSearch'
-import { MechanicIssueWorkspace } from './pages/MechanicIssueWorkspace'
 import { MechanicTasks } from './pages/MechanicTasks'
 import { NoCabinet } from './pages/NoCabinet'
 import { Operator } from './pages/Operator'
 import { OperatorBlockers } from './pages/OperatorBlockers'
 import { OperatorIssueWorkspace } from './pages/OperatorIssueWorkspace'
 import { OperatorNowReport } from './pages/OperatorNowReport'
+import { OperatorParks } from './pages/OperatorParks'
 import { OperatorPending } from './pages/OperatorPending'
 import { OperatorRejected } from './pages/OperatorRejected'
 import { OperatorRobotSearch } from './pages/OperatorRobotSearch'
@@ -34,6 +35,16 @@ function RequirePath({
   if (!user) return <Navigate to="/login" replace />
   const userPath = pathForUser(user)
   if (userPath !== path) return <Navigate to={userPath} replace />
+  return children
+}
+
+function RequireApprovedOperator({ children }: { children: ReactNode }) {
+  const { user, loading } = useAuth()
+  if (loading) return null
+  if (!user) return <Navigate to="/login" replace />
+  if (user.role !== 'operator' || user.access_status !== 'approved') {
+    return <Navigate to={pathForUser(user)} replace />
+  }
   return children
 }
 
@@ -80,9 +91,49 @@ export default function App() {
       <Route
         path="/operator"
         element={
-          <RequirePath path="/operator">
+          <RequireApprovedOperator>
             <Operator />
-          </RequirePath>
+          </RequireApprovedOperator>
+        }
+      />
+      <Route
+        path="/operator/parks"
+        element={
+          <RequireApprovedOperator>
+            <OperatorParks />
+          </RequireApprovedOperator>
+        }
+      />
+      <Route
+        path="/operator/blockers"
+        element={
+          <RequireApprovedOperator>
+            <OperatorBlockers />
+          </RequireApprovedOperator>
+        }
+      />
+      <Route
+        path="/operator/robot-search"
+        element={
+          <RequireApprovedOperator>
+            <OperatorRobotSearch />
+          </RequireApprovedOperator>
+        }
+      />
+      <Route
+        path="/operator/now-report"
+        element={
+          <RequireApprovedOperator>
+            <OperatorNowReport />
+          </RequireApprovedOperator>
+        }
+      />
+      <Route
+        path="/operator/tracker"
+        element={
+          <RequireApprovedOperator>
+            <OperatorIssueWorkspace />
+          </RequireApprovedOperator>
         }
       />
       <Route
@@ -90,38 +141,6 @@ export default function App() {
         element={
           <RequirePath path="/operator/pending">
             <OperatorPending />
-          </RequirePath>
-        }
-      />
-      <Route
-        path="/operator/blockers"
-        element={
-          <RequirePath path="/operator">
-            <OperatorBlockers />
-          </RequirePath>
-        }
-      />
-      <Route
-        path="/operator/robot-search"
-        element={
-          <RequirePath path="/operator">
-            <OperatorRobotSearch />
-          </RequirePath>
-        }
-      />
-      <Route
-        path="/operator/now-report"
-        element={
-          <RequirePath path="/operator">
-            <OperatorNowReport />
-          </RequirePath>
-        }
-      />
-      <Route
-        path="/operator/tracker"
-        element={
-          <RequirePath path="/operator">
-            <OperatorIssueWorkspace />
           </RequirePath>
         }
       />

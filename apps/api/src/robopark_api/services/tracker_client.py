@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 TRACKER_SEARCH_URL = "https://api.tracker.yandex.net/v2/issues/_search"
+TRACKER_COUNT_URL = "https://api.tracker.yandex.net/v2/issues/_count"
 TRACKER_ISSUE_URL = "https://api.tracker.yandex.net/v2/issues"
 TRACKER_COMMENTS_URL = "https://api.tracker.yandex.net/v2/issues/{key}/comments"
 TRACKER_TRANSITIONS_URL = "https://api.tracker.yandex.net/v2/issues/{key}/transitions"
@@ -159,6 +160,34 @@ def _search(token: str, query: str) -> list[dict[str, Any]]:
         raise TrackerError("unexpected tracker response")
     items = [issue_to_dict(item) for item in payload if isinstance(item, dict)]
     return [item for item in items if is_issue_open_item(item)]
+
+
+def count_issues(*, token: str, query: str) -> int:
+    headers = {"Authorization": f"OAuth {token}"}
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                TRACKER_COUNT_URL,
+                headers=headers,
+                json={"query": query},
+            )
+            response.raise_for_status()
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise TrackerError("unexpected tracker count response") from exc
+    except httpx.HTTPError as exc:
+        raise TrackerError(str(exc)) from exc
+    try:
+        if isinstance(payload, (int, float)):
+            return int(payload)
+        if isinstance(payload, dict):
+            for key in ("count", "total", "value"):
+                if key in payload:
+                    return int(payload[key])
+    except (TypeError, ValueError) as exc:
+        raise TrackerError("unexpected tracker count response") from exc
+    raise TrackerError("unexpected tracker count response")
 
 
 def fetch_park_blockers(*, token: str, queue: str, park_tag: str) -> list[dict[str, Any]]:
