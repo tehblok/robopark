@@ -112,6 +112,30 @@ used VINs (or the optional seed VIN when the ring is empty), records cookie
 validity, and marks it invalid after an upstream 401. Emergency pages load on
 user actions and do not poll from browser timers.
 
+## UI shell и дашборд
+
+После входа все роли попадают в общий **AppShell**: слева сайдбар «Робопарк
+Сервис», сверху — выбор **Парка**, имя пользователя и меню.
+
+**Тема:** в меню пользователя (правый верхний угол) переключатель «Светлая /
+Тёмная тема». Выбор сохраняется в `localStorage` (`robopark-theme`); по
+умолчанию — светлая.
+
+**Парк:** дашборд и связанные экраны зависят от выбранного парка в шапке.
+У механика парк зафиксирован; у оператора и админа — выпадающий список
+назначенных парков.
+
+**Дашборд** (`/dashboard`): KPI и график «пришли / ушли» блокеров за 7 дней.
+Сводка берётся из Tracker (now-report); история графика — из локальной БД.
+Фоновый job API сканирует Tracker **каждые 2 часа** и пишет бакеты per-park;
+пока job не отработал, график может быть пустым. Нужны `tracker_queue`, `tag`
+и OAuth-токен Tracker в `/admin`.
+
+**Заглушки «Скоро»:** Карта, Обучение, Помощь — пункты меню видны, контент
+появится позже.
+
+Design: [`docs/superpowers/specs/2026-08-24-robopark-ui-shell-dashboard-design.md`](docs/superpowers/specs/2026-08-24-robopark-ui-shell-dashboard-design.md)
+
 ## Local development
 
 ### API

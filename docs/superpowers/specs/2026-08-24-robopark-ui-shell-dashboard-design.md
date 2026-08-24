@@ -1,7 +1,7 @@
 # Robopark — UI shell, тема, дашборд и навигация
 
 **Date:** 2026-08-24  
-**Status:** approved for planning  
+**Status:** implemented  
 **Depends on:** Phase 4/5 Tracker (now-report, blockers, park queue/tag), Phase 6 Emergency (shared viewer)  
 **Refs:** эскиз «Робопарк Сервис» (layout), скрин soft UI (светлая палитра + оранжевый акцент)
 
