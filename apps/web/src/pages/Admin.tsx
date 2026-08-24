@@ -212,6 +212,7 @@ export function Admin() {
         </form>
         <div className="actions" style={{ marginTop: '0.75rem' }}>
           <Link to="/admin/emergency">Открыть Emergency →</Link>
+          <Link to="/admin/emergency/config">Конфиг Emergency →</Link>
         </div>
         {trackerPolicy && (
           <div className="actions" style={{ marginTop: '0.75rem' }}>

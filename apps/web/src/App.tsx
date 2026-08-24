@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { useAuth } from './auth-context'
 import { Admin } from './pages/Admin'
 import { AdminEmergency } from './pages/AdminEmergency'
+import { AdminEmergencyConfig } from './pages/AdminEmergencyConfig'
 import { AdminTrackerWorkspace } from './pages/AdminTrackerWorkspace'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
@@ -95,6 +96,14 @@ export default function App() {
         element={
           <RequirePath path="/admin">
             <AdminEmergency />
+          </RequirePath>
+        }
+      />
+      <Route
+        path="/admin/emergency/config"
+        element={
+          <RequirePath path="/admin">
+            <AdminEmergencyConfig />
           </RequirePath>
         }
       />

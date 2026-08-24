@@ -110,6 +110,35 @@ export type EmergencySectionDetail = {
   fields: { label: string; lines: string[] }[]
 }
 
+export type EmergencyViewerRole = 'mechanic' | 'operator' | 'admin' | 'royal'
+
+export type EmergencyAdminField = {
+  id: number
+  path: string
+  label: string
+  sort_order: number
+}
+
+export type EmergencyAdminSection = {
+  id: string
+  title: string
+  sort_order: number
+  is_enabled: boolean
+  formatter: string | null
+  meta: Record<string, unknown> | null
+  roles: EmergencyViewerRole[]
+  fields: EmergencyAdminField[]
+}
+
+export type EmergencySectionCreate = {
+  id: string
+  title: string
+  is_enabled?: boolean
+  formatter?: string | null
+  roles?: EmergencyViewerRole[]
+  fields?: Array<{ path: string; label: string }>
+}
+
 export type TrackerIssue = {
   key: string
   summary: string
@@ -170,6 +199,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return response.json() as Promise<T>
+}
+
+async function requestBlob(path: string): Promise<Blob> {
+  const response = await fetch(`/api${path}`, { credentials: 'include' })
+  if (!response.ok) {
+    const detail = await readErrorDetail(response)
+    throw new ApiError(response.status, detail)
+  }
+  return response.blob()
 }
 
 export const api = {
@@ -283,6 +321,49 @@ export const api = {
     request<EmergencySectionDetail>(
       `/emergency/${encodeURIComponent(vin)}/sections/${encodeURIComponent(sectionId)}`,
     ),
+  adminEmergencySections: () =>
+    request<EmergencyAdminSection[]>('/admin/emergency/sections'),
+  createEmergencySection: (payload: EmergencySectionCreate) =>
+    request<EmergencyAdminSection>('/admin/emergency/sections', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateEmergencySection: (
+    sectionId: string,
+    changes: Partial<Pick<
+      EmergencyAdminSection,
+      'title' | 'is_enabled' | 'formatter' | 'meta' | 'roles'
+    >>,
+  ) =>
+    request<EmergencyAdminSection>(
+      `/admin/emergency/sections/${encodeURIComponent(sectionId)}`,
+      { method: 'PATCH', body: JSON.stringify(changes) },
+    ),
+  deleteEmergencySection: (sectionId: string) =>
+    request<void>(`/admin/emergency/sections/${encodeURIComponent(sectionId)}`, {
+      method: 'DELETE',
+    }),
+  reorderEmergencySections: (ids: string[]) =>
+    request<EmergencyAdminSection[]>('/admin/emergency/sections/reorder', {
+      method: 'PUT',
+      body: JSON.stringify({ ids }),
+    }),
+  createEmergencyField: (sectionId: string, payload: { path: string; label: string }) =>
+    request<EmergencyAdminField>(
+      `/admin/emergency/sections/${encodeURIComponent(sectionId)}/fields`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+  updateEmergencyField: (
+    fieldId: number,
+    changes: Partial<Pick<EmergencyAdminField, 'path' | 'label'>>,
+  ) =>
+    request<EmergencyAdminField>(`/admin/emergency/fields/${fieldId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(changes),
+    }),
+  deleteEmergencyField: (fieldId: number) =>
+    request<void>(`/admin/emergency/fields/${fieldId}`, { method: 'DELETE' }),
+  exportEmergencyConfig: () => requestBlob('/admin/emergency/export'),
   trackerIssues: (params: {
     queue?: string
     park?: string
