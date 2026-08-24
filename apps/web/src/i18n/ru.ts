@@ -84,24 +84,26 @@ export const ru = {
     emergency: 'Не удалось получить данные Emergency.',
     emergencySection: 'Не удалось загрузить раздел.',
     details: {
-      blockers_disabled_for_park:
-        'Блокеры отключены для этого парка (очередь или feature_blockers).',
-      no_tracker_parks: 'Нет назначенных парков с очередью Tracker.',
-      no_report_parks:
-        'Нет парков для отчёта — назначьте парк или включите feature_reports.',
       tracker_token_not_configured:
-        'Tracker не настроен — попросите администратора указать OAuth-токен.',
+        'Startrek не настроен — попросите администратора указать OAuth-токен.',
       tracker_issue_out_of_scope: 'Тикет вне вашей очереди или парка.',
-      tracker_queue_forbidden: 'Нет доступа к этой очереди Tracker.',
+      tracker_queue_forbidden: 'Нет доступа к этой очереди Startrek.',
       tracker_park_forbidden: 'Нет доступа к этому парку.',
       tracker_untagged_forbidden: 'Просмотр неразмеченных тикетов отключён.',
-      tracker_write_disabled: 'Запись в Tracker отключена политикой.',
-      tracker_upstream_error: 'Ошибка интеграции с Tracker.',
+      tracker_queue_required_for_untagged:
+        'Для неразмеченных укажите очередь (например SDCFLEETOPS).',
+      tracker_write_disabled: 'Запись в Startrek отключена политикой.',
+      tracker_upstream_error: 'Ошибка интеграции со Startrek.',
       tracker_transition_invalid: 'Этот переход недоступен для тикета.',
       tracker_close_transition_not_found: 'Не найден переход для закрытия тикета.',
       emergency_cookie_not_configured: 'Cookie Emergency не задан в настройках администратора.',
       emergency_cookie_invalid: 'Cookie Emergency просрочен или недействителен.',
-      tasks_disabled_for_park: 'Задачи отключены: проверьте очередь Tracker и флаг blockers у парка.',
+      tasks_disabled_for_park: 'Задачи отключены: проверьте очередь Startrek и флаг blockers у парка.',
+      blockers_disabled_for_park:
+        'Блокеры отключены для этого парка (очередь или feature_blockers).',
+      no_tracker_parks: 'Нет назначенных парков с очередью Startrek.',
+      no_report_parks:
+        'Нет парков для отчёта — назначьте парк или включите feature_reports.',
     } as Record<string, string>,
   },
 

@@ -39,3 +39,6 @@ data/
 *.sqlite
 *.db
 uv.lock
+
+# Vendored Startrek client (local copy; same as bot_otchet layout)
+startrek_client-2.8/

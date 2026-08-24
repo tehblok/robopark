@@ -6,8 +6,14 @@ from robopark_api.services import tracker_metrics
 def test_build_backlog_query_no_donor_exclude_when_empty():
     q = tracker_metrics.build_backlog_query("ROBOPARK", "Alpha", "")
     assert "Queue: ROBOPARK" in q
-    assert 'Tags: "Alpha"' in q
-    assert 'Tags: !' not in q
+    assert "Tags: Alpha" in q
+    assert "Tags: !" not in q
+
+
+def test_build_backlog_query_excludes_donor():
+    q = tracker_metrics.build_backlog_query("ROBOPARK", "Alpha", "donor")
+    assert 'Tags: !"donor"' in q
+    assert "-Tags:" not in q
 
 
 def test_collect_park_metrics_fixed_order():

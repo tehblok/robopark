@@ -1,7 +1,7 @@
 import { ApiError } from '../api'
 import { ru } from './ru'
 
-export function mapApiError(error: unknown, fallback: string): string {
+export function mapApiError(error: unknown, fallback = ''): string {
   if (error instanceof ApiError) {
     if (error.detail && ru.errors.details[error.detail]) {
       return ru.errors.details[error.detail]

@@ -13,7 +13,7 @@ from robopark_api.deps import (
 from robopark_api.models import User
 from robopark_api.schemas import NowReportOut, ParkMetricsOut, SkippedParkOut
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_client, tracker_metrics
+from robopark_api.services import tracker_client, tracker_filters, tracker_metrics
 
 router = APIRouter(prefix="/operator", tags=["operator-report"])
 
@@ -42,7 +42,9 @@ TOTAL_FROM_PARK = {
 
 def _all_parks_cache_key(user_id: int, parks: list) -> str:
     fingerprint = ",".join(
-        f"{park.id}:{park.tracker_queue or ''}:{park.tag}" for park in parks
+        f"{park.id}:{park.tracker_queue or ''}:{park.tag}:"
+        f"{park.tracker_priority or ''}:{park.tracker_type or ''}"
+        for park in parks
     )
     return f"now:{user_id}:all:{fingerprint}"
 
@@ -56,7 +58,12 @@ def operator_now_report(
     if park_id is not None:
         parks = [require_operator_park(park_id, db, user)]
         scope = "park"
-        cache_key = f"now:{user.id}:{park_id}"
+        park = parks[0]
+        cache_key = (
+            f"now:{user.id}:{park_id}:"
+            f"{park.tracker_queue or ''}:{park.tag}:"
+            f"{park.tracker_priority or ''}:{park.tracker_type or ''}"
+        )
     else:
         parks = get_operator_parks(db, user)
         scope = "all"
@@ -101,8 +108,13 @@ def operator_now_report(
             )
             continue
         try:
+            priority, issue_type = tracker_filters.park_priority_type(park)
             metrics = tracker_metrics.collect_park_metrics(
-                token=token, queue=queue, tag=park.tag
+                token=token,
+                queue=queue,
+                tag=park.tag,
+                priority=priority,
+                issue_type=issue_type,
             )
         except tracker_client.TrackerError as exc:
             raise HTTPException(

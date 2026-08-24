@@ -89,7 +89,7 @@ def test_mechanic_close_creates_close_review(
     assert report.author_user_id == seed_mechanic.id
     assert report.target_role == UserRole.operator.value
     assert report.tracker_key == "ROBOPARK-1"
-    assert report.tracker_url == "https://tracker.yandex.ru/ROBOPARK-1"
+    assert report.tracker_url == "https://st.yandex-team.ru/ROBOPARK-1"
     assert report.title == "Закрытие ROBOPARK-1"
 
 

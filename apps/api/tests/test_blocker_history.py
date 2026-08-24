@@ -154,7 +154,7 @@ def test_build_arrived_in_window_query_uses_park_filters():
     )
     assert 'Queue: ROBOPARK' in query
     assert "Priority: critical" in query
-    assert 'Tags: "Alpha"' in query
+    assert "Tags: Alpha" in query
     assert "Type: bug" in query
     assert 'Created: >= "2026-08-24 10:00:00"' in query
     assert 'Created: < "2026-08-24 12:00:00"' in query

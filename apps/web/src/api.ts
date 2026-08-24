@@ -42,6 +42,8 @@ export type User = {
 export type IntegrationSettings = {
   tracker_token_masked: string | null
   tracker_token_updated_at: string | null
+  tracker_org_id?: string | null
+  tracker_org_mode?: string
   emergency_cookie_masked: string | null
   emergency_cookie_updated_at: string | null
   emergency_cookie_valid: boolean | null
