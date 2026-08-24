@@ -21,6 +21,7 @@ def test_metadata_has_required_tables():
         "emergency_fields",
         "emergency_section_roles",
         "park_blocker_history",
+        "reports",
     }
 
 
