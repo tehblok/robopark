@@ -25,7 +25,11 @@ export function AdminEmergencyConfig() {
     api.adminEmergencySections().then(setSections).catch(() => setError(ru.errors.load))
   }, [])
 
-  const run = async (action: () => Promise<unknown>, success = 'Изменения сохранены.') => {
+  const run = async (
+    action: () => Promise<unknown>,
+    success = 'Изменения сохранены.',
+    reloadOnFailure = false,
+  ) => {
     setError('')
     setMessage('')
     try {
@@ -33,6 +37,9 @@ export function AdminEmergencyConfig() {
       await load()
       setMessage(success)
     } catch {
+      if (reloadOnFailure) {
+        await load().catch(() => undefined)
+      }
       setError(ru.errors.generic)
     }
   }
@@ -86,7 +93,11 @@ export function AdminEmergencyConfig() {
     const reordered = [...sections]
     ;[reordered[index], reordered[target]] = [reordered[target], reordered[index]]
     setSections(reordered)
-    void run(() => api.reorderEmergencySections(reordered.map((section) => section.id)))
+    void run(
+      () => api.reorderEmergencySections(reordered.map((section) => section.id)),
+      'Изменения сохранены.',
+      true,
+    )
   }
 
   const saveSection = (section: EmergencyAdminSection) => run(() =>
