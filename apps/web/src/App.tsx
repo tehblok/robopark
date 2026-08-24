@@ -2,6 +2,7 @@ import { type ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useAuth } from './auth-context'
 import { Admin } from './pages/Admin'
+import { AdminEmergency } from './pages/AdminEmergency'
 import { AdminTrackerWorkspace } from './pages/AdminTrackerWorkspace'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
@@ -14,6 +15,7 @@ import { MechanicTasks } from './pages/MechanicTasks'
 import { NoCabinet } from './pages/NoCabinet'
 import { Operator } from './pages/Operator'
 import { OperatorBlockers } from './pages/OperatorBlockers'
+import { OperatorEmergency } from './pages/OperatorEmergency'
 import { OperatorIssueWorkspace } from './pages/OperatorIssueWorkspace'
 import { OperatorNowReport } from './pages/OperatorNowReport'
 import { OperatorParks } from './pages/OperatorParks'
@@ -89,6 +91,14 @@ export default function App() {
         }
       />
       <Route
+        path="/admin/emergency"
+        element={
+          <RequirePath path="/admin">
+            <AdminEmergency />
+          </RequirePath>
+        }
+      />
+      <Route
         path="/operator"
         element={
           <RequireApprovedOperator>
@@ -133,6 +143,14 @@ export default function App() {
         element={
           <RequireApprovedOperator>
             <OperatorIssueWorkspace />
+          </RequireApprovedOperator>
+        }
+      />
+      <Route
+        path="/operator/emergency"
+        element={
+          <RequireApprovedOperator>
+            <OperatorEmergency />
           </RequireApprovedOperator>
         }
       />

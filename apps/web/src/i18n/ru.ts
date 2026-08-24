@@ -86,6 +86,20 @@ export const ru = {
     detailsError: 'Не удалось загрузить детали тикета',
     actionsDisabled: 'Действия отключены политикой',
   },
+
+  emergency: {
+    title: 'Emergency',
+    subtitle: 'Номер робота → VIN → разделы данных Emergency API.',
+    searchTitle: 'Поиск робота',
+    searchHint: 'Нужен cookie Emergency в настройках администратора.',
+    robotNumber: 'Номер робота',
+    robotPlaceholder: '447',
+    resolve: 'Проверить',
+    refresh: 'Обновить данные',
+    sectionsHint: 'Выберите раздел для просмотра полей.',
+    sectionsEmpty: 'Разделы не найдены.',
+    detailEmpty: 'В разделе нет данных.',
+  },
 }
 
 export function roleLabel(role: string) {

@@ -274,6 +274,15 @@ export const api = {
     request<EmergencySectionDetail>(
       `/mechanic/emergency/${encodeURIComponent(vin)}/sections/${encodeURIComponent(sectionId)}`,
     ),
+  emergencyResolve: (robot_number: string) =>
+    request<{ vin: string; sections: EmergencySection[] }>('/emergency/resolve', {
+      method: 'POST',
+      body: JSON.stringify({ robot_number }),
+    }),
+  emergencySection: (vin: string, sectionId: string) =>
+    request<EmergencySectionDetail>(
+      `/emergency/${encodeURIComponent(vin)}/sections/${encodeURIComponent(sectionId)}`,
+    ),
   trackerIssues: (params: {
     queue?: string
     park?: string
