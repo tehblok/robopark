@@ -1,5 +1,6 @@
-import { type ReactNode, useState } from 'react'
-import { Link, NavLink, Outlet } from 'react-router-dom'
+import { type ReactNode, useEffect, useState } from 'react'
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
+import { api } from '../api'
 import { useAuth } from '../auth-context'
 import { ru, roleLabel } from '../i18n/ru'
 import { navItemsForRole } from '../nav'
@@ -14,6 +15,37 @@ export function AppShell({ children }: AppShellProps) {
   const { user, logout } = useAuth()
   const { parkId, setParkId, parks, parksLoading, parkLocked } = useParkContext()
   const [theme, setThemeState] = useState<Theme>(() => getStoredTheme())
+  const [reportsBadge, setReportsBadge] = useState(0)
+  const location = useLocation()
+
+  useEffect(() => {
+    let cancelled = false
+    api.reportsBadge()
+      .then((data) => {
+        if (!cancelled) setReportsBadge(data.count)
+      })
+      .catch(() => {
+        if (!cancelled) setReportsBadge(0)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!location.pathname.startsWith('/reports')) return
+    let cancelled = false
+    api.reportsBadge()
+      .then((data) => {
+        if (!cancelled) setReportsBadge(data.count)
+      })
+      .catch(() => {
+        if (!cancelled) setReportsBadge(0)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [location.pathname])
 
   if (!user) return null
 
@@ -47,6 +79,9 @@ export function AppShell({ children }: AppShellProps) {
               className={({ isActive }) => (isActive ? 'nav-item active' : 'nav-item')}
             >
               <span className="nav-item-label">{item.label}</span>
+              {item.id === 'reports' && reportsBadge > 0 ? (
+                <span className="nav-count">{reportsBadge}</span>
+              ) : null}
               {item.stub ? <span className="nav-soon">{ru.nav.soon}</span> : null}
             </NavLink>
           ))}

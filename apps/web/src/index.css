@@ -678,6 +678,19 @@ textarea {
   letter-spacing: 0.04em;
 }
 
+.nav-count {
+  flex-shrink: 0;
+  min-width: 1.35rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-pill);
+  background: var(--brand);
+  color: white;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+}
+
 .nav-item.active .nav-soon {
   background: var(--bg);
 }
