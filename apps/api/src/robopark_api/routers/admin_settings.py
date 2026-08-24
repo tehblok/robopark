@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from robopark_api.db import get_db
 from robopark_api.deps import require_admin
 from robopark_api.models import User
+from robopark_api.schemas import TrackerPolicySettingsIn, TrackerPolicySettingsOut
 from robopark_api.services import platform_settings as settings_svc
 
 router = APIRouter(
@@ -73,3 +74,44 @@ def put_emergency_cookie(
     settings_svc.set_setting(db, settings_svc.EMERGENCY_COOKIE_KEY, payload.cookie)
     settings_svc.set_emergency_cookie_valid(db, True)
     return _to_out(db)
+
+
+@router.get("/tracker-policy", response_model=TrackerPolicySettingsOut)
+def get_tracker_policy(
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+) -> TrackerPolicySettingsOut:
+    return TrackerPolicySettingsOut(**settings_svc.tracker_policy_status(db))
+
+
+@router.put("/tracker-policy", response_model=TrackerPolicySettingsOut)
+def put_tracker_policy(
+    payload: TrackerPolicySettingsIn,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+) -> TrackerPolicySettingsOut:
+    if payload.operator_show_untagged is not None:
+        settings_svc.set_bool_setting(
+            db,
+            settings_svc.TRACKER_OPERATOR_UNTAGGED_KEY,
+            payload.operator_show_untagged,
+        )
+    if payload.operator_show_raw is not None:
+        settings_svc.set_bool_setting(
+            db,
+            settings_svc.TRACKER_OPERATOR_RAW_KEY,
+            payload.operator_show_raw,
+        )
+    if payload.operator_show_firmware_profile is not None:
+        settings_svc.set_bool_setting(
+            db,
+            settings_svc.TRACKER_OPERATOR_FIRMWARE_KEY,
+            payload.operator_show_firmware_profile,
+        )
+    if payload.mechanic_can_write is not None:
+        settings_svc.set_bool_setting(
+            db,
+            settings_svc.TRACKER_MECHANIC_WRITE_KEY,
+            payload.mechanic_can_write,
+        )
+    return TrackerPolicySettingsOut(**settings_svc.tracker_policy_status(db))

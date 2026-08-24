@@ -68,6 +68,30 @@ These tools require a platform Tracker OAuth token in `/admin` and, per park,
 `feature_reports` for the now-report. Parks missing queue or flags are skipped
 in the report with an inline reason.
 
+## Phase 5
+
+Tracker Core + Actions: unified `/tracker/*` API with role-aware ACL for
+`admin`/`operator`/`mechanic`, issue read endpoints, and write actions
+(comment/assign/unassign/transition/close). Queue scope is enforced on the
+backend for every issue key request to prevent cross-queue access.
+
+New endpoints:
+
+- `GET /tracker/issues`
+- `GET /tracker/issues/{key}`
+- `GET /tracker/issues/{key}/comments`
+- `GET /tracker/transitions/{key}`
+- `POST /tracker/issues/{key}/comment`
+- `POST /tracker/issues/{key}/assign`
+- `POST /tracker/issues/{key}/unassign`
+- `POST /tracker/issues/{key}/transition`
+- `POST /tracker/issues/{key}/close`
+
+Admin policy toggles are available at:
+
+- `GET /admin/settings/tracker-policy`
+- `PUT /admin/settings/tracker-policy`
+
 ## Local development
 
 ### API

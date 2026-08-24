@@ -11,6 +11,8 @@ import httpx
 TRACKER_SEARCH_URL = "https://api.tracker.yandex.net/v2/issues/_search"
 TRACKER_COUNT_URL = "https://api.tracker.yandex.net/v2/issues/_count"
 TRACKER_ISSUE_URL = "https://api.tracker.yandex.net/v2/issues"
+TRACKER_COMMENTS_URL = "https://api.tracker.yandex.net/v2/issues/{key}/comments"
+TRACKER_TRANSITIONS_URL = "https://api.tracker.yandex.net/v2/issues/{key}/transitions"
 
 
 class TrackerError(Exception):
@@ -121,7 +123,11 @@ def issue_to_dict(issue: dict[str, Any]) -> dict[str, Any]:
         "in_relocation": "1" if _is_relocation_status(status) else "0",
         "robot": parse_robot_from_summary(summary),
         "status_key": _issue_status_key(issue),
-        "resolution": str((issue.get("resolution") or {}) if isinstance(issue.get("resolution"), dict) else issue.get("resolution") or ""),
+        "resolution": str(
+            (issue.get("resolution") or {})
+            if isinstance(issue.get("resolution"), dict)
+            else issue.get("resolution") or ""
+        ),
         "queue": _issue_queue_display(issue),
     }
 
@@ -134,13 +140,16 @@ def is_issue_open_item(item: dict[str, Any]) -> bool:
     return not resolution or resolution in {"—", "none", "null", "empty"}
 
 
+def _headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"OAuth {token}"}
+
+
 def _search(token: str, query: str) -> list[dict[str, Any]]:
-    headers = {"Authorization": f"OAuth {token}"}
     try:
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
                 TRACKER_SEARCH_URL,
-                headers=headers,
+                headers=_headers(token),
                 json={"query": query},
             )
             response.raise_for_status()
@@ -186,6 +195,142 @@ def fetch_park_blockers(*, token: str, queue: str, park_tag: str) -> list[dict[s
     return _search(token, query)
 
 
+def search_issues(*, token: str, query: str) -> list[dict[str, Any]]:
+    return _search(token, query)
+
+
+def get_issue(*, token: str, key: str) -> dict[str, Any] | None:
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(f"{TRACKER_ISSUE_URL}/{key}", headers=_headers(token))
+            response.raise_for_status()
+            issue = issue_to_dict(response.json())
+            return issue if is_issue_open_item(issue) else None
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return None
+        raise TrackerError(str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise TrackerError(str(exc)) from exc
+
+
+def list_comments(*, token: str, key: str) -> list[dict[str, Any]]:
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(
+                TRACKER_COMMENTS_URL.format(key=key),
+                headers=_headers(token),
+            )
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise TrackerError(str(exc)) from exc
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise TrackerError("unexpected tracker comments response")
+
+    out: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        author = item.get("createdBy") or {}
+        if isinstance(author, dict):
+            author_name = str(author.get("display") or author.get("login") or "")
+        else:
+            author_name = ""
+        out.append(
+            {
+                "id": str(item.get("id") or ""),
+                "text": str(item.get("text") or ""),
+                "author": author_name,
+                "created_at": str(item.get("createdAt") or ""),
+            }
+        )
+    return out
+
+
+def add_comment(*, token: str, key: str, text: str) -> dict[str, Any]:
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                TRACKER_COMMENTS_URL.format(key=key),
+                headers=_headers(token),
+                json={"text": text},
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except httpx.HTTPError as exc:
+        raise TrackerError(str(exc)) from exc
+    if not isinstance(payload, dict):
+        raise TrackerError("unexpected tracker comment response")
+    return {"id": str(payload.get("id") or ""), "text": str(payload.get("text") or "")}
+
+
+def _patch_issue(*, token: str, key: str, payload: dict[str, Any]) -> None:
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.patch(
+                f"{TRACKER_ISSUE_URL}/{key}",
+                headers=_headers(token),
+                json=payload,
+            )
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise TrackerError(str(exc)) from exc
+
+
+def assign_issue(*, token: str, key: str, assignee: str) -> None:
+    _patch_issue(token=token, key=key, payload={"assignee": assignee})
+
+
+def unassign_issue(*, token: str, key: str) -> None:
+    _patch_issue(token=token, key=key, payload={"assignee": None})
+
+
+def list_transitions(*, token: str, key: str) -> list[dict[str, Any]]:
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(
+                TRACKER_TRANSITIONS_URL.format(key=key),
+                headers=_headers(token),
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except httpx.HTTPError as exc:
+        raise TrackerError(str(exc)) from exc
+    if not isinstance(payload, list):
+        raise TrackerError("unexpected tracker transitions response")
+
+    out: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            {
+                "id": str(item.get("id") or item.get("key") or ""),
+                "display": str(item.get("display") or item.get("name") or ""),
+            }
+        )
+    return out
+
+
+def transition_issue(
+    *, token: str, key: str, transition: str, resolution: str | None = None
+) -> None:
+    payload: dict[str, Any] = {"transition": transition}
+    if resolution:
+        payload["resolution"] = resolution
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                TRACKER_TRANSITIONS_URL.format(key=key),
+                headers=_headers(token),
+                json=payload,
+            )
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise TrackerError(str(exc)) from exc
+
+
 def _robot_search_variants(robot_number: str) -> list[str]:
     text = robot_number.strip()
     if not text:
@@ -224,18 +369,13 @@ def _summary_matches_robot(summary: str, robot_number: str) -> bool:
 def search_robot_tickets(*, token: str, queue: str, query: str) -> list[dict[str, Any]]:
     key = query.strip().upper()
     if re.fullmatch(r"[A-Z0-9-]+-\d+", key):
-        headers = {"Authorization": f"OAuth {token}"}
-        try:
-            with httpx.Client(timeout=30.0) as client:
-                response = client.get(f"{TRACKER_ISSUE_URL}/{key}", headers=headers)
-                response.raise_for_status()
-                issue = issue_to_dict(response.json())
-                issue_queue = (issue.get("queue") or "").strip()
-                if issue_queue and issue_queue != queue.strip():
-                    return []
-                return [issue] if is_issue_open_item(issue) else []
-        except httpx.HTTPError as exc:
-            raise TrackerError(str(exc)) from exc
+        issue = get_issue(token=token, key=key)
+        if not issue:
+            return []
+        issue_queue = (issue.get("queue") or "").strip()
+        if issue_queue and issue_queue != queue.strip():
+            return []
+        return [issue]
 
     seen: set[str] = set()
     results: list[dict[str, Any]] = []

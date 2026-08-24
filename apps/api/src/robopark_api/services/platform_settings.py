@@ -10,6 +10,10 @@ from robopark_api.models import PlatformSetting
 TRACKER_TOKEN_KEY = "tracker_token"
 EMERGENCY_COOKIE_KEY = "emergency_cookie"
 EMERGENCY_COOKIE_VALID_KEY = "emergency_cookie_valid"
+TRACKER_OPERATOR_UNTAGGED_KEY = "tracker_operator_untagged"
+TRACKER_OPERATOR_RAW_KEY = "tracker_operator_raw"
+TRACKER_OPERATOR_FIRMWARE_KEY = "tracker_operator_firmware_profile"
+TRACKER_MECHANIC_WRITE_KEY = "tracker_mechanic_write"
 
 
 def mask_secret(value: str | None) -> str | None:
@@ -59,6 +63,17 @@ def set_emergency_cookie_valid(db: Session, valid: bool) -> None:
     set_setting(db, EMERGENCY_COOKIE_VALID_KEY, "true" if valid else "false")
 
 
+def get_bool_setting(db: Session, key: str, default: bool) -> bool:
+    row = get_setting(db, key)
+    if row is None:
+        return default
+    return row.value.lower() in {"1", "true", "yes"}
+
+
+def set_bool_setting(db: Session, key: str, value: bool) -> None:
+    set_setting(db, key, "true" if value else "false")
+
+
 def integration_status(db: Session) -> dict:
     tracker = get_setting(db, TRACKER_TOKEN_KEY)
     emergency = get_setting(db, EMERGENCY_COOKIE_KEY)
@@ -69,4 +84,15 @@ def integration_status(db: Session) -> dict:
         "emergency_cookie_masked": mask_secret(emergency.value if emergency else None),
         "emergency_cookie_updated_at": emergency.updated_at if emergency else None,
         "emergency_cookie_valid": valid,
+    }
+
+
+def tracker_policy_status(db: Session) -> dict[str, bool]:
+    return {
+        "operator_show_untagged": get_bool_setting(db, TRACKER_OPERATOR_UNTAGGED_KEY, True),
+        "operator_show_raw": get_bool_setting(db, TRACKER_OPERATOR_RAW_KEY, True),
+        "operator_show_firmware_profile": get_bool_setting(
+            db, TRACKER_OPERATOR_FIRMWARE_KEY, True
+        ),
+        "mechanic_can_write": get_bool_setting(db, TRACKER_MECHANIC_WRITE_KEY, True),
     }

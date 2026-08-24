@@ -2,16 +2,19 @@ import { type ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useAuth } from './auth-context'
 import { Admin } from './pages/Admin'
+import { AdminTrackerWorkspace } from './pages/AdminTrackerWorkspace'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Mechanic } from './pages/Mechanic'
 import { MechanicEmergency } from './pages/MechanicEmergency'
+import { MechanicIssueWorkspace } from './pages/MechanicIssueWorkspace'
 import { MechanicNoPark } from './pages/MechanicNoPark'
 import { MechanicRobotSearch } from './pages/MechanicRobotSearch'
 import { MechanicTasks } from './pages/MechanicTasks'
 import { NoCabinet } from './pages/NoCabinet'
 import { Operator } from './pages/Operator'
 import { OperatorBlockers } from './pages/OperatorBlockers'
+import { OperatorIssueWorkspace } from './pages/OperatorIssueWorkspace'
 import { OperatorNowReport } from './pages/OperatorNowReport'
 import { OperatorParks } from './pages/OperatorParks'
 import { OperatorPending } from './pages/OperatorPending'
@@ -78,6 +81,14 @@ export default function App() {
         }
       />
       <Route
+        path="/admin/tracker"
+        element={
+          <RequirePath path="/admin">
+            <AdminTrackerWorkspace />
+          </RequirePath>
+        }
+      />
+      <Route
         path="/operator"
         element={
           <RequireApprovedOperator>
@@ -114,6 +125,14 @@ export default function App() {
         element={
           <RequireApprovedOperator>
             <OperatorNowReport />
+          </RequireApprovedOperator>
+        }
+      />
+      <Route
+        path="/operator/tracker"
+        element={
+          <RequireApprovedOperator>
+            <OperatorIssueWorkspace />
           </RequireApprovedOperator>
         }
       />
@@ -170,6 +189,14 @@ export default function App() {
         element={
           <RequireMechanic requirePark>
             <MechanicEmergency />
+          </RequireMechanic>
+        }
+      />
+      <Route
+        path="/mechanic/tracker"
+        element={
+          <RequireMechanic requirePark>
+            <MechanicIssueWorkspace />
           </RequireMechanic>
         }
       />

@@ -66,7 +66,7 @@ def get_mechanic_park(db: Session, user: User) -> Park | None:
     return parks[0]
 
 
-def get_operator_parks(db: Session, user: User) -> list[Park]:
+def get_user_parks(db: Session, user: User) -> list[Park]:
     return list(
         db.scalars(
             select(Park)
@@ -75,6 +75,10 @@ def get_operator_parks(db: Session, user: User) -> list[Park]:
             .order_by(Park.id)
         ).all()
     )
+
+
+def get_operator_parks(db: Session, user: User) -> list[Park]:
+    return get_user_parks(db, user)
 
 
 def require_operator_park(park_id: int, db: Session, user: User) -> Park:

@@ -67,10 +67,24 @@ export const ru = {
         'Нет парков для отчёта — назначьте парк или включите feature_reports.',
       tracker_token_not_configured:
         'Tracker не настроен — попросите администратора указать OAuth-токен.',
+      tracker_issue_out_of_scope: 'Тикет вне вашей очереди или парка.',
+      tracker_queue_forbidden: 'Нет доступа к этой очереди Tracker.',
+      tracker_park_forbidden: 'Нет доступа к этому парку.',
+      tracker_untagged_forbidden: 'Просмотр неразмеченных тикетов отключён.',
+      tracker_write_disabled: 'Запись в Tracker отключена политикой.',
+      tracker_upstream_error: 'Ошибка интеграции с Tracker.',
+      tracker_transition_invalid: 'Этот переход недоступен для тикета.',
+      tracker_close_transition_not_found: 'Не найден переход для закрытия тикета.',
       emergency_cookie_not_configured: 'Cookie Emergency не задан в настройках администратора.',
       emergency_cookie_invalid: 'Cookie Emergency просрочен или недействителен.',
       tasks_disabled_for_park: 'Задачи отключены: проверьте очередь Tracker и флаг blockers у парка.',
     } as Record<string, string>,
+  },
+
+  tracker: {
+    loadError: 'Не удалось загрузить тикеты',
+    detailsError: 'Не удалось загрузить детали тикета',
+    actionsDisabled: 'Действия отключены политикой',
   },
 }
 

@@ -1,4 +1,5 @@
 import { type FormEvent, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   api,
   type AccessRequest,
@@ -6,6 +7,7 @@ import {
   type Mechanic,
   type Park,
   type ParkRequest,
+  type TrackerPolicySettings,
 } from '../api'
 import { Alert, Badge, EmptyState, PageShell, Panel } from '../components/PageShell'
 import { ru } from '../i18n/ru'
@@ -24,6 +26,7 @@ export function Admin() {
   const [parkRequests, setParkRequests] = useState<ParkRequest[]>([])
   const [mechanics, setMechanics] = useState<Mechanic[]>([])
   const [settings, setSettings] = useState<IntegrationSettings | null>(null)
+  const [trackerPolicy, setTrackerPolicy] = useState<TrackerPolicySettings | null>(null)
   const [selections, setSelections] = useState<Record<number, number[]>>({})
   const [name, setName] = useState('')
   const [tag, setTag] = useState('')
@@ -38,19 +41,21 @@ export function Admin() {
   const [error, setError] = useState('')
 
   const load = async () => {
-    const [parkList, accessInbox, parkInbox, mechanicList, integration] =
+    const [parkList, accessInbox, parkInbox, mechanicList, integration, policy] =
       await Promise.all([
         api.parks(),
         api.accessRequests(),
         api.adminParkRequests(),
         api.mechanics(),
         api.integrationSettings(),
+        api.trackerPolicy(),
       ])
     setParks(parkList)
     setAccessRequests(accessInbox)
     setParkRequests(parkInbox)
     setMechanics(mechanicList)
     setSettings(integration)
+    setTrackerPolicy(policy)
     setMechanicDrafts(Object.fromEntries(
       mechanicList.map((mechanic) => [
         mechanic.id,
@@ -205,6 +210,33 @@ export function Admin() {
           />
           <button type="submit">Сохранить секреты</button>
         </form>
+        {trackerPolicy && (
+          <div className="actions" style={{ marginTop: '0.75rem' }}>
+            <span>Неразмеченные для оператора: {trackerPolicy.operator_show_untagged ? 'вкл' : 'выкл'}</span>
+            <span>Запись механика: {trackerPolicy.mechanic_can_write ? 'вкл' : 'выкл'}</span>
+            <button
+              onClick={() => run(async () => {
+                await api.updateTrackerPolicy({
+                  operator_show_untagged: !trackerPolicy.operator_show_untagged,
+                })
+              })}
+              type="button"
+            >
+              Переключить untagged
+            </button>
+            <button
+              onClick={() => run(async () => {
+                await api.updateTrackerPolicy({
+                  mechanic_can_write: !trackerPolicy.mechanic_can_write,
+                })
+              })}
+              type="button"
+            >
+              Переключить запись механика
+            </button>
+            <Link to="/admin/tracker">Рабочий стол Tracker →</Link>
+          </div>
+        )}
       </Panel>
 
       <Panel hint="Механик получает ровно один активный парк и сразу одобренный доступ." title="Механики">
