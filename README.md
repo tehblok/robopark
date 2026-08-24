@@ -2,13 +2,13 @@
 
 Web-first fleet operations system (admin / operator / mechanic).
 
-- **Primary:** website on local host (API + app), public HTTPS via VPS tunnel (no white IP on the host).
+- **Primary:** website on local host (API + app); remote access via **WireGuard on a VPS** (no app on the VPS, no public URL required).
 - **Reserve:** Telegram bots with feature parity, as thin clients to the same API (not in Phase 1).
 - **Clean slate:** new codebase; prior bot repo is reference only, not a dependency.
 
 ## Phase 1
 
-Platform skeleton: FastAPI + React monorepo, session auth, empty role cabinets, SQLite on host, one Docker Compose with `ROBOPARK_ROLE=host|vps`.
+Platform skeleton: FastAPI + React monorepo, session auth, role cabinets, SQLite on host, Docker Compose on the host; VPS optional for WireGuard only.
 
 Design: [`docs/superpowers/specs/2026-08-21-robopark-platform-phase1-design.md`](docs/superpowers/specs/2026-08-21-robopark-platform-phase1-design.md)
 
@@ -117,50 +117,37 @@ cd robopark/deploy
 cp host.env.example host.env
 ```
 
-Edit `host.env`, set a strong `SEED_PASSWORD`, set `OPERATOR_SHARED_PASSWORD` if
-operator registration should be open, keep `ROBOPARK_ROLE=host`, and then start
-the host profile:
+Edit `host.env`: strong `SEED_PASSWORD`, optional `OPERATOR_SHARED_PASSWORD`, and
+`CORS_ORIGINS=http://10.8.0.2:8080` (host VPN address — see deploy docs).
 
 ```bash
-export ROBOPARK_ROLE=host
 export HOST_ENV_FILE=./host.env
-docker compose --profile host up -d --build
+docker compose up -d --build
 ```
 
-`host.env` is gitignored, like every other `*.env` file; only the `*.env.example`
-templates are tracked. `COOKIE_SECURE` defaults to `true`, so the session cookie
-is only sent over HTTPS — set it to `false` only while testing over plain HTTP on
-the LAN, and never on a published deployment.
+`host.env` is gitignored. For **VPN access**, keep `COOKIE_SECURE=false` (HTTP
+inside WireGuard). The API is not exposed on port 8000 — use the web container
+on **port 8080** (SPA + `/api` proxy).
 
-The web app is served on `http://<host>:8080`. The API container runs
-`alembic upgrade head` before Uvicorn starts, and stores SQLite data in the
-`robopark_data` volume.
+Full topology: [`deploy/README.md`](deploy/README.md).
 
-## VPS installation
+## VPS (WireGuard only)
 
-The VPS runs Caddy only; **the API and application database do not run on the
-VPS**.
+The VPS does **not** run Robopark. It runs the WireGuard hub so operators and
+the host can reach each other without a public IP on the host.
 
 ```bash
 git clone <repository-url> robopark
-cd robopark/deploy
-cp vps.env.example vps.env
+cd robopark/deploy/vps
+cp wg.env.example wg.env
+# set SERVERURL to the VPS public IP; keep host as the first PEER name
+docker compose --env-file wg.env up -d
 ```
 
-Set `ROBOPARK_ROLE=vps`, `PUBLIC_HOST`, and `TUNNEL_UPSTREAM` in `vps.env`.
-`TUNNEL_UPSTREAM` must point at the host's **web** container on port 8080, not
-at the API on 8000 — see [`deploy/README.md`](deploy/README.md). Replace the
-placeholders in `Caddyfile.vps.example` and choose/configure a transport from
-`tunnel.env.example`; tunnel credentials must stay in untracked files. The
-tunnel itself is operator-managed and is not started by this Compose file.
+Copy `config/peer_host/` to the Armbian host, enable `wg0`, then operators import
+their peer configs and open **http://10.8.0.2:8080**.
 
-```bash
-export ROBOPARK_ROLE=vps
-export VPS_ENV_FILE=./vps.env
-docker compose --profile vps up -d
-```
-
-Never enable both Compose profiles on one machine.
+Details: [`deploy/vps/README.md`](deploy/vps/README.md), [`deploy/wireguard/host-peer.md`](deploy/wireguard/host-peer.md).
 
 ## Phase 1 boundaries
 
@@ -171,5 +158,5 @@ Phase 1 does not include:
 
 - Telegram bots or feature parity clients.
 - Tracker, Emergency, reports, blockers, SLA, or onboarding flows.
-- A live tunnel/VPS deployment; that waits for user-provided SSH access.
+- Automated WireGuard key distribution to operators (configs are manual from VPS `config/`).
 - PostgreSQL migration or production hardening beyond the platform skeleton.
