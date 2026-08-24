@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import time
 from pathlib import Path
@@ -99,8 +100,8 @@ def get_section_config(db: Session, section_id: str) -> dict[str, Any] | None:
                 "id": section["id"],
                 "title": section["title"],
                 "formatter": section["formatter"],
-                "meta": section["meta"],
-                "fields": list(section["fields"]),
+                "meta": copy.deepcopy(section["meta"]),
+                "fields": copy.deepcopy(section["fields"]),
                 "roles": list(section["roles"]),
             }
     return None

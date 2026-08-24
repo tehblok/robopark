@@ -169,7 +169,6 @@ def test_config_cache_invalidated_on_seed(db_session, tmp_path):
 
     db_session.query(EmergencySection).delete()
     db_session.commit()
-    emergency_config.invalidate_config_cache()
 
     json_path.write_text(
         json.dumps(
