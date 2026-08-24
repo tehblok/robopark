@@ -136,6 +136,51 @@ user actions and do not poll from browser timers.
 
 Design: [`docs/superpowers/specs/2026-08-24-robopark-ui-shell-dashboard-design.md`](docs/superpowers/specs/2026-08-24-robopark-ui-shell-dashboard-design.md)
 
+## Репорты
+
+Цепочка «механик → оператор → админ» в `/reports`. KPI Tracker (now-report)
+остаётся на **Дашборде**, не смешивается с человеческими репортами.
+
+Design: [`docs/superpowers/specs/2026-08-24-robopark-reports-workflow-design.md`](docs/superpowers/specs/2026-08-24-robopark-reports-workflow-design.md)
+
+### Виды (`kind`)
+
+| kind | Кто создаёт | Получатель |
+|------|-------------|------------|
+| `ticket_question` | Механик (форма «Вопрос по тикету») | Оператор парка |
+| `ticket_close_review` | Автоматически при «Закрыть» тикет в UI | Оператор парка |
+| `mechanic_problem` | Механик (форма «Проблема») | Оператор парка |
+| `escalation_to_admin` | Оператор (эскалация) | Админ / royal |
+
+Для `ticket_question` и `ticket_close_review` обязателен ключ тикета Tracker;
+для `mechanic_problem` — опционален.
+
+### Закрытие тикета → оператор
+
+Механик нажимает «Закрыть» в задачах Tracker. Бэкенд сначала выполняет
+переход в Tracker; только после успешного закрытия создаётся репорт
+`ticket_close_review` со статусом `open` для операторов этого парка. Повторное
+открытое ревью по тому же `(park_id, tracker_key)` не дублируется.
+
+### Действия получателя
+
+- **Вернуть** — статус `returned`, обязателен комментарий; механик видит его в
+  `/reports` и в списке задач (возвращённые close-review).
+- **Готово** — статус `done`, репорт уходит из активного inbox (не удаляется).
+- **Закрыть** — только закрыть карточку в UI, статус не меняется.
+- **Эскалировать** (оператор) — новый репорт `escalation_to_admin` в inbox
+  админа.
+
+### Бейдж в меню
+
+На пункте «Репорты» в сайдбаре:
+
+- **Механик** — число своих репортов со статусом `returned`.
+- **Оператор** — число `open` в inbox по назначенным паркам.
+- **Админ / royal** — число `open` эскалаций.
+
+Счётчик обновляется при навигации и при возврате на `/reports`.
+
 ## Local development
 
 ### API

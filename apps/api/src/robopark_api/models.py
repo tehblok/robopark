@@ -7,11 +7,13 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -207,3 +209,49 @@ class EmergencySectionRole(Base):
     role: Mapped[str] = mapped_column(String(32), primary_key=True)
 
     section: Mapped[EmergencySection] = relationship(back_populates="roles")
+
+
+class Report(Base):
+    __tablename__ = "reports"
+    __table_args__ = (
+        Index("ix_reports_target_role_status_park_id", "target_role", "status", "park_id"),
+        Index("ix_reports_author_user_id_created_at", "author_user_id", "created_at"),
+        Index(
+            "ix_reports_tracker_key",
+            "tracker_key",
+            sqlite_where=text("tracker_key IS NOT NULL"),
+            postgresql_where=text("tracker_key IS NOT NULL"),
+        ),
+        Index(
+            "uq_reports_open_close_review_park_tracker",
+            "park_id",
+            "tracker_key",
+            unique=True,
+            sqlite_where=text("kind = 'ticket_close_review' AND status = 'open'"),
+            postgresql_where=text("kind = 'ticket_close_review' AND status = 'open'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True, default="open")
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id"), index=True)
+    author_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    target_role: Mapped[str] = mapped_column(String(32), index=True)
+    tracker_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    tracker_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    title: Mapped[str] = mapped_column(String(256))
+    body: Mapped[str] = mapped_column(Text, default="")
+    parent_report_id: Mapped[int | None] = mapped_column(
+        ForeignKey("reports.id"), nullable=True
+    )
+    return_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

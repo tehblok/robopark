@@ -1,9 +1,11 @@
-import { type ReactNode, useState } from 'react'
-import { Link, NavLink, Outlet } from 'react-router-dom'
+import { type ReactNode, useCallback, useEffect, useState } from 'react'
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
+import { api } from '../api'
 import { useAuth } from '../auth-context'
 import { ru, roleLabel } from '../i18n/ru'
 import { navItemsForRole } from '../nav'
 import { useParkContext } from '../park-context'
+import { REPORTS_BADGE_REFRESH } from '../reports-badge'
 import { getStoredTheme, setTheme, type Theme } from '../theme'
 
 type AppShellProps = {
@@ -14,6 +16,30 @@ export function AppShell({ children }: AppShellProps) {
   const { user, logout } = useAuth()
   const { parkId, setParkId, parks, parksLoading, parkLocked } = useParkContext()
   const [theme, setThemeState] = useState<Theme>(() => getStoredTheme())
+  const [reportsBadge, setReportsBadge] = useState(0)
+  const location = useLocation()
+  const badgeParkId = user?.role === 'operator' ? parkId ?? undefined : undefined
+
+  const loadReportsBadge = useCallback(() => {
+    api.reportsBadge(badgeParkId)
+      .then((data) => setReportsBadge(data.count))
+      .catch(() => setReportsBadge(0))
+  }, [badgeParkId])
+
+  useEffect(() => {
+    loadReportsBadge()
+  }, [loadReportsBadge])
+
+  useEffect(() => {
+    if (!location.pathname.startsWith('/reports')) return
+    loadReportsBadge()
+  }, [location.pathname, loadReportsBadge])
+
+  useEffect(() => {
+    const onRefresh = () => loadReportsBadge()
+    window.addEventListener(REPORTS_BADGE_REFRESH, onRefresh)
+    return () => window.removeEventListener(REPORTS_BADGE_REFRESH, onRefresh)
+  }, [loadReportsBadge])
 
   if (!user) return null
 
@@ -47,6 +73,9 @@ export function AppShell({ children }: AppShellProps) {
               className={({ isActive }) => (isActive ? 'nav-item active' : 'nav-item')}
             >
               <span className="nav-item-label">{item.label}</span>
+              {item.id === 'reports' && reportsBadge > 0 ? (
+                <span className="nav-count">{reportsBadge}</span>
+              ) : null}
               {item.stub ? <span className="nav-soon">{ru.nav.soon}</span> : null}
             </NavLink>
           ))}

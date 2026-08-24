@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
-import { api, type Blocker } from '../api'
+import { Link } from 'react-router-dom'
+import { api, type Blocker, type Report } from '../api'
 import { Alert, EmptyState, PageShell, Panel } from '../components/PageShell'
+import {
+  formatReportDate,
+  reportKindText,
+  reportStatusText,
+  statusBadgeClass,
+} from '../components/reports/report-utils'
 import { mapApiError } from '../i18n/errors'
 import { ru, taskFilterLabel } from '../i18n/ru'
 
@@ -20,6 +27,15 @@ export function MechanicTasks() {
   const [parkTag, setParkTag] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [returnedReports, setReturnedReports] = useState<Report[]>([])
+
+  useEffect(() => {
+    api.reportsMine()
+      .then((reports) => {
+        setReturnedReports(reports.filter((report) => report.status === 'returned'))
+      })
+      .catch(() => setReturnedReports([]))
+  }, [])
 
   useEffect(() => {
     setLoading(true)
@@ -42,6 +58,31 @@ export function MechanicTasks() {
       title="Задачи парка"
     >
       {error && <Alert tone="error">{error}</Alert>}
+
+      {returnedReports.length > 0 && (
+        <Panel title={`Возвращённые репорты (${returnedReports.length})`}>
+          <p className="panel-hint">
+            Оператор вернул репорт на доработку. Подробности — на странице{' '}
+            <Link to="/reports">Репорты</Link>.
+          </p>
+          <ul className="card-list">
+            {returnedReports.map((report) => (
+              <li className="card" key={report.id}>
+                <div className="card-title">{report.title}</div>
+                {report.return_comment && <p>{report.return_comment}</p>}
+                <div className="card-meta">
+                  <span className={statusBadgeClass(report.status)}>
+                    {reportStatusText(report.status)}
+                  </span>
+                  <span>{reportKindText(report.kind)}</span>
+                  {report.tracker_key && <span>{report.tracker_key}</span>}
+                  <span>{formatReportDate(report.updated_at)}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      )}
 
       <Panel hint="Фильтр по статусу блокера в Tracker." title="Фильтры">
         <div className="actions">

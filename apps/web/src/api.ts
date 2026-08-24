@@ -183,6 +183,39 @@ export type DashboardHistory = {
   points: DashboardHistoryPoint[]
 }
 
+export type ReportKindManual = 'ticket_question' | 'mechanic_problem'
+
+export type Report = {
+  id: number
+  kind: string
+  status: string
+  park_id: number
+  author_user_id: number
+  target_role: string
+  tracker_key: string | null
+  tracker_url: string | null
+  title: string
+  body: string
+  parent_report_id: number | null
+  return_comment: string | null
+  created_at: string
+  updated_at: string
+  resolved_at: string | null
+}
+
+export type ReportBadge = {
+  count: number
+}
+
+export type ReportCreatePayload = {
+  kind: ReportKindManual
+  park_id: number
+  title: string
+  body?: string
+  tracker_key?: string | null
+  tracker_url?: string | null
+}
+
 export class ApiError extends Error {
   status: number
   detail: string | null
@@ -456,5 +489,36 @@ export const api = {
   dashboardHistory: (parkId: number, days = 7) =>
     request<DashboardHistory>(
       `/dashboard/history?park_id=${parkId}&days=${days}`,
+    ),
+  reportsMine: () => request<Report[]>('/reports/mine'),
+  reportsInbox: (parkId?: number) =>
+    request<Report[]>(
+      parkId == null
+        ? '/reports/inbox'
+        : `/reports/inbox?park_id=${parkId}`,
+    ),
+  report: (id: number) => request<Report>(`/reports/${id}`),
+  createReport: (payload: ReportCreatePayload) =>
+    request<Report>('/reports', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  reportReturn: (id: number, comment: string) =>
+    request<Report>(`/reports/${id}/return`, {
+      method: 'POST',
+      body: JSON.stringify({ comment }),
+    }),
+  reportDone: (id: number) =>
+    request<Report>(`/reports/${id}/done`, { method: 'POST' }),
+  reportEscalate: (id: number, comment: string) =>
+    request<Report>(`/reports/${id}/escalate`, {
+      method: 'POST',
+      body: JSON.stringify({ comment }),
+    }),
+  reportsBadge: (parkId?: number) =>
+    request<ReportBadge>(
+      parkId == null
+        ? '/reports/badge'
+        : `/reports/badge?park_id=${parkId}`,
     ),
 }

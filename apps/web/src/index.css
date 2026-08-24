@@ -384,6 +384,23 @@ textarea {
   background: var(--surface-muted);
 }
 
+.report-list-body {
+  display: grid;
+  gap: 0.65rem;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+
+.reports-forms {
+  display: grid;
+  gap: 1rem;
+}
+
+.reports-forms form.panel {
+  margin: 0;
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
@@ -659,6 +676,19 @@ textarea {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.nav-count {
+  flex-shrink: 0;
+  min-width: 1.35rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-pill);
+  background: var(--brand);
+  color: white;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
 }
 
 .nav-item.active .nav-soon {
