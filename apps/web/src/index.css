@@ -234,7 +234,7 @@ button {
 
 @media (hover: hover) and (pointer: fine) {
   .btn:hover,
-  button:hover:not(.topbar-menu-item):not(.tracker-item):not(.mobile-nav-item):not(.mobile-user-open) {
+  button:hover:not(.topbar-menu-item):not(.tracker-item):not(.mobile-nav-item):not(.mobile-user-open):not(.page-back):not(.tracker-detail-back) {
     transform: translateY(-1px);
   }
 }
@@ -249,7 +249,7 @@ button:disabled {
 .btn-primary,
 .btn,
 button[type='submit'],
-button:not(.btn-secondary):not(.btn-ghost):not(.btn-filter):not(.topbar-menu-item):not(.tracker-item):not(.mobile-nav-item):not(.mobile-user-open) {
+button:not(.btn-secondary):not(.btn-ghost):not(.btn-filter):not(.topbar-menu-item):not(.tracker-item):not(.mobile-nav-item):not(.mobile-user-open):not(.page-back):not(.tracker-detail-back) {
   color: white;
   background: var(--brand);
 }
@@ -257,7 +257,7 @@ button:not(.btn-secondary):not(.btn-ghost):not(.btn-filter):not(.topbar-menu-ite
 .btn-primary:hover,
 .btn:hover,
 button[type='submit']:hover:not(:disabled),
-button:not(.btn-secondary):not(.btn-ghost):not(.btn-filter):not(.topbar-menu-item):not(.tracker-item):not(.mobile-nav-item):not(.mobile-user-open):hover:not(:disabled) {
+button:not(.btn-secondary):not(.btn-ghost):not(.btn-filter):not(.topbar-menu-item):not(.tracker-item):not(.mobile-nav-item):not(.mobile-user-open):not(.page-back):not(.tracker-detail-back):hover:not(:disabled) {
   background: var(--brand-strong);
 }
 
