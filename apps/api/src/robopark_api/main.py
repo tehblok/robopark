@@ -1,4 +1,5 @@
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +27,7 @@ from robopark_api.routers import (
     tracker_read,
 )
 from robopark_api.seed import ensure_seed_user
+from robopark_api.services.emergency_keepalive import run_keepalive_loop
 
 
 def create_app() -> FastAPI:
@@ -35,7 +37,15 @@ def create_app() -> FastAPI:
     async def lifespan(_app: FastAPI):
         with SessionLocal() as db:
             ensure_seed_user(db, settings)
-        yield
+        stop_event = asyncio.Event()
+        keepalive_task = asyncio.create_task(run_keepalive_loop(stop_event))
+        try:
+            yield
+        finally:
+            stop_event.set()
+            keepalive_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await keepalive_task
 
     app = FastAPI(title="Robopark API", version="0.1.0", lifespan=lifespan)
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
