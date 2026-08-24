@@ -96,6 +96,8 @@ def list_sections_for_role(db: Session, role: str) -> list[tuple[str, str]]:
 def get_section_config(db: Session, section_id: str) -> dict[str, Any] | None:
     for section in _load_sections(db):
         if section["id"] == section_id:
+            if not section["is_enabled"]:
+                return None
             return {
                 "id": section["id"],
                 "title": section["title"],

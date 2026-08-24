@@ -3,11 +3,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from conftest import login_as
+from robopark_api.services import emergency_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def test_emergency_resolve(client, seed_mechanic, seed_royal):
+def test_emergency_resolve(client, db_session, seed_mechanic, seed_royal):
+    emergency_config.seed_emergency_config(
+        db_session, emergency_config.DEFAULT_JSON_PATH
+    )
     login_as(client, "royal", "secret")
     client.put("/admin/settings/emergency-cookie", json={"cookie": "Session_id=test"})
     login_as(client, "mech1", "secret")

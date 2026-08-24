@@ -20,7 +20,7 @@ router = APIRouter(prefix="/mechanic/emergency", tags=["mechanic-emergency"])
 @router.post("/resolve", response_model=EmergencyResolveOut)
 def resolve_robot(
     payload: EmergencyResolveRequest,
-    _user: User = Depends(require_approved_mechanic),
+    user: User = Depends(require_approved_mechanic),
     db: Session = Depends(get_db),
 ) -> EmergencyResolveOut:
     cookie = settings_svc.get_emergency_cookie(db)
@@ -51,7 +51,7 @@ def resolve_robot(
 
     sections = [
         EmergencySectionItem(id=section_id, title=title)
-        for section_id, title in emergency_sections.list_sections()
+        for section_id, title in emergency_sections.list_sections(db, user.role)
     ]
     return EmergencyResolveOut(vin=vin, sections=sections)
 
@@ -85,7 +85,7 @@ def emergency_section(
         ) from exc
 
     try:
-        rendered = emergency_sections.render_section(payload, section_id)
+        rendered = emergency_sections.render_section(db, payload, section_id)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
 

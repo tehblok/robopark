@@ -1,30 +1,22 @@
-"""Render Emergency API payload sections from static JSON map."""
+"""Render Emergency API payload sections from database config."""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
-DEFAULT_MAP_PATH = Path(__file__).resolve().parents[3] / "data" / "emergency_sections.json"
+from sqlalchemy.orm import Session
+
+from robopark_api.services.emergency_config import (
+    get_section_config,
+    list_sections_for_role,
+)
+
 PARKTRONICS_NO_DATA = 2147483647
 _MISSING = object()
 
 
-def _load_sections() -> dict[str, dict[str, Any]]:
-    raw = json.loads(DEFAULT_MAP_PATH.read_text(encoding="utf-8"))
-    sections = raw.get("sections") if isinstance(raw, dict) else None
-    if not isinstance(sections, dict):
-        raise ValueError("emergency_sections.json must contain a sections mapping")
-    return sections
-
-
-def list_sections() -> list[tuple[str, str]]:
-    sections = _load_sections()
-    return [
-        (section_id, str(section.get("title") or section_id))
-        for section_id, section in sections.items()
-    ]
+def list_sections(db: Session, role: str) -> list[tuple[str, str]]:
+    return list_sections_for_role(db, role)
 
 
 def _dig(data: Any, path: str) -> Any:
@@ -89,7 +81,8 @@ def _render_fields(payload: dict[str, Any], fields: list[dict[str, str]]) -> lis
 
 
 def _render_errors(payload: dict[str, Any], section: dict[str, Any]) -> list[dict[str, Any]]:
-    covered = section.get("covered_top_level") or ["panics", "errors"]
+    meta = section.get("meta") or {}
+    covered = meta.get("covered_top_level") or ["panics", "errors"]
     rendered: list[dict[str, Any]] = []
     for key in covered:
         value = payload.get(key)
@@ -101,15 +94,35 @@ def _render_errors(payload: dict[str, Any], section: dict[str, Any]) -> list[dic
     return rendered
 
 
-def render_section(payload: dict[str, Any], section_id: str) -> dict[str, Any]:
-    sections = _load_sections()
-    section = sections.get(section_id)
+def _render_fields_and_top_level_leftovers(
+    payload: dict[str, Any], fields: list[dict[str, str]]
+) -> list[dict[str, Any]]:
+    rendered = _render_fields(payload, fields)
+    covered_top_level = {
+        str(field.get("path") or "").split(".", maxsplit=1)[0] for field in fields
+    }
+    rendered.extend(
+        {"label": str(key), "lines": _value_lines(value)}
+        for key, value in payload.items()
+        if key not in covered_top_level
+    )
+    return rendered
+
+
+def render_section(
+    db: Session, payload: dict[str, Any], section_id: str
+) -> dict[str, Any]:
+    section = get_section_config(db, section_id)
     if section is None:
-        raise KeyError(f"unknown emergency section: {section_id}")
+        raise KeyError(f"unknown or disabled emergency section: {section_id}")
     title = str(section.get("title") or section_id)
     formatter = section.get("formatter")
     if formatter == "errors_classify":
         fields = _render_errors(payload, section)
+    elif formatter == "fields_and_top_level_leftovers":
+        fields = _render_fields_and_top_level_leftovers(
+            payload, list(section.get("fields") or [])
+        )
     else:
         fields = _render_fields(payload, list(section.get("fields") or []))
     return {"id": section_id, "title": title, "fields": fields}
