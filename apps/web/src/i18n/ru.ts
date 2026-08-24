@@ -1,6 +1,25 @@
 export const ru = {
-  brand: 'Robopark',
+  brand: 'Робопарк Сервис',
   tagline: 'Платформа управления парком роботов',
+
+  nav: {
+    dashboard: 'Дашборд',
+    tasks: 'Задачи',
+    robot_search: 'Поиск по роботу',
+    emergency: 'Проверка по роботу',
+    map: 'Карта',
+    analytics: 'Аналитика',
+    reports: 'Репорты',
+    learning: 'Обучение',
+    help: 'Помощь',
+    soon: 'Скоро',
+    park: 'Парк',
+    user: 'Пользователь',
+    themeLight: 'Светлая тема',
+    themeDark: 'Тёмная тема',
+    admin: 'Администрирование',
+    brand: 'Робопарк Сервис',
+  },
 
   loading: 'Загрузка…',
   signOut: 'Выйти',
