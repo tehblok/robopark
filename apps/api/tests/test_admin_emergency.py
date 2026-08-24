@@ -166,6 +166,10 @@ def test_patch_rejects_explicit_null_for_title_path_label(client, seed_royal):
         == 422
     )
     assert (
+        client.patch("/admin/emergency/sections/status", json={"is_enabled": None}).status_code
+        == 422
+    )
+    assert (
         client.patch(f"/admin/emergency/fields/{field_id}", json={"path": None}).status_code
         == 422
     )

@@ -23,6 +23,12 @@ Implemented the admin/royal Emergency configuration API.
 ## Review fixes
 
 - **Export merge order:** export now applies `meta` first, then overwrites with canonical `title`, `fields`, and `formatter` from DB columns so reserved keys in meta cannot clobber seed shape.
-- **PATCH null rejection:** `EmergencySectionUpdate.title` and `EmergencyFieldUpdate.path`/`label` reject explicit JSON `null` via Pydantic `model_validator`; omitted fields still use `exclude_unset` and do not write `None` to columns.
-- **Tests:** added `test_export_canonical_keys_override_meta` and `test_patch_rejects_explicit_null_for_title_path_label`.
+- **PATCH null rejection:** `EmergencySectionUpdate.title`/`is_enabled` and `EmergencyFieldUpdate.path`/`label` reject explicit JSON `null` via Pydantic `model_validator`; omitted fields still use `exclude_unset` and do not write `None` to columns.
+- **Tests:** added `test_export_canonical_keys_override_meta` and `test_patch_rejects_explicit_null_for_title_path_label` (covers `title`, `is_enabled`, `path`, `label`).
 - **Verification:** admin emergency tests 6 passed; full API suite 148 passed.
+
+## Follow-up fix
+
+- Extended `EmergencySectionUpdate.reject_explicit_nulls` to also reject explicit `is_enabled: null`.
+- Extended `test_patch_rejects_explicit_null_for_title_path_label` with `is_enabled: null` → 422 assertion.
+- **Verification:** admin emergency tests 6 passed.

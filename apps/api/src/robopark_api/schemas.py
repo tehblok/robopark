@@ -212,7 +212,7 @@ class EmergencySectionUpdate(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def reject_explicit_nulls(cls, data: Any) -> Any:
-        return _reject_explicit_nulls(data, ("title",))
+        return _reject_explicit_nulls(data, ("title", "is_enabled"))
 
 
 class EmergencySectionsReorder(BaseModel):
