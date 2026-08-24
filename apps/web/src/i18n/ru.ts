@@ -124,6 +124,28 @@ export const ru = {
     sectionsEmpty: 'Разделы не найдены.',
     detailEmpty: 'В разделе нет данных.',
   },
+
+  reports: {
+    kinds: {
+      ticket_question: 'Вопрос по тикету',
+      ticket_close_review: 'Проверка закрытия',
+      mechanic_problem: 'Проблема',
+      escalation_to_admin: 'Эскалация админу',
+    } as Record<string, string>,
+    statuses: {
+      open: 'Открыт',
+      returned: 'Возвращён',
+      done: 'Готово',
+    } as Record<string, string>,
+    actions: {
+      return: 'Вернуть',
+      done: 'Готово',
+      close: 'Закрыть',
+      escalate: 'Эскалировать',
+      question: 'Вопрос',
+      problem: 'Проблема',
+    },
+  },
 }
 
 export function roleLabel(role: string) {
@@ -140,4 +162,12 @@ export function requestStatusLabel(status: string) {
 
 export function taskFilterLabel(key: string) {
   return ru.taskFilters[key] ?? key
+}
+
+export function reportKindLabel(kind: string) {
+  return ru.reports.kinds[kind] ?? kind
+}
+
+export function reportStatusLabel(status: string) {
+  return ru.reports.statuses[status] ?? status
 }
