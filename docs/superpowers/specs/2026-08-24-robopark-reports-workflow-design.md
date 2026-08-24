@@ -1,7 +1,7 @@
 # Robopark — Workflow репортов (механик → оператор → админ)
 
 **Date:** 2026-08-24  
-**Status:** approved for planning  
+**Status:** implemented  
 **Depends on:** UI shell + dashboard (`feature/ui-shell-dashboard` / merged main), Tracker tasks UI, park membership  
 **Supersedes stub:** `Reports.tsx` каркас из UI redesign; KPI Tracker остаётся в Дашборде / now-report, не в «Репортах»
 
