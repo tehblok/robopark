@@ -517,6 +517,30 @@ textarea {
   gap: 0.75rem;
 }
 
+.tracker-list-pane,
+.tracker-detail-pane {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.tracker-detail-back {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .tracker-grid--has-detail .tracker-list-pane {
+    display: none;
+  }
+
+  .tracker-grid:not(.tracker-grid--has-detail) .tracker-detail-pane {
+    display: none;
+  }
+
+  .tracker-detail-back {
+    display: inline-flex;
+  }
+}
+
 .tracker-list {
   margin: 0;
   padding: 0;

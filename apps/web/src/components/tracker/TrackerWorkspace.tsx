@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { api, type TrackerComment, type TrackerIssue, type TrackerIssueDetail, type TrackerTransition } from '../../api'
+import { ru } from '../../i18n/ru'
 import { IssueActionsPanel } from './IssueActionsPanel'
 import { IssueDetailPanel } from './IssueDetailPanel'
 import { IssueFilters } from './IssueFilters'
@@ -54,22 +55,44 @@ export function TrackerWorkspace({ allowUntagged, canWrite }: { allowUntagged: b
   }
 
   return (
-    <section className="tracker-grid">
-      <IssueFilters allowUntagged={allowUntagged} onApply={loadIssues} />
-      {error && <p className="error">{error}</p>}
-      <IssueList items={items} onSelect={(key) => void openIssue(key)} selected={selected} />
-      <IssueDetailPanel comments={comments} issue={detail} />
-      {detail && (
-        <IssueActionsPanel
-          canWrite={canWrite}
-          onAssign={async (assignee) => { await api.trackerAssign(detail.key, assignee); await refreshSelected() }}
-          onClose={async () => { await api.trackerClose(detail.key); await refreshSelected() }}
-          onComment={async (text) => { await api.trackerComment(detail.key, text); await refreshSelected() }}
-          onTransition={async (transition) => { await api.trackerTransition(detail.key, transition); await refreshSelected() }}
-          onUnassign={async () => { await api.trackerUnassign(detail.key); await refreshSelected() }}
-          transitions={transitions}
-        />
-      )}
+    <section
+      className={
+        selected ? 'tracker-grid tracker-grid--has-detail' : 'tracker-grid'
+      }
+    >
+      <div className="tracker-list-pane">
+        <IssueFilters allowUntagged={allowUntagged} onApply={loadIssues} />
+        {error && <p className="error">{error}</p>}
+        <IssueList items={items} onSelect={(key) => void openIssue(key)} selected={selected} />
+      </div>
+      <div className="tracker-detail-pane">
+        {selected ? (
+          <button
+            type="button"
+            className="page-back tracker-detail-back"
+            onClick={() => {
+              setSelected('')
+              setDetail(null)
+              setComments([])
+              setTransitions([])
+            }}
+          >
+            {ru.back}
+          </button>
+        ) : null}
+        <IssueDetailPanel comments={comments} issue={detail} />
+        {detail && (
+          <IssueActionsPanel
+            canWrite={canWrite}
+            onAssign={async (assignee) => { await api.trackerAssign(detail.key, assignee); await refreshSelected() }}
+            onClose={async () => { await api.trackerClose(detail.key); await refreshSelected() }}
+            onComment={async (text) => { await api.trackerComment(detail.key, text); await refreshSelected() }}
+            onTransition={async (transition) => { await api.trackerTransition(detail.key, transition); await refreshSelected() }}
+            onUnassign={async () => { await api.trackerUnassign(detail.key); await refreshSelected() }}
+            transitions={transitions}
+          />
+        )}
+      </div>
     </section>
   )
 }
