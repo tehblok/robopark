@@ -7,6 +7,7 @@ from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
 from robopark_api.routers import (
     admin_access,
+    admin_emergency,
     admin_mechanics,
     admin_park_requests,
     admin_settings,
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(parks.router)
     app.include_router(admin_access.router)
+    app.include_router(admin_emergency.router)
     app.include_router(admin_settings.router)
     app.include_router(admin_mechanics.router)
     app.include_router(operator_parks.router)

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -145,6 +146,59 @@ class EmergencySectionOut(BaseModel):
     id: str
     title: str
     fields: list[EmergencyFieldOut]
+
+
+EmergencyViewerRole = Literal["mechanic", "operator", "admin", "royal"]
+
+
+class EmergencyFieldAdminOut(BaseModel):
+    id: int
+    path: str
+    label: str
+    sort_order: int
+
+
+class EmergencyFieldCreate(BaseModel):
+    path: str = Field(min_length=1, max_length=256)
+    label: str = Field(min_length=1, max_length=128)
+
+
+class EmergencyFieldUpdate(BaseModel):
+    path: str | None = Field(default=None, min_length=1, max_length=256)
+    label: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class EmergencySectionAdminOut(BaseModel):
+    id: str
+    title: str
+    sort_order: int
+    is_enabled: bool
+    formatter: str | None
+    meta: dict[str, Any] | None
+    roles: list[str]
+    fields: list[EmergencyFieldAdminOut]
+
+
+class EmergencySectionCreate(BaseModel):
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    title: str = Field(min_length=1, max_length=128)
+    is_enabled: bool = True
+    formatter: str | None = Field(default=None, max_length=64)
+    meta: dict[str, Any] | None = None
+    roles: list[EmergencyViewerRole] = Field(default_factory=list)
+    fields: list[EmergencyFieldCreate] = Field(default_factory=list)
+
+
+class EmergencySectionUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=128)
+    is_enabled: bool | None = None
+    formatter: str | None = Field(default=None, max_length=64)
+    meta: dict[str, Any] | None = None
+    roles: list[EmergencyViewerRole] | None = None
+
+
+class EmergencySectionsReorder(BaseModel):
+    ids: list[str]
 
 
 class ParkMetricsOut(BaseModel):
