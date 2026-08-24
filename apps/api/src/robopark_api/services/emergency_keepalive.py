@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -21,8 +22,42 @@ INTER_VIN_GAP_SECONDS = 0.9
 logger = logging.getLogger(__name__)
 
 
-def keepalive_once(db: Session) -> None:
+def _interruptible_sleep(
+    seconds: float, stop_event: threading.Event | None
+) -> bool:
+    """Sleep up to *seconds*. Return False if *stop_event* was set."""
+    if stop_event is None:
+        time.sleep(seconds)
+        return True
+
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if stop_event.is_set():
+            return False
+        time.sleep(min(0.1, deadline - time.monotonic()))
+    return not stop_event.is_set()
+
+
+def keepalive_once(
+    db: Session | None = None,
+    *,
+    stop_event: threading.Event | None = None,
+) -> None:
     """Run one keep-alive cycle for the recent VIN ring or optional seed VIN."""
+    if stop_event is not None and stop_event.is_set():
+        return
+
+    if db is not None:
+        _keepalive_once_with_db(db, stop_event)
+        return
+
+    with SessionLocal() as session:
+        _keepalive_once_with_db(session, stop_event)
+
+
+def _keepalive_once_with_db(
+    db: Session, stop_event: threading.Event | None
+) -> None:
     cookie = settings_svc.get_emergency_cookie(db)
     if not cookie:
         return
@@ -36,6 +71,9 @@ def keepalive_once(db: Session) -> None:
             vins = [seed.value.strip()]
 
     for index, vin in enumerate(vins):
+        if stop_event is not None and stop_event.is_set():
+            return
+
         try:
             emergency_client.fetch_robot_payload(cookie=cookie, vin=vin)
         except emergency_client.EmergencyAuthError:
@@ -52,7 +90,8 @@ def keepalive_once(db: Session) -> None:
             )
 
         if index + 1 < len(vins):
-            time.sleep(INTER_VIN_GAP_SECONDS)
+            if not _interruptible_sleep(INTER_VIN_GAP_SECONDS, stop_event):
+                return
 
 
 async def run_keepalive_loop(
@@ -61,19 +100,28 @@ async def run_keepalive_loop(
     interval_seconds: float | None = None,
 ) -> None:
     """Run keep-alive cycles until shutdown, with an injectable test interval."""
-    while not stop_event.is_set():
-        try:
-            with SessionLocal() as db:
-                await asyncio.to_thread(keepalive_once, db)
-        except Exception:
-            logger.exception("Emergency keep-alive cycle failed")
+    thread_stop = threading.Event()
+    try:
+        while not stop_event.is_set():
+            try:
+                await asyncio.to_thread(keepalive_once, stop_event=thread_stop)
+            except asyncio.CancelledError:
+                thread_stop.set()
+                raise
+            except Exception:
+                logger.exception("Emergency keep-alive cycle failed")
 
-        delay = (
-            interval_seconds
-            if interval_seconds is not None
-            else random.uniform(MIN_INTERVAL_SECONDS, MAX_INTERVAL_SECONDS)
-        )
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=delay)
-        except TimeoutError:
-            pass
+            if stop_event.is_set():
+                break
+
+            delay = (
+                interval_seconds
+                if interval_seconds is not None
+                else random.uniform(MIN_INTERVAL_SECONDS, MAX_INTERVAL_SECONDS)
+            )
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=delay)
+            except TimeoutError:
+                pass
+    finally:
+        thread_stop.set()

@@ -1,6 +1,8 @@
 import asyncio
 import threading
+import time
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
@@ -95,28 +97,66 @@ def test_unauthorized_fetch_marks_cookie_invalid(db_session, monkeypatch):
 
 
 def test_loop_accepts_injectable_interval(monkeypatch):
-    stop_event = asyncio.Event()
+    asyncio_stop = asyncio.Event()
     calls = []
 
-    class FakeSession:
-        def __enter__(self):
-            return object()
+    def fake_keepalive_once(*, stop_event=None):
+        calls.append(stop_event)
+        asyncio_stop.set()
 
-        def __exit__(self, *_args):
-            return None
-
-    def fake_keepalive_once(db):
-        calls.append(db)
-        stop_event.set()
-
-    monkeypatch.setattr(emergency_keepalive, "SessionLocal", FakeSession)
     monkeypatch.setattr(emergency_keepalive, "keepalive_once", fake_keepalive_once)
 
     asyncio.run(
-        emergency_keepalive.run_keepalive_loop(stop_event, interval_seconds=0)
+        emergency_keepalive.run_keepalive_loop(asyncio_stop, interval_seconds=0)
     )
 
     assert len(calls) == 1
+
+
+def test_keepalive_once_stops_between_vins_when_requested(db_session, monkeypatch):
+    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "cookie")
+    for vin in ("VIN-1", "VIN-2", "VIN-3"):
+        settings_svc.touch_keepalive_ring(db_session, vin)
+
+    calls = []
+    stop_event = threading.Event()
+
+    def fake_fetch(**kwargs):
+        calls.append(kwargs["vin"])
+        if len(calls) == 1:
+            stop_event.set()
+
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
+    monkeypatch.setattr(
+        emergency_keepalive, "INTER_VIN_GAP_SECONDS", 5.0, raising=False
+    )
+
+    emergency_keepalive.keepalive_once(db_session, stop_event=stop_event)
+
+    assert calls == ["VIN-1"]
+
+
+def test_run_keepalive_loop_sets_thread_stop_on_cancel(monkeypatch):
+    captured_stop: list[threading.Event] = []
+
+    def fake_keepalive_once(*, stop_event=None):
+        captured_stop.append(stop_event)
+        while not stop_event.is_set():
+            time.sleep(0.01)
+
+    monkeypatch.setattr(emergency_keepalive, "keepalive_once", fake_keepalive_once)
+
+    async def run_and_cancel():
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(emergency_keepalive.run_keepalive_loop(stop_event))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_and_cancel())
+    assert captured_stop
+    assert captured_stop[0].is_set()
 
 
 def test_lifespan_starts_and_stops_keepalive(
