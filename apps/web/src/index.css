@@ -119,6 +119,9 @@ textarea {
   display: inline-flex;
   align-items: center;
   width: fit-content;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--text-muted);
   font-size: 0.88rem;
   font-weight: 600;
@@ -515,6 +518,10 @@ textarea {
 .tracker-grid {
   display: grid;
   gap: 0.75rem;
+}
+
+.tracker-grid > .error {
+  grid-column: 1 / -1;
 }
 
 .tracker-list-pane,
@@ -1016,6 +1023,29 @@ textarea {
 
   .mobile-user-open {
     display: inline-flex;
+    max-width: 42%;
+  }
+
+  .topbar {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.75rem 0.85rem;
+  }
+
+  .topbar-park {
+    flex: 1 1 12rem;
+  }
+
+  .topbar-select {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .topbar-user-name {
+    max-width: 7rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .app-content {
@@ -1053,6 +1083,12 @@ textarea {
     font-weight: 600;
     text-decoration: none;
     position: relative;
+  }
+
+  .mobile-nav-item .nav-count {
+    position: absolute;
+    top: 0.1rem;
+    right: 0.15rem;
   }
 
   .mobile-nav-item.active {

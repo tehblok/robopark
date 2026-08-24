@@ -15,6 +15,13 @@ export function TrackerWorkspace({ allowUntagged, canWrite }: { allowUntagged: b
   const [error, setError] = useState('')
   const requestId = useRef(0)
 
+  const clearDetail = () => {
+    setSelected('')
+    setDetail(null)
+    setComments([])
+    setTransitions([])
+  }
+
   const loadIssues = async (filters: { status?: string; robot?: string; untagged?: boolean }) => {
     const req = ++requestId.current
     setError('')
@@ -22,8 +29,12 @@ export function TrackerWorkspace({ allowUntagged, canWrite }: { allowUntagged: b
       const data = await api.trackerIssues(filters)
       if (req !== requestId.current) return
       setItems(data.items)
-      if (data.items[0]) {
+      const mobileShell =
+        typeof window !== 'undefined' && window.matchMedia('(max-width: 900px)').matches
+      if (data.items[0] && !mobileShell) {
         await openIssue(data.items[0].key)
+      } else {
+        clearDetail()
       }
     } catch {
       if (req !== requestId.current) return
@@ -32,7 +43,6 @@ export function TrackerWorkspace({ allowUntagged, canWrite }: { allowUntagged: b
   }
 
   const openIssue = async (key: string) => {
-    setSelected(key)
     setError('')
     try {
       const [issue, issueComments, issueTransitions] = await Promise.all([
@@ -40,10 +50,12 @@ export function TrackerWorkspace({ allowUntagged, canWrite }: { allowUntagged: b
         api.trackerComments(key),
         api.trackerTransitions(key),
       ])
+      setSelected(key)
       setDetail(issue)
       setComments(issueComments)
       setTransitions(issueTransitions)
     } catch {
+      clearDetail()
       setError('Could not load issue details.')
     }
   }
@@ -60,9 +72,9 @@ export function TrackerWorkspace({ allowUntagged, canWrite }: { allowUntagged: b
         selected ? 'tracker-grid tracker-grid--has-detail' : 'tracker-grid'
       }
     >
+      {error ? <p className="error">{error}</p> : null}
       <div className="tracker-list-pane">
         <IssueFilters allowUntagged={allowUntagged} onApply={loadIssues} />
-        {error && <p className="error">{error}</p>}
         <IssueList items={items} onSelect={(key) => void openIssue(key)} selected={selected} />
       </div>
       <div className="tracker-detail-pane">
@@ -70,12 +82,7 @@ export function TrackerWorkspace({ allowUntagged, canWrite }: { allowUntagged: b
           <button
             type="button"
             className="page-back tracker-detail-back"
-            onClick={() => {
-              setSelected('')
-              setDetail(null)
-              setComments([])
-              setTransitions([])
-            }}
+            onClick={clearDetail}
           >
             {ru.back}
           </button>
