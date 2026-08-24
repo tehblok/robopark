@@ -13,6 +13,7 @@ from robopark_api.routers import (
     admin_park_requests,
     admin_settings,
     auth,
+    dashboard,
     emergency,
     health,
     mechanic_emergency,
@@ -27,6 +28,7 @@ from robopark_api.routers import (
     tracker_read,
 )
 from robopark_api.seed import ensure_seed_user
+from robopark_api.services.blocker_history_job import run_blocker_history_loop
 from robopark_api.services.emergency_keepalive import run_keepalive_loop
 
 
@@ -39,13 +41,16 @@ def create_app() -> FastAPI:
             ensure_seed_user(db, settings)
         stop_event = asyncio.Event()
         keepalive_task = asyncio.create_task(run_keepalive_loop(stop_event))
+        history_task = asyncio.create_task(run_blocker_history_loop(stop_event))
         try:
             yield
         finally:
             stop_event.set()
             keepalive_task.cancel()
+            history_task.cancel()
             with suppress(asyncio.CancelledError):
                 await keepalive_task
+                await history_task
 
     app = FastAPI(title="Robopark API", version="0.1.0", lifespan=lifespan)
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
@@ -74,6 +79,7 @@ def create_app() -> FastAPI:
     app.include_router(mechanic_emergency.router)
     app.include_router(tracker_read.router)
     app.include_router(tracker_actions.router)
+    app.include_router(dashboard.router)
     return app
 
 

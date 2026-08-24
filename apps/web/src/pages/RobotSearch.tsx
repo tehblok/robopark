@@ -1,10 +1,17 @@
 import { type FormEvent, useState } from 'react'
 import { api, type Blocker } from '../api'
-import { Alert, EmptyState, PageShell, Panel } from '../components/PageShell'
+import { useAuth } from '../auth-context'
+import { Alert, EmptyState, Panel } from '../components/PageShell'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
 
-export function MechanicRobotSearch() {
+function searchTickets(role: string, query: string) {
+  if (role === 'mechanic') return api.mechanicRobotTickets(query)
+  return api.operatorRobotTickets(query)
+}
+
+export function RobotSearch() {
+  const { user } = useAuth()
   const [query, setQuery] = useState('')
   const [items, setItems] = useState<Blocker[]>([])
   const [error, setError] = useState('')
@@ -12,10 +19,11 @@ export function MechanicRobotSearch() {
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
+    if (!user) return
     setError('')
     setSearched(true)
     try {
-      const data = await api.mechanicRobotTickets(query.trim())
+      const data = await searchTickets(user.role, query.trim())
       setItems(data.items)
     } catch (caught) {
       setError(mapApiError(caught, ru.errors.robotSearch))
@@ -23,12 +31,15 @@ export function MechanicRobotSearch() {
   }
 
   return (
-    <PageShell
-      standalone
-      subtitle="Поиск по номеру робота (447, a1517) или ключу тикета (ROBOPARK-123). Результаты без фильтра по парку."
-      title="Поиск робота"
-    >
-      <Panel hint="Используется OAuth Tracker из настроек администратора." title="Запрос">
+    <>
+      <Panel
+        hint="Используется OAuth Tracker из настроек администратора."
+        title="Запрос"
+      >
+        <p className="panel-hint">
+          Поиск по номеру робота (447, a1517) или ключу тикета (ROBOPARK-123). Результаты без
+          фильтра по парку.
+        </p>
         <form className="inline-form" onSubmit={submit}>
           <input
             aria-label="Номер робота или ключ тикета"
@@ -53,7 +64,9 @@ export function MechanicRobotSearch() {
             {items.map((item) => (
               <li className="card" key={item.key}>
                 <div className="card-title">
-                  <a href={item.url} rel="noreferrer" target="_blank">{item.key}</a>
+                  <a href={item.url} rel="noreferrer" target="_blank">
+                    {item.key}
+                  </a>
                 </div>
                 <p>{item.summary}</p>
                 <div className="card-meta">
@@ -65,6 +78,6 @@ export function MechanicRobotSearch() {
           </ul>
         )}
       </Panel>
-    </PageShell>
+    </>
   )
 }

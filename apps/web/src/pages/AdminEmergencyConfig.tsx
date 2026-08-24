@@ -4,14 +4,12 @@ import {
   type EmergencyAdminSection,
   type EmergencyViewerRole,
 } from '../api'
-import { useAuth } from '../auth-context'
 import { Alert, Badge, EmptyState, PageShell, Panel } from '../components/PageShell'
 import { roleLabel, ru } from '../i18n/ru'
 
 const roles: EmergencyViewerRole[] = ['mechanic', 'operator', 'admin', 'royal']
 
 export function AdminEmergencyConfig() {
-  const { logout } = useAuth()
   const [sections, setSections] = useState<EmergencyAdminSection[]>([])
   const [sectionId, setSectionId] = useState('')
   const [sectionTitle, setSectionTitle] = useState('')
@@ -141,7 +139,6 @@ export function AdminEmergencyConfig() {
   return (
     <PageShell
       backTo="/admin"
-      onLogout={logout}
       subtitle="Разделы и поля, доступ по ролям, порядок и выгрузка конфигурации."
       title="Конфиг Emergency"
     >

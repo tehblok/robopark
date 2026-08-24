@@ -4,7 +4,7 @@ import { Alert, EmptyState, PageShell, Panel } from '../PageShell'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
 
-export function EmergencyViewer({ backTo }: { backTo: string }) {
+export function EmergencyViewer() {
   const [robotNumber, setRobotNumber] = useState('')
   const [vin, setVin] = useState('')
   const [sections, setSections] = useState<EmergencySection[]>([])
@@ -50,7 +50,7 @@ export function EmergencyViewer({ backTo }: { backTo: string }) {
   }
 
   return (
-    <PageShell backTo={backTo} subtitle={ru.emergency.subtitle} title={ru.emergency.title}>
+    <PageShell subtitle={ru.emergency.subtitle} title={ru.emergency.title}>
       <Panel hint={ru.emergency.searchHint} title={ru.emergency.searchTitle}>
         <form className="inline-form" onSubmit={submit}>
           <input

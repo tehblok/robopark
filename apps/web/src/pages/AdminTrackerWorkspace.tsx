@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { api, type TrackerPolicySettings } from '../api'
+import { PageShell, Panel } from '../components/PageShell'
 import { TrackerWorkspace } from '../components/tracker/TrackerWorkspace'
 
 export function AdminTrackerWorkspace() {
@@ -17,20 +17,18 @@ export function AdminTrackerWorkspace() {
   }
 
   return (
-    <main className="page">
-      <section className="workspace">
-        <header>
-          <h1>Admin tracker workspace</h1>
-          <Link to="/admin">Back</Link>
-        </header>
-        {policy && (
+    <PageShell backTo="/admin" title="Рабочий стол Tracker">
+      {policy && (
+        <Panel hint="Политика записи механика в Tracker." title="Политика">
           <div className="actions">
-            <span>Mechanic write: {policy.mechanic_can_write ? 'on' : 'off'}</span>
-            <button onClick={() => void toggleMechanicWrite()} type="button">Toggle mechanic write</button>
+            <span>Запись механика: {policy.mechanic_can_write ? 'вкл' : 'выкл'}</span>
+            <button onClick={() => void toggleMechanicWrite()} type="button">
+              Переключить
+            </button>
           </div>
-        )}
-        <TrackerWorkspace allowUntagged canWrite />
-      </section>
-    </main>
+        </Panel>
+      )}
+      <TrackerWorkspace allowUntagged canWrite />
+    </PageShell>
   )
 }

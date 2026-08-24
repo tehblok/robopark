@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, type Blocker, type Park } from '../api'
-import { useAuth } from '../auth-context'
 import { Alert, EmptyState, PageShell, Panel } from '../components/PageShell'
 import { mapApiError } from '../i18n/errors'
 import { ru, taskFilterLabel } from '../i18n/ru'
@@ -15,7 +14,6 @@ const FILTERS = [
 ] as const
 
 export function OperatorBlockers() {
-  const { logout } = useAuth()
   const [parks, setParks] = useState<Park[]>([])
   const [parkId, setParkId] = useState<number | null>(null)
   const [status, setStatus] = useState('all')
@@ -69,8 +67,6 @@ export function OperatorBlockers() {
 
   return (
     <PageShell
-      backTo="/operator"
-      onLogout={logout}
       subtitle={`Блокеры парка ${parkTag || '…'} · сортировка: старые сверху.`}
       title="Блокеры"
     >

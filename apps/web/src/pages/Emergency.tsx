@@ -1,5 +1,5 @@
 import { EmergencyViewer } from '../components/emergency/EmergencyViewer'
 
-export function OperatorEmergency() {
+export function Emergency() {
   return <EmergencyViewer />
 }

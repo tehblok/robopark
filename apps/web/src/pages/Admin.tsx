@@ -11,7 +11,6 @@ import {
 } from '../api'
 import { Alert, Badge, EmptyState, PageShell, Panel } from '../components/PageShell'
 import { ru } from '../i18n/ru'
-import { useAuth } from '../auth-context'
 
 function cookieBadge(valid: boolean | null | undefined) {
   if (valid === true) return <span className="badge badge-ok">cookie действует</span>
@@ -20,7 +19,6 @@ function cookieBadge(valid: boolean | null | undefined) {
 }
 
 export function Admin() {
-  const { logout } = useAuth()
   const [parks, setParks] = useState<Park[]>([])
   const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([])
   const [parkRequests, setParkRequests] = useState<ParkRequest[]>([])
@@ -170,7 +168,6 @@ export function Admin() {
 
   return (
     <PageShell
-      onLogout={logout}
       subtitle="Парки, доступы, механики и интеграции Tracker / Emergency."
       title="Администрирование"
     >
@@ -365,6 +362,22 @@ export function Admin() {
                   value={park.tracker_queue ?? ''}
                 />
                 <input
+                  aria-label={`Приоритет Tracker ${park.id}`}
+                  onChange={(event) => editPark(park.id, {
+                    tracker_priority: event.target.value || null,
+                  })}
+                  placeholder="Приоритет (blocker)"
+                  value={park.tracker_priority ?? ''}
+                />
+                <input
+                  aria-label={`Тип Tracker ${park.id}`}
+                  onChange={(event) => editPark(park.id, {
+                    tracker_type: event.target.value || null,
+                  })}
+                  placeholder="Тип (пусто = без фильтра)"
+                  value={park.tracker_type ?? ''}
+                />
+                <input
                   aria-label={`Group ID ${park.id}`}
                   onChange={(event) => editPark(park.id, {
                     group_id: parseOptionalInt(event.target.value),
@@ -431,6 +444,8 @@ export function Admin() {
                     name: park.name,
                     tag: park.tag,
                     tracker_queue: park.tracker_queue || null,
+                    tracker_priority: park.tracker_priority || null,
+                    tracker_type: park.tracker_type || null,
                     group_id: park.group_id ?? null,
                     chat_id: park.chat_id ?? null,
                     feature_blockers: park.feature_blockers,

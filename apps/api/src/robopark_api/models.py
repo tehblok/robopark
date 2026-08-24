@@ -3,7 +3,16 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -69,6 +78,8 @@ class Park(Base):
     tag: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     tracker_queue: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    tracker_priority: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tracker_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     group_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     feature_reports: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -78,6 +89,35 @@ class Park(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+    blocker_history: Mapped[list[ParkBlockerHistory]] = relationship(
+        back_populates="park",
+        cascade="all, delete-orphan",
+    )
+
+
+class ParkBlockerHistory(Base):
+    __tablename__ = "park_blocker_history"
+    __table_args__ = (
+        UniqueConstraint(
+            "park_id",
+            "bucket_start",
+            name="uq_park_blocker_history_park_bucket",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    park_id: Mapped[int] = mapped_column(
+        ForeignKey("parks.id", ondelete="CASCADE"), index=True
+    )
+    bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    arrived_count: Mapped[int] = mapped_column(Integer, default=0)
+    departed_count: Mapped[int] = mapped_column(Integer, default=0)
+    scanned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    park: Mapped[Park] = relationship(back_populates="blocker_history")
 
 
 class PlatformSetting(Base):

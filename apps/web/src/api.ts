@@ -4,6 +4,8 @@ export type Park = {
   tag: string
   is_active?: boolean
   tracker_queue?: string | null
+  tracker_priority?: string | null
+  tracker_type?: string | null
   group_id?: number | null
   chat_id?: number | null
   feature_reports?: boolean
@@ -156,6 +158,31 @@ export type TrackerComment = { id: string; text: string; author?: string | null;
 export type TrackerTransition = { id: string; display: string }
 export type TrackerActionResult = { key: string; action: string; status: string; actor: string; performed_at: string }
 
+export type DashboardMovingItem = {
+  key: string
+  summary: string
+}
+
+export type DashboardSummary = {
+  park_id: number
+  arrived: number
+  done: number
+  queued: number
+  in_transit: number
+  moving: DashboardMovingItem[]
+}
+
+export type DashboardHistoryPoint = {
+  bucket_start: string
+  arrived_count: number
+  departed_count: number
+}
+
+export type DashboardHistory = {
+  park_id: number
+  points: DashboardHistoryPoint[]
+}
+
 export class ApiError extends Error {
   status: number
   detail: string | null
@@ -228,6 +255,8 @@ export const api = {
     name: string
     tag: string
     tracker_queue?: string | null
+    tracker_priority?: string | null
+    tracker_type?: string | null
     group_id?: number | null
     chat_id?: number | null
     feature_reports?: boolean
@@ -421,5 +450,11 @@ export const api = {
       parkId == null
         ? '/operator/now-report'
         : `/operator/now-report?park_id=${parkId}`,
+    ),
+  dashboardSummary: (parkId: number) =>
+    request<DashboardSummary>(`/dashboard/summary?park_id=${parkId}`),
+  dashboardHistory: (parkId: number, days = 7) =>
+    request<DashboardHistory>(
+      `/dashboard/history?park_id=${parkId}&days=${days}`,
     ),
 }

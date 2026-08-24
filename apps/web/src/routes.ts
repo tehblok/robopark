@@ -6,7 +6,7 @@ export function pathForUser(user: Pick<User, 'role' | 'access_status' | 'parks'>
   switch (user.role) {
     case 'royal':
     case 'admin':
-      return '/admin'
+      return '/dashboard'
     case 'operator':
       switch (user.access_status) {
         case 'pending':
@@ -14,13 +14,13 @@ export function pathForUser(user: Pick<User, 'role' | 'access_status' | 'parks'>
         case 'rejected':
           return '/operator/rejected'
         case 'approved':
-          return '/operator'
+          return '/dashboard'
         default:
           return NO_CABINET_PATH
       }
     case 'mechanic':
       if (user.parks?.length !== 1) return '/mechanic/no-park'
-      return '/mechanic'
+      return '/dashboard'
     default:
       // Never '/login': Login redirects here for any signed-in user, so
       // returning '/login' turns an unknown role into a redirect loop.
