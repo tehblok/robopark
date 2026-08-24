@@ -16,6 +16,11 @@ export const ru = {
   inactive: 'неактивен',
   empty: 'Пока ничего нет',
 
+  theme: {
+    light: 'Светлая тема',
+    dark: 'Тёмная тема',
+  },
+
   roles: {
     royal: 'Владелец',
     admin: 'Администратор',
