@@ -1,3 +1,5 @@
+"""Park metrics queries for Startrek — aligned with bot_otchet patterns."""
+
 from __future__ import annotations
 
 import time
@@ -5,12 +7,20 @@ from datetime import datetime, timezone
 from typing import Any
 
 from robopark_api.services.tracker_client import (
+    DEFAULT_ISSUE_TYPES,
+    DEFAULT_QUEUE,
     build_open_blockers_query,
     count_issues,
+    exclude_tag,
     join_query,
     ql_quote,
+    ql_token,
 )
 
+# Fleet convention (bot_otchet): backlog excludes donor tickets.
+DEFAULT_DONOR_TAG = "donor"
+
+# typo in Tracker status key is intentional (fleet workflow)
 DEFAULT_STATUS_KEYS: dict[str, list[str]] = {
     "waiting_parts": ["delieveryWaiting", "Ожидание поставки"],
     "in_transit": ["moving", "Перемещение"],
@@ -19,7 +29,7 @@ DEFAULT_STATUS_KEYS: dict[str, list[str]] = {
 }
 
 _METRICS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-METRICS_CACHE_TTL_SEC = 60
+METRICS_CACHE_TTL_SEC = 90
 
 
 def clear_metrics_cache() -> None:
@@ -49,18 +59,47 @@ def set_cached_now_report(
 def _status_or_clause(statuses: list[str]) -> str:
     parts: list[str] = []
     for raw in statuses:
-        text = raw.strip()
+        text = (raw or "").strip()
         if not text:
             continue
-        if " " in text or not text.isascii():
-            parts.append(f'Status: "{text}"')
-        else:
-            parts.append(f"Status: {text}")
+        token = ql_token(text) or ql_quote(text)
+        parts.append(f"Status: {token}")
     if not parts:
         return ""
     if len(parts) == 1:
         return parts[0]
     return "(" + " OR ".join(parts) + ")"
+
+
+def _queue_uses_issue_types(queue: str) -> bool:
+    raw = (queue or "").strip().strip('"') or DEFAULT_QUEUE
+    return raw.upper() == DEFAULT_QUEUE.upper()
+
+
+def _type_part(queue: str, issue_type: str | None) -> str:
+    explicit = (issue_type or "").strip()
+    if explicit:
+        return f"Type: {ql_token(explicit)}"
+    if _queue_uses_issue_types(queue):
+        return f"Type: {', '.join(DEFAULT_ISSUE_TYPES)}"
+    return ""
+
+
+def _park_scoped_parts(
+    queue: str,
+    tag: str,
+    *,
+    priority: str = "blocker",
+    issue_type: str | None = None,
+) -> list[str]:
+    q = ql_token(queue) or queue
+    parts = [
+        f"Queue: {q}",
+        _type_part(queue, issue_type),
+        f"Priority: {ql_token(priority) or 'blocker'}",
+        f"Tags: {ql_token(tag)}",
+    ]
+    return [p for p in parts if p]
 
 
 def build_backlog_query(
@@ -72,16 +111,12 @@ def build_backlog_query(
     issue_type: str | None = None,
 ) -> str:
     parts = [
-        f"Queue: {queue}",
-        f"Priority: {priority}",
+        *_park_scoped_parts(queue, tag, priority=priority, issue_type=issue_type),
         "Resolution: empty()",
-        f"Tags: {ql_quote(tag)}",
     ]
-    if issue_type:
-        parts.append(f"Type: {issue_type}")
-    donor = (donor_tag or "").strip()
+    donor = exclude_tag(donor_tag)
     if donor:
-        parts.append(f"Tags: !{ql_quote(donor)}")
+        parts.append(donor)
     return join_query(*parts)
 
 
@@ -93,23 +128,6 @@ def _as_utc(value: datetime) -> datetime:
 
 def _format_ql_datetime(value: datetime) -> str:
     return _as_utc(value).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _park_scoped_parts(
-    queue: str,
-    tag: str,
-    *,
-    priority: str = "blocker",
-    issue_type: str | None = None,
-) -> list[str]:
-    parts = [
-        f"Queue: {queue}",
-        f"Priority: {priority}",
-        f"Tags: {ql_quote(tag)}",
-    ]
-    if issue_type:
-        parts.append(f"Type: {issue_type}")
-    return parts
 
 
 def build_arrived_today_query(
@@ -199,16 +217,11 @@ def build_status_query(
     status_part = _status_or_clause(statuses)
     if not status_part:
         return None
-    parts = [
-        f"Queue: {queue}",
-        f"Priority: {priority}",
+    return join_query(
+        *_park_scoped_parts(queue, tag, priority=priority, issue_type=issue_type),
         "Resolution: empty()",
-        f"Tags: {ql_quote(tag)}",
-    ]
-    if issue_type:
-        parts.append(f"Type: {issue_type}")
-    parts.append(status_part)
-    return join_query(*parts)
+        status_part,
+    )
 
 
 def collect_park_metrics(
@@ -231,7 +244,7 @@ def collect_park_metrics(
                 issue_type=issue_type,
             ),
         ),
-        ("backlog", build_backlog_query(queue, tag, "", **scoped)),
+        ("backlog", build_backlog_query(queue, tag, DEFAULT_DONOR_TAG, **scoped)),
         ("in_transit", build_status_query(queue, tag, keys["in_transit"], **scoped)),
         ("queued", build_status_query(queue, tag, keys["queued"], **scoped)),
         ("waiting_team", build_status_query(queue, tag, keys["waiting_team"], **scoped)),

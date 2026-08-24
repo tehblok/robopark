@@ -1,4 +1,4 @@
-"""Status buckets for mechanic task filters."""
+"""Status buckets and park Tracker scope helpers."""
 
 from __future__ import annotations
 
@@ -21,6 +21,13 @@ STATUS_FILTER_BUTTONS: tuple[tuple[str, str], ...] = (
 )
 
 VALID_STATUS_FILTERS = {name for name, _ in STATUS_FILTER_BUTTONS}
+
+
+def park_priority_type(park: Any) -> tuple[str, str | None]:
+    """Park-level Tracker priority/type overrides used by all blocker/report paths."""
+    priority = (getattr(park, "tracker_priority", None) or "blocker").strip() or "blocker"
+    issue_type = (getattr(park, "tracker_type", None) or "").strip() or None
+    return priority, issue_type
 
 
 def status_bucket(status_key: str, status_display: str = "") -> str | None:

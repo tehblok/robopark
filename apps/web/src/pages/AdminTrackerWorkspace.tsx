@@ -17,9 +17,9 @@ export function AdminTrackerWorkspace() {
   }
 
   return (
-    <PageShell backTo="/admin" title="Рабочий стол Tracker">
+    <PageShell backTo="/admin" title="Рабочий стол Startrek">
       {policy && (
-        <Panel hint="Политика записи механика в Tracker." title="Политика">
+        <Panel hint="Политика записи механика во внутренний Tracker (st.yandex-team.ru)." title="Политика">
           <div className="actions">
             <span>Запись механика: {policy.mechanic_can_write ? 'вкл' : 'выкл'}</span>
             <button onClick={() => void toggleMechanicWrite()} type="button">

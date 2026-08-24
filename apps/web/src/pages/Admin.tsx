@@ -194,7 +194,7 @@ export function Admin() {
           <input
             aria-label="Tracker token"
             onChange={(event) => setTrackerToken(event.target.value)}
-            placeholder="OAuth-токен Tracker"
+            placeholder="OAuth-токен Startrek (st.yandex-team.ru)"
             type="password"
             value={trackerToken}
           />

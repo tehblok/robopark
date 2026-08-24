@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
 from robopark_api.deps import require_user
-from robopark_api.models import AccessStatus, User, UserRole
+from robopark_api.models import AccessStatus, Park, User, UserRole
 from robopark_api.schemas import (
     TrackerCommentOut,
     TrackerIssueDetailOut,
@@ -26,10 +27,18 @@ router = APIRouter(prefix="/tracker", tags=["tracker-read"])
 
 
 def _ensure_tracker_user(user: User) -> None:
-    allowed_roles = {UserRole.admin.value, UserRole.royal.value, UserRole.operator.value, UserRole.mechanic.value}
+    allowed_roles = {
+        UserRole.admin.value,
+        UserRole.royal.value,
+        UserRole.operator.value,
+        UserRole.mechanic.value,
+    }
     if user.role not in allowed_roles:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-    if user.role in {UserRole.operator.value, UserRole.mechanic.value} and user.access_status != AccessStatus.approved.value:
+    if user.role in {
+        UserRole.operator.value,
+        UserRole.mechanic.value,
+    } and user.access_status != AccessStatus.approved.value:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
 
@@ -48,7 +57,21 @@ def _issue_out(issue: dict) -> TrackerIssueOut:
 
 
 def _detail_out(issue: dict) -> TrackerIssueDetailOut:
-    return TrackerIssueDetailOut(**_issue_out(issue).model_dump(), resolution=str(issue.get("resolution") or ""))
+    return TrackerIssueDetailOut(
+        **_issue_out(issue).model_dump(),
+        resolution=str(issue.get("resolution") or ""),
+    )
+
+
+def _untagged_park_tags(db: Session, user: User) -> list[str]:
+    """Tags to exclude for «неразмеченные»: user's parks, or all active parks for admin."""
+    tags = sorted(t for t in allowed_park_tags_for_user(db, user) if t)
+    if tags:
+        return tags
+    if user.role in {UserRole.admin.value, UserRole.royal.value}:
+        rows = db.scalars(select(Park).where(Park.is_active.is_(True))).all()
+        return sorted({str(park.tag).strip() for park in rows if park.tag and str(park.tag).strip()})
+    return []
 
 
 def _build_query(
@@ -61,34 +84,73 @@ def _build_query(
     robot: str | None,
     untagged: bool,
 ) -> str:
-    parts: list[str] = ["Priority: blocker", "Resolution: empty()"]
+    parts: list[str] = [
+        "Priority: blocker",
+        tracker_client.open_issues_clause(),
+    ]
 
     if status_filter:
-        parts.append(f"Status: {tracker_client.ql_quote(status_filter)}")
+        parts.append(f"Status: {tracker_client.ql_token(status_filter)}")
 
     queues = allowed_queues_for_user(db, user)
+    selected_queue = (queue or "").strip() or None
     if user.role not in {UserRole.admin.value, UserRole.royal.value}:
-        if queue and queue not in queues:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="tracker_queue_forbidden")
-        if queue:
-            parts.append(f"Queue: {queue}")
+        if selected_queue and selected_queue not in queues:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="tracker_queue_forbidden",
+            )
+        if selected_queue:
+            parts.append(f"Queue: {tracker_client.ql_token(selected_queue)}")
         elif queues:
-            parts.append("(" + " OR ".join(f"Queue: {q}" for q in queues) + ")")
-    elif queue:
-        parts.append(f"Queue: {queue}")
+            if len(queues) == 1:
+                selected_queue = queues[0]
+                parts.append(f"Queue: {tracker_client.ql_token(selected_queue)}")
+            else:
+                parts.append(
+                    "("
+                    + " OR ".join(f"Queue: {tracker_client.ql_token(q)}" for q in queues)
+                    + ")"
+                )
+    elif selected_queue:
+        parts.append(f"Queue: {tracker_client.ql_token(selected_queue)}")
+
+    # Type filter only when a single concrete queue is selected (SDCFLEETOPS default types).
+    if selected_queue:
+        type_part = tracker_client.type_clause(selected_queue)
+        if type_part:
+            parts.append(type_part)
 
     if robot:
         parts.append(f"Summary: {tracker_client.ql_quote(robot)}")
 
     if park:
         allowed_tags = allowed_park_tags_for_user(db, user)
-        if user.role not in {UserRole.admin.value, UserRole.royal.value} and park not in allowed_tags:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="tracker_park_forbidden")
-        parts.append(f"Tags: {tracker_client.ql_quote(park)}")
+        if (
+            user.role not in {UserRole.admin.value, UserRole.royal.value}
+            and park not in allowed_tags
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="tracker_park_forbidden",
+            )
+        parts.append(f"Tags: {tracker_client.ql_token(park)}")
     elif untagged:
         if not can_view_untagged(db, user):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="tracker_untagged_forbidden")
-        parts.append("Tags: empty()")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="tracker_untagged_forbidden",
+            )
+        if not selected_queue:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="tracker_queue_required_for_untagged",
+            )
+        # Replace the generic Priority/open/type parts with the dedicated untagged builder.
+        return tracker_client.build_untagged_blockers_query(
+            selected_queue,
+            _untagged_park_tags(db, user),
+        )
 
     return tracker_client.join_query(*parts)
 
@@ -108,7 +170,10 @@ def list_issues(
 
     token = settings_svc.get_tracker_token(db)
     if not token:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="tracker_token_not_configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="tracker_token_not_configured",
+        )
 
     query_text = _build_query(
         user=user,
@@ -122,7 +187,10 @@ def list_issues(
     try:
         items = tracker_client.search_issues(token=token, query=query_text)
     except tracker_client.TrackerError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="tracker_upstream_error") from exc
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="tracker_upstream_error",
+        ) from exc
 
     scoped: list[TrackerIssueOut] = []
     for issue in items:
@@ -146,11 +214,17 @@ def get_issue(
     _ensure_tracker_user(user)
     token = settings_svc.get_tracker_token(db)
     if not token:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="tracker_token_not_configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="tracker_token_not_configured",
+        )
     try:
         issue = tracker_client.get_issue(token=token, key=key)
     except tracker_client.TrackerError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="tracker_upstream_error") from exc
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="tracker_upstream_error",
+        ) from exc
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     enforce_issue_scope(db, user, issue)
@@ -166,7 +240,10 @@ def get_comments(
     _ensure_tracker_user(user)
     token = settings_svc.get_tracker_token(db)
     if not token:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="tracker_token_not_configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="tracker_token_not_configured",
+        )
 
     issue = tracker_client.get_issue(token=token, key=key)
     if issue is None:
@@ -176,7 +253,10 @@ def get_comments(
     try:
         comments = tracker_client.list_comments(token=token, key=key)
     except tracker_client.TrackerError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="tracker_upstream_error") from exc
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="tracker_upstream_error",
+        ) from exc
     return [TrackerCommentOut(**item) for item in comments]
 
 
@@ -189,7 +269,10 @@ def get_transitions(
     _ensure_tracker_user(user)
     token = settings_svc.get_tracker_token(db)
     if not token:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="tracker_token_not_configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="tracker_token_not_configured",
+        )
 
     issue = tracker_client.get_issue(token=token, key=key)
     if issue is None:
@@ -199,5 +282,8 @@ def get_transitions(
     try:
         transitions = tracker_client.list_transitions(token=token, key=key)
     except tracker_client.TrackerError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="tracker_upstream_error") from exc
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="tracker_upstream_error",
+        ) from exc
     return [TrackerTransitionOut(**item) for item in transitions]

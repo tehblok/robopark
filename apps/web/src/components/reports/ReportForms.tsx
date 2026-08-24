@@ -13,7 +13,7 @@ type FormKind = 'question' | 'problem'
 
 function trackerUrlFromKey(key: string): string | null {
   const trimmed = key.trim()
-  return trimmed ? `https://tracker.yandex.ru/${trimmed}` : null
+  return trimmed ? `https://st.yandex-team.ru/${trimmed}` : null
 }
 
 export function ReportForms({ parkId, onCreated }: ReportFormsProps) {

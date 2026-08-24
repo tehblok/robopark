@@ -9,6 +9,9 @@ from sqlalchemy.orm import Session
 from robopark_api.models import PlatformSetting
 
 TRACKER_TOKEN_KEY = "tracker_token"
+# Legacy cloud-org keys kept for DB compatibility; unused for internal Startrek.
+TRACKER_ORG_ID_KEY = "tracker_org_id"
+TRACKER_ORG_MODE_KEY = "tracker_org_mode"
 EMERGENCY_COOKIE_KEY = "emergency_cookie"
 EMERGENCY_COOKIE_VALID_KEY = "emergency_cookie_valid"
 EMERGENCY_KEEPALIVE_RING_KEY = "emergency_keepalive_ring"
@@ -52,6 +55,31 @@ def set_setting(db: Session, key: str, value: str) -> PlatformSetting:
 def get_tracker_token(db: Session) -> str | None:
     row = get_setting(db, TRACKER_TOKEN_KEY)
     return row.value if row else None
+
+
+def get_tracker_org_id(db: Session) -> str | None:
+    """Deprecated for internal Startrek; kept for API shape compatibility."""
+    row = get_setting(db, TRACKER_ORG_ID_KEY)
+    value = (row.value if row else "") or ""
+    value = value.strip()
+    return value or None
+
+
+def get_tracker_org_mode(db: Session) -> str:
+    """Deprecated for internal Startrek; kept for API shape compatibility."""
+    row = get_setting(db, TRACKER_ORG_MODE_KEY)
+    mode = (row.value if row else "internal") or "internal"
+    mode = mode.strip().lower()
+    if mode in {"360", "org", "x-org-id"}:
+        return "360"
+    if mode in {"cloud", "x-cloud-org-id"}:
+        return "cloud"
+    return "internal"
+
+
+def apply_tracker_org_context(db: Session) -> None:
+    """No-op for internal Startrek (OAuth only, no org headers)."""
+    return None
 
 
 def get_emergency_cookie(db: Session) -> str | None:
@@ -112,6 +140,8 @@ def integration_status(db: Session) -> dict:
     return {
         "tracker_token_masked": mask_secret(tracker.value if tracker else None),
         "tracker_token_updated_at": tracker.updated_at if tracker else None,
+        "tracker_org_id": get_tracker_org_id(db),
+        "tracker_org_mode": get_tracker_org_mode(db),
         "emergency_cookie_masked": mask_secret(emergency.value if emergency else None),
         "emergency_cookie_updated_at": emergency.updated_at if emergency else None,
         "emergency_cookie_valid": valid,

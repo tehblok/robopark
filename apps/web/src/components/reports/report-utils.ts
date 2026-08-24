@@ -8,7 +8,7 @@ export function formatReportDate(value: string): string {
 
 export function trackerHref(key: string | null, url: string | null): string | null {
   if (url) return url
-  if (key) return `https://tracker.yandex.ru/${key}`
+  if (key) return `https://st.yandex-team.ru/${key}`
   return null
 }
 

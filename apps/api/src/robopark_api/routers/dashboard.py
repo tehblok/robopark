@@ -20,12 +20,6 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 MOVING_LIST_LIMIT = 20
 
 
-def _park_tracker_filters(park) -> tuple[str, str | None]:
-    priority = (park.tracker_priority or "blocker").strip() or "blocker"
-    issue_type = (park.tracker_type or "").strip() or None
-    return priority, issue_type
-
-
 def _fetch_moving_items(
     *,
     token: str,
@@ -76,7 +70,7 @@ def dashboard_summary(
         )
 
     try:
-        priority, issue_type = _park_tracker_filters(park)
+        priority, issue_type = tracker_filters.park_priority_type(park)
         metrics = tracker_metrics.collect_park_metrics(
             token=token,
             queue=queue,

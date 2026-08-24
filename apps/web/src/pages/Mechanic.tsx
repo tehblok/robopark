@@ -50,7 +50,7 @@ export function Mechanic() {
         ))}
       </div>
 
-      <Panel hint="Если инструмент не работает, проверьте в админке: OAuth Tracker, cookie Emergency и tracker_queue у парка." title="Подсказка">
+      <Panel hint="Если инструмент не работает, проверьте в админке: OAuth Startrek (st.yandex-team.ru), cookie Emergency и tracker_queue у парка." title="Подсказка">
         <p>Задачи доступны только при включённом feature_blockers и указанной очереди Tracker.</p>
       </Panel>
     </PageShell>
