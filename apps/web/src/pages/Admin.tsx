@@ -270,8 +270,9 @@ export function Admin() {
           <button type="submit">Создать механика</button>
         </form>
         {mechanics.length ? (
-          <ul className="card-list">
-            {mechanics.map((mechanic) => (
+          <div className="table-scroll">
+            <ul className="card-list">
+              {mechanics.map((mechanic) => (
               <li className="card" key={mechanic.id}>
                 <div className="card-title">{mechanic.username}</div>
                 <div className="card-meta">
@@ -314,8 +315,9 @@ export function Admin() {
                   </button>
                 </div>
               </li>
-            ))}
-          </ul>
+              ))}
+            </ul>
+          </div>
         ) : (
           <EmptyState>Механики ещё не созданы.</EmptyState>
         )}
@@ -339,9 +341,10 @@ export function Admin() {
           />
           <button type="submit">{ru.create}</button>
         </form>
-        <ul className="card-list">
-          {parks.map((park) => (
-            <li className="card" key={park.id}>
+        <div className="table-scroll">
+          <ul className="card-list">
+            {parks.map((park) => (
+              <li className="card" key={park.id}>
               <div className="inline-form">
                 <input
                   aria-label={`Название парка ${park.id}`}
@@ -466,9 +469,10 @@ export function Admin() {
                   {park.is_active ? ru.deactivate : ru.activate}
                 </button>
               </div>
-            </li>
-          ))}
-        </ul>
+              </li>
+            ))}
+          </ul>
+        </div>
       </Panel>
 
       <Panel hint="Одобрение требует выбора хотя бы одного активного парка." title="Заявки на доступ">
