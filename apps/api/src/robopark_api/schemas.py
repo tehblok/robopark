@@ -337,3 +337,54 @@ class DashboardHistoryOut(BaseModel):
     park_id: int
     points: list[DashboardHistoryPointOut]
 
+
+ReportKindManual = Literal["ticket_question", "mechanic_problem"]
+
+
+class ReportCreateIn(BaseModel):
+    kind: ReportKindManual
+    park_id: int
+    title: str = Field(min_length=1, max_length=256)
+    body: str = ""
+    tracker_key: str | None = Field(default=None, max_length=128)
+    tracker_url: str | None = Field(default=None, max_length=512)
+
+
+class ReportFromTicketCloseIn(BaseModel):
+    tracker_key: str = Field(min_length=1, max_length=128)
+    tracker_url: str | None = Field(default=None, max_length=512)
+    title: str | None = Field(default=None, max_length=256)
+    body: str = ""
+
+
+class ReportReturnIn(BaseModel):
+    comment: str
+
+
+class ReportEscalateIn(BaseModel):
+    comment: str
+
+
+class ReportOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    kind: str
+    status: str
+    park_id: int
+    author_user_id: int
+    target_role: str
+    tracker_key: str | None
+    tracker_url: str | None
+    title: str
+    body: str
+    parent_report_id: int | None
+    return_comment: str | None
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: datetime | None
+
+
+class ReportBadgeOut(BaseModel):
+    count: int
+

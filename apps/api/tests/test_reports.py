@@ -1,4 +1,6 @@
 import pytest
+from conftest import login_as
+from fastapi.testclient import TestClient
 
 from robopark_api.models import AccessStatus, Park, Report, User, UserPark, UserRole
 from robopark_api.security import hash_password
@@ -518,3 +520,209 @@ def test_badge_counts_admin_open_escalations(
     )
 
     assert reports_svc.badge_counts(db_session, seed_admin) == {"count": 1}
+
+
+# --- HTTP router tests ---
+
+
+def _login(client: TestClient, username: str) -> None:
+    login_as(client, username, "secret")
+
+
+def test_http_mechanic_create_report(
+    client: TestClient, seed_mechanic, seed_park_with_tracker
+):
+    _login(client, "mech1")
+    r = client.post(
+        "/reports",
+        json={
+            "kind": "ticket_question",
+            "park_id": seed_park_with_tracker.id,
+            "title": "Question about ROBO-1",
+            "body": "What is the status?",
+            "tracker_key": "ROBO-1",
+            "tracker_url": "https://tracker.yandex.ru/ROBO-1",
+        },
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["kind"] == "ticket_question"
+    assert body["status"] == "open"
+    assert body["author_user_id"] == seed_mechanic.id
+    assert body["park_id"] == seed_park_with_tracker.id
+
+
+def test_http_mechanic_create_wrong_park_forbidden(
+    client: TestClient, seed_mechanic, seed_other_park
+):
+    _login(client, "mech1")
+    r = client.post(
+        "/reports",
+        json={
+            "kind": "mechanic_problem",
+            "park_id": seed_other_park.id,
+            "title": "Wrong park",
+            "body": "Should fail",
+        },
+    )
+    assert r.status_code == 403
+
+
+def test_http_operator_inbox(
+    client: TestClient,
+    db_session,
+    seed_mechanic,
+    seed_operator_with_park,
+    seed_park_with_tracker,
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+    _login(client, "operator1")
+    r = client.get("/reports/inbox")
+    assert r.status_code == 200
+    assert [item["id"] for item in r.json()] == [report.id]
+
+
+def test_http_operator_inbox_cross_park_filter_forbidden(
+    client: TestClient, seed_operator_with_park, seed_other_park
+):
+    _login(client, "operator1")
+    r = client.get(f"/reports/inbox?park_id={seed_other_park.id}")
+    assert r.status_code == 403
+
+
+def test_http_return_report(
+    client: TestClient,
+    db_session,
+    seed_mechanic,
+    seed_operator_with_park,
+    seed_park_with_tracker,
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+    _login(client, "operator1")
+    r = client.post(
+        f"/reports/{report.id}/return",
+        json={"comment": "Please fix tracker link"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "returned"
+    assert r.json()["return_comment"] == "Please fix tracker link"
+
+
+def test_http_return_requires_comment(
+    client: TestClient,
+    db_session,
+    seed_mechanic,
+    seed_operator_with_park,
+    seed_park_with_tracker,
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+    _login(client, "operator1")
+    r = client.post(f"/reports/{report.id}/return", json={"comment": "  "})
+    assert r.status_code == 400
+
+
+def test_http_done_report(
+    client: TestClient,
+    db_session,
+    seed_mechanic,
+    seed_operator_with_park,
+    seed_park_with_tracker,
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+    _login(client, "operator1")
+    r = client.post(f"/reports/{report.id}/done")
+    assert r.status_code == 200
+    assert r.json()["status"] == "done"
+    assert r.json()["resolved_at"] is not None
+
+
+def test_http_escalate_report(
+    client: TestClient,
+    db_session,
+    seed_mechanic,
+    seed_operator_with_park,
+    seed_park_with_tracker,
+):
+    parent = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+    _login(client, "operator1")
+    r = client.post(
+        f"/reports/{parent.id}/escalate",
+        json={"comment": "Escalating to admin"},
+    )
+    assert r.status_code == 200
+    child = r.json()
+    assert child["kind"] == "escalation_to_admin"
+    assert child["status"] == "open"
+    assert child["parent_report_id"] == parent.id
+
+
+def test_http_badge_operator(
+    client: TestClient,
+    db_session,
+    seed_mechanic,
+    seed_operator_with_park,
+    seed_park_with_tracker,
+):
+    _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+    _login(client, "operator1")
+    r = client.get("/reports/badge")
+    assert r.status_code == 200
+    assert r.json() == {"count": 1}
+
+
+def test_http_get_report_cross_park_forbidden(
+    client: TestClient,
+    db_session,
+    seed_mechanic,
+    seed_operator_with_park,
+    seed_other_park,
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_other_park.id, title="Other"
+    )
+    _login(client, "operator1")
+    r = client.get(f"/reports/{report.id}")
+    assert r.status_code == 403
+
+
+def test_http_from_ticket_close(
+    client: TestClient, seed_mechanic, seed_park_with_tracker
+):
+    _login(client, "mech1")
+    r = client.post(
+        "/reports/from-ticket-close",
+        json={"tracker_key": "ROBO-99"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["kind"] == "ticket_close_review"
+    assert body["tracker_key"] == "ROBO-99"
+    assert body["title"] == "Закрытие ROBO-99"
+
+
+def test_http_list_mine(
+    client: TestClient, db_session, seed_mechanic, seed_park_with_tracker
+):
+    first = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id, title="One"
+    )
+    second = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id, title="Two"
+    )
+    _login(client, "mech1")
+    r = client.get("/reports/mine")
+    assert r.status_code == 200
+    assert [item["id"] for item in r.json()] == [second.id, first.id]
+
