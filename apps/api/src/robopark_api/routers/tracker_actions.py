@@ -147,6 +147,16 @@ def close_issue(
     token = settings_svc.get_tracker_token(db)
     if not token:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="tracker_token_not_configured")
+
+    mechanic_park = None
+    if user.role == UserRole.mechanic.value:
+        mechanic_park = get_mechanic_park(db, user)
+        if mechanic_park is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="mechanic_park_required_for_close_review",
+            )
+
     issue = _get_issue_or_404(token, key)
     ensure_action_allowed(db, user, issue, "close")
     transitions = tracker_client.list_transitions(token=token, key=key)
@@ -156,27 +166,26 @@ def close_issue(
     )
     if not close_transition:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="tracker_close_transition_not_found")
+
     try:
         tracker_client.transition_issue(token=token, key=key, transition=close_transition["id"])
     except tracker_client.TrackerError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="tracker_upstream_error") from exc
 
-    if user.role == UserRole.mechanic.value:
-        park = get_mechanic_park(db, user)
-        if park is not None:
-            try:
-                reports_svc.get_or_create_close_review(
-                    db,
-                    author=user,
-                    park_id=park.id,
-                    tracker_key=key,
-                    tracker_url=tracker_client.build_issue_url(key),
-                    title=f"Закрытие {key}",
-                )
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="tracker_closed_report_failed",
-                ) from exc
+    if mechanic_park is not None:
+        try:
+            reports_svc.get_or_create_close_review(
+                db,
+                author=user,
+                park_id=mechanic_park.id,
+                tracker_key=key,
+                tracker_url=tracker_client.build_issue_url(key),
+                title=f"Закрытие {key}",
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="tracker_closed_report_failed",
+            ) from exc
 
     return _ok(key, "close", user, issue)

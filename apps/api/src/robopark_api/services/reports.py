@@ -254,7 +254,7 @@ def escalate_report(db: Session, user: User, report_id: int, comment: str) -> Re
     return child
 
 
-def badge_counts(db: Session, user: User) -> dict:
+def badge_counts(db: Session, user: User, *, park_id: int | None = None) -> dict:
     if user.role == UserRole.mechanic.value:
         count = db.scalar(
             select(func.count())
@@ -281,6 +281,10 @@ def badge_counts(db: Session, user: User) -> dict:
         park_ids = _user_park_ids(db, user)
         if not park_ids:
             return {"count": 0}
+        if park_id is not None:
+            if park_id not in park_ids:
+                raise PermissionError("forbidden")
+            park_ids = {park_id}
         count = db.scalar(
             select(func.count())
             .select_from(Report)

@@ -8,6 +8,7 @@ import { Alert, EmptyState, Panel } from '../components/PageShell'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
 import { useParkContext } from '../park-context'
+import { refreshReportsBadge } from '../reports-badge'
 
 function isInboxRole(role: string): boolean {
   return role === 'operator' || role === 'admin' || role === 'royal'
@@ -112,6 +113,7 @@ export function Reports() {
 
   async function handleDetailUpdated() {
     await loadLists()
+    refreshReportsBadge()
     if (selectedId != null) {
       try {
         const fresh = await api.report(selectedId)
@@ -127,6 +129,7 @@ export function Reports() {
 
   async function handleCreated() {
     await loadLists()
+    refreshReportsBadge()
   }
 
   const inboxTitle = isAdminRole(role) ? 'Эскалации' : 'Входящие'

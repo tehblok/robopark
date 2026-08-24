@@ -1,10 +1,11 @@
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import { api } from '../api'
 import { useAuth } from '../auth-context'
 import { ru, roleLabel } from '../i18n/ru'
 import { navItemsForRole } from '../nav'
 import { useParkContext } from '../park-context'
+import { REPORTS_BADGE_REFRESH } from '../reports-badge'
 import { getStoredTheme, setTheme, type Theme } from '../theme'
 
 type AppShellProps = {
@@ -17,35 +18,28 @@ export function AppShell({ children }: AppShellProps) {
   const [theme, setThemeState] = useState<Theme>(() => getStoredTheme())
   const [reportsBadge, setReportsBadge] = useState(0)
   const location = useLocation()
+  const badgeParkId = user?.role === 'operator' ? parkId ?? undefined : undefined
+
+  const loadReportsBadge = useCallback(() => {
+    api.reportsBadge(badgeParkId)
+      .then((data) => setReportsBadge(data.count))
+      .catch(() => setReportsBadge(0))
+  }, [badgeParkId])
 
   useEffect(() => {
-    let cancelled = false
-    api.reportsBadge()
-      .then((data) => {
-        if (!cancelled) setReportsBadge(data.count)
-      })
-      .catch(() => {
-        if (!cancelled) setReportsBadge(0)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+    loadReportsBadge()
+  }, [loadReportsBadge])
 
   useEffect(() => {
     if (!location.pathname.startsWith('/reports')) return
-    let cancelled = false
-    api.reportsBadge()
-      .then((data) => {
-        if (!cancelled) setReportsBadge(data.count)
-      })
-      .catch(() => {
-        if (!cancelled) setReportsBadge(0)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [location.pathname])
+    loadReportsBadge()
+  }, [location.pathname, loadReportsBadge])
+
+  useEffect(() => {
+    const onRefresh = () => loadReportsBadge()
+    window.addEventListener(REPORTS_BADGE_REFRESH, onRefresh)
+    return () => window.removeEventListener(REPORTS_BADGE_REFRESH, onRefresh)
+  }, [loadReportsBadge])
 
   if (!user) return null
 

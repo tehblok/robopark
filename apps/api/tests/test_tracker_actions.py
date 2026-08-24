@@ -91,3 +91,39 @@ def test_mechanic_close_creates_close_review(
     assert report.tracker_key == "ROBOPARK-1"
     assert report.tracker_url == "https://tracker.yandex.ru/ROBOPARK-1"
     assert report.title == "Закрытие ROBOPARK-1"
+
+
+def test_mechanic_close_without_park_rejected_before_tracker(
+    client, db_session, monkeypatch
+):
+    from robopark_api.services import tracker_client
+
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    _mock_close_tracker(monkeypatch)
+
+    mechanic = User(
+        username="mech_nopark",
+        password_hash=hash_password("secret"),
+        role=UserRole.mechanic.value,
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(mechanic)
+    db_session.commit()
+
+    transition_called = False
+
+    def _transition(**_kwargs):
+        nonlocal transition_called
+        transition_called = True
+        return {"status": "closed"}
+
+    monkeypatch.setattr(tracker_client, "transition_issue", _transition)
+
+    login_as(client, "mech_nopark", "secret")
+    response = client.post("/tracker/issues/ROBOPARK-1/close")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "mechanic_park_required_for_close_review"
+    assert transition_called is False
+    assert db_session.query(Report).count() == 0

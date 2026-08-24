@@ -16,12 +16,10 @@ from robopark_api.schemas import (
     ReportBadgeOut,
     ReportCreateIn,
     ReportEscalateIn,
-    ReportFromTicketCloseIn,
     ReportOut,
     ReportReturnIn,
 )
 from robopark_api.services import reports as reports_svc
-from robopark_api.services import tracker_client
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -88,34 +86,6 @@ def create_report(
     return _report_out(report)
 
 
-@router.post("/from-ticket-close", response_model=ReportOut)
-def create_from_ticket_close(
-    payload: ReportFromTicketCloseIn,
-    user: User = Depends(require_approved_mechanic),
-    db: Session = Depends(get_db),
-) -> ReportOut:
-    park = get_mechanic_park(db, user)
-    if park is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-
-    tracker_url = payload.tracker_url or tracker_client.build_issue_url(
-        payload.tracker_key
-    )
-    title = payload.title or f"Закрытие {payload.tracker_key}"
-    report = _run_svc(
-        lambda: reports_svc.get_or_create_close_review(
-            db,
-            author=user,
-            park_id=park.id,
-            tracker_key=payload.tracker_key,
-            tracker_url=tracker_url,
-            title=title,
-            body=payload.body,
-        )
-    )
-    return _report_out(report)
-
-
 @router.get("/inbox", response_model=list[ReportOut])
 def list_inbox(
     park_id: int | None = Query(default=None),
@@ -139,10 +109,13 @@ def list_mine(
 
 @router.get("/badge", response_model=ReportBadgeOut)
 def report_badge(
+    park_id: int | None = Query(default=None),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> ReportBadgeOut:
-    counts = reports_svc.badge_counts(db, user)
+    counts = _run_svc(
+        lambda: reports_svc.badge_counts(db, user, park_id=park_id)
+    )
     return ReportBadgeOut(count=counts["count"])
 
 

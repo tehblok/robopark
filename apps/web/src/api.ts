@@ -515,5 +515,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ comment }),
     }),
-  reportsBadge: () => request<ReportBadge>('/reports/badge'),
+  reportsBadge: (parkId?: number) =>
+    request<ReportBadge>(
+      parkId == null
+        ? '/reports/badge'
+        : `/reports/badge?park_id=${parkId}`,
+    ),
 }

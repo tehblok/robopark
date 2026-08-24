@@ -509,6 +509,35 @@ def test_badge_counts_operator_open_inbox(
     assert reports_svc.badge_counts(db_session, seed_operator_with_park) == {"count": 1}
 
 
+def test_badge_counts_operator_filters_by_park_id(
+    db_session,
+    seed_mechanic,
+    seed_operator_with_park,
+    seed_other_park,
+    seed_park_with_tracker,
+):
+    _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id, title="Alpha"
+    )
+    _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_other_park.id, title="Beta"
+    )
+
+    assert reports_svc.badge_counts(
+        db_session, seed_operator_with_park, park_id=seed_park_with_tracker.id
+    ) == {"count": 1}
+    assert reports_svc.badge_counts(db_session, seed_operator_with_park) == {"count": 1}
+
+
+def test_badge_counts_operator_cross_park_filter_forbidden(
+    db_session, seed_operator_with_park, seed_other_park
+):
+    with pytest.raises(PermissionError):
+        reports_svc.badge_counts(
+            db_session, seed_operator_with_park, park_id=seed_other_park.id
+        )
+
+
 def test_badge_counts_admin_open_escalations(
     db_session, seed_mechanic, seed_operator_with_park, seed_admin, seed_park_with_tracker
 ):
@@ -677,9 +706,17 @@ def test_http_badge_operator(
         db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
     )
     _login(client, "operator1")
-    r = client.get("/reports/badge")
+    r = client.get(f"/reports/badge?park_id={seed_park_with_tracker.id}")
     assert r.status_code == 200
     assert r.json() == {"count": 1}
+
+
+def test_http_badge_operator_cross_park_forbidden(
+    client: TestClient, seed_operator_with_park, seed_other_park
+):
+    _login(client, "operator1")
+    r = client.get(f"/reports/badge?park_id={seed_other_park.id}")
+    assert r.status_code == 403
 
 
 def test_http_get_report_cross_park_forbidden(
@@ -695,21 +732,6 @@ def test_http_get_report_cross_park_forbidden(
     _login(client, "operator1")
     r = client.get(f"/reports/{report.id}")
     assert r.status_code == 403
-
-
-def test_http_from_ticket_close(
-    client: TestClient, seed_mechanic, seed_park_with_tracker
-):
-    _login(client, "mech1")
-    r = client.post(
-        "/reports/from-ticket-close",
-        json={"tracker_key": "ROBO-99"},
-    )
-    assert r.status_code == 200
-    body = r.json()
-    assert body["kind"] == "ticket_close_review"
-    assert body["tracker_key"] == "ROBO-99"
-    assert body["title"] == "Закрытие ROBO-99"
 
 
 def test_http_list_mine(
