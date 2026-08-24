@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from robopark_api.services.tracker_client import (
@@ -75,23 +76,94 @@ def build_backlog_query(queue: str, tag: str, donor_tag: str = "") -> str:
     return join_query(*parts)
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _format_ql_datetime(value: datetime) -> str:
+    return _as_utc(value).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _park_scoped_parts(
+    queue: str,
+    tag: str,
+    *,
+    priority: str = "blocker",
+    issue_type: str | None = None,
+) -> list[str]:
+    parts = [
+        f"Queue: {queue}",
+        f"Priority: {priority}",
+        f"Tags: {ql_quote(tag)}",
+    ]
+    if issue_type:
+        parts.append(f"Type: {issue_type}")
+    return parts
+
+
 def build_arrived_today_query(queue: str, tag: str) -> str:
     return join_query(
-        f"Queue: {queue}",
-        "Priority: blocker",
+        *_park_scoped_parts(queue, tag),
         "Resolution: empty(), fixed",
         "Created: today()",
-        f"Tags: {ql_quote(tag)}",
     )
 
 
 def build_done_today_query(queue: str, tag: str) -> str:
     return join_query(
-        f"Queue: {queue}",
-        "Priority: blocker",
+        *_park_scoped_parts(queue, tag),
         "Resolution: fixed",
         "Updated: today()",
-        f"Tags: {ql_quote(tag)}",
+    )
+
+
+def build_arrived_in_window_query(
+    queue: str,
+    tag: str,
+    bucket_start: datetime,
+    bucket_end: datetime,
+    *,
+    priority: str = "blocker",
+    issue_type: str | None = None,
+) -> str:
+    start = _format_ql_datetime(bucket_start)
+    end = _format_ql_datetime(bucket_end)
+    return join_query(
+        *_park_scoped_parts(
+            queue,
+            tag,
+            priority=priority,
+            issue_type=issue_type,
+        ),
+        "Resolution: empty(), fixed",
+        f'Created: >= "{start}"',
+        f'Created: < "{end}"',
+    )
+
+
+def build_departed_in_window_query(
+    queue: str,
+    tag: str,
+    bucket_start: datetime,
+    bucket_end: datetime,
+    *,
+    priority: str = "blocker",
+    issue_type: str | None = None,
+) -> str:
+    start = _format_ql_datetime(bucket_start)
+    end = _format_ql_datetime(bucket_end)
+    return join_query(
+        *_park_scoped_parts(
+            queue,
+            tag,
+            priority=priority,
+            issue_type=issue_type,
+        ),
+        "Resolution: fixed",
+        f'Updated: >= "{start}"',
+        f'Updated: < "{end}"',
     )
 
 
