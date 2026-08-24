@@ -26,8 +26,8 @@ export function OperatorRobotSearch() {
 
   return (
     <PageShell
-      backTo="/operator"
       onLogout={logout}
+      standalone
       subtitle="Поиск по номеру робота (447, a1517) или ключу тикета (ROBOPARK-123). Результаты без фильтра по парку."
       title="Поиск робота"
     >

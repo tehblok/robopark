@@ -118,8 +118,8 @@ export function OperatorNowReport() {
 
   return (
     <PageShell
-      backTo="/operator"
       onLogout={logout}
+      standalone
       subtitle="Живой срез открытых blocker по вашим паркам."
       title="Сейчас по Tracker"
     >

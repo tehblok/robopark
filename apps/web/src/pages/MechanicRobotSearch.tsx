@@ -24,7 +24,7 @@ export function MechanicRobotSearch() {
 
   return (
     <PageShell
-      backTo="/mechanic"
+      standalone
       subtitle="Поиск по номеру робота (447, a1517) или ключу тикета (ROBOPARK-123). Результаты без фильтра по парку."
       title="Поиск робота"
     >

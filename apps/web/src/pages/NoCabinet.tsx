@@ -14,7 +14,7 @@ export function NoCabinet() {
   }
 
   return (
-    <PageShell onLogout={logout} subtitle="Для этой роли кабинет не настроен." title="Кабинет недоступен">
+    <PageShell onLogout={logout} standalone subtitle="Для этой роли кабинет не настроен." title="Кабинет недоступен">
       <Panel title="Детали">
         <p>
           У аккаунта роль <strong>{roleLabel(user.role)}</strong>. В текущей

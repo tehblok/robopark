@@ -32,6 +32,7 @@ export function Mechanic() {
   return (
     <PageShell
       onLogout={logout}
+      standalone
       subtitle={
         park
           ? `Парк: ${park.name} (${park.tag}). Выберите инструмент для работы.`

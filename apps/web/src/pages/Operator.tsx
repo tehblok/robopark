@@ -41,6 +41,7 @@ export function Operator() {
   return (
     <PageShell
       onLogout={logout}
+      standalone
       subtitle="Выберите инструмент для работы с парками и Tracker."
       title="Кабинет оператора"
     >

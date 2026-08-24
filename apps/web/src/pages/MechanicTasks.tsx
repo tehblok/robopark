@@ -38,7 +38,6 @@ export function MechanicTasks() {
 
   return (
     <PageShell
-      backTo="/mechanic"
       subtitle={`Блокеры парка ${parkTag || '…'} · сортировка: старые сверху.`}
       title="Задачи парка"
     >

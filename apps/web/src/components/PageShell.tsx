@@ -7,6 +7,9 @@ type PageShellProps = {
   subtitle?: string
   backTo?: string
   backLabel?: string
+  /** Wrap in centered .page layout (pages outside AppShell) */
+  standalone?: boolean
+  /** Logout for pages rendered outside AppShell */
   onLogout?: () => void
   children: ReactNode
 }
@@ -16,35 +19,43 @@ export function PageShell({
   subtitle,
   backTo,
   backLabel = ru.back,
+  standalone = false,
   onLogout,
   children,
 }: PageShellProps) {
-  return (
-    <main className="page">
-      <div className="shell">
-        <header className="shell-header">
-          <div className="shell-brand">
-            <span className="brand-mark">{ru.brand}</span>
-            <div>
-              <h1>{title}</h1>
-              {subtitle && <p className="shell-subtitle">{subtitle}</p>}
-            </div>
+  const content = (
+    <>
+      <header className="page-header">
+        {backTo && (
+          <Link className="page-back" to={backTo}>
+            ← {backLabel}
+          </Link>
+        )}
+        <div className="page-header-row">
+          <div>
+            <h1>{title}</h1>
+            {subtitle && <p className="page-subtitle">{subtitle}</p>}
           </div>
-          <div className="shell-actions">
-            {backTo && (
-              <Link className="btn btn-ghost" to={backTo}>{backLabel}</Link>
-            )}
-            {onLogout && (
-              <button className="btn btn-secondary" onClick={onLogout} type="button">
-                {ru.signOut}
-              </button>
-            )}
-          </div>
-        </header>
-        {children}
-      </div>
-    </main>
+          {onLogout && (
+            <button className="btn btn-secondary" onClick={onLogout} type="button">
+              {ru.signOut}
+            </button>
+          )}
+        </div>
+      </header>
+      <div className="page-body">{children}</div>
+    </>
   )
+
+  if (standalone) {
+    return (
+      <main className="page">
+        <div className="page-content shell">{content}</div>
+      </main>
+    )
+  }
+
+  return <div className="page-content">{content}</div>
 }
 
 export function Panel({

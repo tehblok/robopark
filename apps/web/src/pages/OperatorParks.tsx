@@ -42,8 +42,8 @@ export function OperatorParks() {
 
   return (
     <PageShell
-      backTo="/operator"
       onLogout={logout}
+      standalone
       subtitle="Ваши парки, заявки на доступ и история запросов."
       title="Мои парки"
     >
