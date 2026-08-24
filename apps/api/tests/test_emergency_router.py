@@ -1,0 +1,94 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from conftest import login_as
+from robopark_api.models import AccessStatus, User, UserRole
+from robopark_api.security import hash_password
+from robopark_api.services import emergency_cache, emergency_client, emergency_config
+from robopark_api.services import platform_settings as settings_svc
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def empty_emergency_cache():
+    emergency_cache.clear_cache_for_tests()
+    yield
+    emergency_cache.clear_cache_for_tests()
+
+
+@pytest.fixture
+def seed_operator(db_session):
+    user = User(
+        username="operator1",
+        password_hash=hash_password("secret"),
+        role=UserRole.operator.value,
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+    return user
+
+
+@pytest.fixture
+def emergency_payload():
+    return json.loads(
+        (FIXTURES / "emergency_robot.json").read_text(encoding="utf-8")
+    )
+
+
+def configure_emergency(db_session, monkeypatch, emergency_payload):
+    emergency_config.seed_emergency_config(
+        db_session, emergency_config.DEFAULT_JSON_PATH
+    )
+    settings_svc.set_setting(
+        db_session, settings_svc.EMERGENCY_COOKIE_KEY, "Session_id=test"
+    )
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        lambda **_kwargs: emergency_payload,
+    )
+
+
+def test_operator_resolve_hides_service_raw(
+    client, db_session, seed_operator, monkeypatch, emergency_payload
+):
+    configure_emergency(db_session, monkeypatch, emergency_payload)
+    login_as(client, "operator1", "secret")
+
+    response = client.post("/emergency/resolve", json={"robot_number": "447"})
+
+    assert response.status_code == 200
+    section_ids = [section["id"] for section in response.json()["sections"]]
+    assert "status" in section_ids
+    assert "service_raw" not in section_ids
+
+
+def test_operator_cannot_open_hidden_section(
+    client, db_session, seed_operator, monkeypatch, emergency_payload
+):
+    configure_emergency(db_session, monkeypatch, emergency_payload)
+    login_as(client, "operator1", "secret")
+
+    response = client.get("/emergency/YASADR00000000447/sections/service_raw")
+
+    assert response.status_code == 404
+
+
+def test_mechanic_alias_still_works(
+    client, db_session, seed_mechanic, monkeypatch, emergency_payload
+):
+    configure_emergency(db_session, monkeypatch, emergency_payload)
+    login_as(client, "mech1", "secret")
+
+    response = client.post(
+        "/mechanic/emergency/resolve", json={"robot_number": "447"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["vin"] == "YASADR00000000447"

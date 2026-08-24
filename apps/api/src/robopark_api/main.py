@@ -11,6 +11,7 @@ from robopark_api.routers import (
     admin_park_requests,
     admin_settings,
     auth,
+    emergency,
     health,
     mechanic_emergency,
     mechanic_robots,
@@ -57,6 +58,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_park_requests.router)
     app.include_router(mechanic_tasks.router)
     app.include_router(mechanic_robots.router)
+    app.include_router(emergency.router)
     app.include_router(mechanic_emergency.router)
     app.include_router(tracker_read.router)
     app.include_router(tracker_actions.router)

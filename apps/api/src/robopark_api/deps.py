@@ -57,6 +57,17 @@ def require_approved_mechanic(user: User = Depends(require_user)) -> User:
     return user
 
 
+def require_emergency_viewer(user: User = Depends(require_user)) -> User:
+    if user.role in (UserRole.royal.value, UserRole.admin.value):
+        return user
+    if (
+        user.role in (UserRole.mechanic.value, UserRole.operator.value)
+        and user.access_status == AccessStatus.approved.value
+    ):
+        return user
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+
 def get_mechanic_park(db: Session, user: User) -> Park | None:
     parks = db.scalars(
         select(Park).join(UserPark).where(UserPark.user_id == user.id)

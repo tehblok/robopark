@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from robopark_api.services.emergency_config import (
     get_section_config,
     list_sections_for_role,
+    role_can_view_section,
 )
 
 PARKTRONICS_NO_DATA = 2147483647
@@ -110,8 +111,13 @@ def _render_fields_and_top_level_leftovers(
 
 
 def render_section(
-    db: Session, payload: dict[str, Any], section_id: str
+    db: Session,
+    payload: dict[str, Any],
+    section_id: str,
+    role: str | None = None,
 ) -> dict[str, Any]:
+    if role is not None and not role_can_view_section(db, role, section_id):
+        raise KeyError(f"role cannot view emergency section: {section_id}")
     section = get_section_config(db, section_id)
     if section is None:
         raise KeyError(f"unknown or disabled emergency section: {section_id}")

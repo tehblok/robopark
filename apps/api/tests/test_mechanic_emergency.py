@@ -2,10 +2,19 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from conftest import login_as
-from robopark_api.services import emergency_config
+from robopark_api.services import emergency_cache, emergency_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def empty_emergency_cache():
+    emergency_cache.clear_cache_for_tests()
+    yield
+    emergency_cache.clear_cache_for_tests()
 
 
 def test_emergency_resolve(client, db_session, seed_mechanic, seed_royal):
