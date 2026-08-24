@@ -41,7 +41,7 @@ const METRIC_LABELS: Record<string, string> = {
 
 const SKIP_REASON_LABELS: Record<string, string> = {
   reports_disabled: 'отчёты выключены',
-  no_tracker_queue: 'нет очереди Tracker',
+  no_tracker_queue: 'нет очереди Startrek',
 }
 
 function metricLabel(key: string) {

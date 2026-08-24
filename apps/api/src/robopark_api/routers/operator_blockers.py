@@ -51,10 +51,13 @@ def operator_blockers(
         )
 
     try:
+        priority, issue_type = tracker_filters.park_priority_type(park)
         issues = tracker_client.fetch_park_blockers(
             token=token,
             queue=park.tracker_queue,
             park_tag=park.tag,
+            priority=priority,
+            issue_type=issue_type,
         )
     except tracker_client.TrackerError as exc:
         raise HTTPException(

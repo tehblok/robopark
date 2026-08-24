@@ -80,7 +80,7 @@ def _create_open_report(db_session, *, author, park_id, title="Test report"):
         title=title,
         body="Body",
         tracker_key="ROBO-1",
-        tracker_url="https://tracker.yandex.ru/ROBO-1",
+        tracker_url="https://st.yandex-team.ru/ROBO-1",
     )
 
 
@@ -93,7 +93,7 @@ def test_create_manual_ticket_question_success(db_session, seed_mechanic, seed_p
         title="Question about ROBO-1",
         body="What is the status?",
         tracker_key="ROBO-1",
-        tracker_url="https://tracker.yandex.ru/ROBO-1",
+        tracker_url="https://st.yandex-team.ru/ROBO-1",
     )
 
     assert report.id is not None
@@ -103,7 +103,7 @@ def test_create_manual_ticket_question_success(db_session, seed_mechanic, seed_p
     assert report.author_user_id == seed_mechanic.id
     assert report.target_role == UserRole.operator.value
     assert report.tracker_key == "ROBO-1"
-    assert report.tracker_url == "https://tracker.yandex.ru/ROBO-1"
+    assert report.tracker_url == "https://st.yandex-team.ru/ROBO-1"
     assert report.title == "Question about ROBO-1"
     assert report.body == "What is the status?"
 
@@ -173,7 +173,7 @@ def test_get_or_create_close_review_inserts(db_session, seed_mechanic, seed_park
         author=seed_mechanic,
         park_id=seed_park_with_tracker.id,
         tracker_key="ROBO-99",
-        tracker_url="https://tracker.yandex.ru/ROBO-99",
+        tracker_url="https://st.yandex-team.ru/ROBO-99",
         title="Закрытие ROBO-99",
     )
 
@@ -196,7 +196,7 @@ def test_get_or_create_close_review_returns_existing_open(
         author=seed_mechanic,
         park_id=seed_park_with_tracker.id,
         tracker_key="ROBO-42",
-        tracker_url="https://tracker.yandex.ru/ROBO-42",
+        tracker_url="https://st.yandex-team.ru/ROBO-42",
         title="Закрытие ROBO-42",
     )
     second = reports_svc.get_or_create_close_review(
@@ -204,7 +204,7 @@ def test_get_or_create_close_review_returns_existing_open(
         author=seed_mechanic,
         park_id=seed_park_with_tracker.id,
         tracker_key="ROBO-42",
-        tracker_url="https://tracker.yandex.ru/ROBO-42",
+        tracker_url="https://st.yandex-team.ru/ROBO-42",
         title="Duplicate attempt",
     )
 
@@ -570,7 +570,7 @@ def test_http_mechanic_create_report(
             "title": "Question about ROBO-1",
             "body": "What is the status?",
             "tracker_key": "ROBO-1",
-            "tracker_url": "https://tracker.yandex.ru/ROBO-1",
+            "tracker_url": "https://st.yandex-team.ru/ROBO-1",
         },
     )
     assert r.status_code == 201

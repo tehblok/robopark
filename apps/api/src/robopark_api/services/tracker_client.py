@@ -1,35 +1,116 @@
-"""Yandex Tracker HTTP client."""
+"""Internal Yandex Startrek client (st-api.yandex-team.ru).
+
+Uses vendored ``startrek_client`` the same way as bot_otchet:
+``per_page=API_PAGE_SIZE`` (50) — клиент сам ходит по Link next;
+``count_only`` с разбором int/dict/_value и fallback на пагинацию;
+слоты/retry через ``tracker_api.call_with_retry``.
+"""
 
 from __future__ import annotations
 
+import logging
+import os
 import re
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-import httpx
+from robopark_api.services.tracker_api import call_with_retry
 
-TRACKER_SEARCH_URL = "https://api.tracker.yandex.net/v2/issues/_search"
-TRACKER_COUNT_URL = "https://api.tracker.yandex.net/v2/issues/_count"
-TRACKER_ISSUE_URL = "https://api.tracker.yandex.net/v2/issues"
-TRACKER_COMMENTS_URL = "https://api.tracker.yandex.net/v2/issues/{key}/comments"
-TRACKER_TRANSITIONS_URL = "https://api.tracker.yandex.net/v2/issues/{key}/transitions"
+logger = logging.getLogger(__name__)
+
+API_BASE = os.environ.get("TRACKER_API_BASE", "https://st-api.yandex-team.ru")
+WEB_BASE = os.environ.get("TRACKER_WEB_BASE", "https://st.yandex-team.ru")
+USER_AGENT = os.environ.get("TRACKER_USER_AGENT", "robopark-api/0.1")
+# Tracker API отдаёт не более 50 тикетов за один HTTP-запрос; find() сам
+# дочитывает следующие страницы по Link header при итерации.
+API_PAGE_SIZE = 50
+DEFAULT_QUEUE = "SDCFLEETOPS"
+DEFAULT_ISSUE_TYPES = ("repair", "service", "calibration")
+
+_CLIENTS: dict[str, Any] = {}
 
 
 class TrackerError(Exception):
     pass
 
 
+def _ensure_startrek_on_path() -> None:
+    env_path = (os.environ.get("TRACKER_STARTREK_PATH") or "").strip()
+    candidates: list[Path] = []
+    if env_path:
+        candidates.append(Path(env_path))
+    here = Path(__file__).resolve()
+    for idx in (5, 7):
+        if idx < len(here.parents):
+            candidates.append(here.parents[idx] / "startrek_client-2.8")
+    for root in candidates:
+        if (root / "startrek_client").is_dir():
+            path = str(root)
+            if path not in sys.path:
+                sys.path.insert(0, path)
+            return
+    raise TrackerError(
+        "startrek_client-2.8 not found; place it at repo root or set TRACKER_STARTREK_PATH"
+    )
+
+
+def _import_startrek():
+    _ensure_startrek_on_path()
+    from startrek_client import Startrek  # type: ignore
+
+    return Startrek
+
+
+def clear_tracker_clients() -> None:
+    """Сброс кэша Startrek после смены OAuth-токена."""
+    _CLIENTS.clear()
+
+
+def _client(token: str):
+    cached = _CLIENTS.get(token)
+    if cached is not None:
+        return cached
+    Startrek = _import_startrek()
+    client = Startrek(useragent=USER_AGENT, base_url=API_BASE, token=token)
+    _CLIENTS[token] = client
+    return client
+
+
 def build_issue_url(key: str) -> str:
-    return f"https://tracker.yandex.ru/{key}"
+    return f"{WEB_BASE.rstrip('/')}/{key}"
+
+
+def configure_org_header(*, header_name: str | None, org_id: str | None) -> None:
+    return None
+
+
+def clear_org_header() -> None:
+    return None
+
+
+def _sanitize_ql_value(value: str) -> str:
+    return str(value or "").strip().replace("\n", " ").replace("\r", "")
+
+
+def _ql_quote(value: str) -> str:
+    text = _sanitize_ql_value(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{text}"'
+
+
+def _ql_token(value: str) -> str:
+    """Значение без кавычек, если безопасно для парсера Tracker."""
+    text = _sanitize_ql_value(value)
+    if not text:
+        return ""
+    if text.isascii() and " " not in text and "(" not in text and ")" not in text and '"' not in text:
+        return text
+    return _ql_quote(text)
 
 
 def _join_query(*parts: str) -> str:
     return " ".join(part.strip() for part in parts if part and part.strip())
-
-
-def _ql_quote(value: str) -> str:
-    text = value.replace('"', '\\"')
-    return f'"{text}"'
 
 
 def join_query(*parts: str) -> str:
@@ -40,12 +121,63 @@ def ql_quote(value: str) -> str:
     return _ql_quote(value)
 
 
-def _open_issues_clause() -> str:
+def ql_token(value: str) -> str:
+    return _ql_token(value)
+
+
+def open_issues_clause() -> str:
+    """Открытые: без resolution + не closed/закрыт (Tracker иногда оставляет Resolution empty)."""
     return (
-        'Resolution: empty() '
+        "Resolution: empty() "
         '(Status: !closed AND Status: !"Закрыт" AND Status: !"Closed" '
         'AND Status: !resolved AND Status: !"Решен" AND Status: !"Решён")'
     )
+
+
+def _open_issues_clause() -> str:
+    return open_issues_clause()
+
+
+def _queue_uses_issue_types(queue: str) -> bool:
+    """Фильтр Type действует только для очереди SDCFLEETOPS (как в bot_otchet)."""
+    raw = (queue or "").strip().strip('"') or DEFAULT_QUEUE
+    return raw.upper() == DEFAULT_QUEUE.upper()
+
+
+def type_clause(queue: str, issue_type: str | None = None) -> str:
+    explicit = _sanitize_ql_value(issue_type or "")
+    if explicit:
+        return f"Type: {_ql_token(explicit)}"
+    if _queue_uses_issue_types(queue):
+        return f"Type: {', '.join(DEFAULT_ISSUE_TYPES)}"
+    return ""
+
+
+def _type_clause(queue: str, issue_type: str | None = None) -> str:
+    return type_clause(queue, issue_type)
+
+
+def _tag_clause(tag: str) -> str:
+    token = _ql_token(tag)
+    if not token:
+        raise ValueError("тег парка пустой")
+    return f"Tags: {token}"
+
+
+def exclude_tag(tag: str) -> str:
+    """Исключение тега: Tags: !\"donor\" (не -Tags:)."""
+    text = _sanitize_ql_value(tag)
+    if not text:
+        return ""
+    return f"Tags: !{_ql_quote(text)}"
+
+
+def _priority_clause(priority: str = "blocker") -> str:
+    return f"Priority: {_ql_token(priority) or 'blocker'}"
+
+
+def _queue_clause(queue: str) -> str:
+    return f"Queue: {_ql_token(queue) or DEFAULT_QUEUE}"
 
 
 def build_open_blockers_query(
@@ -56,14 +188,50 @@ def build_open_blockers_query(
     issue_type: str | None = None,
 ) -> str:
     parts = [
-        f"Queue: {queue}",
-        f"Priority: {priority}",
-        _open_issues_clause(),
-        f"Tags: {_ql_quote(tag)}",
+        _queue_clause(queue),
+        type_clause(queue, issue_type),
+        _priority_clause(priority),
+        open_issues_clause(),
+        _tag_clause(tag),
     ]
-    if issue_type:
-        parts.append(f"Type: {issue_type}")
     return _join_query(*parts)
+
+
+def build_untagged_blockers_query(
+    queue: str,
+    park_tags: list[str],
+    *,
+    priority: str = "blocker",
+    issue_type: str | None = None,
+) -> str:
+    """Открытые blocker без тегов известных парков (не Tags: empty())."""
+    parts = [
+        _queue_clause(queue),
+        type_clause(queue, issue_type),
+        _priority_clause(priority),
+        open_issues_clause(),
+    ]
+    for raw in park_tags:
+        clause = exclude_tag(raw)
+        if clause:
+            parts.append(clause)
+    if not any(_sanitize_ql_value(t) for t in park_tags):
+        parts.append("Tags: empty()")
+    return _join_query(*parts)
+
+
+def build_incident_blockers_query(
+    queue: str,
+    *,
+    priority: str = "blocker",
+) -> str:
+    """Открытые blocker типа Incident (без фильтра тегов)."""
+    return _join_query(
+        _queue_clause(queue),
+        "Type: incident",
+        _priority_clause(priority),
+        open_issues_clause(),
+    )
 
 
 def _hours_since(created: str) -> float | None:
@@ -87,23 +255,13 @@ def _fmt_hours(value: float | None) -> str | None:
     return f"{value:.1f}"
 
 
-def _issue_status_display(issue: dict[str, Any]) -> str:
-    status = issue.get("status") or {}
-    if isinstance(status, dict):
-        return str(status.get("display") or status.get("key") or "")
-    return str(status or "")
-
-
-def _issue_status_key(issue: dict[str, Any]) -> str:
-    status = issue.get("status") or {}
-    if isinstance(status, dict):
-        return str(status.get("key") or "")
-    return str(status or "")
-
-
 def _is_relocation_status(status: str) -> bool:
-    low = status.lower()
-    return "перемещ" in low or "moving" in low or "relocation" in low
+    low = (status or "").strip().lower()
+    if not low:
+        return False
+    if low in {"intransit", "moving", "перемещение"}:
+        return True
+    return "перемещ" in low or "relocation" in low
 
 
 def parse_robot_from_summary(summary: str) -> str | None:
@@ -111,92 +269,231 @@ def parse_robot_from_summary(summary: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _issue_queue_display(issue: dict[str, Any]) -> str:
-    queue = issue.get("queue") or {}
+def _status_display(status: Any) -> str:
+    if status is None:
+        return ""
+    if isinstance(status, dict):
+        return str(status.get("display") or status.get("key") or "")
+    display = getattr(status, "display", None)
+    if display:
+        return str(display)
+    key = getattr(status, "key", None)
+    return str(key or status or "")
+
+
+def _status_key(status: Any) -> str:
+    if status is None:
+        return ""
+    if isinstance(status, dict):
+        return str(status.get("key") or "")
+    key = getattr(status, "key", None)
+    if key:
+        return str(key)
+    return str(getattr(status, "display", "") or status or "")
+
+
+def _queue_display(queue: Any) -> str:
+    if queue is None:
+        return ""
     if isinstance(queue, dict):
         return str(queue.get("key") or queue.get("display") or "")
-    return str(queue or "")
+    key = getattr(queue, "key", None)
+    if key:
+        return str(key)
+    return str(getattr(queue, "display", None) or queue or "")
 
 
-def issue_to_dict(issue: dict[str, Any]) -> dict[str, Any]:
-    created = str(issue.get("createdAt") or "")
-    status = _issue_status_display(issue)
+def _resolution_display(resolution: Any) -> str:
+    if resolution is None:
+        return ""
+    if isinstance(resolution, dict):
+        return str(resolution.get("key") or resolution.get("display") or "")
+    for attr in ("key", "display", "name"):
+        val = getattr(resolution, attr, None)
+        if val:
+            return str(val)
+    return str(resolution)
+
+
+def issue_to_dict(issue: Any) -> dict[str, Any]:
+    """Normalize a Tracker issue (REST dict or Startrek object) to our DTO."""
+    if isinstance(issue, dict):
+        created = str(issue.get("createdAt") or "")
+        status = _status_display(issue.get("status"))
+        status_key = _status_key(issue.get("status"))
+        summary = str(issue.get("summary") or "")
+        resolution = _resolution_display(issue.get("resolution"))
+        queue = _queue_display(issue.get("queue"))
+        key = str(issue.get("key") or "")
+    else:
+        created = str(getattr(issue, "createdAt", "") or "")
+        status = _status_display(getattr(issue, "status", None))
+        status_key = _status_key(getattr(issue, "status", None))
+        summary = str(getattr(issue, "summary", "") or "")
+        resolution = _resolution_display(getattr(issue, "resolution", None))
+        queue = _queue_display(getattr(issue, "queue", None))
+        key = str(getattr(issue, "key", "") or "")
+
     hours_created = _hours_since(created)
-    summary = str(issue.get("summary") or "")
     return {
-        "key": str(issue.get("key") or ""),
+        "key": key,
         "summary": summary,
         "status": status,
         "created": created,
         "hours_created": _fmt_hours(hours_created),
         "in_relocation": "1" if _is_relocation_status(status) else "0",
         "robot": parse_robot_from_summary(summary),
-        "status_key": _issue_status_key(issue),
-        "resolution": str(
-            (issue.get("resolution") or {})
-            if isinstance(issue.get("resolution"), dict)
-            else issue.get("resolution") or ""
-        ),
-        "queue": _issue_queue_display(issue),
+        "status_key": status_key,
+        "resolution": resolution,
+        "queue": queue,
     }
 
 
+def _card_status_closed(status: str) -> bool:
+    low = (status or "").strip().lower().replace("ё", "е")
+    if not low:
+        return False
+    markers = (
+        "closed",
+        "закрыт",
+        "resolved",
+        "решен",
+        "cancelled",
+        "canceled",
+        "отменен",
+    )
+    return any(marker in low for marker in markers)
+
+
 def is_issue_open_item(item: dict[str, Any]) -> bool:
-    status = str(item.get("status") or "").lower()
-    if status in {"closed", "закрыт", "resolved", "решен", "решён"}:
+    """Клиентский фильтр: отсекает закрытые/отменённые по status/resolution."""
+    if _card_status_closed(str(item.get("status") or "")):
+        return False
+    if _card_status_closed(str(item.get("status_key") or "")):
         return False
     resolution = str(item.get("resolution") or "").strip().lower()
-    return not resolution or resolution in {"—", "none", "null", "empty"}
-
-
-def _headers(token: str) -> dict[str, str]:
-    return {"Authorization": f"OAuth {token}"}
-
-
-def _search(token: str, query: str) -> list[dict[str, Any]]:
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                TRACKER_SEARCH_URL,
-                headers=_headers(token),
-                json={"query": query},
+    if resolution and resolution not in {"", "—", "none", "null", "empty"}:
+        if any(
+            marker in resolution
+            for marker in (
+                "fixed",
+                "закрыт",
+                "closed",
+                "won't",
+                "wont",
+                "duplicate",
+                "cancel",
+                "отмен",
+                "решен",
+                "решён",
             )
-            response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise TrackerError(str(exc)) from exc
-    payload = response.json()
-    if not isinstance(payload, list):
-        raise TrackerError("unexpected tracker response")
-    items = [issue_to_dict(item) for item in payload if isinstance(item, dict)]
-    return [item for item in items if is_issue_open_item(item)]
+        ):
+            return False
+        return False
+    return True
+
+
+def _map_exc(exc: BaseException) -> TrackerError | BaseException:
+    name = type(exc).__name__
+    if name in {"NotFound", "NotFoundError"}:
+        return exc
+    if isinstance(exc, TrackerError):
+        return exc
+    return TrackerError(str(exc))
+
+
+def _run_tracked(fn, *, max_attempts: int = 2, call_timeout: float = 25.0):
+    try:
+        return call_with_retry(fn, max_attempts=max_attempts, call_timeout=call_timeout)
+    except TrackerError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        mapped = _map_exc(exc)
+        if mapped is exc:
+            raise
+        raise mapped from exc
+
+
+def _parse_count_result(result: Any) -> int | None:
+    if isinstance(result, (int, float)):
+        return int(result)
+    if isinstance(result, dict):
+        for key in ("count", "total", "value"):
+            if key in result:
+                return int(result[key])
+    value = getattr(result, "_value", None)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return None
+
+
+def _search(
+    token: str,
+    query: str,
+    *,
+    filter_open: bool = True,
+    order: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    client = _client(token)
+    kwargs: dict[str, Any] = {"per_page": API_PAGE_SIZE}
+    if order:
+        kwargs["order"] = order
+
+    def _run() -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for issue in client.issues.find(query, **kwargs):
+            item = issue_to_dict(issue)
+            if filter_open and not is_issue_open_item(item):
+                continue
+            items.append(item)
+        return items
+
+    return _run_tracked(_run, call_timeout=30.0)
 
 
 def count_issues(*, token: str, query: str) -> int:
-    headers = {"Authorization": f"OAuth {token}"}
+    """Считает тикеты: сначала count_only, иначе пагинация по API_PAGE_SIZE.
+
+    Без вложенного retry поверх call_with_retry (deadlock слотов).
+    """
+    client = _client(token)
+
+    def _count_only() -> int | None:
+        result = client.issues.find(query, count_only=True)
+        return _parse_count_result(result)
+
     try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                TRACKER_COUNT_URL,
-                headers=headers,
-                json={"query": query},
-            )
-            response.raise_for_status()
-            try:
-                payload = response.json()
-            except ValueError as exc:
-                raise TrackerError("unexpected tracker count response") from exc
-    except httpx.HTTPError as exc:
-        raise TrackerError(str(exc)) from exc
+        counted = _run_tracked(_count_only, max_attempts=2, call_timeout=20.0)
+        if counted is not None:
+            return counted
+    except TrackerError as exc:
+        logger.warning("count_only failed for %r: %s", query, exc)
+        text = str(exc).lower()
+        if "unprocessable" in text or "query" in text:
+            raise
+
+    def _paginate() -> int:
+        total = 0
+        for _ in client.issues.find(query, per_page=API_PAGE_SIZE):
+            total += 1
+        return total
+
+    return _run_tracked(_paginate, max_attempts=1, call_timeout=30.0)
+
+
+def health_check(*, token: str, queue: str = DEFAULT_QUEUE) -> bool:
+    """Лёгкий ping: только count_only, без тяжёлой пагинации."""
+    client = _client(token)
+    query = f"Queue: {_ql_token(queue) or DEFAULT_QUEUE}"
+
+    def _run() -> bool:
+        result = client.issues.find(query, count_only=True)
+        return _parse_count_result(result) is not None
+
     try:
-        if isinstance(payload, (int, float)):
-            return int(payload)
-        if isinstance(payload, dict):
-            for key in ("count", "total", "value"):
-                if key in payload:
-                    return int(payload[key])
-    except (TypeError, ValueError) as exc:
-        raise TrackerError("unexpected tracker count response") from exc
-    raise TrackerError("unexpected tracker count response")
+        return bool(_run_tracked(_run, max_attempts=1, call_timeout=15.0))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def fetch_park_blockers(
@@ -213,143 +510,154 @@ def fetch_park_blockers(
         priority=priority,
         issue_type=issue_type,
     )
-    return _search(token, query)
+    return _search(token, query, filter_open=True)
 
 
-def search_issues(*, token: str, query: str) -> list[dict[str, Any]]:
-    return _search(token, query)
+def search_issues(
+    *,
+    token: str,
+    query: str,
+    filter_open: bool = True,
+    order: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    return _search(token, query, filter_open=filter_open, order=order)
 
 
 def get_issue(*, token: str, key: str) -> dict[str, Any] | None:
+    client = _client(token)
+
+    def _run() -> dict[str, Any] | None:
+        try:
+            issue = client.issues[key]
+        except Exception as exc:  # noqa: BLE001
+            if type(exc).__name__ in {"NotFound", "NotFoundError"}:
+                return None
+            raise
+        item = issue_to_dict(issue)
+        return item if is_issue_open_item(item) else None
+
     try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.get(f"{TRACKER_ISSUE_URL}/{key}", headers=_headers(token))
-            response.raise_for_status()
-            issue = issue_to_dict(response.json())
-            return issue if is_issue_open_item(issue) else None
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
+        return _run_tracked(_run)
+    except Exception as exc:  # noqa: BLE001
+        if type(exc).__name__ in {"NotFound", "NotFoundError"}:
             return None
-        raise TrackerError(str(exc)) from exc
-    except httpx.HTTPError as exc:
-        raise TrackerError(str(exc)) from exc
+        raise
 
 
 def list_comments(*, token: str, key: str) -> list[dict[str, Any]]:
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.get(
-                TRACKER_COMMENTS_URL.format(key=key),
-                headers=_headers(token),
-            )
-            response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise TrackerError(str(exc)) from exc
-    payload = response.json()
-    if not isinstance(payload, list):
-        raise TrackerError("unexpected tracker comments response")
+    client = _client(token)
 
-    out: list[dict[str, Any]] = []
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
-        author = item.get("createdBy") or {}
-        if isinstance(author, dict):
-            author_name = str(author.get("display") or author.get("login") or "")
-        else:
-            author_name = ""
-        out.append(
-            {
-                "id": str(item.get("id") or ""),
-                "text": str(item.get("text") or ""),
-                "author": author_name,
-                "created_at": str(item.get("createdAt") or ""),
-            }
-        )
-    return out
+    def _run() -> list[dict[str, Any]]:
+        issue = client.issues[key]
+        out: list[dict[str, Any]] = []
+        for item in issue.comments.get_all():
+            author = getattr(item, "createdBy", None)
+            if author is None:
+                author_name = ""
+            elif isinstance(author, dict):
+                author_name = str(author.get("display") or author.get("login") or "")
+            else:
+                author_name = str(
+                    getattr(author, "display", None)
+                    or getattr(author, "login", None)
+                    or ""
+                )
+            out.append(
+                {
+                    "id": str(getattr(item, "id", "") or ""),
+                    "text": str(getattr(item, "text", "") or ""),
+                    "author": author_name,
+                    "created_at": str(getattr(item, "createdAt", "") or ""),
+                }
+            )
+        return out
+
+    return _run_tracked(_run)
 
 
 def add_comment(*, token: str, key: str, text: str) -> dict[str, Any]:
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                TRACKER_COMMENTS_URL.format(key=key),
-                headers=_headers(token),
-                json={"text": text},
-            )
-            response.raise_for_status()
-            payload = response.json()
-    except httpx.HTTPError as exc:
-        raise TrackerError(str(exc)) from exc
-    if not isinstance(payload, dict):
-        raise TrackerError("unexpected tracker comment response")
-    return {"id": str(payload.get("id") or ""), "text": str(payload.get("text") or "")}
+    client = _client(token)
 
+    def _run() -> dict[str, Any]:
+        comment = client.issues[key].comments.create(text=text)
+        return {
+            "id": str(getattr(comment, "id", "") or ""),
+            "text": str(getattr(comment, "text", "") or text),
+        }
 
-def _patch_issue(*, token: str, key: str, payload: dict[str, Any]) -> None:
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.patch(
-                f"{TRACKER_ISSUE_URL}/{key}",
-                headers=_headers(token),
-                json=payload,
-            )
-            response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise TrackerError(str(exc)) from exc
+    return _run_tracked(_run)
 
 
 def assign_issue(*, token: str, key: str, assignee: str) -> None:
-    _patch_issue(token=token, key=key, payload={"assignee": assignee})
+    client = _client(token)
+
+    def _run() -> None:
+        client.issues[key].update(assignee=assignee)
+
+    _run_tracked(_run)
 
 
 def unassign_issue(*, token: str, key: str) -> None:
-    _patch_issue(token=token, key=key, payload={"assignee": None})
+    client = _client(token)
+
+    def _run() -> None:
+        client.issues[key].update(assignee=None)
+
+    _run_tracked(_run)
 
 
 def list_transitions(*, token: str, key: str) -> list[dict[str, Any]]:
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.get(
-                TRACKER_TRANSITIONS_URL.format(key=key),
-                headers=_headers(token),
-            )
-            response.raise_for_status()
-            payload = response.json()
-    except httpx.HTTPError as exc:
-        raise TrackerError(str(exc)) from exc
-    if not isinstance(payload, list):
-        raise TrackerError("unexpected tracker transitions response")
+    client = _client(token)
 
-    out: list[dict[str, Any]] = []
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
-        out.append(
-            {
-                "id": str(item.get("id") or item.get("key") or ""),
-                "display": str(item.get("display") or item.get("name") or ""),
-            }
-        )
-    return out
+    def _run() -> list[dict[str, Any]]:
+        issue = client.issues[key]
+        transitions = issue.transitions
+        if hasattr(transitions, "get_all"):
+            raw_items = list(transitions.get_all())
+        else:
+            try:
+                raw_items = list(transitions)
+            except TypeError:
+                raw_items = []
+        out: list[dict[str, Any]] = []
+        for item in raw_items:
+            if isinstance(item, dict):
+                out.append(
+                    {
+                        "id": str(item.get("id") or item.get("key") or ""),
+                        "display": str(item.get("display") or item.get("name") or ""),
+                    }
+                )
+                continue
+            out.append(
+                {
+                    "id": str(
+                        getattr(item, "id", None) or getattr(item, "key", None) or ""
+                    ),
+                    "display": str(
+                        getattr(item, "display", None)
+                        or getattr(item, "name", None)
+                        or ""
+                    ),
+                }
+            )
+        return out
+
+    return _run_tracked(_run)
 
 
 def transition_issue(
     *, token: str, key: str, transition: str, resolution: str | None = None
 ) -> None:
-    payload: dict[str, Any] = {"transition": transition}
-    if resolution:
-        payload["resolution"] = resolution
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                TRACKER_TRANSITIONS_URL.format(key=key),
-                headers=_headers(token),
-                json=payload,
-            )
-            response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise TrackerError(str(exc)) from exc
+    client = _client(token)
+
+    def _run() -> None:
+        kwargs: dict[str, Any] = {}
+        if resolution:
+            kwargs["resolution"] = resolution
+        client.issues[key].transitions[transition].execute(**kwargs)
+
+    _run_tracked(_run)
 
 
 def _robot_search_variants(robot_number: str) -> list[str]:
@@ -402,12 +710,13 @@ def search_robot_tickets(*, token: str, queue: str, query: str) -> list[dict[str
     results: list[dict[str, Any]] = []
     for variant in _robot_search_variants(query):
         search_query = _join_query(
-            f"Queue: {queue}",
-            "Priority: blocker",
-            "Resolution: empty()",
+            _queue_clause(queue),
+            type_clause(queue),
+            _priority_clause("blocker"),
+            open_issues_clause(),
             f"Summary: {_ql_quote(variant)}",
         )
-        for item in _search(token, search_query):
+        for item in _search(token, search_query, filter_open=True):
             if not _summary_matches_robot(item["summary"], query):
                 continue
             if item["key"] in seen:
