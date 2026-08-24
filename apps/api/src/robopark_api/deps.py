@@ -105,3 +105,27 @@ def require_operator_park(park_id: int, db: Session, user: User) -> Park:
     if assigned is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return park
+
+
+def require_dashboard_park(park_id: int, db: Session, user: User) -> Park:
+    park = db.get(Park, park_id)
+    if park is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    if user.role in (UserRole.royal.value, UserRole.admin.value):
+        return park
+
+    if user.role == UserRole.operator.value:
+        if user.access_status != AccessStatus.approved.value:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+        return require_operator_park(park_id, db, user)
+
+    if user.role == UserRole.mechanic.value:
+        if user.access_status != AccessStatus.approved.value:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+        mechanic_park = get_mechanic_park(db, user)
+        if mechanic_park is None or mechanic_park.id != park_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+        return park
+
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)

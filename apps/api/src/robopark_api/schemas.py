@@ -312,3 +312,28 @@ class TrackerPolicySettingsIn(BaseModel):
     operator_show_firmware_profile: bool | None = None
     mechanic_can_write: bool | None = None
 
+
+class DashboardMovingItemOut(BaseModel):
+    key: str
+    summary: str
+
+
+class DashboardSummaryOut(BaseModel):
+    park_id: int
+    arrived: int
+    done: int
+    queued: int
+    in_transit: int
+    moving: list[DashboardMovingItemOut]
+
+
+class DashboardHistoryPointOut(BaseModel):
+    bucket_start: datetime
+    arrived_count: int
+    departed_count: int
+
+
+class DashboardHistoryOut(BaseModel):
+    park_id: int
+    points: list[DashboardHistoryPointOut]
+
