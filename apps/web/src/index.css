@@ -384,6 +384,23 @@ textarea {
   background: var(--surface-muted);
 }
 
+.report-list-body {
+  display: grid;
+  gap: 0.65rem;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+
+.reports-forms {
+  display: grid;
+  gap: 1rem;
+}
+
+.reports-forms form.panel {
+  margin: 0;
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
