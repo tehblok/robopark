@@ -1,6 +1,8 @@
-from robopark_api.models import AccessStatus, User, UserPark
+from conftest import login_as
+
+from robopark_api.models import AccessStatus, Report, User, UserPark, UserRole
 from robopark_api.security import hash_password
-from robopark_api.services import platform_settings
+from robopark_api.services import platform_settings, reports as reports_svc
 
 
 def _seed_operator(db_session, park):
@@ -41,3 +43,51 @@ def test_tracker_action_comment(client, db_session, seed_park_with_tracker, monk
     response = client.post("/tracker/issues/ROBOPARK-1/comment", json={"text": "hello"})
     assert response.status_code == 200
     assert response.json()["action"] == "comment"
+
+
+def _mock_close_tracker(monkeypatch, *, key: str = "ROBOPARK-1"):
+    from robopark_api.services import tracker_client
+
+    issue = {
+        "key": key,
+        "summary": "blocker [447]",
+        "status": "Open",
+        "status_key": "open",
+        "queue": "ROBOPARK",
+        "resolution": "",
+    }
+    monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: issue)
+    monkeypatch.setattr(
+        tracker_client,
+        "list_transitions",
+        lambda **_kwargs: [{"id": "close", "display": "Закрыть"}],
+    )
+    monkeypatch.setattr(
+        tracker_client,
+        "transition_issue",
+        lambda **_kwargs: {"status": "closed"},
+    )
+    return issue
+
+
+def test_mechanic_close_creates_close_review(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    _mock_close_tracker(monkeypatch)
+
+    login_as(client, "mech1", "secret")
+    response = client.post("/tracker/issues/ROBOPARK-1/close")
+
+    assert response.status_code == 200
+    assert response.json()["action"] == "close"
+
+    report = db_session.query(Report).one()
+    assert report.kind == reports_svc.KIND_TICKET_CLOSE_REVIEW
+    assert report.status == reports_svc.STATUS_OPEN
+    assert report.park_id == seed_park_with_tracker.id
+    assert report.author_user_id == seed_mechanic.id
+    assert report.target_role == UserRole.operator.value
+    assert report.tracker_key == "ROBOPARK-1"
+    assert report.tracker_url == "https://tracker.yandex.ru/ROBOPARK-1"
+    assert report.title == "Закрытие ROBOPARK-1"

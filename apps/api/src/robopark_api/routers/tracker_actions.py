@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
-from robopark_api.deps import require_user
+from robopark_api.deps import get_mechanic_park, require_user
 from robopark_api.models import AccessStatus, User, UserRole
 from robopark_api.schemas import (
     TrackerActionOut,
@@ -15,6 +15,7 @@ from robopark_api.schemas import (
     TrackerTransitionIn,
 )
 from robopark_api.services import platform_settings as settings_svc
+from robopark_api.services import reports as reports_svc
 from robopark_api.services import tracker_client
 from robopark_api.services.tracker_policy import ensure_action_allowed
 
@@ -159,4 +160,23 @@ def close_issue(
         tracker_client.transition_issue(token=token, key=key, transition=close_transition["id"])
     except tracker_client.TrackerError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="tracker_upstream_error") from exc
+
+    if user.role == UserRole.mechanic.value:
+        park = get_mechanic_park(db, user)
+        if park is not None:
+            try:
+                reports_svc.get_or_create_close_review(
+                    db,
+                    author=user,
+                    park_id=park.id,
+                    tracker_key=key,
+                    tracker_url=tracker_client.build_issue_url(key),
+                    title=f"Закрытие {key}",
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="tracker_closed_report_failed",
+                ) from exc
+
     return _ok(key, "close", user, issue)
