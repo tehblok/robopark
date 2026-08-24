@@ -11,6 +11,7 @@ from robopark_api.services import tracker_metrics
 from robopark_api.services.tracker_client import TrackerError
 from robopark_api.services.blocker_history import (
     align_bucket_start,
+    closed_bucket_window,
     delete_old_buckets,
     history_series,
     scan_all_parks_once,
@@ -126,6 +127,20 @@ def test_align_bucket_start_even_hour_grid():
     )
 
 
+def test_closed_bucket_window_scans_previous_closed_bucket():
+    now = datetime(2026, 8, 24, 14, 30, tzinfo=timezone.utc)
+    start, end = closed_bucket_window(now)
+    assert start == datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    assert end == datetime(2026, 8, 24, 14, 0, tzinfo=timezone.utc)
+
+
+def test_closed_bucket_window_at_exact_boundary():
+    now = datetime(2026, 8, 24, 14, 0, tzinfo=timezone.utc)
+    start, end = closed_bucket_window(now)
+    assert start == datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    assert end == datetime(2026, 8, 24, 14, 0, tzinfo=timezone.utc)
+
+
 def test_build_arrived_in_window_query_uses_park_filters():
     start = datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc)
     end = start + timedelta(hours=2)
@@ -203,10 +218,12 @@ def test_scan_all_parks_once_skips_inactive_and_unconfigured(
     db_session.add_all([inactive, missing_queue])
     db_session.commit()
 
-    calls: list[int] = []
+    bucket_calls: list[tuple[datetime, datetime]] = []
+    park_calls: list[int] = []
 
     def fake_scan(db, park, bucket_start, bucket_end, *, token):
-        calls.append(park.id)
+        bucket_calls.append((bucket_start, bucket_end))
+        park_calls.append(park.id)
         return 1, 0
 
     monkeypatch.setattr(history_svc, "scan_park_bucket", fake_scan)
@@ -215,7 +232,13 @@ def test_scan_all_parks_once_skips_inactive_and_unconfigured(
     scanned = scan_all_parks_once(db_session, now=now)
 
     assert scanned == 1
-    assert calls == [seed_park_with_tracker.id]
+    assert bucket_calls == [
+        (
+            datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
+            datetime(2026, 8, 24, 14, 0, tzinfo=timezone.utc),
+        )
+    ]
+    assert park_calls == [seed_park_with_tracker.id]
 
 
 def test_scan_all_parks_once_continues_on_tracker_error(
@@ -261,6 +284,48 @@ def test_scan_all_parks_once_without_token_returns_zero(db_session, monkeypatch)
     monkeypatch.setattr(history_svc, "scan_park_bucket", lambda *a, **k: calls.append(1))
     assert scan_all_parks_once(db_session) == 0
     assert calls == []
+
+
+def test_scan_all_parks_once_runs_retention_after_success(
+    db_session, seed_park_with_tracker, monkeypatch
+):
+    settings_svc.set_setting(db_session, settings_svc.TRACKER_TOKEN_KEY, "token")
+    retention_calls: list[int] = []
+
+    monkeypatch.setattr(
+        history_svc,
+        "scan_park_bucket",
+        lambda *a, **k: (1, 0),
+    )
+    monkeypatch.setattr(
+        history_svc,
+        "delete_old_buckets",
+        lambda db, **kwargs: retention_calls.append(kwargs.get("retention_days", 30)),
+    )
+
+    scanned = scan_all_parks_once(
+        db_session,
+        now=datetime(2026, 8, 24, 14, 30, tzinfo=timezone.utc),
+    )
+
+    assert scanned == 1
+    assert retention_calls == [30]
+
+
+def test_scan_all_parks_once_skips_retention_when_nothing_scanned(
+    db_session, seed_park, monkeypatch
+):
+    settings_svc.set_setting(db_session, settings_svc.TRACKER_TOKEN_KEY, "token")
+    retention_calls: list[int] = []
+
+    monkeypatch.setattr(
+        history_svc,
+        "delete_old_buckets",
+        lambda db, **kwargs: retention_calls.append(1) or 0,
+    )
+
+    assert scan_all_parks_once(db_session) == 0
+    assert retention_calls == []
 
 
 def test_run_blocker_history_loop_runs_once_with_zero_interval(monkeypatch):

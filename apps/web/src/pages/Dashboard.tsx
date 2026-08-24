@@ -178,44 +178,66 @@ export function Dashboard() {
   const { parkId, parksLoading } = useParkContext()
   const [summary, setSummary] = useState<DashboardSummary | null>(null)
   const [history, setHistory] = useState<DashboardHistory | null>(null)
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [summaryError, setSummaryError] = useState('')
+  const [historyError, setHistoryError] = useState('')
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [historyLoading, setHistoryLoading] = useState(false)
   const requestIdRef = useRef(0)
 
   const load = useCallback(async () => {
     if (parkId == null) return
 
     const requestId = ++requestIdRef.current
-    setLoading(true)
-    setError('')
-    try {
-      const [summaryData, historyData] = await Promise.all([
-        api.dashboardSummary(parkId),
-        api.dashboardHistory(parkId, 7),
-      ])
-      if (requestId !== requestIdRef.current) return
-      setSummary(summaryData)
-      setHistory(historyData)
-    } catch (loadError) {
-      if (requestId !== requestIdRef.current) return
-      setSummary(null)
-      setHistory(null)
-      setError(mapApiError(loadError, ru.errors.load))
-    } finally {
-      if (requestId !== requestIdRef.current) return
-      setLoading(false)
-    }
+    setSummaryLoading(true)
+    setHistoryLoading(true)
+    setSummaryError('')
+    setHistoryError('')
+
+    const summaryPromise = api.dashboardSummary(parkId)
+      .then((summaryData) => {
+        if (requestId !== requestIdRef.current) return
+        setSummary(summaryData)
+      })
+      .catch((loadError) => {
+        if (requestId !== requestIdRef.current) return
+        setSummary(null)
+        setSummaryError(mapApiError(loadError, ru.errors.load))
+      })
+      .finally(() => {
+        if (requestId !== requestIdRef.current) return
+        setSummaryLoading(false)
+      })
+
+    const historyPromise = api.dashboardHistory(parkId, 7)
+      .then((historyData) => {
+        if (requestId !== requestIdRef.current) return
+        setHistory(historyData)
+      })
+      .catch((loadError) => {
+        if (requestId !== requestIdRef.current) return
+        setHistory(null)
+        setHistoryError(mapApiError(loadError, ru.errors.load))
+      })
+      .finally(() => {
+        if (requestId !== requestIdRef.current) return
+        setHistoryLoading(false)
+      })
+
+    await Promise.allSettled([summaryPromise, historyPromise])
   }, [parkId])
 
   useEffect(() => {
     if (parksLoading || parkId == null) {
       setSummary(null)
       setHistory(null)
-      setError('')
+      setSummaryError('')
+      setHistoryError('')
       return
     }
     void load()
   }, [load, parkId, parksLoading])
+
+  const loading = summaryLoading || historyLoading
 
   return (
     <div className="dashboard-page">
@@ -230,8 +252,6 @@ export function Dashboard() {
         </button>
       </div>
 
-      {error && <Alert tone="error">{error}</Alert>}
-
       {parkId == null && !parksLoading && (
         <Panel title={ru.nav.dashboard}>
           <EmptyState>Выберите парк в верхней панели, чтобы загрузить дашборд.</EmptyState>
@@ -245,9 +265,10 @@ export function Dashboard() {
               hint="Сумма по 2-часовым снимкам за последние 7 дней (Europe/Moscow)."
               title="Пришли и ушли за 7 дней"
             >
-              {loading && <EmptyState>{ru.loading}</EmptyState>}
-              {!loading && history && <BlockerHistoryChart points={history.points} />}
-              {!loading && !history && !error && (
+              {historyError && <Alert tone="error">{historyError}</Alert>}
+              {historyLoading && <EmptyState>{ru.loading}</EmptyState>}
+              {!historyLoading && history && <BlockerHistoryChart points={history.points} />}
+              {!historyLoading && !history && !historyError && (
                 <EmptyState>Нажмите «Обновить», чтобы загрузить историю.</EmptyState>
               )}
             </Panel>
@@ -255,8 +276,9 @@ export function Dashboard() {
 
           <div className="dashboard-panel-kpi">
             <Panel title="Сегодня">
-              {loading && <EmptyState>{ru.loading}</EmptyState>}
-              {!loading && summary && (
+              {summaryError && <Alert tone="error">{summaryError}</Alert>}
+              {summaryLoading && <EmptyState>{ru.loading}</EmptyState>}
+              {!summaryLoading && summary && (
                 <div className="dashboard-kpi-grid">
                   <div className="dashboard-kpi">
                     <span className="dashboard-kpi-label">Пришли</span>
@@ -272,7 +294,7 @@ export function Dashboard() {
                   </div>
                 </div>
               )}
-              {!loading && !summary && !error && (
+              {!summaryLoading && !summary && !summaryError && (
                 <EmptyState>Нажмите «Обновить», чтобы загрузить показатели.</EmptyState>
               )}
             </Panel>
@@ -280,8 +302,9 @@ export function Dashboard() {
 
           <div className="dashboard-panel-moving">
             <Panel title="Перемещение">
-              {loading && <EmptyState>{ru.loading}</EmptyState>}
-              {!loading && summary && summary.moving.length > 0 && (
+              {summaryError && <Alert tone="error">{summaryError}</Alert>}
+              {summaryLoading && <EmptyState>{ru.loading}</EmptyState>}
+              {!summaryLoading && summary && summary.moving.length > 0 && (
                 <ul className="card-list">
                   {summary.moving.map((item) => (
                     <li className="card" key={item.key}>
@@ -291,10 +314,10 @@ export function Dashboard() {
                   ))}
                 </ul>
               )}
-              {!loading && summary && summary.moving.length === 0 && !error && (
+              {!summaryLoading && summary && summary.moving.length === 0 && !summaryError && (
                 <EmptyState>Нет blocker-ов в статусе «Перемещение».</EmptyState>
               )}
-              {!loading && !summary && !error && (
+              {!summaryLoading && !summary && !summaryError && (
                 <EmptyState>Нажмите «Обновить», чтобы загрузить список.</EmptyState>
               )}
             </Panel>

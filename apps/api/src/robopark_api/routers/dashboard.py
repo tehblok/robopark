@@ -20,16 +20,26 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 MOVING_LIST_LIMIT = 20
 
 
+def _park_tracker_filters(park) -> tuple[str, str | None]:
+    priority = (park.tracker_priority or "blocker").strip() or "blocker"
+    issue_type = (park.tracker_type or "").strip() or None
+    return priority, issue_type
+
+
 def _fetch_moving_items(
     *,
     token: str,
     queue: str,
     park_tag: str,
+    priority: str = "blocker",
+    issue_type: str | None = None,
 ) -> list[DashboardMovingItemOut]:
     issues = tracker_client.fetch_park_blockers(
         token=token,
         queue=queue,
         park_tag=park_tag,
+        priority=priority,
+        issue_type=issue_type,
     )
     sorted_issues = tracker_filters.sort_issues_oldest_first(issues)
     moving = tracker_filters.filter_issues_by_status(sorted_issues, "moving")
@@ -66,12 +76,21 @@ def dashboard_summary(
         )
 
     try:
+        priority, issue_type = _park_tracker_filters(park)
         metrics = tracker_metrics.collect_park_metrics(
             token=token,
             queue=queue,
             tag=park.tag,
+            priority=priority,
+            issue_type=issue_type,
         )
-        moving = _fetch_moving_items(token=token, queue=queue, park_tag=park.tag)
+        moving = _fetch_moving_items(
+            token=token,
+            queue=queue,
+            park_tag=park.tag,
+            priority=priority,
+            issue_type=issue_type,
+        )
     except tracker_client.TrackerError as exc:
         raise HTTPException(
             status_code=http_status.HTTP_502_BAD_GATEWAY,

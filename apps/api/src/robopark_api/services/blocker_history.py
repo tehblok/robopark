@@ -34,6 +34,13 @@ def align_bucket_start(now: datetime) -> datetime:
     return aligned - timedelta(hours=now_utc.hour % 2)
 
 
+def closed_bucket_window(now: datetime) -> tuple[datetime, datetime]:
+    """Return ``[start, end)`` for the most recently closed 2h bucket at *now*."""
+    bucket_end = align_bucket_start(now)
+    bucket_start = bucket_end - timedelta(seconds=BUCKET_SECONDS)
+    return bucket_start, bucket_end
+
+
 def _park_scan_config(park: Park) -> tuple[str, str, str, str | None] | None:
     if not park.is_active:
         return None
@@ -93,8 +100,7 @@ def scan_all_parks_once(db: Session, *, now: datetime | None = None) -> int:
         return 0
 
     now_utc = _as_utc(now or datetime.now(timezone.utc))
-    bucket_start = align_bucket_start(now_utc)
-    bucket_end = bucket_start + timedelta(seconds=BUCKET_SECONDS)
+    bucket_start, bucket_end = closed_bucket_window(now_utc)
 
     parks = db.scalars(select(Park)).all()
     scanned = 0
@@ -118,6 +124,8 @@ def scan_all_parks_once(db: Session, *, now: datetime | None = None) -> int:
             )
             continue
         scanned += 1
+    if scanned > 0:
+        delete_old_buckets(db, retention_days=30)
     return scanned
 
 

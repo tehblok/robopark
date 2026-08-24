@@ -63,13 +63,22 @@ def _status_or_clause(statuses: list[str]) -> str:
     return "(" + " OR ".join(parts) + ")"
 
 
-def build_backlog_query(queue: str, tag: str, donor_tag: str = "") -> str:
+def build_backlog_query(
+    queue: str,
+    tag: str,
+    donor_tag: str = "",
+    *,
+    priority: str = "blocker",
+    issue_type: str | None = None,
+) -> str:
     parts = [
         f"Queue: {queue}",
-        "Priority: blocker",
+        f"Priority: {priority}",
         "Resolution: empty()",
         f"Tags: {ql_quote(tag)}",
     ]
+    if issue_type:
+        parts.append(f"Type: {issue_type}")
     donor = (donor_tag or "").strip()
     if donor:
         parts.append(f"Tags: !{ql_quote(donor)}")
@@ -103,17 +112,29 @@ def _park_scoped_parts(
     return parts
 
 
-def build_arrived_today_query(queue: str, tag: str) -> str:
+def build_arrived_today_query(
+    queue: str,
+    tag: str,
+    *,
+    priority: str = "blocker",
+    issue_type: str | None = None,
+) -> str:
     return join_query(
-        *_park_scoped_parts(queue, tag),
+        *_park_scoped_parts(queue, tag, priority=priority, issue_type=issue_type),
         "Resolution: empty(), fixed",
         "Created: today()",
     )
 
 
-def build_done_today_query(queue: str, tag: str) -> str:
+def build_done_today_query(
+    queue: str,
+    tag: str,
+    *,
+    priority: str = "blocker",
+    issue_type: str | None = None,
+) -> str:
     return join_query(
-        *_park_scoped_parts(queue, tag),
+        *_park_scoped_parts(queue, tag, priority=priority, issue_type=issue_type),
         "Resolution: fixed",
         "Updated: today()",
     )
@@ -167,30 +188,56 @@ def build_departed_in_window_query(
     )
 
 
-def build_status_query(queue: str, tag: str, statuses: list[str]) -> str | None:
+def build_status_query(
+    queue: str,
+    tag: str,
+    statuses: list[str],
+    *,
+    priority: str = "blocker",
+    issue_type: str | None = None,
+) -> str | None:
     status_part = _status_or_clause(statuses)
     if not status_part:
         return None
-    return join_query(
+    parts = [
         f"Queue: {queue}",
-        "Priority: blocker",
+        f"Priority: {priority}",
         "Resolution: empty()",
         f"Tags: {ql_quote(tag)}",
-        status_part,
-    )
+    ]
+    if issue_type:
+        parts.append(f"Type: {issue_type}")
+    parts.append(status_part)
+    return join_query(*parts)
 
 
-def collect_park_metrics(*, token: str, queue: str, tag: str) -> dict[str, int]:
+def collect_park_metrics(
+    *,
+    token: str,
+    queue: str,
+    tag: str,
+    priority: str = "blocker",
+    issue_type: str | None = None,
+) -> dict[str, int]:
     keys = DEFAULT_STATUS_KEYS
+    scoped = {"priority": priority, "issue_type": issue_type}
     query_map: list[tuple[str, str | None]] = [
-        ("open_blockers", build_open_blockers_query(queue, tag)),
-        ("backlog", build_backlog_query(queue, tag, "")),
-        ("in_transit", build_status_query(queue, tag, keys["in_transit"])),
-        ("queued", build_status_query(queue, tag, keys["queued"])),
-        ("waiting_team", build_status_query(queue, tag, keys["waiting_team"])),
-        ("waiting_parts", build_status_query(queue, tag, keys["waiting_parts"])),
-        ("arrived", build_arrived_today_query(queue, tag)),
-        ("done", build_done_today_query(queue, tag)),
+        (
+            "open_blockers",
+            build_open_blockers_query(
+                queue,
+                tag,
+                priority=priority,
+                issue_type=issue_type,
+            ),
+        ),
+        ("backlog", build_backlog_query(queue, tag, "", **scoped)),
+        ("in_transit", build_status_query(queue, tag, keys["in_transit"], **scoped)),
+        ("queued", build_status_query(queue, tag, keys["queued"], **scoped)),
+        ("waiting_team", build_status_query(queue, tag, keys["waiting_team"], **scoped)),
+        ("waiting_parts", build_status_query(queue, tag, keys["waiting_parts"], **scoped)),
+        ("arrived", build_arrived_today_query(queue, tag, **scoped)),
+        ("done", build_done_today_query(queue, tag, **scoped)),
     ]
     metrics: dict[str, int] = {}
     for key, query in query_map:

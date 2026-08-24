@@ -48,13 +48,22 @@ def _open_issues_clause() -> str:
     )
 
 
-def build_open_blockers_query(queue: str, tag: str) -> str:
-    return _join_query(
+def build_open_blockers_query(
+    queue: str,
+    tag: str,
+    *,
+    priority: str = "blocker",
+    issue_type: str | None = None,
+) -> str:
+    parts = [
         f"Queue: {queue}",
-        "Priority: blocker",
+        f"Priority: {priority}",
         _open_issues_clause(),
         f"Tags: {_ql_quote(tag)}",
-    )
+    ]
+    if issue_type:
+        parts.append(f"Type: {issue_type}")
+    return _join_query(*parts)
 
 
 def _hours_since(created: str) -> float | None:
@@ -190,8 +199,20 @@ def count_issues(*, token: str, query: str) -> int:
     raise TrackerError("unexpected tracker count response")
 
 
-def fetch_park_blockers(*, token: str, queue: str, park_tag: str) -> list[dict[str, Any]]:
-    query = build_open_blockers_query(queue, park_tag)
+def fetch_park_blockers(
+    *,
+    token: str,
+    queue: str,
+    park_tag: str,
+    priority: str = "blocker",
+    issue_type: str | None = None,
+) -> list[dict[str, Any]]:
+    query = build_open_blockers_query(
+        queue,
+        park_tag,
+        priority=priority,
+        issue_type=issue_type,
+    )
     return _search(token, query)
 
 
