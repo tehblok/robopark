@@ -19,6 +19,8 @@ export const ru = {
     themeDark: 'Тёмная тема',
     admin: 'Администрирование',
     brand: 'Робопарк Сервис',
+    more: 'Ещё',
+    close: 'Закрыть',
   },
 
   loading: 'Загрузка…',
