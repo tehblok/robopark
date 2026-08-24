@@ -29,12 +29,29 @@ def test_emergency_section_tables_exist(db_session):
     assert db_session.scalar(select(EmergencyField).limit(1)) is not None
 
 
-def test_seed_service_raw_has_no_mechanic_role(db_session):
+def _seeded_roles(db_session, section_id: str) -> set[str]:
+    return set(
+        db_session.scalars(
+            select(EmergencySectionRole.role).where(
+                EmergencySectionRole.section_id == section_id
+            )
+        ).all()
+    )
+
+
+def test_seed_section_role_defaults(db_session):
     seed_emergency_config(db_session, DEFAULT_JSON_PATH)
-    roles = db_session.scalars(
-        select(EmergencySectionRole.role).where(
-            EmergencySectionRole.section_id == "service_raw"
-        )
-    ).all()
-    assert "mechanic" not in roles
-    assert set(roles) == {"admin", "royal"}
+
+    assert _seeded_roles(db_session, "service_raw") == {"admin", "royal"}
+    assert _seeded_roles(db_session, "position_route") == {
+        "operator",
+        "admin",
+        "royal",
+    }
+    assert _seeded_roles(db_session, "metadata") == {"operator", "admin", "royal"}
+    assert _seeded_roles(db_session, "status") == {
+        "mechanic",
+        "operator",
+        "admin",
+        "royal",
+    }
