@@ -1,7 +1,85 @@
 import pytest
 
-from robopark_api.models import Report, UserRole
+from robopark_api.models import AccessStatus, Park, Report, User, UserPark, UserRole
+from robopark_api.security import hash_password
 from robopark_api.services import reports as reports_svc
+
+
+@pytest.fixture
+def seed_operator_with_park(db_session, seed_park_with_tracker):
+    user = User(
+        username="operator1",
+        password_hash=hash_password("secret"),
+        role=UserRole.operator.value,
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.flush()
+    db_session.add(UserPark(user_id=user.id, park_id=seed_park_with_tracker.id))
+    db_session.commit()
+    db_session.refresh(user)
+    return user
+
+
+@pytest.fixture
+def seed_admin(db_session):
+    user = User(
+        username="admin1",
+        password_hash=hash_password("secret"),
+        role=UserRole.admin.value,
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+    return user
+
+
+@pytest.fixture
+def seed_other_park(db_session):
+    park = Park(
+        name="Beta",
+        tag="Beta",
+        is_active=True,
+        tracker_queue="ROBOPARK",
+        feature_blockers=True,
+    )
+    db_session.add(park)
+    db_session.commit()
+    db_session.refresh(park)
+    return park
+
+
+@pytest.fixture
+def seed_operator_other_park(db_session, seed_other_park):
+    user = User(
+        username="operator2",
+        password_hash=hash_password("secret"),
+        role=UserRole.operator.value,
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.flush()
+    db_session.add(UserPark(user_id=user.id, park_id=seed_other_park.id))
+    db_session.commit()
+    db_session.refresh(user)
+    return user
+
+
+def _create_open_report(db_session, *, author, park_id, title="Test report"):
+    return reports_svc.create_manual_report(
+        db_session,
+        author=author,
+        park_id=park_id,
+        kind=reports_svc.KIND_TICKET_QUESTION,
+        title=title,
+        body="Body",
+        tracker_key="ROBO-1",
+        tracker_url="https://tracker.yandex.ru/ROBO-1",
+    )
 
 
 def test_create_manual_ticket_question_success(db_session, seed_mechanic, seed_park_with_tracker):
@@ -158,3 +236,285 @@ def test_get_or_create_close_review_allows_new_after_done(
     assert second.id != first.id
     assert second.status == reports_svc.STATUS_OPEN
     assert db_session.query(Report).count() == 2
+
+
+def test_list_inbox_operator_sees_open_reports_in_assigned_park(
+    db_session, seed_mechanic, seed_operator_with_park, seed_park_with_tracker
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+
+    inbox = reports_svc.list_inbox(db_session, seed_operator_with_park)
+
+    assert [r.id for r in inbox] == [report.id]
+
+
+def test_list_inbox_operator_excludes_other_parks(
+    db_session,
+    seed_mechanic,
+    seed_operator_with_park,
+    seed_operator_other_park,
+    seed_park_with_tracker,
+    seed_other_park,
+):
+    _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+    other_report = _create_open_report(
+        db_session,
+        author=seed_mechanic,
+        park_id=seed_other_park.id,
+        title="Other park",
+    )
+
+    inbox = reports_svc.list_inbox(db_session, seed_operator_other_park)
+
+    assert [r.id for r in inbox] == [other_report.id]
+
+
+def test_list_inbox_operator_filters_by_park_id(
+    db_session, seed_mechanic, seed_operator_with_park, seed_park_with_tracker
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+
+    inbox = reports_svc.list_inbox(
+        db_session, seed_operator_with_park, park_id=seed_park_with_tracker.id
+    )
+
+    assert [r.id for r in inbox] == [report.id]
+
+
+def test_list_inbox_operator_park_filter_cross_park_forbidden(
+    db_session, seed_mechanic, seed_operator_with_park, seed_other_park
+):
+    _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_other_park.id, title="Other"
+    )
+
+    with pytest.raises(PermissionError):
+        reports_svc.list_inbox(
+            db_session, seed_operator_with_park, park_id=seed_other_park.id
+        )
+
+
+def test_list_inbox_admin_sees_open_escalations(
+    db_session, seed_mechanic, seed_operator_with_park, seed_admin, seed_park_with_tracker
+):
+    parent = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+    escalation = reports_svc.escalate_report(
+        db_session, seed_operator_with_park, parent.id, "Need admin help"
+    )
+
+    inbox = reports_svc.list_inbox(db_session, seed_admin)
+
+    assert [r.id for r in inbox] == [escalation.id]
+    assert escalation.kind == reports_svc.KIND_ESCALATION
+    assert escalation.target_role == UserRole.admin.value
+
+
+def test_list_inbox_excludes_non_open(
+    db_session, seed_mechanic, seed_operator_with_park, seed_park_with_tracker
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+    reports_svc.done_report(db_session, seed_operator_with_park, report.id)
+
+    inbox = reports_svc.list_inbox(db_session, seed_operator_with_park)
+
+    assert inbox == []
+
+
+def test_list_mine_returns_author_reports(
+    db_session, seed_mechanic, seed_park_with_tracker
+):
+    first = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id, title="One"
+    )
+    second = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id, title="Two"
+    )
+
+    mine = reports_svc.list_mine(db_session, seed_mechanic)
+
+    assert [r.id for r in mine] == [second.id, first.id]
+
+
+def test_get_report_author_can_view(
+    db_session, seed_mechanic, seed_park_with_tracker
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+
+    fetched = reports_svc.get_report(db_session, seed_mechanic, report.id)
+
+    assert fetched.id == report.id
+
+
+def test_get_report_operator_in_park_can_view(
+    db_session, seed_mechanic, seed_operator_with_park, seed_park_with_tracker
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+
+    fetched = reports_svc.get_report(db_session, seed_operator_with_park, report.id)
+
+    assert fetched.id == report.id
+
+
+def test_get_report_cross_park_forbidden(
+    db_session,
+    seed_mechanic,
+    seed_operator_with_park,
+    seed_other_park,
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_other_park.id, title="Other"
+    )
+
+    with pytest.raises(PermissionError):
+        reports_svc.get_report(db_session, seed_operator_with_park, report.id)
+
+
+def test_get_report_not_found(db_session, seed_mechanic):
+    with pytest.raises(LookupError):
+        reports_svc.get_report(db_session, seed_mechanic, 99999)
+
+
+def test_return_report_success(
+    db_session, seed_mechanic, seed_operator_with_park, seed_park_with_tracker
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+
+    updated = reports_svc.return_report(
+        db_session, seed_operator_with_park, report.id, "Please fix tracker link"
+    )
+
+    assert updated.status == reports_svc.STATUS_RETURNED
+    assert updated.return_comment == "Please fix tracker link"
+
+
+def test_return_report_requires_comment(
+    db_session, seed_mechanic, seed_operator_with_park, seed_park_with_tracker
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+
+    with pytest.raises(ValueError, match="comment"):
+        reports_svc.return_report(db_session, seed_operator_with_park, report.id, "  ")
+
+
+def test_return_report_mechanic_forbidden(
+    db_session, seed_mechanic, seed_operator_with_park, seed_park_with_tracker
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+
+    with pytest.raises(PermissionError):
+        reports_svc.return_report(db_session, seed_mechanic, report.id, "Nope")
+
+
+def test_done_report_success(
+    db_session, seed_mechanic, seed_operator_with_park, seed_park_with_tracker
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+
+    updated = reports_svc.done_report(db_session, seed_operator_with_park, report.id)
+
+    assert updated.status == reports_svc.STATUS_DONE
+    assert updated.resolved_at is not None
+
+
+def test_escalate_report_creates_child_parent_stays_open(
+    db_session, seed_mechanic, seed_operator_with_park, seed_park_with_tracker
+):
+    parent = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+
+    child = reports_svc.escalate_report(
+        db_session, seed_operator_with_park, parent.id, "Escalating to admin"
+    )
+
+    db_session.refresh(parent)
+    assert parent.status == reports_svc.STATUS_OPEN
+    assert child.id != parent.id
+    assert child.kind == reports_svc.KIND_ESCALATION
+    assert child.status == reports_svc.STATUS_OPEN
+    assert child.target_role == UserRole.admin.value
+    assert child.parent_report_id == parent.id
+    assert child.author_user_id == seed_operator_with_park.id
+    assert child.body == "Escalating to admin"
+    assert child.park_id == parent.park_id
+    assert child.tracker_key == parent.tracker_key
+
+
+def test_escalate_report_admin_forbidden(
+    db_session, seed_mechanic, seed_admin, seed_operator_with_park, seed_park_with_tracker
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+
+    with pytest.raises(PermissionError):
+        reports_svc.escalate_report(db_session, seed_admin, report.id, "Admin cannot")
+
+
+def test_badge_counts_mechanic_returned(
+    db_session, seed_mechanic, seed_operator_with_park, seed_park_with_tracker
+):
+    open_report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id, title="Open"
+    )
+    returned_report = _create_open_report(
+        db_session,
+        author=seed_mechanic,
+        park_id=seed_park_with_tracker.id,
+        title="Returned",
+    )
+    reports_svc.return_report(
+        db_session, seed_operator_with_park, returned_report.id, "Fix it"
+    )
+    reports_svc.done_report(db_session, seed_operator_with_park, open_report.id)
+
+    assert reports_svc.badge_counts(db_session, seed_mechanic) == {"count": 1}
+
+
+def test_badge_counts_operator_open_inbox(
+    db_session, seed_mechanic, seed_operator_with_park, seed_park_with_tracker
+):
+    _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id, title="One"
+    )
+    second = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id, title="Two"
+    )
+    reports_svc.done_report(db_session, seed_operator_with_park, second.id)
+
+    assert reports_svc.badge_counts(db_session, seed_operator_with_park) == {"count": 1}
+
+
+def test_badge_counts_admin_open_escalations(
+    db_session, seed_mechanic, seed_operator_with_park, seed_admin, seed_park_with_tracker
+):
+    parent = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+    reports_svc.escalate_report(
+        db_session, seed_operator_with_park, parent.id, "Need help"
+    )
+
+    assert reports_svc.badge_counts(db_session, seed_admin) == {"count": 1}
