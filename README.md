@@ -54,6 +54,30 @@ Tracker token and Emergency cookie are stored in the database and configured fro
 `tracker_queue` and a mechanic assigned to it, the mechanic cabinet exposes
 `/mechanic/tasks`, `/mechanic/robot-search`, and `/mechanic/emergency`.
 
+## Phase 5
+
+Tracker Core + Actions: unified `/tracker/*` API with role-aware ACL for
+`admin`/`operator`/`mechanic`, issue read endpoints, and write actions
+(comment/assign/unassign/transition/close). Queue scope is enforced on the
+backend for every issue key request to prevent cross-queue access.
+
+New endpoints:
+
+- `GET /tracker/issues`
+- `GET /tracker/issues/{key}`
+- `GET /tracker/issues/{key}/comments`
+- `GET /tracker/transitions/{key}`
+- `POST /tracker/issues/{key}/comment`
+- `POST /tracker/issues/{key}/assign`
+- `POST /tracker/issues/{key}/unassign`
+- `POST /tracker/issues/{key}/transition`
+- `POST /tracker/issues/{key}/close`
+
+Admin policy toggles are available at:
+
+- `GET /admin/settings/tracker-policy`
+- `PUT /admin/settings/tracker-policy`
+
 ## Local development
 
 ### API

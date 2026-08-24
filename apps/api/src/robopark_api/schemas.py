@@ -137,3 +137,70 @@ class EmergencySectionOut(BaseModel):
     id: str
     title: str
     fields: list[EmergencyFieldOut]
+
+
+class TrackerIssueOut(BaseModel):
+    key: str
+    summary: str
+    status: str
+    status_key: str | None = None
+    queue: str | None = None
+    robot: str | None = None
+    created_at: str | None = None
+    hours_created: str | None = None
+    url: str
+
+
+class TrackerIssueDetailOut(TrackerIssueOut):
+    resolution: str | None = None
+
+
+class TrackerCommentOut(BaseModel):
+    id: str
+    text: str
+    author: str | None = None
+    created_at: str | None = None
+
+
+class TrackerTransitionOut(BaseModel):
+    id: str
+    display: str
+
+
+class TrackerIssuesOut(BaseModel):
+    items: list[TrackerIssueOut]
+
+
+class TrackerActionOut(BaseModel):
+    key: str
+    action: str
+    status: str
+    actor: str
+    performed_at: str
+
+
+class TrackerCommentIn(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class TrackerAssignIn(BaseModel):
+    assignee: str = Field(min_length=1, max_length=128)
+
+
+class TrackerTransitionIn(BaseModel):
+    transition: str = Field(min_length=1, max_length=128)
+    resolution: str | None = Field(default=None, max_length=128)
+
+
+class TrackerPolicySettingsOut(BaseModel):
+    operator_show_untagged: bool
+    operator_show_raw: bool
+    operator_show_firmware_profile: bool
+    mechanic_can_write: bool
+
+
+class TrackerPolicySettingsIn(BaseModel):
+    operator_show_untagged: bool | None = None
+    operator_show_raw: bool | None = None
+    operator_show_firmware_profile: bool | None = None
+    mechanic_can_write: bool | None = None

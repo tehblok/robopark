@@ -14,6 +14,7 @@ export function Mechanic() {
         <nav className="actions">
           <Link to="/mechanic/tasks">Tasks</Link>
           <Link to="/mechanic/robot-search">Robot search</Link>
+          <Link to="/mechanic/tracker">Tracker workspace</Link>
           <Link to="/mechanic/emergency">Emergency</Link>
         </nav>
       </section>

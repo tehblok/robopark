@@ -45,6 +45,13 @@ export type IntegrationSettings = {
   emergency_cookie_valid: boolean | null
 }
 
+export type TrackerPolicySettings = {
+  operator_show_untagged: boolean
+  operator_show_raw: boolean
+  operator_show_firmware_profile: boolean
+  mechanic_can_write: boolean
+}
+
 export type Mechanic = {
   id: number
   username: string
@@ -81,6 +88,23 @@ export type EmergencySectionDetail = {
   title: string
   fields: { label: string; lines: string[] }[]
 }
+
+export type TrackerIssue = {
+  key: string
+  summary: string
+  status: string
+  status_key?: string | null
+  queue?: string | null
+  robot?: string | null
+  created_at?: string | null
+  hours_created?: string | null
+  url: string
+}
+
+export type TrackerIssueDetail = TrackerIssue & { resolution?: string | null }
+export type TrackerComment = { id: string; text: string; author?: string | null; created_at?: string | null }
+export type TrackerTransition = { id: string; display: string }
+export type TrackerActionResult = { key: string; action: string; status: string; actor: string; performed_at: string }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
@@ -148,6 +172,12 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ cookie }),
     }),
+  trackerPolicy: () => request<TrackerPolicySettings>('/admin/settings/tracker-policy'),
+  updateTrackerPolicy: (payload: Partial<TrackerPolicySettings>) =>
+    request<TrackerPolicySettings>('/admin/settings/tracker-policy', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
   mechanics: () => request<Mechanic[]>('/admin/mechanics'),
   createMechanic: (username: string, password: string, park_id: number) =>
     request<Mechanic>('/admin/mechanics', {
@@ -199,4 +229,48 @@ export const api = {
     request<EmergencySectionDetail>(
       `/mechanic/emergency/${encodeURIComponent(vin)}/sections/${encodeURIComponent(sectionId)}`,
     ),
+  trackerIssues: (params: {
+    queue?: string
+    park?: string
+    status?: string
+    robot?: string
+    untagged?: boolean
+    age_hours?: number
+  }) => {
+    const q = new URLSearchParams()
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') {
+        q.set(key, String(value))
+      }
+    })
+    return request<{ items: TrackerIssue[] }>(`/tracker/issues?${q.toString()}`)
+  },
+  trackerIssue: (key: string) => request<TrackerIssueDetail>(`/tracker/issues/${encodeURIComponent(key)}`),
+  trackerComments: (key: string) =>
+    request<TrackerComment[]>(`/tracker/issues/${encodeURIComponent(key)}/comments`),
+  trackerTransitions: (key: string) =>
+    request<TrackerTransition[]>(`/tracker/transitions/${encodeURIComponent(key)}`),
+  trackerComment: (key: string, text: string) =>
+    request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/comment`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
+  trackerAssign: (key: string, assignee: string) =>
+    request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/assign`, {
+      method: 'POST',
+      body: JSON.stringify({ assignee }),
+    }),
+  trackerUnassign: (key: string) =>
+    request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/unassign`, {
+      method: 'POST',
+    }),
+  trackerTransition: (key: string, transition: string, resolution?: string) =>
+    request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/transition`, {
+      method: 'POST',
+      body: JSON.stringify({ transition, resolution }),
+    }),
+  trackerClose: (key: string) =>
+    request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/close`, {
+      method: 'POST',
+    }),
 }

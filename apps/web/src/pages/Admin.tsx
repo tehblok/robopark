@@ -6,8 +6,10 @@ import {
   type Mechanic,
   type Park,
   type ParkRequest,
+  type TrackerPolicySettings,
 } from '../api'
 import { useAuth } from '../auth-context'
+import { Link } from 'react-router-dom'
 
 export function Admin() {
   const { logout } = useAuth()
@@ -16,6 +18,7 @@ export function Admin() {
   const [parkRequests, setParkRequests] = useState<ParkRequest[]>([])
   const [mechanics, setMechanics] = useState<Mechanic[]>([])
   const [settings, setSettings] = useState<IntegrationSettings | null>(null)
+  const [trackerPolicy, setTrackerPolicy] = useState<TrackerPolicySettings | null>(null)
   const [selections, setSelections] = useState<Record<number, number[]>>({})
   const [name, setName] = useState('')
   const [tag, setTag] = useState('')
@@ -27,19 +30,21 @@ export function Admin() {
   const [error, setError] = useState('')
 
   const load = async () => {
-    const [parkList, accessInbox, parkInbox, mechanicList, integration] =
+    const [parkList, accessInbox, parkInbox, mechanicList, integration, policy] =
       await Promise.all([
         api.parks(),
         api.accessRequests(),
         api.adminParkRequests(),
         api.mechanics(),
         api.integrationSettings(),
+        api.trackerPolicy(),
       ])
     setParks(parkList)
     setAccessRequests(accessInbox)
     setParkRequests(parkInbox)
     setMechanics(mechanicList)
     setSettings(integration)
+    setTrackerPolicy(policy)
     setMechanicParkId((current) => current || String(parkList.find((park) => park.is_active)?.id ?? ''))
   }
 
@@ -122,6 +127,9 @@ export function Admin() {
           <h1>Admin</h1>
           <button onClick={logout} type="button">Sign out</button>
         </header>
+        <nav className="actions">
+          <Link to="/admin/tracker">Tracker workspace</Link>
+        </nav>
 
         {error && <p className="error">{error}</p>}
 
@@ -153,6 +161,32 @@ export function Admin() {
             />
             <button type="submit">Save secrets</button>
           </form>
+          {trackerPolicy && (
+            <div className="actions">
+              <span>Operator untagged: {trackerPolicy.operator_show_untagged ? 'on' : 'off'}</span>
+              <span>Mechanic write: {trackerPolicy.mechanic_can_write ? 'on' : 'off'}</span>
+              <button
+                onClick={() => run(async () => {
+                  await api.updateTrackerPolicy({
+                    operator_show_untagged: !trackerPolicy.operator_show_untagged,
+                  })
+                })}
+                type="button"
+              >
+                Toggle untagged
+              </button>
+              <button
+                onClick={() => run(async () => {
+                  await api.updateTrackerPolicy({
+                    mechanic_can_write: !trackerPolicy.mechanic_can_write,
+                  })
+                })}
+                type="button"
+              >
+                Toggle mechanic write
+              </button>
+            </div>
+          )}
         </section>
 
         <section>

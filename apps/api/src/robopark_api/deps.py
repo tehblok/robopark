@@ -64,3 +64,33 @@ def get_mechanic_park(db: Session, user: User) -> Park | None:
     if len(parks) != 1:
         return None
     return parks[0]
+
+
+def get_user_parks(db: Session, user: User) -> list[Park]:
+    return list(
+        db.scalars(
+            select(Park)
+            .join(UserPark)
+            .where(UserPark.user_id == user.id)
+            .order_by(Park.id)
+        ).all()
+    )
+
+
+def get_operator_parks(db: Session, user: User) -> list[Park]:
+    return get_user_parks(db, user)
+
+
+def require_operator_park(park_id: int, db: Session, user: User) -> Park:
+    park = db.get(Park, park_id)
+    if park is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    assigned = db.scalar(
+        select(UserPark).where(
+            UserPark.user_id == user.id,
+            UserPark.park_id == park_id,
+        )
+    )
+    if assigned is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    return park

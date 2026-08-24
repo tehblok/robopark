@@ -149,3 +149,37 @@ button:disabled {
   margin: 0;
   text-align: center;
 }
+
+.tracker-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.tracker-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.tracker-item {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  background: #eff6ff;
+  color: #111827;
+}
+
+.tracker-item.selected {
+  border: 2px solid #2563eb;
+}
+
+.tracker-panel {
+  border: 1px solid #e2e8f0;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+}

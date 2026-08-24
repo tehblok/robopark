@@ -2,17 +2,23 @@ import { type ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useAuth } from './auth-context'
 import { Admin } from './pages/Admin'
+import { AdminTrackerWorkspace } from './pages/AdminTrackerWorkspace'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Mechanic } from './pages/Mechanic'
 import { MechanicEmergency } from './pages/MechanicEmergency'
 import { MechanicNoPark } from './pages/MechanicNoPark'
 import { MechanicRobotSearch } from './pages/MechanicRobotSearch'
+import { MechanicIssueWorkspace } from './pages/MechanicIssueWorkspace'
 import { MechanicTasks } from './pages/MechanicTasks'
 import { NoCabinet } from './pages/NoCabinet'
 import { Operator } from './pages/Operator'
+import { OperatorBlockers } from './pages/OperatorBlockers'
+import { OperatorIssueWorkspace } from './pages/OperatorIssueWorkspace'
+import { OperatorNowReport } from './pages/OperatorNowReport'
 import { OperatorPending } from './pages/OperatorPending'
 import { OperatorRejected } from './pages/OperatorRejected'
+import { OperatorRobotSearch } from './pages/OperatorRobotSearch'
 import { Register } from './pages/Register'
 import { NO_CABINET_PATH, pathForUser } from './routes'
 
@@ -64,6 +70,14 @@ export default function App() {
         }
       />
       <Route
+        path="/admin/tracker"
+        element={
+          <RequirePath path="/admin">
+            <AdminTrackerWorkspace />
+          </RequirePath>
+        }
+      />
+      <Route
         path="/operator"
         element={
           <RequirePath path="/operator">
@@ -76,6 +90,38 @@ export default function App() {
         element={
           <RequirePath path="/operator/pending">
             <OperatorPending />
+          </RequirePath>
+        }
+      />
+      <Route
+        path="/operator/blockers"
+        element={
+          <RequirePath path="/operator">
+            <OperatorBlockers />
+          </RequirePath>
+        }
+      />
+      <Route
+        path="/operator/robot-search"
+        element={
+          <RequirePath path="/operator">
+            <OperatorRobotSearch />
+          </RequirePath>
+        }
+      />
+      <Route
+        path="/operator/now-report"
+        element={
+          <RequirePath path="/operator">
+            <OperatorNowReport />
+          </RequirePath>
+        }
+      />
+      <Route
+        path="/operator/tracker"
+        element={
+          <RequirePath path="/operator">
+            <OperatorIssueWorkspace />
           </RequirePath>
         }
       />
@@ -124,6 +170,14 @@ export default function App() {
         element={
           <RequireMechanic requirePark>
             <MechanicEmergency />
+          </RequireMechanic>
+        }
+      />
+      <Route
+        path="/mechanic/tracker"
+        element={
+          <RequireMechanic requirePark>
+            <MechanicIssueWorkspace />
           </RequireMechanic>
         }
       />

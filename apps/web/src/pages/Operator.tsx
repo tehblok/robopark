@@ -1,4 +1,5 @@
 import { type FormEvent, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api, type Park, type ParkRequest } from '../api'
 import { useAuth } from '../auth-context'
 
@@ -45,6 +46,12 @@ export function Operator() {
           <h1>Operator</h1>
           <button onClick={logout} type="button">Sign out</button>
         </header>
+        <nav className="actions">
+          <Link to="/operator/blockers">Blockers</Link>
+          <Link to="/operator/robot-search">Robot search</Link>
+          <Link to="/operator/now-report">Now report</Link>
+          <Link to="/operator/tracker">Tracker workspace</Link>
+        </nav>
 
         {error && <p className="error">{error}</p>}
 

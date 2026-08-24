@@ -17,6 +17,8 @@ from robopark_api.routers import (
     mechanic_tasks,
     operator_parks,
     parks,
+    tracker_actions,
+    tracker_read,
 )
 from robopark_api.seed import ensure_seed_user
 
@@ -50,6 +52,8 @@ def create_app() -> FastAPI:
     app.include_router(mechanic_tasks.router)
     app.include_router(mechanic_robots.router)
     app.include_router(mechanic_emergency.router)
+    app.include_router(tracker_read.router)
+    app.include_router(tracker_actions.router)
     return app
 
 
