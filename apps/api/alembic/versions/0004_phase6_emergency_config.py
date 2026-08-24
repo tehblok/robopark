@@ -6,11 +6,14 @@ Revises: 0003
 
 from collections.abc import Sequence
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 import sqlalchemy as sa
 from alembic import op
+
+logger = logging.getLogger("alembic.runtime.migration")
 
 revision: str = "0004"
 down_revision: str | None = "0003"
@@ -98,6 +101,13 @@ def upgrade() -> None:
     )
 
     json_path = Path(__file__).resolve().parents[2] / "data" / "emergency_sections.json"
+    if not json_path.is_file():
+        logger.warning(
+            "emergency seed file missing at %s; tables created empty",
+            json_path,
+        )
+        return
+
     raw = json.loads(json_path.read_text(encoding="utf-8"))
     sections = raw.get("sections") if isinstance(raw, dict) else None
     if not isinstance(sections, dict):
@@ -134,9 +144,12 @@ def upgrade() -> None:
         for role in _roles_for_section(section_id):
             role_rows.append({"section_id": section_id, "role": role})
 
-    op.bulk_insert(emergency_sections, section_rows)
-    op.bulk_insert(emergency_fields, field_rows)
-    op.bulk_insert(emergency_section_roles, role_rows)
+    if section_rows:
+        op.bulk_insert(emergency_sections, section_rows)
+    if field_rows:
+        op.bulk_insert(emergency_fields, field_rows)
+    if role_rows:
+        op.bulk_insert(emergency_section_roles, role_rows)
 
 
 def downgrade() -> None:

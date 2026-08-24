@@ -80,6 +80,51 @@ def test_operator_cannot_open_hidden_section(
     assert response.status_code == 404
 
 
+def test_mechanic_cannot_open_service_raw(
+    client, db_session, seed_mechanic, monkeypatch, emergency_payload
+):
+    configure_emergency(db_session, monkeypatch, emergency_payload)
+    login_as(client, "mech1", "secret")
+
+    response = client.get("/emergency/YASADR00000000447/sections/service_raw")
+
+    assert response.status_code == 404
+
+
+def test_pending_operator_cannot_use_emergency(
+    client, db_session, seed_pending_operator, monkeypatch, emergency_payload
+):
+    configure_emergency(db_session, monkeypatch, emergency_payload)
+    login_as(client, "operator", "secret")
+
+    response = client.post("/emergency/resolve", json={"robot_number": "447"})
+
+    assert response.status_code == 403
+
+
+def test_section_path_normalizes_vin(
+    client, db_session, seed_operator, monkeypatch, emergency_payload
+):
+    configure_emergency(db_session, monkeypatch, emergency_payload)
+    login_as(client, "operator1", "secret")
+
+    response = client.get("/emergency/447/sections/status")
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "status"
+
+
+def test_section_path_rejects_invalid_vin(
+    client, db_session, seed_operator, monkeypatch, emergency_payload
+):
+    configure_emergency(db_session, monkeypatch, emergency_payload)
+    login_as(client, "operator1", "secret")
+
+    response = client.get("/emergency/not-a-robot/sections/status")
+
+    assert response.status_code == 400
+
+
 def test_mechanic_alias_still_works(
     client, db_session, seed_mechanic, monkeypatch, emergency_payload
 ):

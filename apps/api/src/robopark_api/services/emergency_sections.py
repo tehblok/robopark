@@ -114,9 +114,10 @@ def render_section(
     db: Session,
     payload: dict[str, Any],
     section_id: str,
-    role: str | None = None,
+    *,
+    role: str,
 ) -> dict[str, Any]:
-    if role is not None and not role_can_view_section(db, role, section_id):
+    if not role_can_view_section(db, role, section_id):
         raise KeyError(f"role cannot view emergency section: {section_id}")
     section = get_section_config(db, section_id)
     if section is None:

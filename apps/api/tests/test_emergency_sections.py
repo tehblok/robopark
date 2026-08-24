@@ -72,10 +72,11 @@ def test_render_status_section_uses_db_config(db_session):
         section_id="status",
         title="Статус из БД",
         fields=[("name", "Название"), ("isOnline", "Онлайн")],
+        roles=["admin"],
     )
     payload = {"name": "Robot", "isOnline": True}
 
-    assert render_section(db_session, payload, "status") == {
+    assert render_section(db_session, payload, "status", role="admin") == {
         "id": "status",
         "title": "Статус из БД",
         "fields": [
@@ -90,11 +91,12 @@ def test_render_section_rejects_disabled_config(db_session):
         db_session,
         section_id="disabled",
         title="Disabled",
+        roles=["admin"],
         is_enabled=False,
     )
 
-    with pytest.raises(KeyError, match="unknown or disabled"):
-        render_section(db_session, {}, "disabled")
+    with pytest.raises(KeyError, match="role cannot view"):
+        render_section(db_session, {}, "disabled", role="admin")
 
 
 def test_service_raw_renders_fields_and_top_level_leftovers(db_session):
@@ -104,6 +106,7 @@ def test_service_raw_renders_fields_and_top_level_leftovers(db_session):
         title="Служебные данные",
         formatter="fields_and_top_level_leftovers",
         fields=[("sdcOptions", "SDC options"), ("nested.value", "Nested value")],
+        roles=["admin"],
     )
     payload = {
         "sdcOptions": {"mode": "auto"},
@@ -111,7 +114,7 @@ def test_service_raw_renders_fields_and_top_level_leftovers(db_session):
         "unexpected": {"flag": True},
     }
 
-    rendered = render_section(db_session, payload, "service_raw")
+    rendered = render_section(db_session, payload, "service_raw", role="admin")
 
     assert rendered["fields"] == [
         {"label": "SDC options", "lines": ["mode: auto"]},
