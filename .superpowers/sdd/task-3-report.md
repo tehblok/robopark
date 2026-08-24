@@ -46,3 +46,22 @@ Tests: Added extended `/auth/me`, assigned-park, and role/access dependency cove
 Fixtures: Added `login_as` and `seed_pending_operator`.
 TDD RED: Auth tests failed because role dependencies were missing.
 Verification: `uv run pytest -q` — 47 passed, 1 upstream Starlette/httpx deprecation warning.
+
+## Review fixes
+
+- Wrapped leader completion in `finally`, ensuring every flight event is set
+  even when cookie-validity persistence fails during auth-error handling.
+- Serialized keepalive ring read-modify-write updates with a process-wide lock
+  to prevent concurrent VIN touches from overwriting one another.
+- Updated the model metadata assertion for `emergency_sections`,
+  `emergency_fields`, and `emergency_section_roles`.
+- Added regressions for auth cleanup failures releasing waiters and concurrent
+  keepalive ring updates retaining both VINs.
+
+### Review verification
+
+- RED: both new concurrency regressions failed before the fixes; the auth
+  waiter remained blocked and the ring lost one VIN.
+- GREEN:
+  `uv run --extra dev pytest tests/test_emergency_cache.py tests/test_models_migration.py -v`
+  — 16 passed, 1 upstream Starlette/httpx deprecation warning.

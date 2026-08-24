@@ -162,6 +162,45 @@ def test_auth_error_invalidates_vin_marks_cookie_invalid_and_reraises(
     assert emergency_cache.get_robot_payload(db=db_session, vin=VIN) == {"version": 2}
 
 
+def test_cookie_valid_write_failure_releases_auth_error_waiters(monkeypatch):
+    fetch_started = threading.Event()
+    release_fetch = threading.Event()
+    errors = []
+
+    def fake_fetch(**kwargs):
+        fetch_started.set()
+        assert release_fetch.wait(timeout=2)
+        raise emergency_client.EmergencyAuthError("expired")
+
+    def fail_cookie_valid_write(db, valid):
+        raise RuntimeError("settings unavailable")
+
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
+    monkeypatch.setattr(settings_svc, "get_emergency_cookie", lambda db: "cookie")
+    monkeypatch.setattr(
+        settings_svc, "set_emergency_cookie_valid", fail_cookie_valid_write
+    )
+
+    def load():
+        try:
+            emergency_cache.get_robot_payload(db=object(), vin=VIN)
+        except BaseException as exc:
+            errors.append(exc)
+
+    leader = threading.Thread(target=load)
+    waiter = threading.Thread(target=load)
+    leader.start()
+    assert fetch_started.wait(timeout=2)
+    waiter.start()
+    release_fetch.set()
+    leader.join(timeout=2)
+    waiter.join(timeout=2)
+
+    assert not leader.is_alive()
+    assert not waiter.is_alive()
+    assert len(errors) == 2
+
+
 def test_success_marks_cookie_valid_and_touches_ring(db_session, monkeypatch):
     monkeypatch.setattr(
         emergency_client,
@@ -188,3 +227,43 @@ def test_keepalive_ring_moves_vin_to_end_and_keeps_latest_twenty(db_session):
     assert ring[0] == "VIN-1"
     assert ring[-1] == "VIN-5"
     assert ring.count("VIN-5") == 1
+
+
+def test_keepalive_ring_updates_are_serialized(monkeypatch):
+    persisted = []
+    first_read = threading.Event()
+    release_first_read = threading.Event()
+    read_count = 0
+
+    def fake_get_ring(db):
+        nonlocal read_count
+        snapshot = list(persisted)
+        read_count += 1
+        if read_count == 1:
+            first_read.set()
+            assert release_first_read.wait(timeout=2)
+        return snapshot
+
+    def fake_set_setting(db, key, value):
+        persisted[:] = settings_svc.json.loads(value)
+
+    monkeypatch.setattr(settings_svc, "get_keepalive_ring", fake_get_ring)
+    monkeypatch.setattr(settings_svc, "set_setting", fake_set_setting)
+
+    first = threading.Thread(
+        target=settings_svc.touch_keepalive_ring, args=(object(), "VIN-1")
+    )
+    second = threading.Thread(
+        target=settings_svc.touch_keepalive_ring, args=(object(), "VIN-2")
+    )
+    first.start()
+    assert first_read.wait(timeout=2)
+    second.start()
+    time.sleep(0.05)
+    release_first_read.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert persisted == ["VIN-1", "VIN-2"]

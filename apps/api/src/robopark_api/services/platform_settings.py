@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -16,6 +17,8 @@ TRACKER_OPERATOR_UNTAGGED_KEY = "tracker_operator_untagged"
 TRACKER_OPERATOR_RAW_KEY = "tracker_operator_raw"
 TRACKER_OPERATOR_FIRMWARE_KEY = "tracker_operator_firmware_profile"
 TRACKER_MECHANIC_WRITE_KEY = "tracker_mechanic_write"
+
+_keepalive_ring_lock = threading.Lock()
 
 
 def mask_secret(value: str | None) -> str | None:
@@ -79,13 +82,14 @@ def get_keepalive_ring(db: Session) -> list[str]:
 
 
 def touch_keepalive_ring(db: Session, vin: str) -> None:
-    ring = [saved_vin for saved_vin in get_keepalive_ring(db) if saved_vin != vin]
-    ring.append(vin)
-    set_setting(
-        db,
-        EMERGENCY_KEEPALIVE_RING_KEY,
-        json.dumps(ring[-EMERGENCY_KEEPALIVE_RING_MAX_SIZE :]),
-    )
+    with _keepalive_ring_lock:
+        ring = [saved_vin for saved_vin in get_keepalive_ring(db) if saved_vin != vin]
+        ring.append(vin)
+        set_setting(
+            db,
+            EMERGENCY_KEEPALIVE_RING_KEY,
+            json.dumps(ring[-EMERGENCY_KEEPALIVE_RING_MAX_SIZE :]),
+        )
 
 
 def get_bool_setting(db: Session, key: str, default: bool) -> bool:

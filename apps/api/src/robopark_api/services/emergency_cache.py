@@ -84,19 +84,28 @@ def get_robot_payload(*, db: Session, vin: str) -> dict[str, Any]:
         assert flight.result is not None
         return flight.result
 
+    payload = None
+    error: BaseException | None = None
     try:
-        cookie = settings_svc.get_emergency_cookie(db) or ""
-        payload = emergency_client.fetch_robot_payload(cookie=cookie, vin=vin)
-        settings_svc.set_emergency_cookie_valid(db, True)
-        settings_svc.touch_keepalive_ring(db, vin)
-    except emergency_client.EmergencyAuthError as exc:
-        invalidate_vin(vin)
-        settings_svc.set_emergency_cookie_valid(db, False)
-        _finish_flight(vin, flight, error=exc)
-        raise
+        try:
+            cookie = settings_svc.get_emergency_cookie(db) or ""
+            payload = emergency_client.fetch_robot_payload(cookie=cookie, vin=vin)
+            settings_svc.set_emergency_cookie_valid(db, True)
+            settings_svc.touch_keepalive_ring(db, vin)
+        except emergency_client.EmergencyAuthError:
+            invalidate_vin(vin)
+            settings_svc.set_emergency_cookie_valid(db, False)
+            raise
     except BaseException as exc:
-        _finish_flight(vin, flight, error=exc)
+        error = exc
         raise
+    finally:
+        _finish_flight(
+            vin,
+            flight,
+            result=payload if error is None else None,
+            error=error,
+        )
 
-    _finish_flight(vin, flight, result=payload)
+    assert payload is not None
     return payload
