@@ -1,5 +1,5 @@
 import { type ReactNode, useState } from 'react'
-import { Link, NavLink } from 'react-router-dom'
+import { Link, NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../auth-context'
 import { ru, roleLabel } from '../i18n/ru'
 import { navItemsForRole } from '../nav'
@@ -105,7 +105,7 @@ export function AppShell({ children }: AppShellProps) {
             </div>
           </details>
         </header>
-        <div className="app-content">{children}</div>
+        <div className="app-content">{children ?? <Outlet />}</div>
       </div>
     </div>
   )

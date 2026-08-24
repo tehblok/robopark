@@ -4,7 +4,7 @@ import { Alert, EmptyState, PageShell, Panel } from '../PageShell'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
 
-export function EmergencyViewer({ backTo }: { backTo: string }) {
+export function EmergencyViewer({ backTo }: { backTo?: string }) {
   const [robotNumber, setRobotNumber] = useState('')
   const [vin, setVin] = useState('')
   const [sections, setSections] = useState<EmergencySection[]>([])
