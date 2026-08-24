@@ -124,3 +124,46 @@ class ParkRequest(Base):
         back_populates="park_requests",
         foreign_keys=[user_id],
     )
+
+
+class EmergencySection(Base):
+    __tablename__ = "emergency_sections"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(String(128))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    formatter: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    meta_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    fields: Mapped[list[EmergencyField]] = relationship(
+        back_populates="section", cascade="all, delete-orphan"
+    )
+    roles: Mapped[list[EmergencySectionRole]] = relationship(
+        back_populates="section", cascade="all, delete-orphan"
+    )
+
+
+class EmergencyField(Base):
+    __tablename__ = "emergency_fields"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    section_id: Mapped[str] = mapped_column(
+        ForeignKey("emergency_sections.id", ondelete="CASCADE")
+    )
+    path: Mapped[str] = mapped_column(String(256))
+    label: Mapped[str] = mapped_column(String(128))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    section: Mapped[EmergencySection] = relationship(back_populates="fields")
+
+
+class EmergencySectionRole(Base):
+    __tablename__ = "emergency_section_roles"
+
+    section_id: Mapped[str] = mapped_column(
+        ForeignKey("emergency_sections.id", ondelete="CASCADE"), primary_key=True
+    )
+    role: Mapped[str] = mapped_column(String(32), primary_key=True)
+
+    section: Mapped[EmergencySection] = relationship(back_populates="roles")

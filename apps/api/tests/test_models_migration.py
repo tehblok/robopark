@@ -17,6 +17,9 @@ def test_metadata_has_required_tables():
         "user_parks",
         "park_requests",
         "platform_settings",
+        "emergency_sections",
+        "emergency_fields",
+        "emergency_section_roles",
     }
 
 

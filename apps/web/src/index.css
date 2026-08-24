@@ -470,3 +470,52 @@ button:not(.btn-secondary):not(.btn-ghost):not(.btn-filter) {
   border-radius: 0.5rem;
   padding: 0.75rem;
 }
+
+.emergency-config-list,
+.emergency-config-fields {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.emergency-config-section {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.9rem;
+  background: var(--surface-muted);
+}
+
+.emergency-config-heading,
+.emergency-config-field {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.emergency-config-heading {
+  justify-content: space-between;
+}
+
+.emergency-config-field input {
+  min-width: 0;
+  flex: 1 1 12rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 0.72rem 0.85rem;
+  background: white;
+}
+
+.emergency-config-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+@media (max-width: 720px) {
+  .emergency-config-heading,
+  .emergency-config-field {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

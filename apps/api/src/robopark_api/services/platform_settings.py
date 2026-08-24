@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
+import threading
 from datetime import datetime, timezone
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from robopark_api.models import PlatformSetting
@@ -10,10 +11,16 @@ from robopark_api.models import PlatformSetting
 TRACKER_TOKEN_KEY = "tracker_token"
 EMERGENCY_COOKIE_KEY = "emergency_cookie"
 EMERGENCY_COOKIE_VALID_KEY = "emergency_cookie_valid"
+EMERGENCY_KEEPALIVE_RING_KEY = "emergency_keepalive_ring"
+EMERGENCY_KEEPALIVE_SEED_VIN_KEY = "emergency_keepalive_seed_vin"
+EMERGENCY_KEEPALIVE_LAST_OK_KEY = "emergency_keepalive_last_ok_at"
+EMERGENCY_KEEPALIVE_RING_MAX_SIZE = 20
 TRACKER_OPERATOR_UNTAGGED_KEY = "tracker_operator_untagged"
 TRACKER_OPERATOR_RAW_KEY = "tracker_operator_raw"
 TRACKER_OPERATOR_FIRMWARE_KEY = "tracker_operator_firmware_profile"
 TRACKER_MECHANIC_WRITE_KEY = "tracker_mechanic_write"
+
+_keepalive_ring_lock = threading.Lock()
 
 
 def mask_secret(value: str | None) -> str | None:
@@ -61,6 +68,30 @@ def get_emergency_cookie_valid(db: Session) -> bool | None:
 
 def set_emergency_cookie_valid(db: Session, valid: bool) -> None:
     set_setting(db, EMERGENCY_COOKIE_VALID_KEY, "true" if valid else "false")
+
+
+def get_keepalive_ring(db: Session) -> list[str]:
+    row = get_setting(db, EMERGENCY_KEEPALIVE_RING_KEY)
+    if row is None:
+        return []
+    try:
+        ring = json.loads(row.value)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(ring, list):
+        return []
+    return [vin for vin in ring if isinstance(vin, str)]
+
+
+def touch_keepalive_ring(db: Session, vin: str) -> None:
+    with _keepalive_ring_lock:
+        ring = [saved_vin for saved_vin in get_keepalive_ring(db) if saved_vin != vin]
+        ring.append(vin)
+        set_setting(
+            db,
+            EMERGENCY_KEEPALIVE_RING_KEY,
+            json.dumps(ring[-EMERGENCY_KEEPALIVE_RING_MAX_SIZE :]),
+        )
 
 
 def get_bool_setting(db: Session, key: str, default: bool) -> bool:

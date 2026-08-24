@@ -92,6 +92,26 @@ Admin policy toggles are available at:
 - `GET /admin/settings/tracker-policy`
 - `PUT /admin/settings/tracker-policy`
 
+## Phase 6
+
+Emergency is now a shared, role-aware workflow for mechanics, operators,
+admins, and royal users. Mechanics see the operational sections, operators
+additionally see `position_route` and `metadata`, and only admins/royal users
+see `service_raw`. The legacy `/mechanic/emergency/*` routes remain available
+for compatibility.
+
+Emergency section, field, order, enabled-state, and role configuration lives in
+the database. Migration `0004_phase6_emergency_config` creates the tables and
+seeds them from `apps/api/data/emergency_sections.json`; after migration, use
+the admin UI at `/admin/emergency/config` to create, edit, reorder, enable, or
+export sections instead of editing the seed file.
+
+Robot payloads are cached in-process for 5 seconds, with one in-flight upstream
+request per VIN. The API also runs a keep-alive loop over the 20 most recently
+used VINs (or the optional seed VIN when the ring is empty), records cookie
+validity, and marks it invalid after an upstream 401. Emergency pages load on
+user actions and do not poll from browser timers.
+
 ## Local development
 
 ### API
