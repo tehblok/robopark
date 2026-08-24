@@ -23,6 +23,8 @@ class ParkOut(BaseModel):
     tag: str
     is_active: bool = True
     tracker_queue: str | None = None
+    tracker_priority: str | None = None
+    tracker_type: str | None = None
     group_id: int | None = None
     chat_id: int | None = None
     feature_reports: bool = True
@@ -35,6 +37,8 @@ class ParkCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     tag: str = Field(min_length=1, max_length=64)
     tracker_queue: str | None = Field(default=None, max_length=128)
+    tracker_priority: str | None = Field(default=None, max_length=64)
+    tracker_type: str | None = Field(default=None, max_length=64)
     group_id: int | None = None
     chat_id: int | None = None
     feature_reports: bool = True
@@ -48,6 +52,8 @@ class ParkUpdate(BaseModel):
     tag: str | None = Field(default=None, min_length=1, max_length=64)
     is_active: bool | None = None
     tracker_queue: str | None = Field(default=None, max_length=128)
+    tracker_priority: str | None = Field(default=None, max_length=64)
+    tracker_type: str | None = Field(default=None, max_length=64)
     group_id: int | None = None
     chat_id: int | None = None
     feature_reports: bool | None = None

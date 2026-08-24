@@ -38,6 +38,8 @@ def test_phase2_models_have_required_columns_and_foreign_keys():
         "is_active",
         "created_at",
         "tracker_queue",
+        "tracker_priority",
+        "tracker_type",
         "group_id",
         "chat_id",
         "feature_reports",

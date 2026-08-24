@@ -21,6 +21,34 @@ def test_create_park_with_tracker_fields(client, seed_royal):
     assert body["is_active"] is True
 
 
+def test_patch_park_tracker_priority_and_type(client, seed_royal):
+    login_as(client, "royal", "secret")
+    park_id = client.post("/parks", json={"name": "P", "tag": "P"}).json()["id"]
+    updated = client.patch(
+        f"/parks/{park_id}",
+        json={"tracker_priority": "blocker", "tracker_type": "bug"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["tracker_priority"] == "blocker"
+    assert updated.json()["tracker_type"] == "bug"
+
+
+def test_create_park_with_tracker_priority_and_type(client, seed_royal):
+    login_as(client, "royal", "secret")
+    created = client.post(
+        "/parks",
+        json={
+            "name": "Scoped",
+            "tag": "Scoped",
+            "tracker_priority": "critical",
+            "tracker_type": "incident",
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["tracker_priority"] == "critical"
+    assert created.json()["tracker_type"] == "incident"
+
+
 def test_patch_park_feature_flags(client, seed_royal):
     login_as(client, "royal", "secret")
     park_id = client.post("/parks", json={"name": "P", "tag": "P"}).json()["id"]

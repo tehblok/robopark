@@ -362,6 +362,22 @@ export function Admin() {
                   value={park.tracker_queue ?? ''}
                 />
                 <input
+                  aria-label={`Приоритет Tracker ${park.id}`}
+                  onChange={(event) => editPark(park.id, {
+                    tracker_priority: event.target.value || null,
+                  })}
+                  placeholder="Приоритет (blocker)"
+                  value={park.tracker_priority ?? ''}
+                />
+                <input
+                  aria-label={`Тип Tracker ${park.id}`}
+                  onChange={(event) => editPark(park.id, {
+                    tracker_type: event.target.value || null,
+                  })}
+                  placeholder="Тип (пусто = без фильтра)"
+                  value={park.tracker_type ?? ''}
+                />
+                <input
                   aria-label={`Group ID ${park.id}`}
                   onChange={(event) => editPark(park.id, {
                     group_id: parseOptionalInt(event.target.value),
@@ -428,6 +444,8 @@ export function Admin() {
                     name: park.name,
                     tag: park.tag,
                     tracker_queue: park.tracker_queue || null,
+                    tracker_priority: park.tracker_priority || null,
+                    tracker_type: park.tracker_type || null,
                     group_id: park.group_id ?? null,
                     chat_id: park.chat_id ?? null,
                     feature_blockers: park.feature_blockers,

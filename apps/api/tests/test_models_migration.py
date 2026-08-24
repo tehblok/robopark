@@ -20,6 +20,7 @@ def test_metadata_has_required_tables():
         "emergency_sections",
         "emergency_fields",
         "emergency_section_roles",
+        "park_blocker_history",
     }
 
 
@@ -132,3 +133,43 @@ def test_migrated_indexes_and_foreign_keys_match_models(
     assert foreign_keys[0]["referred_table"] == "users"
     assert foreign_keys[0]["referred_columns"] == ["id"]
     assert foreign_keys[0]["options"]["ondelete"] == "CASCADE"
+
+
+def test_migrated_parks_have_tracker_columns_and_history_table(
+    sqlite_database_url, monkeypatch
+):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    api_dir = Path(__file__).parents[1]
+
+    command.upgrade(Config(api_dir / "alembic.ini"), "head")
+
+    inspector = inspect(create_engine(sqlite_database_url, future=True))
+    park_columns = {column["name"] for column in inspector.get_columns("parks")}
+    assert {"tracker_priority", "tracker_type"} <= park_columns
+    assert "park_blocker_history" in inspector.get_table_names()
+
+    history_columns = {
+        column["name"] for column in inspector.get_columns("park_blocker_history")
+    }
+    assert history_columns == {
+        "id",
+        "park_id",
+        "bucket_start",
+        "arrived_count",
+        "departed_count",
+        "scanned_at",
+    }
+
+    unique_indexes = {
+        index["name"]
+        for index in inspector.get_indexes("park_blocker_history")
+        if index["unique"]
+    }
+    unique_constraints = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("park_blocker_history")
+    }
+    assert (
+        "uq_park_blocker_history_park_bucket" in unique_indexes
+        or "uq_park_blocker_history_park_bucket" in unique_constraints
+    )

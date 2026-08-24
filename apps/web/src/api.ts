@@ -4,6 +4,8 @@ export type Park = {
   tag: string
   is_active?: boolean
   tracker_queue?: string | null
+  tracker_priority?: string | null
+  tracker_type?: string | null
   group_id?: number | null
   chat_id?: number | null
   feature_reports?: boolean
@@ -228,6 +230,8 @@ export const api = {
     name: string
     tag: string
     tracker_queue?: string | null
+    tracker_priority?: string | null
+    tracker_type?: string | null
     group_id?: number | null
     chat_id?: number | null
     feature_reports?: boolean
