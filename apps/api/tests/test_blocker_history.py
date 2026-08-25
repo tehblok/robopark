@@ -151,7 +151,7 @@ def test_build_arrived_in_window_query_uses_park_filters():
         priority="critical",
         issue_type="bug",
     )
-    assert 'Queue: ROBOPARK' in query
+    assert "Queue: ROBOPARK" in query
     assert "Priority: critical" in query
     assert "Tags: Alpha" in query
     assert "Type: bug" in query

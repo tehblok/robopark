@@ -22,11 +22,7 @@ logger = logging.getLogger(__name__)
 
 def purge_expired_sessions_once() -> int:
     with SessionLocal() as db:
-        result = db.execute(
-            delete(AuthSession).where(
-                AuthSession.expires_at <= datetime.now(UTC)
-            )
-        )
+        result = db.execute(delete(AuthSession).where(AuthSession.expires_at <= datetime.now(UTC)))
         db.commit()
         removed = int(result.rowcount or 0)
     if removed:

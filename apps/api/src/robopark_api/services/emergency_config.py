@@ -13,9 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from robopark_api.models import EmergencyField, EmergencySection, EmergencySectionRole
 
-DEFAULT_JSON_PATH = (
-    Path(__file__).resolve().parents[3] / "data" / "emergency_sections.json"
-)
+DEFAULT_JSON_PATH = Path(__file__).resolve().parents[3] / "data" / "emergency_sections.json"
 
 _OPERATOR_SECTIONS = frozenset({"position_route", "metadata"})
 _ALL_VIEWER_ROLES = ("mechanic", "operator", "admin", "royal")
@@ -118,9 +116,7 @@ def role_can_view_section(db: Session, role: str, section_id: str) -> bool:
 
 def _section_meta(section: dict[str, Any]) -> str | None:
     extra = {
-        key: value
-        for key, value in section.items()
-        if key not in {"title", "fields", "formatter"}
+        key: value for key, value in section.items() if key not in {"title", "fields", "formatter"}
     }
     if not extra:
         return None

@@ -40,9 +40,7 @@ def _get_mechanic(db: Session, mechanic_id: int) -> User | None:
 
 
 def _single_park(db: Session, user_id: int) -> Park | None:
-    parks = db.scalars(
-        select(Park).join(UserPark).where(UserPark.user_id == user_id)
-    ).all()
+    parks = db.scalars(select(Park).join(UserPark).where(UserPark.user_id == user_id)).all()
     if len(parks) != 1:
         return None
     return parks[0]

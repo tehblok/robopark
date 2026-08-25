@@ -132,9 +132,7 @@ def test_different_vins_do_not_share_flight(monkeypatch):
     assert sorted(result["vin"] for result in results) == ["VIN-1", "VIN-2"]
 
 
-def test_auth_error_invalidates_vin_marks_cookie_invalid_and_reraises(
-    db_session, monkeypatch
-):
+def test_auth_error_invalidates_vin_marks_cookie_invalid_and_reraises(db_session, monkeypatch):
     now = [100.0]
     responses = iter(({"version": 1}, emergency_client.EmergencyAuthError("expired")))
 
@@ -177,9 +175,7 @@ def test_cookie_valid_write_failure_releases_auth_error_waiters(monkeypatch):
 
     monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
     monkeypatch.setattr(settings_svc, "get_emergency_cookie", lambda db: "cookie")
-    monkeypatch.setattr(
-        settings_svc, "set_emergency_cookie_valid", fail_cookie_valid_write
-    )
+    monkeypatch.setattr(settings_svc, "set_emergency_cookie_valid", fail_cookie_valid_write)
 
     def load():
         try:
@@ -250,12 +246,8 @@ def test_keepalive_ring_updates_are_serialized(monkeypatch):
     monkeypatch.setattr(settings_svc, "get_keepalive_ring", fake_get_ring)
     monkeypatch.setattr(settings_svc, "set_setting", fake_set_setting)
 
-    first = threading.Thread(
-        target=settings_svc.touch_keepalive_ring, args=(object(), "VIN-1")
-    )
-    second = threading.Thread(
-        target=settings_svc.touch_keepalive_ring, args=(object(), "VIN-2")
-    )
+    first = threading.Thread(target=settings_svc.touch_keepalive_ring, args=(object(), "VIN-1"))
+    second = threading.Thread(target=settings_svc.touch_keepalive_ring, args=(object(), "VIN-2"))
     first.start()
     assert first_read.wait(timeout=2)
     second.start()

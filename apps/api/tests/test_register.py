@@ -65,9 +65,7 @@ def test_register_rejects_weak_password(client, test_settings, monkeypatch):
     assert response.status_code == 422
 
 
-def test_register_rejects_password_containing_username(
-    client, test_settings, monkeypatch
-):
+def test_register_rejects_password_containing_username(client, test_settings, monkeypatch):
     monkeypatch.setattr(test_settings, "operator_shared_password", "gate")
     response = client.post(
         "/auth/register",

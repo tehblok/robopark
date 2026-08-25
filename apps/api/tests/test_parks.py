@@ -22,9 +22,7 @@ def test_admin_creates_and_lists_park(client: TestClient, seed_royal):
     assert listed.json() == [created.json()]
 
 
-def test_operator_cannot_create_park(
-    client: TestClient, test_settings, monkeypatch
-):
+def test_operator_cannot_create_park(client: TestClient, test_settings, monkeypatch):
     monkeypatch.setattr(test_settings, "operator_shared_password", "gate")
     client.post(
         "/auth/register",

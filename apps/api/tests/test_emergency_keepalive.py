@@ -41,9 +41,7 @@ def test_ring_vin_fetches_and_records_success(db_session, monkeypatch):
     assert calls == [{"cookie": "cookie", "vin": vin}]
     assert settings_svc.get_emergency_cookie_valid(db_session) is True
     assert (
-        settings_svc.get_setting(
-            db_session, settings_svc.EMERGENCY_KEEPALIVE_LAST_OK_KEY
-        )
+        settings_svc.get_setting(db_session, settings_svc.EMERGENCY_KEEPALIVE_LAST_OK_KEY)
         is not None
     )
 
@@ -51,9 +49,7 @@ def test_ring_vin_fetches_and_records_success(db_session, monkeypatch):
 def test_seed_vin_is_used_when_ring_is_empty(db_session, monkeypatch):
     vin = "YASADR00000000448"
     settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "cookie")
-    settings_svc.set_setting(
-        db_session, settings_svc.EMERGENCY_KEEPALIVE_SEED_VIN_KEY, vin
-    )
+    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_KEEPALIVE_SEED_VIN_KEY, vin)
     calls = []
     monkeypatch.setattr(
         emergency_client,
@@ -105,9 +101,7 @@ def test_loop_accepts_injectable_interval(monkeypatch):
 
     monkeypatch.setattr(emergency_keepalive, "keepalive_once", fake_keepalive_once)
 
-    asyncio.run(
-        emergency_keepalive.run_keepalive_loop(asyncio_stop, interval_seconds=0)
-    )
+    asyncio.run(emergency_keepalive.run_keepalive_loop(asyncio_stop, interval_seconds=0))
 
     assert len(calls) == 1
 
@@ -126,9 +120,7 @@ def test_keepalive_once_stops_between_vins_when_requested(db_session, monkeypatc
             stop_event.set()
 
     monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
-    monkeypatch.setattr(
-        emergency_keepalive, "INTER_VIN_GAP_SECONDS", 5.0, raising=False
-    )
+    monkeypatch.setattr(emergency_keepalive, "INTER_VIN_GAP_SECONDS", 5.0, raising=False)
 
     emergency_keepalive.keepalive_once(db_session, stop_event=stop_event)
 
@@ -158,9 +150,7 @@ def test_run_keepalive_loop_sets_thread_stop_on_cancel(monkeypatch):
     assert captured_stop[0].is_set()
 
 
-def test_lifespan_starts_and_stops_keepalive(
-    db_engine, test_settings, monkeypatch
-):
+def test_lifespan_starts_and_stops_keepalive(db_engine, test_settings, monkeypatch):
     started = threading.Event()
     stopped = threading.Event()
 
@@ -172,9 +162,7 @@ def test_lifespan_starts_and_stops_keepalive(
             stopped.set()
 
     monkeypatch.setattr(main, "run_keepalive_loop", fake_loop, raising=False)
-    monkeypatch.setattr(
-        main, "SessionLocal", sessionmaker(bind=db_engine, future=True)
-    )
+    monkeypatch.setattr(main, "SessionLocal", sessionmaker(bind=db_engine, future=True))
     monkeypatch.setattr(main, "get_settings", lambda: test_settings)
 
     with TestClient(main.create_app()):

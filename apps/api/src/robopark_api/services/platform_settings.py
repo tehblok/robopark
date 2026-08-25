@@ -126,7 +126,7 @@ def touch_keepalive_ring(db: Session, vin: str) -> None:
         set_setting(
             db,
             EMERGENCY_KEEPALIVE_RING_KEY,
-            json.dumps(ring[-EMERGENCY_KEEPALIVE_RING_MAX_SIZE :]),
+            json.dumps(ring[-EMERGENCY_KEEPALIVE_RING_MAX_SIZE:]),
         )
 
 
@@ -162,8 +162,6 @@ def tracker_policy_status(db: Session) -> dict[str, bool]:
     return {
         "operator_show_untagged": get_bool_setting(db, TRACKER_OPERATOR_UNTAGGED_KEY, True),
         "operator_show_raw": get_bool_setting(db, TRACKER_OPERATOR_RAW_KEY, True),
-        "operator_show_firmware_profile": get_bool_setting(
-            db, TRACKER_OPERATOR_FIRMWARE_KEY, True
-        ),
+        "operator_show_firmware_profile": get_bool_setting(db, TRACKER_OPERATOR_FIRMWARE_KEY, True),
         "mechanic_can_write": get_bool_setting(db, TRACKER_MECHANIC_WRITE_KEY, True),
     }

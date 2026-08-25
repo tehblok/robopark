@@ -59,9 +59,7 @@ def test_emergency_cookie_is_encrypted(db_session, with_secret_key):
 
 def test_legacy_plaintext_value_still_readable(db_session, with_secret_key):
     """An existing database written before encryption must keep working."""
-    db_session.add(
-        PlatformSetting(key=settings_svc.TRACKER_TOKEN_KEY, value="legacy-plain-token")
-    )
+    db_session.add(PlatformSetting(key=settings_svc.TRACKER_TOKEN_KEY, value="legacy-plain-token"))
     db_session.commit()
 
     assert settings_svc.get_tracker_token(db_session) == "legacy-plain-token"
@@ -93,9 +91,7 @@ def test_masking_uses_plaintext_not_ciphertext(db_session, with_secret_key):
 
 def test_non_secret_settings_stay_plaintext(db_session, with_secret_key):
     """Only real secrets are encrypted; operational flags stay readable."""
-    settings_svc.set_bool_setting(
-        db_session, settings_svc.TRACKER_MECHANIC_WRITE_KEY, False
-    )
+    settings_svc.set_bool_setting(db_session, settings_svc.TRACKER_MECHANIC_WRITE_KEY, False)
     raw = db_session.get(PlatformSetting, settings_svc.TRACKER_MECHANIC_WRITE_KEY)
     assert raw.value == "false"
 

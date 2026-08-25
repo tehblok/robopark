@@ -37,9 +37,7 @@ def status_bucket(status_key: str, status_display: str = "") -> str | None:
     for bucket, aliases in STATUS_BUCKETS.items():
         for alias in aliases:
             normalized = alias.lower().replace("ё", "е")
-            if key == normalized or display == normalized or (
-                normalized and normalized in blob
-            ):
+            if key == normalized or display == normalized or (normalized and normalized in blob):
                 return bucket
     return None
 

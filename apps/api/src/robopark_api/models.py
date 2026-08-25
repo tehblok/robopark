@@ -42,15 +42,11 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(32))
-    access_status: Mapped[str] = mapped_column(
-        String(32), default=AccessStatus.approved.value
-    )
+    access_status: Mapped[str] = mapped_column(String(32), default=AccessStatus.approved.value)
     tracker_login: Mapped[str | None] = mapped_column(String(128), nullable=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     sessions: Mapped[list[AuthSession]] = relationship(back_populates="user")
     parks: Mapped[list[Park]] = relationship(secondary="user_parks")
@@ -67,9 +63,7 @@ class AuthSession(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     user: Mapped[User] = relationship(back_populates="sessions")
 
@@ -90,9 +84,7 @@ class Park(Base):
     feature_blockers: Mapped[bool] = mapped_column(Boolean, default=True)
     feature_sla_repair: Mapped[bool] = mapped_column(Boolean, default=True)
     feature_backlog_alerts: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     blocker_history: Mapped[list[ParkBlockerHistory]] = relationship(
         back_populates="park",
@@ -111,15 +103,11 @@ class ParkBlockerHistory(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    park_id: Mapped[int] = mapped_column(
-        ForeignKey("parks.id", ondelete="CASCADE"), index=True
-    )
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
     bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     arrived_count: Mapped[int] = mapped_column(Integer, default=0)
     departed_count: Mapped[int] = mapped_column(Integer, default=0)
-    scanned_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     park: Mapped[Park] = relationship(back_populates="blocker_history")
 
@@ -151,15 +139,9 @@ class ParkRequest(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"))
-    status: Mapped[str] = mapped_column(
-        String(32), default=AccessStatus.pending.value
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    resolved_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    status: Mapped[str] = mapped_column(String(32), default=AccessStatus.pending.value)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -192,9 +174,7 @@ class EmergencyField(Base):
     __tablename__ = "emergency_fields"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    section_id: Mapped[str] = mapped_column(
-        ForeignKey("emergency_sections.id", ondelete="CASCADE")
-    )
+    section_id: Mapped[str] = mapped_column(ForeignKey("emergency_sections.id", ondelete="CASCADE"))
     path: Mapped[str] = mapped_column(String(256))
     label: Mapped[str] = mapped_column(String(128))
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
@@ -244,9 +224,7 @@ class AuditLog(Base):
     outcome: Mapped[str] = mapped_column(String(16), default="success")
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Report(Base):
@@ -280,16 +258,10 @@ class Report(Base):
     tracker_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     title: Mapped[str] = mapped_column(String(256))
     body: Mapped[str] = mapped_column(Text, default="")
-    parent_report_id: Mapped[int | None] = mapped_column(
-        ForeignKey("reports.id"), nullable=True
-    )
+    parent_report_id: Mapped[int | None] = mapped_column(ForeignKey("reports.id"), nullable=True)
     return_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
-    resolved_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

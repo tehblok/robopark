@@ -74,9 +74,7 @@ def decrypt_secret(value: str | None, secret_key: str | None) -> str | None:
     if not is_encrypted(value):
         return value
     if not secret_key:
-        raise SecretDecryptionError(
-            "stored secret is encrypted but SECRET_KEY is not configured"
-        )
+        raise SecretDecryptionError("stored secret is encrypted but SECRET_KEY is not configured")
     token = value[len(ENC_PREFIX) :].encode("ascii")
     try:
         return _cipher(secret_key).decrypt(token).decode("utf-8")

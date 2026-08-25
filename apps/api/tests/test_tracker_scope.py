@@ -113,9 +113,7 @@ def test_admin_bypasses_scope(db_session, seed_royal):
     enforce_issue_scope(db_session, seed_royal, _issue(queue="ANY", tags=["Whatever"]))
 
 
-def test_mechanic_cannot_close_foreign_park_issue(
-    client, db_session, seed_mechanic, monkeypatch
-):
+def test_mechanic_cannot_close_foreign_park_issue(client, db_session, seed_mechanic, monkeypatch):
     """End-to-end: closing an issue of another park must be rejected with 403."""
     from robopark_api.services import tracker_client
 

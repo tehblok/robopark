@@ -137,9 +137,7 @@ def call_with_retry(
                 try:
                     return future.result(timeout=max(5.0, call_timeout))
                 except FuturesTimeout as exc:
-                    last_exc = TimeoutError(
-                        f"Tracker API call timed out after {call_timeout:.0f}s"
-                    )
+                    last_exc = TimeoutError(f"Tracker API call timed out after {call_timeout:.0f}s")
                     logger.warning("%s (attempt %s) — draining worker", last_exc, attempt + 1)
                     try:
                         return future.result(timeout=max(5.0, call_timeout))

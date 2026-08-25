@@ -197,9 +197,7 @@ def create_field(
 ) -> EmergencyFieldAdminOut:
     _get_section(db, section_id)
     sort_order = db.scalar(
-        select(func.max(EmergencyField.sort_order)).where(
-            EmergencyField.section_id == section_id
-        )
+        select(func.max(EmergencyField.sort_order)).where(EmergencyField.section_id == section_id)
     )
     field = EmergencyField(
         section_id=section_id,
@@ -250,9 +248,7 @@ def export_config(db: Session = Depends(get_db)) -> dict[str, Any]:
         if section.fields:
             item["fields"] = [
                 {"path": field.path, "label": field.label}
-                for field in sorted(
-                    section.fields, key=lambda field: (field.sort_order, field.id)
-                )
+                for field in sorted(section.fields, key=lambda field: (field.sort_order, field.id))
             ]
         if section.formatter:
             item["formatter"] = section.formatter

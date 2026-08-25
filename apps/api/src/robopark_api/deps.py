@@ -40,19 +40,13 @@ def require_admin(user: User = Depends(require_user)) -> User:
 
 
 def require_approved_operator(user: User = Depends(require_user)) -> User:
-    if (
-        user.role != UserRole.operator.value
-        or user.access_status != AccessStatus.approved.value
-    ):
+    if user.role != UserRole.operator.value or user.access_status != AccessStatus.approved.value:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return user
 
 
 def require_approved_mechanic(user: User = Depends(require_user)) -> User:
-    if (
-        user.role != UserRole.mechanic.value
-        or user.access_status != AccessStatus.approved.value
-    ):
+    if user.role != UserRole.mechanic.value or user.access_status != AccessStatus.approved.value:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return user
 
@@ -69,9 +63,7 @@ def require_emergency_viewer(user: User = Depends(require_user)) -> User:
 
 
 def get_mechanic_park(db: Session, user: User) -> Park | None:
-    parks = db.scalars(
-        select(Park).join(UserPark).where(UserPark.user_id == user.id)
-    ).all()
+    parks = db.scalars(select(Park).join(UserPark).where(UserPark.user_id == user.id)).all()
     if len(parks) != 1:
         return None
     return parks[0]
@@ -80,10 +72,7 @@ def get_mechanic_park(db: Session, user: User) -> Park | None:
 def get_user_parks(db: Session, user: User) -> list[Park]:
     return list(
         db.scalars(
-            select(Park)
-            .join(UserPark)
-            .where(UserPark.user_id == user.id)
-            .order_by(Park.id)
+            select(Park).join(UserPark).where(UserPark.user_id == user.id).order_by(Park.id)
         ).all()
     )
 

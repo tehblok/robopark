@@ -36,31 +36,21 @@ def test_login_me_logout_flow(client: TestClient, seed_royal):
 
 
 def test_login_bad_password(client: TestClient, seed_royal):
-    response = client.post(
-        "/auth/login", json={"username": "royal", "password": "nope"}
-    )
+    response = client.post("/auth/login", json={"username": "royal", "password": "nope"})
 
     assert response.status_code == 401
 
 
-def test_login_cookie_is_httponly_and_samesite_lax(
-    client: TestClient, seed_royal
-):
-    response = client.post(
-        "/auth/login", json={"username": "royal", "password": "secret"}
-    )
+def test_login_cookie_is_httponly_and_samesite_lax(client: TestClient, seed_royal):
+    response = client.post("/auth/login", json={"username": "royal", "password": "secret"})
 
     set_cookie = response.headers["set-cookie"]
     assert "HttpOnly" in set_cookie
     assert "SameSite=lax" in set_cookie
 
 
-def test_login_stores_only_session_token_hash(
-    client: TestClient, db_session: Session, seed_royal
-):
-    response = client.post(
-        "/auth/login", json={"username": "royal", "password": "secret"}
-    )
+def test_login_stores_only_session_token_hash(client: TestClient, db_session: Session, seed_royal):
+    response = client.post("/auth/login", json={"username": "royal", "password": "secret"})
     raw_token = response.cookies["robopark_session"]
     auth_session = db_session.scalar(select(AuthSession))
 
@@ -69,9 +59,7 @@ def test_login_stores_only_session_token_hash(
     assert auth_session.token_hash == hash_session_token(raw_token)
 
 
-def test_logout_deletes_auth_session(
-    client: TestClient, db_session: Session, seed_royal
-):
+def test_logout_deletes_auth_session(client: TestClient, db_session: Session, seed_royal):
     client.post("/auth/login", json={"username": "royal", "password": "secret"})
     assert db_session.scalar(select(AuthSession)) is not None
 
@@ -81,23 +69,17 @@ def test_logout_deletes_auth_session(
     assert db_session.scalar(select(AuthSession)) is None
 
 
-def test_inactive_user_cannot_login(
-    client: TestClient, db_session: Session, seed_royal
-):
+def test_inactive_user_cannot_login(client: TestClient, db_session: Session, seed_royal):
     seed_royal.is_active = False
     db_session.commit()
 
-    response = client.post(
-        "/auth/login", json={"username": "royal", "password": "secret"}
-    )
+    response = client.post("/auth/login", json={"username": "royal", "password": "secret"})
 
     assert response.status_code == 401
     assert db_session.scalar(select(AuthSession)) is None
 
 
-def test_expired_session_cannot_access_me(
-    client: TestClient, db_session: Session, seed_royal
-):
+def test_expired_session_cannot_access_me(client: TestClient, db_session: Session, seed_royal):
     raw_token = "expired-session-token"
     db_session.add(
         AuthSession(
@@ -116,9 +98,7 @@ def test_me_without_cookie(client: TestClient):
     assert client.get("/auth/me").status_code == 401
 
 
-def test_me_includes_assigned_parks(
-    client: TestClient, db_session: Session, seed_royal
-):
+def test_me_includes_assigned_parks(client: TestClient, db_session: Session, seed_royal):
     park = Park(name="Central Park", tag="central", is_active=True)
     db_session.add(park)
     db_session.flush()
@@ -174,9 +154,7 @@ def test_require_approved_operator_allows_approved_operator():
     ("role", "access_status"),
     [("operator", "pending"), ("operator", "rejected"), ("admin", "approved")],
 )
-def test_require_approved_operator_rejects_other_users(
-    role: str, access_status: str
-):
+def test_require_approved_operator_rejects_other_users(role: str, access_status: str):
     user = User(
         username="user",
         password_hash="hash",

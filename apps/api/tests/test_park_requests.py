@@ -27,9 +27,7 @@ def add_park(db_session, tag: str, *, is_active: bool = True) -> Park:
     return park
 
 
-def test_operator_creates_and_lists_own_request(
-    client: TestClient, db_session
-):
+def test_operator_creates_and_lists_own_request(client: TestClient, db_session):
     operator = add_operator(db_session, "operator-one")
     park = add_park(db_session, "one")
     login_as(client, operator.username, "secret")
@@ -43,9 +41,7 @@ def test_operator_creates_and_lists_own_request(
     assert client.get("/operator/park-requests").json() == [created.json()]
 
 
-def test_duplicate_pending_request_returns_conflict(
-    client: TestClient, db_session
-):
+def test_duplicate_pending_request_returns_conflict(client: TestClient, db_session):
     operator = add_operator(db_session, "operator-two")
     park = add_park(db_session, "two")
     db_session.add(ParkRequest(user_id=operator.id, park_id=park.id, status="pending"))
@@ -77,9 +73,7 @@ def test_operator_lists_only_available_parks(client: TestClient, db_session):
     pending = add_park(db_session, "pending")
     add_park(db_session, "inactive", is_active=False)
     db_session.add(UserPark(user_id=operator.id, park_id=assigned.id))
-    db_session.add(
-        ParkRequest(user_id=operator.id, park_id=pending.id, status="pending")
-    )
+    db_session.add(ParkRequest(user_id=operator.id, park_id=pending.id, status="pending"))
     db_session.commit()
     login_as(client, operator.username, "secret")
 
@@ -89,9 +83,7 @@ def test_operator_lists_only_available_parks(client: TestClient, db_session):
     assert [item["id"] for item in response.json()] == [available.id]
 
 
-def test_admin_approves_request_and_assigns_park(
-    client: TestClient, db_session, seed_royal
-):
+def test_admin_approves_request_and_assigns_park(client: TestClient, db_session, seed_royal):
     operator = add_operator(db_session, "operator-four")
     park = add_park(db_session, "four")
     request = ParkRequest(user_id=operator.id, park_id=park.id, status="pending")
@@ -134,9 +126,7 @@ def test_admin_cannot_approve_request_after_park_is_deactivated(
     assert db_session.get(UserPark, (operator.id, park.id)) is None
 
 
-def test_admin_rejects_request_without_assigning_park(
-    client: TestClient, db_session, seed_royal
-):
+def test_admin_rejects_request_without_assigning_park(client: TestClient, db_session, seed_royal):
     operator = add_operator(db_session, "operator-five")
     park = add_park(db_session, "five")
     request = ParkRequest(user_id=operator.id, park_id=park.id, status="pending")

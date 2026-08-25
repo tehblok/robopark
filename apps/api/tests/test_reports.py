@@ -260,9 +260,7 @@ def test_list_inbox_operator_excludes_other_parks(
     seed_park_with_tracker,
     seed_other_park,
 ):
-    _create_open_report(
-        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
-    )
+    _create_open_report(db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id)
     other_report = _create_open_report(
         db_session,
         author=seed_mechanic,
@@ -292,14 +290,10 @@ def test_list_inbox_operator_filters_by_park_id(
 def test_list_inbox_operator_park_filter_cross_park_forbidden(
     db_session, seed_mechanic, seed_operator_with_park, seed_other_park
 ):
-    _create_open_report(
-        db_session, author=seed_mechanic, park_id=seed_other_park.id, title="Other"
-    )
+    _create_open_report(db_session, author=seed_mechanic, park_id=seed_other_park.id, title="Other")
 
     with pytest.raises(PermissionError):
-        reports_svc.list_inbox(
-            db_session, seed_operator_with_park, park_id=seed_other_park.id
-        )
+        reports_svc.list_inbox(db_session, seed_operator_with_park, park_id=seed_other_park.id)
 
 
 def test_list_inbox_admin_sees_open_escalations(
@@ -332,9 +326,7 @@ def test_list_inbox_excludes_non_open(
     assert inbox == []
 
 
-def test_list_mine_returns_author_reports(
-    db_session, seed_mechanic, seed_park_with_tracker
-):
+def test_list_mine_returns_author_reports(db_session, seed_mechanic, seed_park_with_tracker):
     first = _create_open_report(
         db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id, title="One"
     )
@@ -347,9 +339,7 @@ def test_list_mine_returns_author_reports(
     assert [r.id for r in mine] == [second.id, first.id]
 
 
-def test_get_report_author_can_view(
-    db_session, seed_mechanic, seed_park_with_tracker
-):
+def test_get_report_author_can_view(db_session, seed_mechanic, seed_park_with_tracker):
     report = _create_open_report(
         db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
     )
@@ -487,9 +477,7 @@ def test_badge_counts_mechanic_returned(
         park_id=seed_park_with_tracker.id,
         title="Returned",
     )
-    reports_svc.return_report(
-        db_session, seed_operator_with_park, returned_report.id, "Fix it"
-    )
+    reports_svc.return_report(db_session, seed_operator_with_park, returned_report.id, "Fix it")
     reports_svc.done_report(db_session, seed_operator_with_park, open_report.id)
 
     assert reports_svc.badge_counts(db_session, seed_mechanic) == {"count": 1}
@@ -519,9 +507,7 @@ def test_badge_counts_operator_filters_by_park_id(
     _create_open_report(
         db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id, title="Alpha"
     )
-    _create_open_report(
-        db_session, author=seed_mechanic, park_id=seed_other_park.id, title="Beta"
-    )
+    _create_open_report(db_session, author=seed_mechanic, park_id=seed_other_park.id, title="Beta")
 
     assert reports_svc.badge_counts(
         db_session, seed_operator_with_park, park_id=seed_park_with_tracker.id
@@ -533,9 +519,7 @@ def test_badge_counts_operator_cross_park_filter_forbidden(
     db_session, seed_operator_with_park, seed_other_park
 ):
     with pytest.raises(PermissionError):
-        reports_svc.badge_counts(
-            db_session, seed_operator_with_park, park_id=seed_other_park.id
-        )
+        reports_svc.badge_counts(db_session, seed_operator_with_park, park_id=seed_other_park.id)
 
 
 def test_badge_counts_admin_open_escalations(
@@ -544,9 +528,7 @@ def test_badge_counts_admin_open_escalations(
     parent = _create_open_report(
         db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
     )
-    reports_svc.escalate_report(
-        db_session, seed_operator_with_park, parent.id, "Need help"
-    )
+    reports_svc.escalate_report(db_session, seed_operator_with_park, parent.id, "Need help")
 
     assert reports_svc.badge_counts(db_session, seed_admin) == {"count": 1}
 
@@ -558,9 +540,7 @@ def _login(client: TestClient, username: str) -> None:
     login_as(client, username, "secret")
 
 
-def test_http_mechanic_create_report(
-    client: TestClient, seed_mechanic, seed_park_with_tracker
-):
+def test_http_mechanic_create_report(client: TestClient, seed_mechanic, seed_park_with_tracker):
     _login(client, "mech1")
     r = client.post(
         "/reports",
@@ -702,9 +682,7 @@ def test_http_badge_operator(
     seed_operator_with_park,
     seed_park_with_tracker,
 ):
-    _create_open_report(
-        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
-    )
+    _create_open_report(db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id)
     _login(client, "operator1")
     r = client.get(f"/reports/badge?park_id={seed_park_with_tracker.id}")
     assert r.status_code == 200
@@ -734,9 +712,7 @@ def test_http_get_report_cross_park_forbidden(
     assert r.status_code == 403
 
 
-def test_http_list_mine(
-    client: TestClient, db_session, seed_mechanic, seed_park_with_tracker
-):
+def test_http_list_mine(client: TestClient, db_session, seed_mechanic, seed_park_with_tracker):
     first = _create_open_report(
         db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id, title="One"
     )
@@ -747,4 +723,3 @@ def test_http_list_mine(
     r = client.get("/reports/mine")
     assert r.status_code == 200
     assert [item["id"] for item in r.json()] == [second.id, first.id]
-

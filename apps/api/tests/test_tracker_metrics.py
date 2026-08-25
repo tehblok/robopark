@@ -21,9 +21,7 @@ def test_collect_park_metrics_fixed_order():
         "robopark_api.services.tracker_metrics.count_issues",
         side_effect=[3, 1, 0, 2, 0, 1, 4, 5],
     ) as mocked:
-        result = tracker_metrics.collect_park_metrics(
-            token="t", queue="ROBOPARK", tag="Alpha"
-        )
+        result = tracker_metrics.collect_park_metrics(token="t", queue="ROBOPARK", tag="Alpha")
     assert mocked.call_count == 8
     assert result == {
         "open_blockers": 3,

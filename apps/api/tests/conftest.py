@@ -15,9 +15,7 @@ VALID_PASSWORD = "Str0ng-Pass!2026"
 
 
 def login_as(client: TestClient, username: str, password: str):
-    return client.post(
-        "/auth/login", json={"username": username, "password": password}
-    )
+    return client.post("/auth/login", json={"username": username, "password": password})
 
 
 @pytest.fixture(autouse=True)

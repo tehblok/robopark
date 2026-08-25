@@ -61,9 +61,7 @@ def _enforce_password_policy(
 
 def purge_expired_sessions(db: Session) -> int:
     """Delete sessions past their expiry; returns the number removed."""
-    result = db.execute(
-        delete(AuthSession).where(AuthSession.expires_at <= datetime.now(UTC))
-    )
+    result = db.execute(delete(AuthSession).where(AuthSession.expires_at <= datetime.now(UTC)))
     db.commit()
     return int(result.rowcount or 0)
 
@@ -85,9 +83,7 @@ def register(
     if retry_after:
         raise _too_many_requests(retry_after)
 
-    if not shared_passwords_match(
-        registration.shared_password, settings.operator_shared_password
-    ):
+    if not shared_passwords_match(registration.shared_password, settings.operator_shared_password):
         # Rate-limited: the shared password is otherwise brute-forceable.
         throttle.register_failure(throttle_key)
         logger.warning("Rejected registration attempt from %s", throttle_key)
@@ -101,13 +97,9 @@ def register(
         )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
-    _enforce_password_policy(
-        registration.password, settings, username=registration.username
-    )
+    _enforce_password_policy(registration.password, settings, username=registration.username)
 
-    existing_user = db.scalar(
-        select(User).where(User.username == registration.username)
-    )
+    existing_user = db.scalar(select(User).where(User.username == registration.username))
     if existing_user is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT)
 
@@ -195,8 +187,7 @@ def login(
         AuthSession(
             user_id=user.id,
             token_hash=hash_session_token(raw_token),
-            expires_at=datetime.now(UTC)
-            + timedelta(seconds=settings.session_ttl_seconds),
+            expires_at=datetime.now(UTC) + timedelta(seconds=settings.session_ttl_seconds),
         )
     )
     db.commit()
@@ -221,9 +212,7 @@ def logout(
     raw_token = request.cookies.get(settings.session_cookie_name)
     if raw_token:
         db.execute(
-            delete(AuthSession).where(
-                AuthSession.token_hash == hash_session_token(raw_token)
-            )
+            delete(AuthSession).where(AuthSession.token_hash == hash_session_token(raw_token))
         )
         db.commit()
 
@@ -241,9 +230,7 @@ def me(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> UserOut:
-    parks = db.scalars(
-        select(Park).join(UserPark).where(UserPark.user_id == user.id)
-    ).all()
+    parks = db.scalars(select(Park).join(UserPark).where(UserPark.user_id == user.id)).all()
     return UserOut(
         id=user.id,
         username=user.username,

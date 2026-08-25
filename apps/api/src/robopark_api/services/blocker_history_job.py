@@ -46,9 +46,7 @@ async def run_blocker_history_loop(
                 break
 
             delay = (
-                interval_seconds
-                if interval_seconds is not None
-                else seconds_until_next_bucket()
+                interval_seconds if interval_seconds is not None else seconds_until_next_bucket()
             )
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop_event.wait(), timeout=delay)

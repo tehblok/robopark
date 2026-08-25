@@ -36,9 +36,7 @@ def _roles_for_section(section_id: str) -> tuple[str, ...]:
 
 def _section_meta(section: dict[str, Any]) -> str | None:
     extra = {
-        key: value
-        for key, value in section.items()
-        if key not in {"title", "fields", "formatter"}
+        key: value for key, value in section.items() if key not in {"title", "fields", "formatter"}
     }
     if not extra:
         return None
@@ -63,18 +61,14 @@ def upgrade() -> None:
         sa.Column("path", sa.String(length=256), nullable=False),
         sa.Column("label", sa.String(length=128), nullable=False),
         sa.Column("sort_order", sa.Integer(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["section_id"], ["emergency_sections.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["section_id"], ["emergency_sections.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_table(
         "emergency_section_roles",
         sa.Column("section_id", sa.String(length=64), nullable=False),
         sa.Column("role", sa.String(length=32), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["section_id"], ["emergency_sections.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["section_id"], ["emergency_sections.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("section_id", "role"),
     )
 

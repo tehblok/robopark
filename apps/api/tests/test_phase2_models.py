@@ -58,10 +58,10 @@ def test_phase2_models_have_required_columns_and_foreign_keys():
         "resolved_by",
     }
     assert ParkRequest.__table__.columns["status"].default.arg == "pending"
-    assert {
-        foreign_key.target_fullname
-        for foreign_key in ParkRequest.__table__.foreign_keys
-    } == {"users.id", "parks.id"}
+    assert {foreign_key.target_fullname for foreign_key in ParkRequest.__table__.foreign_keys} == {
+        "users.id",
+        "parks.id",
+    }
 
 
 def test_user_exposes_park_relationships():

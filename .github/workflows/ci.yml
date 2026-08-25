@@ -31,11 +31,11 @@ jobs:
       - name: Install dependencies
         run: uv pip install -e ".[dev]" --python .venv/bin/python
 
-      # `ruff format` is intentionally not enforced yet: the existing codebase
-      # predates it and a repo-wide reformat would bury real changes in noise.
-      # Run `ruff format` as a separate, deliberate commit to enable it.
       - name: Lint (ruff)
         run: .venv/bin/ruff check .
+
+      - name: Format (ruff)
+        run: .venv/bin/ruff format --check .
 
       - name: Tests
         run: .venv/bin/python -m pytest -q
@@ -70,6 +70,9 @@ jobs:
 
       - name: Tests
         run: npm test
+
+      - name: Nav parity
+        run: node scripts/check-nav.mjs
 
   docker:
     name: Docker images build

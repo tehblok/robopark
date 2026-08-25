@@ -53,9 +53,7 @@ def update_park(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     changes = payload.model_dump(exclude_unset=True)
-    if (tag := changes.get("tag")) is not None and _tag_exists(
-        db, tag, exclude_id=park_id
-    ):
+    if (tag := changes.get("tag")) is not None and _tag_exists(db, tag, exclude_id=park_id):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT)
 
     for field, value in changes.items():

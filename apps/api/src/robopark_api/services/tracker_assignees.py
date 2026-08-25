@@ -9,7 +9,9 @@ from robopark_api.deps import get_mechanic_park, get_user_parks
 from robopark_api.models import User, UserPark, UserRole
 
 
-def list_assignee_candidates(db: Session, user: User, query: str, *, limit: int = 20) -> list[dict[str, str]]:
+def list_assignee_candidates(
+    db: Session, user: User, query: str, *, limit: int = 20
+) -> list[dict[str, str]]:
     """Mechanics with a Startrek login in parks visible to the current user."""
     needle = query.strip().lower()
     if not needle:

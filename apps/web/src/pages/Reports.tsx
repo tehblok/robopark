@@ -62,8 +62,9 @@ export function Reports() {
       if (role === 'mechanic') setMine([])
       else setInbox([])
     } finally {
-      if (requestId !== requestIdRef.current) return
-      setListLoading(false)
+      if (requestId === requestIdRef.current) {
+        setListLoading(false)
+      }
     }
   }, [parkId, role])
 

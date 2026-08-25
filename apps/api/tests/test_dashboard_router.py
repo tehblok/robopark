@@ -56,8 +56,7 @@ def test_dashboard_summary_operator_ok(client, db_session, seed_royal):
         "done": 6,
     }
     issues = [
-        issue_to_dict(item)
-        for item in json.loads((FIXTURES / "tracker_issues.json").read_text())
+        issue_to_dict(item) for item in json.loads((FIXTURES / "tracker_issues.json").read_text())
     ]
     with (
         patch(

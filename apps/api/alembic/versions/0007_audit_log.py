@@ -35,17 +35,13 @@ def upgrade() -> None:
             server_default=sa.text("(CURRENT_TIMESTAMP)"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["actor_user_id"], ["users.id"], ondelete="SET NULL"
-        ),
+        sa.ForeignKeyConstraint(["actor_user_id"], ["users.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["park_id"], ["parks.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_audit_log_action", "audit_log", ["action"])
     op.create_index("ix_audit_log_created_at", "audit_log", ["created_at"])
-    op.create_index(
-        "ix_audit_log_actor_created", "audit_log", ["actor_user_id", "created_at"]
-    )
+    op.create_index("ix_audit_log_actor_created", "audit_log", ["actor_user_id", "created_at"])
     op.create_index("ix_audit_log_target", "audit_log", ["target_type", "target_id"])
 
 

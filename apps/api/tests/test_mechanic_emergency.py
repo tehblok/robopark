@@ -18,9 +18,7 @@ def empty_emergency_cache():
 
 
 def test_emergency_resolve(client, db_session, seed_mechanic, seed_royal):
-    emergency_config.seed_emergency_config(
-        db_session, emergency_config.DEFAULT_JSON_PATH
-    )
+    emergency_config.seed_emergency_config(db_session, emergency_config.DEFAULT_JSON_PATH)
     login_as(client, "royal", "secret")
     client.put("/admin/settings/emergency-cookie", json={"cookie": "Session_id=test"})
     login_as(client, "mech1", "secret")

@@ -62,10 +62,7 @@ def test_blockers_mocked_ok(client, db_session, seed_royal):
     login_as(client, "royal", "secret")
     client.put("/admin/settings/tracker-token", json={"token": "fake"})
     login_as(client, "op-block", "secret")
-    issues = [
-        issue_to_dict(i)
-        for i in json.loads((FIXTURES / "tracker_issues.json").read_text())
-    ]
+    issues = [issue_to_dict(i) for i in json.loads((FIXTURES / "tracker_issues.json").read_text())]
     with patch("robopark_api.services.tracker_client._search", return_value=issues):
         r = client.get(f"/operator/blockers?park_id={park.id}&status=all")
     assert r.status_code == 200

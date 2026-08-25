@@ -108,8 +108,7 @@ def _is_admin_inbox_user(user: User) -> bool:
 
 def _is_approved_operator(user: User) -> bool:
     return (
-        user.role == UserRole.operator.value
-        and user.access_status == AccessStatus.approved.value
+        user.role == UserRole.operator.value and user.access_status == AccessStatus.approved.value
     )
 
 
@@ -118,7 +117,11 @@ def _can_view_report(db: Session, user: User, report: Report) -> bool:
         return True
     if _is_admin_inbox_user(user):
         return True
-    return bool(_is_approved_operator(user) and report.target_role == UserRole.operator.value and report.park_id in _user_park_ids(db, user))
+    return bool(
+        _is_approved_operator(user)
+        and report.target_role == UserRole.operator.value
+        and report.park_id in _user_park_ids(db, user)
+    )
 
 
 def _can_act_on_report(db: Session, user: User, report: Report) -> bool:
@@ -127,10 +130,7 @@ def _can_act_on_report(db: Session, user: User, report: Report) -> bool:
     if report.target_role == UserRole.admin.value:
         return _is_admin_inbox_user(user)
     if report.target_role == UserRole.operator.value:
-        return (
-            _is_approved_operator(user)
-            and report.park_id in _user_park_ids(db, user)
-        )
+        return _is_approved_operator(user) and report.park_id in _user_park_ids(db, user)
     return False
 
 
@@ -176,9 +176,7 @@ def list_inbox(db: Session, user: User, *, park_id: int | None = None) -> list[R
     if park_id is not None and _is_admin_inbox_user(user):
         stmt = stmt.where(Report.park_id == park_id)
 
-    return list(
-        db.scalars(stmt.order_by(Report.created_at.desc(), Report.id.desc())).all()
-    )
+    return list(db.scalars(stmt.order_by(Report.created_at.desc(), Report.id.desc())).all())
 
 
 def list_mine(db: Session, user: User) -> list[Report]:

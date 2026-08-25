@@ -72,9 +72,7 @@ def emergency_section_for_user(
 
     payload = _get_robot_payload(db, vin)
     try:
-        rendered = emergency_sections.render_section(
-            db, payload, section_id, role=user.role
-        )
+        rendered = emergency_sections.render_section(db, payload, section_id, role=user.role)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
 

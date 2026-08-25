@@ -23,9 +23,7 @@ INTER_VIN_GAP_SECONDS = 0.9
 logger = logging.getLogger(__name__)
 
 
-def _interruptible_sleep(
-    seconds: float, stop_event: threading.Event | None
-) -> bool:
+def _interruptible_sleep(seconds: float, stop_event: threading.Event | None) -> bool:
     """Sleep up to *seconds*. Return False if *stop_event* was set."""
     if stop_event is None:
         time.sleep(seconds)
@@ -56,18 +54,14 @@ def keepalive_once(
         _keepalive_once_with_db(session, stop_event)
 
 
-def _keepalive_once_with_db(
-    db: Session, stop_event: threading.Event | None
-) -> None:
+def _keepalive_once_with_db(db: Session, stop_event: threading.Event | None) -> None:
     cookie = settings_svc.get_emergency_cookie(db)
     if not cookie:
         return
 
     vins = settings_svc.get_keepalive_ring(db)
     if not vins:
-        seed = settings_svc.get_setting(
-            db, settings_svc.EMERGENCY_KEEPALIVE_SEED_VIN_KEY
-        )
+        seed = settings_svc.get_setting(db, settings_svc.EMERGENCY_KEEPALIVE_SEED_VIN_KEY)
         if seed is not None and seed.value.strip():
             vins = [seed.value.strip()]
 
@@ -90,9 +84,7 @@ def _keepalive_once_with_db(
                 datetime.now(UTC).isoformat(),
             )
 
-        if index + 1 < len(vins) and not _interruptible_sleep(
-            INTER_VIN_GAP_SECONDS, stop_event
-        ):
+        if index + 1 < len(vins) and not _interruptible_sleep(INTER_VIN_GAP_SECONDS, stop_event):
             return
 
 

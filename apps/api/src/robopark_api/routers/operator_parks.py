@@ -40,10 +40,7 @@ def list_assigned_parks(
 ) -> list[Park]:
     return list(
         db.scalars(
-            select(Park)
-            .join(UserPark)
-            .where(UserPark.user_id == operator.id)
-            .order_by(Park.id)
+            select(Park).join(UserPark).where(UserPark.user_id == operator.id).order_by(Park.id)
         ).all()
     )
 
@@ -82,9 +79,7 @@ def list_park_requests(
 ) -> list[ParkRequest]:
     return list(
         db.scalars(
-            select(ParkRequest)
-            .where(ParkRequest.user_id == operator.id)
-            .order_by(ParkRequest.id)
+            select(ParkRequest).where(ParkRequest.user_id == operator.id).order_by(ParkRequest.id)
         ).all()
     )
 

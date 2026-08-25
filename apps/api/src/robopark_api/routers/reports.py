@@ -29,10 +29,7 @@ T = TypeVar("T")
 def _require_inbox_viewer(user: User = Depends(require_user)) -> User:
     if user.role in (UserRole.admin.value, UserRole.royal.value):
         return user
-    if (
-        user.role == UserRole.operator.value
-        and user.access_status == AccessStatus.approved.value
-    ):
+    if user.role == UserRole.operator.value and user.access_status == AccessStatus.approved.value:
         return user
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
@@ -45,17 +42,11 @@ def _run_svc(fn: Callable[[], T]) -> T:
     try:
         return fn()
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except LookupError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except PermissionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
 def _require_mechanic_park(db: Session, user: User, park_id: int) -> None:
@@ -92,9 +83,7 @@ def list_inbox(
     user: User = Depends(_require_inbox_viewer),
     db: Session = Depends(get_db),
 ) -> list[ReportOut]:
-    reports = _run_svc(
-        lambda: reports_svc.list_inbox(db, user, park_id=park_id)
-    )
+    reports = _run_svc(lambda: reports_svc.list_inbox(db, user, park_id=park_id))
     return [_report_out(report) for report in reports]
 
 
@@ -113,9 +102,7 @@ def report_badge(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> ReportBadgeOut:
-    counts = _run_svc(
-        lambda: reports_svc.badge_counts(db, user, park_id=park_id)
-    )
+    counts = _run_svc(lambda: reports_svc.badge_counts(db, user, park_id=park_id))
     return ReportBadgeOut(count=counts["count"])
 
 
@@ -136,11 +123,7 @@ def return_report(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> ReportOut:
-    report = _run_svc(
-        lambda: reports_svc.return_report(
-            db, user, report_id, payload.comment
-        )
-    )
+    report = _run_svc(lambda: reports_svc.return_report(db, user, report_id, payload.comment))
     return _report_out(report)
 
 
@@ -161,9 +144,5 @@ def escalate_report(
     user: User = Depends(require_approved_operator),
     db: Session = Depends(get_db),
 ) -> ReportOut:
-    report = _run_svc(
-        lambda: reports_svc.escalate_report(
-            db, user, report_id, payload.comment
-        )
-    )
+    report = _run_svc(lambda: reports_svc.escalate_report(db, user, report_id, payload.comment))
     return _report_out(report)

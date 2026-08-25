@@ -92,9 +92,7 @@ def test_successful_login_clears_counter(client, seed_royal, test_settings, monk
     assert login_as(client, "royal", "wrong").status_code == 401
 
 
-def test_register_shared_password_is_rate_limited(
-    client, test_settings, monkeypatch
-):
+def test_register_shared_password_is_rate_limited(client, test_settings, monkeypatch):
     """The shared registration password must not be brute-forceable."""
     monkeypatch.setattr(test_settings, "operator_shared_password", "gate")
     monkeypatch.setattr(test_settings, "register_max_attempts", 3)

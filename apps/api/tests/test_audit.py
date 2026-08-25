@@ -77,10 +77,7 @@ def test_lockout_is_audited(client, db_session, seed_royal, test_settings, monke
     for _ in range(3):
         login_as(client, "royal", "wrong")
 
-    assert (
-        db_session.query(AuditLog).filter_by(action=audit.ACTION_LOGIN_BLOCKED).count()
-        >= 1
-    )
+    assert db_session.query(AuditLog).filter_by(action=audit.ACTION_LOGIN_BLOCKED).count() >= 1
 
 
 # --- Tracker actions ----------------------------------------------------
@@ -103,25 +100,19 @@ def test_close_is_audited_with_actor(
     assert entry.park_id == seed_park_with_tracker.id
 
 
-def test_comment_is_signed_and_audited(
-    client, db_session, seed_mechanic, monkeypatch
-):
+def test_comment_is_signed_and_audited(client, db_session, seed_mechanic, monkeypatch):
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "t")
     captured = _mock_tracker(monkeypatch)
 
     login_as(client, "mech1", "secret")
-    response = client.post(
-        "/tracker/issues/ROBOPARK-1/comment", json={"text": "проверил робота"}
-    )
+    response = client.post("/tracker/issues/ROBOPARK-1/comment", json={"text": "проверил робота"})
     assert response.status_code == 200
 
     # The comment carries the real author, not just the service account.
     assert "проверил робота" in captured["text"]
     assert "mech1" in captured["text"]
 
-    entry = db_session.query(AuditLog).filter_by(
-        action=audit.ACTION_TRACKER_COMMENT
-    ).one()
+    entry = db_session.query(AuditLog).filter_by(action=audit.ACTION_TRACKER_COMMENT).one()
     assert entry.actor_username == "mech1"
     assert entry.target_id == "ROBOPARK-1"
 
@@ -136,14 +127,14 @@ def test_denied_action_is_audited(client, db_session, seed_mechanic, monkeypatch
     _mock_tracker(monkeypatch, issue=_issue(tags=["Beta"]))
 
     login_as(client, "mech1", "secret")
-    response = client.post(
-        "/tracker/issues/ROBOPARK-1/comment", json={"text": "hi"}
-    )
+    response = client.post("/tracker/issues/ROBOPARK-1/comment", json={"text": "hi"})
     assert response.status_code == 403
 
-    entry = db_session.query(AuditLog).filter_by(
-        outcome=audit.OUTCOME_DENIED, action=audit.ACTION_TRACKER_COMMENT
-    ).one()
+    entry = (
+        db_session.query(AuditLog)
+        .filter_by(outcome=audit.OUTCOME_DENIED, action=audit.ACTION_TRACKER_COMMENT)
+        .one()
+    )
     assert entry.actor_username == "mech1"
 
 

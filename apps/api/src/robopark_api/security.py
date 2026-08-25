@@ -45,9 +45,7 @@ def validate_password(
     password was valid for operators and admin-created mechanics alike.
     """
     if len(password) < min_length:
-        raise PasswordPolicyError(
-            f"password must be at least {min_length} characters long"
-        )
+        raise PasswordPolicyError(f"password must be at least {min_length} characters long")
 
     normalized = password.strip().lower()
     if normalized in _COMMON_PASSWORDS:

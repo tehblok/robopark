@@ -31,10 +31,7 @@ def _pending_operator(db: Session, user_id: int) -> User:
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    if (
-        user.role != UserRole.operator.value
-        or user.access_status != AccessStatus.pending.value
-    ):
+    if user.role != UserRole.operator.value or user.access_status != AccessStatus.pending.value:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
     return user
 
@@ -46,9 +43,7 @@ def list_access_requests(db: Session = Depends(get_db)) -> list[User]:
             select(User)
             .where(
                 User.role == UserRole.operator.value,
-                User.access_status.in_(
-                    [AccessStatus.pending.value, AccessStatus.rejected.value]
-                ),
+                User.access_status.in_([AccessStatus.pending.value, AccessStatus.rejected.value]),
             )
             .order_by(User.id)
         ).all()

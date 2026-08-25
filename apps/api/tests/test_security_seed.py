@@ -32,8 +32,7 @@ def test_verify_password_rejects_unparsable_hash(stored_hash):
 
 def test_session_token_hash_is_stable_sha256():
     assert hash_session_token("abc") == (
-        "ba7816bf8f01cfea414140de5dae2223"
-        "b00361a396177a9cb410ff61f20015ad"
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     )
 
 
@@ -114,9 +113,7 @@ def test_app_lifespan_ensures_seed_user(monkeypatch):
     monkeypatch.setattr(
         main,
         "ensure_seed_user",
-        lambda session, configured_settings: calls.append(
-            (session, configured_settings)
-        ),
+        lambda session, configured_settings: calls.append((session, configured_settings)),
         raising=False,
     )
     monkeypatch.setattr(main, "get_settings", lambda: settings)
@@ -127,9 +124,7 @@ def test_app_lifespan_ensures_seed_user(monkeypatch):
     assert calls == [(db, settings)]
 
 
-def test_app_lifespan_seeds_only_the_configured_database(
-    db_engine, db_session, monkeypatch
-):
+def test_app_lifespan_seeds_only_the_configured_database(db_engine, db_session, monkeypatch):
     from robopark_api import main
 
     monkeypatch.setattr(main, "SessionLocal", sessionmaker(bind=db_engine, future=True))

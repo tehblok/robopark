@@ -36,9 +36,7 @@ def test_open_blockers_query_non_fleet_queue_skips_default_types():
 
 
 def test_open_blockers_explicit_type_overrides_default():
-    query = tracker_client.build_open_blockers_query(
-        "SDCFLEETOPS", "Next", issue_type="incident"
-    )
+    query = tracker_client.build_open_blockers_query("SDCFLEETOPS", "Next", issue_type="incident")
     assert "Type: incident" in query
     assert "repair, service" not in query
 
@@ -66,12 +64,8 @@ def test_waiting_parts_keeps_typo_status_key():
 
 def test_is_issue_open_item_filters_resolved():
     assert tracker_client.is_issue_open_item({"status": "Open", "resolution": ""})
-    assert not tracker_client.is_issue_open_item(
-        {"status": "Closed", "resolution": ""}
-    )
-    assert not tracker_client.is_issue_open_item(
-        {"status": "Open", "resolution": "fixed"}
-    )
+    assert not tracker_client.is_issue_open_item({"status": "Closed", "resolution": ""})
+    assert not tracker_client.is_issue_open_item({"status": "Open", "resolution": "fixed"})
 
 
 def test_metrics_cache_ttl_matches_bot():

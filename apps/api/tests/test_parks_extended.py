@@ -59,6 +59,10 @@ def test_patch_park_feature_flags(client, seed_royal):
     assert updated.json()["feature_blockers"] is False
     assert updated.json()["tracker_queue"] == "OPS"
     assert updated.json()["is_active"] is True
-    assert {k: updated.json()[k] for k in PARK_DEFAULTS if k not in {"feature_blockers", "tracker_queue"}} == {
+    assert {
+        k: updated.json()[k]
+        for k in PARK_DEFAULTS
+        if k not in {"feature_blockers", "tracker_queue"}
+    } == {
         k: PARK_DEFAULTS[k] for k in PARK_DEFAULTS if k not in {"feature_blockers", "tracker_queue"}
     }

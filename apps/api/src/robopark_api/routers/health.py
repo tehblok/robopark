@@ -46,9 +46,7 @@ def readiness(response: Response, db: Session = Depends(get_db)) -> dict:
     # Integrations are reported but do not fail readiness: the UI stays usable
     # (parks, reports, admin) while a token is being re-issued.
     try:
-        checks["tracker_token"] = (
-            "configured" if settings_svc.get_tracker_token(db) else "missing"
-        )
+        checks["tracker_token"] = "configured" if settings_svc.get_tracker_token(db) else "missing"
         cookie_valid = settings_svc.get_emergency_cookie_valid(db)
         if not settings_svc.get_emergency_cookie(db):
             checks["emergency_cookie"] = "missing"

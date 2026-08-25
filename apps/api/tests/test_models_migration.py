@@ -110,9 +110,7 @@ def test_migrated_schema_matches_models(sqlite_database_url, monkeypatch):
     assert difference == []
 
 
-def test_migrated_indexes_and_foreign_keys_match_models(
-    sqlite_database_url, monkeypatch
-):
+def test_migrated_indexes_and_foreign_keys_match_models(sqlite_database_url, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
     api_dir = Path(__file__).parents[1]
 
@@ -139,9 +137,7 @@ def test_migrated_indexes_and_foreign_keys_match_models(
     assert foreign_keys[0]["options"]["ondelete"] == "CASCADE"
 
 
-def test_migrated_parks_have_tracker_columns_and_history_table(
-    sqlite_database_url, monkeypatch
-):
+def test_migrated_parks_have_tracker_columns_and_history_table(sqlite_database_url, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
     api_dir = Path(__file__).parents[1]
 
@@ -152,9 +148,7 @@ def test_migrated_parks_have_tracker_columns_and_history_table(
     assert {"tracker_priority", "tracker_type"} <= park_columns
     assert "park_blocker_history" in inspector.get_table_names()
 
-    history_columns = {
-        column["name"] for column in inspector.get_columns("park_blocker_history")
-    }
+    history_columns = {column["name"] for column in inspector.get_columns("park_blocker_history")}
     assert history_columns == {
         "id",
         "park_id",
@@ -165,9 +159,7 @@ def test_migrated_parks_have_tracker_columns_and_history_table(
     }
 
     unique_indexes = {
-        index["name"]
-        for index in inspector.get_indexes("park_blocker_history")
-        if index["unique"]
+        index["name"] for index in inspector.get_indexes("park_blocker_history") if index["unique"]
     }
     unique_constraints = {
         constraint["name"]

@@ -161,21 +161,16 @@ def test_patch_rejects_explicit_null_for_title_path_label(client, seed_royal):
     section = _create_section(client, "status").json()
     field_id = section["fields"][0]["id"]
 
-    assert (
-        client.patch("/admin/emergency/sections/status", json={"title": None}).status_code
-        == 422
-    )
+    assert client.patch("/admin/emergency/sections/status", json={"title": None}).status_code == 422
     assert (
         client.patch("/admin/emergency/sections/status", json={"is_enabled": None}).status_code
         == 422
     )
     assert (
-        client.patch(f"/admin/emergency/fields/{field_id}", json={"path": None}).status_code
-        == 422
+        client.patch(f"/admin/emergency/fields/{field_id}", json={"path": None}).status_code == 422
     )
     assert (
-        client.patch(f"/admin/emergency/fields/{field_id}", json={"label": None}).status_code
-        == 422
+        client.patch(f"/admin/emergency/fields/{field_id}", json={"label": None}).status_code == 422
     )
 
     listed = client.get("/admin/emergency/sections").json()[0]

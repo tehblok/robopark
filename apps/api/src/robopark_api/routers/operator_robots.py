@@ -44,9 +44,7 @@ def operator_robot_tickets(
     keys: set[str] = set()
     try:
         for queue in queues:
-            for item in tracker_client.search_robot_tickets(
-                token=token, queue=queue, query=query
-            ):
+            for item in tracker_client.search_robot_tickets(token=token, queue=queue, query=query):
                 item_queue = (item.get("queue") or "").strip()
                 if item_queue and item_queue not in allowed_queues:
                     continue

@@ -94,17 +94,13 @@ def operator_now_report(
     for park in parks:
         if not park.feature_reports:
             skipped.append(
-                SkippedParkOut(
-                    park_id=park.id, park_name=park.name, reason="reports_disabled"
-                )
+                SkippedParkOut(park_id=park.id, park_name=park.name, reason="reports_disabled")
             )
             continue
         queue = (park.tracker_queue or "").strip()
         if not queue:
             skipped.append(
-                SkippedParkOut(
-                    park_id=park.id, park_name=park.name, reason="no_tracker_queue"
-                )
+                SkippedParkOut(park_id=park.id, park_name=park.name, reason="no_tracker_queue")
             )
             continue
         try:

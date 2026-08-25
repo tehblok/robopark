@@ -96,7 +96,13 @@ def _ql_token(value: str) -> str:
     text = _sanitize_ql_value(value)
     if not text:
         return ""
-    if text.isascii() and " " not in text and "(" not in text and ")" not in text and '"' not in text:
+    if (
+        text.isascii()
+        and " " not in text
+        and "(" not in text
+        and ")" not in text
+        and '"' not in text
+    ):
         return text
     return _ql_quote(text)
 
@@ -350,11 +356,17 @@ def _attachments_from(raw: Any) -> list[dict[str, Any]]:
             mimetype = str(item.get("mimetype") or item.get("contentType") or "").strip() or None
         else:
             name = str(getattr(item, "name", None) or getattr(item, "filename", None) or "").strip()
-            attachment_id = str(getattr(item, "id", None) or getattr(item, "self", None) or "").strip()
-            url = str(getattr(item, "self", None) or getattr(item, "url", None) or "").strip() or None
+            attachment_id = str(
+                getattr(item, "id", None) or getattr(item, "self", None) or ""
+            ).strip()
+            url = (
+                str(getattr(item, "self", None) or getattr(item, "url", None) or "").strip() or None
+            )
             size_raw = getattr(item, "size", None)
             mimetype = (
-                str(getattr(item, "mimetype", None) or getattr(item, "contentType", None) or "").strip()
+                str(
+                    getattr(item, "mimetype", None) or getattr(item, "contentType", None) or ""
+                ).strip()
                 or None
             )
         if not name and not attachment_id:
@@ -747,13 +759,9 @@ def list_transitions(*, token: str, key: str) -> list[dict[str, Any]]:
                 continue
             out.append(
                 {
-                    "id": str(
-                        getattr(item, "id", None) or getattr(item, "key", None) or ""
-                    ),
+                    "id": str(getattr(item, "id", None) or getattr(item, "key", None) or ""),
                     "display": str(
-                        getattr(item, "display", None)
-                        or getattr(item, "name", None)
-                        or ""
+                        getattr(item, "display", None) or getattr(item, "name", None) or ""
                     ),
                 }
             )

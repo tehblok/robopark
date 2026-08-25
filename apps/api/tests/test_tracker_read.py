@@ -42,7 +42,10 @@ def test_tracker_read_list_issues(client, db_session, seed_park_with_tracker, mo
         ],
     )
 
-    assert client.post("/auth/login", json={"username": "op2", "password": "secret"}).status_code == 204
+    assert (
+        client.post("/auth/login", json={"username": "op2", "password": "secret"}).status_code
+        == 204
+    )
     response = client.get("/tracker/issues")
     assert response.status_code == 200
     assert response.json()["items"][0]["key"] == "ROBOPARK-1"
@@ -62,7 +65,10 @@ def test_tracker_read_assignee_filter(client, db_session, seed_park_with_tracker
 
     monkeypatch.setattr(tracker_client, "search_issues", fake_search)
 
-    assert client.post("/auth/login", json={"username": "op2", "password": "secret"}).status_code == 204
+    assert (
+        client.post("/auth/login", json={"username": "op2", "password": "secret"}).status_code
+        == 204
+    )
 
     response = client.get("/tracker/issues?assignee=ivan.petrov")
     assert response.status_code == 200

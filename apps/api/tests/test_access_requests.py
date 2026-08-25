@@ -29,9 +29,7 @@ def test_approve_requires_parks_and_sets_approved(
     monkeypatch,
 ):
     login_as(client, "royal", "secret")
-    park_id = client.post("/parks", json={"name": "Next", "tag": "Next"}).json()[
-        "id"
-    ]
+    park_id = client.post("/parks", json={"name": "Next", "tag": "Next"}).json()["id"]
     client.post("/auth/logout")
     operator_id = register_operator(client, test_settings, monkeypatch, "op1")
     login_as(client, "royal", "secret")
@@ -45,10 +43,7 @@ def test_approve_requires_parks_and_sets_approved(
     )
     inbox = client.get("/admin/access-requests")
     assert inbox.status_code == 200
-    assert any(
-        user["id"] == operator_id and user["username"] == "op1"
-        for user in inbox.json()
-    )
+    assert any(user["id"] == operator_id and user["username"] == "op1" for user in inbox.json())
     assert (
         client.post(
             f"/admin/access-requests/{operator_id}/approve",
@@ -73,14 +68,10 @@ def test_reject_sets_rejected_and_remains_visible(
     operator_id = register_operator(client, test_settings, monkeypatch, "op2")
     login_as(client, "royal", "secret")
 
-    assert (
-        client.post(f"/admin/access-requests/{operator_id}/reject").status_code
-        == 204
-    )
+    assert client.post(f"/admin/access-requests/{operator_id}/reject").status_code == 204
     inbox = client.get("/admin/access-requests")
     assert any(
-        user["id"] == operator_id and user["access_status"] == "rejected"
-        for user in inbox.json()
+        user["id"] == operator_id and user["access_status"] == "rejected" for user in inbox.json()
     )
 
     client.post("/auth/logout")
@@ -115,9 +106,7 @@ def test_approve_rejects_non_pending_user(
 ):
     operator_id = register_operator(client, test_settings, monkeypatch, "op4")
     login_as(client, "royal", "secret")
-    park_id = client.post("/parks", json={"name": "Next", "tag": "next"}).json()[
-        "id"
-    ]
+    park_id = client.post("/parks", json={"name": "Next", "tag": "next"}).json()["id"]
     assert (
         client.post(
             f"/admin/access-requests/{operator_id}/approve",

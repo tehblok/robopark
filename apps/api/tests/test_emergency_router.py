@@ -36,18 +36,12 @@ def seed_operator(db_session):
 
 @pytest.fixture
 def emergency_payload():
-    return json.loads(
-        (FIXTURES / "emergency_robot.json").read_text(encoding="utf-8")
-    )
+    return json.loads((FIXTURES / "emergency_robot.json").read_text(encoding="utf-8"))
 
 
 def configure_emergency(db_session, monkeypatch, emergency_payload):
-    emergency_config.seed_emergency_config(
-        db_session, emergency_config.DEFAULT_JSON_PATH
-    )
-    settings_svc.set_setting(
-        db_session, settings_svc.EMERGENCY_COOKIE_KEY, "Session_id=test"
-    )
+    emergency_config.seed_emergency_config(db_session, emergency_config.DEFAULT_JSON_PATH)
+    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "Session_id=test")
     monkeypatch.setattr(
         emergency_client,
         "fetch_robot_payload",
@@ -131,9 +125,7 @@ def test_mechanic_alias_still_works(
     configure_emergency(db_session, monkeypatch, emergency_payload)
     login_as(client, "mech1", "secret")
 
-    response = client.post(
-        "/mechanic/emergency/resolve", json={"robot_number": "447"}
-    )
+    response = client.post("/mechanic/emergency/resolve", json={"robot_number": "447"})
 
     assert response.status_code == 200
     assert response.json()["vin"] == "YASADR00000000447"

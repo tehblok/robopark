@@ -56,9 +56,7 @@ def _get_issue_or_404(token: str, key: str) -> dict:
     return issue
 
 
-def _authorize(
-    db: Session, user: User, issue: dict, action: str, request: Request
-) -> None:
+def _authorize(db: Session, user: User, issue: dict, action: str, request: Request) -> None:
     """Check the policy and audit a denial before propagating it."""
     try:
         ensure_action_allowed(db, user, issue, action)
@@ -89,9 +87,7 @@ def _upstream_error(
         detail=audit.describe(exc),
         client_ip=client_ip(request),
     )
-    return HTTPException(
-        status_code=status.HTTP_502_BAD_GATEWAY, detail="tracker_upstream_error"
-    )
+    return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="tracker_upstream_error")
 
 
 def _ok(key: str, action: str, user: User, issue: dict) -> TrackerActionOut:
@@ -276,9 +272,7 @@ def close_issue(
         )
 
     try:
-        tracker_client.transition_issue(
-            token=token, key=key, transition=close_transition["id"]
-        )
+        tracker_client.transition_issue(token=token, key=key, transition=close_transition["id"])
     except tracker_client.TrackerError as exc:
         raise _upstream_error(db, user, "close", key, exc, request) from exc
 

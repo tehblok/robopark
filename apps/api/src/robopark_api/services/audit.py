@@ -114,9 +114,7 @@ def list_entries(
     if park_id is not None:
         filters.append(AuditLog.park_id == park_id)
 
-    total = db.scalar(
-        select(func.count()).select_from(AuditLog).where(*filters)
-    ) or 0
+    total = db.scalar(select(func.count()).select_from(AuditLog).where(*filters)) or 0
     rows = db.scalars(
         select(AuditLog)
         .where(*filters)

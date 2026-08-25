@@ -46,10 +46,14 @@ def _ensure_tracker_user(user: User) -> None:
     }
     if user.role not in allowed_roles:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-    if user.role in {
-        UserRole.operator.value,
-        UserRole.mechanic.value,
-    } and user.access_status != AccessStatus.approved.value:
+    if (
+        user.role
+        in {
+            UserRole.operator.value,
+            UserRole.mechanic.value,
+        }
+        and user.access_status != AccessStatus.approved.value
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
 
@@ -83,9 +87,7 @@ def _issue_out(issue: dict) -> TrackerIssueOut:
 
 
 def _detail_out(issue: dict) -> TrackerIssueDetailOut:
-    attachments = [
-        TrackerAttachmentOut(**item) for item in (issue.get("attachments") or [])
-    ]
+    attachments = [TrackerAttachmentOut(**item) for item in (issue.get("attachments") or [])]
     return TrackerIssueDetailOut(
         **_issue_out(issue).model_dump(),
         resolution=str(issue.get("resolution") or ""),
@@ -103,7 +105,9 @@ def _untagged_park_tags(db: Session, user: User) -> list[str]:
         return tags
     if user.role in {UserRole.admin.value, UserRole.royal.value}:
         rows = db.scalars(select(Park).where(Park.is_active.is_(True))).all()
-        return sorted({str(park.tag).strip() for park in rows if park.tag and str(park.tag).strip()})
+        return sorted(
+            {str(park.tag).strip() for park in rows if park.tag and str(park.tag).strip()}
+        )
     return []
 
 
@@ -143,9 +147,7 @@ def _build_query(
                 parts.append(f"Queue: {tracker_client.ql_token(selected_queue)}")
             else:
                 parts.append(
-                    "("
-                    + " OR ".join(f"Queue: {tracker_client.ql_token(q)}" for q in queues)
-                    + ")"
+                    "(" + " OR ".join(f"Queue: {tracker_client.ql_token(q)}" for q in queues) + ")"
                 )
     elif selected_queue:
         parts.append(f"Queue: {tracker_client.ql_token(selected_queue)}")

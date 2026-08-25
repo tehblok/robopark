@@ -452,4 +452,3 @@ class AuditPageOut(BaseModel):
     limit: int
     offset: int
     has_more: bool
-

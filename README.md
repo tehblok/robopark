@@ -339,7 +339,7 @@ Locally:
 
 ```bash
 cd apps/api && .venv/bin/ruff check . && .venv/bin/python -m pytest -q
-cd apps/web && npm run build && npm test && npm run lint
+cd apps/web && npm run build && npm test && npm run lint && npm run check-nav
 ```
 
 Remaining UI/UX backlog: [`docs/UI-REFACTOR-SPEC.md`](docs/UI-REFACTOR-SPEC.md).

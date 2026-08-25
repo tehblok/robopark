@@ -40,7 +40,10 @@ def test_tracker_action_comment(client, db_session, seed_park_with_tracker, monk
     )
     monkeypatch.setattr(tracker_client, "add_comment", lambda **_kwargs: {"id": "1", "text": "ok"})
 
-    assert client.post("/auth/login", json={"username": "op3", "password": "secret"}).status_code == 204
+    assert (
+        client.post("/auth/login", json={"username": "op3", "password": "secret"}).status_code
+        == 204
+    )
     response = client.post("/tracker/issues/ROBOPARK-1/comment", json={"text": "hello"})
     assert response.status_code == 200
     assert response.json()["action"] == "comment"
@@ -95,9 +98,7 @@ def test_mechanic_close_creates_close_review(
     assert report.title == "Закрытие ROBOPARK-1"
 
 
-def test_mechanic_close_without_park_rejected_before_tracker(
-    client, db_session, monkeypatch
-):
+def test_mechanic_close_without_park_rejected_before_tracker(client, db_session, monkeypatch):
     from robopark_api.services import tracker_client
 
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")

@@ -96,9 +96,7 @@ def _render_fields_and_top_level_leftovers(
     payload: dict[str, Any], fields: list[dict[str, str]]
 ) -> list[dict[str, Any]]:
     rendered = _render_fields(payload, fields)
-    covered_top_level = {
-        str(field.get("path") or "").split(".", maxsplit=1)[0] for field in fields
-    }
+    covered_top_level = {str(field.get("path") or "").split(".", maxsplit=1)[0] for field in fields}
     rendered.extend(
         {"label": str(key), "lines": _value_lines(value)}
         for key, value in payload.items()
@@ -124,9 +122,7 @@ def render_section(
     if formatter == "errors_classify":
         fields = _render_errors(payload, section)
     elif formatter == "fields_and_top_level_leftovers":
-        fields = _render_fields_and_top_level_leftovers(
-            payload, list(section.get("fields") or [])
-        )
+        fields = _render_fields_and_top_level_leftovers(payload, list(section.get("fields") or []))
     else:
         fields = _render_fields(payload, list(section.get("fields") or []))
     return {"id": section_id, "title": title, "fields": fields}

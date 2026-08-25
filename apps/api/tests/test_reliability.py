@@ -123,9 +123,7 @@ def test_login_purges_expired_sessions(client, db_session, seed_royal):
     db_session.commit()
 
     assert login_as(client, "royal", "secret").status_code == 204
-    assert (
-        db_session.query(AuthSession).filter_by(token_hash="stale").count() == 0
-    )
+    assert db_session.query(AuthSession).filter_by(token_hash="stale").count() == 0
 
 
 def test_liveness_endpoint(client):
@@ -149,12 +147,8 @@ def test_readiness_reports_database_and_integrations(client):
 def test_readiness_reports_configured_integrations(client, db_session):
     from robopark_api.services import platform_settings
 
-    platform_settings.set_setting(
-        db_session, platform_settings.TRACKER_TOKEN_KEY, "token"
-    )
-    platform_settings.set_setting(
-        db_session, platform_settings.EMERGENCY_COOKIE_KEY, "cookie"
-    )
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    platform_settings.set_setting(db_session, platform_settings.EMERGENCY_COOKIE_KEY, "cookie")
 
     checks = client.get("/health/ready").json()["checks"]
     assert checks["tracker_token"] == "configured"

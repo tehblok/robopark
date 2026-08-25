@@ -22,7 +22,9 @@ def test_admin_creates_and_lists_mechanic(client, seed_royal, seed_park_with_tra
     assert any(item["username"] == "mech2" for item in listed.json())
 
 
-def test_duplicate_mechanic_username_conflict(client, seed_royal, seed_mechanic, seed_park_with_tracker):
+def test_duplicate_mechanic_username_conflict(
+    client, seed_royal, seed_mechanic, seed_park_with_tracker
+):
     login_as(client, "royal", "secret")
     response = client.post(
         "/admin/mechanics",
@@ -74,9 +76,7 @@ def test_mechanic_password_policy_enforced(client, seed_royal, seed_park_with_tr
     assert response.status_code == 422
 
 
-def test_deactivating_mechanic_revokes_sessions(
-    client, db_session, seed_royal, seed_mechanic
-):
+def test_deactivating_mechanic_revokes_sessions(client, db_session, seed_royal, seed_mechanic):
     """A disabled account must lose access immediately, not at cookie expiry."""
     from robopark_api.models import AuthSession
 
@@ -87,9 +87,7 @@ def test_deactivating_mechanic_revokes_sessions(
     admin_client_cookies = dict(client.cookies)
     client.cookies.clear()
     login_as(client, "royal", "secret")
-    patched = client.patch(
-        f"/admin/mechanics/{seed_mechanic.id}", json={"is_active": False}
-    )
+    patched = client.patch(f"/admin/mechanics/{seed_mechanic.id}", json={"is_active": False})
     assert patched.status_code == 200
     assert db_session.query(AuthSession).filter_by(user_id=seed_mechanic.id).count() == 0
 

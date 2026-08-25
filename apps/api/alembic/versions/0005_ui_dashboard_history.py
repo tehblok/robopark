@@ -49,9 +49,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        op.f("ix_park_blocker_history_park_id"), table_name="park_blocker_history"
-    )
+    op.drop_index(op.f("ix_park_blocker_history_park_id"), table_name="park_blocker_history")
     op.drop_table("park_blocker_history")
     op.drop_column("parks", "tracker_type")
     op.drop_column("parks", "tracker_priority")
