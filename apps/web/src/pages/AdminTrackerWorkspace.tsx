@@ -2,9 +2,14 @@ import { useEffect, useState } from 'react'
 import { api, type TrackerPolicySettings } from '../api'
 import { PageShell, Panel } from '../components/PageShell'
 import { TrackerWorkspace } from '../components/tracker/TrackerWorkspace'
+import { useParkContext } from '../park-context'
 
 export function AdminTrackerWorkspace() {
+  const { parkId, parks } = useParkContext()
   const [policy, setPolicy] = useState<TrackerPolicySettings | null>(null)
+  const selected = parks.find((park) => park.id === parkId)
+  const defaultQueue = (selected?.tracker_queue || 'SDCFLEETOPS').trim() || 'SDCFLEETOPS'
+  const defaultPark = selected?.tag?.trim() || undefined
 
   useEffect(() => {
     api.trackerPolicy().then(setPolicy).catch(() => setPolicy(null))
@@ -28,7 +33,12 @@ export function AdminTrackerWorkspace() {
           </div>
         </Panel>
       )}
-      <TrackerWorkspace allowUntagged canWrite />
+      <TrackerWorkspace
+        allowUntagged
+        canWrite
+        defaultPark={defaultPark}
+        defaultQueue={defaultQueue}
+      />
     </PageShell>
   )
 }

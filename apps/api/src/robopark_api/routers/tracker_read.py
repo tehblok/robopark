@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -23,6 +25,7 @@ from robopark_api.services.tracker_policy import (
     enforce_issue_scope,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tracker", tags=["tracker-read"])
 
 
@@ -86,11 +89,12 @@ def _build_query(
 ) -> str:
     parts: list[str] = [
         "Priority: blocker",
-        tracker_client.open_issues_clause(),
     ]
-
+    # Explicit Status replaces the default open-issues clause (avoid conflicting QL).
     if status_filter:
         parts.append(f"Status: {tracker_client.ql_token(status_filter)}")
+    else:
+        parts.append(tracker_client.open_issues_clause())
 
     queues = allowed_queues_for_user(db, user)
     selected_queue = (queue or "").strip() or None
@@ -113,6 +117,10 @@ def _build_query(
                     + ")"
                 )
     elif selected_queue:
+        parts.append(f"Queue: {tracker_client.ql_token(selected_queue)}")
+    else:
+        # Never run an unscoped search — default to fleet ops queue.
+        selected_queue = tracker_client.DEFAULT_QUEUE
         parts.append(f"Queue: {tracker_client.ql_token(selected_queue)}")
 
     # Type filter only when a single concrete queue is selected (SDCFLEETOPS default types).
@@ -187,6 +195,7 @@ def list_issues(
     try:
         items = tracker_client.search_issues(token=token, query=query_text)
     except tracker_client.TrackerError as exc:
+        logger.exception("tracker search failed query=%r", query_text)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="tracker_upstream_error",

@@ -534,7 +534,7 @@ def get_issue(*, token: str, key: str) -> dict[str, Any] | None:
                 return None
             raise
         item = issue_to_dict(issue)
-        return item if is_issue_open_item(item) else None
+        return item
 
     try:
         return _run_tracked(_run)

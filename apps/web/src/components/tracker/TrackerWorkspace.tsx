@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   api,
   type TrackerComment,
@@ -31,6 +31,7 @@ export function TrackerWorkspace({
   const [transitions, setTransitions] = useState<TrackerTransition[]>([])
   const [error, setError] = useState('')
   const requestId = useRef(0)
+  const didInitialLoad = useRef(false)
 
   const clearDetail = () => {
     setSelected('')
@@ -62,6 +63,17 @@ export function TrackerWorkspace({
       setError(mapApiError(err) || 'Не удалось загрузить тикеты Startrek.')
     }
   }
+
+  useEffect(() => {
+    if (didInitialLoad.current) return
+    didInitialLoad.current = true
+    void loadIssues({
+      queue: defaultQueue,
+      park: defaultPark || undefined,
+    })
+    // Initial load with workspace defaults only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const openIssue = async (key: string) => {
     setSelected(key)
