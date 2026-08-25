@@ -42,3 +42,6 @@ uv.lock
 
 # Vendored Startrek client (local copy; same as bot_otchet layout)
 startrek_client-2.8/
+
+# Local git worktrees
+.worktrees/
