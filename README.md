@@ -221,6 +221,10 @@ after the user has been created. To enable operator self-registration, also set
 `http://127.0.0.1:8000`; check it with
 `curl http://127.0.0.1:8000/health`.
 
+**Local demo accounts:** set `DEV_SEED=true` in `apps/api/.env` and restart the
+API. Logins and passwords — [`docs/DEV-ACCOUNTS.md`](docs/DEV-ACCOUNTS.md)
+(for example `royal` / `RoboparkRoyal!1`, `operator` / `RoboparkOperator!1`).
+
 ### Web
 
 With the API running, start the web app in another terminal:

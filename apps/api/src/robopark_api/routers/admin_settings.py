@@ -81,6 +81,9 @@ def put_emergency_cookie(
 ) -> IntegrationSettingsOut:
     settings_svc.set_setting(db, settings_svc.EMERGENCY_COOKIE_KEY, payload.cookie)
     settings_svc.set_emergency_cookie_valid(db, True)
+    from robopark_api.services import reports as reports_svc
+
+    reports_svc.resolve_open_emergency_cookie_reports(db)
     return _to_out(db)
 
 

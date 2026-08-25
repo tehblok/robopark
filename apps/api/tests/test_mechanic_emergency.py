@@ -49,5 +49,5 @@ def test_emergency_invalid_cookie(client, seed_mechanic, seed_royal):
     ):
         response = client.post("/mechanic/emergency/resolve", json={"robot_number": "447"})
 
-    assert response.status_code == 401
+    assert response.status_code == 403
     assert response.json()["detail"] == "emergency_cookie_invalid"

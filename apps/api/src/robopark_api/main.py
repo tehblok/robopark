@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
+from robopark_api.dev_seed import ensure_dev_seed
 from robopark_api.routers import (
     admin_access,
     admin_audit,
@@ -42,6 +43,7 @@ def create_app() -> FastAPI:
     async def lifespan(_app: FastAPI):
         with SessionLocal() as db:
             ensure_seed_user(db, settings)
+            ensure_dev_seed(db, settings)
         stop_event = asyncio.Event()
         tasks = [
             asyncio.create_task(run_keepalive_loop(stop_event)),

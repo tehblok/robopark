@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from robopark_api.db import SessionLocal
-from robopark_api.services import emergency_client
+from robopark_api.services import emergency_client, reports
 from robopark_api.services import platform_settings as settings_svc
 
 MIN_INTERVAL_SECONDS = 90.0
@@ -83,6 +83,7 @@ def _keepalive_once_with_db(db: Session, stop_event: threading.Event | None) -> 
                 settings_svc.EMERGENCY_KEEPALIVE_LAST_OK_KEY,
                 datetime.now(UTC).isoformat(),
             )
+            reports.resolve_open_emergency_cookie_reports(db)
 
         if index + 1 < len(vins) and not _interruptible_sleep(INTER_VIN_GAP_SECONDS, stop_event):
             return

@@ -9,10 +9,10 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from robopark_api.services import emergency_client
+from robopark_api.services import emergency_client, reports
 from robopark_api.services import platform_settings as settings_svc
 
-PAYLOAD_CACHE_TTL_SECONDS = 5.0
+PAYLOAD_CACHE_TTL_SECONDS = 2.5
 
 
 @dataclass
@@ -92,9 +92,11 @@ def get_robot_payload(*, db: Session, vin: str) -> dict[str, Any]:
             payload = emergency_client.fetch_robot_payload(cookie=cookie, vin=vin)
             settings_svc.set_emergency_cookie_valid(db, True)
             settings_svc.touch_keepalive_ring(db, vin)
+            reports.resolve_open_emergency_cookie_reports(db)
         except emergency_client.EmergencyAuthError:
             invalidate_vin(vin)
             settings_svc.set_emergency_cookie_valid(db, False)
+            reports.ensure_open_emergency_cookie_report(db, author=None)
             raise
     except BaseException as exc:
         error = exc

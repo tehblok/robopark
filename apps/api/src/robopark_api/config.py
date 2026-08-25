@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     seed_username: str | None = None
     seed_password: str | None = None
     seed_role: str = "royal"
+    #: When true, create documented local demo users and a demo park on startup.
+    #: Local development only — keep false in production.
+    dev_seed: bool = False
 
     #: Master key for encrypting integration secrets at rest (Tracker token,
     #: Emergency cookie). When unset, secrets fall back to plaintext storage and

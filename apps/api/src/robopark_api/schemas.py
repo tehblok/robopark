@@ -181,6 +181,18 @@ class EmergencySectionOut(BaseModel):
     fields: list[EmergencyFieldOut]
 
 
+class EmergencySnapshotOut(BaseModel):
+    vin: str
+    short_number: str
+    online: bool | None = None
+    speed: float | None = None
+    charge_percent: float | None = None
+    lat: float | None = None
+    lon: float | None = None
+    heading_deg: float | None = None
+    wheels_fault: list[str] = []
+
+
 EmergencyViewerRole = Literal["mechanic", "operator", "admin", "royal"]
 
 
@@ -411,7 +423,7 @@ class ReportOut(BaseModel):
     id: int
     kind: str
     status: str
-    park_id: int
+    park_id: int | None
     author_user_id: int
     target_role: str
     tracker_key: str | None

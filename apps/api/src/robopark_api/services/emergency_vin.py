@@ -27,3 +27,8 @@ def normalize_robot_id(raw: str) -> str:
     if not match:
         raise ValueError(f"robot number not found in {raw!r}")
     return "YASADR" + match.group(1).zfill(11)[-11:]
+
+
+def short_robot_number(vin: str) -> str:
+    digits = "".join(ch for ch in (vin or "") if ch.isdigit())
+    return digits.lstrip("0") or "0"

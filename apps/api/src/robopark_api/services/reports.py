@@ -2,16 +2,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from robopark_api.deps import get_user_parks
 from robopark_api.models import AccessStatus, Report, User, UserRole
+from robopark_api.services import platform_settings as settings_svc
 
 KIND_TICKET_QUESTION = "ticket_question"
 KIND_TICKET_CLOSE_REVIEW = "ticket_close_review"
 KIND_MECHANIC_PROBLEM = "mechanic_problem"
 KIND_ESCALATION = "escalation_to_admin"
+KIND_EMERGENCY_COOKIE_STALE = "emergency_cookie_stale"
 
 STATUS_OPEN = "open"
 STATUS_RETURNED = "returned"
@@ -102,6 +105,80 @@ def _load_report(db: Session, report_id: int) -> Report:
     return report
 
 
+def _first_admin(db: Session) -> User | None:
+    return db.scalars(
+        select(User)
+        .where(
+            User.role.in_((UserRole.admin.value, UserRole.royal.value)),
+            User.is_active.is_(True),
+        )
+        .order_by(User.id.asc())
+    ).first()
+
+
+def ensure_open_emergency_cookie_report(db: Session, *, author: User | None) -> Report | None:
+    existing = db.scalars(
+        select(Report).where(
+            Report.kind == KIND_EMERGENCY_COOKIE_STALE,
+            Report.status == STATUS_OPEN,
+        )
+    ).first()
+    if existing is not None:
+        return existing
+    user = author or _first_admin(db)
+    if user is None:
+        return None
+    valid = settings_svc.get_emergency_cookie_valid(db)
+    updated = None
+    row = settings_svc.get_setting(db, settings_svc.EMERGENCY_COOKIE_KEY)
+    if row is not None:
+        updated = row.updated_at
+    body = f"user={user.username}\ncookie_valid={valid}\ncookie_updated_at={updated}"
+    report = Report(
+        kind=KIND_EMERGENCY_COOKIE_STALE,
+        status=STATUS_OPEN,
+        park_id=None,
+        author_user_id=user.id,
+        target_role=UserRole.admin.value,
+        title="Emergency cookie протухла",
+        body=body,
+    )
+    db.add(report)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.scalars(
+            select(Report).where(
+                Report.kind == KIND_EMERGENCY_COOKIE_STALE,
+                Report.status == STATUS_OPEN,
+            )
+        ).first()
+        if existing is None:
+            raise
+        return existing
+    db.refresh(report)
+    return report
+
+
+def resolve_open_emergency_cookie_reports(db: Session) -> int:
+    rows = list(
+        db.scalars(
+            select(Report).where(
+                Report.kind == KIND_EMERGENCY_COOKIE_STALE,
+                Report.status == STATUS_OPEN,
+            )
+        ).all()
+    )
+    now = datetime.now(UTC)
+    for report in rows:
+        report.status = STATUS_DONE
+        report.resolved_at = now
+    if rows:
+        db.commit()
+    return len(rows)
+
+
 def _is_admin_inbox_user(user: User) -> bool:
     return user.role in (UserRole.admin.value, UserRole.royal.value)
 
@@ -130,7 +207,11 @@ def _can_act_on_report(db: Session, user: User, report: Report) -> bool:
     if report.target_role == UserRole.admin.value:
         return _is_admin_inbox_user(user)
     if report.target_role == UserRole.operator.value:
-        return _is_approved_operator(user) and report.park_id in _user_park_ids(db, user)
+        return (
+            _is_approved_operator(user)
+            and report.park_id is not None
+            and report.park_id in _user_park_ids(db, user)
+        )
     return False
 
 
@@ -174,7 +255,12 @@ def list_inbox(db: Session, user: User, *, park_id: int | None = None) -> list[R
         return []
 
     if park_id is not None and _is_admin_inbox_user(user):
-        stmt = stmt.where(Report.park_id == park_id)
+        stmt = stmt.where(
+            or_(
+                Report.park_id == park_id,
+                Report.kind == KIND_EMERGENCY_COOKIE_STALE,
+            )
+        )
 
     return list(db.scalars(stmt.order_by(Report.created_at.desc(), Report.id.desc())).all())
 

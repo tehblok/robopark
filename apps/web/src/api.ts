@@ -121,6 +121,18 @@ export type EmergencySectionDetail = {
   fields: { label: string; lines: string[] }[]
 }
 
+export type EmergencySnapshot = {
+  vin: string
+  short_number: string
+  online: boolean | null
+  speed: number | null
+  charge_percent: number | null
+  lat: number | null
+  lon: number | null
+  heading_deg: number | null
+  wheels_fault: string[]
+}
+
 export type EmergencyViewerRole = 'mechanic' | 'operator' | 'admin' | 'royal'
 
 export type EmergencyAdminField = {
@@ -458,6 +470,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ robot_number }),
     }),
+  emergencySnapshot: (vin: string) =>
+    request<EmergencySnapshot>(`/emergency/${encodeURIComponent(vin)}/snapshot`),
   emergencySection: (vin: string, sectionId: string) =>
     request<EmergencySectionDetail>(
       `/emergency/${encodeURIComponent(vin)}/sections/${encodeURIComponent(sectionId)}`,

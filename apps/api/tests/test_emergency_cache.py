@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from robopark_api.services import emergency_cache, emergency_client
+from robopark_api.services import emergency_cache, emergency_client, reports
 from robopark_api.services import platform_settings as settings_svc
 
 VIN = "YASADR00000000447"
@@ -38,7 +38,7 @@ def test_cache_reuses_payload_within_ttl(db_session, monkeypatch):
     assert calls == 1
 
 
-def test_cache_expires_at_exactly_five_seconds(db_session, monkeypatch):
+def test_cache_expires_at_exactly_two_point_five_seconds(db_session, monkeypatch):
     now = [100.0]
     calls = 0
 
@@ -52,7 +52,7 @@ def test_cache_expires_at_exactly_five_seconds(db_session, monkeypatch):
     _set_cookie(db_session)
 
     assert emergency_cache.get_robot_payload(db=db_session, vin=VIN) == {"call": 1}
-    now[0] += 4.999
+    now[0] += 2.499
     assert emergency_cache.get_robot_payload(db=db_session, vin=VIN) == {"call": 1}
     now[0] += 0.001
     assert emergency_cache.get_robot_payload(db=db_session, vin=VIN) == {"call": 2}
@@ -75,6 +75,7 @@ def test_single_flight_per_vin(monkeypatch):
     monkeypatch.setattr(settings_svc, "get_emergency_cookie", lambda db: "cookie")
     monkeypatch.setattr(settings_svc, "set_emergency_cookie_valid", lambda db, valid: None)
     monkeypatch.setattr(settings_svc, "touch_keepalive_ring", lambda db, vin: None)
+    monkeypatch.setattr(reports, "resolve_open_emergency_cookie_reports", lambda db: 0)
 
     results = []
     errors = []
@@ -113,6 +114,7 @@ def test_different_vins_do_not_share_flight(monkeypatch):
     monkeypatch.setattr(settings_svc, "get_emergency_cookie", lambda db: "cookie")
     monkeypatch.setattr(settings_svc, "set_emergency_cookie_valid", lambda db, valid: None)
     monkeypatch.setattr(settings_svc, "touch_keepalive_ring", lambda db, vin: None)
+    monkeypatch.setattr(reports, "resolve_open_emergency_cookie_reports", lambda db: 0)
 
     results = []
     threads = [

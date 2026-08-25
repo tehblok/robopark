@@ -246,12 +246,19 @@ class Report(Base):
             sqlite_where=text("kind = 'ticket_close_review' AND status = 'open'"),
             postgresql_where=text("kind = 'ticket_close_review' AND status = 'open'"),
         ),
+        Index(
+            "uq_reports_open_emergency_cookie_stale",
+            "kind",
+            unique=True,
+            sqlite_where=text("kind = 'emergency_cookie_stale' AND status = 'open'"),
+            postgresql_where=text("kind = 'emergency_cookie_stale' AND status = 'open'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     kind: Mapped[str] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(32), index=True, default="open")
-    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id"), index=True)
+    park_id: Mapped[int | None] = mapped_column(ForeignKey("parks.id"), index=True)
     author_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     target_role: Mapped[str] = mapped_column(String(32), index=True)
     tracker_key: Mapped[str | None] = mapped_column(String(128), nullable=True)

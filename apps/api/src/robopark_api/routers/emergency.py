@@ -10,6 +10,7 @@ from robopark_api.schemas import (
     EmergencyResolveRequest,
     EmergencySectionItem,
     EmergencySectionOut,
+    EmergencySnapshotOut,
 )
 from robopark_api.services import (
     emergency_cache,
@@ -18,6 +19,7 @@ from robopark_api.services import (
     emergency_vin,
 )
 from robopark_api.services import platform_settings as settings_svc
+from robopark_api.services.emergency_snapshot import parse_emergency_snapshot
 
 router = APIRouter(prefix="/emergency", tags=["emergency"])
 
@@ -36,7 +38,7 @@ def _get_robot_payload(db: Session, vin: str) -> dict:
         return emergency_cache.get_robot_payload(db=db, vin=vin)
     except emergency_client.EmergencyAuthError as exc:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="emergency_cookie_invalid",
         ) from exc
     except emergency_client.EmergencyError as exc:
@@ -86,6 +88,18 @@ def emergency_section_for_user(
     )
 
 
+def emergency_snapshot_for_user(vin: str, user: User, db: Session) -> EmergencySnapshotOut:
+    del user
+    try:
+        vin = emergency_vin.normalize_robot_id(vin)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    payload = _get_robot_payload(db, vin)
+    snap = parse_emergency_snapshot(payload, vin=vin)
+    return EmergencySnapshotOut(**snap)
+
+
 @router.post("/resolve", response_model=EmergencyResolveOut)
 def resolve_robot(
     payload: EmergencyResolveRequest,
@@ -93,6 +107,15 @@ def resolve_robot(
     db: Session = Depends(get_db),
 ) -> EmergencyResolveOut:
     return resolve_robot_for_user(payload, user, db)
+
+
+@router.get("/{vin}/snapshot", response_model=EmergencySnapshotOut)
+def emergency_snapshot(
+    vin: str,
+    user: User = Depends(require_emergency_viewer),
+    db: Session = Depends(get_db),
+) -> EmergencySnapshotOut:
+    return emergency_snapshot_for_user(vin, user, db)
 
 
 @router.get("/{vin}/sections/{section_id}", response_model=EmergencySectionOut)
