@@ -7,6 +7,7 @@ import {
   type TrackerTransition,
 } from '../../api'
 import { mapApiError } from '../../i18n/errors'
+import { ru } from '../../i18n/ru'
 import { IssueActionsPanel } from './IssueActionsPanel'
 import { IssueDetailPanel } from './IssueDetailPanel'
 import { IssueFilters, type IssueFilterValues } from './IssueFilters'
@@ -31,6 +32,13 @@ export function TrackerWorkspace({
   const [error, setError] = useState('')
   const requestId = useRef(0)
 
+  const clearDetail = () => {
+    setSelected('')
+    setDetail(null)
+    setComments([])
+    setTransitions([])
+  }
+
   const loadIssues = async (filters: IssueFilterValues) => {
     const req = ++requestId.current
     setError('')
@@ -42,13 +50,12 @@ export function TrackerWorkspace({
       const data = await api.trackerIssues(filters)
       if (req !== requestId.current) return
       setItems(data.items)
-      if (data.items[0]) {
+      const mobileShell =
+        typeof window !== 'undefined' && window.matchMedia('(max-width: 900px)').matches
+      if (data.items[0] && !mobileShell) {
         await openIssue(data.items[0].key)
       } else {
-        setSelected('')
-        setDetail(null)
-        setComments([])
-        setTransitions([])
+        clearDetail()
       }
     } catch (err) {
       if (req !== requestId.current) return
@@ -80,42 +87,59 @@ export function TrackerWorkspace({
   }
 
   return (
-    <section className="tracker-grid">
-      <IssueFilters
-        allowUntagged={allowUntagged}
-        defaultPark={defaultPark}
-        defaultQueue={defaultQueue}
-        onApply={(filters) => void loadIssues(filters)}
-      />
-      {error && <p className="error">{error}</p>}
-      <IssueList items={items} onSelect={(key) => void openIssue(key)} selected={selected} />
-      <IssueDetailPanel comments={comments} issue={detail} />
-      {detail && (
-        <IssueActionsPanel
-          canWrite={canWrite}
-          onAssign={async (assignee) => {
-            await api.trackerAssign(detail.key, assignee)
-            await refreshSelected()
-          }}
-          onClose={async () => {
-            await api.trackerClose(detail.key)
-            await refreshSelected()
-          }}
-          onComment={async (text) => {
-            await api.trackerComment(detail.key, text)
-            await refreshSelected()
-          }}
-          onTransition={async (transition) => {
-            await api.trackerTransition(detail.key, transition)
-            await refreshSelected()
-          }}
-          onUnassign={async () => {
-            await api.trackerUnassign(detail.key)
-            await refreshSelected()
-          }}
-          transitions={transitions}
+    <section
+      className={
+        selected ? 'tracker-grid tracker-grid--has-detail' : 'tracker-grid'
+      }
+    >
+      {error ? <p className="error">{error}</p> : null}
+      <div className="tracker-list-pane">
+        <IssueFilters
+          allowUntagged={allowUntagged}
+          defaultPark={defaultPark}
+          defaultQueue={defaultQueue}
+          onApply={(filters) => void loadIssues(filters)}
         />
-      )}
+        <IssueList items={items} onSelect={(key) => void openIssue(key)} selected={selected} />
+      </div>
+      <div className="tracker-detail-pane">
+        {selected ? (
+          <button
+            type="button"
+            className="page-back tracker-detail-back"
+            onClick={clearDetail}
+          >
+            {ru.back}
+          </button>
+        ) : null}
+        <IssueDetailPanel comments={comments} issue={detail} />
+        {detail && (
+          <IssueActionsPanel
+            canWrite={canWrite}
+            onAssign={async (assignee) => {
+              await api.trackerAssign(detail.key, assignee)
+              await refreshSelected()
+            }}
+            onClose={async () => {
+              await api.trackerClose(detail.key)
+              await refreshSelected()
+            }}
+            onComment={async (text) => {
+              await api.trackerComment(detail.key, text)
+              await refreshSelected()
+            }}
+            onTransition={async (transition) => {
+              await api.trackerTransition(detail.key, transition)
+              await refreshSelected()
+            }}
+            onUnassign={async () => {
+              await api.trackerUnassign(detail.key)
+              await refreshSelected()
+            }}
+            transitions={transitions}
+          />
+        )}
+      </div>
     </section>
   )
 }

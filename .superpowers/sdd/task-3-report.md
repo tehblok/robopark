@@ -1,67 +1,104 @@
-# Task 3 Report: Payload cache
+# Task 3 Report: CSS — mobile shell, safe-area, forms, KPI, hover
 
-## Implementation
+**Branch:** `feature/mobile-responsive`  
+**Date:** 2026-08-24  
+**Status:** ✅ Complete
 
-- Added `emergency_cache.get_robot_payload` with an exact 5.0-second
-  monotonic TTL.
-- Added per-VIN single-flight coordination using one process-wide lock and
-  per-flight events. Concurrent requests for different VINs remain independent.
-- Added `invalidate_vin` and `clear_cache_for_tests`.
-- Successful upstream loads mark the Emergency cookie valid and update the
-  keepalive ring.
-- `EmergencyAuthError` invalidates the VIN, marks the cookie invalid, and is
-  re-raised.
-- Added JSON-backed keepalive ring helpers under
-  `emergency_keepalive_ring`; touching a VIN moves it to the end and retains at
-  most 20 VINs.
+## Summary
 
-## TDD evidence
+Implemented mobile-responsive CSS in `apps/web/src/index.css` per task brief. Mobile-only chrome is hidden on desktop and activated at `max-width: 900px`. Safe-area insets, bottom nav, more-sheet, form stacking, KPI grids, and touch-safe hover behavior are in place.
 
-The new test module was run before implementation and failed during collection
-because `robopark_api.services.emergency_cache` did not exist. After
-implementation, the focused cache and platform settings suite passed:
+## Changes
 
-```text
-10 passed, 1 warning in 0.54s
+### 1. CSS tokens (`:root`)
+
+Added:
+- `--bottom-nav-height: 3.75rem`
+- `--safe-bottom: env(safe-area-inset-bottom, 0px)`
+
+### 2. Hover guard (touch devices)
+
+Replaced unconditional `transform: translateY(-1px)` on button hover with:
+
+```css
+@media (hover: hover) and (pointer: fine) { ... }
 ```
 
-Coverage includes cache reuse, expiry at exactly 5.0 seconds, same-VIN
-single-flight, independent VIN flights, auth invalidation, cookie validity,
-ring updates, move-to-end behavior, and the 20-item ring limit.
+Excluded `.mobile-nav-item` from hover transform and from global brand `button` fill/hover rules so «Ещё» is not an orange pill.
+
+### 3. Mobile shell (≤900px)
+
+- Replaced old sidebar-as-top-grid block with hide-sidebar + bottom nav layout
+- Desktop defaults: `.mobile-bottom-nav`, `.mobile-user-open`, `.mobile-more-backdrop`, `.mobile-more-sheet` → `display: none`
+- Mobile: fixed bottom nav (5 columns), safe-area padding, more-sheet/backdrop, `.mobile-user-open` in topbar
+- `.app-content` bottom padding accounts for nav + safe area
+- Forms/actions stack vertically; panel inputs full-width with `min-height: 2.75rem`
+- KPI/stat grids: 2 columns at 900px, 1 column at 480px
+- Table wrappers get horizontal scroll with `-webkit-overflow-scrolling: touch`
+
+### 4. Preserved
+
+- Existing dashboard `@media (max-width: 900px)` grid-areas block (chart → kpi → moving) unchanged
 
 ## Verification
 
-- IDE lint diagnostics: no errors in the three changed code/test files.
-- Full API suite: `134 passed, 1 failed, 1 warning in 10.18s`.
-- The one full-suite failure is pre-existing phase work:
-  `tests/test_models_migration.py::test_metadata_has_required_tables` still
-  expects only the Phase 1 tables, while earlier Phase 6 commits added
-  `emergency_sections`, `emergency_section_roles`, and `emergency_fields`.
-  Task 3 does not modify model metadata or that assertion.
-# Task 3 Report
-Status: Complete
-Commit: `feat(api): extend /auth/me and add admin/operator deps`
-Implemented: `ParkOut`; extended `UserOut`; `/auth/me` park lookup; admin and approved-operator dependencies.
-Tests: Added extended `/auth/me`, assigned-park, and role/access dependency coverage.
-Fixtures: Added `login_as` and `seed_pending_operator`.
-TDD RED: Auth tests failed because role dependencies were missing.
-Verification: `uv run pytest -q` — 47 passed, 1 upstream Starlette/httpx deprecation warning.
+```bash
+cd apps/web && npm run build
+```
 
-## Review fixes
+**Result:** PASS (tsc + vite build, 68 modules, ~90ms)
 
-- Wrapped leader completion in `finally`, ensuring every flight event is set
-  even when cookie-validity persistence fails during auth-error handling.
-- Serialized keepalive ring read-modify-write updates with a process-wide lock
-  to prevent concurrent VIN touches from overwriting one another.
-- Updated the model metadata assertion for `emergency_sections`,
-  `emergency_fields`, and `emergency_section_roles`.
-- Added regressions for auth cleanup failures releasing waiters and concurrent
-  keepalive ring updates retaining both VINs.
+## Commit
 
-### Review verification
+```
+feat(web): mobile shell CSS with bottom nav and safe-area
+```
 
-- RED: both new concurrency regressions failed before the fixes; the auth
-  waiter remained blocked and the ring lost one VIN.
-- GREEN:
-  `uv run --extra dev pytest tests/test_emergency_cache.py tests/test_models_migration.py -v`
-  — 16 passed, 1 upstream Starlette/httpx deprecation warning.
+File: `apps/web/src/index.css`
+
+## Notes / follow-ups
+
+- `.mobile-more-backdrop` and `.mobile-more-sheet` remain `display: none` on desktop; JS toggling visibility on mobile may need `display: block/grid` when open (Task 2 DOM should handle via conditional render or future JS task).
+- Dashboard KPI grid at 900px is now 2 columns (from this task) instead of the prior 3-column rule in the dashboard-only block — intentional per brief mobile KPI spec.
+
+---
+
+## Review fixes (Important findings)
+
+**Date:** 2026-08-24  
+**Status:** ✅ Fixed
+
+### Changes
+
+1. **`apps/web/src/index.css`** — In `@media (max-width: 900px)`, added `.mobile-more-backdrop { display: block; }` so the dim overlay paints and receives taps (desktop default remains `display: none`).
+2. **`apps/web/src/index.css`** — Excluded `.mobile-user-open` from global brand button fill/hover selectors (`:not(.mobile-user-open)`), same as `.mobile-nav-item`.
+3. **`apps/web/index.html`** — Added `viewport-fit=cover` to viewport meta for iOS `env(safe-area-inset-bottom)`.
+
+### Verification
+
+```bash
+cd apps/web && npm run build
+```
+
+**Result:** PASS
+
+```
+npm notice run web@0.0.0 build
+npm notice run tsc -b && vite build
+vite v8.2.2 building client environment for production...
+transforming...
+✓ 68 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.45 kB │ gzip:  0.32 kB
+dist/assets/index-D59GmTkx.css   15.05 kB │ gzip:  3.62 kB
+dist/assets/index-hz0Sgniq.js   313.31 kB │ gzip: 92.63 kB
+
+✓ built in 92ms
+```
+
+### Commit
+
+```
+fix(web): show mobile more backdrop and unbrand user chip
+```

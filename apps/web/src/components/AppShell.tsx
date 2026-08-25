@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import { api } from '../api'
 import { useAuth } from '../auth-context'
 import { ru, roleLabel } from '../i18n/ru'
-import { navItemsForRole } from '../nav'
+import { moreNavItems, navItemsForRole, primaryNavItems } from '../nav'
 import { useParkContext } from '../park-context'
 import { REPORTS_BADGE_REFRESH } from '../reports-badge'
 import { getStoredTheme, setTheme, type Theme } from '../theme'
@@ -17,6 +17,7 @@ export function AppShell({ children }: AppShellProps) {
   const { parkId, setParkId, parks, parksLoading, parkLocked } = useParkContext()
   const [theme, setThemeState] = useState<Theme>(() => getStoredTheme())
   const [reportsBadge, setReportsBadge] = useState(0)
+  const [moreOpen, setMoreOpen] = useState(false)
   const location = useLocation()
   const badgeParkId = user?.role === 'operator' ? parkId ?? undefined : undefined
 
@@ -41,9 +42,29 @@ export function AppShell({ children }: AppShellProps) {
     return () => window.removeEventListener(REPORTS_BADGE_REFRESH, onRefresh)
   }, [loadReportsBadge])
 
+  useEffect(() => {
+    if (!moreOpen) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMoreOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prev
+    }
+  }, [moreOpen])
+
+  useEffect(() => {
+    setMoreOpen(false)
+  }, [location.pathname])
+
   if (!user) return null
 
   const items = navItemsForRole(user.role)
+  const primary = primaryNavItems(user.role)
+  const more = moreNavItems(user.role)
   const showAdminLink = user.role === 'admin' || user.role === 'royal'
   const selectedPark = parks.find((park) => park.id === parkId)
 
@@ -108,6 +129,14 @@ export function AppShell({ children }: AppShellProps) {
               </select>
             )}
           </div>
+          <button
+            type="button"
+            className="topbar-pill topbar-user mobile-user-open"
+            onClick={() => setMoreOpen(true)}
+          >
+            <span className="topbar-user-name">{user.username}</span>
+            <span className="topbar-user-role">{roleLabel(user.role)}</span>
+          </button>
           <details className="topbar-menu">
             <summary className="topbar-pill topbar-user">
               <span className="topbar-user-name">{user.username}</span>
@@ -135,6 +164,91 @@ export function AppShell({ children }: AppShellProps) {
           </details>
         </header>
         <div className="app-content">{children ?? <Outlet />}</div>
+
+        <nav className="mobile-bottom-nav" aria-label={ru.nav.brand}>
+          {primary.map((item) => (
+            <NavLink
+              key={item.id}
+              to={item.path}
+              className={({ isActive }) =>
+                isActive ? 'mobile-nav-item active' : 'mobile-nav-item'
+              }
+            >
+              <span className="mobile-nav-label">{item.label}</span>
+              {item.id === 'reports' && reportsBadge > 0 ? (
+                <span className="nav-count">{reportsBadge}</span>
+              ) : null}
+            </NavLink>
+          ))}
+          <button
+            type="button"
+            className={moreOpen ? 'mobile-nav-item active' : 'mobile-nav-item'}
+            aria-expanded={moreOpen}
+            aria-controls="mobile-more-sheet"
+            onClick={() => setMoreOpen((v) => !v)}
+          >
+            <span className="mobile-nav-label">{ru.nav.more}</span>
+          </button>
+        </nav>
+
+        {moreOpen ? (
+          <>
+            <button
+              type="button"
+              className="mobile-more-backdrop"
+              aria-label={ru.nav.close}
+              onClick={() => setMoreOpen(false)}
+            />
+            <div
+              id="mobile-more-sheet"
+              className="mobile-more-sheet"
+              role="dialog"
+              aria-modal="true"
+              aria-label={ru.nav.more}
+            >
+              <div className="mobile-more-head">
+                <strong>{user.username}</strong>
+                <span className="topbar-user-role">{roleLabel(user.role)}</span>
+                <button type="button" className="btn-ghost" onClick={() => setMoreOpen(false)}>
+                  {ru.nav.close}
+                </button>
+              </div>
+              <nav className="mobile-more-nav">
+                {more.map((item) => (
+                  <NavLink
+                    key={item.id}
+                    to={item.path}
+                    className={({ isActive }) => (isActive ? 'nav-item active' : 'nav-item')}
+                    onClick={() => setMoreOpen(false)}
+                  >
+                    <span className="nav-item-label">{item.label}</span>
+                    {item.stub ? <span className="nav-soon">{ru.nav.soon}</span> : null}
+                  </NavLink>
+                ))}
+              </nav>
+              <div className="mobile-more-actions">
+                {showAdminLink ? (
+                  <Link className="topbar-menu-item" to="/admin" onClick={() => setMoreOpen(false)}>
+                    {ru.nav.admin}
+                  </Link>
+                ) : null}
+                <button type="button" className="topbar-menu-item" onClick={toggleTheme}>
+                  {theme === 'light' ? ru.theme.dark : ru.theme.light}
+                </button>
+                <button
+                  type="button"
+                  className="topbar-menu-item"
+                  onClick={() => {
+                    setMoreOpen(false)
+                    void logout()
+                  }}
+                >
+                  {ru.signOut}
+                </button>
+              </div>
+            </div>
+          </>
+        ) : null}
       </div>
     </div>
   )
