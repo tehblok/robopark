@@ -75,7 +75,14 @@ class UserOut(BaseModel):
     username: str
     role: str
     access_status: str
+    tracker_login: str | None = None
+    must_change_password: bool = False
     parks: list[ParkOut]
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=1, max_length=128)
 
 
 class MechanicCreate(BaseModel):
@@ -88,6 +95,8 @@ class MechanicUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=1, max_length=128)
     park_id: int | None = None
     is_active: bool | None = None
+    tracker_login: str | None = Field(default=None, max_length=128)
+    must_change_password: bool | None = None
 
 
 class MechanicOut(BaseModel):
@@ -95,18 +104,36 @@ class MechanicOut(BaseModel):
     username: str
     is_active: bool
     created_at: datetime
+    tracker_login: str | None = None
+    must_change_password: bool = False
     park: ParkOut
+
+
+class TrackerPersonOut(BaseModel):
+    display: str
+    login: str = ""
+
+
+class TrackerAttachmentOut(BaseModel):
+    id: str
+    name: str
+    size: int | None = None
+    url: str | None = None
+    mimetype: str | None = None
 
 
 class BlockerOut(BaseModel):
     key: str
     summary: str
     status: str
+    status_key: str | None = None
     robot: str | None
     created_at: str | None
     hours_created: str | None
     url: str
     bucket: str
+    priority: str | None = None
+    assignee: TrackerPersonOut | None = None
 
 
 class MechanicTasksOut(BaseModel):
@@ -254,18 +281,34 @@ class TrackerIssueOut(BaseModel):
     queue: str | None = None
     robot: str | None = None
     created_at: str | None = None
+    updated_at: str | None = None
     hours_created: str | None = None
     url: str
+    tags: list[str] = Field(default_factory=list)
+    priority: str | None = None
+    type: str | None = None
+    assignee: TrackerPersonOut | None = None
 
 
 class TrackerIssueDetailOut(TrackerIssueOut):
     resolution: str | None = None
+    description: str | None = None
+    reporter: TrackerPersonOut | None = None
+    components: list[str] = Field(default_factory=list)
+    attachments: list[TrackerAttachmentOut] = Field(default_factory=list)
+
+
+class TrackerUserOut(BaseModel):
+    login: str
+    display: str
+    source: str = "park"
 
 
 class TrackerCommentOut(BaseModel):
     id: str
     text: str
     author: str | None = None
+    author_login: str | None = None
     created_at: str | None = None
 
 
@@ -276,6 +319,10 @@ class TrackerTransitionOut(BaseModel):
 
 class TrackerIssuesOut(BaseModel):
     items: list[TrackerIssueOut]
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
+    has_more: bool = False
 
 
 class TrackerActionOut(BaseModel):
@@ -380,4 +427,29 @@ class ReportOut(BaseModel):
 
 class ReportBadgeOut(BaseModel):
     count: int
+
+
+class AuditEntryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    action: str
+    actor_user_id: int | None
+    actor_username: str | None
+    actor_role: str | None
+    park_id: int | None
+    target_type: str | None
+    target_id: str | None
+    outcome: str
+    detail: str | None
+    client_ip: str | None
+    created_at: datetime
+
+
+class AuditPageOut(BaseModel):
+    items: list[AuditEntryOut]
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
 

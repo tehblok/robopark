@@ -78,6 +78,12 @@ def test_metrics_cache_ttl_matches_bot():
     assert tracker_metrics.METRICS_CACHE_TTL_SEC == 90
 
 
+def test_assignee_clause():
+    assert tracker_client.assignee_clause("ivan") == "Assignee: ivan"
+    assert tracker_client.assignee_clause("empty") == "Assignee: empty()"
+    assert tracker_client.assignee_clause(None) is None
+
+
 def test_untagged_blockers_excludes_park_tags():
     query = tracker_client.build_untagged_blockers_query(
         "SDCFLEETOPS",

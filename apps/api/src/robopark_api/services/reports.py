@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -118,13 +118,7 @@ def _can_view_report(db: Session, user: User, report: Report) -> bool:
         return True
     if _is_admin_inbox_user(user):
         return True
-    if (
-        _is_approved_operator(user)
-        and report.target_role == UserRole.operator.value
-        and report.park_id in _user_park_ids(db, user)
-    ):
-        return True
-    return False
+    return bool(_is_approved_operator(user) and report.target_role == UserRole.operator.value and report.park_id in _user_park_ids(db, user))
 
 
 def _can_act_on_report(db: Session, user: User, report: Report) -> bool:
@@ -217,7 +211,7 @@ def done_report(db: Session, user: User, report_id: int) -> Report:
     report = _load_report(db, report_id)
     _require_act(db, user, report)
     report.status = STATUS_DONE
-    report.resolved_at = datetime.now(timezone.utc)
+    report.resolved_at = datetime.now(UTC)
     db.commit()
     db.refresh(report)
     return report

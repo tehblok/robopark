@@ -1,24 +1,18 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type Blocker, type Report } from '../api'
-import { Alert, EmptyState, PageShell, Panel } from '../components/PageShell'
+import { Alert, PageShell, Panel } from '../components/PageShell'
 import {
   formatReportDate,
   reportKindText,
   reportStatusText,
   statusBadgeClass,
 } from '../components/reports/report-utils'
+import { IssueDrawer } from '../components/tracker/IssueDrawer'
+import { TaskFilterBar, TaskList } from '../components/tracker/TaskBoard'
+import { EmptyBlock, SkeletonList } from '../components/ui/Feedback'
 import { mapApiError } from '../i18n/errors'
-import { ru, taskFilterLabel } from '../i18n/ru'
-
-const FILTERS = [
-  'all',
-  'moving',
-  'queued',
-  'waiting_team',
-  'waiting_parts',
-  'other',
-] as const
+import { ru } from '../i18n/ru'
 
 export function MechanicTasks() {
   const [status, setStatus] = useState('all')
@@ -28,33 +22,57 @@ export function MechanicTasks() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [returnedReports, setReturnedReports] = useState<Report[]>([])
+  const [openKey, setOpenKey] = useState('')
 
   useEffect(() => {
-    api.reportsMine()
+    api
+      .reportsMine()
       .then((reports) => {
         setReturnedReports(reports.filter((report) => report.status === 'returned'))
       })
       .catch(() => setReturnedReports([]))
   }, [])
 
+  const load = useCallback(
+    (nextStatus: string) => {
+      setLoading(true)
+      setError('')
+      return api
+        .mechanicTasks(nextStatus)
+        .then((data) => {
+          setItems(data.items)
+          setCounts(data.counts)
+          setParkTag(data.park_tag)
+        })
+        .catch((loadError) => {
+          setError(mapApiError(loadError, ru.errors.tasks))
+        })
+        .finally(() => setLoading(false))
+    },
+    [],
+  )
+
   useEffect(() => {
-    setLoading(true)
-    setError('')
-    api.mechanicTasks(status)
-      .then((data) => {
-        setItems(data.items)
-        setCounts(data.counts)
-        setParkTag(data.park_tag)
-      })
-      .catch((loadError) => {
-        setError(mapApiError(loadError, ru.errors.tasks))
-      })
-      .finally(() => setLoading(false))
-  }, [status])
+    void load(status)
+  }, [status, load])
+
+  // The ticket card replaces the list while open — same as the Tracker layout.
+  if (openKey) {
+    return (
+      <PageShell subtitle={`Парк ${parkTag || '…'}`} title="Задача">
+        <IssueDrawer
+          canWrite
+          issueKey={openKey}
+          onChanged={() => void load(status)}
+          onClose={() => setOpenKey('')}
+        />
+      </PageShell>
+    )
+  }
 
   return (
     <PageShell
-      subtitle={`Блокеры парка ${parkTag || '…'} · сортировка: старые сверху.`}
+      subtitle={`Блокеры парка ${parkTag || '…'} · старые сверху`}
       title="Задачи парка"
     >
       {error && <Alert tone="error">{error}</Alert>}
@@ -84,45 +102,19 @@ export function MechanicTasks() {
         </Panel>
       )}
 
-      <Panel hint="Фильтр по статусу блокера в Tracker." title="Фильтры">
-        <div className="actions">
-          {FILTERS.map((value) => (
-            <button
-              className={`btn btn-filter ${status === value ? 'is-active' : ''}`}
-              key={value}
-              onClick={() => setStatus(value)}
-              type="button"
-            >
-              {taskFilterLabel(value)} ({counts[value] ?? 0})
-            </button>
-          ))}
-        </div>
-      </Panel>
+      <TaskFilterBar counts={counts} onChange={setStatus} value={status} />
 
-      <Panel title={`Список (${items.length})`}>
-        {loading && <EmptyState>{ru.loading}</EmptyState>}
-        {!loading && !items.length && !error && (
-          <EmptyState>Нет открытых blocker-ов для выбранного фильтра.</EmptyState>
-        )}
-        {!loading && items.length > 0 && (
-          <ul className="card-list">
-            {items.map((item) => (
-              <li className="card" key={item.key}>
-                <div className="card-title">
-                  <a href={item.url} rel="noreferrer" target="_blank">{item.key}</a>
-                </div>
-                <p>{item.summary}</p>
-                <div className="card-meta">
-                  <span>Статус: {item.status}</span>
-                  {item.robot && <span>Робот: {item.robot}</span>}
-                  {item.hours_created && <span>В возрасте: {item.hours_created} ч</span>}
-                  <span>Корзина: {taskFilterLabel(item.bucket)}</span>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Panel>
+      {loading && <SkeletonList rows={4} />}
+      {!loading && !items.length && !error && (
+        <EmptyBlock
+          hint="Смените фильтр статуса или обновите список позже."
+          icon="📋"
+          title="Нет открытых блокеров для выбранного фильтра"
+        />
+      )}
+      {!loading && items.length > 0 && (
+        <TaskList items={items} onSelect={setOpenKey} selected={openKey} />
+      )}
     </PageShell>
   )
 }

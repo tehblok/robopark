@@ -45,6 +45,8 @@ class User(Base):
     access_status: Mapped[str] = mapped_column(
         String(32), default=AccessStatus.approved.value
     )
+    tracker_login: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -209,6 +211,42 @@ class EmergencySectionRole(Base):
     role: Mapped[str] = mapped_column(String(32), primary_key=True)
 
     section: Mapped[EmergencySection] = relationship(back_populates="roles")
+
+
+class AuditLog(Base):
+    """Append-only record of security- and Tracker-relevant actions.
+
+    The platform talks to Tracker through a single service OAuth token, so in
+    Tracker every change looks like the same account. Without this table there
+    was no way to answer "who closed that ticket".
+    """
+
+    __tablename__ = "audit_log"
+    __table_args__ = (
+        Index("ix_audit_log_created_at", "created_at"),
+        Index("ix_audit_log_actor_created", "actor_user_id", "created_at"),
+        Index("ix_audit_log_target", "target_type", "target_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    #: Nullable: failed logins are recorded before a user is identified.
+    actor_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    park_id: Mapped[int | None] = mapped_column(
+        ForeignKey("parks.id", ondelete="SET NULL"), nullable=True
+    )
+    target_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(16), default="success")
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class Report(Base):

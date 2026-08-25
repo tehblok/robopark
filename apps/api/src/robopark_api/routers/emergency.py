@@ -11,8 +11,12 @@ from robopark_api.schemas import (
     EmergencySectionItem,
     EmergencySectionOut,
 )
-from robopark_api.services import emergency_cache, emergency_client, emergency_sections
-from robopark_api.services import emergency_vin
+from robopark_api.services import (
+    emergency_cache,
+    emergency_client,
+    emergency_sections,
+    emergency_vin,
+)
 from robopark_api.services import platform_settings as settings_svc
 
 router = APIRouter(prefix="/emergency", tags=["emergency"])

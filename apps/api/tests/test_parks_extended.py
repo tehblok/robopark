@@ -1,5 +1,4 @@
 from conftest import login_as
-
 from park_helpers import PARK_DEFAULTS
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def align_bucket_start(now: datetime) -> datetime:
@@ -99,7 +99,7 @@ def scan_all_parks_once(db: Session, *, now: datetime | None = None) -> int:
         logger.warning("Blocker history scan skipped: tracker token not configured")
         return 0
 
-    now_utc = _as_utc(now or datetime.now(timezone.utc))
+    now_utc = _as_utc(now or datetime.now(UTC))
     bucket_start, bucket_end = closed_bucket_window(now_utc)
 
     parks = db.scalars(select(Park)).all()
@@ -139,7 +139,7 @@ def upsert_bucket(
     scanned_at: datetime | None = None,
 ) -> ParkBlockerHistory:
     bucket_start = _as_utc(bucket_start)
-    scanned = _as_utc(scanned_at or datetime.now(timezone.utc))
+    scanned = _as_utc(scanned_at or datetime.now(UTC))
 
     row = db.scalar(
         select(ParkBlockerHistory).where(
@@ -171,7 +171,7 @@ def history_series(
     park_id: int,
     days: int = 7,
 ) -> list[dict]:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
     rows = db.scalars(
         select(ParkBlockerHistory)
         .where(
@@ -196,7 +196,7 @@ def delete_old_buckets(
     park_id: int | None = None,
     retention_days: int = 30,
 ) -> int:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
     stmt = delete(ParkBlockerHistory).where(ParkBlockerHistory.bucket_start < cutoff)
     if park_id is not None:
         stmt = stmt.where(ParkBlockerHistory.park_id == park_id)

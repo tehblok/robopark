@@ -46,3 +46,28 @@ def test_tracker_read_list_issues(client, db_session, seed_park_with_tracker, mo
     response = client.get("/tracker/issues")
     assert response.status_code == 200
     assert response.json()["items"][0]["key"] == "ROBOPARK-1"
+
+
+def test_tracker_read_assignee_filter(client, db_session, seed_park_with_tracker, monkeypatch):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+
+    from robopark_api.services import tracker_client
+
+    captured: dict[str, str] = {}
+
+    def fake_search(**kwargs):
+        captured["query"] = kwargs["query"]
+        return []
+
+    monkeypatch.setattr(tracker_client, "search_issues", fake_search)
+
+    assert client.post("/auth/login", json={"username": "op2", "password": "secret"}).status_code == 204
+
+    response = client.get("/tracker/issues?assignee=ivan.petrov")
+    assert response.status_code == 200
+    assert "Assignee: ivan.petrov" in captured["query"]
+
+    response = client.get("/tracker/issues?assignee=empty")
+    assert response.status_code == 200
+    assert "Assignee: empty()" in captured["query"]

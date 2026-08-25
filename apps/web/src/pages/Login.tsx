@@ -1,6 +1,7 @@
 import { type FormEvent, useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { Alert } from '../components/PageShell'
+import { Spinner } from '../components/ui/Feedback'
 import { ru } from '../i18n/ru'
 import { useAuth } from '../auth-context'
 import { pathForUser } from '../routes'
@@ -15,7 +16,11 @@ export function Login() {
   const [submitting, setSubmitting] = useState(false)
 
   if (loading) {
-    return <main className="page"><p className="empty-state">{ru.loading}</p></main>
+    return (
+      <main className="page page-center">
+        <Spinner label={ru.loading} />
+      </main>
+    )
   }
 
   if (user) {
@@ -39,7 +44,7 @@ export function Login() {
 
   return (
     <main className="page">
-      <form className="login-card" onSubmit={handleSubmit}>
+      <form className="login-card animate-in" onSubmit={handleSubmit}>
         <h1>{ru.brand}</h1>
         <p>{ru.tagline}</p>
         <p className="field-hint">Войдите в личный кабинет по логину и паролю.</p>
@@ -67,8 +72,8 @@ export function Login() {
           />
         </label>
         {error && <Alert tone="error">{error}</Alert>}
-        <button disabled={submitting} type="submit">
-          {submitting ? 'Вход…' : 'Войти'}
+        <button className="btn" disabled={submitting} type="submit">
+          {submitting ? <Spinner label="Вход…" /> : 'Войти'}
         </button>
         <p className="form-link">
           Нужен доступ оператора? <Link to="/register">Регистрация</Link>

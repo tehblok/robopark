@@ -7,6 +7,8 @@ type PageShellProps = {
   subtitle?: string
   backTo?: string
   backLabel?: string
+  /** Toolbar rendered on the right of the title (refresh, create, …). */
+  actions?: ReactNode
   /** Wrap in centered .page layout (pages outside AppShell) */
   standalone?: boolean
   /** Logout for pages rendered outside AppShell */
@@ -19,6 +21,7 @@ export function PageShell({
   subtitle,
   backTo,
   backLabel = ru.back,
+  actions,
   standalone = false,
   onLogout,
   children,
@@ -32,15 +35,18 @@ export function PageShell({
           </Link>
         )}
         <div className="page-header-row">
-          <div>
+          <div className="page-header-text">
             <h1>{title}</h1>
             {subtitle && <p className="page-subtitle">{subtitle}</p>}
           </div>
-          {onLogout && (
-            <button className="btn btn-secondary" onClick={onLogout} type="button">
-              {ru.signOut}
-            </button>
-          )}
+          <div className="page-header-actions">
+            {actions}
+            {onLogout && (
+              <button className="btn btn-secondary" onClick={onLogout} type="button">
+                {ru.signOut}
+              </button>
+            )}
+          </div>
         </div>
       </header>
       <div className="page-body">{children}</div>
@@ -50,36 +56,39 @@ export function PageShell({
   if (standalone) {
     return (
       <main className="page">
-        <div className="page-content shell">{content}</div>
+        <div className="page-content shell animate-in">{content}</div>
       </main>
     )
   }
 
-  return <div className="page-content">{content}</div>
+  return <div className="page-content animate-in">{content}</div>
 }
 
 export function Panel({
   title,
   hint,
+  actions,
   children,
 }: {
-  title: string
+  title?: string
   hint?: string
+  actions?: ReactNode
   children: ReactNode
 }) {
   return (
     <section className="panel">
-      <div className="panel-head">
-        <h2>{title}</h2>
-        {hint && <p className="panel-hint">{hint}</p>}
-      </div>
+      {(title || hint || actions) && (
+        <div className="panel-head">
+          <div>
+            {title && <h2>{title}</h2>}
+            {hint && <p className="panel-hint">{hint}</p>}
+          </div>
+          {actions && <div className="panel-actions">{actions}</div>}
+        </div>
+      )}
       {children}
     </section>
   )
-}
-
-export function EmptyState({ children }: { children: ReactNode }) {
-  return <p className="empty-state">{children}</p>
 }
 
 export function Badge({ active }: { active: boolean }) {
@@ -90,6 +99,25 @@ export function Badge({ active }: { active: boolean }) {
   )
 }
 
-export function Alert({ tone, children }: { tone: 'error' | 'success'; children: ReactNode }) {
-  return <p className={tone === 'error' ? 'alert alert-error' : 'alert alert-success'}>{children}</p>
+export function Alert({
+  tone,
+  children,
+}: {
+  tone: 'error' | 'success' | 'info' | 'warning'
+  children: ReactNode
+}) {
+  const icons: Record<string, string> = {
+    error: '⚠',
+    success: '✓',
+    info: 'i',
+    warning: '!',
+  }
+  return (
+    <p className={`alert alert-${tone}`} role={tone === 'error' ? 'alert' : undefined}>
+      <span aria-hidden="true" className="alert-icon">
+        {icons[tone]}
+      </span>
+      <span>{children}</span>
+    </p>
+  )
 }

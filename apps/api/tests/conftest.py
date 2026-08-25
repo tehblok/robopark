@@ -4,11 +4,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from robopark_api import main
-from robopark_api.config import Settings, get_settings
+from robopark_api.config import Settings, get_settings, reset_settings_cache
 from robopark_api.db import get_db
-from robopark_api.models import Base
-from robopark_api.models import AccessStatus, Park, User, UserPark
+from robopark_api.models import AccessStatus, Base, Park, User, UserPark
 from robopark_api.security import hash_password
+
+#: Password satisfying the default policy (length + character classes).
+#: Fixtures hash passwords directly, so only tests going through the API need it.
+VALID_PASSWORD = "Str0ng-Pass!2026"
 
 
 def login_as(client: TestClient, username: str, password: str):
@@ -25,6 +28,14 @@ def ignore_local_env_file(monkeypatch):
     `monkeypatch.delenv` and explicit keyword arguments stay authoritative.
     """
     monkeypatch.setitem(Settings.model_config, "env_file", None)
+
+
+@pytest.fixture(autouse=True)
+def clear_settings_cache():
+    """`get_settings()` is process-wide cached; isolate it between tests."""
+    reset_settings_cache()
+    yield
+    reset_settings_cache()
 
 
 @pytest.fixture

@@ -4,9 +4,9 @@ Revision ID: 0004
 Revises: 0003
 """
 
-from collections.abc import Sequence
 import json
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 

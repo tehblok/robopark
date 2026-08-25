@@ -1,14 +1,12 @@
-from datetime import datetime, timedelta, timezone
-
 import asyncio
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from robopark_api.models import Park
 from robopark_api.services import blocker_history as history_svc
-from robopark_api.services import blocker_history_job
+from robopark_api.services import blocker_history_job, tracker_metrics
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_metrics
-from robopark_api.services.tracker_client import TrackerError
 from robopark_api.services.blocker_history import (
     align_bucket_start,
     closed_bucket_window,
@@ -18,6 +16,7 @@ from robopark_api.services.blocker_history import (
     scan_park_bucket,
     upsert_bucket,
 )
+from robopark_api.services.tracker_client import TrackerError
 
 
 @pytest.fixture
@@ -46,7 +45,7 @@ def seed_park_with_tracker(db_session):
 
 
 def test_upsert_bucket_idempotent(db_session, seed_park):
-    t0 = datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc)
+    t0 = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)
     upsert_bucket(
         db_session,
         park_id=seed_park.id,
@@ -68,7 +67,7 @@ def test_upsert_bucket_idempotent(db_session, seed_park):
 
 
 def test_history_series_filters_by_days(db_session, seed_park):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     recent = now.replace(minute=0, second=0, microsecond=0)
     old = recent - timedelta(days=10)
     upsert_bucket(
@@ -91,7 +90,7 @@ def test_history_series_filters_by_days(db_session, seed_park):
 
 
 def test_delete_old_buckets(db_session, seed_park):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     recent = now.replace(minute=0, second=0, microsecond=0)
     old = recent - timedelta(days=40)
     upsert_bucket(
@@ -116,33 +115,33 @@ def test_delete_old_buckets(db_session, seed_park):
 
 
 def test_align_bucket_start_even_hour_grid():
-    assert align_bucket_start(datetime(2026, 8, 24, 14, 30, tzinfo=timezone.utc)) == datetime(
-        2026, 8, 24, 14, 0, tzinfo=timezone.utc
+    assert align_bucket_start(datetime(2026, 8, 24, 14, 30, tzinfo=UTC)) == datetime(
+        2026, 8, 24, 14, 0, tzinfo=UTC
     )
-    assert align_bucket_start(datetime(2026, 8, 24, 13, 30, tzinfo=timezone.utc)) == datetime(
-        2026, 8, 24, 12, 0, tzinfo=timezone.utc
+    assert align_bucket_start(datetime(2026, 8, 24, 13, 30, tzinfo=UTC)) == datetime(
+        2026, 8, 24, 12, 0, tzinfo=UTC
     )
-    assert align_bucket_start(datetime(2026, 8, 24, 11, 5, tzinfo=timezone.utc)) == datetime(
-        2026, 8, 24, 10, 0, tzinfo=timezone.utc
+    assert align_bucket_start(datetime(2026, 8, 24, 11, 5, tzinfo=UTC)) == datetime(
+        2026, 8, 24, 10, 0, tzinfo=UTC
     )
 
 
 def test_closed_bucket_window_scans_previous_closed_bucket():
-    now = datetime(2026, 8, 24, 14, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 24, 14, 30, tzinfo=UTC)
     start, end = closed_bucket_window(now)
-    assert start == datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
-    assert end == datetime(2026, 8, 24, 14, 0, tzinfo=timezone.utc)
+    assert start == datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
+    assert end == datetime(2026, 8, 24, 14, 0, tzinfo=UTC)
 
 
 def test_closed_bucket_window_at_exact_boundary():
-    now = datetime(2026, 8, 24, 14, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 24, 14, 0, tzinfo=UTC)
     start, end = closed_bucket_window(now)
-    assert start == datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
-    assert end == datetime(2026, 8, 24, 14, 0, tzinfo=timezone.utc)
+    assert start == datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
+    assert end == datetime(2026, 8, 24, 14, 0, tzinfo=UTC)
 
 
 def test_build_arrived_in_window_query_uses_park_filters():
-    start = datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)
     end = start + timedelta(hours=2)
     query = tracker_metrics.build_arrived_in_window_query(
         "ROBOPARK",
@@ -161,7 +160,7 @@ def test_build_arrived_in_window_query_uses_park_filters():
 
 
 def test_build_departed_in_window_query_omits_empty_type():
-    start = datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)
     end = start + timedelta(hours=2)
     query = tracker_metrics.build_departed_in_window_query(
         "ROBOPARK",
@@ -176,7 +175,7 @@ def test_build_departed_in_window_query_omits_empty_type():
 
 def test_scan_park_bucket_upserts_counts(db_session, seed_park_with_tracker, monkeypatch):
     settings_svc.set_setting(db_session, settings_svc.TRACKER_TOKEN_KEY, "token")
-    bucket_start = datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc)
+    bucket_start = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)
     bucket_end = bucket_start + timedelta(hours=2)
     calls: list[str] = []
 
@@ -228,14 +227,14 @@ def test_scan_all_parks_once_skips_inactive_and_unconfigured(
 
     monkeypatch.setattr(history_svc, "scan_park_bucket", fake_scan)
 
-    now = datetime(2026, 8, 24, 14, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 24, 14, 30, tzinfo=UTC)
     scanned = scan_all_parks_once(db_session, now=now)
 
     assert scanned == 1
     assert bucket_calls == [
         (
-            datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
-            datetime(2026, 8, 24, 14, 0, tzinfo=timezone.utc),
+            datetime(2026, 8, 24, 12, 0, tzinfo=UTC),
+            datetime(2026, 8, 24, 14, 0, tzinfo=UTC),
         )
     ]
     assert park_calls == [seed_park_with_tracker.id]
@@ -271,7 +270,7 @@ def test_scan_all_parks_once_continues_on_tracker_error(
 
     scanned = scan_all_parks_once(
         db_session,
-        now=datetime(2026, 8, 24, 14, 30, tzinfo=timezone.utc),
+        now=datetime(2026, 8, 24, 14, 30, tzinfo=UTC),
     )
 
     assert scanned == 1
@@ -305,7 +304,7 @@ def test_scan_all_parks_once_runs_retention_after_success(
 
     scanned = scan_all_parks_once(
         db_session,
-        now=datetime(2026, 8, 24, 14, 30, tzinfo=timezone.utc),
+        now=datetime(2026, 8, 24, 14, 30, tzinfo=UTC),
     )
 
     assert scanned == 1

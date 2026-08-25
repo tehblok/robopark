@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from conftest import login_as
+from conftest import VALID_PASSWORD, login_as
 
 
 def register_operator(
@@ -15,7 +15,7 @@ def register_operator(
         json={
             "shared_password": "gate",
             "username": username,
-            "password": "secret1",
+            "password": VALID_PASSWORD,
         },
     )
     assert response.status_code == 201
@@ -58,7 +58,7 @@ def test_approve_requires_parks_and_sets_approved(
     )
 
     client.post("/auth/logout")
-    login_as(client, "op1", "secret1")
+    login_as(client, "op1", VALID_PASSWORD)
     me = client.get("/auth/me").json()
     assert me["access_status"] == "approved"
     assert any(park["id"] == park_id for park in me["parks"])
@@ -84,7 +84,7 @@ def test_reject_sets_rejected_and_remains_visible(
     )
 
     client.post("/auth/logout")
-    login_as(client, "op2", "secret1")
+    login_as(client, "op2", VALID_PASSWORD)
     assert client.get("/auth/me").json()["access_status"] == "rejected"
 
 

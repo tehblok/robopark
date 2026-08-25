@@ -10,20 +10,28 @@ from robopark_api.db import get_db
 from robopark_api.deps import require_user
 from robopark_api.models import AccessStatus, Park, User, UserRole
 from robopark_api.schemas import (
+    TrackerAttachmentOut,
     TrackerCommentOut,
     TrackerIssueDetailOut,
     TrackerIssueOut,
     TrackerIssuesOut,
+    TrackerPersonOut,
     TrackerTransitionOut,
+    TrackerUserOut,
 )
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import tracker_client
+from robopark_api.services.tracker_assignees import list_assignee_candidates
 from robopark_api.services.tracker_policy import (
     allowed_park_tags_for_user,
     allowed_queues_for_user,
     can_view_untagged,
     enforce_issue_scope,
+    is_issue_in_scope,
 )
+
+MAX_PAGE_SIZE = 200
+DEFAULT_PAGE_SIZE = 50
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tracker", tags=["tracker-read"])
@@ -45,6 +53,16 @@ def _ensure_tracker_user(user: User) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
 
+def _person_out(raw: object) -> TrackerPersonOut | None:
+    if not isinstance(raw, dict):
+        return None
+    display = str(raw.get("display") or "").strip()
+    login = str(raw.get("login") or "").strip()
+    if not display and not login:
+        return None
+    return TrackerPersonOut(display=display or login, login=login)
+
+
 def _issue_out(issue: dict) -> TrackerIssueOut:
     return TrackerIssueOut(
         key=str(issue.get("key") or ""),
@@ -54,15 +72,27 @@ def _issue_out(issue: dict) -> TrackerIssueOut:
         queue=str(issue.get("queue") or ""),
         robot=issue.get("robot"),
         created_at=issue.get("created"),
+        updated_at=issue.get("updated"),
         hours_created=issue.get("hours_created"),
         url=tracker_client.build_issue_url(str(issue.get("key") or "")),
+        tags=[str(tag) for tag in (issue.get("tags") or [])],
+        priority=str(issue.get("priority") or ""),
+        type=str(issue.get("type") or ""),
+        assignee=_person_out(issue.get("assignee")),
     )
 
 
 def _detail_out(issue: dict) -> TrackerIssueDetailOut:
+    attachments = [
+        TrackerAttachmentOut(**item) for item in (issue.get("attachments") or [])
+    ]
     return TrackerIssueDetailOut(
         **_issue_out(issue).model_dump(),
         resolution=str(issue.get("resolution") or ""),
+        description=str(issue.get("description") or ""),
+        reporter=_person_out(issue.get("reporter")),
+        components=[str(item) for item in (issue.get("components") or [])],
+        attachments=attachments,
     )
 
 
@@ -85,6 +115,7 @@ def _build_query(
     park: str | None,
     status_filter: str | None,
     robot: str | None,
+    assignee: str | None,
     untagged: bool,
 ) -> str:
     parts: list[str] = [
@@ -132,6 +163,10 @@ def _build_query(
     if robot:
         parts.append(f"Summary: {tracker_client.ql_quote(robot)}")
 
+    assignee_part = tracker_client.assignee_clause(assignee or "")
+    if assignee_part:
+        parts.append(assignee_part)
+
     if park:
         allowed_tags = allowed_park_tags_for_user(db, user)
         if (
@@ -169,8 +204,11 @@ def list_issues(
     park: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
     robot: str | None = Query(default=None),
+    assignee: str | None = Query(default=None, max_length=128),
     untagged: bool = Query(default=False),
     age_hours: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    offset: int = Query(default=0, ge=0),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerIssuesOut:
@@ -190,6 +228,7 @@ def list_issues(
         park=park,
         status_filter=status_filter,
         robot=robot,
+        assignee=assignee,
         untagged=untagged,
     )
     try:
@@ -203,7 +242,10 @@ def list_issues(
 
     scoped: list[TrackerIssueOut] = []
     for issue in items:
-        enforce_issue_scope(db, user, issue)
+        # Out-of-scope issues are filtered out, not fatal: a single foreign issue
+        # in the upstream response must not fail the whole listing.
+        if not is_issue_in_scope(db, user, issue):
+            continue
         if age_hours and issue.get("hours_created"):
             try:
                 if float(issue["hours_created"]) < age_hours:
@@ -211,7 +253,26 @@ def list_issues(
             except (TypeError, ValueError):
                 pass
         scoped.append(_issue_out(issue))
-    return TrackerIssuesOut(items=scoped[:200])
+
+    total = len(scoped)
+    page = scoped[offset : offset + limit]
+    return TrackerIssuesOut(
+        items=page,
+        total=total,
+        limit=limit,
+        offset=offset,
+        has_more=offset + len(page) < total,
+    )
+
+
+@router.get("/users", response_model=list[TrackerUserOut])
+def search_tracker_users(
+    q: str = Query(min_length=1, max_length=64),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> list[TrackerUserOut]:
+    _ensure_tracker_user(user)
+    return [TrackerUserOut(**item) for item in list_assignee_candidates(db, user, q)]
 
 
 @router.get("/issues/{key}", response_model=TrackerIssueDetailOut)

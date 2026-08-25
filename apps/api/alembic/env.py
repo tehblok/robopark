@@ -3,16 +3,18 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from robopark_api.config import get_settings
+from robopark_api.config import Settings
 from robopark_api.models import Base
-
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-database_url = get_settings().database_url.replace("%", "%%")
+# Build Settings directly instead of the cached get_settings(): a migration run
+# must always honour the DATABASE_URL of the current environment, never a value
+# cached earlier in the same process.
+database_url = Settings().database_url.replace("%", "%%")
 config.set_main_option("sqlalchemy.url", database_url)
 target_metadata = Base.metadata
 

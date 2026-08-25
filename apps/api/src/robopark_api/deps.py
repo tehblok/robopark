@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
@@ -24,7 +24,7 @@ def require_user(
         .join(AuthSession)
         .where(
             AuthSession.token_hash == hash_session_token(session_token),
-            AuthSession.expires_at > datetime.now(timezone.utc),
+            AuthSession.expires_at > datetime.now(UTC),
             User.is_active.is_(True),
         )
     )

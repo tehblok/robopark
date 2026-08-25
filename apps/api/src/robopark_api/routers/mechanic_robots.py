@@ -4,24 +4,12 @@ from sqlalchemy.orm import Session
 from robopark_api.db import get_db
 from robopark_api.deps import get_mechanic_park, require_approved_mechanic
 from robopark_api.models import User
-from robopark_api.schemas import BlockerOut, RobotTicketsOut
+from robopark_api.routers._blockers import blocker_out as _blocker_out
+from robopark_api.schemas import RobotTicketsOut
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_client, tracker_filters
+from robopark_api.services import tracker_client
 
 router = APIRouter(prefix="/mechanic", tags=["mechanic-robots"])
-
-
-def _blocker_out(item: dict) -> BlockerOut:
-    return BlockerOut(
-        key=item["key"],
-        summary=item["summary"],
-        status=item["status"],
-        robot=item.get("robot"),
-        created_at=item.get("created"),
-        hours_created=item.get("hours_created"),
-        url=tracker_client.build_issue_url(item["key"]),
-        bucket=tracker_filters.issue_status_bucket(item),
-    )
 
 
 @router.get("/robots/{query}/tickets", response_model=RobotTicketsOut)

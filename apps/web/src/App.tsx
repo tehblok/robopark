@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import { useAuth } from './auth-context'
 import { AppShell } from './components/AppShell'
 import { ParkProvider } from './park-context'
@@ -7,15 +7,14 @@ import { Admin } from './pages/Admin'
 import { AdminEmergencyConfig } from './pages/AdminEmergencyConfig'
 import { AdminTrackerWorkspace } from './pages/AdminTrackerWorkspace'
 import { Analytics } from './pages/Analytics'
+import { ChangePassword } from './pages/ChangePassword'
 import { ComingSoon } from './pages/ComingSoon'
 import { Dashboard } from './pages/Dashboard'
 import { Emergency } from './pages/Emergency'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
-import { MechanicIssueWorkspace } from './pages/MechanicIssueWorkspace'
 import { MechanicNoPark } from './pages/MechanicNoPark'
 import { NoCabinet } from './pages/NoCabinet'
-import { OperatorIssueWorkspace } from './pages/OperatorIssueWorkspace'
 import { OperatorParks } from './pages/OperatorParks'
 import { OperatorPending } from './pages/OperatorPending'
 import { OperatorRejected } from './pages/OperatorRejected'
@@ -37,6 +36,14 @@ function RequirePath({
   if (!user) return <Navigate to="/login" replace />
   const userPath = pathForUser(user)
   if (userPath !== path) return <Navigate to={userPath} replace />
+  return children
+}
+
+function RequirePasswordChanged({ children }: { children: ReactNode }) {
+  const { user, loading } = useAuth()
+  if (loading) return null
+  if (!user) return <Navigate to="/login" replace />
+  if (user.must_change_password) return <Navigate to="/change-password" replace />
   return children
 }
 
@@ -88,6 +95,7 @@ function AuthenticatedShellLayout() {
   const { user, loading } = useAuth()
   if (loading) return null
   if (!user) return <Navigate to="/login" replace />
+  if (user.must_change_password) return <Navigate to="/change-password" replace />
   if (!canUseShell(user)) return <Navigate to={pathForUser(user)} replace />
   return (
     <ParkProvider>
@@ -102,6 +110,7 @@ export default function App() {
       <Route path="/" element={<Home />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/change-password" element={<ChangePassword />} />
       <Route path={NO_CABINET_PATH} element={<NoCabinet />} />
 
       <Route
@@ -130,6 +139,13 @@ export default function App() {
       />
 
       <Route element={<AuthenticatedShellLayout />}>
+        <Route
+          element={
+            <RequirePasswordChanged>
+              <Outlet />
+            </RequirePasswordChanged>
+          }
+        >
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/robots/search" element={<RobotSearch />} />
@@ -164,6 +180,7 @@ export default function App() {
             </RequireAdmin>
           }
         />
+        </Route>
       </Route>
 
       {/* Legacy redirects */}
@@ -176,31 +193,16 @@ export default function App() {
       <Route path="/mechanic/emergency" element={<Navigate to="/emergency" replace />} />
       <Route path="/admin/emergency" element={<Navigate to="/emergency" replace />} />
       <Route path="/operator/now-report" element={<Navigate to="/analytics" replace />} />
+      <Route path="/operator/tracker" element={<Navigate to="/tasks" replace />} />
+      <Route path="/mechanic/tracker" element={<Navigate to="/tasks" replace />} />
       <Route path="/mechanic" element={<Navigate to="/dashboard" replace />} />
 
-      {/* Legacy routes kept outside shell until Task 5 */}
       <Route
         path="/operator/parks"
         element={
           <RequireApprovedOperator>
             <OperatorParks />
           </RequireApprovedOperator>
-        }
-      />
-      <Route
-        path="/operator/tracker"
-        element={
-          <RequireApprovedOperator>
-            <OperatorIssueWorkspace />
-          </RequireApprovedOperator>
-        }
-      />
-      <Route
-        path="/mechanic/tracker"
-        element={
-          <RequireMechanic requirePark>
-            <MechanicIssueWorkspace />
-          </RequireMechanic>
         }
       />
 

@@ -1,6 +1,7 @@
 import { Link, Navigate } from 'react-router-dom'
 import { useAuth } from '../auth-context'
-import { EmptyState, Panel } from '../components/PageShell'
+import { PageShell } from '../components/PageShell'
+import { EmptyBlock } from '../components/ui/Feedback'
 import { MechanicTasks } from './MechanicTasks'
 import { OperatorBlockers } from './OperatorBlockers'
 import { pathForUser } from '../routes'
@@ -17,14 +18,26 @@ export function Tasks() {
     case 'admin':
     case 'royal':
       return (
-        <Panel title="Задачи">
-          <EmptyState>
-            Для администратора используйте{' '}
-            <Link to="/admin/tracker">рабочий стол Tracker</Link>
-            {' '}или инструменты на странице{' '}
-            <Link to="/admin">администрирования</Link>.
-          </EmptyState>
-        </Panel>
+        <PageShell
+          subtitle="Администратор работает с тикетами через рабочий стол Tracker."
+          title="Задачи"
+        >
+          <EmptyBlock
+            action={
+              <div className="actions">
+                <Link className="btn" to="/admin/tracker">
+                  Рабочий стол Tracker
+                </Link>
+                <Link className="btn btn-secondary" to="/admin">
+                  Администрирование
+                </Link>
+              </div>
+            }
+            hint="Список задач по парку доступен механикам и операторам. Здесь — быстрые ссылки."
+            icon="📋"
+            title="Нет списка задач для этой роли"
+          />
+        </PageShell>
       )
     default:
       return <Navigate to={pathForUser(user)} replace />

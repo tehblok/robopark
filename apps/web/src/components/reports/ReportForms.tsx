@@ -3,6 +3,7 @@ import { api, type ReportKindManual } from '../../api'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
 import { Alert } from '../PageShell'
+import { Spinner } from '../ui/Feedback'
 
 type ReportFormsProps = {
   parkId: number
@@ -71,6 +72,10 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
     }
   }
 
+  const canSubmit =
+    Boolean(title.trim())
+    && (activeForm === 'problem' || Boolean(trackerKey.trim()))
+
   return (
     <div className="reports-forms">
       <div className="actions">
@@ -93,26 +98,24 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
       {error && <Alert tone="error">{error}</Alert>}
       {success && <Alert tone="success">{success}</Alert>}
 
-      <form className="panel" onSubmit={(event) => void handleSubmit(event)}>
+      <form className="form-grid" onSubmit={(event) => void handleSubmit(event)}>
         <p className="panel-hint">
           {activeForm === 'question'
             ? 'Вопрос по конкретному тикету — ключ Tracker обязателен.'
             : 'Опишите проблему; ссылку на тикет можно указать по желанию.'}
         </p>
 
-        {(activeForm === 'question' || activeForm === 'problem') && (
-          <label className="field">
-            <span className="field-label">
-              Ключ Tracker{activeForm === 'question' ? ' *' : ''}
-            </span>
-            <input
-              onChange={(event) => setTrackerKey(event.target.value)}
-              placeholder="ROBOPARK-123"
-              required={activeForm === 'question'}
-              value={trackerKey}
-            />
-          </label>
-        )}
+        <label className="field">
+          <span className="field-label">
+            Ключ Tracker{activeForm === 'question' ? ' *' : ''}
+          </span>
+          <input
+            onChange={(event) => setTrackerKey(event.target.value)}
+            placeholder="ROBOPARK-123"
+            required={activeForm === 'question'}
+            value={trackerKey}
+          />
+        </label>
 
         <label className="field">
           <span className="field-label">Заголовок *</span>
@@ -132,9 +135,9 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
           />
         </label>
 
-        <div className="action-row">
-          <button disabled={submitting} type="submit">
-            {ru.create}
+        <div className="form-actions">
+          <button className="btn" disabled={submitting || !canSubmit} type="submit">
+            {submitting ? <Spinner label={ru.create} /> : ru.create}
           </button>
         </div>
       </form>

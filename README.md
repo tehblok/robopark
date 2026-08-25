@@ -30,7 +30,7 @@ closed. Never commit a real value.
    password, then signs in at `/login`.
 2. New operators start as `access_status=pending` and land on `/operator/pending`.
 3. Admin or royal creates parks in `/admin`, then approves the access request
-   with at least one active park — the operator moves to `/operator`.
+   with at least one active park — the operator moves to `/dashboard`.
 4. Reject sets `access_status=rejected` and routes to `/operator/rejected`; there
    is no self-serve re-apply.
 
@@ -51,15 +51,15 @@ Design: [`docs/superpowers/specs/2026-08-22-robopark-phase3-mechanic-flows-desig
 
 Tracker token and Emergency cookie are stored in the database and configured from
 `/admin` — they are not environment variables. After creating a park with
-`tracker_queue` and a mechanic assigned to it, the mechanic cabinet exposes
-`/mechanic/tasks`, `/mechanic/robot-search`, and `/mechanic/emergency`.
+`tracker_queue` and a mechanic assigned to it, the shared shell exposes
+`/tasks`, `/robots/search`, and `/emergency` (legacy `/mechanic/*` URLs redirect).
 
 ## Phase 4
 
-Operator tools: approved operators use the hub at `/operator` for read-only
-Tracker workflows — blockers by assigned park, cross-park robot search, and the
-«Сейчас по Tracker» live metrics snapshot. Park assignment and park requests
-remain at `/operator/parks`.
+Operator tools: approved operators use the hub at `/dashboard` for read-only
+Tracker workflows — blockers by assigned park (`/tasks`), cross-park robot search
+(`/robots/search`), and the «Сейчас по Tracker» live metrics snapshot
+(`/analytics`). Park assignment and park requests remain at `/operator/parks`.
 
 Design: [`docs/superpowers/specs/2026-08-22-robopark-phase4-operator-tools-design.md`](docs/superpowers/specs/2026-08-22-robopark-phase4-operator-tools-design.md)
 
@@ -72,8 +72,22 @@ in the report with an inline reason.
 
 Tracker Core + Actions: unified `/tracker/*` API with role-aware ACL for
 `admin`/`operator`/`mechanic`, issue read endpoints, and write actions
-(comment/assign/unassign/transition/close). Queue scope is enforced on the
-backend for every issue key request to prevent cross-queue access.
+(comment/assign/unassign/transition/close).
+
+**Scope is fail-closed.** For every issue an operator or mechanic touches, the
+backend requires proof that the issue belongs to one of their parks:
+
+1. the issue queue must be present and among the user's park queues;
+2. the issue must carry the tag of one of the user's parks.
+
+An issue tagged with a *different* park is always denied. An issue with no park
+tag is reachable only while the `operator_show_untagged` policy is enabled, and
+never for mechanics. Anything unverifiable — missing queue, no park assigned —
+is denied rather than allowed. List endpoints silently filter out-of-scope
+issues; single-issue endpoints return `403 tracker_issue_out_of_scope`.
+
+`GET /tracker/issues` is paginated (`limit`, `offset`, default 50, max 200) and
+returns `total` / `has_more` instead of silently truncating the result.
 
 New endpoints:
 
@@ -262,14 +276,83 @@ their peer configs and open **http://10.8.0.2:8080**.
 
 Details: [`deploy/vps/README.md`](deploy/vps/README.md), [`deploy/wireguard/host-peer.md`](deploy/wireguard/host-peer.md).
 
-## Phase 1 boundaries
+## Security
+
+### Secrets at rest
+
+The Tracker OAuth token and the Emergency cookie are stored in the database and
+encrypted with a key derived from `SECRET_KEY` (Fernet, AES-128-CBC + HMAC).
+Without `SECRET_KEY` the API still runs but keeps secrets as plaintext and logs
+a warning — set it in `.env` / `host.env`:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Values written before encryption keep working and are upgraded to ciphertext on
+the next save. Changing or losing the key makes stored secrets unreadable: the
+API reports the integration as «not configured» and the value must be re-entered
+in `/admin`.
+
+### Passwords and brute force
+
+Registration and admin-created accounts must satisfy a password policy
+(`PASSWORD_MIN_LENGTH`, default 12, plus three of four character classes).
+`POST /auth/login` and `POST /auth/register` are rate limited per
+username + address; after `LOGIN_MAX_ATTEMPTS` failures the pair is locked for
+`LOGIN_LOCKOUT_SECONDS` and the API answers `429` with `Retry-After`.
+
+Changing a mechanic's password or deactivating the account revokes their active
+sessions immediately. Expired sessions are purged on login and by an hourly
+background job.
+
+### Audit trail
+
+All Tracker writes go through one service token, so Tracker itself cannot tell
+users apart. Every action is therefore recorded in `audit_log` — actor, role,
+target issue, outcome (`success` / `failure` / `denied`), and address — and
+comments written through the platform are signed with the real author.
+
+- `GET /admin/audit` — filter by `action`, `actor_user_id`, `target_id`,
+  `park_id`; paginated.
+- `GET /admin/audit/actions` — known action names for UI filters.
+
+Denied attempts are recorded too, so a blocked cross-park action leaves a trace.
+
+## Health and operations
+
+- `GET /health` — liveness, dependency-free.
+- `GET /health/ready` — readiness: verifies the database and reports integration
+  state; returns `503` when the database is unreachable.
+
+Both Compose services declare healthchecks, the API container runs as an
+unprivileged user, and SQLite is opened in WAL mode with `busy_timeout` and
+enforced foreign keys so the background jobs do not collide with requests.
+
+## Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and
+pull request: ruff lint, the pytest suite (including model/migration parity),
+web lint + type check + build + vitest, and a build of both Docker images.
+
+Locally:
+
+```bash
+cd apps/api && .venv/bin/ruff check . && .venv/bin/python -m pytest -q
+cd apps/web && npm run build && npm test && npm run lint
+```
+
+Remaining UI/UX backlog: [`docs/UI-REFACTOR-SPEC.md`](docs/UI-REFACTOR-SPEC.md).
+
+## Scope boundaries
 
 This repository is a clean implementation and has no runtime or build
 dependency on the old bot repository.
 
-Phase 1 does not include:
+Not included:
 
 - Telegram bots or feature parity clients.
-- Tracker, Emergency, reports, blockers, SLA, or onboarding flows.
 - Automated WireGuard key distribution to operators (configs are manual from VPS `config/`).
-- PostgreSQL migration or production hardening beyond the platform skeleton.
+- PostgreSQL migration; SQLite on the host remains the storage engine.
+- Per-user Tracker credentials — the platform uses one service token and
+  attributes actions through `audit_log` and comment signatures.

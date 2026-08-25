@@ -1,5 +1,5 @@
-from fastapi import HTTPException
 import pytest
+from fastapi import HTTPException
 
 from robopark_api.deps import get_operator_parks, require_operator_park
 from robopark_api.models import Park, User, UserPark

@@ -7,8 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from robopark_api import main
-from robopark_api.services import emergency_client
-from robopark_api.services import emergency_keepalive
+from robopark_api.services import emergency_client, emergency_keepalive
 from robopark_api.services import platform_settings as settings_svc
 
 

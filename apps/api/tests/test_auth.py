@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -7,7 +7,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from conftest import login_as
-
 from park_helpers import PARK_DEFAULTS
 from robopark_api.deps import require_admin, require_approved_operator
 from robopark_api.models import AuthSession, Park, User, UserPark
@@ -26,6 +25,8 @@ def test_login_me_logout_flow(client: TestClient, seed_royal):
         "username": "royal",
         "role": "royal",
         "access_status": "approved",
+        "tracker_login": None,
+        "must_change_password": False,
         "parks": [],
     }
 
@@ -102,7 +103,7 @@ def test_expired_session_cannot_access_me(
         AuthSession(
             user_id=seed_royal.id,
             token_hash=hash_session_token(raw_token),
-            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            expires_at=datetime.now(UTC) - timedelta(seconds=1),
         )
     )
     db_session.commit()

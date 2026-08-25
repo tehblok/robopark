@@ -1,7 +1,7 @@
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
-from fastapi.testclient import TestClient
 
 from robopark_api.config import Settings
 from robopark_api.models import User

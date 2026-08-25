@@ -5,24 +5,12 @@ from sqlalchemy.orm import Session
 from robopark_api.db import get_db
 from robopark_api.deps import require_approved_operator, require_operator_park
 from robopark_api.models import User
-from robopark_api.schemas import BlockerOut, OperatorBlockersOut
+from robopark_api.routers._blockers import blocker_out as _blocker_out
+from robopark_api.schemas import OperatorBlockersOut
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import tracker_client, tracker_filters
 
 router = APIRouter(prefix="/operator", tags=["operator-blockers"])
-
-
-def _blocker_out(item: dict) -> BlockerOut:
-    return BlockerOut(
-        key=item["key"],
-        summary=item["summary"],
-        status=item["status"],
-        robot=item.get("robot"),
-        created_at=item.get("created"),
-        hours_created=item.get("hours_created"),
-        url=tracker_client.build_issue_url(item["key"]),
-        bucket=tracker_filters.issue_status_bucket(item),
-    )
 
 
 @router.get("/blockers", response_model=OperatorBlockersOut)

@@ -8,6 +8,7 @@ from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
 from robopark_api.routers import (
     admin_access,
+    admin_audit,
     admin_emergency,
     admin_mechanics,
     admin_park_requests,
@@ -31,6 +32,7 @@ from robopark_api.routers import (
 from robopark_api.seed import ensure_seed_user
 from robopark_api.services.blocker_history_job import run_blocker_history_loop
 from robopark_api.services.emergency_keepalive import run_keepalive_loop
+from robopark_api.services.session_cleanup import run_session_cleanup_loop
 
 
 def create_app() -> FastAPI:
@@ -41,17 +43,27 @@ def create_app() -> FastAPI:
         with SessionLocal() as db:
             ensure_seed_user(db, settings)
         stop_event = asyncio.Event()
-        keepalive_task = asyncio.create_task(run_keepalive_loop(stop_event))
-        history_task = asyncio.create_task(run_blocker_history_loop(stop_event))
+        tasks = [
+            asyncio.create_task(run_keepalive_loop(stop_event)),
+            asyncio.create_task(run_blocker_history_loop(stop_event)),
+            asyncio.create_task(
+                run_session_cleanup_loop(
+                    stop_event,
+                    interval_seconds=settings.session_cleanup_interval_seconds,
+                )
+            ),
+        ]
         try:
             yield
         finally:
             stop_event.set()
-            keepalive_task.cancel()
-            history_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await keepalive_task
-                await history_task
+            for task in tasks:
+                task.cancel()
+            # Await each task separately: a single `await` chain would skip the
+            # remaining tasks as soon as the first CancelledError propagates.
+            for task in tasks:
+                with suppress(asyncio.CancelledError):
+                    await task
 
     app = FastAPI(title="Robopark API", version="0.1.0", lifespan=lifespan)
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
@@ -66,6 +78,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(parks.router)
     app.include_router(admin_access.router)
+    app.include_router(admin_audit.router)
     app.include_router(admin_emergency.router)
     app.include_router(admin_settings.router)
     app.include_router(admin_mechanics.router)

@@ -5,7 +5,8 @@ import {
   type DashboardHistoryPoint,
   type DashboardSummary,
 } from '../api'
-import { Alert, EmptyState, Panel } from '../components/PageShell'
+import { Alert, Panel } from '../components/PageShell'
+import { EmptyBlock, SkeletonKpi, SkeletonList, Spinner } from '../components/ui/Feedback'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
 import { useParkContext } from '../park-context'
@@ -117,11 +118,19 @@ function BlockerHistoryChart({ points }: { points: DashboardHistoryPoint[] }) {
 
   if (!hasData) {
     return (
-      <EmptyState>
-        История blocker-ов за последние 7 дней пока не накоплена. Нажмите «Обновить» позже.
-      </EmptyState>
+      <EmptyBlock
+        hint="Фоновый сбор идёт каждые 2 часа — данные появятся после первого прохода."
+        icon="📊"
+        title="История ещё не накоплена"
+      />
     )
   }
+
+  // Area under each line makes the chart readable at a glance on a phone.
+  const areaFor = (line: string) =>
+    `${CHART_PAD.left},${CHART_PAD.top + plotHeight} ${line} ${
+      CHART_PAD.left + plotWidth
+    },${CHART_PAD.top + plotHeight}`
 
   return (
     <div className="dashboard-chart-wrap">
@@ -149,8 +158,24 @@ function BlockerHistoryChart({ points }: { points: DashboardHistoryPoint[] }) {
             </g>
           )
         })}
+        <polygon className="dashboard-chart-area dashboard-chart-area-arrived" points={areaFor(arrivedLine)} />
+        <polygon className="dashboard-chart-area dashboard-chart-area-departed" points={areaFor(departedLine)} />
         <polyline className="dashboard-chart-line dashboard-chart-line-arrived" points={arrivedLine} />
         <polyline className="dashboard-chart-line dashboard-chart-line-departed" points={departedLine} />
+        {series.map((day, index) => {
+          const x = CHART_PAD.left + (index / Math.max(series.length - 1, 1)) * plotWidth
+          const yArrived =
+            CHART_PAD.top + plotHeight - (day.arrived / maxValue) * plotHeight
+          const yDeparted =
+            CHART_PAD.top + plotHeight - (day.departed / maxValue) * plotHeight
+          return (
+            <g key={`dots-${day.key}`}>
+              <circle className="dashboard-chart-dot dashboard-chart-dot-arrived" cx={x} cy={yArrived} r={3} />
+              <circle className="dashboard-chart-dot dashboard-chart-dot-departed" cx={x} cy={yDeparted} r={3} />
+              <title>{`${day.label}: пришли ${day.arrived}, ушли ${day.departed}`}</title>
+            </g>
+          )
+        })}
         {series.map((day, index) => {
           const x = CHART_PAD.left + (index / Math.max(series.length - 1, 1)) * plotWidth
           return (
@@ -240,22 +265,25 @@ export function Dashboard() {
   const loading = summaryLoading || historyLoading
 
   return (
-    <div className="dashboard-page">
+    <div className="dashboard-page animate-in">
       <div className="dashboard-toolbar">
         <h1 className="dashboard-title">{ru.nav.dashboard}</h1>
         <button
+          className="btn btn-secondary"
           disabled={loading || parkId == null || parksLoading}
           onClick={() => void load()}
           type="button"
         >
-          Обновить
+          {loading ? <Spinner label="Обновление" /> : 'Обновить'}
         </button>
       </div>
 
       {parkId == null && !parksLoading && (
-        <Panel title={ru.nav.dashboard}>
-          <EmptyState>Выберите парк в верхней панели, чтобы загрузить дашборд.</EmptyState>
-        </Panel>
+        <EmptyBlock
+          hint="Дашборд показывает данные выбранного парка."
+          icon="🏭"
+          title="Выберите парк в верхней панели"
+        />
       )}
 
       {parkId != null && (
@@ -266,10 +294,10 @@ export function Dashboard() {
               title="Пришли и ушли за 7 дней"
             >
               {historyError && <Alert tone="error">{historyError}</Alert>}
-              {historyLoading && <EmptyState>{ru.loading}</EmptyState>}
+              {historyLoading && <SkeletonList rows={1} />}
               {!historyLoading && history && <BlockerHistoryChart points={history.points} />}
               {!historyLoading && !history && !historyError && (
-                <EmptyState>Нажмите «Обновить», чтобы загрузить историю.</EmptyState>
+                <EmptyBlock icon="📈" title="Нажмите «Обновить», чтобы загрузить историю" />
               )}
             </Panel>
           </div>
@@ -277,25 +305,25 @@ export function Dashboard() {
           <div className="dashboard-panel-kpi">
             <Panel title="Сегодня">
               {summaryError && <Alert tone="error">{summaryError}</Alert>}
-              {summaryLoading && <EmptyState>{ru.loading}</EmptyState>}
+              {summaryLoading && <SkeletonKpi />}
               {!summaryLoading && summary && (
                 <div className="dashboard-kpi-grid">
-                  <div className="dashboard-kpi">
+                  <div className="dashboard-kpi tone-arrived">
                     <span className="dashboard-kpi-label">Пришли</span>
                     <span className="dashboard-kpi-value">{summary.arrived}</span>
                   </div>
-                  <div className="dashboard-kpi">
+                  <div className="dashboard-kpi tone-done">
                     <span className="dashboard-kpi-label">Ушли</span>
                     <span className="dashboard-kpi-value">{summary.done}</span>
                   </div>
-                  <div className="dashboard-kpi">
+                  <div className="dashboard-kpi tone-queued">
                     <span className="dashboard-kpi-label">В очереди</span>
                     <span className="dashboard-kpi-value">{summary.queued}</span>
                   </div>
                 </div>
               )}
               {!summaryLoading && !summary && !summaryError && (
-                <EmptyState>Нажмите «Обновить», чтобы загрузить показатели.</EmptyState>
+                <EmptyBlock icon="📋" title="Нажмите «Обновить», чтобы загрузить показатели" />
               )}
             </Panel>
           </div>
@@ -303,7 +331,7 @@ export function Dashboard() {
           <div className="dashboard-panel-moving">
             <Panel title="Перемещение">
               {summaryError && <Alert tone="error">{summaryError}</Alert>}
-              {summaryLoading && <EmptyState>{ru.loading}</EmptyState>}
+              {summaryLoading && <SkeletonList rows={2} />}
               {!summaryLoading && summary && summary.moving.length > 0 && (
                 <ul className="card-list">
                   {summary.moving.map((item) => (
@@ -315,10 +343,10 @@ export function Dashboard() {
                 </ul>
               )}
               {!summaryLoading && summary && summary.moving.length === 0 && !summaryError && (
-                <EmptyState>Нет blocker-ов в статусе «Перемещение».</EmptyState>
+                <EmptyBlock icon="✅" title="Нет блокеров в статусе «Перемещение»" />
               )}
               {!summaryLoading && !summary && !summaryError && (
-                <EmptyState>Нажмите «Обновить», чтобы загрузить список.</EmptyState>
+                <EmptyBlock icon="🚚" title="Нажмите «Обновить», чтобы загрузить список" />
               )}
             </Panel>
           </div>

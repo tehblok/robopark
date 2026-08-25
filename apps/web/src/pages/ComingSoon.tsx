@@ -1,20 +1,37 @@
 import { useLocation } from 'react-router-dom'
-import { EmptyState, Panel } from '../components/PageShell'
+import { PageShell } from '../components/PageShell'
+import { EmptyBlock } from '../components/ui/Feedback'
 import { ru } from '../i18n/ru'
 
-const TITLES: Record<string, string> = {
-  '/map': ru.nav.map,
-  '/learning': ru.nav.learning,
-  '/help': ru.nav.help,
+const SECTIONS: Record<string, { title: string; icon: string; hint: string }> = {
+  '/map': {
+    title: ru.nav.map,
+    icon: '⊕',
+    hint: 'Карта парков и роботов появится в одном из следующих релизов.',
+  },
+  '/learning': {
+    title: ru.nav.learning,
+    icon: '✦',
+    hint: 'Здесь будут инструкции и обучающие материалы для механиков.',
+  },
+  '/help': {
+    title: ru.nav.help,
+    icon: '?',
+    hint: 'Справка и контакты поддержки готовятся.',
+  },
 }
 
 export function ComingSoon() {
   const { pathname } = useLocation()
-  const title = TITLES[pathname] ?? 'Раздел'
+  const section = SECTIONS[pathname] ?? {
+    title: 'Раздел',
+    icon: '⋯',
+    hint: 'Раздел находится в разработке.',
+  }
 
   return (
-    <Panel title={title}>
-      <EmptyState>{ru.nav.soon}</EmptyState>
-    </Panel>
+    <PageShell subtitle={ru.nav.soon} title={section.title}>
+      <EmptyBlock hint={section.hint} icon={section.icon} title={ru.nav.soon} />
+    </PageShell>
   )
 }

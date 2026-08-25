@@ -8,6 +8,7 @@ dependencies = [
   "sqlalchemy>=2.0.36",
   "alembic>=1.14.0",
   "argon2-cffi>=23.1.0",
+  "cryptography>=44.0.0",
   "pydantic-settings>=2.6.0",
   "httpx>=0.28.0",
   "yandex-tracker-client>=2.8",
@@ -15,7 +16,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3.0", "httpx>=0.28.0"]
+dev = [
+  "pytest>=8.3.0",
+  "pytest-cov>=6.0.0",
+  "httpx>=0.28.0",
+  "ruff>=0.9.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -27,3 +33,23 @@ packages = ["src/robopark_api"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM"]
+ignore = [
+  # Long lines are reported by the formatter, not the linter, in this codebase.
+  "E501",
+  # `Depends(...)` / `Query(...)` in defaults is the documented FastAPI style.
+  "B008",
+  # PEP-695 generics would drop support for tooling pinned to older syntax.
+  "UP047",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Alembic revisions are generated and follow their own conventions.
+"alembic/versions/*" = ["E", "W"]

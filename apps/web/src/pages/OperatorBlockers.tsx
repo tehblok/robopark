@@ -1,17 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api, type Blocker, type Park } from '../api'
-import { Alert, EmptyState, PageShell, Panel } from '../components/PageShell'
+import { Alert, PageShell, Panel } from '../components/PageShell'
+import { IssueDrawer } from '../components/tracker/IssueDrawer'
+import { TaskFilterBar, TaskList } from '../components/tracker/TaskBoard'
+import { EmptyBlock, SkeletonList } from '../components/ui/Feedback'
 import { mapApiError } from '../i18n/errors'
-import { ru, taskFilterLabel } from '../i18n/ru'
-
-const FILTERS = [
-  'all',
-  'moving',
-  'queued',
-  'waiting_team',
-  'waiting_parts',
-  'other',
-] as const
+import { ru } from '../i18n/ru'
 
 export function OperatorBlockers() {
   const [parks, setParks] = useState<Park[]>([])
@@ -22,10 +17,12 @@ export function OperatorBlockers() {
   const [parkTag, setParkTag] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [openKey, setOpenKey] = useState('')
   const requestIdRef = useRef(0)
 
   useEffect(() => {
-    api.operatorParks()
+    api
+      .operatorParks()
       .then((data) => {
         setParks(data)
         setParkId((current) => current ?? data[0]?.id ?? null)
@@ -36,19 +33,16 @@ export function OperatorBlockers() {
       })
   }, [])
 
-  useEffect(() => {
-    if (parkId == null) {
+  const load = useCallback((park: number | null, nextStatus: string) => {
+    if (park == null) {
       setLoading(false)
       return
     }
-
     const requestId = ++requestIdRef.current
     setLoading(true)
     setError('')
-    setItems([])
-    setCounts({})
-    setParkTag('')
-    api.operatorBlockers(parkId, status)
+    api
+      .operatorBlockers(park, nextStatus)
       .then((data) => {
         if (requestId !== requestIdRef.current) return
         setItems(data.items)
@@ -58,25 +52,45 @@ export function OperatorBlockers() {
       .catch((loadError) => {
         if (requestId !== requestIdRef.current) return
         setError(mapApiError(loadError, ru.errors.tasks))
+        setItems([])
+        setCounts({})
       })
       .finally(() => {
-        if (requestId !== requestIdRef.current) return
-        setLoading(false)
+        if (requestId === requestIdRef.current) {
+          setLoading(false)
+        }
       })
-  }, [parkId, status])
+  }, [])
+
+  useEffect(() => {
+    load(parkId, status)
+  }, [parkId, status, load])
+
+  if (openKey) {
+    return (
+      <PageShell subtitle={`Парк ${parkTag || '…'}`} title="Задача">
+        <IssueDrawer
+          canWrite
+          issueKey={openKey}
+          onChanged={() => load(parkId, status)}
+          onClose={() => setOpenKey('')}
+        />
+      </PageShell>
+    )
+  }
 
   return (
     <PageShell
-      subtitle={`Блокеры парка ${parkTag || '…'} · сортировка: старые сверху.`}
+      subtitle={`Блокеры парка ${parkTag || '…'} · старые сверху`}
       title="Блокеры"
     >
       {error && <Alert tone="error">{error}</Alert>}
 
-      <Panel hint="Выберите парк из назначенных и фильтр по статусу блокера в Tracker." title="Парк и фильтры">
-        <div className="inline-form">
+      {parks.length > 1 && (
+        <Panel hint="Задачи показываются по выбранному парку." title="Парк">
           <select
             aria-label="Парк"
-            disabled={!parks.length}
+            className="park-select"
             onChange={(event) => setParkId(Number(event.target.value))}
             value={parkId ?? ''}
           >
@@ -86,50 +100,39 @@ export function OperatorBlockers() {
               </option>
             ))}
           </select>
-        </div>
-        {!parks.length && !error && (
-          <EmptyState>Нет назначенных парков. Запросите доступ на странице «Мои парки».</EmptyState>
-        )}
-        {parks.length > 0 && (
-          <div className="actions">
-            {FILTERS.map((value) => (
-              <button
-                className={`btn btn-filter ${status === value ? 'is-active' : ''}`}
-                key={value}
-                onClick={() => setStatus(value)}
-                type="button"
-              >
-                {taskFilterLabel(value)} ({counts[value] ?? 0})
-              </button>
-            ))}
-          </div>
-        )}
-      </Panel>
+        </Panel>
+      )}
 
-      <Panel title={`Список (${items.length})`}>
-        {loading && <EmptyState>{ru.loading}</EmptyState>}
-        {!loading && parkId != null && !items.length && !error && (
-          <EmptyState>Нет открытых blocker-ов для выбранного фильтра.</EmptyState>
-        )}
-        {!loading && items.length > 0 && (
-          <ul className="card-list">
-            {items.map((item) => (
-              <li className="card" key={item.key}>
-                <div className="card-title">
-                  <a href={item.url} rel="noreferrer" target="_blank">{item.key}</a>
-                </div>
-                <p>{item.summary}</p>
-                <div className="card-meta">
-                  <span>Статус: {item.status}</span>
-                  {item.robot && <span>Робот: {item.robot}</span>}
-                  {item.hours_created && <span>В возрасте: {item.hours_created} ч</span>}
-                  <span>Корзина: {taskFilterLabel(item.bucket)}</span>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Panel>
+      {!parks.length && !error && (
+        <EmptyBlock
+          action={
+            <Link className="btn btn-secondary" to="/operator/parks">
+              Мои парки
+            </Link>
+          }
+          hint="Запросите доступ на странице «Мои парки»."
+          icon="🏭"
+          title="Нет назначенных парков"
+        />
+      )}
+
+      {parks.length > 0 && (
+        <>
+          <TaskFilterBar counts={counts} onChange={setStatus} value={status} />
+
+          {loading && <SkeletonList rows={4} />}
+          {!loading && !items.length && !error && (
+            <EmptyBlock
+              hint="Смените фильтр статуса или обновите список позже."
+              icon="📋"
+              title="Нет открытых блокеров для выбранного фильтра"
+            />
+          )}
+          {!loading && items.length > 0 && (
+            <TaskList items={items} onSelect={setOpenKey} selected={openKey} />
+          )}
+        </>
+      )}
     </PageShell>
   )
 }

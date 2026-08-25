@@ -73,10 +73,7 @@ def _render_fields(payload: dict[str, Any], fields: list[dict[str, str]]) -> lis
         path = str(field.get("path") or "")
         label = str(field.get("label") or path)
         value = _dig(payload, path)
-        if value is _MISSING:
-            lines = ["нет данных"]
-        else:
-            lines = _value_lines(value)
+        lines = ["нет данных"] if value is _MISSING else _value_lines(value)
         rendered.append({"label": label, "lines": lines})
     return rendered
 

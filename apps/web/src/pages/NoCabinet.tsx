@@ -1,5 +1,6 @@
 import { Navigate } from 'react-router-dom'
-import { PageShell, Panel } from '../components/PageShell'
+import { PageShell } from '../components/PageShell'
+import { EmptyBlock } from '../components/ui/Feedback'
 import { roleLabel } from '../i18n/ru'
 import { useAuth } from '../auth-context'
 import { hasCabinet, pathForUser } from '../routes'
@@ -14,14 +15,17 @@ export function NoCabinet() {
   }
 
   return (
-    <PageShell onLogout={logout} standalone subtitle="Для этой роли кабинет не настроен." title="Кабинет недоступен">
-      <Panel title="Детали">
-        <p>
-          У аккаунта роль <strong>{roleLabel(user.role)}</strong>. В текущей
-          сборке для неё нет интерфейса. Попросите администратора назначить
-          корректную роль.
-        </p>
-      </Panel>
+    <PageShell
+      onLogout={logout}
+      standalone
+      subtitle="Для этой роли кабинет не настроен."
+      title="Кабинет недоступен"
+    >
+      <EmptyBlock
+        hint={`Роль «${roleLabel(user.role)}» пока без интерфейса. Попросите администратора назначить корректную роль.`}
+        icon="⛔"
+        title="Кабинет недоступен"
+      />
     </PageShell>
   )
 }

@@ -2,7 +2,10 @@ import type { User } from './api'
 
 export const NO_CABINET_PATH = '/no-cabinet'
 
-export function pathForUser(user: Pick<User, 'role' | 'access_status' | 'parks'>) {
+export function pathForUser(user: Pick<User, 'role' | 'access_status' | 'parks' | 'must_change_password'>) {
+  if (user.must_change_password) {
+    return '/change-password'
+  }
   switch (user.role) {
     case 'royal':
     case 'admin':

@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   api,
@@ -9,8 +9,12 @@ import {
   type ParkRequest,
   type TrackerPolicySettings,
 } from '../api'
-import { Alert, Badge, EmptyState, PageShell, Panel } from '../components/PageShell'
+import { Alert, Badge, PageShell, Panel } from '../components/PageShell'
+import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
+import { TabPanel, Tabs, Toggle } from '../components/ui/Tabs'
 import { ru } from '../i18n/ru'
+
+type TabId = 'integrations' | 'parks' | 'mechanics' | 'requests'
 
 function cookieBadge(valid: boolean | null | undefined) {
   if (valid === true) return <span className="badge badge-ok">cookie действует</span>
@@ -19,6 +23,7 @@ function cookieBadge(valid: boolean | null | undefined) {
 }
 
 export function Admin() {
+  const [tab, setTab] = useState<TabId>('integrations')
   const [parks, setParks] = useState<Park[]>([])
   const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([])
   const [parkRequests, setParkRequests] = useState<ParkRequest[]>([])
@@ -34,11 +39,14 @@ export function Admin() {
   const [mechanicPassword, setMechanicPassword] = useState('')
   const [mechanicParkId, setMechanicParkId] = useState('')
   const [mechanicDrafts, setMechanicDrafts] = useState<
-    Record<number, { parkId: string; password: string }>
+    Record<number, { parkId: string; password: string; trackerLogin: string }>
   >({})
   const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const [parkList, accessInbox, parkInbox, mechanicList, integration, policy] =
       await Promise.all([
         api.parks(),
@@ -54,26 +62,41 @@ export function Admin() {
     setMechanics(mechanicList)
     setSettings(integration)
     setTrackerPolicy(policy)
-    setMechanicDrafts(Object.fromEntries(
-      mechanicList.map((mechanic) => [
-        mechanic.id,
-        { parkId: String(mechanic.park.id), password: '' },
-      ]),
-    ))
-    setMechanicParkId((current) => current || String(parkList.find((park) => park.is_active)?.id ?? ''))
-  }
-
-  useEffect(() => {
-    load().catch(() => setError(ru.errors.load))
+    setMechanicDrafts(
+      Object.fromEntries(
+        mechanicList.map((mechanic) => [
+          mechanic.id,
+          {
+            parkId: String(mechanic.park.id),
+            password: '',
+            trackerLogin: mechanic.tracker_login ?? '',
+          },
+        ]),
+      ),
+    )
+    setMechanicParkId(
+      (current) => current || String(parkList.find((park) => park.is_active)?.id ?? ''),
+    )
   }, [])
 
-  const run = async (action: () => Promise<unknown>) => {
+  useEffect(() => {
+    load()
+      .catch(() => setError(ru.errors.load))
+      .finally(() => setLoading(false))
+  }, [load])
+
+  const run = async (action: () => Promise<unknown>, message = 'Сохранено') => {
     setError('')
+    setSuccess('')
+    setBusy(true)
     try {
       await action()
       await load()
+      setSuccess(message)
     } catch {
       setError(ru.errors.generic)
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -83,20 +106,16 @@ export function Admin() {
       await api.createPark({ name, tag })
       setName('')
       setTag('')
-    })
+    }, 'Парк создан')
   }
 
   const createMechanic = async (event: FormEvent) => {
     event.preventDefault()
     await run(async () => {
-      await api.createMechanic(
-        mechanicUsername,
-        mechanicPassword,
-        Number(mechanicParkId),
-      )
+      await api.createMechanic(mechanicUsername, mechanicPassword, Number(mechanicParkId))
       setMechanicUsername('')
       setMechanicPassword('')
-    })
+    }, 'Механик создан')
   }
 
   const saveIntegration = async (event: FormEvent) => {
@@ -110,7 +129,7 @@ export function Admin() {
         await api.setEmergencyCookie(emergencyCookie.trim())
         setEmergencyCookie('')
       }
-    })
+    }, 'Секреты обновлены')
   }
 
   const toggleSelection = (userId: number, parkId: number) => {
@@ -126,14 +145,14 @@ export function Admin() {
   }
 
   const editPark = (parkId: number, changes: Partial<Park>) => {
-    setParks((current) => current.map((park) => (
-      park.id === parkId ? { ...park, ...changes } : park
-    )))
+    setParks((current) =>
+      current.map((park) => (park.id === parkId ? { ...park, ...changes } : park)),
+    )
   }
 
   const editMechanicDraft = (
     mechanicId: number,
-    changes: Partial<{ parkId: string; password: string }>,
+    changes: Partial<{ parkId: string; password: string; trackerLogin: string }>,
   ) => {
     setMechanicDrafts((current) => ({
       ...current,
@@ -154,398 +173,573 @@ export function Admin() {
     return run(async () => {
       await api.updateMechanic(mechanicId, {
         park_id: Number(draft.parkId),
+        tracker_login: draft.trackerLogin.trim() || null,
         ...(draft.password ? { password: draft.password } : {}),
       })
-    })
+    }, 'Механик обновлён')
   }
 
   const pendingAccess = accessRequests.filter(
     (request) => request.access_status === 'pending',
   )
+  const requestsCount = pendingAccess.length + parkRequests.length
+  const activeParks = parks.filter((park) => park.is_active)
 
   const parkName = (parkId: number) =>
     parks.find((park) => park.id === parkId)?.name ?? `#${parkId}`
 
+  if (loading) {
+    return (
+      <PageShell subtitle="Загрузка данных…" title="Администрирование">
+        <SkeletonList rows={4} />
+      </PageShell>
+    )
+  }
+
   return (
     <PageShell
+      actions={busy ? <Spinner label="Сохранение" /> : undefined}
       subtitle="Парки, доступы, механики и интеграции Tracker / Emergency."
       title="Администрирование"
     >
       {error && <Alert tone="error">{error}</Alert>}
+      {success && <Alert tone="success">{success}</Alert>}
 
-      <Panel hint="Секреты хранятся в базе; в интерфейсе показываются только маскированные значения." title="Интеграции">
-        {settings && (
-          <div className="stat-grid">
-            <div className="stat">
-              <span className="stat-label">Tracker OAuth</span>
-              <span className="stat-value">{settings.tracker_token_masked ?? 'не задан'}</span>
-            </div>
-            <div className="stat">
-              <span className="stat-label">Emergency cookie</span>
-              <span className="stat-value">{settings.emergency_cookie_masked ?? 'не задан'}</span>
-            </div>
-            <div className="stat">
-              <span className="stat-label">Статус cookie</span>
-              <span className="stat-value">{cookieBadge(settings.emergency_cookie_valid)}</span>
-            </div>
-          </div>
-        )}
-        <form className="inline-form" onSubmit={saveIntegration}>
-          <input
-            aria-label="Tracker token"
-            onChange={(event) => setTrackerToken(event.target.value)}
-            placeholder="OAuth-токен Startrek (st.yandex-team.ru)"
-            type="password"
-            value={trackerToken}
-          />
-          <input
-            aria-label="Emergency cookie"
-            onChange={(event) => setEmergencyCookie(event.target.value)}
-            placeholder="Cookie Emergency"
-            type="password"
-            value={emergencyCookie}
-          />
-          <button type="submit">Сохранить секреты</button>
-        </form>
-        <div className="actions" style={{ marginTop: '0.75rem' }}>
-          <Link to="/admin/emergency">Открыть Emergency →</Link>
-          <Link to="/admin/emergency/config">Конфиг Emergency →</Link>
-        </div>
-        {trackerPolicy && (
-          <div className="actions" style={{ marginTop: '0.75rem' }}>
-            <span>Неразмеченные для оператора: {trackerPolicy.operator_show_untagged ? 'вкл' : 'выкл'}</span>
-            <span>Запись механика: {trackerPolicy.mechanic_can_write ? 'вкл' : 'выкл'}</span>
-            <button
-              onClick={() => run(async () => {
-                await api.updateTrackerPolicy({
-                  operator_show_untagged: !trackerPolicy.operator_show_untagged,
-                })
-              })}
-              type="button"
-            >
-              Переключить untagged
-            </button>
-            <button
-              onClick={() => run(async () => {
-                await api.updateTrackerPolicy({
-                  mechanic_can_write: !trackerPolicy.mechanic_can_write,
-                })
-              })}
-              type="button"
-            >
-              Переключить запись механика
-            </button>
-            <Link to="/admin/tracker">Рабочий стол Tracker →</Link>
-          </div>
-        )}
-      </Panel>
+      <Tabs
+        items={[
+          { id: 'integrations', label: 'Интеграции' },
+          { id: 'parks', label: 'Парки', count: parks.length },
+          { id: 'mechanics', label: 'Механики', count: mechanics.length },
+          { id: 'requests', label: 'Заявки', count: requestsCount },
+        ]}
+        onChange={(id) => setTab(id as TabId)}
+        value={tab}
+      />
 
-      <Panel hint="Механик получает ровно один активный парк и сразу одобренный доступ." title="Механики">
-        <form className="inline-form" onSubmit={createMechanic}>
-          <input
-            aria-label="Логин механика"
-            onChange={(event) => setMechanicUsername(event.target.value)}
-            placeholder="Логин"
-            required
-            value={mechanicUsername}
-          />
-          <input
-            aria-label="Пароль механика"
-            onChange={(event) => setMechanicPassword(event.target.value)}
-            placeholder="Пароль"
-            required
-            type="password"
-            value={mechanicPassword}
-          />
-          <select
-            aria-label="Парк механика"
-            onChange={(event) => setMechanicParkId(event.target.value)}
-            required
-            value={mechanicParkId}
-          >
-            {parks.filter((park) => park.is_active).map((park) => (
-              <option key={park.id} value={park.id}>{park.name}</option>
-            ))}
-          </select>
-          <button type="submit">Создать механика</button>
-        </form>
-        {mechanics.length ? (
-          <div className="table-scroll">
-            <ul className="card-list">
-              {mechanics.map((mechanic) => (
-              <li className="card" key={mechanic.id}>
-                <div className="card-title">{mechanic.username}</div>
-                <div className="card-meta">
-                  <Badge active={mechanic.is_active} />
-                </div>
-                <div className="inline-form">
-                  <select
-                    aria-label={`Парк для ${mechanic.username}`}
-                    onChange={(event) => editMechanicDraft(mechanic.id, {
-                      parkId: event.target.value,
-                    })}
-                    value={mechanicDrafts[mechanic.id]?.parkId ?? String(mechanic.park.id)}
-                  >
-                    {parks.filter((park) => park.is_active).map((park) => (
-                      <option key={park.id} value={park.id}>{park.name}</option>
-                    ))}
-                  </select>
-                  <input
-                    aria-label={`Новый пароль для ${mechanic.username}`}
-                    onChange={(event) => editMechanicDraft(mechanic.id, {
-                      password: event.target.value,
-                    })}
-                    placeholder="Новый пароль (необязательно)"
-                    type="password"
-                    value={mechanicDrafts[mechanic.id]?.password ?? ''}
-                  />
-                </div>
-                <div className="actions">
-                  <button onClick={() => saveMechanic(mechanic.id)} type="button">
-                    {ru.save}
-                  </button>
-                  <button
-                    className="btn btn-secondary"
-                    onClick={() => run(() => api.updateMechanic(mechanic.id, {
-                      is_active: !mechanic.is_active,
-                    }))}
-                    type="button"
-                  >
-                    {mechanic.is_active ? ru.deactivate : ru.activate}
-                  </button>
-                </div>
-              </li>
-              ))}
-            </ul>
-          </div>
-        ) : (
-          <EmptyState>Механики ещё не созданы.</EmptyState>
-        )}
-      </Panel>
-
-      <Panel hint="Тег используется в Tracker; очередь нужна для задач и поиска." title="Парки">
-        <form className="inline-form" onSubmit={createPark}>
-          <input
-            aria-label="Название парка"
-            onChange={(event) => setName(event.target.value)}
-            placeholder="Название"
-            required
-            value={name}
-          />
-          <input
-            aria-label="Тег парка"
-            onChange={(event) => setTag(event.target.value)}
-            placeholder="Тег"
-            required
-            value={tag}
-          />
-          <button type="submit">{ru.create}</button>
-        </form>
-        <div className="table-scroll">
-          <ul className="card-list">
-            {parks.map((park) => (
-              <li className="card" key={park.id}>
-              <div className="inline-form">
-                <input
-                  aria-label={`Название парка ${park.id}`}
-                  onChange={(event) => editPark(park.id, { name: event.target.value })}
-                  required
-                  value={park.name}
-                />
-                <input
-                  aria-label={`Тег парка ${park.id}`}
-                  onChange={(event) => editPark(park.id, { tag: event.target.value })}
-                  required
-                  value={park.tag}
-                />
-                <input
-                  aria-label={`Очередь Tracker ${park.id}`}
-                  onChange={(event) => editPark(park.id, { tracker_queue: event.target.value })}
-                  placeholder="Очередь Tracker"
-                  value={park.tracker_queue ?? ''}
-                />
-                <input
-                  aria-label={`Приоритет Tracker ${park.id}`}
-                  onChange={(event) => editPark(park.id, {
-                    tracker_priority: event.target.value || null,
-                  })}
-                  placeholder="Приоритет (blocker)"
-                  value={park.tracker_priority ?? ''}
-                />
-                <input
-                  aria-label={`Тип Tracker ${park.id}`}
-                  onChange={(event) => editPark(park.id, {
-                    tracker_type: event.target.value || null,
-                  })}
-                  placeholder="Тип (пусто = без фильтра)"
-                  value={park.tracker_type ?? ''}
-                />
-                <input
-                  aria-label={`Group ID ${park.id}`}
-                  onChange={(event) => editPark(park.id, {
-                    group_id: parseOptionalInt(event.target.value),
-                  })}
-                  placeholder="Group ID (Telegram)"
-                  value={park.group_id ?? ''}
-                />
-                <input
-                  aria-label={`Chat ID ${park.id}`}
-                  onChange={(event) => editPark(park.id, {
-                    chat_id: parseOptionalInt(event.target.value),
-                  })}
-                  placeholder="Chat ID"
-                  value={park.chat_id ?? ''}
-                />
-                <div className="checks">
-                  <label>
-                    <input
-                      checked={park.feature_blockers ?? true}
-                      onChange={(event) => editPark(park.id, {
-                        feature_blockers: event.target.checked,
-                      })}
-                      type="checkbox"
-                    />
-                    Задачи
-                  </label>
-                  <label>
-                    <input
-                      checked={park.feature_reports ?? true}
-                      onChange={(event) => editPark(park.id, {
-                        feature_reports: event.target.checked,
-                      })}
-                      type="checkbox"
-                    />
-                    Отчёты
-                  </label>
-                  <label>
-                    <input
-                      checked={park.feature_sla_repair ?? true}
-                      onChange={(event) => editPark(park.id, {
-                        feature_sla_repair: event.target.checked,
-                      })}
-                      type="checkbox"
-                    />
-                    SLA ремонт
-                  </label>
-                  <label>
-                    <input
-                      checked={park.feature_backlog_alerts ?? true}
-                      onChange={(event) => editPark(park.id, {
-                        feature_backlog_alerts: event.target.checked,
-                      })}
-                      type="checkbox"
-                    />
-                    Backlog alerts
-                  </label>
-                </div>
-                <Badge active={park.is_active ?? true} />
+      {/* --- Integrations ------------------------------------------------- */}
+      <TabPanel active={tab === 'integrations'}>
+        <Panel
+          hint="Секреты хранятся зашифрованными; в интерфейсе видно только маску."
+          title="Секреты"
+        >
+          {settings && (
+            <div className="stat-grid">
+              <div className="stat">
+                <span className="stat-label">Tracker OAuth</span>
+                <span className="stat-value">
+                  {settings.tracker_token_masked ?? 'не задан'}
+                </span>
               </div>
-              <div className="actions">
+              <div className="stat">
+                <span className="stat-label">Emergency cookie</span>
+                <span className="stat-value">
+                  {settings.emergency_cookie_masked ?? 'не задан'}
+                </span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Статус cookie</span>
+                <span className="stat-value">
+                  {cookieBadge(settings.emergency_cookie_valid)}
+                </span>
+              </div>
+            </div>
+          )}
+
+          <form className="form-grid" onSubmit={saveIntegration}>
+            <label className="field">
+              <span className="field-label">Tracker OAuth-токен</span>
+              <input
+                onChange={(event) => setTrackerToken(event.target.value)}
+                placeholder="Оставьте пустым, чтобы не менять"
+                type="password"
+                value={trackerToken}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">Emergency cookie</span>
+              <input
+                onChange={(event) => setEmergencyCookie(event.target.value)}
+                placeholder="Оставьте пустым, чтобы не менять"
+                type="password"
+                value={emergencyCookie}
+              />
+            </label>
+            <div className="form-actions">
+              <button
+                className="btn"
+                disabled={busy || (!trackerToken.trim() && !emergencyCookie.trim())}
+                type="submit"
+              >
+                Сохранить секреты
+              </button>
+            </div>
+          </form>
+        </Panel>
+
+        {trackerPolicy && (
+          <Panel hint="Влияет на то, что видят операторы и механики." title="Политика Tracker">
+            <div className="toggle-list">
+              <Toggle
+                checked={trackerPolicy.operator_show_untagged}
+                disabled={busy}
+                label="Оператор видит неразмеченные тикеты"
+                onChange={(next) =>
+                  run(
+                    () => api.updateTrackerPolicy({ operator_show_untagged: next }),
+                    'Политика обновлена',
+                  )
+                }
+              />
+              <Toggle
+                checked={trackerPolicy.mechanic_can_write}
+                disabled={busy}
+                label="Механик может писать в Tracker"
+                onChange={(next) =>
+                  run(
+                    () => api.updateTrackerPolicy({ mechanic_can_write: next }),
+                    'Политика обновлена',
+                  )
+                }
+              />
+            </div>
+          </Panel>
+        )}
+
+        <Panel title="Быстрые переходы">
+          <div className="link-row">
+            <Link className="btn btn-secondary" to="/admin/tracker">
+              Рабочий стол Tracker
+            </Link>
+            <Link className="btn btn-secondary" to="/emergency">
+              Emergency
+            </Link>
+            <Link className="btn btn-secondary" to="/admin/emergency/config">
+              Конфиг Emergency
+            </Link>
+          </div>
+        </Panel>
+      </TabPanel>
+
+      {/* --- Parks --------------------------------------------------------- */}
+      <TabPanel active={tab === 'parks'}>
+        <Panel hint="Тег используется в Tracker; очередь нужна для задач и поиска." title="Новый парк">
+          <form className="form-grid" onSubmit={createPark}>
+            <label className="field">
+              <span className="field-label">Название</span>
+              <input
+                onChange={(event) => setName(event.target.value)}
+                required
+                value={name}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">Тег</span>
+              <input
+                onChange={(event) => setTag(event.target.value)}
+                required
+                value={tag}
+              />
+            </label>
+            <div className="form-actions">
+              <button className="btn" disabled={busy} type="submit">
+                {ru.create}
+              </button>
+            </div>
+          </form>
+        </Panel>
+
+        {parks.length === 0 ? (
+          <EmptyBlock
+            hint="Парк нужен, чтобы назначать операторов и механиков."
+            icon="🏭"
+            title="Парков пока нет"
+          />
+        ) : (
+          parks.map((park) => (
+            <Panel
+              actions={<Badge active={park.is_active ?? true} />}
+              key={park.id}
+              title={park.name || `Парк #${park.id}`}
+            >
+              <div className="form-grid">
+                <label className="field">
+                  <span className="field-label">Название</span>
+                  <input
+                    onChange={(event) => editPark(park.id, { name: event.target.value })}
+                    required
+                    value={park.name}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Тег</span>
+                  <input
+                    onChange={(event) => editPark(park.id, { tag: event.target.value })}
+                    required
+                    value={park.tag}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Очередь Tracker</span>
+                  <input
+                    onChange={(event) =>
+                      editPark(park.id, { tracker_queue: event.target.value })
+                    }
+                    placeholder="SDCFLEETOPS"
+                    value={park.tracker_queue ?? ''}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Приоритет</span>
+                  <input
+                    onChange={(event) =>
+                      editPark(park.id, { tracker_priority: event.target.value || null })
+                    }
+                    placeholder="blocker"
+                    value={park.tracker_priority ?? ''}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Тип</span>
+                  <input
+                    onChange={(event) =>
+                      editPark(park.id, { tracker_type: event.target.value || null })
+                    }
+                    placeholder="пусто = без фильтра"
+                    value={park.tracker_type ?? ''}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Group ID (Telegram)</span>
+                  <input
+                    onChange={(event) =>
+                      editPark(park.id, { group_id: parseOptionalInt(event.target.value) })
+                    }
+                    value={park.group_id ?? ''}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Chat ID</span>
+                  <input
+                    onChange={(event) =>
+                      editPark(park.id, { chat_id: parseOptionalInt(event.target.value) })
+                    }
+                    value={park.chat_id ?? ''}
+                  />
+                </label>
+              </div>
+
+              <div className="toggle-list">
+                <Toggle
+                  checked={park.feature_blockers ?? true}
+                  label="Задачи"
+                  onChange={(next) => editPark(park.id, { feature_blockers: next })}
+                />
+                <Toggle
+                  checked={park.feature_reports ?? true}
+                  label="Отчёты"
+                  onChange={(next) => editPark(park.id, { feature_reports: next })}
+                />
+                <Toggle
+                  checked={park.feature_sla_repair ?? true}
+                  label="SLA ремонт"
+                  onChange={(next) => editPark(park.id, { feature_sla_repair: next })}
+                />
+                <Toggle
+                  checked={park.feature_backlog_alerts ?? true}
+                  label="Backlog alerts"
+                  onChange={(next) => editPark(park.id, { feature_backlog_alerts: next })}
+                />
+              </div>
+
+              <div className="form-actions">
                 <button
-                  disabled={!park.name || !park.tag}
-                  onClick={() => run(() => api.updatePark(park.id, {
-                    name: park.name,
-                    tag: park.tag,
-                    tracker_queue: park.tracker_queue || null,
-                    tracker_priority: park.tracker_priority || null,
-                    tracker_type: park.tracker_type || null,
-                    group_id: park.group_id ?? null,
-                    chat_id: park.chat_id ?? null,
-                    feature_blockers: park.feature_blockers,
-                    feature_reports: park.feature_reports,
-                    feature_sla_repair: park.feature_sla_repair,
-                    feature_backlog_alerts: park.feature_backlog_alerts,
-                  }))}
+                  className="btn"
+                  disabled={!park.name || !park.tag || busy}
+                  onClick={() =>
+                    run(() =>
+                      api.updatePark(park.id, {
+                        name: park.name,
+                        tag: park.tag,
+                        tracker_queue: park.tracker_queue || null,
+                        tracker_priority: park.tracker_priority || null,
+                        tracker_type: park.tracker_type || null,
+                        group_id: park.group_id ?? null,
+                        chat_id: park.chat_id ?? null,
+                        feature_blockers: park.feature_blockers,
+                        feature_reports: park.feature_reports,
+                        feature_sla_repair: park.feature_sla_repair,
+                        feature_backlog_alerts: park.feature_backlog_alerts,
+                      }),
+                    )
+                  }
                   type="button"
                 >
                   {ru.save}
                 </button>
                 <button
-                  onClick={() => run(() => api.updatePark(park.id, {
-                    is_active: !park.is_active,
-                  }))}
+                  className="btn btn-secondary"
+                  disabled={busy}
+                  onClick={() =>
+                    run(() => api.updatePark(park.id, { is_active: !park.is_active }))
+                  }
                   type="button"
                 >
                   {park.is_active ? ru.deactivate : ru.activate}
                 </button>
               </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </Panel>
-
-      <Panel hint="Одобрение требует выбора хотя бы одного активного парка." title="Заявки на доступ">
-        {pendingAccess.length ? pendingAccess.map((request) => (
-          <article className="inbox-item" key={request.id}>
-            <strong>{request.username}</strong>
-            <p className="field-hint">Выберите парки для назначения оператору.</p>
-            <div className="checks">
-              {parks.filter((park) => park.is_active).map((park) => (
-                <label key={park.id}>
-                  <input
-                    checked={(selections[request.id] ?? []).includes(park.id)}
-                    onChange={() => toggleSelection(request.id, park.id)}
-                    type="checkbox"
-                  />
-                  {park.name}
-                </label>
-              ))}
-            </div>
-            <div className="actions">
-              <button
-                disabled={!(selections[request.id]?.length)}
-                onClick={() => run(() => api.approveAccessRequest(
-                  request.id,
-                  selections[request.id] ?? [],
-                ))}
-                type="button"
-              >
-                {ru.approve}
-              </button>
-              <button
-                onClick={() => run(() => api.rejectAccessRequest(request.id))}
-                type="button"
-              >
-                {ru.reject}
-              </button>
-            </div>
-          </article>
-        )) : (
-          <EmptyState>Нет заявок на первичный доступ.</EmptyState>
+            </Panel>
+          ))
         )}
-      </Panel>
+      </TabPanel>
 
-      <Panel hint="Операторы запрашивают дополнительные парки из своего кабинета." title="Заявки на парки">
-        {parkRequests.length ? (
-          <ul className="card-list">
-            {parkRequests.map((request) => (
-              <li className="card action-row" key={request.id}>
-                <div>
-                  <div className="card-title">Пользователь #{request.user_id}</div>
-                  <div className="card-meta">Парк: {parkName(request.park_id)}</div>
+      {/* --- Mechanics ----------------------------------------------------- */}
+      <TabPanel active={tab === 'mechanics'}>
+        <Panel
+          hint="Механик получает ровно один активный парк и сразу одобренный доступ."
+          title="Новый механик"
+        >
+          <form className="form-grid" onSubmit={createMechanic}>
+            <label className="field">
+              <span className="field-label">Логин</span>
+              <input
+                onChange={(event) => setMechanicUsername(event.target.value)}
+                required
+                value={mechanicUsername}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">Пароль</span>
+              <input
+                onChange={(event) => setMechanicPassword(event.target.value)}
+                required
+                type="password"
+                value={mechanicPassword}
+              />
+              <span className="field-hint">
+                Минимум 12 символов и три типа символов.
+              </span>
+            </label>
+            <label className="field">
+              <span className="field-label">Парк</span>
+              <select
+                onChange={(event) => setMechanicParkId(event.target.value)}
+                required
+                value={mechanicParkId}
+              >
+                {activeParks.map((park) => (
+                  <option key={park.id} value={park.id}>
+                    {park.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="form-actions">
+              <button className="btn" disabled={busy || !activeParks.length} type="submit">
+                Создать механика
+              </button>
+            </div>
+          </form>
+        </Panel>
+
+        {mechanics.length === 0 ? (
+          <EmptyBlock icon="🔧" title="Механики ещё не созданы" />
+        ) : (
+          mechanics.map((mechanic) => (
+            <Panel
+              actions={<Badge active={mechanic.is_active} />}
+              key={mechanic.id}
+              title={mechanic.username}
+            >
+              <div className="form-grid">
+                <label className="field">
+                  <span className="field-label">Парк</span>
+                  <select
+                    onChange={(event) =>
+                      editMechanicDraft(mechanic.id, { parkId: event.target.value })
+                    }
+                    value={mechanicDrafts[mechanic.id]?.parkId ?? String(mechanic.park.id)}
+                  >
+                    {activeParks.map((park) => (
+                      <option key={park.id} value={park.id}>
+                        {park.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span className="field-label">Startrek-логин</span>
+                  <input
+                    onChange={(event) =>
+                      editMechanicDraft(mechanic.id, { trackerLogin: event.target.value })
+                    }
+                    placeholder="ivan.petrov"
+                    value={mechanicDrafts[mechanic.id]?.trackerLogin ?? ''}
+                  />
+                  <span className="field-hint">
+                    Нужен для фильтра «Мои» и назначения «На себя» в Tracker.
+                  </span>
+                </label>
+                <label className="field">
+                  <span className="field-label">Новый пароль</span>
+                  <input
+                    onChange={(event) =>
+                      editMechanicDraft(mechanic.id, { password: event.target.value })
+                    }
+                    placeholder="необязательно"
+                    type="password"
+                    value={mechanicDrafts[mechanic.id]?.password ?? ''}
+                  />
+                  <span className="field-hint">
+                    Смена пароля завершит активные сессии механика.
+                  </span>
+                </label>
+              </div>
+
+              <div className="toggle-list">
+                <Toggle
+                  checked={mechanic.must_change_password ?? false}
+                  disabled={busy}
+                  label="Запросить смену пароля при входе"
+                  onChange={(next) =>
+                    run(
+                      () => api.updateMechanic(mechanic.id, { must_change_password: next }),
+                      'Флаг смены пароля обновлён',
+                    )
+                  }
+                />
+              </div>
+
+              <div className="form-actions">
+                <button
+                  className="btn"
+                  disabled={busy}
+                  onClick={() => saveMechanic(mechanic.id)}
+                  type="button"
+                >
+                  {ru.save}
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  disabled={busy}
+                  onClick={() =>
+                    run(() =>
+                      api.updateMechanic(mechanic.id, { is_active: !mechanic.is_active }),
+                    )
+                  }
+                  type="button"
+                >
+                  {mechanic.is_active ? ru.deactivate : ru.activate}
+                </button>
+              </div>
+            </Panel>
+          ))
+        )}
+      </TabPanel>
+
+      {/* --- Requests ------------------------------------------------------ */}
+      <TabPanel active={tab === 'requests'}>
+        <Panel
+          hint="Одобрение требует выбора хотя бы одного активного парка."
+          title={`Заявки на доступ (${pendingAccess.length})`}
+        >
+          {pendingAccess.length === 0 ? (
+            <EmptyBlock icon="✅" title="Нет заявок на первичный доступ" />
+          ) : (
+            pendingAccess.map((request) => (
+              <article className="inbox-item" key={request.id}>
+                <strong>{request.username}</strong>
+                <p className="field-hint">Выберите парки для назначения оператору.</p>
+                <div className="checks">
+                  {activeParks.map((park) => (
+                    <label key={park.id}>
+                      <input
+                        checked={(selections[request.id] ?? []).includes(park.id)}
+                        onChange={() => toggleSelection(request.id, park.id)}
+                        type="checkbox"
+                      />
+                      {park.name}
+                    </label>
+                  ))}
                 </div>
-                <div className="actions">
+                <div className="form-actions">
                   <button
-                    onClick={() => run(() => api.resolveParkRequest(request.id, 'approve'))}
+                    className="btn"
+                    disabled={!selections[request.id]?.length || busy}
+                    onClick={() =>
+                      run(
+                        () =>
+                          api.approveAccessRequest(request.id, selections[request.id] ?? []),
+                        'Доступ одобрен',
+                      )
+                    }
                     type="button"
                   >
                     {ru.approve}
                   </button>
                   <button
-                    onClick={() => run(() => api.resolveParkRequest(request.id, 'reject'))}
+                    className="btn btn-secondary"
+                    disabled={busy}
+                    onClick={() =>
+                      run(() => api.rejectAccessRequest(request.id), 'Заявка отклонена')
+                    }
                     type="button"
                   >
                     {ru.reject}
                   </button>
                 </div>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <EmptyState>Нет заявок на дополнительные парки.</EmptyState>
-        )}
-      </Panel>
+              </article>
+            ))
+          )}
+        </Panel>
+
+        <Panel
+          hint="Операторы запрашивают дополнительные парки из своего кабинета."
+          title={`Заявки на парки (${parkRequests.length})`}
+        >
+          {parkRequests.length === 0 ? (
+            <EmptyBlock icon="✅" title="Нет заявок на дополнительные парки" />
+          ) : (
+            <ul className="card-list">
+              {parkRequests.map((request) => (
+                <li className="card action-row" key={request.id}>
+                  <div>
+                    <div className="card-title">Пользователь #{request.user_id}</div>
+                    <div className="card-meta">Парк: {parkName(request.park_id)}</div>
+                  </div>
+                  <div className="form-actions">
+                    <button
+                      className="btn"
+                      disabled={busy}
+                      onClick={() =>
+                        run(
+                          () => api.resolveParkRequest(request.id, 'approve'),
+                          'Заявка одобрена',
+                        )
+                      }
+                      type="button"
+                    >
+                      {ru.approve}
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      disabled={busy}
+                      onClick={() =>
+                        run(
+                          () => api.resolveParkRequest(request.id, 'reject'),
+                          'Заявка отклонена',
+                        )
+                      }
+                      type="button"
+                    >
+                      {ru.reject}
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+      </TabPanel>
     </PageShell>
   )
 }

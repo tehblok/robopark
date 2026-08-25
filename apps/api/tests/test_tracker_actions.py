@@ -1,8 +1,8 @@
 from conftest import login_as
-
 from robopark_api.models import AccessStatus, Report, User, UserPark, UserRole
 from robopark_api.security import hash_password
-from robopark_api.services import platform_settings, reports as reports_svc
+from robopark_api.services import platform_settings
+from robopark_api.services import reports as reports_svc
 
 
 def _seed_operator(db_session, park):
@@ -35,6 +35,7 @@ def test_tracker_action_comment(client, db_session, seed_park_with_tracker, monk
             "status_key": "open",
             "queue": "ROBOPARK",
             "resolution": "",
+            "tags": ["Alpha"],
         },
     )
     monkeypatch.setattr(tracker_client, "add_comment", lambda **_kwargs: {"id": "1", "text": "ok"})
@@ -55,6 +56,7 @@ def _mock_close_tracker(monkeypatch, *, key: str = "ROBOPARK-1"):
         "status_key": "open",
         "queue": "ROBOPARK",
         "resolution": "",
+        "tags": ["Alpha"],
     }
     monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: issue)
     monkeypatch.setattr(

@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -99,7 +99,7 @@ def test_dashboard_summary_not_found(client, db_session, seed_mechanic):
 
 def test_dashboard_history_shape(client, db_session, seed_royal):
     _, park = seed_dashboard_park(db_session)
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     upsert_bucket(
         db_session,
         park_id=park.id,

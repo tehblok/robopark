@@ -4,7 +4,8 @@ import { useAuth } from '../auth-context'
 import { ReportDetail } from '../components/reports/ReportDetail'
 import { ReportForms } from '../components/reports/ReportForms'
 import { ReportList } from '../components/reports/ReportList'
-import { Alert, EmptyState, Panel } from '../components/PageShell'
+import { Alert, Panel } from '../components/PageShell'
+import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
 import { useParkContext } from '../park-context'
@@ -138,15 +139,16 @@ export function Reports() {
     : 'Открытые репорты механиков по выбранному парку.'
 
   return (
-    <div className="dashboard-page">
+    <div className="dashboard-page animate-in">
       <div className="dashboard-toolbar">
         <h1 className="dashboard-title">{ru.nav.reports}</h1>
         <button
+          className="btn btn-secondary"
           disabled={listLoading || parksLoading || (isInboxRole(role) && parkId == null)}
           onClick={() => void loadLists()}
           type="button"
         >
-          Обновить
+          {listLoading ? <Spinner label="Обновление" /> : 'Обновить'}
         </button>
       </div>
 
@@ -172,7 +174,11 @@ export function Reports() {
             </Panel>
           ) : (
             <Panel title="Создать репорт">
-              <EmptyState>Парк не назначен — обратитесь к администратору.</EmptyState>
+              <EmptyBlock
+                hint="Репорт уходит оператору парка — без назначенного парка адресата нет."
+                icon="🏭"
+                title="Парк не назначен"
+              />
             </Panel>
           )}
         </>
@@ -181,9 +187,11 @@ export function Reports() {
       {isInboxRole(role) && (
         <>
           {parkId == null && !parksLoading && (
-            <Panel title={inboxTitle}>
-              <EmptyState>Выберите парк в верхней панели, чтобы загрузить входящие.</EmptyState>
-            </Panel>
+            <EmptyBlock
+              hint="Входящие репорты показываются по выбранному парку."
+              icon="📥"
+              title="Выберите парк в верхней панели"
+            />
           )}
 
           {parkId != null && selectedId == null && (
@@ -193,6 +201,7 @@ export function Reports() {
                 loading={listLoading}
                 onSelect={handleSelect}
                 reports={inbox}
+                selectedId={selectedId}
                 showReturnComment={false}
               />
             </Panel>
@@ -201,7 +210,7 @@ export function Reports() {
           {parkId != null && selectedId != null && (
             <Panel title="Репорт">
               {detailError && <Alert tone="error">{detailError}</Alert>}
-              {detailLoading && <EmptyState>{ru.loading}</EmptyState>}
+              {detailLoading && <SkeletonList rows={2} />}
               {!detailLoading && selectedReport && (
                 <ReportDetail
                   canAct
@@ -217,11 +226,7 @@ export function Reports() {
         </>
       )}
 
-      {!role && !user && (
-        <Panel title={ru.nav.reports}>
-          <EmptyState>{ru.loading}</EmptyState>
-        </Panel>
-      )}
+      {!role && !user && <SkeletonList rows={3} />}
     </div>
   )
 }

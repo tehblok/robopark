@@ -1,6 +1,7 @@
 import { type FormEvent, useState } from 'react'
 import { api, type EmergencySection, type EmergencySectionDetail } from '../../api'
-import { Alert, EmptyState, PageShell, Panel } from '../PageShell'
+import { Alert, PageShell, Panel } from '../PageShell'
+import { EmptyBlock, SkeletonList, Spinner } from '../ui/Feedback'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
 
@@ -9,7 +10,9 @@ export function EmergencyViewer() {
   const [vin, setVin] = useState('')
   const [sections, setSections] = useState<EmergencySection[]>([])
   const [detail, setDetail] = useState<EmergencySectionDetail | null>(null)
+  const [activeSection, setActiveSection] = useState('')
   const [loading, setLoading] = useState(false)
+  const [sectionLoading, setSectionLoading] = useState(false)
   const [error, setError] = useState('')
 
   const resolveRobot = async () => {
@@ -19,6 +22,7 @@ export function EmergencyViewer() {
     setLoading(true)
     setError('')
     setDetail(null)
+    setActiveSection('')
     try {
       const data = await api.emergencyResolve(query)
       setVin(data.vin)
@@ -38,21 +42,23 @@ export function EmergencyViewer() {
   }
 
   const openSection = async (sectionId: string) => {
-    setLoading(true)
+    setSectionLoading(true)
+    setActiveSection(sectionId)
     setError('')
     try {
       setDetail(await api.emergencySection(vin, sectionId))
     } catch (caught) {
+      setDetail(null)
       setError(mapApiError(caught, ru.errors.emergencySection))
     } finally {
-      setLoading(false)
+      setSectionLoading(false)
     }
   }
 
   return (
     <PageShell subtitle={ru.emergency.subtitle} title={ru.emergency.title}>
       <Panel hint={ru.emergency.searchHint} title={ru.emergency.searchTitle}>
-        <form className="inline-form" onSubmit={submit}>
+        <form className="search-form" onSubmit={submit}>
           <input
             aria-label={ru.emergency.robotNumber}
             disabled={loading}
@@ -61,7 +67,9 @@ export function EmergencyViewer() {
             required
             value={robotNumber}
           />
-          <button disabled={loading} type="submit">{ru.emergency.resolve}</button>
+          <button className="btn" disabled={loading || !robotNumber.trim()} type="submit">
+            {loading ? <Spinner label="Поиск" /> : ru.emergency.resolve}
+          </button>
           {vin && (
             <button
               className="btn btn-secondary"
@@ -77,14 +85,24 @@ export function EmergencyViewer() {
 
       {error && <Alert tone="error">{error}</Alert>}
 
-      {vin && (
+      {loading && <SkeletonList rows={2} />}
+
+      {!loading && !vin && !error && (
+        <EmptyBlock
+          hint="Номер робота преобразуется в VIN, затем доступны разделы Emergency."
+          icon="⚑"
+          title="Введите номер робота"
+        />
+      )}
+
+      {!loading && vin && (
         <Panel hint={ru.emergency.sectionsHint} title={`VIN: ${vin}`}>
           {sections.length ? (
-            <div className="actions">
+            <div className="task-filters">
               {sections.map((section) => (
                 <button
-                  className="btn btn-filter"
-                  disabled={loading}
+                  className={`btn btn-filter${activeSection === section.id ? ' is-active' : ''}`}
+                  disabled={sectionLoading}
                   key={section.id}
                   onClick={() => openSection(section.id)}
                   type="button"
@@ -94,20 +112,24 @@ export function EmergencyViewer() {
               ))}
             </div>
           ) : (
-            <EmptyState>{ru.emergency.sectionsEmpty}</EmptyState>
+            <EmptyBlock icon="📭" title={ru.emergency.sectionsEmpty} />
           )}
         </Panel>
       )}
 
-      {detail && (
+      {sectionLoading && <SkeletonList rows={2} />}
+
+      {!sectionLoading && detail && (
         <Panel title={detail.title}>
-          {detail.fields.length ? detail.fields.map((field) => (
-            <div className="detail-block" key={field.label}>
-              <strong>{field.label}</strong>
-              <pre>{field.lines.join('\n')}</pre>
-            </div>
-          )) : (
-            <EmptyState>{ru.emergency.detailEmpty}</EmptyState>
+          {detail.fields.length ? (
+            detail.fields.map((field) => (
+              <div className="detail-block" key={field.label}>
+                <strong>{field.label}</strong>
+                <pre>{field.lines.join('\n')}</pre>
+              </div>
+            ))
+          ) : (
+            <EmptyBlock icon="📭" title={ru.emergency.detailEmpty} />
           )}
         </Panel>
       )}

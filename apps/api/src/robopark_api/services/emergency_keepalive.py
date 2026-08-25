@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import random
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -86,12 +87,13 @@ def _keepalive_once_with_db(
             settings_svc.set_setting(
                 db,
                 settings_svc.EMERGENCY_KEEPALIVE_LAST_OK_KEY,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
             )
 
-        if index + 1 < len(vins):
-            if not _interruptible_sleep(INTER_VIN_GAP_SECONDS, stop_event):
-                return
+        if index + 1 < len(vins) and not _interruptible_sleep(
+            INTER_VIN_GAP_SECONDS, stop_event
+        ):
+            return
 
 
 async def run_keepalive_loop(
@@ -119,9 +121,7 @@ async def run_keepalive_loop(
                 if interval_seconds is not None
                 else random.uniform(MIN_INTERVAL_SECONDS, MAX_INTERVAL_SECONDS)
             )
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop_event.wait(), timeout=delay)
-            except TimeoutError:
-                pass
     finally:
         thread_stop.set()

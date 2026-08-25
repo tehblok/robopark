@@ -10,10 +10,11 @@ import logging
 import re
 import threading
 import time
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
-from contextlib import contextmanager
-from typing import Any, Callable, Iterator, TypeVar
+from contextlib import contextmanager, suppress
+from typing import Any, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -107,10 +108,8 @@ def tracker_slot(*, timeout: float = DEFAULT_SLOT_WAIT_SEC) -> Iterator[None]:
     finally:
         with _lock:
             _slot_holder_since.pop(tid, None)
-        try:
+        with suppress(ValueError):
             _inflight.release()
-        except ValueError:
-            pass
 
 
 def call_with_retry(

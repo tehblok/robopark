@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
+from robopark_api.config import get_settings
+from robopark_api.crypto import (
+    SecretDecryptionError,
+    decrypt_secret,
+    encrypt_secret,
+    is_encrypted,
+)
 from robopark_api.models import PlatformSetting
+
+logger = logging.getLogger(__name__)
+
+#: Settings whose values are encrypted at rest.
+SECRET_KEYS = frozenset({"tracker_token", "emergency_cookie"})
 
 TRACKER_TOKEN_KEY = "tracker_token"
 # Legacy cloud-org keys kept for DB compatibility; unused for internal Startrek.
@@ -34,57 +47,52 @@ def mask_secret(value: str | None) -> str | None:
     return "*" * (len(value) - 4) + value[-4:]
 
 
+def _secret_key() -> str | None:
+    return get_settings().secret_key
+
+
 def get_setting(db: Session, key: str) -> PlatformSetting | None:
     return db.get(PlatformSetting, key)
 
 
 def set_setting(db: Session, key: str, value: str) -> PlatformSetting:
+    """Persist a setting, encrypting it when the key holds a secret."""
+    stored = encrypt_secret(value, _secret_key()) if key in SECRET_KEYS else value
     row = db.get(PlatformSetting, key)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if row is None:
-        row = PlatformSetting(key=key, value=value, updated_at=now)
+        row = PlatformSetting(key=key, value=stored, updated_at=now)
         db.add(row)
     else:
-        row.value = value
+        row.value = stored
         row.updated_at = now
     db.commit()
     db.refresh(row)
     return row
 
 
+def get_secret_setting(db: Session, key: str) -> str | None:
+    """Read and decrypt a secret setting; returns None when unreadable."""
+    row = get_setting(db, key)
+    if row is None:
+        return None
+    try:
+        return decrypt_secret(row.value, _secret_key())
+    except SecretDecryptionError:
+        logger.error(
+            "Cannot decrypt setting %r — SECRET_KEY is missing or was rotated. "
+            "Re-enter the value in /admin.",
+            key,
+        )
+        return None
+
+
 def get_tracker_token(db: Session) -> str | None:
-    row = get_setting(db, TRACKER_TOKEN_KEY)
-    return row.value if row else None
-
-
-def get_tracker_org_id(db: Session) -> str | None:
-    """Deprecated for internal Startrek; kept for API shape compatibility."""
-    row = get_setting(db, TRACKER_ORG_ID_KEY)
-    value = (row.value if row else "") or ""
-    value = value.strip()
-    return value or None
-
-
-def get_tracker_org_mode(db: Session) -> str:
-    """Deprecated for internal Startrek; kept for API shape compatibility."""
-    row = get_setting(db, TRACKER_ORG_MODE_KEY)
-    mode = (row.value if row else "internal") or "internal"
-    mode = mode.strip().lower()
-    if mode in {"360", "org", "x-org-id"}:
-        return "360"
-    if mode in {"cloud", "x-cloud-org-id"}:
-        return "cloud"
-    return "internal"
-
-
-def apply_tracker_org_context(db: Session) -> None:
-    """No-op for internal Startrek (OAuth only, no org headers)."""
-    return None
+    return get_secret_setting(db, TRACKER_TOKEN_KEY)
 
 
 def get_emergency_cookie(db: Session) -> str | None:
-    row = get_setting(db, EMERGENCY_COOKIE_KEY)
-    return row.value if row else None
+    return get_secret_setting(db, EMERGENCY_COOKIE_KEY)
 
 
 def get_emergency_cookie_valid(db: Session) -> bool | None:
@@ -137,13 +145,15 @@ def integration_status(db: Session) -> dict:
     tracker = get_setting(db, TRACKER_TOKEN_KEY)
     emergency = get_setting(db, EMERGENCY_COOKIE_KEY)
     valid = get_emergency_cookie_valid(db)
+    # Mask the plaintext value, never the ciphertext: masking a Fernet token
+    # would leak its length and tail instead of the secret's real shape.
     return {
-        "tracker_token_masked": mask_secret(tracker.value if tracker else None),
+        "tracker_token_masked": mask_secret(get_tracker_token(db)),
         "tracker_token_updated_at": tracker.updated_at if tracker else None,
-        "tracker_org_id": get_tracker_org_id(db),
-        "tracker_org_mode": get_tracker_org_mode(db),
-        "emergency_cookie_masked": mask_secret(emergency.value if emergency else None),
+        "tracker_token_encrypted": is_encrypted(tracker.value) if tracker else False,
+        "emergency_cookie_masked": mask_secret(get_emergency_cookie(db)),
         "emergency_cookie_updated_at": emergency.updated_at if emergency else None,
+        "emergency_cookie_encrypted": is_encrypted(emergency.value) if emergency else False,
         "emergency_cookie_valid": valid,
     }
 

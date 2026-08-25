@@ -18,22 +18,15 @@ router = APIRouter(
 class IntegrationSettingsOut(BaseModel):
     tracker_token_masked: str | None
     tracker_token_updated_at: str | None
-    tracker_org_id: str | None = None
-    tracker_org_mode: str = "internal"
+    tracker_token_encrypted: bool = False
     emergency_cookie_masked: str | None
     emergency_cookie_updated_at: str | None
+    emergency_cookie_encrypted: bool = False
     emergency_cookie_valid: bool | None
 
 
 class TrackerTokenUpdate(BaseModel):
     token: str = Field(min_length=1)
-
-
-class TrackerOrgUpdate(BaseModel):
-    """Deprecated: internal Startrek does not use org headers."""
-
-    org_id: str = Field(min_length=1)
-    mode: str = Field(default="internal")
 
 
 class EmergencyCookieUpdate(BaseModel):
@@ -49,14 +42,14 @@ def _to_out(db: Session) -> IntegrationSettingsOut:
             if data["tracker_token_updated_at"]
             else None
         ),
-        tracker_org_id=data.get("tracker_org_id"),
-        tracker_org_mode=str(data.get("tracker_org_mode") or "internal"),
+        tracker_token_encrypted=bool(data.get("tracker_token_encrypted")),
         emergency_cookie_masked=data["emergency_cookie_masked"],
         emergency_cookie_updated_at=(
             data["emergency_cookie_updated_at"].isoformat()
             if data["emergency_cookie_updated_at"]
             else None
         ),
+        emergency_cookie_encrypted=bool(data.get("emergency_cookie_encrypted")),
         emergency_cookie_valid=data["emergency_cookie_valid"],
     )
 
@@ -72,27 +65,11 @@ def put_tracker_token(
     db: Session = Depends(get_db),
     _admin: User = Depends(require_admin),
 ) -> IntegrationSettingsOut:
-    from robopark_api.services import tracker_client
-    from robopark_api.services import tracker_metrics
+    from robopark_api.services import tracker_client, tracker_metrics
 
     settings_svc.set_setting(db, settings_svc.TRACKER_TOKEN_KEY, payload.token)
     tracker_client.clear_tracker_clients()
     tracker_metrics.clear_metrics_cache()
-    return _to_out(db)
-
-
-@router.put("/tracker-org", response_model=IntegrationSettingsOut)
-def put_tracker_org(
-    payload: TrackerOrgUpdate,
-    db: Session = Depends(get_db),
-    _admin: User = Depends(require_admin),
-) -> IntegrationSettingsOut:
-    # Kept for backward compatibility; internal Startrek ignores org headers.
-    mode = payload.mode.strip().lower()
-    if mode not in {"cloud", "360", "internal"}:
-        mode = "internal"
-    settings_svc.set_setting(db, settings_svc.TRACKER_ORG_ID_KEY, payload.org_id.strip())
-    settings_svc.set_setting(db, settings_svc.TRACKER_ORG_MODE_KEY, mode)
     return _to_out(db)
 
 

@@ -93,6 +93,9 @@ export function AppShell({ children }: AppShellProps) {
               to={item.path}
               className={({ isActive }) => (isActive ? 'nav-item active' : 'nav-item')}
             >
+              <span aria-hidden="true" className="nav-item-icon">
+                {item.icon}
+              </span>
               <span className="nav-item-label">{item.label}</span>
               {item.id === 'reports' && reportsBadge > 0 ? (
                 <span className="nav-count">{reportsBadge}</span>
@@ -174,6 +177,9 @@ export function AppShell({ children }: AppShellProps) {
                 isActive ? 'mobile-nav-item active' : 'mobile-nav-item'
               }
             >
+              <span aria-hidden="true" className="mobile-nav-icon">
+                {item.icon}
+              </span>
               <span className="mobile-nav-label">{item.label}</span>
               {item.id === 'reports' && reportsBadge > 0 ? (
                 <span className="nav-count">{reportsBadge}</span>
@@ -187,6 +193,9 @@ export function AppShell({ children }: AppShellProps) {
             aria-controls="mobile-more-sheet"
             onClick={() => setMoreOpen((v) => !v)}
           >
+            <span aria-hidden="true" className="mobile-nav-icon">
+              ⋯
+            </span>
             <span className="mobile-nav-label">{ru.nav.more}</span>
           </button>
         </nav>
@@ -221,6 +230,9 @@ export function AppShell({ children }: AppShellProps) {
                     className={({ isActive }) => (isActive ? 'nav-item active' : 'nav-item')}
                     onClick={() => setMoreOpen(false)}
                   >
+                    <span aria-hidden="true" className="nav-item-icon">
+                      {item.icon}
+                    </span>
                     <span className="nav-item-label">{item.label}</span>
                     {item.stub ? <span className="nav-soon">{ru.nav.soon}</span> : null}
                   </NavLink>

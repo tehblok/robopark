@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -27,7 +27,7 @@ def _pending_request(db: Session, request_id: int) -> ParkRequest:
 
 def _resolve(park_request: ParkRequest, admin: User, resolution: AccessStatus) -> None:
     park_request.status = resolution.value
-    park_request.resolved_at = datetime.now(timezone.utc)
+    park_request.resolved_at = datetime.now(UTC)
     park_request.resolved_by = admin.id
 
 

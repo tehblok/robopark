@@ -1,11 +1,22 @@
-import { PageShell, Panel } from '../components/PageShell'
+import { PageShell } from '../components/PageShell'
+import { EmptyBlock } from '../components/ui/Feedback'
+import { useAuth } from '../auth-context'
 
 export function MechanicNoPark() {
+  const { logout } = useAuth()
+
   return (
-    <PageShell subtitle="Без привязки к парку инструменты недоступны." title="Парк не назначен">
-      <Panel hint="Администратор должен создать или обновить учётную запись механика и привязать ровно один активный парк." title="Что делать">
-        <p>После назначения парка выйдите и войдите снова — откроется полный кабинет.</p>
-      </Panel>
+    <PageShell
+      onLogout={logout}
+      standalone
+      subtitle="Без привязки к парку инструменты недоступны."
+      title="Парк не назначен"
+    >
+      <EmptyBlock
+        hint="Администратор должен привязать ровно один активный парк. После назначения выйдите и войдите снова."
+        icon="🏭"
+        title="Парк не назначен"
+      />
     </PageShell>
   )
 }

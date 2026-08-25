@@ -15,19 +15,21 @@ export type NavItem = {
   id: NavId
   path: string
   label: string
+  /** Glyph shown in the sidebar and the mobile bottom bar. */
+  icon: string
   stub?: boolean
 }
 
 const ALL_NAV_ITEMS: NavItem[] = [
-  { id: 'dashboard', path: '/dashboard', label: ru.nav.dashboard },
-  { id: 'tasks', path: '/tasks', label: ru.nav.tasks },
-  { id: 'robot_search', path: '/robots/search', label: ru.nav.robot_search },
-  { id: 'emergency', path: '/emergency', label: ru.nav.emergency },
-  { id: 'map', path: '/map', label: ru.nav.map, stub: true },
-  { id: 'analytics', path: '/analytics', label: ru.nav.analytics },
-  { id: 'reports', path: '/reports', label: ru.nav.reports },
-  { id: 'learning', path: '/learning', label: ru.nav.learning, stub: true },
-  { id: 'help', path: '/help', label: ru.nav.help, stub: true },
+  { id: 'dashboard', path: '/dashboard', label: ru.nav.dashboard, icon: '◧' },
+  { id: 'tasks', path: '/tasks', label: ru.nav.tasks, icon: '☰' },
+  { id: 'robot_search', path: '/robots/search', label: ru.nav.robot_search, icon: '⌕' },
+  { id: 'emergency', path: '/emergency', label: ru.nav.emergency, icon: '⚑' },
+  { id: 'map', path: '/map', label: ru.nav.map, icon: '⊕', stub: true },
+  { id: 'analytics', path: '/analytics', label: ru.nav.analytics, icon: '◔' },
+  { id: 'reports', path: '/reports', label: ru.nav.reports, icon: '✉' },
+  { id: 'learning', path: '/learning', label: ru.nav.learning, icon: '✦', stub: true },
+  { id: 'help', path: '/help', label: ru.nav.help, icon: '?', stub: true },
 ]
 
 export const PRIMARY_NAV_IDS: readonly NavId[] = [

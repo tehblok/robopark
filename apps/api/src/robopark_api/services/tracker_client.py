@@ -12,7 +12,7 @@ import logging
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -82,14 +82,6 @@ def build_issue_url(key: str) -> str:
     return f"{WEB_BASE.rstrip('/')}/{key}"
 
 
-def configure_org_header(*, header_name: str | None, org_id: str | None) -> None:
-    return None
-
-
-def clear_org_header() -> None:
-    return None
-
-
 def _sanitize_ql_value(value: str) -> str:
     return str(value or "").strip().replace("\n", " ").replace("\r", "")
 
@@ -123,6 +115,19 @@ def ql_quote(value: str) -> str:
 
 def ql_token(value: str) -> str:
     return _ql_token(value)
+
+
+def assignee_clause(assignee: str | None) -> str | None:
+    """Build Startrek QL for assignee filter. ``empty`` → unassigned issues."""
+    if not assignee:
+        return None
+    normalized = assignee.strip().lower()
+    if normalized in {"empty", "none", "__empty__"}:
+        return "Assignee: empty()"
+    login = assignee.strip()
+    if not login:
+        return None
+    return f"Assignee: {_ql_token(login)}"
 
 
 def open_issues_clause() -> str:
@@ -245,8 +250,8 @@ def _hours_since(created: str) -> float | None:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds() / 3600
+        dt = dt.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - dt.astimezone(UTC)).total_seconds() / 3600
 
 
 def _fmt_hours(value: float | None) -> str | None:
@@ -303,6 +308,108 @@ def _queue_display(queue: Any) -> str:
     return str(getattr(queue, "display", None) or queue or "")
 
 
+def _tags_from(raw: Any) -> list[str]:
+    """Normalize Tracker tags (list of str / dicts / objects) to a list of strings."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        text = raw.strip()
+        return [text] if text else []
+    try:
+        items = list(raw)
+    except TypeError:
+        return []
+    out: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            value = item.get("name") or item.get("display") or item.get("key") or ""
+        else:
+            value = (
+                getattr(item, "name", None)
+                or getattr(item, "display", None)
+                or getattr(item, "key", None)
+                or item
+            )
+        text = str(value or "").strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _attachments_from(raw: Any) -> list[dict[str, Any]]:
+    if raw is None:
+        return []
+    items = raw if isinstance(raw, list) else [raw]
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, dict):
+            name = str(item.get("name") or item.get("filename") or "").strip()
+            attachment_id = str(item.get("id") or item.get("self") or "").strip()
+            url = str(item.get("self") or item.get("url") or "").strip() or None
+            size_raw = item.get("size")
+            mimetype = str(item.get("mimetype") or item.get("contentType") or "").strip() or None
+        else:
+            name = str(getattr(item, "name", None) or getattr(item, "filename", None) or "").strip()
+            attachment_id = str(getattr(item, "id", None) or getattr(item, "self", None) or "").strip()
+            url = str(getattr(item, "self", None) or getattr(item, "url", None) or "").strip() or None
+            size_raw = getattr(item, "size", None)
+            mimetype = (
+                str(getattr(item, "mimetype", None) or getattr(item, "contentType", None) or "").strip()
+                or None
+            )
+        if not name and not attachment_id:
+            continue
+        try:
+            size = int(size_raw) if size_raw is not None else None
+        except (TypeError, ValueError):
+            size = None
+        out.append(
+            {
+                "id": attachment_id or name,
+                "name": name or attachment_id,
+                "size": size,
+                "url": url,
+                "mimetype": mimetype,
+            }
+        )
+    return out
+
+
+def _person(raw: Any) -> dict[str, str] | None:
+    """Normalize a Tracker user reference to ``{display, login}``."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        text = raw.strip()
+        return {"display": text, "login": text} if text else None
+    if isinstance(raw, dict):
+        display = raw.get("display") or raw.get("login") or ""
+        login = raw.get("login") or raw.get("id") or ""
+    else:
+        display = getattr(raw, "display", None) or getattr(raw, "login", None) or ""
+        login = getattr(raw, "login", None) or getattr(raw, "id", None) or ""
+    display = str(display or "").strip()
+    login = str(login or "").strip()
+    if not display and not login:
+        return None
+    return {"display": display or login, "login": login}
+
+
+def _plain(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, dict):
+        for key in ("display", "name", "key", "value"):
+            if raw.get(key):
+                return str(raw[key])
+        return ""
+    for attr in ("display", "name", "key"):
+        value = getattr(raw, attr, None)
+        if value:
+            return str(value)
+    return str(raw)
+
+
 def _resolution_display(resolution: Any) -> str:
     if resolution is None:
         return ""
@@ -315,24 +422,33 @@ def _resolution_display(resolution: Any) -> str:
     return str(resolution)
 
 
+def _field(issue: Any, name: str) -> Any:
+    """Read a field from a REST dict or a Startrek object uniformly."""
+    if isinstance(issue, dict):
+        return issue.get(name)
+    return getattr(issue, name, None)
+
+
 def issue_to_dict(issue: Any) -> dict[str, Any]:
     """Normalize a Tracker issue (REST dict or Startrek object) to our DTO."""
-    if isinstance(issue, dict):
-        created = str(issue.get("createdAt") or "")
-        status = _status_display(issue.get("status"))
-        status_key = _status_key(issue.get("status"))
-        summary = str(issue.get("summary") or "")
-        resolution = _resolution_display(issue.get("resolution"))
-        queue = _queue_display(issue.get("queue"))
-        key = str(issue.get("key") or "")
-    else:
-        created = str(getattr(issue, "createdAt", "") or "")
-        status = _status_display(getattr(issue, "status", None))
-        status_key = _status_key(getattr(issue, "status", None))
-        summary = str(getattr(issue, "summary", "") or "")
-        resolution = _resolution_display(getattr(issue, "resolution", None))
-        queue = _queue_display(getattr(issue, "queue", None))
-        key = str(getattr(issue, "key", "") or "")
+    created = str(_field(issue, "createdAt") or "")
+    status = _status_display(_field(issue, "status"))
+    status_key = _status_key(_field(issue, "status"))
+    summary = str(_field(issue, "summary") or "")
+    resolution = _resolution_display(_field(issue, "resolution"))
+    queue = _queue_display(_field(issue, "queue"))
+    key = str(_field(issue, "key") or "")
+    tags = _tags_from(_field(issue, "tags"))
+
+    # Fields needed to render a Tracker-like issue card.
+    description = str(_field(issue, "description") or "")
+    updated = str(_field(issue, "updatedAt") or "")
+    assignee = _person(_field(issue, "assignee"))
+    reporter = _person(_field(issue, "createdBy"))
+    priority = _plain(_field(issue, "priority"))
+    issue_type = _plain(_field(issue, "type"))
+    components = _tags_from(_field(issue, "components"))
+    attachments = _attachments_from(_field(issue, "attachment") or _field(issue, "attachments"))
 
     hours_created = _hours_since(created)
     return {
@@ -340,12 +456,21 @@ def issue_to_dict(issue: Any) -> dict[str, Any]:
         "summary": summary,
         "status": status,
         "created": created,
+        "updated": updated,
         "hours_created": _fmt_hours(hours_created),
         "in_relocation": "1" if _is_relocation_status(status) else "0",
         "robot": parse_robot_from_summary(summary),
         "status_key": status_key,
         "resolution": resolution,
+        "description": description,
+        "assignee": assignee,
+        "reporter": reporter,
+        "priority": priority,
+        "type": issue_type,
+        "components": components,
+        "attachments": attachments,
         "queue": queue,
+        "tags": tags,
     }
 
 
@@ -551,22 +676,13 @@ def list_comments(*, token: str, key: str) -> list[dict[str, Any]]:
         issue = client.issues[key]
         out: list[dict[str, Any]] = []
         for item in issue.comments.get_all():
-            author = getattr(item, "createdBy", None)
-            if author is None:
-                author_name = ""
-            elif isinstance(author, dict):
-                author_name = str(author.get("display") or author.get("login") or "")
-            else:
-                author_name = str(
-                    getattr(author, "display", None)
-                    or getattr(author, "login", None)
-                    or ""
-                )
+            author = _person(getattr(item, "createdBy", None))
             out.append(
                 {
                     "id": str(getattr(item, "id", "") or ""),
                     "text": str(getattr(item, "text", "") or ""),
-                    "author": author_name,
+                    "author": author["display"] if author else "",
+                    "author_login": author["login"] if author else "",
                     "created_at": str(getattr(item, "createdAt", "") or ""),
                 }
             )
@@ -690,9 +806,7 @@ def _summary_matches_robot(summary: str, robot_number: str) -> bool:
     if query in summary_lower:
         return True
     digits = re.sub(r"^[a-z]+", "", query)
-    if digits and digits in summary_lower:
-        return True
-    return False
+    return bool(digits and digits in summary_lower)
 
 
 def search_robot_tickets(*, token: str, queue: str, query: str) -> list[dict[str, Any]]:

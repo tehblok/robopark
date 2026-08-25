@@ -36,16 +36,18 @@ export type User = {
   username: string
   role: string
   access_status: string
+  tracker_login?: string | null
+  must_change_password?: boolean
   parks: Park[]
 }
 
 export type IntegrationSettings = {
   tracker_token_masked: string | null
   tracker_token_updated_at: string | null
-  tracker_org_id?: string | null
-  tracker_org_mode?: string
+  tracker_token_encrypted?: boolean
   emergency_cookie_masked: string | null
   emergency_cookie_updated_at: string | null
+  emergency_cookie_encrypted?: boolean
   emergency_cookie_valid: boolean | null
 }
 
@@ -61,6 +63,8 @@ export type Mechanic = {
   username: string
   is_active: boolean
   created_at: string
+  tracker_login?: string | null
+  must_change_password?: boolean
   park: Park
 }
 
@@ -68,11 +72,14 @@ export type Blocker = {
   key: string
   summary: string
   status: string
+  status_key?: string | null
   robot: string | null
   created_at: string | null
   hours_created: string | null
   url: string
   bucket: string
+  priority?: string | null
+  assignee?: { display: string; login?: string } | null
 }
 
 export type MechanicTasks = {
@@ -143,6 +150,11 @@ export type EmergencySectionCreate = {
   fields?: Array<{ path: string; label: string }>
 }
 
+export type TrackerPerson = {
+  display: string
+  login?: string
+}
+
 export type TrackerIssue = {
   key: string
   summary: string
@@ -151,12 +163,66 @@ export type TrackerIssue = {
   queue?: string | null
   robot?: string | null
   created_at?: string | null
+  updated_at?: string | null
   hours_created?: string | null
   url: string
+  tags?: string[]
+  priority?: string | null
+  type?: string | null
+  assignee?: TrackerPerson | null
 }
 
-export type TrackerIssueDetail = TrackerIssue & { resolution?: string | null }
-export type TrackerComment = { id: string; text: string; author?: string | null; created_at?: string | null }
+export type Paged<T> = {
+  items: T[]
+  total: number
+  limit: number
+  offset: number
+  has_more: boolean
+}
+
+export type AuditEntry = {
+  id: number
+  action: string
+  actor_user_id: number | null
+  actor_username: string | null
+  actor_role: string | null
+  park_id: number | null
+  target_type: string | null
+  target_id: string | null
+  outcome: 'success' | 'failure' | 'denied' | string
+  detail: string | null
+  client_ip: string | null
+  created_at: string
+}
+
+export type TrackerIssueDetail = TrackerIssue & {
+  resolution?: string | null
+  description?: string | null
+  reporter?: TrackerPerson | null
+  components?: string[]
+  attachments?: TrackerAttachment[]
+}
+
+export type TrackerAttachment = {
+  id: string
+  name: string
+  size?: number | null
+  url?: string | null
+  mimetype?: string | null
+}
+
+export type TrackerUserSuggestion = {
+  login: string
+  display: string
+  source: string
+}
+export type TrackerComment = {
+  id: string
+  text: string
+  author?: string | null
+  author_login?: string | null
+  created_at?: string | null
+}
 export type TrackerTransition = { id: string; display: string }
 export type TrackerActionResult = { key: string; action: string; status: string; actor: string; performed_at: string }
 
@@ -280,6 +346,11 @@ export const api = {
       body: JSON.stringify({ username, password }),
     }),
   logout: () => request<void>('/auth/logout', { method: 'POST' }),
+  changePassword: (current_password: string, new_password: string) =>
+    request<void>('/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ current_password, new_password }),
+    }),
   register: (shared_password: string, username: string, password: string) =>
     request<User>('/auth/register', {
       method: 'POST',
@@ -333,7 +404,13 @@ export const api = {
     }),
   updateMechanic: (
     mechanicId: number,
-    changes: { password?: string; park_id?: number; is_active?: boolean },
+    changes: {
+      password?: string
+      park_id?: number
+      is_active?: boolean
+      tracker_login?: string | null
+      must_change_password?: boolean
+    },
   ) =>
     request<Mechanic>(`/admin/mechanics/${mechanicId}`, {
       method: 'PATCH',
@@ -433,8 +510,11 @@ export const api = {
     park?: string
     status?: string
     robot?: string
+    assignee?: string
     untagged?: boolean
     age_hours?: number
+    limit?: number
+    offset?: number
   }) => {
     const q = new URLSearchParams()
     Object.entries(params).forEach(([key, value]) => {
@@ -442,8 +522,27 @@ export const api = {
         q.set(key, String(value))
       }
     })
-    return request<{ items: TrackerIssue[] }>(`/tracker/issues?${q.toString()}`)
+    return request<Paged<TrackerIssue>>(`/tracker/issues?${q.toString()}`)
   },
+  trackerUsers: (q: string) =>
+    request<TrackerUserSuggestion[]>(`/tracker/users?q=${encodeURIComponent(q)}`),
+  auditLog: (params: {
+    action?: string
+    actor_user_id?: number
+    target_id?: string
+    park_id?: number
+    limit?: number
+    offset?: number
+  } = {}) => {
+    const q = new URLSearchParams()
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') {
+        q.set(key, String(value))
+      }
+    })
+    return request<Paged<AuditEntry>>(`/admin/audit?${q.toString()}`)
+  },
+  auditActions: () => request<string[]>('/admin/audit/actions'),
   trackerIssue: (key: string) => request<TrackerIssueDetail>(`/tracker/issues/${encodeURIComponent(key)}`),
   trackerComments: (key: string) =>
     request<TrackerComment[]>(`/tracker/issues/${encodeURIComponent(key)}/comments`),

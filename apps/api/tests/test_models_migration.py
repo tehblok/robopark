@@ -22,6 +22,7 @@ def test_metadata_has_required_tables():
         "emergency_section_roles",
         "park_blocker_history",
         "reports",
+        "audit_log",
     }
 
 
@@ -32,6 +33,8 @@ def test_models_match_required_schema():
         "password_hash",
         "role",
         "access_status",
+        "tracker_login",
+        "must_change_password",
         "is_active",
         "created_at",
     }

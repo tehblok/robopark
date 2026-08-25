@@ -1,7 +1,6 @@
 from fastapi.testclient import TestClient
 
-from conftest import login_as
-
+from conftest import VALID_PASSWORD, login_as
 from park_helpers import PARK_DEFAULTS
 
 
@@ -32,10 +31,10 @@ def test_operator_cannot_create_park(
         json={
             "shared_password": "gate",
             "username": "op1",
-            "password": "secret1",
+            "password": VALID_PASSWORD,
         },
     )
-    login_as(client, "op1", "secret1")
+    login_as(client, "op1", VALID_PASSWORD)
 
     assert client.post("/parks", json={"name": "X", "tag": "x"}).status_code == 403
 
