@@ -114,12 +114,12 @@ export function RobotSchematic({
 }: RobotSchematicProps) {
   const heading = snapshot?.heading_deg
   const showHud = snapshot != null && !dimmed
-  const mode = snapshot?.mode ?? (showHud ? '—' : '—')
+  const mode = snapshot?.mode ?? '—'
   const modeActive = Boolean(snapshot?.mode && /auto/i.test(snapshot.mode))
   const icpLabel = snapshot?.icp_label ?? 'ICP'
   const lteLabel = snapshot?.lte_label ?? 'LTE'
   const speed = formatSpeed(snapshot?.speed)
-  const bat1 = snapshot?.battery1_percent ?? snapshot?.charge_percent
+  const bat1 = snapshot?.battery1_percent
   const bat2 = snapshot?.battery2_percent
   const disk = snapshot?.disk_percent
   const banner = snapshot?.error_banner
@@ -127,53 +127,53 @@ export function RobotSchematic({
   const noLink = snapshot?.online == null && showHud
 
   return (
-    <aside
-      className={`inspection-sidebar${dimmed ? ' is-dimmed' : ''}${showHud ? '' : ' is-empty'}`}
-    >
-      <div className="inspection-hud">
-        <div className="inspection-hud-row inspection-hud-row-3">
-          <div className={`inspection-tile${modeActive ? ' is-mode-on' : ''}`}>
-            <strong>{mode}</strong>
+    <aside className={`inspection-sidebar${dimmed ? ' is-dimmed' : ''}`}>
+      {showHud && (
+        <div className="inspection-hud">
+          <div className="inspection-hud-row inspection-hud-row-3">
+            <div className={`inspection-tile${modeActive ? ' is-mode-on' : ''}`}>
+              <strong>{mode}</strong>
+            </div>
+            <div
+              className={`inspection-tile inspection-tile-icon${
+                snapshot?.icp_ok === false ? ' is-bad' : snapshot?.icp_ok ? ' is-good' : ''
+              }`}
+            >
+              <NavIcon />
+              <span>{icpLabel}</span>
+            </div>
+            <div
+              className={`inspection-tile inspection-tile-icon${
+                snapshot?.lte_ok === false || offline ? ' is-bad' : snapshot?.lte_ok ? ' is-good' : ''
+              }`}
+            >
+              <SignalIcon />
+              <span>{lteLabel}</span>
+            </div>
           </div>
-          <div
-            className={`inspection-tile inspection-tile-icon${
-              snapshot?.icp_ok === false ? ' is-bad' : snapshot?.icp_ok ? ' is-good' : ''
-            }`}
-          >
-            <NavIcon />
-            <span>{icpLabel}</span>
-          </div>
-          <div
-            className={`inspection-tile inspection-tile-icon${
-              snapshot?.lte_ok === false || offline ? ' is-bad' : snapshot?.lte_ok ? ' is-good' : ''
-            }`}
-          >
-            <SignalIcon />
-            <span>{lteLabel}</span>
+
+          <div className="inspection-hud-row inspection-hud-row-4">
+            <div className="inspection-tile inspection-tile-metric">
+              <strong>{speed}</strong>
+              <span>{ru.emergency.speedUnit}</span>
+            </div>
+            <div className="inspection-tile inspection-tile-metric">
+              <BatteryIcon tone={batteryTone(bat1)} />
+              <span>{formatPercent(bat1)}</span>
+            </div>
+            <div className="inspection-tile inspection-tile-metric">
+              <BatteryIcon tone={batteryTone(bat2)} />
+              <span>{formatPercent(bat2)}</span>
+            </div>
+            <div className="inspection-tile inspection-tile-metric">
+              <DiskIcon tone={diskTone(disk)} />
+              <span>{formatPercent(disk)}</span>
+            </div>
           </div>
         </div>
+      )}
 
-        <div className="inspection-hud-row inspection-hud-row-4">
-          <div className="inspection-tile inspection-tile-metric">
-            <strong>{speed}</strong>
-            <span>{ru.emergency.speedUnit}</span>
-          </div>
-          <div className="inspection-tile inspection-tile-metric">
-            <BatteryIcon tone={batteryTone(bat1)} />
-            <span>{formatPercent(bat1)}</span>
-          </div>
-          <div className="inspection-tile inspection-tile-metric">
-            <BatteryIcon tone={batteryTone(bat2)} />
-            <span>{formatPercent(bat2)}</span>
-          </div>
-          <div className="inspection-tile inspection-tile-metric">
-            <DiskIcon tone={diskTone(disk)} />
-            <span>{formatPercent(disk)}</span>
-          </div>
-        </div>
-      </div>
-
-      {(banner || offline || noLink) && (
+      {showHud && (banner || offline || noLink) && (
         <div className={`inspection-banner${offline || noLink ? ' is-offline' : ''}`}>
           {banner
             ?? (offline ? ru.emergency.offlineBanner : ru.emergency.noLinkBanner)}
@@ -191,9 +191,9 @@ export function RobotSchematic({
           {showHud &&
             WHEEL_HOTSPOTS.map((hotspot) => (
               <button
-                aria-label={hotspot.slot}
+                aria-label={ru.emergency.wheelSlots[hotspot.slot] ?? hotspot.slot}
                 className={`inspection-hotspot${
-                  snapshot.wheels_fault.includes(hotspot.slot) ? ' is-fault' : ''
+                  snapshot?.wheels_fault.includes(hotspot.slot) ? ' is-fault' : ''
                 }`}
                 key={hotspot.slot}
                 onClick={() => onWheelClick(hotspot.slot)}
@@ -201,7 +201,7 @@ export function RobotSchematic({
                 type="button"
               />
             ))}
-          {showHud && snapshot.wheels_fault.includes('body') && (
+          {showHud && snapshot?.wheels_fault.includes('body') && (
             <span
               className="inspection-hotspot is-fault"
               style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }}

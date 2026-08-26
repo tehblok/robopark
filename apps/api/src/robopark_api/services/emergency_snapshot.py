@@ -37,6 +37,18 @@ def _as_float(value: Any) -> float | None:
 def _as_bool(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return None
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "1", "yes", "on", "online"}:
+            return True
+        if text in {"false", "0", "no", "off", "offline"}:
+            return False
     return None
 
 
@@ -126,7 +138,11 @@ def _wheel_slots(raw: Any) -> list[str]:
             slots.append(WHEEL_SLOTS[item])
             mapped = True
             continue
-        text = str(item).lower() if item is not None else ""
+        text = str(item).lower().strip() if item is not None else ""
+        if text in WHEEL_SLOTS:
+            slots.append(text)
+            mapped = True
+            continue
         side_left = "left" in text or text == "l" or text.endswith("_l")
         side_right = "right" in text or text == "r" or text.endswith("_r")
         row = None

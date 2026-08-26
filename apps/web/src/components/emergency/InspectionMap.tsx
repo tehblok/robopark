@@ -103,7 +103,7 @@ export function InspectionMap({
     }
     const release = window.setTimeout(() => {
       skipPanRef.current = false
-    }, 300)
+    }, FOLLOW_PAN_S * 1000 + 300)
     return () => window.clearTimeout(release)
   }, [lat, lon, follow])
 
