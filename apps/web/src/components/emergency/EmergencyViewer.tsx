@@ -64,6 +64,13 @@ export function EmergencyViewer() {
     setFollow(true)
   }, [])
 
+  const markCookieStale = useCallback(() => {
+    setCookieStale(true)
+    setSnapshot(null)
+    setDetail(null)
+    setError('')
+  }, [])
+
   useEffect(() => {
     setSnapshot((current) => (current != null && current.vin !== vin ? null : current))
   }, [vin])
@@ -79,12 +86,11 @@ export function EmergencyViewer() {
         const next = await api.emergencySnapshot(vin)
         if (cancelled) return
         setSnapshot(next)
-        if (!userPanRef.current) setFollow(true)
         setStaleHint(false)
       } catch (caught) {
         if (cancelled) return
         if (isCookieInvalid(caught)) {
-          setCookieStale(true)
+          markCookieStale()
           return
         }
         setStaleHint(true)
@@ -106,12 +112,7 @@ export function EmergencyViewer() {
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [vin, cookieStale])
-
-  const markCookieStale = () => {
-    setCookieStale(true)
-    setError('')
-  }
+  }, [vin, cookieStale, markCookieStale])
 
   const fetchSection = async (sectionId: string, sectionVin = vin) => {
     if (!sectionVin) return
@@ -171,7 +172,6 @@ export function EmergencyViewer() {
       try {
         const next = await api.emergencySnapshot(data.vin)
         setSnapshot(next)
-        if (!userPanRef.current) setFollow(true)
       } catch (caught) {
         if (isCookieInvalid(caught)) {
           markCookieStale()
@@ -182,6 +182,8 @@ export function EmergencyViewer() {
       }
     } catch (caught) {
       if (isCookieInvalid(caught)) {
+        setVin('')
+        setSections([])
         markCookieStale()
         return
       }
@@ -282,20 +284,24 @@ export function EmergencyViewer() {
               <CookieStaleStub />
             ) : (
               <>
-                <div className="inspection-tabs task-filters">
+                <div className="inspection-tabs task-filters" role="tablist">
                   <button
+                    aria-selected={activeTab === 'map'}
                     className={`btn btn-filter${activeTab === 'map' ? ' is-active' : ''}`}
                     onClick={() => openTab('map')}
+                    role="tab"
                     type="button"
                   >
                     {ru.emergency.map}
                   </button>
                   {sections.map((section) => (
                     <button
+                      aria-selected={activeTab === section.id}
                       className={`btn btn-filter${activeTab === section.id ? ' is-active' : ''}`}
                       disabled={sectionLoading}
                       key={section.id}
                       onClick={() => openTab(section.id)}
+                      role="tab"
                       type="button"
                     >
                       {section.title}
@@ -307,29 +313,31 @@ export function EmergencyViewer() {
                   <Alert tone="warning">{ru.emergency.staleHint}</Alert>
                 )}
 
-                {activeTab === 'map' && (
-                  <div className="inspection-map-pane">
-                    {hasCoords ? (
-                      <>
-                        <button
-                          className="btn btn-secondary inspection-follow"
-                          onClick={enableFollow}
-                          type="button"
-                        >
-                          {ru.emergency.follow}
-                        </button>
-                        <InspectionMap
-                          follow={follow}
-                          lat={lat}
-                          lon={lon}
-                          onUserPan={onUserPan}
-                          visible
-                        />
-                      </>
-                    ) : (
-                      <EmptyBlock icon="🗺" title={ru.emergency.noCoords} />
-                    )}
+                {hasCoords ? (
+                  <div
+                    className="inspection-map-pane"
+                    hidden={activeTab !== 'map'}
+                  >
+                    <button
+                      aria-pressed={follow}
+                      className="btn btn-secondary inspection-follow"
+                      onClick={enableFollow}
+                      type="button"
+                    >
+                      {ru.emergency.follow}
+                    </button>
+                    <InspectionMap
+                      follow={follow}
+                      lat={lat}
+                      lon={lon}
+                      onUserPan={onUserPan}
+                      visible={activeTab === 'map'}
+                    />
                   </div>
+                ) : (
+                  activeTab === 'map' && (
+                    <EmptyBlock icon="🗺" title={ru.emergency.noCoords} />
+                  )
                 )}
 
                 {activeTab !== 'map' && (

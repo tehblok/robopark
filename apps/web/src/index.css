@@ -2550,7 +2550,7 @@ textarea {
 
 .inspection-tile.is-mode-on {
   background: color-mix(in srgb, var(--success) 28%, var(--surface));
-  color: color-mix(in srgb, var(--text) 80%, #14532d);
+  color: color-mix(in srgb, var(--text) 80%, var(--success));
 }
 
 .inspection-tile.is-mode-on strong {
@@ -2584,7 +2584,7 @@ textarea {
 }
 
 .inspection-icon.is-warn {
-  color: #ea580c;
+  color: var(--warning);
 }
 
 .inspection-icon.is-muted {
@@ -2595,7 +2595,7 @@ textarea {
   margin: 0;
   padding: 0.55rem 0.65rem;
   border-radius: 0.65rem;
-  background: color-mix(in srgb, #fb923c 35%, var(--surface));
+  background: color-mix(in srgb, var(--warning) 35%, var(--surface));
   color: var(--text);
   font-size: 0.72rem;
   font-weight: 600;
@@ -2701,6 +2701,10 @@ textarea {
   position: relative;
   flex: 1;
   min-height: 16rem;
+}
+
+.inspection-map-pane[hidden] {
+  display: none !important;
 }
 
 .inspection-follow {

@@ -1,6 +1,6 @@
 # Robopark runs entirely on the host (Armbian / home server).
-# Remote access: WireGuard on a VPS — see deploy/vps/README.md.
-# Do not run this Compose file on the VPS.
+# Remote access: Tuna HTTPS tunnel — see deploy/README.md.
+# Do not publish 8080 to the internet; tuna agent connects to localhost.
 
 services:
   api:
@@ -32,8 +32,8 @@ services:
       api:
         condition: service_healthy
     ports:
-      # Bind on all interfaces so WireGuard peers can reach the SPA + /api proxy.
-      - "8080:80"
+      # Localhost only — Tuna agent on the host forwards public HTTPS here.
+      - "127.0.0.1:8080:80"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]

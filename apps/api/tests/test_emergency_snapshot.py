@@ -58,6 +58,20 @@ def test_parse_snapshot_opaque_wheels_uses_body():
     assert snap["wheels_fault"] == ["body"]
 
 
+def test_parse_snapshot_compact_wheel_codes():
+    snap = parse_emergency_snapshot({"wheelsBroken": ["fl", "rr"]}, vin="YASADR00000000001")
+    assert snap["wheels_fault"] == ["fl", "rr"]
+
+
+def test_parse_snapshot_online_coercion():
+    online = parse_emergency_snapshot({"isOnline": "true"}, vin="YASADR00000000001")
+    offline = parse_emergency_snapshot({"isOnline": 0}, vin="YASADR00000000001")
+    unknown = parse_emergency_snapshot({"isOnline": "maybe"}, vin="YASADR00000000001")
+    assert online["online"] is True
+    assert offline["online"] is False
+    assert unknown["online"] is None
+
+
 def test_parse_snapshot_manual_mode_and_offline_link():
     snap = parse_emergency_snapshot(
         {"autoMode": False, "lte": False, "icp": "fail"},

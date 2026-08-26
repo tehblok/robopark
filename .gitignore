@@ -1,6 +1,6 @@
 # Secrets & env
 # Every *.env variant is operator-owned and untracked (deploy/host.env,
-# deploy/vps/wg.env, apps/api/.env); only examples are committed.
+# /etc/robopark/tuna.env, apps/api/.env); only *.env.example are committed.
 .env
 .env.*
 *.env
