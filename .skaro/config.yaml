@@ -10,8 +10,8 @@ llm:
   api_key_env: OPENAI_API_KEY
   base_url: null
   max_tokens: 16384
-  model: gpt-5.4
-  provider: openai
+  model: claude-opus-4-7
+  provider: ollama
   temperature: 0.3
 project_description: ''
 project_name: robopark
