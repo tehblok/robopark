@@ -2,13 +2,13 @@
 
 Web-first fleet operations system (admin / operator / mechanic).
 
-- **Primary:** website on local host (API + app); remote access via **WireGuard on a VPS** (no app on the VPS, no public URL required).
+- **Primary:** website on local host (API + app); remote access via **Tuna HTTPS tunnel** (no VPS, mechanics open a link).
 - **Reserve:** Telegram bots with feature parity, as thin clients to the same API (not in Phase 1).
 - **Clean slate:** new codebase; prior bot repo is reference only, not a dependency.
 
 ## Phase 1
 
-Platform skeleton: FastAPI + React monorepo, session auth, role cabinets, SQLite on host, Docker Compose on the host; VPS optional for WireGuard only.
+Platform skeleton: FastAPI + React monorepo, session auth, role cabinets, SQLite on host, Docker Compose on the host; public access through [Tuna](https://tuna.am/docs/).
 
 Design: [`docs/superpowers/specs/2026-08-21-robopark-platform-phase1-design.md`](docs/superpowers/specs/2026-08-21-robopark-platform-phase1-design.md)
 
@@ -249,36 +249,32 @@ cp host.env.example host.env
 ```
 
 Edit `host.env`: strong `SEED_PASSWORD`, optional `OPERATOR_SHARED_PASSWORD`, and
-`CORS_ORIGINS=http://10.8.0.2:8080` (host VPN address — see deploy docs).
+`CORS_ORIGINS=https://<your-tuna-host>` (exact HTTPS URL from Tuna — see deploy docs).
 
 ```bash
 export HOST_ENV_FILE=./host.env
 docker compose up -d --build
 ```
 
-`host.env` is gitignored. For **VPN access**, keep `COOKIE_SECURE=false` (HTTP
-inside WireGuard). The API is not exposed on port 8000 — use the web container
-on **port 8080** (SPA + `/api` proxy).
+`host.env` is gitignored. For **Tuna HTTPS**, set `COOKIE_SECURE=true`. The API is
+not exposed on port 8000 — use the web container on **localhost:8080**, then run
+the Tuna agent (see [`deploy/README.md`](deploy/README.md)).
 
 Full topology: [`deploy/README.md`](deploy/README.md).
 
-## VPS (WireGuard only)
+## Remote access (Tuna)
 
-The VPS does **not** run Robopark. It runs the WireGuard hub so operators and
-the host can reach each other without a public IP on the host.
+There is **no VPS**. Install [tuna-cli](https://tuna.am/docs/guides/install/) on the
+host, point it at `127.0.0.1:8080`, prefer a Russian `--location`, and give mechanics
+the HTTPS link.
 
 ```bash
-git clone <repository-url> robopark
-cd robopark/deploy/vps
-cp wg.env.example wg.env
-# set SERVERURL to the VPS public IP; keep host as the first PEER name
-docker compose --env-file wg.env up -d
+# after Docker is up — see deploy/tuna.service for production
+export TUNA_TOKEN=tt_***
+tuna http 127.0.0.1:8080 --subdomain=robopark --https-redirect
 ```
 
-Copy `config/peer_host/` to the Armbian host, enable `wg0`, then operators import
-their peer configs and open **http://10.8.0.2:8080**.
-
-Details: [`deploy/vps/README.md`](deploy/vps/README.md), [`deploy/wireguard/host-peer.md`](deploy/wireguard/host-peer.md).
+Put the printed `https://…` origin into `CORS_ORIGINS` and restart the API container.
 
 ## Security
 
@@ -356,7 +352,7 @@ dependency on the old bot repository.
 Not included:
 
 - Telegram bots or feature parity clients.
-- Automated WireGuard key distribution to operators (configs are manual from VPS `config/`).
+- VPS / WireGuard remote access (replaced by Tuna HTTPS tunnel).
 - PostgreSQL migration; SQLite on the host remains the storage engine.
 - Per-user Tracker credentials — the platform uses one service token and
   attributes actions through `audit_log` and comment signatures.

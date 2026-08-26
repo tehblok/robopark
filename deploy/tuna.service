@@ -1,0 +1,31 @@
+[Unit]
+Description=Robopark Tuna HTTPS tunnel
+Documentation=https://tuna.am/docs/tunnels/http/
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+# tuna-cli on PATH (default install is often /usr/local/bin)
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/etc/robopark/tuna.env
+# Wrapper avoids systemd $VAR expansion bugs. Install:
+#   sudo install -m 755 deploy/tuna-http.sh /etc/robopark/tuna-http.sh
+ExecStart=/etc/robopark/tuna-http.sh
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=10
+TimeoutStartSec=180
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=robopark-tuna
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Production: dedicated user (Tuna advises against a privileged account).
+# User=robopark
+# Group=robopark
+
+[Install]
+WantedBy=multi-user.target

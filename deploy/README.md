@@ -1,26 +1,22 @@
-# Deployment: host + WireGuard (VPS)
+# Deployment: host + Tuna
 
 Robopark runs **only on the host** (Armbian / home server): API, SQLite, web UI.
 
-The **VPS runs WireGuard only** — no Robopark containers, no Caddy, no tunnel to
-publish the app on the public internet. Operators connect to the VPN, then open
-the site on the host's VPN address.
+Remote access uses **[Tuna](https://tuna.am/docs/)** — an HTTP reverse tunnel (ngrok-class).
+There is **no VPS** and **no WireGuard**. Mechanics open an HTTPS link in the browser.
 
 ```
-  Operator laptop/phone          VPS (public IP)              Host (no white IP)
-  ┌─────────────────┐           ┌──────────────┐            ┌──────────────────┐
-  │ WireGuard client│◄──UDP───►│ WireGuard    │◄───VPN────►│ wg + Docker      │
-  │                 │   51820   │ hub (Docker) │   tunnel   │ api + web :8080  │
-  └────────┬────────┘           └──────────────┘            └──────────────────┘
-           │                                                          ▲
-           └──────── HTTP http://10.8.0.2:8080 (host peer IP) ────────┘
+  Mechanic laptop/phone                         Host (no white IP)
+  ┌─────────────────┐                          ┌──────────────────────┐
+  │ Browser         │──HTTPS──► tuna.am ──────►│ tuna agent           │
+  │ https://….tuna… │                          │   ↓ localhost:8080   │
+  └─────────────────┘                          │ Docker: web + api    │
+                                               └──────────────────────┘
 ```
 
-Default VPN subnet: `10.8.0.0/24` — server `.1`, host peer `.2`, operators `.3+`.
+Docs: [Tuna overview](https://tuna.am/docs/), [HTTP tunnels](https://tuna.am/docs/tunnels/http/), [Install](https://tuna.am/docs/guides/install/).
 
 ## 1. Host (application)
-
-On the machine that runs 24/7 (Armbian, NUC, etc.):
 
 ```sh
 git clone <repository-url> robopark
@@ -34,113 +30,129 @@ Edit `host.env`:
 |----------|--------|
 | `SEED_PASSWORD` | Strong password for first admin (`royal`) |
 | `OPERATOR_SHARED_PASSWORD` | Optional; empty disables self-register |
-| `CORS_ORIGINS` | Must match how users open the UI, e.g. `http://10.8.0.2:8080` |
-| `COOKIE_SECURE` | Keep `false` for VPN over HTTP (see below) |
+| `CORS_ORIGINS` | Exact HTTPS origin users open, e.g. `https://robopark.<region>.tuna.am` |
+| `COOKIE_SECURE` | **`true`** — Tuna terminates TLS |
+| `SECRET_KEY` | Required for encrypting Tracker / Emergency secrets at rest |
 
-Start the stack:
+Start the stack (web listens on **localhost only**):
 
 ```sh
 export HOST_ENV_FILE=./host.env
 docker compose up -d --build
 ```
 
-- Web (SPA + `/api` proxy): **`http://<host-vpn-ip>:8080`** (default `http://10.8.0.2:8080` after WireGuard is up).
-- API is **not** published on port 8000 — only reachable via the web container's nginx proxy.
-- SQLite lives in Docker volume `robopark_data`.
-
-Validate:
+Validate locally:
 
 ```sh
 docker compose ps
 curl -sS http://127.0.0.1:8080/api/health
 ```
 
-### Session cookies over VPN
+- SPA + `/api` proxy: **`http://127.0.0.1:8080`** on the host.
+- API is **not** published on port 8000 — only via the web container.
+- SQLite lives in Docker volume `robopark_data`.
 
-Traffic is **HTTP inside WireGuard** (no TLS terminator). `COOKIE_SECURE=false`
-is required so the browser stores the session cookie. The VPN replaces TLS for
-transport privacy among trusted peers.
+## 2. Tuna tunnel (public HTTPS link)
 
-## 2. VPS (WireGuard hub)
+### Account and client
 
-On a small Ubuntu VPS with a public IP:
+1. Register at [tuna.am](https://tuna.am/) and create a token in the cabinet.
+2. Install **tuna-cli** (or Desktop) from [Install docs](https://tuna.am/docs/guides/install/) / [releases](https://tuna.am/releases/).
+3. Prefer a **Russian region** (`--location` / `TUNA_LOCATION`) for ping and stability — see current locations in the Tuna UI / `tuna http --help`.
 
-```sh
-git clone <repository-url> robopark
-cd robopark/deploy/vps
-cp wg.env.example wg.env
-```
+Paid plans can reserve a stable subdomain (`--subdomain`) or attach a custom domain (`--domain`).  
+Free plan: dynamic name, **~30 minutes** per tunnel — fine for demos, not for 24/7 production.
 
-Edit `wg.env`: set `SERVERURL` to the VPS public IP or DNS, adjust `PEERS` (first
-name **`host`** is reserved for the application server).
+### One-shot (test / free plan)
 
-Open **UDP `51820`** (or your `SERVERPORT`) in the VPS firewall / security group.
-
-```sh
-docker compose --env-file wg.env up -d
-```
-
-Peer configs are generated under `./config/peer_<name>/`:
-
-| Peer | Role | Typical VPN IP |
-|------|------|----------------|
-| `host` | Armbian / home server | `10.8.0.2` |
-| `operator1`, … | Staff devices | `10.8.0.3`, … |
-
-Details: [`vps/README.md`](vps/README.md).
-
-## 3. Host WireGuard client
-
-Copy `config/peer_host/` from the VPS to the host (scp/rsync). On Armbian:
+Free plan: dynamic hostname, **~30 minutes**. After reconnect the URL changes —
+update `CORS_ORIGINS` and restart the API container.
 
 ```sh
-sudo apt install wireguard
-sudo cp peer_host/robopark-host.conf /etc/wireguard/wg0.conf
-sudo chmod 600 /etc/wireguard/wg0.conf
-sudo systemctl enable --now wg-quick@wg0
+set -a; . /etc/robopark/tuna.env; set +a   # do not paste the token into shell history
+tuna http 127.0.0.1:8080 --https-redirect --qr
 ```
 
-Confirm the host has `10.8.0.2` on `wg0` and can ping `10.8.0.1` (VPS).
-
-From a machine already on the VPN:
+### Production (paid: reserved subdomain)
 
 ```sh
-curl -sS http://10.8.0.2:8080/api/health
+tuna http 127.0.0.1:8080 --subdomain=robopark --https-redirect
 ```
 
-Step-by-step: [`wireguard/host-peer.md`](wireguard/host-peer.md).
+Copy the printed **HTTPS** URL into `CORS_ORIGINS`, restart API if needed:
 
-## 4. Operator devices
+```sh
+# in host.env
+CORS_ORIGINS=https://robopark.<region>.tuna.am
+docker compose up -d api
+```
 
-Distribute `config/peer_operatorN/` **securely** (not in chat/email if avoidable).
-Import the `.conf` or QR code into the WireGuard app, connect, open:
+Mechanics open that HTTPS link — no VPN app.
 
-**http://10.8.0.2:8080**
+### Production: systemd unit
 
-(`CORS_ORIGINS` in `host.env` must include this origin.)
+On the host, after installing `tuna` on `$PATH`:
 
-## 5. Firewall (recommended)
+```sh
+sudo mkdir -p /etc/robopark
+sudo cp tuna.env.example /etc/robopark/tuna.env
+sudo chmod 600 /etc/robopark/tuna.env
+# edit: TUNA_TOKEN, TUNA_BIN if needed, TUNA_SUBDOMAIN / TUNA_LOCATION / TUNA_DOMAIN
+command -v tuna   # expect e.g. /usr/local/bin/tuna
 
-**Host:** allow `8080/tcp` only on `wg0` (or from `10.8.0.0/24`), not on the public LAN/WAN interface.
+sudo install -m 755 tuna-http.sh /etc/robopark/tuna-http.sh
+sudo cp tuna.service /etc/systemd/system/robopark-tuna.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now robopark-tuna
+sudo systemctl status robopark-tuna
+journalctl -u robopark-tuna -f
+```
 
-**VPS:** allow `51820/udp` from the internet; no need to expose 80/443 for Robopark.
+Ensure Compose starts on boot (`restart: unless-stopped` plus a host unit or
+cron `@reboot` that runs `docker compose up -d` from this directory).
+
+Files: `tuna.service`, `tuna.env.example`, `tuna-http.sh`.
+
+- `--https-redirect` is always passed by the wrapper  
+- bind `127.0.0.1:8080` — do not expose 8080 on WAN  
+- optional `TUNA_RATE_LIMIT` in the env file  
+- do **not** enable Tuna `--cors` if Robopark already sends CORS (`CORS_ORIGINS`)  
+- copy the **HTTPS** URL into `CORS_ORIGINS`, then `docker compose up -d api`
+
+## 3. Firewall
+
+- **Do not** publish `8080` / `8000` to the internet. Compose binds `127.0.0.1:8080`.
+- Allow outbound HTTPS from the host so the Tuna agent can reach Tuna.
+- Keep LAN access to `127.0.0.1:8080` only for admin debugging.
+
+## 4. Security notes
+
+| Layer | What protects it |
+|-------|------------------|
+| Browser ↔ Tuna | HTTPS (TLS) |
+| Tuna ↔ host | Encrypted agent tunnel |
+| App auth | Session cookie (`COOKIE_SECURE=true`), login throttle |
+| Secrets at rest | `SECRET_KEY` (Fernet) for Tracker / Emergency |
+
+Tuna makes the app reachable by **URL**. Rely on Robopark login; rotate `TUNA_TOKEN` if leaked; use a reserved subdomain or custom domain in production. Set **`SECRET_KEY`** in `host.env` before first boot — without it Tracker and Emergency secrets are stored as plaintext.
+
+Login throttle and audit IPs depend on Tuna forwarding `X-Forwarded-For` / `X-Forwarded-Proto`; nginx trusts those headers from `127.0.0.1` (the agent).
+
+Optional Tuna extras (cabinet / docs): basic-auth / key-auth in front of the app, CIDR allowlists, [Apps / Zero Trust](https://tuna.am/docs/apps/) — not required for the default Robopark flow.
 
 ## Backup
 
-Back up the `robopark_data` volume / SQLite file on the host regularly. WireGuard
-`config/` on the VPS contains private keys — back up encrypted, never commit.
-
-## What we removed
-
-Earlier drafts used a **VPS Caddy + reverse tunnel** to publish HTTPS on a public
-domain. That path is replaced by **VPN-only access**. See git history under
-`deploy/` if you need the old templates.
+Back up the `robopark_data` volume / SQLite file on the host regularly.  
+Do **not** commit `host.env`, `tuna.env`, or Tuna tokens.
 
 ## Quick reference
 
-| Machine | Compose path | Command |
-|---------|--------------|---------|
-| Host | `deploy/` | `docker compose up -d --build` |
-| VPS | `deploy/vps/` | `docker compose --env-file wg.env up -d` |
+| Piece | Where | Command |
+|-------|--------|---------|
+| App | `deploy/` | `HOST_ENV_FILE=./host.env docker compose up -d --build` |
+| Tunnel | host systemd | `systemctl enable --now robopark-tuna` |
+| Users | browser | `https://<your-tuna-host>/` |
 
-Never run `deploy/docker-compose.yml` on the VPS.
+## What we removed
+
+WireGuard VPS hub (`deploy/vps/`, `deploy/wireguard/`) is gone. Access is HTTPS via Tuna only.
