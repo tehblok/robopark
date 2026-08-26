@@ -87,6 +87,32 @@ def get_secret_setting(db: Session, key: str) -> str | None:
         return None
 
 
+def migrate_plaintext_secrets(db: Session) -> int:
+    """Re-seal secrets that were saved before encryption was enabled.
+
+    When ``SECRET_KEY`` is now configured but an older row is still stored as
+    plaintext, rewrite it so the DB no longer contains a working token in the
+    clear. Without a key we silently no-op — the app still boots to let an
+    operator upgrade in place. Returns the count of rows that were rewritten.
+    """
+    if not _secret_key():
+        return 0
+    rewritten = 0
+    for setting_key in SECRET_KEYS:
+        row = get_setting(db, setting_key)
+        if row is None or not row.value or is_encrypted(row.value):
+            continue
+        # ``set_setting`` encrypts before writing back.
+        set_setting(db, setting_key, row.value)
+        rewritten += 1
+    if rewritten:
+        logger.warning(
+            "Re-encrypted %d legacy plaintext secret(s) at boot; cycle SECRET_KEY only after backup.",
+            rewritten,
+        )
+    return rewritten
+
+
 def get_tracker_token(db: Session) -> str | None:
     return get_secret_setting(db, TRACKER_TOKEN_KEY)
 
