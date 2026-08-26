@@ -127,6 +127,15 @@ export type EmergencySnapshot = {
   online: boolean | null
   speed: number | null
   charge_percent: number | null
+  battery1_percent: number | null
+  battery2_percent: number | null
+  disk_percent: number | null
+  mode: string | null
+  icp_label: string | null
+  icp_ok: boolean | null
+  lte_label: string | null
+  lte_ok: boolean | null
+  error_banner: string | null
   lat: number | null
   lon: number | null
   heading_deg: number | null

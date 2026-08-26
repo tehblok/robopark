@@ -187,6 +187,15 @@ class EmergencySnapshotOut(BaseModel):
     online: bool | None = None
     speed: float | None = None
     charge_percent: float | None = None
+    battery1_percent: float | None = None
+    battery2_percent: float | None = None
+    disk_percent: float | None = None
+    mode: str | None = None
+    icp_label: str | None = None
+    icp_ok: bool | None = None
+    lte_label: str | None = None
+    lte_ok: bool | None = None
+    error_banner: str | None = None
     lat: float | None = None
     lon: float | None = None
     heading_deg: float | None = None

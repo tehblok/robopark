@@ -28,6 +28,17 @@ function wheelsSectionId(sections: EmergencySection[]): string {
   return match?.id ?? 'wheels'
 }
 
+function sectionIdByHints(
+  sections: EmergencySection[],
+  ids: string[],
+  titlePattern: RegExp,
+): string | null {
+  const byId = sections.find((section) => ids.includes(section.id))
+  if (byId) return byId.id
+  const byTitle = sections.find((section) => titlePattern.test(section.title))
+  return byTitle?.id ?? null
+}
+
 export function EmergencyViewer() {
   const [robotNumber, setRobotNumber] = useState('')
   const [vin, setVin] = useState('')
@@ -198,6 +209,16 @@ export function EmergencyViewer() {
   const lon = liveSnapshot?.lon ?? null
   const hasCoords = lat != null && lon != null
   const wheelsTab = wheelsSectionId(sections)
+  const soundTab = sectionIdByHints(
+    sections,
+    ['hardware_hud', 'hardware'],
+    /оборуд|hud|звук|сирен/i,
+  )
+  const powerTab = sectionIdByHints(
+    sections,
+    ['control', 'errors'],
+    /управл|ошиб|control/i,
+  )
 
   return (
     <PageShell subtitle={ru.emergency.subtitle} title={ru.emergency.title}>
@@ -251,6 +272,8 @@ export function EmergencyViewer() {
         <div className="inspection-desk">
           <RobotSchematic
             dimmed={cookieStale}
+            onPowerClick={powerTab ? () => openTab(powerTab) : undefined}
+            onSoundClick={soundTab ? () => openTab(soundTab) : undefined}
             onWheelClick={() => openTab(wheelsTab)}
             snapshot={liveSnapshot}
           />
