@@ -15,8 +15,10 @@ from robopark_api.schemas import (
 from robopark_api.services import (
     emergency_cache,
     emergency_client,
+    emergency_scope,
     emergency_sections,
     emergency_vin,
+    tracker_client,
 )
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.emergency_snapshot import parse_emergency_snapshot
@@ -48,6 +50,26 @@ def _get_robot_payload(db: Session, vin: str) -> dict:
         ) from exc
 
 
+def _enforce_vin_scope(db: Session, user: User, vin: str) -> None:
+    """Deny non-admin access to VINs outside the user's Tracker-linked parks.
+
+    Tracker call failures surface as 502 so the client can distinguish them
+    from a genuine "you have no ticket for this robot" (403).
+    """
+    try:
+        allowed = emergency_scope.vin_allowed_for_user(db, user, vin)
+    except tracker_client.TrackerError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="emergency_vin_out_of_scope",
+        )
+
+
 def resolve_robot_for_user(
     payload: EmergencyResolveRequest, user: User, db: Session
 ) -> EmergencyResolveOut:
@@ -55,6 +77,9 @@ def resolve_robot_for_user(
         vin = emergency_vin.normalize_robot_id(payload.robot_number)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    _require_emergency_cookie(db)
+    _enforce_vin_scope(db, user, vin)
 
     _get_robot_payload(db, vin)
     sections = [
@@ -71,6 +96,8 @@ def emergency_section_for_user(
         vin = emergency_vin.normalize_robot_id(vin)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    _enforce_vin_scope(db, user, vin)
 
     payload = _get_robot_payload(db, vin)
     try:
@@ -89,11 +116,12 @@ def emergency_section_for_user(
 
 
 def emergency_snapshot_for_user(vin: str, user: User, db: Session) -> EmergencySnapshotOut:
-    del user
     try:
         vin = emergency_vin.normalize_robot_id(vin)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    _enforce_vin_scope(db, user, vin)
 
     payload = _get_robot_payload(db, vin)
     snap = parse_emergency_snapshot(payload, vin=vin)

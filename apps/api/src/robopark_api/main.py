@@ -31,6 +31,7 @@ from robopark_api.routers import (
     tracker_read,
 )
 from robopark_api.seed import ensure_seed_user
+from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.blocker_history_job import run_blocker_history_loop
 from robopark_api.services.emergency_keepalive import run_keepalive_loop
 from robopark_api.services.session_cleanup import run_session_cleanup_loop
@@ -44,6 +45,11 @@ def create_app() -> FastAPI:
         with SessionLocal() as db:
             ensure_seed_user(db, settings)
             ensure_dev_seed(db, settings)
+            # Databases from before the encryption feature can still hold
+            # Tracker token / Emergency cookie as plaintext. Re-seal them now
+            # so ``SECRET_KEY`` actually protects an existing install, not
+            # only fresh writes from the admin UI.
+            settings_svc.migrate_plaintext_secrets(db)
         stop_event = asyncio.Event()
         tasks = [
             asyncio.create_task(run_keepalive_loop(stop_event)),
@@ -69,12 +75,15 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Robopark API", version="0.1.0", lifespan=lifespan)
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+    # Explicit method/header allowlists paired with ``allow_credentials=True``:
+    # a wildcard here would let the browser send credentialed requests with
+    # arbitrary custom headers to every configured origin.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Accept"],
     )
     app.include_router(auth.router)
     app.include_router(health.router)

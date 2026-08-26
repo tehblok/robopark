@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from conftest import login_as
-from robopark_api.services import emergency_cache, emergency_config
+from robopark_api.services import emergency_cache, emergency_config, emergency_scope
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -15,6 +15,12 @@ def empty_emergency_cache():
     emergency_cache.clear_cache_for_tests()
     yield
     emergency_cache.clear_cache_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def allow_vin_scope(monkeypatch):
+    """Focus these tests on cookie / payload behavior, not VIN park-scope."""
+    monkeypatch.setattr(emergency_scope, "vin_allowed_for_user", lambda *_a, **_k: True)
 
 
 def test_emergency_resolve(client, db_session, seed_mechanic, seed_royal):
