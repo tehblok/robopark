@@ -7,7 +7,7 @@ from robopark_api.models import User
 from robopark_api.routers._blockers import blocker_out as _blocker_out
 from robopark_api.schemas import RobotTicketsOut
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_client, tracker_filters
+from robopark_api.services import tracker_cache, tracker_client, tracker_filters
 
 router = APIRouter(prefix="/operator", tags=["operator-robots"])
 
@@ -44,7 +44,7 @@ def operator_robot_tickets(
     keys: set[str] = set()
     try:
         for queue in queues:
-            for item in tracker_client.search_robot_tickets(token=token, queue=queue, query=query):
+            for item in tracker_cache.search_robot_tickets(token=token, queue=queue, query=query):
                 item_queue = (item.get("queue") or "").strip()
                 if item_queue and item_queue not in allowed_queues:
                     continue

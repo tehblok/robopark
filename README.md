@@ -225,6 +225,14 @@ after the user has been created. To enable operator self-registration, also set
 API. Logins and passwords — [`docs/DEV-ACCOUNTS.md`](docs/DEV-ACCOUNTS.md)
 (for example `royal` / `RoboparkRoyal!1`, `operator` / `RoboparkOperator!1`).
 
+One-shot demo bootstrap (API + web, real Startrek/Emergency, no Tuna):
+
+```bash
+scripts/dev-demo.sh          # start
+scripts/dev-demo.sh status   # verify listeners
+scripts/dev-demo.sh stop     # tear down
+```
+
 ### Web
 
 With the API running, start the web app in another terminal:

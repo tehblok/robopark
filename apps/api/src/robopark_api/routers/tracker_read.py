@@ -20,7 +20,7 @@ from robopark_api.schemas import (
     TrackerUserOut,
 )
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_client
+from robopark_api.services import tracker_cache, tracker_client
 from robopark_api.services.tracker_assignees import list_assignee_candidates
 from robopark_api.services.tracker_policy import (
     allowed_park_tags_for_user,
@@ -234,7 +234,7 @@ def list_issues(
         untagged=untagged,
     )
     try:
-        items = tracker_client.search_issues(token=token, query=query_text)
+        items = tracker_cache.search_issues(token=token, query=query_text)
     except tracker_client.TrackerError as exc:
         logger.exception("tracker search failed query=%r", query_text)
         raise HTTPException(
@@ -291,7 +291,7 @@ def get_issue(
             detail="tracker_token_not_configured",
         )
     try:
-        issue = tracker_client.get_issue(token=token, key=key)
+        issue = tracker_cache.get_issue(token=token, key=key)
     except tracker_client.TrackerError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -317,13 +317,13 @@ def get_comments(
             detail="tracker_token_not_configured",
         )
 
-    issue = tracker_client.get_issue(token=token, key=key)
+    issue = tracker_cache.get_issue(token=token, key=key)
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     enforce_issue_scope(db, user, issue)
 
     try:
-        comments = tracker_client.list_comments(token=token, key=key)
+        comments = tracker_cache.list_comments(token=token, key=key)
     except tracker_client.TrackerError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -346,13 +346,13 @@ def get_transitions(
             detail="tracker_token_not_configured",
         )
 
-    issue = tracker_client.get_issue(token=token, key=key)
+    issue = tracker_cache.get_issue(token=token, key=key)
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     enforce_issue_scope(db, user, issue)
 
     try:
-        transitions = tracker_client.list_transitions(token=token, key=key)
+        transitions = tracker_cache.list_transitions(token=token, key=key)
     except tracker_client.TrackerError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

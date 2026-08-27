@@ -1,8 +1,9 @@
-import { type ReactNode, useCallback, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import { api } from '../api'
 import { useAuth } from '../auth-context'
 import { ru, roleLabel } from '../i18n/ru'
+import { useCachedResource } from '../lib/resource'
 import { moreNavItems, navItemsForRole, primaryNavItems } from '../nav'
 import { useParkContext } from '../park-context'
 import { REPORTS_BADGE_REFRESH } from '../reports-badge'
@@ -16,31 +17,28 @@ export function AppShell({ children }: AppShellProps) {
   const { user, logout } = useAuth()
   const { parkId, setParkId, parks, parksLoading, parkLocked } = useParkContext()
   const [theme, setThemeState] = useState<Theme>(() => getStoredTheme())
-  const [reportsBadge, setReportsBadge] = useState(0)
   const [moreOpen, setMoreOpen] = useState(false)
   const location = useLocation()
   const badgeParkId = user?.role === 'operator' ? parkId ?? undefined : undefined
-
-  const loadReportsBadge = useCallback(() => {
-    api.reportsBadge(badgeParkId)
-      .then((data) => setReportsBadge(data.count))
-      .catch(() => setReportsBadge(0))
-  }, [badgeParkId])
-
-  useEffect(() => {
-    loadReportsBadge()
-  }, [loadReportsBadge])
+  const badgeRes = useCachedResource(
+    user ? `reports:badge:${user.role}:${badgeParkId ?? 'all'}` : '',
+    () => api.reportsBadge(badgeParkId),
+    { enabled: Boolean(user), persist: false },
+  )
+  const reportsBadge = badgeRes.data?.count ?? 0
 
   useEffect(() => {
     if (!location.pathname.startsWith('/reports')) return
-    loadReportsBadge()
-  }, [location.pathname, loadReportsBadge])
+    void badgeRes.refresh()
+  }, [location.pathname, badgeRes.refresh])
 
   useEffect(() => {
-    const onRefresh = () => loadReportsBadge()
+    const onRefresh = () => {
+      void badgeRes.refresh()
+    }
     window.addEventListener(REPORTS_BADGE_REFRESH, onRefresh)
     return () => window.removeEventListener(REPORTS_BADGE_REFRESH, onRefresh)
-  }, [loadReportsBadge])
+  }, [badgeRes.refresh])
 
   useEffect(() => {
     if (!moreOpen) return

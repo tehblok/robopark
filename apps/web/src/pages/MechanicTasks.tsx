@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, type Blocker, type Report } from '../api'
+import { api, type Report } from '../api'
 import { Alert, PageShell, Panel } from '../components/PageShell'
 import {
   formatReportDate,
@@ -13,48 +13,30 @@ import { TaskFilterBar, TaskList } from '../components/tracker/TaskBoard'
 import { EmptyBlock, SkeletonList } from '../components/ui/Feedback'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
+import { useCachedResource } from '../lib/resource'
 
 export function MechanicTasks() {
   const [status, setStatus] = useState('all')
-  const [items, setItems] = useState<Blocker[]>([])
-  const [counts, setCounts] = useState<Record<string, number>>({})
-  const [parkTag, setParkTag] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [returnedReports, setReturnedReports] = useState<Report[]>([])
   const [openKey, setOpenKey] = useState('')
 
-  useEffect(() => {
-    api
-      .reportsMine()
-      .then((reports) => {
-        setReturnedReports(reports.filter((report) => report.status === 'returned'))
-      })
-      .catch(() => setReturnedReports([]))
-  }, [])
+  const tasksRes = useCachedResource(
+    `mechanic:tasks:${status}`,
+    () => api.mechanicTasks(status),
+  )
+  const items = tasksRes.data?.items ?? []
+  const counts = tasksRes.data?.counts ?? {}
+  const parkTag = tasksRes.data?.park_tag ?? ''
 
-  const load = useCallback(
-    (nextStatus: string) => {
-      setLoading(true)
-      setError('')
-      return api
-        .mechanicTasks(nextStatus)
-        .then((data) => {
-          setItems(data.items)
-          setCounts(data.counts)
-          setParkTag(data.park_tag)
-        })
-        .catch((loadError) => {
-          setError(mapApiError(loadError, ru.errors.tasks))
-        })
-        .finally(() => setLoading(false))
-    },
-    [],
+  const reportsRes = useCachedResource<Report[]>(
+    'mechanic:reports:mine',
+    () => api.reportsMine(),
+  )
+  const returnedReports = (reportsRes.data ?? []).filter(
+    (report) => report.status === 'returned',
   )
 
-  useEffect(() => {
-    void load(status)
-  }, [status, load])
+  const errorText = tasksRes.error ? mapApiError(tasksRes.error, ru.errors.tasks) : ''
+  const showColdSkeleton = tasksRes.isLoading && !tasksRes.data && !errorText
 
   // The ticket card replaces the list while open — same as the Tracker layout.
   if (openKey) {
@@ -63,7 +45,9 @@ export function MechanicTasks() {
         <IssueDrawer
           canWrite
           issueKey={openKey}
-          onChanged={() => void load(status)}
+          onChanged={() => {
+            void tasksRes.refresh()
+          }}
           onClose={() => setOpenKey('')}
         />
       </PageShell>
@@ -75,7 +59,7 @@ export function MechanicTasks() {
       subtitle={`Блокеры парка ${parkTag || '…'} · старые сверху`}
       title="Задачи парка"
     >
-      {error && <Alert tone="error">{error}</Alert>}
+      {errorText && <Alert tone="error">{errorText}</Alert>}
 
       {returnedReports.length > 0 && (
         <Panel title={`Возвращённые репорты (${returnedReports.length})`}>
@@ -104,15 +88,15 @@ export function MechanicTasks() {
 
       <TaskFilterBar counts={counts} onChange={setStatus} value={status} />
 
-      {loading && <SkeletonList rows={4} />}
-      {!loading && !items.length && !error && (
+      {showColdSkeleton && <SkeletonList rows={4} />}
+      {!showColdSkeleton && !items.length && !errorText && tasksRes.data && (
         <EmptyBlock
           hint="Смените фильтр статуса или обновите список позже."
           icon="📋"
           title="Нет открытых блокеров для выбранного фильтра"
         />
       )}
-      {!loading && items.length > 0 && (
+      {items.length > 0 && (
         <TaskList items={items} onSelect={setOpenKey} selected={openKey} />
       )}
     </PageShell>

@@ -35,6 +35,7 @@ coverage/
 data/
 !apps/api/data/
 !apps/api/data/emergency_sections.json
+apps/api/logs/
 *.log
 *.sqlite
 *.db

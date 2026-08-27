@@ -36,6 +36,20 @@ def clear_settings_cache():
     reset_settings_cache()
 
 
+@pytest.fixture(autouse=True)
+def clear_response_caches():
+    """Every test starts with cold Tracker/Emergency caches — otherwise the
+    monkeypatched upstream calls in the previous test would leak through the
+    module-level TTL cache and mask real behaviour."""
+    from robopark_api.services import emergency_cache, tracker_cache
+
+    tracker_cache.clear_all()
+    emergency_cache.clear_cache_for_tests()
+    yield
+    tracker_cache.clear_all()
+    emergency_cache.clear_cache_for_tests()
+
+
 @pytest.fixture
 def sqlite_database_url(tmp_path):
     return f"sqlite:///{tmp_path / 'alembic.db'}"

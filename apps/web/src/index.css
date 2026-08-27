@@ -130,6 +130,50 @@
   }
 }
 
+@keyframes global-progress-slide {
+  0% {
+    transform: translateX(-40%);
+  }
+
+  100% {
+    transform: translateX(140%);
+  }
+}
+
+.global-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  overflow: hidden;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 200ms var(--ease-out, ease-out);
+}
+
+.global-progress[data-active='true'] {
+  opacity: 1;
+}
+
+.global-progress::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--brand), transparent);
+  animation: global-progress-slide 1200ms linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .global-progress::after {
+    animation: none;
+    width: 100%;
+    background: var(--brand);
+  }
+}
+
 .animate-in {
   animation: fade-slide-up var(--dur-base) var(--ease-out) both;
 }

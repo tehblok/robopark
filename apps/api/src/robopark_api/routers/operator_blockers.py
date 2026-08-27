@@ -8,7 +8,7 @@ from robopark_api.models import User
 from robopark_api.routers._blockers import blocker_out as _blocker_out
 from robopark_api.schemas import OperatorBlockersOut
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_client, tracker_filters
+from robopark_api.services import tracker_cache, tracker_client, tracker_filters
 
 router = APIRouter(prefix="/operator", tags=["operator-blockers"])
 
@@ -40,7 +40,7 @@ def operator_blockers(
 
     try:
         priority, issue_type = tracker_filters.park_priority_type(park)
-        issues = tracker_client.fetch_park_blockers(
+        issues = tracker_cache.fetch_park_blockers(
             token=token,
             queue=park.tracker_queue,
             park_tag=park.tag,

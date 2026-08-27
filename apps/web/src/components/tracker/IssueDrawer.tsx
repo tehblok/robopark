@@ -1,13 +1,9 @@
-import { useEffect, useState } from 'react'
-import {
-  api,
-  type TrackerComment,
-  type TrackerIssueDetail,
-  type TrackerTransition,
-} from '../../api'
+import { useEffect } from 'react'
+import { api, type TrackerTransition } from '../../api'
 import { useAuth } from '../../auth-context'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
+import { useCachedResource } from '../../lib/resource'
 import { IssueActionsPanel } from './IssueActionsPanel'
 import { IssueDetailPanel } from './IssueDetailPanel'
 
@@ -27,55 +23,37 @@ export function IssueDrawer({
   onChanged?: () => void
 }) {
   const { user } = useAuth()
-  const [detail, setDetail] = useState<TrackerIssueDetail | null>(null)
-  const [comments, setComments] = useState<TrackerComment[]>([])
-  const [transitions, setTransitions] = useState<TrackerTransition[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
 
-  useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    setError('')
+  const detailRes = useCachedResource(
+    `tracker:issue:${issueKey}`,
+    () => api.trackerIssue(issueKey),
+  )
+  const commentsRes = useCachedResource(
+    `tracker:comments:${issueKey}`,
+    () => api.trackerComments(issueKey),
+  )
+  const transitionsRes = useCachedResource<TrackerTransition[]>(
+    canWrite ? `tracker:transitions:${issueKey}` : '',
+    () => api.trackerTransitions(issueKey),
+    { enabled: canWrite },
+  )
 
-    Promise.all([
-      api.trackerIssue(issueKey),
-      api.trackerComments(issueKey),
-      canWrite ? api.trackerTransitions(issueKey) : Promise.resolve([]),
-    ])
-      .then(([issue, issueComments, issueTransitions]) => {
-        if (cancelled) return
-        setDetail(issue)
-        setComments(issueComments)
-        setTransitions(issueTransitions)
-      })
-      .catch((err) => {
-        if (cancelled) return
-        setError(mapApiError(err) || ru.tracker.detailsError)
-        setDetail(null)
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [issueKey, canWrite])
+  const detail = detailRes.data ?? null
+  const comments = commentsRes.data ?? []
+  const transitions = transitionsRes.data ?? []
+  const loadError = detailRes.error ?? commentsRes.error ?? transitionsRes.error
+  const errorText = loadError ? mapApiError(loadError) || ru.tracker.detailsError : ''
+  const loading = detailRes.isLoading && !detail
 
   const reload = async () => {
-    const [issue, issueComments, issueTransitions] = await Promise.all([
-      api.trackerIssue(issueKey),
-      api.trackerComments(issueKey),
-      canWrite ? api.trackerTransitions(issueKey) : Promise.resolve([]),
+    await Promise.all([
+      detailRes.refresh(),
+      commentsRes.refresh(),
+      canWrite ? transitionsRes.refresh() : Promise.resolve(),
     ])
-    setDetail(issue)
-    setComments(issueComments)
-    setTransitions(issueTransitions)
     onChanged?.()
   }
 
-  // Escape closes the card, matching the usual drawer behaviour.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
@@ -92,7 +70,7 @@ export function IssueDrawer({
         </button>
       </div>
 
-      {error && <p className="alert alert-error">{error}</p>}
+      {errorText && <p className="alert alert-error">{errorText}</p>}
 
       <IssueDetailPanel comments={comments} issue={detail} loading={loading} />
 

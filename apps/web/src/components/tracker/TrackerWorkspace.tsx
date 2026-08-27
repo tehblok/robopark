@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   api,
-  type TrackerComment,
   type TrackerIssue,
-  type TrackerIssueDetail,
   type TrackerTransition,
 } from '../../api'
 import { useAuth } from '../../auth-context'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
+import { resourceStore, useCachedResource } from '../../lib/resource'
 import { IssueActionsPanel } from './IssueActionsPanel'
 import { IssueDetailPanel } from './IssueDetailPanel'
 import { IssueFilters, type IssueFilterValues } from './IssueFilters'
@@ -16,8 +15,18 @@ import { IssueList } from './IssueList'
 
 const PAGE_SIZE = 50
 
+type ListPage = {
+  items: TrackerIssue[]
+  total: number
+  has_more: boolean
+}
+
 function isMobileShell() {
   return typeof window !== 'undefined' && window.matchMedia('(max-width: 900px)').matches
+}
+
+function listKey(filters: IssueFilterValues): string {
+  return `tracker:list:${JSON.stringify(filters)}`
 }
 
 export function TrackerWorkspace({
@@ -32,124 +41,109 @@ export function TrackerWorkspace({
   defaultPark?: string
 }) {
   const { user } = useAuth()
-  const [items, setItems] = useState<TrackerIssue[]>([])
-  const [total, setTotal] = useState(0)
-  const [hasMore, setHasMore] = useState(false)
+  const [filters, setFilters] = useState<IssueFilterValues>({
+    queue: defaultQueue,
+    park: defaultPark || undefined,
+  })
   const [selected, setSelected] = useState('')
-  const [detail, setDetail] = useState<TrackerIssueDetail | null>(null)
-  const [comments, setComments] = useState<TrackerComment[]>([])
-  const [transitions, setTransitions] = useState<TrackerTransition[]>([])
-  const [error, setError] = useState('')
-  const [listLoading, setListLoading] = useState(false)
-  const [detailLoading, setDetailLoading] = useState(false)
+  const [validationError, setValidationError] = useState('')
+  const loadMoreRef = useRef(false)
 
-  const requestId = useRef(0)
-  const didInitialLoad = useRef(false)
-  const lastFilters = useRef<IssueFilterValues>({})
+  const invalidFilter = filters.untagged && !filters.queue
+  const listRes = useCachedResource<ListPage>(
+    invalidFilter ? '' : listKey(filters),
+    () => api.trackerIssues({ ...filters, limit: PAGE_SIZE, offset: 0 }),
+    { enabled: !invalidFilter },
+  )
+
+  const detailRes = useCachedResource(
+    selected ? `tracker:issue:${selected}` : '',
+    () => api.trackerIssue(selected),
+    { enabled: Boolean(selected) },
+  )
+  const commentsRes = useCachedResource(
+    selected ? `tracker:comments:${selected}` : '',
+    () => api.trackerComments(selected),
+    { enabled: Boolean(selected) },
+  )
+  const transitionsRes = useCachedResource<TrackerTransition[]>(
+    selected ? `tracker:transitions:${selected}` : '',
+    () => api.trackerTransitions(selected),
+    { enabled: Boolean(selected) },
+  )
+
+  const items = listRes.data?.items ?? []
+  const total = listRes.data?.total ?? 0
+  const hasMore = listRes.data?.has_more ?? false
+  const detail = detailRes.data ?? null
+  const comments = commentsRes.data ?? []
+  const transitions = transitionsRes.data ?? []
+
+  const listError = validationError
+    || (invalidFilter ? ru.errors.details.tracker_queue_required_for_untagged : '')
+    || (listRes.error ? mapApiError(listRes.error) || ru.tracker.loadError : '')
+  const detailError = detailRes.error
+    ? mapApiError(detailRes.error) || ru.tracker.detailsError
+    : ''
+  const error = listError || detailError
+
+  const listLoading = listRes.isRevalidating
+  const detailLoading = detailRes.isLoading && !detail
 
   const clearDetail = () => {
     setSelected('')
-    setDetail(null)
-    setComments([])
-    setTransitions([])
   }
 
-  const openIssue = useCallback(async (key: string) => {
+  const openIssue = useCallback((key: string) => {
     setSelected(key)
-    setError('')
-    setDetailLoading(true)
-    try {
-      const [issue, issueComments, issueTransitions] = await Promise.all([
-        api.trackerIssue(key),
-        api.trackerComments(key),
-        api.trackerTransitions(key),
-      ])
-      setDetail(issue)
-      setComments(issueComments)
-      setTransitions(issueTransitions)
-    } catch (err) {
-      setError(mapApiError(err) || ru.tracker.detailsError)
-      setDetail(null)
-    } finally {
-      setDetailLoading(false)
-    }
   }, [])
 
-  const loadIssues = useCallback(
-    async (filters: IssueFilterValues) => {
-      const req = ++requestId.current
-      setError('')
-      setListLoading(true)
-      lastFilters.current = filters
-      try {
-        if (filters.untagged && !filters.queue) {
-          setError(ru.errors.details.tracker_queue_required_for_untagged)
-          return
-        }
-        const data = await api.trackerIssues({ ...filters, limit: PAGE_SIZE, offset: 0 })
-        if (req !== requestId.current) return
-        setItems(data.items)
-        setTotal(data.total)
-        setHasMore(data.has_more)
+  const applyFilters = useCallback((next: IssueFilterValues) => {
+    setValidationError('')
+    setFilters(next)
+  }, [])
 
-        // On desktop preselect the first issue; on mobile the list is the
-        // primary view and the detail pane opens on tap.
-        if (data.items[0] && !isMobileShell()) {
-          await openIssue(data.items[0].key)
-        } else {
-          clearDetail()
-        }
-      } catch (err) {
-        if (req !== requestId.current) return
-        setError(mapApiError(err) || ru.tracker.loadError)
-      } finally {
-        if (req === requestId.current) setListLoading(false)
-      }
-    },
-    [openIssue],
-  )
+  // Desktop convenience: highlight the first item as soon as it arrives.
+  useEffect(() => {
+    if (selected || !listRes.data || listRes.data.items.length === 0) return
+    if (!isMobileShell()) {
+      setSelected(listRes.data.items[0].key)
+    }
+  }, [listRes.data, selected])
 
   const loadMore = async () => {
-    setListLoading(true)
+    if (loadMoreRef.current) return
+    loadMoreRef.current = true
     try {
       const data = await api.trackerIssues({
-        ...lastFilters.current,
+        ...filters,
         limit: PAGE_SIZE,
         offset: items.length,
       })
-      setItems((prev) => [...prev, ...data.items])
-      setTotal(data.total)
-      setHasMore(data.has_more)
-    } catch (err) {
-      setError(mapApiError(err) || ru.tracker.loadError)
+      const merged: ListPage = {
+        items: [...items, ...data.items],
+        total: data.total,
+        has_more: data.has_more,
+      }
+      // Update the cached page so the extra rows survive re-mounts.
+      resourceStore.set(listKey(filters), merged, true)
     } finally {
-      setListLoading(false)
+      loadMoreRef.current = false
     }
   }
 
-  useEffect(() => {
-    if (didInitialLoad.current) return
-    didInitialLoad.current = true
-    void loadIssues({ queue: defaultQueue, park: defaultPark || undefined })
-    // Initial load uses workspace defaults only.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   const refreshSelected = async () => {
-    if (selected) await openIssue(selected)
+    if (!selected) return
+    await Promise.all([
+      detailRes.refresh(),
+      commentsRes.refresh(),
+      transitionsRes.refresh(),
+    ])
   }
 
-  // After a write the list may be stale (status changed, ticket closed).
   const refreshAll = async () => {
     await refreshSelected()
-    const data = await api.trackerIssues({
-      ...lastFilters.current,
-      limit: Math.max(PAGE_SIZE, items.length),
-      offset: 0,
-    })
-    setItems(data.items)
-    setTotal(data.total)
-    setHasMore(data.has_more)
+    await listRes.refresh()
   }
 
   return (
@@ -162,7 +156,7 @@ export function TrackerWorkspace({
           defaultPark={defaultPark}
           defaultQueue={defaultQueue}
           loading={listLoading}
-          onApply={(filters) => void loadIssues(filters)}
+          onApply={applyFilters}
           trackerLogin={user?.tracker_login}
         />
         <IssueList
@@ -170,7 +164,7 @@ export function TrackerWorkspace({
           items={items}
           loading={listLoading}
           onLoadMore={() => void loadMore()}
-          onSelect={(key) => void openIssue(key)}
+          onSelect={openIssue}
           selected={selected}
           total={total}
         />

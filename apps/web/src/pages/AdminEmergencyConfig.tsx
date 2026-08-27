@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
 import {
   api,
   type EmergencyAdminSection,
@@ -7,29 +7,29 @@ import {
 import { Alert, Badge, PageShell, Panel } from '../components/PageShell'
 import { EmptyBlock, SkeletonList } from '../components/ui/Feedback'
 import { Toggle } from '../components/ui/Tabs'
+import { mapApiError } from '../i18n/errors'
 import { roleLabel, ru } from '../i18n/ru'
+import { useCachedResource } from '../lib/resource'
 
 const roles: EmergencyViewerRole[] = ['mechanic', 'operator', 'admin', 'royal']
 
 export function AdminEmergencyConfig() {
-  const [sections, setSections] = useState<EmergencyAdminSection[]>([])
+  const sectionsRes = useCachedResource<EmergencyAdminSection[]>(
+    'admin:emergency-sections',
+    () => api.adminEmergencySections(),
+  )
+  const cached = sectionsRes.data
+  const [sections, setSections] = useState<EmergencyAdminSection[]>(cached ?? [])
   const [sectionId, setSectionId] = useState('')
   const [sectionTitle, setSectionTitle] = useState('')
   const [newFields, setNewFields] = useState<Record<string, { path: string; label: string }>>({})
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
-  const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
 
-  const load = useCallback(async () => {
-    setSections(await api.adminEmergencySections())
-  }, [])
-
   useEffect(() => {
-    load()
-      .catch(() => setError(ru.errors.load))
-      .finally(() => setLoading(false))
-  }, [load])
+    if (cached) setSections(cached)
+  }, [cached])
 
   const run = async (
     action: () => Promise<unknown>,
@@ -41,11 +41,11 @@ export function AdminEmergencyConfig() {
     setBusy(true)
     try {
       await action()
-      await load()
+      await sectionsRes.refresh()
       setMessage(success)
     } catch {
       if (reloadOnFailure) {
-        await load().catch(() => undefined)
+        await sectionsRes.refresh().catch(() => undefined)
       }
       setError(ru.errors.generic)
     } finally {
@@ -149,7 +149,10 @@ export function AdminEmergencyConfig() {
     }
   }
 
-  if (loading) {
+  const displayError = error || (sectionsRes.error ? mapApiError(sectionsRes.error, ru.errors.load) : '')
+  const showColdSkeleton = sectionsRes.isLoading && !cached
+
+  if (showColdSkeleton) {
     return (
       <PageShell
         backTo="/admin"
@@ -172,7 +175,7 @@ export function AdminEmergencyConfig() {
       subtitle="Разделы и поля, доступ по ролям, порядок и выгрузка конфигурации."
       title="Конфиг Emergency"
     >
-      {error && <Alert tone="error">{error}</Alert>}
+      {displayError && <Alert tone="error">{displayError}</Alert>}
       {message && <Alert tone="success">{message}</Alert>}
 
       <Panel hint="ID можно задать только при создании." title="Новый раздел">

@@ -10,11 +10,17 @@ import { Alert, PageShell, Panel } from '../PageShell'
 import { EmptyBlock, SkeletonList, Spinner } from '../ui/Feedback'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
+import { resourceStore, useCachedResource } from '../../lib/resource'
 import { CookieStaleStub } from './CookieStaleStub'
 import { InspectionMap } from './InspectionMap'
 import { RobotSchematic } from './RobotSchematic'
 
 const SNAPSHOT_POLL_MS = 2500
+
+type ResolvePayload = {
+  vin: string
+  sections: EmergencySection[]
+}
 
 function isCookieInvalid(error: unknown): boolean {
   return error instanceof ApiError && error.detail === 'emergency_cookie_invalid'
@@ -43,13 +49,9 @@ export function EmergencyViewer() {
   const [robotNumber, setRobotNumber] = useState('')
   const [vin, setVin] = useState('')
   const [sections, setSections] = useState<EmergencySection[]>([])
-  const [snapshot, setSnapshot] = useState<EmergencySnapshot | null>(null)
-  const [detail, setDetail] = useState<EmergencySectionDetail | null>(null)
   const [activeTab, setActiveTab] = useState('map')
   const [cookieStale, setCookieStale] = useState(false)
-  const [staleHint, setStaleHint] = useState(false)
   const [resolving, setResolving] = useState(false)
-  const [sectionLoading, setSectionLoading] = useState(false)
   const [error, setError] = useState('')
   const [follow, setFollow] = useState(true)
   const userPanRef = useRef(false)
@@ -66,88 +68,48 @@ export function EmergencyViewer() {
 
   const markCookieStale = useCallback(() => {
     setCookieStale(true)
-    setSnapshot(null)
-    setDetail(null)
+    resourceStore.invalidate('emergency:', { prefix: true })
     setError('')
   }, [])
 
+  const snapshotRes = useCachedResource<EmergencySnapshot>(
+    vin && !cookieStale ? `emergency:snapshot:${vin}` : '',
+    () => api.emergencySnapshot(vin),
+    { enabled: Boolean(vin) && !cookieStale, persist: false, trackProgress: false },
+  )
+  const sectionRes = useCachedResource<EmergencySectionDetail>(
+    vin && activeTab !== 'map' && !cookieStale ? `emergency:section:${vin}:${activeTab}` : '',
+    () => api.emergencySection(vin, activeTab),
+    { enabled: Boolean(vin) && activeTab !== 'map' && !cookieStale, persist: false },
+  )
+
   useEffect(() => {
-    setSnapshot((current) => (current != null && current.vin !== vin ? null : current))
-  }, [vin])
+    if (isCookieInvalid(snapshotRes.error) || isCookieInvalid(sectionRes.error)) {
+      markCookieStale()
+    }
+  }, [snapshotRes.error, sectionRes.error, markCookieStale])
 
   useEffect(() => {
     if (!vin || cookieStale) return
-
-    let cancelled = false
-
-    const loadSnapshot = async () => {
-      if (document.hidden) return
-      try {
-        const next = await api.emergencySnapshot(vin)
-        if (cancelled) return
-        setSnapshot(next)
-        setStaleHint(false)
-      } catch (caught) {
-        if (cancelled) return
-        if (isCookieInvalid(caught)) {
-          markCookieStale()
-          return
-        }
-        setStaleHint(true)
-      }
+    const tick = () => {
+      if (!document.hidden) void snapshotRes.refresh()
     }
-
-    void loadSnapshot()
-    const timer = window.setInterval(() => {
-      void loadSnapshot()
-    }, SNAPSHOT_POLL_MS)
-
+    const timer = window.setInterval(tick, SNAPSHOT_POLL_MS)
     const onVisibility = () => {
-      if (!document.hidden) void loadSnapshot()
+      if (!document.hidden) void snapshotRes.refresh()
     }
     document.addEventListener('visibilitychange', onVisibility)
-
     return () => {
-      cancelled = true
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [vin, cookieStale, markCookieStale])
-
-  const fetchSection = async (sectionId: string, sectionVin = vin) => {
-    if (!sectionVin) return
-    setSectionLoading(true)
-    try {
-      const data = await api.emergencySection(sectionVin, sectionId)
-      setDetail(data)
-      setError('')
-    } catch (caught) {
-      if (isCookieInvalid(caught)) {
-        markCookieStale()
-        return
-      }
-      setDetail(null)
-      setError(mapApiError(caught, ru.errors.emergencySection))
-    } finally {
-      setSectionLoading(false)
-    }
-  }
-
-  const openTab = (tabId: string) => {
-    setActiveTab(tabId)
-    if (tabId !== 'map') {
-      void fetchSection(tabId)
-    }
-  }
+  }, [vin, cookieStale, snapshotRes.refresh])
 
   const resolveRobot = async () => {
     const query = robotNumber.trim()
     if (!query) {
       setVin('')
       setSections([])
-      setSnapshot(null)
-      setDetail(null)
-      setStaleHint(false)
       setActiveTab('map')
       enableFollow()
       return
@@ -155,31 +117,22 @@ export function EmergencyViewer() {
 
     setResolving(true)
     setError('')
-    setSnapshot((current) =>
-      current && (current.vin === query || current.short_number === query)
-        ? current
-        : null,
-    )
+    const cached = resourceStore.get<ResolvePayload>(`emergency:resolve:${query}`)
+    if (cached) {
+      setVin(cached.vin)
+      setSections(cached.sections)
+      setCookieStale(false)
+      setActiveTab('map')
+      enableFollow()
+    }
     try {
       const data = await api.emergencyResolve(query)
+      resourceStore.set(`emergency:resolve:${query}`, data, false)
       setVin(data.vin)
       setSections(data.sections)
       setActiveTab('map')
-      setDetail(null)
-      setStaleHint(false)
+      setCookieStale(false)
       enableFollow()
-      setSnapshot((current) => (current?.vin === data.vin ? current : null))
-      try {
-        const next = await api.emergencySnapshot(data.vin)
-        setSnapshot(next)
-      } catch (caught) {
-        if (isCookieInvalid(caught)) {
-          markCookieStale()
-          return
-        }
-        setSnapshot((current) => (current?.vin === data.vin ? current : null))
-        setStaleHint(true)
-      }
     } catch (caught) {
       if (isCookieInvalid(caught)) {
         setVin('')
@@ -187,10 +140,10 @@ export function EmergencyViewer() {
         markCookieStale()
         return
       }
-      setVin('')
-      setSections([])
-      setSnapshot(null)
-      setDetail(null)
+      if (!cached) {
+        setVin('')
+        setSections([])
+      }
       setError(mapApiError(caught, ru.errors.emergency))
     } finally {
       setResolving(false)
@@ -202,7 +155,14 @@ export function EmergencyViewer() {
     await resolveRobot()
   }
 
-  const liveSnapshot = snapshot?.vin === vin ? snapshot : null
+  const liveSnapshot = snapshotRes.data?.vin === vin ? snapshotRes.data : null
+  const detail = sectionRes.data?.id === activeTab ? sectionRes.data : null
+  const sectionLoading = sectionRes.isLoading && !detail
+  const sectionError =
+    sectionRes.error && !isCookieInvalid(sectionRes.error)
+      ? mapApiError(sectionRes.error, ru.errors.emergencySection)
+      : ''
+  const staleHint = Boolean(snapshotRes.error) && !isCookieInvalid(snapshotRes.error)
   const identity = liveSnapshot?.short_number
     ? `${liveSnapshot.short_number} · ${vin}`
     : vin
@@ -221,6 +181,7 @@ export function EmergencyViewer() {
     ['control', 'errors'],
     /управл|ошиб|control/i,
   )
+  const displayError = error || sectionError
 
   return (
     <PageShell subtitle={ru.emergency.subtitle} title={ru.emergency.title}>
@@ -258,11 +219,11 @@ export function EmergencyViewer() {
         </form>
       </Panel>
 
-      {error && !cookieStale && <Alert tone="error">{error}</Alert>}
+      {displayError && !cookieStale && <Alert tone="error">{displayError}</Alert>}
 
       {resolving && !vin && <SkeletonList rows={2} />}
 
-      {!resolving && !vin && !error && (
+      {!resolving && !vin && !displayError && (
         <EmptyBlock
           hint="Номер робота преобразуется в VIN; справа откроются карта и разделы Emergency."
           icon="⚑"
@@ -274,9 +235,9 @@ export function EmergencyViewer() {
         <div className="inspection-desk">
           <RobotSchematic
             dimmed={cookieStale}
-            onPowerClick={powerTab ? () => openTab(powerTab) : undefined}
-            onSoundClick={soundTab ? () => openTab(soundTab) : undefined}
-            onWheelClick={() => openTab(wheelsTab)}
+            onPowerClick={powerTab ? () => setActiveTab(powerTab) : undefined}
+            onSoundClick={soundTab ? () => setActiveTab(soundTab) : undefined}
+            onWheelClick={() => setActiveTab(wheelsTab)}
             snapshot={liveSnapshot}
           />
           <div className="inspection-right">
@@ -288,7 +249,7 @@ export function EmergencyViewer() {
                   <button
                     aria-selected={activeTab === 'map'}
                     className={`btn btn-filter${activeTab === 'map' ? ' is-active' : ''}`}
-                    onClick={() => openTab('map')}
+                    onClick={() => setActiveTab('map')}
                     role="tab"
                     type="button"
                   >
@@ -298,9 +259,8 @@ export function EmergencyViewer() {
                     <button
                       aria-selected={activeTab === section.id}
                       className={`btn btn-filter${activeTab === section.id ? ' is-active' : ''}`}
-                      disabled={sectionLoading}
                       key={section.id}
-                      onClick={() => openTab(section.id)}
+                      onClick={() => setActiveTab(section.id)}
                       role="tab"
                       type="button"
                     >
@@ -336,14 +296,18 @@ export function EmergencyViewer() {
                   </div>
                 ) : (
                   activeTab === 'map' && (
-                    <EmptyBlock icon="🗺" title={ru.emergency.noCoords} />
+                    snapshotRes.isLoading ? (
+                      <SkeletonList rows={2} />
+                    ) : (
+                      <EmptyBlock icon="🗺" title={ru.emergency.noCoords} />
+                    )
                   )
                 )}
 
                 {activeTab !== 'map' && (
                   <Panel title={detail?.title ?? ru.loading}>
                     {sectionLoading && <SkeletonList rows={2} />}
-                    {!sectionLoading && detail?.id === activeTab && (
+                    {detail && (
                       detail.fields.length ? (
                         detail.fields.map((field) => (
                           <div className="detail-block" key={field.label}>
@@ -355,7 +319,7 @@ export function EmergencyViewer() {
                         <EmptyBlock icon="📭" title={ru.emergency.detailEmpty} />
                       )
                     )}
-                    {!sectionLoading && detail?.id !== activeTab && !error && (
+                    {!sectionLoading && !detail && !sectionError && (
                       <EmptyBlock icon="⏳" title={ru.loading} />
                     )}
                   </Panel>

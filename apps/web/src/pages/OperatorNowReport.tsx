@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type NowReport, type Park } from '../api'
 import { Alert, PageShell, Panel } from '../components/PageShell'
 import { EmptyBlock, SkeletonKpi, SkeletonList, Spinner } from '../components/ui/Feedback'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
+import { useCachedResource } from '../lib/resource'
 
 const TOTAL_KEYS = [
   'blocker',
@@ -85,67 +86,37 @@ function MetricsGrid({ metrics }: { metrics: Record<string, number> }) {
 
 /** Live Tracker snapshot for operators — shown under /analytics. */
 export function OperatorNowReport() {
-  const [parks, setParks] = useState<Park[]>([])
   const [parkFilter, setParkFilter] = useState<number | null>(null)
-  const [report, setReport] = useState<NowReport | null>(null)
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [parksLoading, setParksLoading] = useState(true)
-  const requestIdRef = useRef(0)
 
-  useEffect(() => {
-    let cancelled = false
-    api
-      .operatorParks()
-      .then((data) => {
-        if (!cancelled) setParks(data)
-      })
-      .catch((loadError) => {
-        if (!cancelled) setError(mapApiError(loadError, ru.errors.load))
-      })
-      .finally(() => {
-        if (!cancelled) setParksLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const parksRes = useCachedResource<Park[]>('operator:parks', () => api.operatorParks())
+  const parks = parksRes.data ?? []
 
-  const loadReport = useCallback(async () => {
-    const requestId = ++requestIdRef.current
-    setLoading(true)
-    setError('')
-    setReport(null)
-    try {
-      const data = await api.operatorNowReport(parkFilter ?? undefined)
-      if (requestId !== requestIdRef.current) return
-      setReport(data)
-    } catch (loadError) {
-      if (requestId !== requestIdRef.current) return
-      setReport(null)
-      setError(mapApiError(loadError, ru.errors.load))
-    } finally {
-      if (requestId === requestIdRef.current) {
-        setLoading(false)
-      }
-    }
-  }, [parkFilter])
+  const reportKey =
+    parks.length === 0 ? '' : parkFilter == null ? 'now-report:all' : `now-report:park:${parkFilter}`
+  const reportRes = useCachedResource<NowReport>(
+    reportKey,
+    () => api.operatorNowReport(parkFilter ?? undefined),
+    { enabled: parks.length > 0 },
+  )
 
-  useEffect(() => {
-    if (parksLoading) return
-    void loadReport()
-  }, [loadReport, parksLoading])
+  const report = reportRes.data
+  const parksLoading = parksRes.isLoading && !parksRes.data
+  const showReportSkeleton = reportRes.isLoading && !report
+  const error =
+    (parksRes.error && mapApiError(parksRes.error, ru.errors.load)) ||
+    (reportRes.error && mapApiError(reportRes.error, ru.errors.load)) ||
+    ''
 
   return (
     <PageShell
       actions={
         <button
           className="btn btn-secondary"
-          disabled={loading || parksLoading || !parks.length}
-          onClick={() => void loadReport()}
+          disabled={reportRes.isRevalidating || parksLoading || !parks.length}
+          onClick={() => void reportRes.refresh()}
           type="button"
         >
-          {loading ? <Spinner label="Обновление" /> : 'Обновить'}
+          {reportRes.isRevalidating ? <Spinner label="Обновление" /> : 'Обновить'}
         </button>
       }
       subtitle="Живой срез открытых blocker по вашим паркам."
@@ -200,19 +171,19 @@ export function OperatorNowReport() {
       </Panel>
 
       <Panel title="Итого">
-        {loading && <SkeletonKpi items={4} />}
-        {!loading && report && <MetricsGrid metrics={report.totals} />}
-        {!loading && !report && !error && parks.length > 0 && (
+        {showReportSkeleton && <SkeletonKpi items={4} />}
+        {report && <MetricsGrid metrics={report.totals} />}
+        {!showReportSkeleton && !report && !error && parks.length > 0 && (
           <EmptyBlock hint="Нажмите «Обновить» в шапке." icon="◔" title="Сводка ещё не загружена" />
         )}
       </Panel>
 
       <Panel title="По паркам">
-        {loading && <SkeletonList rows={2} />}
-        {!loading && report && !report.parks.length && (
+        {showReportSkeleton && <SkeletonList rows={2} />}
+        {report && !report.parks.length && (
           <EmptyBlock icon="📋" title="Нет парков с метриками для выбранного охвата" />
         )}
-        {!loading && report && report.parks.length > 0 && (
+        {report && report.parks.length > 0 && (
           <ul className="park-card-list">
             {report.parks.map((park) => (
               <li className="park-card" key={park.park_id}>

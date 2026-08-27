@@ -7,7 +7,7 @@ from robopark_api.models import User
 from robopark_api.routers._blockers import blocker_out as _blocker_out
 from robopark_api.schemas import RobotTicketsOut
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_client
+from robopark_api.services import tracker_cache, tracker_client
 
 router = APIRouter(prefix="/mechanic", tags=["mechanic-robots"])
 
@@ -31,7 +31,7 @@ def robot_tickets(
 
     queue = park.tracker_queue or "ROBOPARK"
     try:
-        issues = tracker_client.search_robot_tickets(
+        issues = tracker_cache.search_robot_tickets(
             token=token,
             queue=queue,
             query=query,

@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   api,
@@ -12,9 +12,46 @@ import {
 import { Alert, Badge, PageShell, Panel } from '../components/PageShell'
 import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
 import { TabPanel, Tabs, Toggle } from '../components/ui/Tabs'
+import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
+import { useCachedResource } from '../lib/resource'
 
 type TabId = 'integrations' | 'parks' | 'mechanics' | 'requests'
+
+type AdminBootstrap = {
+  parks: Park[]
+  accessRequests: AccessRequest[]
+  parkRequests: ParkRequest[]
+  mechanics: Mechanic[]
+  settings: IntegrationSettings
+  trackerPolicy: TrackerPolicySettings
+}
+
+async function loadAdminBootstrap(): Promise<AdminBootstrap> {
+  const [parks, accessRequests, parkRequests, mechanics, settings, trackerPolicy] =
+    await Promise.all([
+      api.parks(),
+      api.accessRequests(),
+      api.adminParkRequests(),
+      api.mechanics(),
+      api.integrationSettings(),
+      api.trackerPolicy(),
+    ])
+  return { parks, accessRequests, parkRequests, mechanics, settings, trackerPolicy }
+}
+
+function draftsFromMechanics(mechanicList: Mechanic[]) {
+  return Object.fromEntries(
+    mechanicList.map((mechanic) => [
+      mechanic.id,
+      {
+        parkId: String(mechanic.park.id),
+        password: '',
+        trackerLogin: mechanic.tracker_login ?? '',
+      },
+    ]),
+  )
+}
 
 function cookieBadge(valid: boolean | null | undefined) {
   if (valid === true) return <span className="badge badge-ok">cookie действует</span>
@@ -24,12 +61,17 @@ function cookieBadge(valid: boolean | null | undefined) {
 
 export function Admin() {
   const [tab, setTab] = useState<TabId>('integrations')
-  const [parks, setParks] = useState<Park[]>([])
-  const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([])
-  const [parkRequests, setParkRequests] = useState<ParkRequest[]>([])
-  const [mechanics, setMechanics] = useState<Mechanic[]>([])
-  const [settings, setSettings] = useState<IntegrationSettings | null>(null)
-  const [trackerPolicy, setTrackerPolicy] = useState<TrackerPolicySettings | null>(null)
+  const bootRes = useCachedResource<AdminBootstrap>('admin:bootstrap', loadAdminBootstrap)
+  const boot = bootRes.data
+
+  const [parks, setParks] = useState<Park[]>(boot?.parks ?? [])
+  const [accessRequests, setAccessRequests] = useState<AccessRequest[]>(boot?.accessRequests ?? [])
+  const [parkRequests, setParkRequests] = useState<ParkRequest[]>(boot?.parkRequests ?? [])
+  const [mechanics, setMechanics] = useState<Mechanic[]>(boot?.mechanics ?? [])
+  const [settings, setSettings] = useState<IntegrationSettings | null>(boot?.settings ?? null)
+  const [trackerPolicy, setTrackerPolicy] = useState<TrackerPolicySettings | null>(
+    boot?.trackerPolicy ?? null,
+  )
   const [selections, setSelections] = useState<Record<number, number[]>>({})
   const [name, setName] = useState('')
   const [tag, setTag] = useState('')
@@ -43,47 +85,21 @@ export function Admin() {
   >({})
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
-  const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
 
-  const load = useCallback(async () => {
-    const [parkList, accessInbox, parkInbox, mechanicList, integration, policy] =
-      await Promise.all([
-        api.parks(),
-        api.accessRequests(),
-        api.adminParkRequests(),
-        api.mechanics(),
-        api.integrationSettings(),
-        api.trackerPolicy(),
-      ])
-    setParks(parkList)
-    setAccessRequests(accessInbox)
-    setParkRequests(parkInbox)
-    setMechanics(mechanicList)
-    setSettings(integration)
-    setTrackerPolicy(policy)
-    setMechanicDrafts(
-      Object.fromEntries(
-        mechanicList.map((mechanic) => [
-          mechanic.id,
-          {
-            parkId: String(mechanic.park.id),
-            password: '',
-            trackerLogin: mechanic.tracker_login ?? '',
-          },
-        ]),
-      ),
-    )
-    setMechanicParkId(
-      (current) => current || String(parkList.find((park) => park.is_active)?.id ?? ''),
-    )
-  }, [])
-
   useEffect(() => {
-    load()
-      .catch(() => setError(ru.errors.load))
-      .finally(() => setLoading(false))
-  }, [load])
+    if (!boot) return
+    setParks(boot.parks)
+    setAccessRequests(boot.accessRequests)
+    setParkRequests(boot.parkRequests)
+    setMechanics(boot.mechanics)
+    setSettings(boot.settings)
+    setTrackerPolicy(boot.trackerPolicy)
+    setMechanicDrafts(draftsFromMechanics(boot.mechanics))
+    setMechanicParkId(
+      (current) => current || String(boot.parks.find((park) => park.is_active)?.id ?? ''),
+    )
+  }, [boot])
 
   const run = async (action: () => Promise<unknown>, message = 'Сохранено') => {
     setError('')
@@ -91,7 +107,7 @@ export function Admin() {
     setBusy(true)
     try {
       await action()
-      await load()
+      await bootRes.refresh()
       setSuccess(message)
     } catch {
       setError(ru.errors.generic)
@@ -188,7 +204,10 @@ export function Admin() {
   const parkName = (parkId: number) =>
     parks.find((park) => park.id === parkId)?.name ?? `#${parkId}`
 
-  if (loading) {
+  const displayError = error || (bootRes.error ? mapApiError(bootRes.error, ru.errors.load) : '')
+  const showColdSkeleton = bootRes.isLoading && !boot
+
+  if (showColdSkeleton) {
     return (
       <PageShell subtitle="Загрузка данных…" title="Администрирование">
         <SkeletonList rows={4} />
@@ -202,7 +221,7 @@ export function Admin() {
       subtitle="Парки, доступы, механики и интеграции Tracker / Emergency."
       title="Администрирование"
     >
-      {error && <Alert tone="error">{error}</Alert>}
+      {displayError && <Alert tone="error">{displayError}</Alert>}
       {success && <Alert tone="success">{success}</Alert>}
 
       <Tabs

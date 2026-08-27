@@ -1,14 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   api,
-  type DashboardHistory,
   type DashboardHistoryPoint,
-  type DashboardSummary,
 } from '../api'
 import { Alert, Panel } from '../components/PageShell'
 import { EmptyBlock, SkeletonKpi, SkeletonList, Spinner } from '../components/ui/Feedback'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
+import { useCachedResource } from '../lib/resource'
 import { useParkContext } from '../park-context'
 
 type DaySeriesPoint = {
@@ -201,68 +199,34 @@ function BlockerHistoryChart({ points }: { points: DashboardHistoryPoint[] }) {
 
 export function Dashboard() {
   const { parkId, parksLoading } = useParkContext()
-  const [summary, setSummary] = useState<DashboardSummary | null>(null)
-  const [history, setHistory] = useState<DashboardHistory | null>(null)
-  const [summaryError, setSummaryError] = useState('')
-  const [historyError, setHistoryError] = useState('')
-  const [summaryLoading, setSummaryLoading] = useState(false)
-  const [historyLoading, setHistoryLoading] = useState(false)
-  const requestIdRef = useRef(0)
 
-  const load = useCallback(async () => {
-    if (parkId == null) return
+  const summaryRes = useCachedResource(
+    parkId == null ? '' : `dashboard:summary:${parkId}`,
+    () => api.dashboardSummary(parkId as number),
+    { enabled: parkId != null && !parksLoading },
+  )
+  const historyRes = useCachedResource(
+    parkId == null ? '' : `dashboard:history:${parkId}:7`,
+    () => api.dashboardHistory(parkId as number, 7),
+    { enabled: parkId != null && !parksLoading },
+  )
 
-    const requestId = ++requestIdRef.current
-    setSummaryLoading(true)
-    setHistoryLoading(true)
-    setSummaryError('')
-    setHistoryError('')
+  const summary = summaryRes.data ?? null
+  const history = historyRes.data ?? null
+  const summaryError = summaryRes.error
+    ? mapApiError(summaryRes.error, ru.errors.load)
+    : ''
+  const historyError = historyRes.error
+    ? mapApiError(historyRes.error, ru.errors.load)
+    : ''
+  const loading = summaryRes.isRevalidating || historyRes.isRevalidating
+  const showSummarySkeleton = summaryRes.isLoading && !summary && !summaryError
+  const showHistorySkeleton = historyRes.isLoading && !history && !historyError
 
-    const summaryPromise = api.dashboardSummary(parkId)
-      .then((summaryData) => {
-        if (requestId !== requestIdRef.current) return
-        setSummary(summaryData)
-      })
-      .catch((loadError) => {
-        if (requestId !== requestIdRef.current) return
-        setSummary(null)
-        setSummaryError(mapApiError(loadError, ru.errors.load))
-      })
-      .finally(() => {
-        if (requestId !== requestIdRef.current) return
-        setSummaryLoading(false)
-      })
-
-    const historyPromise = api.dashboardHistory(parkId, 7)
-      .then((historyData) => {
-        if (requestId !== requestIdRef.current) return
-        setHistory(historyData)
-      })
-      .catch((loadError) => {
-        if (requestId !== requestIdRef.current) return
-        setHistory(null)
-        setHistoryError(mapApiError(loadError, ru.errors.load))
-      })
-      .finally(() => {
-        if (requestId !== requestIdRef.current) return
-        setHistoryLoading(false)
-      })
-
-    await Promise.allSettled([summaryPromise, historyPromise])
-  }, [parkId])
-
-  useEffect(() => {
-    if (parksLoading || parkId == null) {
-      setSummary(null)
-      setHistory(null)
-      setSummaryError('')
-      setHistoryError('')
-      return
-    }
-    void load()
-  }, [load, parkId, parksLoading])
-
-  const loading = summaryLoading || historyLoading
+  const refresh = () => {
+    void summaryRes.refresh()
+    void historyRes.refresh()
+  }
 
   return (
     <div className="dashboard-page animate-in">
@@ -271,7 +235,7 @@ export function Dashboard() {
         <button
           className="btn btn-secondary"
           disabled={loading || parkId == null || parksLoading}
-          onClick={() => void load()}
+          onClick={refresh}
           type="button"
         >
           {loading ? <Spinner label="Обновление" /> : 'Обновить'}
@@ -294,9 +258,9 @@ export function Dashboard() {
               title="Пришли и ушли за 7 дней"
             >
               {historyError && <Alert tone="error">{historyError}</Alert>}
-              {historyLoading && <SkeletonList rows={1} />}
-              {!historyLoading && history && <BlockerHistoryChart points={history.points} />}
-              {!historyLoading && !history && !historyError && (
+              {showHistorySkeleton && <SkeletonList rows={1} />}
+              {history && <BlockerHistoryChart points={history.points} />}
+              {!history && !historyError && !showHistorySkeleton && (
                 <EmptyBlock icon="📈" title="Нажмите «Обновить», чтобы загрузить историю" />
               )}
             </Panel>
@@ -305,8 +269,8 @@ export function Dashboard() {
           <div className="dashboard-panel-kpi">
             <Panel title="Сегодня">
               {summaryError && <Alert tone="error">{summaryError}</Alert>}
-              {summaryLoading && <SkeletonKpi />}
-              {!summaryLoading && summary && (
+              {showSummarySkeleton && <SkeletonKpi />}
+              {summary && (
                 <div className="dashboard-kpi-grid">
                   <div className="dashboard-kpi tone-arrived">
                     <span className="dashboard-kpi-label">Пришли</span>
@@ -322,7 +286,7 @@ export function Dashboard() {
                   </div>
                 </div>
               )}
-              {!summaryLoading && !summary && !summaryError && (
+              {!summary && !summaryError && !showSummarySkeleton && (
                 <EmptyBlock icon="📋" title="Нажмите «Обновить», чтобы загрузить показатели" />
               )}
             </Panel>
@@ -331,8 +295,8 @@ export function Dashboard() {
           <div className="dashboard-panel-moving">
             <Panel title="Перемещение">
               {summaryError && <Alert tone="error">{summaryError}</Alert>}
-              {summaryLoading && <SkeletonList rows={2} />}
-              {!summaryLoading && summary && summary.moving.length > 0 && (
+              {showSummarySkeleton && <SkeletonList rows={2} />}
+              {summary && summary.moving.length > 0 && (
                 <ul className="card-list">
                   {summary.moving.map((item) => (
                     <li className="card" key={item.key}>
@@ -342,10 +306,10 @@ export function Dashboard() {
                   ))}
                 </ul>
               )}
-              {!summaryLoading && summary && summary.moving.length === 0 && !summaryError && (
+              {summary && summary.moving.length === 0 && !summaryError && (
                 <EmptyBlock icon="✅" title="Нет блокеров в статусе «Перемещение»" />
               )}
-              {!summaryLoading && !summary && !summaryError && (
+              {!summary && !summaryError && !showSummarySkeleton && (
                 <EmptyBlock icon="🚚" title="Нажмите «Обновить», чтобы загрузить список" />
               )}
             </Panel>

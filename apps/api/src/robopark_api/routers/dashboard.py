@@ -12,7 +12,7 @@ from robopark_api.schemas import (
     DashboardSummaryOut,
 )
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_client, tracker_filters, tracker_metrics
+from robopark_api.services import tracker_cache, tracker_client, tracker_filters, tracker_metrics
 from robopark_api.services.blocker_history import history_series
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -28,7 +28,7 @@ def _fetch_moving_items(
     priority: str = "blocker",
     issue_type: str | None = None,
 ) -> list[DashboardMovingItemOut]:
-    issues = tracker_client.fetch_park_blockers(
+    issues = tracker_cache.fetch_park_blockers(
         token=token,
         queue=queue,
         park_tag=park_tag,

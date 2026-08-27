@@ -65,11 +65,12 @@ def put_tracker_token(
     db: Session = Depends(get_db),
     _admin: User = Depends(require_admin),
 ) -> IntegrationSettingsOut:
-    from robopark_api.services import tracker_client, tracker_metrics
+    from robopark_api.services import tracker_cache, tracker_client, tracker_metrics
 
     settings_svc.set_setting(db, settings_svc.TRACKER_TOKEN_KEY, payload.token)
     tracker_client.clear_tracker_clients()
     tracker_metrics.clear_metrics_cache()
+    tracker_cache.clear_all()
     return _to_out(db)
 
 

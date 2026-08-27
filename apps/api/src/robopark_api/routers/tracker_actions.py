@@ -14,7 +14,7 @@ from robopark_api.schemas import (
     TrackerCommentIn,
     TrackerTransitionIn,
 )
-from robopark_api.services import audit, tracker_client
+from robopark_api.services import audit, tracker_cache, tracker_client
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import reports as reports_svc
 from robopark_api.services.login_throttle import client_ip
@@ -50,7 +50,7 @@ def _require_token(db: Session) -> str:
 
 
 def _get_issue_or_404(token: str, key: str) -> dict:
-    issue = tracker_client.get_issue(token=token, key=key)
+    issue = tracker_cache.get_issue(token=token, key=key)
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     return issue
@@ -120,6 +120,7 @@ def add_comment(
         tracker_client.add_comment(token=token, key=key, text=text)
     except tracker_client.TrackerError as exc:
         raise _upstream_error(db, user, "comment", key, exc, request) from exc
+    tracker_cache.invalidate_issue(key)
 
     audit.record(
         db,
@@ -150,6 +151,7 @@ def assign_issue(
         tracker_client.assign_issue(token=token, key=key, assignee=payload.assignee)
     except tracker_client.TrackerError as exc:
         raise _upstream_error(db, user, "assign", key, exc, request) from exc
+    tracker_cache.invalidate_issue(key)
 
     audit.record(
         db,
@@ -179,6 +181,7 @@ def unassign_issue(
         tracker_client.unassign_issue(token=token, key=key)
     except tracker_client.TrackerError as exc:
         raise _upstream_error(db, user, "unassign", key, exc, request) from exc
+    tracker_cache.invalidate_issue(key)
 
     audit.record(
         db,
@@ -204,7 +207,7 @@ def transition_issue(
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "transition", request)
 
-    transitions = tracker_client.list_transitions(token=token, key=key)
+    transitions = tracker_cache.list_transitions(token=token, key=key)
     transition_ids = {item["id"] for item in transitions}
     if payload.transition not in transition_ids:
         raise HTTPException(
@@ -221,6 +224,7 @@ def transition_issue(
         )
     except tracker_client.TrackerError as exc:
         raise _upstream_error(db, user, "transition", key, exc, request) from exc
+    tracker_cache.invalidate_issue(key)
 
     audit.record(
         db,
@@ -256,7 +260,7 @@ def close_issue(
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "close", request)
 
-    transitions = tracker_client.list_transitions(token=token, key=key)
+    transitions = tracker_cache.list_transitions(token=token, key=key)
     close_transition = next(
         (
             item
@@ -275,6 +279,7 @@ def close_issue(
         tracker_client.transition_issue(token=token, key=key, transition=close_transition["id"])
     except tracker_client.TrackerError as exc:
         raise _upstream_error(db, user, "close", key, exc, request) from exc
+    tracker_cache.invalidate_issue(key)
 
     audit.record(
         db,

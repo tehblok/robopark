@@ -1,9 +1,11 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
 import { api, type Park, type ParkRequest } from '../api'
 import { Alert, Badge, PageShell, Panel } from '../components/PageShell'
 import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
+import { mapApiError } from '../i18n/errors'
 import { requestStatusLabel, ru } from '../i18n/ru'
 import { useAuth } from '../auth-context'
+import { useCachedResource } from '../lib/resource'
 
 function requestBadgeClass(status: string): string {
   switch (status) {
@@ -20,43 +22,45 @@ function requestBadgeClass(status: string): string {
 
 export function OperatorParks() {
   const { logout } = useAuth()
-  const [parks, setParks] = useState<Park[]>([])
-  const [available, setAvailable] = useState<Park[]>([])
-  const [requests, setRequests] = useState<ParkRequest[]>([])
   const [parkId, setParkId] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState('')
 
-  const load = useCallback(async () => {
-    const [assigned, requestable, ownRequests] = await Promise.all([
-      api.operatorParks(),
-      api.availableParks(),
-      api.operatorParkRequests(),
-    ])
-    setParks(assigned)
-    setAvailable(requestable)
-    setRequests(ownRequests)
-    setParkId((current) => current || String(requestable[0]?.id ?? ''))
-  }, [])
+  const parksRes = useCachedResource<Park[]>('operator:parks', () => api.operatorParks())
+  const availableRes = useCachedResource<Park[]>('operator:available-parks', () => api.availableParks())
+  const requestsRes = useCachedResource<ParkRequest[]>(
+    'operator:park-requests',
+    () => api.operatorParkRequests(),
+  )
+
+  const parks = parksRes.data ?? []
+  const available = availableRes.data ?? []
+  const requests = requestsRes.data ?? []
+
+  const parksLoading = parksRes.isLoading && !parksRes.data
+  const availableLoading = availableRes.isLoading && !availableRes.data
+  const requestsLoading = requestsRes.isLoading && !requestsRes.data
+
+  const loadError = parksRes.error ?? availableRes.error ?? requestsRes.error
+  const error =
+    submitError || (loadError ? mapApiError(loadError, ru.errors.load) : '')
 
   useEffect(() => {
-    setLoading(true)
-    load()
-      .catch(() => setError(ru.errors.load))
-      .finally(() => setLoading(false))
-  }, [load])
+    if (!parkId && available.length) {
+      setParkId(String(available[0].id))
+    }
+  }, [parkId, available])
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    setError('')
+    setSubmitError('')
     setSubmitting(true)
     try {
       await api.requestPark(Number(parkId))
       setParkId('')
-      await load()
+      await Promise.all([parksRes.refresh(), availableRes.refresh(), requestsRes.refresh()])
     } catch {
-      setError('Не удалось отправить заявку на парк.')
+      setSubmitError('Не удалось отправить заявку на парк.')
     } finally {
       setSubmitting(false)
     }
@@ -72,7 +76,7 @@ export function OperatorParks() {
       {error && <Alert tone="error">{error}</Alert>}
 
       <Panel hint="Парки, к которым администратор уже выдал доступ." title="Мои парки">
-        {loading ? (
+        {parksLoading ? (
           <SkeletonList rows={2} />
         ) : parks.length ? (
           <ul className="park-card-list">
@@ -96,7 +100,7 @@ export function OperatorParks() {
       </Panel>
 
       <Panel hint="Можно запросить только активные парки, к которым у вас ещё нет доступа." title="Запросить парк">
-        {loading ? (
+        {availableLoading ? (
           <SkeletonList rows={1} />
         ) : (
           <>
@@ -134,7 +138,7 @@ export function OperatorParks() {
       </Panel>
 
       <Panel title="Мои заявки">
-        {loading ? (
+        {requestsLoading ? (
           <SkeletonList rows={2} />
         ) : requests.length ? (
           <ul className="park-card-list">

@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
 import { AuthProvider } from './auth.tsx'
+import { GlobalProgress } from './components/GlobalProgress'
 import { applyStoredTheme } from './theme'
 
 applyStoredTheme()
@@ -12,6 +13,7 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
       <AuthProvider>
+        <GlobalProgress />
         <App />
       </AuthProvider>
     </BrowserRouter>

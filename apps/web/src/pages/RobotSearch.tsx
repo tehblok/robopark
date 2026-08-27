@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from 'react'
-import { api, type Blocker } from '../api'
+import { api } from '../api'
 import { useAuth } from '../auth-context'
 import { Alert, Panel } from '../components/PageShell'
 import { IssueDrawer } from '../components/tracker/IssueDrawer'
@@ -7,6 +7,7 @@ import { TaskList } from '../components/tracker/TaskBoard'
 import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
+import { useCachedResource } from '../lib/resource'
 
 function searchTickets(role: string, query: string) {
   if (role === 'mechanic') return api.mechanicRobotTickets(query)
@@ -16,44 +17,41 @@ function searchTickets(role: string, query: string) {
 export function RobotSearch() {
   const { user } = useAuth()
   const [query, setQuery] = useState('')
-  const [items, setItems] = useState<Blocker[]>([])
-  const [error, setError] = useState('')
-  const [searched, setSearched] = useState(false)
-  const [loading, setLoading] = useState(false)
+  const [submitted, setSubmitted] = useState('')
   const [openKey, setOpenKey] = useState('')
 
-  const runSearch = async () => {
-    if (!user) return
-    setError('')
-    setLoading(true)
-    setSearched(true)
-    try {
-      const data = await searchTickets(user.role, query.trim())
-      setItems(data.items)
-    } catch (caught) {
-      setItems([])
-      setError(mapApiError(caught, ru.errors.robotSearch))
-    } finally {
-      setLoading(false)
-    }
-  }
+  const trimmedSubmitted = submitted.trim()
+  const searchRes = useCachedResource(
+    trimmedSubmitted ? `robot:tickets:${user?.role ?? 'anon'}:${trimmedSubmitted}` : '',
+    () => searchTickets(user?.role ?? 'operator', trimmedSubmitted),
+    { enabled: Boolean(user && trimmedSubmitted) },
+  )
 
-  const submit = async (event: FormEvent) => {
+  const items = searchRes.data?.items ?? []
+  const errorText = searchRes.error
+    ? mapApiError(searchRes.error, ru.errors.robotSearch)
+    : ''
+
+  const submit = (event: FormEvent) => {
     event.preventDefault()
-    await runSearch()
+    setSubmitted(query.trim())
   }
 
-  // Found tickets open as a full card, just like on the tasks page.
   if (openKey) {
     return (
       <IssueDrawer
         canWrite
         issueKey={openKey}
-        onChanged={() => void runSearch()}
+        onChanged={() => {
+          void searchRes.refresh()
+        }}
         onClose={() => setOpenKey('')}
       />
     )
   }
+
+  const showColdSkeleton =
+    Boolean(trimmedSubmitted) && searchRes.isLoading && !searchRes.data && !errorText
 
   return (
     <>
@@ -70,17 +68,21 @@ export function RobotSearch() {
             required
             value={query}
           />
-          <button className="btn" disabled={loading || !query.trim()} type="submit">
-            {loading ? <Spinner label="Поиск" /> : ru.search}
+          <button
+            className="btn"
+            disabled={searchRes.isLoading || !query.trim()}
+            type="submit"
+          >
+            {searchRes.isLoading ? <Spinner label="Поиск" /> : ru.search}
           </button>
         </form>
       </Panel>
 
-      {error && <Alert tone="error">{error}</Alert>}
+      {errorText && <Alert tone="error">{errorText}</Alert>}
 
-      {loading && <SkeletonList rows={3} />}
+      {showColdSkeleton && <SkeletonList rows={3} />}
 
-      {!loading && !searched && (
+      {!trimmedSubmitted && (
         <EmptyBlock
           hint="Поиск идёт по всем паркам, доступным вашей роли."
           icon="⌕"
@@ -88,7 +90,7 @@ export function RobotSearch() {
         />
       )}
 
-      {!loading && searched && !items.length && !error && (
+      {trimmedSubmitted && searchRes.data && !items.length && !errorText && (
         <EmptyBlock
           hint="Проверьте номер робота или ключ задачи."
           icon="🔍"
@@ -96,7 +98,7 @@ export function RobotSearch() {
         />
       )}
 
-      {!loading && items.length > 0 && (
+      {items.length > 0 && (
         <Panel title={`Найдено: ${items.length}`}>
           <TaskList items={items} onSelect={setOpenKey} selected={openKey} />
         </Panel>

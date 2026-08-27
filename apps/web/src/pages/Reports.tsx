@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { api, type Report } from '../api'
 import { useAuth } from '../auth-context'
 import { ReportDetail } from '../components/reports/ReportDetail'
@@ -8,6 +8,7 @@ import { Alert, Panel } from '../components/PageShell'
 import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
+import { useCachedResource, resourceStore } from '../lib/resource'
 import { useParkContext } from '../park-context'
 import { refreshReportsBadge } from '../reports-badge'
 
@@ -23,85 +24,43 @@ export function Reports() {
   const { user } = useAuth()
   const { parkId, parks, parksLoading } = useParkContext()
   const role = user?.role ?? ''
-
-  const [mine, setMine] = useState<Report[]>([])
-  const [inbox, setInbox] = useState<Report[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
-  const [selectedReport, setSelectedReport] = useState<Report | null>(null)
-  const [listError, setListError] = useState('')
-  const [detailError, setDetailError] = useState('')
-  const [listLoading, setListLoading] = useState(false)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const requestIdRef = useRef(0)
 
   const selectedPark = parks.find((park) => park.id === parkId)
 
-  const loadLists = useCallback(async () => {
-    const requestId = ++requestIdRef.current
-    setListLoading(true)
-    setListError('')
+  const mineRes = useCachedResource<Report[]>(
+    role === 'mechanic' ? 'reports:mine' : '',
+    () => api.reportsMine(),
+    { enabled: role === 'mechanic' && !parksLoading },
+  )
+  const inboxKey =
+    isInboxRole(role) && parkId != null ? `reports:inbox:${parkId}` : ''
+  const inboxRes = useCachedResource<Report[]>(
+    inboxKey,
+    () => api.reportsInbox(parkId as number),
+    { enabled: isInboxRole(role) && parkId != null && !parksLoading },
+  )
+  const detailRes = useCachedResource<Report>(
+    selectedId != null ? `reports:detail:${selectedId}` : '',
+    () => api.report(selectedId as number),
+    { enabled: selectedId != null },
+  )
 
-    try {
-      if (role === 'mechanic') {
-        const data = await api.reportsMine()
-        if (requestId !== requestIdRef.current) return
-        setMine(data)
-      } else if (isInboxRole(role)) {
-        if (parkId == null) {
-          if (requestId !== requestIdRef.current) return
-          setInbox([])
-        } else {
-          const data = await api.reportsInbox(parkId)
-          if (requestId !== requestIdRef.current) return
-          setInbox(data)
-        }
-      }
-    } catch (loadError) {
-      if (requestId !== requestIdRef.current) return
-      setListError(mapApiError(loadError, ru.errors.load))
-      if (role === 'mechanic') setMine([])
-      else setInbox([])
-    } finally {
-      if (requestId === requestIdRef.current) {
-        setListLoading(false)
-      }
-    }
-  }, [parkId, role])
+  const mine = mineRes.data ?? []
+  const inbox = inboxRes.data ?? []
+  const selectedReport = detailRes.data ?? null
 
-  useEffect(() => {
-    if (!user || parksLoading) return
-    void loadLists()
-  }, [loadLists, parksLoading, user])
+  const listRes = role === 'mechanic' ? mineRes : inboxRes
+  const listError = listRes.error
+    ? mapApiError(listRes.error, ru.errors.load)
+    : ''
+  const listLoading = listRes.isRevalidating
+  const showListSkeleton = listRes.isLoading && !listRes.data && !listError
 
-  useEffect(() => {
-    if (selectedId == null) {
-      setSelectedReport(null)
-      setDetailError('')
-      return
-    }
-
-    let cancelled = false
-    setDetailLoading(true)
-    setDetailError('')
-
-    api.report(selectedId)
-      .then((report) => {
-        if (!cancelled) setSelectedReport(report)
-      })
-      .catch((loadError) => {
-        if (!cancelled) {
-          setSelectedReport(null)
-          setDetailError(mapApiError(loadError, ru.errors.load))
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setDetailLoading(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [selectedId])
+  const detailError = detailRes.error
+    ? mapApiError(detailRes.error, ru.errors.load)
+    : ''
+  const detailLoading = detailRes.isLoading && !selectedReport && !detailError
 
   function handleSelect(report: Report) {
     setSelectedId(report.id)
@@ -109,18 +68,26 @@ export function Reports() {
 
   function handleCloseDetail() {
     setSelectedId(null)
-    setSelectedReport(null)
-    setDetailError('')
+  }
+
+  async function refreshLists() {
+    await Promise.all([
+      role === 'mechanic' ? mineRes.refresh() : Promise.resolve(),
+      inboxKey ? inboxRes.refresh() : Promise.resolve(),
+    ])
   }
 
   async function handleDetailUpdated() {
-    await loadLists()
+    // Drop cached inbox/mine so /reports/inbox and /reports/mine reflect the
+    // latest status without waiting for TTL.
+    resourceStore.invalidate('reports:', { prefix: true })
+    await refreshLists()
     refreshReportsBadge()
     if (selectedId != null) {
       try {
-        const fresh = await api.report(selectedId)
-        setSelectedReport(fresh)
-        if (fresh.status !== 'open') {
+        await detailRes.refresh()
+        const fresh = resourceStore.get<Report>(`reports:detail:${selectedId}`)
+        if (fresh && fresh.status !== 'open') {
           handleCloseDetail()
         }
       } catch {
@@ -130,7 +97,8 @@ export function Reports() {
   }
 
   async function handleCreated() {
-    await loadLists()
+    resourceStore.invalidate('reports:', { prefix: true })
+    await refreshLists()
     refreshReportsBadge()
   }
 
@@ -146,7 +114,7 @@ export function Reports() {
         <button
           className="btn btn-secondary"
           disabled={listLoading || parksLoading || (isInboxRole(role) && parkId == null)}
-          onClick={() => void loadLists()}
+          onClick={() => void refreshLists()}
           type="button"
         >
           {listLoading ? <Spinner label="Обновление" /> : 'Обновить'}
@@ -160,7 +128,7 @@ export function Reports() {
           <Panel hint="Статусы ваших репортов и комментарии при возврате." title="Мои репорты">
             <ReportList
               emptyMessage="Вы ещё не создавали репортов."
-              loading={listLoading}
+              loading={showListSkeleton}
               reports={mine}
               showReturnComment
             />
@@ -199,7 +167,7 @@ export function Reports() {
             <Panel hint={inboxHint} title={inboxTitle}>
               <ReportList
                 emptyMessage="Нет открытых репортов для выбранного парка."
-                loading={listLoading}
+                loading={showListSkeleton}
                 onSelect={handleSelect}
                 reports={inbox}
                 selectedId={selectedId}
