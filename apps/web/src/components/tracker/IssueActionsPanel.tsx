@@ -1,7 +1,9 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react'
 import { api, type TrackerTransition, type TrackerUserSuggestion } from '../../api'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
+
+const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
 
 export function IssueActionsPanel({
   canWrite,
@@ -9,6 +11,7 @@ export function IssueActionsPanel({
   currentUser,
   issueUrl,
   onComment,
+  onAttach,
   onAssign,
   onUnassign,
   onTransition,
@@ -19,6 +22,7 @@ export function IssueActionsPanel({
   currentUser?: string
   issueUrl?: string
   onComment: (text: string) => Promise<void>
+  onAttach?: (file: File) => Promise<void>
   onAssign: (assignee: string) => Promise<void>
   onUnassign: () => Promise<void>
   onTransition: (transition: string) => Promise<void>
@@ -29,6 +33,9 @@ export function IssueActionsPanel({
   const [suggestions, setSuggestions] = useState<TrackerUserSuggestion[]>([])
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
+  const [photoFile, setPhotoFile] = useState<File | null>(null)
+  const [photoPreview, setPhotoPreview] = useState('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     const query = assignee.trim()
@@ -46,6 +53,51 @@ export function IssueActionsPanel({
 
     return () => window.clearTimeout(timer)
   }, [assignee])
+
+  useEffect(() => {
+    if (!photoFile) {
+      setPhotoPreview('')
+      return
+    }
+    const url = URL.createObjectURL(photoFile)
+    setPhotoPreview(url)
+    return () => URL.revokeObjectURL(url)
+  }, [photoFile])
+
+  const clearPhoto = () => {
+    setPhotoFile(null)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
+  const handlePhotoPick = (event: ChangeEvent<HTMLInputElement>) => {
+    setError('')
+    const file = event.target.files?.[0]
+    if (!file) {
+      clearPhoto()
+      return
+    }
+    if (!file.type.startsWith('image/') && !/\.(jpe?g|png|webp|heic|heif)$/i.test(file.name)) {
+      setError(ru.tracker.attachPhotoInvalidType)
+      clearPhoto()
+      return
+    }
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setError(ru.tracker.attachPhotoTooLarge)
+      clearPhoto()
+      return
+    }
+    setPhotoFile(file)
+  }
+
+  const submitPhoto = async () => {
+    if (!photoFile || !onAttach) return
+    await run('attach', async () => {
+      await onAttach(photoFile)
+      clearPhoto()
+    })
+  }
 
   const run = async (name: string, action: () => Promise<void>) => {
     setBusy(name)
@@ -79,7 +131,7 @@ export function IssueActionsPanel({
     })
   }
 
-  if (!canWrite) {
+  if (!canWrite && !onAttach) {
     return (
       <section className="issue-actions">
         <p className="issue-muted">{ru.tracker.actionsDisabled}</p>
@@ -96,6 +148,54 @@ export function IssueActionsPanel({
     <section className="issue-actions">
       {error && <p className="alert alert-error">{error}</p>}
 
+      {onAttach && (
+        <div className="issue-action-group issue-attach-group">
+          <span className="issue-action-label">{ru.tracker.attachPhoto}</span>
+          <p className="issue-muted">{ru.tracker.attachPhotoHint}</p>
+          <input
+            accept="image/*"
+            capture="environment"
+            className="issue-attach-input"
+            onChange={handlePhotoPick}
+            ref={fileInputRef}
+            type="file"
+          />
+          <div className="issue-action-row">
+            <button
+              className="btn btn-secondary"
+              disabled={Boolean(busy)}
+              onClick={() => fileInputRef.current?.click()}
+              type="button"
+            >
+              {ru.tracker.attachPhotoPick}
+            </button>
+            {photoFile && (
+              <button
+                className="btn"
+                disabled={busy === 'attach'}
+                onClick={() => void submitPhoto()}
+                type="button"
+              >
+                {busy === 'attach' ? ru.loading : ru.tracker.attachPhotoSubmit}
+              </button>
+            )}
+          </div>
+          {photoPreview && (
+            <img alt="" className="issue-attach-preview" src={photoPreview} />
+          )}
+        </div>
+      )}
+
+      {!canWrite && issueUrl && (
+        <div className="issue-action-footer">
+          <a className="btn btn-ghost" href={issueUrl} rel="noreferrer" target="_blank">
+            {ru.tracker.actions.openInTracker}
+          </a>
+        </div>
+      )}
+
+      {canWrite && (
+        <>
       <form className="issue-comment-form" onSubmit={submitComment}>
         <textarea
           aria-label={ru.tracker.comments}
@@ -190,6 +290,8 @@ export function IssueActionsPanel({
           {busy === 'close' ? ru.loading : ru.tracker.actions.close}
         </button>
       </div>
+        </>
+      )}
     </section>
   )
 }

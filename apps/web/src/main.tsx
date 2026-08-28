@@ -5,6 +5,7 @@ import './index.css'
 import App from './App.tsx'
 import { AuthProvider } from './auth.tsx'
 import { GlobalProgress } from './components/GlobalProgress'
+import { ScreenshotGuardGate } from './components/ScreenshotGuard/ScreenshotGuardGate'
 import { applyStoredTheme } from './theme'
 
 applyStoredTheme()
@@ -14,6 +15,7 @@ createRoot(document.getElementById('root')!).render(
     <BrowserRouter>
       <AuthProvider>
         <GlobalProgress />
+        <ScreenshotGuardGate />
         <App />
       </AuthProvider>
     </BrowserRouter>

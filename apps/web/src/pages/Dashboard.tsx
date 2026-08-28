@@ -1,12 +1,17 @@
+import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   api,
   type DashboardHistoryPoint,
 } from '../api'
-import { Alert, Panel } from '../components/PageShell'
+import { Alert, PageShell, Panel } from '../components/PageShell'
+import { IssueDrawer } from '../components/tracker/IssueDrawer'
 import { EmptyBlock, SkeletonKpi, SkeletonList, Spinner } from '../components/ui/Feedback'
+import { useAuth } from '../auth-context'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
 import { useCachedResource } from '../lib/resource'
+import { navItemsForPermissions } from '../nav-permissions'
 import { useParkContext } from '../park-context'
 
 type DaySeriesPoint = {
@@ -198,7 +203,18 @@ function BlockerHistoryChart({ points }: { points: DashboardHistoryPoint[] }) {
 }
 
 export function Dashboard() {
+  const { user } = useAuth()
   const { parkId, parksLoading } = useParkContext()
+  const [openKey, setOpenKey] = useState('')
+  const permissions = user?.permissions ?? []
+  const canOpenIssue =
+    permissions.includes('tracker.read') ||
+    permissions.includes('tracker.write') ||
+    permissions.includes('nav.admin.tracker')
+  const canWrite = permissions.includes('tracker.write')
+  const quickLinks = navItemsForPermissions(permissions).filter((item) =>
+    ['tasks', 'emergency', 'reports', 'analytics', 'robot_search'].includes(item.id),
+  )
 
   const summaryRes = useCachedResource(
     parkId == null ? '' : `dashboard:summary:${parkId}`,
@@ -228,6 +244,24 @@ export function Dashboard() {
     void historyRes.refresh()
   }
 
+  if (openKey) {
+    return (
+      <PageShell
+        subtitle="Тикет из ленты перемещения"
+        title="Задача"
+      >
+        <IssueDrawer
+          canWrite={canWrite}
+          issueKey={openKey}
+          onChanged={() => {
+            void summaryRes.refresh()
+          }}
+          onClose={() => setOpenKey('')}
+        />
+      </PageShell>
+    )
+  }
+
   return (
     <div className="dashboard-page animate-in">
       <div className="dashboard-toolbar">
@@ -241,6 +275,17 @@ export function Dashboard() {
           {loading ? <Spinner label="Обновление" /> : 'Обновить'}
         </button>
       </div>
+
+      {quickLinks.length > 0 && (
+        <div className="chip-row">
+          {quickLinks.map((item) => (
+            <Link className="chip chip-link" key={item.id} to={item.path}>
+              <span aria-hidden="true">{item.icon}</span>
+              {item.label}
+            </Link>
+          ))}
+        </div>
+      )}
 
       {parkId == null && !parksLoading && (
         <EmptyBlock
@@ -299,9 +344,22 @@ export function Dashboard() {
               {summary && summary.moving.length > 0 && (
                 <ul className="card-list">
                   {summary.moving.map((item) => (
-                    <li className="card" key={item.key}>
-                      <div className="card-title">{item.key}</div>
-                      <p>{item.summary}</p>
+                    <li key={item.key}>
+                      {canOpenIssue ? (
+                        <button
+                          className="card card-button"
+                          onClick={() => setOpenKey(item.key)}
+                          type="button"
+                        >
+                          <div className="card-title">{item.key}</div>
+                          <p>{item.summary}</p>
+                        </button>
+                      ) : (
+                        <div className="card">
+                          <div className="card-title">{item.key}</div>
+                          <p>{item.summary}</p>
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>

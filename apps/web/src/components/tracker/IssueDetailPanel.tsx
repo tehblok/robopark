@@ -1,5 +1,10 @@
-import type { TrackerComment, TrackerIssueDetail } from '../../api'
+import type { TrackerAttachment, TrackerComment, TrackerIssueDetail } from '../../api'
 import { ru } from '../../i18n/ru'
+import {
+  isImageAttachment,
+  sortCommentsChronologically,
+  splitPlatformComment,
+} from './commentChat'
 import {
   formatAge,
   formatDateTime,
@@ -11,6 +16,7 @@ import {
   priorityTone,
   statusTone,
 } from './issue-utils'
+import { RobotCheckPanel } from './RobotCheckPanel'
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -21,10 +27,51 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
-function CommentItem({ comment }: { comment: TrackerComment }) {
-  const author = { display: comment.author ?? '', login: comment.author_login ?? '' }
+function CommentAttachmentImage({ attachment }: { attachment: TrackerAttachment }) {
+  if (!attachment.url || !isImageAttachment(attachment)) {
+    const size = formatFileSize(attachment.size)
+    const label = size ? `${attachment.name} (${size})` : attachment.name
+    return (
+      <span className="issue-comment-file">
+        {attachment.url ? (
+          <a href={attachment.url} rel="noreferrer" target="_blank">
+            {label}
+          </a>
+        ) : (
+          label
+        )}
+      </span>
+    )
+  }
+
   return (
-    <li className="issue-comment">
+    <a
+      className="issue-comment-image-link"
+      href={attachment.url}
+      rel="noreferrer"
+      target="_blank"
+      title={attachment.name}
+    >
+      <img alt={attachment.name} className="issue-comment-image" src={attachment.url} />
+    </a>
+  )
+}
+
+function CommentItem({
+  comment,
+  chatLayout = false,
+}: {
+  comment: TrackerComment
+  chatLayout?: boolean
+}) {
+  const author = { display: comment.author ?? '', login: comment.author_login ?? '' }
+  const { body, signature } = splitPlatformComment(comment.text)
+  const attachments = comment.attachments ?? []
+  const imageAttachments = attachments.filter(isImageAttachment)
+  const otherAttachments = attachments.filter((item) => !isImageAttachment(item))
+
+  return (
+    <li className={`issue-comment${chatLayout ? ' issue-comment--chat' : ''}`}>
       <span className="issue-avatar issue-avatar--comment" aria-hidden="true">
         {initials(author)}
       </span>
@@ -35,7 +82,24 @@ function CommentItem({ comment }: { comment: TrackerComment }) {
           </span>
           <time className="issue-comment-date">{formatDateTime(comment.created_at)}</time>
         </div>
-        <p className="issue-comment-text">{comment.text}</p>
+        {body && <p className="issue-comment-text">{body}</p>}
+        {imageAttachments.length > 0 && (
+          <div className="issue-comment-images">
+            {imageAttachments.map((attachment) => (
+              <CommentAttachmentImage attachment={attachment} key={attachment.id} />
+            ))}
+          </div>
+        )}
+        {otherAttachments.length > 0 && (
+          <ul className="issue-comment-files">
+            {otherAttachments.map((attachment) => (
+              <li key={attachment.id}>
+                <CommentAttachmentImage attachment={attachment} />
+              </li>
+            ))}
+          </ul>
+        )}
+        {signature && <p className="issue-comment-signature">{signature}</p>}
       </div>
     </li>
   )
@@ -44,10 +108,12 @@ function CommentItem({ comment }: { comment: TrackerComment }) {
 export function IssueDetailPanel({
   issue,
   comments,
+  commentsAsHistory = false,
   loading,
 }: {
   issue: TrackerIssueDetail | null
   comments: TrackerComment[]
+  commentsAsHistory?: boolean
   loading?: boolean
 }) {
   if (loading) {
@@ -60,6 +126,12 @@ export function IssueDetailPanel({
 
   const priority = priorityLabel(issue.priority)
   const age = formatAge(issue.hours_created)
+  const commentsTitle = commentsAsHistory ? ru.tracker.history : ru.tracker.comments
+  const commentsEmpty = commentsAsHistory ? ru.tracker.historyEmpty : ru.tracker.commentsEmpty
+  const sortedComments = sortCommentsChronologically(comments)
+  const chatLayout = sortedComments.some(
+    (comment) => (comment.attachments?.length ?? 0) > 0 || commentsAsHistory,
+  )
 
   return (
     <article className="issue-detail">
@@ -172,17 +244,19 @@ export function IssueDetailPanel({
         )}
       </section>
 
-      <section className="issue-section">
+      <RobotCheckPanel robot={issue.robot} />
+
+      <section className={`issue-section${chatLayout ? ' issue-section--history' : ''}`}>
         <h3>
-          {ru.tracker.comments}
-          {comments.length > 0 && <span className="issue-count">{comments.length}</span>}
+          {commentsTitle}
+          {sortedComments.length > 0 && <span className="issue-count">{sortedComments.length}</span>}
         </h3>
-        {comments.length === 0 ? (
-          <p className="issue-muted">{ru.tracker.commentsEmpty}</p>
+        {sortedComments.length === 0 ? (
+          <p className="issue-muted">{commentsEmpty}</p>
         ) : (
           <ul className="issue-comments">
-            {comments.map((comment) => (
-              <CommentItem comment={comment} key={comment.id} />
+            {sortedComments.map((comment) => (
+              <CommentItem chatLayout={chatLayout} comment={comment} key={comment.id} />
             ))}
           </ul>
         )}

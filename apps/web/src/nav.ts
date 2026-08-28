@@ -20,7 +20,7 @@ export type NavItem = {
   stub?: boolean
 }
 
-const ALL_NAV_ITEMS: NavItem[] = [
+export const ALL_NAV_ITEMS: NavItem[] = [
   { id: 'dashboard', path: '/dashboard', label: ru.nav.dashboard, icon: '◧' },
   { id: 'tasks', path: '/tasks', label: ru.nav.tasks, icon: '☰' },
   { id: 'robot_search', path: '/robots/search', label: ru.nav.robot_search, icon: '⌕' },
@@ -40,6 +40,11 @@ export const PRIMARY_NAV_IDS: readonly NavId[] = [
 ] as const
 
 export function navItemsForRole(_role: string): NavItem[] {
+  return ALL_NAV_ITEMS
+}
+
+/** @deprecated Use navItemsForPermissions from nav-permissions.ts */
+export function navItemsForPermissionsLegacy(_permissions: string[]): NavItem[] {
   return ALL_NAV_ITEMS
 }
 

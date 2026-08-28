@@ -1,7 +1,9 @@
-import { useLocation } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { PageShell } from '../components/PageShell'
 import { EmptyBlock } from '../components/ui/Feedback'
+import { useAuth } from '../auth-context'
 import { ru } from '../i18n/ru'
+import { pathForUser } from '../routes'
 
 const SECTIONS: Record<string, { title: string; icon: string; hint: string }> = {
   '/map': {
@@ -23,6 +25,7 @@ const SECTIONS: Record<string, { title: string; icon: string; hint: string }> = 
 
 export function ComingSoon() {
   const { pathname } = useLocation()
+  const { user } = useAuth()
   const section = SECTIONS[pathname] ?? {
     title: 'Раздел',
     icon: '⋯',
@@ -31,7 +34,18 @@ export function ComingSoon() {
 
   return (
     <PageShell subtitle={ru.nav.soon} title={section.title}>
-      <EmptyBlock hint={section.hint} icon={section.icon} title={ru.nav.soon} />
+      <EmptyBlock
+        action={
+          user ? (
+            <Link className="btn btn-secondary" to={pathForUser(user)}>
+              На главную
+            </Link>
+          ) : undefined
+        }
+        hint={section.hint}
+        icon={section.icon}
+        title={ru.nav.soon}
+      />
     </PageShell>
   )
 }

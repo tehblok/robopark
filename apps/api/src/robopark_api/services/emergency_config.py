@@ -16,7 +16,7 @@ from robopark_api.models import EmergencyField, EmergencySection, EmergencySecti
 DEFAULT_JSON_PATH = Path(__file__).resolve().parents[3] / "data" / "emergency_sections.json"
 
 _OPERATOR_SECTIONS = frozenset({"position_route", "metadata"})
-_ALL_VIEWER_ROLES = ("mechanic", "operator", "admin", "royal")
+_ALL_VIEWER_ROLES = ("mechanic", "operator", "admin", "royal", "driver")
 _OPERATOR_ROLES = ("operator", "admin", "royal")
 _ADMIN_ROLES = ("admin", "royal")
 
@@ -157,3 +157,25 @@ def seed_emergency_config(db: Session, json_path: Path | str) -> None:
             db.add(EmergencySectionRole(section_id=section_id, role=role))
     db.commit()
     invalidate_config_cache()
+
+
+def ensure_default_section_roles(db: Session) -> None:
+    """Add missing viewer roles (e.g. driver) without wiping admin customizations."""
+    sections = db.scalars(select(EmergencySection)).all()
+    if not sections:
+        return
+    existing = {
+        (row.section_id, row.role) for row in db.scalars(select(EmergencySectionRole)).all()
+    }
+    added = False
+    for section in sections:
+        for role in roles_for_section(section.id):
+            key = (section.id, role)
+            if key in existing:
+                continue
+            db.add(EmergencySectionRole(section_id=section.id, role=role))
+            existing.add(key)
+            added = True
+    if added:
+        db.commit()
+        invalidate_config_cache()

@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   ApiError,
   api,
@@ -6,13 +7,20 @@ import {
   type EmergencySectionDetail,
   type EmergencySnapshot,
 } from '../../api'
+import { useAuth } from '../../auth-context'
 import { Alert, PageShell, Panel } from '../PageShell'
 import { EmptyBlock, SkeletonList, Spinner } from '../ui/Feedback'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
+import { loadRecentRobots, pushRecentRobot } from '../../lib/recentRobots'
 import { resourceStore, useCachedResource } from '../../lib/resource'
 import { CookieStaleStub } from './CookieStaleStub'
 import { InspectionMap } from './InspectionMap'
+import {
+  buildInspectionParams,
+  inspectionParamsEqual,
+  parseInspectionParams,
+} from './inspectionUrl'
 import { RobotSchematic } from './RobotSchematic'
 
 const SNAPSHOT_POLL_MS = 2500
@@ -34,27 +42,39 @@ function wheelsSectionId(sections: EmergencySection[]): string {
   return match?.id ?? 'wheels'
 }
 
-function sectionIdByHints(
-  sections: EmergencySection[],
-  ids: string[],
-  titlePattern: RegExp,
-): string | null {
-  const byId = sections.find((section) => ids.includes(section.id))
-  if (byId) return byId.id
-  const byTitle = sections.find((section) => titlePattern.test(section.title))
-  return byTitle?.id ?? null
-}
-
 export function EmergencyViewer() {
-  const [robotNumber, setRobotNumber] = useState('')
+  const { user } = useAuth()
+  const isDriver = user?.role === 'driver'
+  const [searchParams, setSearchParams] = useSearchParams()
+  const { q: urlQuery, tab: urlTab } = parseInspectionParams(searchParams)
+  const [robotNumber, setRobotNumber] = useState(urlQuery)
+  const [recent, setRecent] = useState<string[]>(() => loadRecentRobots())
+  const autoQueryRef = useRef('')
   const [vin, setVin] = useState('')
   const [sections, setSections] = useState<EmergencySection[]>([])
-  const [activeTab, setActiveTab] = useState('map')
+  const [activeTab, setActiveTab] = useState(urlTab)
   const [cookieStale, setCookieStale] = useState(false)
   const [resolving, setResolving] = useState(false)
   const [error, setError] = useState('')
   const [follow, setFollow] = useState(true)
   const userPanRef = useRef(false)
+
+  const writeUrl = useCallback(
+    (query: string, tab: string) => {
+      const next = buildInspectionParams(query, tab)
+      if (inspectionParamsEqual(searchParams, next)) return
+      setSearchParams(next, { replace: true })
+    },
+    [searchParams, setSearchParams],
+  )
+
+  const selectTab = useCallback(
+    (tab: string) => {
+      setActiveTab(tab)
+      writeUrl(robotNumber.trim() || urlQuery, tab)
+    },
+    [robotNumber, urlQuery, writeUrl],
+  )
 
   const onUserPan = useCallback(() => {
     userPanRef.current = true
@@ -80,7 +100,11 @@ export function EmergencyViewer() {
   const sectionRes = useCachedResource<EmergencySectionDetail>(
     vin && activeTab !== 'map' && !cookieStale ? `emergency:section:${vin}:${activeTab}` : '',
     () => api.emergencySection(vin, activeTab),
-    { enabled: Boolean(vin) && activeTab !== 'map' && !cookieStale, persist: false },
+    {
+      enabled: Boolean(vin) && activeTab !== 'map' && !cookieStale,
+      persist: false,
+      trackProgress: false,
+    },
   )
 
   useEffect(() => {
@@ -92,51 +116,65 @@ export function EmergencyViewer() {
   useEffect(() => {
     if (!vin || cookieStale) return
     const tick = () => {
-      if (!document.hidden) void snapshotRes.refresh()
+      if (document.hidden) return
+      void snapshotRes.refresh()
+      if (activeTab !== 'map') void sectionRes.refresh()
     }
     const timer = window.setInterval(tick, SNAPSHOT_POLL_MS)
     const onVisibility = () => {
-      if (!document.hidden) void snapshotRes.refresh()
+      if (!document.hidden) tick()
     }
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [vin, cookieStale, snapshotRes.refresh])
+  }, [vin, cookieStale, activeTab, snapshotRes.refresh, sectionRes.refresh])
 
-  const resolveRobot = async () => {
-    const query = robotNumber.trim()
+  const resolveRobot = useCallback(async (
+    queryOverride?: string,
+    opts: { resetView?: boolean } = {},
+  ) => {
+    const query = (queryOverride ?? robotNumber).trim()
+    const resetView = opts.resetView ?? queryOverride == null
+    if (queryOverride != null) setRobotNumber(query)
+    autoQueryRef.current = query
     if (!query) {
       setVin('')
       setSections([])
       setActiveTab('map')
       enableFollow()
+      writeUrl('', 'map')
       return
     }
 
     setResolving(true)
     setError('')
     const cached = resourceStore.get<ResolvePayload>(`emergency:resolve:${query}`)
-    if (cached) {
-      setVin(cached.vin)
-      setSections(cached.sections)
+    const apply = (data: ResolvePayload) => {
+      setVin(data.vin)
+      setSections(data.sections)
       setCookieStale(false)
-      setActiveTab('map')
-      enableFollow()
+      setRecent(pushRecentRobot(query))
+      if (resetView) {
+        setActiveTab('map')
+        enableFollow()
+        writeUrl(query, 'map')
+        return
+      }
+      const restored = urlTab === 'map' || data.sections.some((section) => section.id === urlTab)
+        ? urlTab
+        : 'map'
+      setActiveTab(restored)
+      writeUrl(query, restored)
     }
+    if (cached) apply(cached)
     try {
       const data = await api.emergencyResolve(query)
       resourceStore.set(`emergency:resolve:${query}`, data, false)
-      setVin(data.vin)
-      setSections(data.sections)
-      setActiveTab('map')
-      setCookieStale(false)
-      enableFollow()
+      apply(data)
     } catch (caught) {
       if (isCookieInvalid(caught)) {
-        setVin('')
-        setSections([])
         markCookieStale()
         return
       }
@@ -148,7 +186,19 @@ export function EmergencyViewer() {
     } finally {
       setResolving(false)
     }
-  }
+  }, [enableFollow, markCookieStale, robotNumber, urlTab, writeUrl])
+
+  useEffect(() => {
+    if (!urlQuery || autoQueryRef.current === urlQuery) return
+    autoQueryRef.current = urlQuery
+    void resolveRobot(urlQuery, { resetView: false })
+  }, [urlQuery, resolveRobot])
+
+  useEffect(() => {
+    if (!sections.length || activeTab === 'map') return
+    if (sections.some((section) => section.id === activeTab)) return
+    selectTab('map')
+  }, [sections, activeTab, selectTab])
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -171,27 +221,20 @@ export function EmergencyViewer() {
   const lon = liveSnapshot?.lon ?? null
   const hasCoords = lat != null && lon != null
   const wheelsTab = wheelsSectionId(sections)
-  const soundTab = sectionIdByHints(
-    sections,
-    ['hardware_hud', 'hardware'],
-    /оборуд|hud|звук|сирен/i,
-  )
-  const powerTab = sectionIdByHints(
-    sections,
-    ['control', 'errors'],
-    /управл|ошиб|control/i,
-  )
   const displayError = error || sectionError
 
   return (
-    <PageShell subtitle={ru.emergency.subtitle} title={ru.emergency.title}>
+    <PageShell
+      subtitle={isDriver ? ru.emergency.driverSubtitle : ru.emergency.subtitle}
+      title={ru.emergency.title}
+    >
       <Panel
         actions={
           vin ? (
             <span className="panel-hint">{identity}</span>
           ) : undefined
         }
-        hint={ru.emergency.searchHint}
+        hint={isDriver ? ru.emergency.driverSearchHint : ru.emergency.searchHint}
         title={ru.emergency.searchTitle}
       >
         <form className="search-form" onSubmit={(event) => void submit(event)}>
@@ -206,17 +249,22 @@ export function EmergencyViewer() {
           <button className="btn" disabled={formLocked || !robotNumber.trim()} type="submit">
             {resolving ? <Spinner label="Поиск" /> : ru.emergency.resolve}
           </button>
-          {vin && (
-            <button
-              className="btn btn-secondary"
-              disabled={formLocked}
-              onClick={() => void resolveRobot()}
-              type="button"
-            >
-              {ru.emergency.refresh}
-            </button>
-          )}
         </form>
+        {recent.length > 0 && (
+          <div className="chip-row">
+            {recent.map((item) => (
+              <button
+                className="chip"
+                disabled={formLocked}
+                key={item}
+                onClick={() => void resolveRobot(item)}
+                type="button"
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+        )}
       </Panel>
 
       {displayError && !cookieStale && <Alert tone="error">{displayError}</Alert>}
@@ -225,7 +273,11 @@ export function EmergencyViewer() {
 
       {!resolving && !vin && !displayError && (
         <EmptyBlock
-          hint="Номер робота преобразуется в VIN; справа откроются карта и разделы Emergency."
+          hint={
+            isDriver
+              ? 'Введите короткий номер или VIN — карта и секции откроются справа.'
+              : 'Номер робота преобразуется в VIN; справа откроются карта и разделы Emergency.'
+          }
           icon="⚑"
           title={ru.emergency.enterRobot}
         />
@@ -235,9 +287,7 @@ export function EmergencyViewer() {
         <div className="inspection-desk">
           <RobotSchematic
             dimmed={cookieStale}
-            onPowerClick={powerTab ? () => setActiveTab(powerTab) : undefined}
-            onSoundClick={soundTab ? () => setActiveTab(soundTab) : undefined}
-            onWheelClick={() => setActiveTab(wheelsTab)}
+            onWheelClick={() => selectTab(wheelsTab)}
             snapshot={liveSnapshot}
           />
           <div className="inspection-right">
@@ -249,7 +299,7 @@ export function EmergencyViewer() {
                   <button
                     aria-selected={activeTab === 'map'}
                     className={`btn btn-filter${activeTab === 'map' ? ' is-active' : ''}`}
-                    onClick={() => setActiveTab('map')}
+                    onClick={() => selectTab('map')}
                     role="tab"
                     type="button"
                   >
@@ -260,7 +310,7 @@ export function EmergencyViewer() {
                       aria-selected={activeTab === section.id}
                       className={`btn btn-filter${activeTab === section.id ? ' is-active' : ''}`}
                       key={section.id}
-                      onClick={() => setActiveTab(section.id)}
+                      onClick={() => selectTab(section.id)}
                       role="tab"
                       type="button"
                     >

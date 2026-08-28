@@ -3,7 +3,7 @@ from fastapi import status as http_status
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
-from robopark_api.deps import get_mechanic_park, require_approved_mechanic
+from robopark_api.deps import get_mechanic_park, require_approved_mechanic, require_operator_park
 from robopark_api.models import User
 from robopark_api.routers._blockers import blocker_out as _blocker_out
 from robopark_api.schemas import MechanicTasksOut
@@ -16,13 +16,18 @@ router = APIRouter(prefix="/mechanic", tags=["mechanic-tasks"])
 @router.get("/tasks", response_model=MechanicTasksOut)
 def mechanic_tasks(
     status_filter: str = Query(default="all", alias="status"),
+    park_id: int | None = Query(default=None),
     user: User = Depends(require_approved_mechanic),
     db: Session = Depends(get_db),
 ) -> MechanicTasksOut:
     if status_filter not in tracker_filters.VALID_STATUS_FILTERS:
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST)
 
-    park = get_mechanic_park(db, user)
+    park = (
+        require_operator_park(park_id, db, user)
+        if park_id is not None
+        else get_mechanic_park(db, user)
+    )
     if park is None:
         raise HTTPException(status_code=http_status.HTTP_403_FORBIDDEN)
 

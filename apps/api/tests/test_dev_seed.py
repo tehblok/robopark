@@ -1,5 +1,6 @@
 from sqlalchemy import select
 
+from conftest import role_id_for
 from robopark_api.config import Settings
 from robopark_api.dev_seed import DEV_ACCOUNTS, DEV_PARK_TAG, ensure_dev_seed
 from robopark_api.models import Park, User, UserPark
@@ -44,7 +45,7 @@ def test_dev_seed_does_not_overwrite_existing_user(db_session):
     existing = User(
         username="royal",
         password_hash="unchanged",
-        role="royal",
+        role_id=role_id_for(db_session, "royal"),
         access_status="approved",
         is_active=True,
     )

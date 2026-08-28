@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from robopark_api.services.tracker_api import call_with_retry
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,25 @@ USER_AGENT = os.environ.get("TRACKER_USER_AGENT", "robopark-api/0.1")
 API_PAGE_SIZE = 50
 DEFAULT_QUEUE = "SDCFLEETOPS"
 DEFAULT_ISSUE_TYPES = ("repair", "service", "calibration")
+MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
+ALLOWED_ATTACHMENT_MIMES = frozenset(
+    {
+        "image/jpeg",
+        "image/jpg",
+        "image/png",
+        "image/webp",
+        "image/heic",
+        "image/heif",
+    }
+)
+_ATTACHMENT_EXT_MIMES = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "webp": "image/webp",
+    "heic": "image/heic",
+    "heif": "image/heif",
+}
 
 _CLIENTS: dict[str, Any] = {}
 
@@ -351,7 +372,10 @@ def _attachments_from(raw: Any) -> list[dict[str, Any]]:
         if isinstance(item, dict):
             name = str(item.get("name") or item.get("filename") or "").strip()
             attachment_id = str(item.get("id") or item.get("self") or "").strip()
-            url = str(item.get("self") or item.get("url") or "").strip() or None
+            url = (
+                str(item.get("content") or item.get("self") or item.get("url") or "").strip()
+                or None
+            )
             size_raw = item.get("size")
             mimetype = str(item.get("mimetype") or item.get("contentType") or "").strip() or None
         else:
@@ -360,7 +384,13 @@ def _attachments_from(raw: Any) -> list[dict[str, Any]]:
                 getattr(item, "id", None) or getattr(item, "self", None) or ""
             ).strip()
             url = (
-                str(getattr(item, "self", None) or getattr(item, "url", None) or "").strip() or None
+                str(
+                    getattr(item, "content", None)
+                    or getattr(item, "self", None)
+                    or getattr(item, "url", None)
+                    or ""
+                ).strip()
+                or None
             )
             size_raw = getattr(item, "size", None)
             mimetype = (
@@ -689,6 +719,9 @@ def list_comments(*, token: str, key: str) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for item in issue.comments.get_all():
             author = _person(getattr(item, "createdBy", None))
+            attachments = _attachments_from(
+                getattr(item, "attachments", None) or getattr(item, "attachment", None)
+            )
             out.append(
                 {
                     "id": str(getattr(item, "id", "") or ""),
@@ -696,6 +729,7 @@ def list_comments(*, token: str, key: str) -> list[dict[str, Any]]:
                     "author": author["display"] if author else "",
                     "author_login": author["login"] if author else "",
                     "created_at": str(getattr(item, "createdAt", "") or ""),
+                    "attachments": attachments,
                 }
             )
         return out
@@ -703,7 +737,40 @@ def list_comments(*, token: str, key: str) -> list[dict[str, Any]]:
     return _run_tracked(_run)
 
 
-def add_comment(*, token: str, key: str, text: str) -> dict[str, Any]:
+def add_comment(
+    *,
+    token: str,
+    key: str,
+    text: str,
+    attachment_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    if attachment_ids:
+        url = f"{API_BASE.rstrip('/')}/v2/issues/{key}/comments"
+        headers = {
+            "Authorization": f"OAuth {token}",
+            "User-Agent": USER_AGENT,
+            "Content-Type": "application/json",
+        }
+        body = {"text": text, "attachmentIds": attachment_ids}
+
+        def _run() -> dict[str, Any]:
+            try:
+                with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+                    response = client.post(url, headers=headers, json=body)
+            except httpx.HTTPError as exc:
+                raise TrackerError(str(exc)) from exc
+            if response.status_code >= 400:
+                raise TrackerError(f"comment create failed: {response.status_code}")
+            data = response.json()
+            if not isinstance(data, dict):
+                raise TrackerError("unexpected comment response")
+            return {
+                "id": str(data.get("id") or data.get("longId") or ""),
+                "text": str(data.get("text") or text),
+            }
+
+        return _run_tracked(_run)
+
     client = _client(token)
 
     def _run() -> dict[str, Any]:
@@ -711,6 +778,103 @@ def add_comment(*, token: str, key: str, text: str) -> dict[str, Any]:
         return {
             "id": str(getattr(comment, "id", "") or ""),
             "text": str(getattr(comment, "text", "") or text),
+        }
+
+    return _run_tracked(_run)
+
+
+def upload_temp_attachment(
+    *,
+    token: str,
+    filename: str,
+    content: bytes,
+    content_type: str,
+) -> str:
+    """Upload a file to Tracker temp storage; returns id for attachmentIds."""
+    url = f"{API_BASE.rstrip('/')}/v2/attachments/"
+    headers = {"Authorization": f"OAuth {token}", "User-Agent": USER_AGENT}
+    files = {"file": (filename, content, content_type)}
+
+    def _run() -> str:
+        try:
+            with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+                response = client.post(url, headers=headers, files=files)
+        except httpx.HTTPError as exc:
+            raise TrackerError(str(exc)) from exc
+        if response.status_code >= 400:
+            raise TrackerError(f"temp attachment upload failed: {response.status_code}")
+        data = response.json()
+        if not isinstance(data, dict):
+            raise TrackerError("unexpected temp attachment response")
+        attachment_id = str(data.get("id") or "").strip()
+        if not attachment_id:
+            raise TrackerError("temp attachment upload missing id")
+        return attachment_id
+
+    return _run_tracked(_run)
+
+
+def guess_image_content_type(filename: str, content: bytes) -> str | None:
+    """Mobile cameras often send ``application/octet-stream`` or an empty type."""
+    name = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext in _ATTACHMENT_EXT_MIMES:
+        return _ATTACHMENT_EXT_MIMES[ext]
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def normalize_attachment_content_type(
+    *,
+    filename: str,
+    content: bytes,
+    content_type: str | None,
+) -> str | None:
+    declared = (content_type or "").split(";", 1)[0].strip().lower()
+    if declared in ALLOWED_ATTACHMENT_MIMES:
+        return declared
+    if declared in {"", "application/octet-stream", "binary/octet-stream"}:
+        return guess_image_content_type(filename, content)
+    return None
+
+
+def add_attachment(
+    *,
+    token: str,
+    key: str,
+    filename: str,
+    content: bytes,
+    content_type: str,
+) -> dict[str, Any]:
+    url = f"{API_BASE.rstrip('/')}/v2/issues/{key}/attachments"
+    headers = {"Authorization": f"OAuth {token}", "User-Agent": USER_AGENT}
+    files = {"file": (filename, content, content_type)}
+
+    def _run() -> dict[str, Any]:
+        try:
+            with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+                response = client.post(url, headers=headers, files=files)
+        except httpx.HTTPError as exc:
+            raise TrackerError(str(exc)) from exc
+        if response.status_code >= 400:
+            raise TrackerError(f"attachment upload failed: {response.status_code}")
+        data = response.json()
+        if not isinstance(data, dict):
+            raise TrackerError("unexpected attachment response")
+        parsed = _attachments_from([data])
+        if parsed:
+            return parsed[0]
+        return {
+            "id": str(data.get("id") or data.get("self") or filename),
+            "name": str(data.get("name") or filename),
+            "size": len(content),
+            "url": str(data.get("self") or data.get("content") or "") or None,
+            "mimetype": content_type,
         }
 
     return _run_tracked(_run)

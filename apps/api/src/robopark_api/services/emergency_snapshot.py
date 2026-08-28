@@ -17,6 +17,7 @@ def _as_float(value: Any) -> float | None:
             "mps",
             "kmh",
             "chargePercents",
+            "chargePercentage",
             "charge",
             "percent",
             "percents",
@@ -125,9 +126,63 @@ def _position(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_WHEEL_ALIASES = {
+    "fl": "fl",
+    "lf": "fl",
+    "ml": "ml",
+    "lm": "ml",
+    "rl": "rl",
+    "lr": "rl",
+    "fr": "fr",
+    "rf": "fr",
+    "mr": "mr",
+    "rm": "mr",
+    "rr": "rr",
+}
+
+
+def _connection(payload: dict[str, Any], online: bool | None) -> str | None:
+    for key in ("isWired", "wired", "ethernet", "ethernetConnected"):
+        if _as_bool(payload.get(key)) is True:
+            return "wire"
+    lte = payload.get("lte")
+    if isinstance(lte, dict):
+        ok = _status_ok(lte)
+        strengths = [
+            _as_float(value)
+            for value in lte.values()
+            if not isinstance(value, (dict, list, bool))
+        ]
+        if ok is True or any(value is not None and value > 0 for value in strengths):
+            return "lte"
+        return "wire" if online else None
+    if isinstance(lte, str) and "lte" in lte.lower():
+        return "lte"
+    ok = _status_ok(lte)
+    if ok is True:
+        return "lte"
+    if ok is False:
+        return "wire" if online else None
+    if online:
+        return "wire"
+    return None
+
+
 def _wheel_slots(raw: Any) -> list[str]:
     if raw in (None, False, "", [], {}):
         return []
+    if isinstance(raw, dict):
+        aliases_present = False
+        slots: list[str] = []
+        for key, value in raw.items():
+            slot = _WHEEL_ALIASES.get(str(key).lower().strip())
+            if slot is None:
+                continue
+            aliases_present = True
+            if _as_bool(value) is True:
+                slots.append(slot)
+        if aliases_present:
+            return [slot for slot in WHEEL_SLOTS if slot in slots]
     slots: list[str] = []
     items = raw if isinstance(raw, list) else [raw]
     mapped = False
@@ -167,13 +222,23 @@ def _wheel_slots(raw: Any) -> list[str]:
     return ["body"]
 
 
+def _battery_pack(raw: Any) -> float | None:
+    if raw is None:
+        return None
+    if isinstance(raw, dict) and "isConnected" in raw and _as_bool(raw.get("isConnected")) is False:
+        return None
+    return _as_float(raw)
+
+
 def _battery_levels(payload: dict[str, Any]) -> tuple[float | None, float | None, float | None]:
     batteries = payload.get("batteriesStatus")
     if not isinstance(batteries, dict):
         return None, None, None
     overall = _as_float(batteries.get("chargePercents"))
-    bat1 = _as_float(batteries.get("battery1"))
-    bat2 = _as_float(batteries.get("battery2"))
+    if overall is None:
+        overall = _as_float(batteries.get("chargePercentage"))
+    bat1 = _battery_pack(batteries.get("battery1"))
+    bat2 = _battery_pack(batteries.get("battery2"))
     if bat1 is None and bat2 is None and overall is not None:
         bat1 = overall
     return bat1, bat2, overall
@@ -227,20 +292,25 @@ def parse_emergency_snapshot(payload: dict[str, Any], *, vin: str) -> dict[str, 
     pos = _position(payload)
     icp_raw = payload.get("icp")
     lte_raw = payload.get("lte")
+    online = _as_bool(payload.get("isOnline"))
+    disk = _as_float(payload.get("disk"))
+    if disk is None:
+        disk = _as_float(payload.get("diskUsage"))
     return {
         "vin": vin,
         "short_number": short_robot_number(vin),
-        "online": _as_bool(payload.get("isOnline")),
+        "online": online,
         "speed": _as_float(payload.get("velocity")),
         "charge_percent": charge if charge is not None else bat1,
         "battery1_percent": bat1,
         "battery2_percent": bat2,
-        "disk_percent": _as_float(payload.get("disk")),
+        "disk_percent": disk,
         "mode": _mode_label(payload),
         "icp_label": _status_label(icp_raw, fallback="ICP"),
         "icp_ok": _status_ok(icp_raw),
         "lte_label": _status_label(lte_raw, fallback="LTE"),
         "lte_ok": _status_ok(lte_raw),
+        "connection": _connection(payload, online),
         "error_banner": _error_banner(payload),
         "lat": pos["lat"],
         "lon": pos["lon"],

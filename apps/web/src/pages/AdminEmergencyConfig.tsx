@@ -11,7 +11,7 @@ import { mapApiError } from '../i18n/errors'
 import { roleLabel, ru } from '../i18n/ru'
 import { useCachedResource } from '../lib/resource'
 
-const roles: EmergencyViewerRole[] = ['mechanic', 'operator', 'admin', 'royal']
+const roles: EmergencyViewerRole[] = ['mechanic', 'operator', 'admin', 'royal', 'driver']
 
 export function AdminEmergencyConfig() {
   const sectionsRes = useCachedResource<EmergencyAdminSection[]>(

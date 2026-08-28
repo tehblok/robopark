@@ -8,8 +8,8 @@ missing queue, foreign park tag, no park assigned — must be denied.
 import pytest
 from fastapi import HTTPException
 
-from conftest import login_as
-from robopark_api.models import AccessStatus, Park, User, UserPark, UserRole
+from conftest import login_as, role_id_for
+from robopark_api.models import AccessStatus, Park, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings
 from robopark_api.services.tracker_policy import (
@@ -37,7 +37,7 @@ def operator(db_session, seed_park_with_tracker):
     user = User(
         username="op_scope",
         password_hash=hash_password("secret"),
-        role=UserRole.operator.value,
+        role_id=role_id_for(db_session, "operator"),
         access_status=AccessStatus.approved.value,
         is_active=True,
     )
@@ -95,11 +95,21 @@ def test_mechanic_denied_outside_own_park(db_session, seed_mechanic):
     assert is_issue_in_scope(db_session, seed_mechanic, _issue(tags=[])) is False
 
 
+def test_mechanic_second_park_tag_in_scope(db_session, seed_mechanic):
+    extra = Park(name="Beta", tag="Beta", is_active=True, tracker_queue="ROBOPARK")
+    db_session.add(extra)
+    db_session.flush()
+    db_session.add(UserPark(user_id=seed_mechanic.id, park_id=extra.id))
+    db_session.commit()
+
+    assert is_issue_in_scope(db_session, seed_mechanic, _issue(tags=["Beta"])) is True
+
+
 def test_mechanic_without_park_denied(db_session):
     mechanic = User(
         username="mech_scope_nopark",
         password_hash=hash_password("secret"),
-        role=UserRole.mechanic.value,
+        role_id=role_id_for(db_session, "mechanic"),
         access_status=AccessStatus.approved.value,
         is_active=True,
     )

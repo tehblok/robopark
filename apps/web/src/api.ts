@@ -29,6 +29,7 @@ export type ParkRequest = {
   created_at: string
   resolved_at: string | null
   resolved_by: number | null
+  username?: string | null
 }
 
 export type User = {
@@ -36,9 +37,43 @@ export type User = {
   username: string
   role: string
   access_status: string
+  permissions?: string[]
+  tracker_login?: string | null
+  must_change_password?: boolean
+  screenshot_guard?: boolean
+  parks: Park[]
+}
+
+export type AdminRole = {
+  id: number
+  slug: string
+  name: string
+  description: string
+  is_system: boolean
+  is_active: boolean
+  permissions: string[]
+  user_count: number
+}
+
+export type PermissionCatalogItem = {
+  key: string
+  category: string
+  label: string
+  sort_order: number
+}
+
+export type AdminUser = {
+  id: number
+  username: string
+  role: string
+  role_id: number
+  access_status: string
+  is_active: boolean
   tracker_login?: string | null
   must_change_password?: boolean
   parks: Park[]
+  permissions: string[]
+  role_permissions: string[]
 }
 
 export type IntegrationSettings = {
@@ -56,6 +91,21 @@ export type TrackerPolicySettings = {
   operator_show_raw: boolean
   operator_show_firmware_profile: boolean
   mechanic_can_write: boolean
+}
+
+export type ScreenshotGuardSettings = {
+  operator: boolean
+  mechanic: boolean
+  admin: boolean
+  royal: boolean
+  driver: boolean
+}
+
+export type RegistrationPasswordSettings = {
+  configured: boolean
+  password_masked: string | null
+  updated_at: string | null
+  encrypted?: boolean
 }
 
 export type Mechanic = {
@@ -135,6 +185,7 @@ export type EmergencySnapshot = {
   icp_ok: boolean | null
   lte_label: string | null
   lte_ok: boolean | null
+  connection: 'lte' | 'wire' | null
   error_banner: string | null
   lat: number | null
   lon: number | null
@@ -142,7 +193,7 @@ export type EmergencySnapshot = {
   wheels_fault: string[]
 }
 
-export type EmergencyViewerRole = 'mechanic' | 'operator' | 'admin' | 'royal'
+export type EmergencyViewerRole = 'mechanic' | 'operator' | 'admin' | 'royal' | 'driver'
 
 export type EmergencyAdminField = {
   id: number
@@ -243,6 +294,7 @@ export type TrackerComment = {
   author?: string | null
   author_login?: string | null
   created_at?: string | null
+  attachments?: TrackerAttachment[]
 }
 export type TrackerTransition = { id: string; display: string }
 export type TrackerActionResult = { key: string; action: string; status: string; actor: string; performed_at: string }
@@ -359,6 +411,21 @@ async function requestBlob(path: string): Promise<Blob> {
   return response.blob()
 }
 
+async function requestForm<T>(path: string, formData: FormData): Promise<T> {
+  const response = await fetch(`/api${path}`, {
+    credentials: 'include',
+    method: 'POST',
+    body: formData,
+  })
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response)
+    throw new ApiError(response.status, detail)
+  }
+
+  return response.json() as Promise<T>
+}
+
 export const api = {
   me: () => request<User>('/auth/me'),
   login: (username: string, password: string) =>
@@ -372,10 +439,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ current_password, new_password }),
     }),
-  register: (shared_password: string, username: string, password: string) =>
+  register: (shared_password: string, username: string, password: string, role_slug: string) =>
     request<User>('/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ shared_password, username, password }),
+      body: JSON.stringify({ shared_password, username, password, role_slug }),
     }),
   parks: () => request<Park[]>('/parks'),
   createPark: (payload: {
@@ -417,26 +484,96 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
-  mechanics: () => request<Mechanic[]>('/admin/mechanics'),
-  createMechanic: (username: string, password: string, park_id: number) =>
-    request<Mechanic>('/admin/mechanics', {
+  screenshotGuardSettings: () =>
+    request<ScreenshotGuardSettings>('/admin/settings/screenshot-guard'),
+  updateScreenshotGuardSettings: (payload: Partial<ScreenshotGuardSettings>) =>
+    request<ScreenshotGuardSettings>('/admin/settings/screenshot-guard', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  registrationPasswordSettings: () =>
+    request<RegistrationPasswordSettings>('/admin/settings/registration-password'),
+  setRegistrationPassword: (password: string) =>
+    request<RegistrationPasswordSettings>('/admin/settings/registration-password', {
+      method: 'PUT',
+      body: JSON.stringify({ password }),
+    }),
+  clearRegistrationPassword: () =>
+    request<RegistrationPasswordSettings>('/admin/settings/registration-password', {
+      method: 'DELETE',
+    }),
+  adminRoles: () => request<AdminRole[]>('/admin/roles'),
+  adminRolePermissionCatalog: () =>
+    request<PermissionCatalogItem[]>('/admin/roles/permissions/catalog'),
+  createAdminRole: (payload: {
+    slug: string
+    name: string
+    description?: string
+    permissions: string[]
+  }) =>
+    request<AdminRole>('/admin/roles', {
       method: 'POST',
-      body: JSON.stringify({ username, password, park_id }),
+      body: JSON.stringify(payload),
     }),
-  updateMechanic: (
-    mechanicId: number,
-    changes: {
-      password?: string
-      park_id?: number
-      is_active?: boolean
-      tracker_login?: string | null
-      must_change_password?: boolean
-    },
+  updateAdminRole: (
+    roleId: number,
+    payload: Partial<{
+      name: string
+      description: string
+      is_active: boolean
+      permissions: string[]
+    }>,
   ) =>
-    request<Mechanic>(`/admin/mechanics/${mechanicId}`, {
+    request<AdminRole>(`/admin/roles/${roleId}`, {
       method: 'PATCH',
-      body: JSON.stringify(changes),
+      body: JSON.stringify(payload),
     }),
+  deleteAdminRole: (roleId: number) =>
+    request<void>(`/admin/roles/${roleId}`, { method: 'DELETE' }),
+  adminUsers: (params?: { role?: string; access_status?: string }) => {
+    const query = new URLSearchParams()
+    if (params?.role) query.set('role', params.role)
+    if (params?.access_status) query.set('access_status', params.access_status)
+    const suffix = query.toString() ? `?${query.toString()}` : ''
+    return request<AdminUser[]>(`/admin/users${suffix}`)
+  },
+  createAdminUser: (payload: {
+    username: string
+    password: string
+    role_slug: string
+    park_ids?: number[]
+    tracker_login?: string | null
+  }) =>
+    request<AdminUser>('/admin/users', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateAdminUser: (
+    userId: number,
+    payload: Partial<{
+      password: string
+      role_slug: string
+      park_ids: number[]
+      is_active: boolean
+      tracker_login: string | null
+      must_change_password: boolean
+      access_status: string
+      permissions: string[]
+    }>,
+  ) =>
+    request<AdminUser>(`/admin/users/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  approveAdminUser: (userId: number, parkIds: number[] = []) =>
+    request<void>(`/admin/users/${userId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ park_ids: parkIds }),
+    }),
+  rejectAdminUser: (userId: number) =>
+    request<void>(`/admin/users/${userId}/reject`, { method: 'POST' }),
+  deleteAdminUser: (userId: number) =>
+    request<void>(`/admin/users/${userId}`, { method: 'DELETE' }),
   operatorParks: () => request<Park[]>('/operator/parks'),
   availableParks: () => request<Park[]>('/operator/available-parks'),
   operatorParkRequests: () => request<ParkRequest[]>('/operator/park-requests'),
@@ -445,25 +582,24 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ park_id: parkId }),
     }),
-  accessRequests: () => request<AccessRequest[]>('/admin/access-requests'),
-  approveAccessRequest: (userId: number, parkIds: number[]) =>
-    request<void>(`/admin/access-requests/${userId}/approve`, {
-      method: 'POST',
-      body: JSON.stringify({ park_ids: parkIds }),
-    }),
-  rejectAccessRequest: (userId: number) =>
-    request<void>(`/admin/access-requests/${userId}/reject`, { method: 'POST' }),
   adminParkRequests: () =>
     request<ParkRequest[]>('/admin/park-requests'),
   resolveParkRequest: (requestId: number, resolution: 'approve' | 'reject') =>
     request<void>(`/admin/park-requests/${requestId}/${resolution}`, {
       method: 'POST',
     }),
-  mechanicTasks: (status = 'all') =>
-    request<MechanicTasks>(`/mechanic/tasks?status=${encodeURIComponent(status)}`),
+  mechanicTasks: (status = 'all', parkId?: number) => {
+    const params = new URLSearchParams({ status })
+    if (parkId != null) params.set('park_id', String(parkId))
+    return request<MechanicTasks>(`/mechanic/tasks?${params.toString()}`)
+  },
   mechanicRobotTickets: (query: string) =>
     request<{ query: string; items: Blocker[] }>(
       `/mechanic/robots/${encodeURIComponent(query)}/tickets`,
+    ),
+  trackerRobotTickets: (query: string) =>
+    request<{ query: string; items: Blocker[] }>(
+      `/tracker/robots/${encodeURIComponent(query)}/tickets`,
     ),
   mechanicEmergencyResolve: (robot_number: string) =>
     request<{ vin: string; sections: EmergencySection[] }>('/mechanic/emergency/resolve', {
@@ -576,6 +712,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ text }),
     }),
+  trackerAttach: (key: string, file: File) => {
+    const form = new FormData()
+    form.append('file', file, file.name)
+    return requestForm<TrackerActionResult>(
+      `/tracker/issues/${encodeURIComponent(key)}/attachments`,
+      form,
+    )
+  },
   trackerAssign: (key: string, assignee: string) =>
     request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/assign`, {
       method: 'POST',

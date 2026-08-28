@@ -13,6 +13,7 @@ class RegisterRequest(BaseModel):
     shared_password: str = Field(min_length=1, max_length=128)
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=128)
+    role_slug: str = Field(default="operator", min_length=2, max_length=32)
 
 
 class ParkOut(BaseModel):
@@ -77,6 +78,8 @@ class UserOut(BaseModel):
     access_status: str
     tracker_login: str | None = None
     must_change_password: bool = False
+    screenshot_guard: bool = False
+    permissions: list[str] = Field(default_factory=list)
     parks: list[ParkOut]
 
 
@@ -195,6 +198,7 @@ class EmergencySnapshotOut(BaseModel):
     icp_ok: bool | None = None
     lte_label: str | None = None
     lte_ok: bool | None = None
+    connection: Literal["lte", "wire"] | None = None
     error_banner: str | None = None
     lat: float | None = None
     lon: float | None = None
@@ -202,7 +206,7 @@ class EmergencySnapshotOut(BaseModel):
     wheels_fault: list[str] = []
 
 
-EmergencyViewerRole = Literal["mechanic", "operator", "admin", "royal"]
+EmergencyViewerRole = Literal["mechanic", "operator", "admin", "royal", "driver"]
 
 
 class EmergencyFieldAdminOut(BaseModel):
@@ -331,6 +335,7 @@ class TrackerCommentOut(BaseModel):
     author: str | None = None
     author_login: str | None = None
     created_at: str | None = None
+    attachments: list[TrackerAttachmentOut] = Field(default_factory=list)
 
 
 class TrackerTransitionOut(BaseModel):
@@ -379,6 +384,22 @@ class TrackerPolicySettingsIn(BaseModel):
     operator_show_raw: bool | None = None
     operator_show_firmware_profile: bool | None = None
     mechanic_can_write: bool | None = None
+
+
+class ScreenshotGuardSettingsOut(BaseModel):
+    operator: bool
+    mechanic: bool
+    admin: bool
+    royal: bool
+    driver: bool
+
+
+class ScreenshotGuardSettingsIn(BaseModel):
+    operator: bool | None = None
+    mechanic: bool | None = None
+    admin: bool | None = None
+    royal: bool | None = None
+    driver: bool | None = None
 
 
 class DashboardMovingItemOut(BaseModel):

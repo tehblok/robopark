@@ -48,4 +48,5 @@ def test_seed_section_role_defaults(db_session):
         "operator",
         "admin",
         "royal",
+        "driver",
     }

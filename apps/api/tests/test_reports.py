@@ -1,8 +1,9 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from conftest import login_as
-from robopark_api.models import AccessStatus, Park, Report, User, UserPark, UserRole
+from conftest import login_as, role_id_for
+from robopark_api.models import AccessStatus, Park, Report, User, UserPark
+from robopark_api.services.rbac import RoleSlug
 from robopark_api.security import hash_password
 from robopark_api.services import reports as reports_svc
 
@@ -12,7 +13,7 @@ def seed_operator_with_park(db_session, seed_park_with_tracker):
     user = User(
         username="operator1",
         password_hash=hash_password("secret"),
-        role=UserRole.operator.value,
+        role_id=role_id_for(db_session, "operator"),
         access_status=AccessStatus.approved.value,
         is_active=True,
     )
@@ -29,7 +30,7 @@ def seed_admin(db_session):
     user = User(
         username="admin1",
         password_hash=hash_password("secret"),
-        role=UserRole.admin.value,
+        role_id=role_id_for(db_session, "admin"),
         access_status=AccessStatus.approved.value,
         is_active=True,
     )
@@ -59,7 +60,7 @@ def seed_operator_other_park(db_session, seed_other_park):
     user = User(
         username="operator2",
         password_hash=hash_password("secret"),
-        role=UserRole.operator.value,
+        role_id=role_id_for(db_session, "operator"),
         access_status=AccessStatus.approved.value,
         is_active=True,
     )
@@ -101,7 +102,7 @@ def test_create_manual_ticket_question_success(db_session, seed_mechanic, seed_p
     assert report.status == reports_svc.STATUS_OPEN
     assert report.park_id == seed_park_with_tracker.id
     assert report.author_user_id == seed_mechanic.id
-    assert report.target_role == UserRole.operator.value
+    assert report.target_role == RoleSlug.OPERATOR
     assert report.tracker_key == "ROBO-1"
     assert report.tracker_url == "https://st.yandex-team.ru/ROBO-1"
     assert report.title == "Question about ROBO-1"
@@ -182,7 +183,7 @@ def test_get_or_create_close_review_inserts(db_session, seed_mechanic, seed_park
     assert report.status == reports_svc.STATUS_OPEN
     assert report.park_id == seed_park_with_tracker.id
     assert report.author_user_id == seed_mechanic.id
-    assert report.target_role == UserRole.operator.value
+    assert report.target_role == RoleSlug.OPERATOR
     assert report.tracker_key == "ROBO-99"
     assert report.title == "Закрытие ROBO-99"
     assert report.body == ""
@@ -310,7 +311,7 @@ def test_list_inbox_admin_sees_open_escalations(
 
     assert [r.id for r in inbox] == [escalation.id]
     assert escalation.kind == reports_svc.KIND_ESCALATION
-    assert escalation.target_role == UserRole.admin.value
+    assert escalation.target_role == RoleSlug.ADMIN
 
 
 def test_list_inbox_excludes_non_open(
@@ -446,7 +447,7 @@ def test_escalate_report_creates_child_parent_stays_open(
     assert child.id != parent.id
     assert child.kind == reports_svc.KIND_ESCALATION
     assert child.status == reports_svc.STATUS_OPEN
-    assert child.target_role == UserRole.admin.value
+    assert child.target_role == RoleSlug.ADMIN
     assert child.parent_report_id == parent.id
     assert child.author_user_id == seed_operator_with_park.id
     assert child.body == "Escalating to admin"

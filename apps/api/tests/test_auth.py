@@ -6,11 +6,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from conftest import login_as
+from conftest import login_as, role_id_for
 from park_helpers import PARK_DEFAULTS
 from robopark_api.deps import require_admin, require_approved_operator
 from robopark_api.models import AuthSession, Park, User, UserPark
 from robopark_api.security import hash_session_token
+from robopark_api.services.rbac import ALL_PERMISSIONS
 
 
 def test_login_me_logout_flow(client: TestClient, seed_royal):
@@ -27,6 +28,8 @@ def test_login_me_logout_flow(client: TestClient, seed_royal):
         "access_status": "approved",
         "tracker_login": None,
         "must_change_password": False,
+        "screenshot_guard": False,
+        "permissions": sorted(ALL_PERMISSIONS),
         "parks": [],
     }
 
@@ -121,31 +124,39 @@ def test_me_includes_assigned_parks(client: TestClient, db_session: Session, see
 
 
 @pytest.mark.parametrize("role", ["royal", "admin"])
-def test_require_admin_allows_admin_roles(role: str):
+def test_require_admin_allows_admin_roles(db_session: Session, role: str):
     user = User(
         username=role,
         password_hash="hash",
-        role=role,
+        role_id=role_id_for(db_session, role),
         access_status="approved",
+        is_active=True,
     )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
 
-    assert require_admin(user) is user
+    assert require_admin(user, db_session) is user
 
 
-def test_require_admin_rejects_non_admin(seed_pending_operator):
+def test_require_admin_rejects_non_admin(db_session: Session, seed_pending_operator):
     with pytest.raises(HTTPException) as exc_info:
-        require_admin(seed_pending_operator)
+        require_admin(seed_pending_operator, db_session)
 
     assert exc_info.value.status_code == 403
 
 
-def test_require_approved_operator_allows_approved_operator():
+def test_require_approved_operator_allows_approved_operator(db_session: Session):
     user = User(
         username="operator",
         password_hash="hash",
-        role="operator",
+        role_id=role_id_for(db_session, "operator"),
         access_status="approved",
+        is_active=True,
     )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
 
     assert require_approved_operator(user) is user
 
@@ -154,13 +165,19 @@ def test_require_approved_operator_allows_approved_operator():
     ("role", "access_status"),
     [("operator", "pending"), ("operator", "rejected"), ("admin", "approved")],
 )
-def test_require_approved_operator_rejects_other_users(role: str, access_status: str):
+def test_require_approved_operator_rejects_other_users(
+    db_session: Session, role: str, access_status: str
+):
     user = User(
         username="user",
         password_hash="hash",
-        role=role,
+        role_id=role_id_for(db_session, role),
         access_status=access_status,
+        is_active=True,
     )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
 
     with pytest.raises(HTTPException) as exc_info:
         require_approved_operator(user)

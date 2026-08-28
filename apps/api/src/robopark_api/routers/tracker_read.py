@@ -7,9 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
-from robopark_api.deps import require_user
-from robopark_api.models import AccessStatus, Park, User, UserRole
+from robopark_api.deps import get_user_parks, require_user
+from robopark_api.models import Park, User
+from robopark_api.routers._blockers import blocker_out as _blocker_out
+from robopark_api.services import rbac
+from robopark_api.services.rbac import RoleSlug
 from robopark_api.schemas import (
+    RobotTicketsOut,
     TrackerAttachmentOut,
     TrackerCommentOut,
     TrackerIssueDetailOut,
@@ -20,7 +24,8 @@ from robopark_api.schemas import (
     TrackerUserOut,
 )
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_cache, tracker_client
+from robopark_api.services import tracker_cache, tracker_client, tracker_filters
+from robopark_api.services import tracker_signatures as sig_svc
 from robopark_api.services.tracker_assignees import list_assignee_candidates
 from robopark_api.services.tracker_policy import (
     allowed_park_tags_for_user,
@@ -37,24 +42,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tracker", tags=["tracker-read"])
 
 
-def _ensure_tracker_user(user: User) -> None:
-    allowed_roles = {
-        UserRole.admin.value,
-        UserRole.royal.value,
-        UserRole.operator.value,
-        UserRole.mechanic.value,
-    }
-    if user.role not in allowed_roles:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-    if (
-        user.role
-        in {
-            UserRole.operator.value,
-            UserRole.mechanic.value,
-        }
-        and user.access_status != AccessStatus.approved.value
-    ):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+def _ensure_tracker_user(user: User, db: Session) -> None:
+    rbac.assert_approved_or_staff(user)
+    if rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_READ):
+        return
+    if rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_WRITE):
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
 
 def _person_out(raw: object) -> TrackerPersonOut | None:
@@ -103,7 +97,7 @@ def _untagged_park_tags(db: Session, user: User) -> list[str]:
     tags = sorted(t for t in allowed_park_tags_for_user(db, user) if t)
     if tags:
         return tags
-    if user.role in {UserRole.admin.value, UserRole.royal.value}:
+    if user.role in {RoleSlug.ADMIN, RoleSlug.ROYAL}:
         rows = db.scalars(select(Park).where(Park.is_active.is_(True))).all()
         return sorted(
             {str(park.tag).strip() for park in rows if park.tag and str(park.tag).strip()}
@@ -133,7 +127,7 @@ def _build_query(
 
     queues = allowed_queues_for_user(db, user)
     selected_queue = (queue or "").strip() or None
-    if user.role not in {UserRole.admin.value, UserRole.royal.value}:
+    if user.role not in {RoleSlug.ADMIN, RoleSlug.ROYAL}:
         if selected_queue and selected_queue not in queues:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -172,7 +166,7 @@ def _build_query(
     if park:
         allowed_tags = allowed_park_tags_for_user(db, user)
         if (
-            user.role not in {UserRole.admin.value, UserRole.royal.value}
+            user.role not in {RoleSlug.ADMIN, RoleSlug.ROYAL}
             and park not in allowed_tags
         ):
             raise HTTPException(
@@ -214,7 +208,7 @@ def list_issues(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerIssuesOut:
-    _ensure_tracker_user(user)
+    _ensure_tracker_user(user, db)
 
     token = settings_svc.get_tracker_token(db)
     if not token:
@@ -273,7 +267,7 @@ def search_tracker_users(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> list[TrackerUserOut]:
-    _ensure_tracker_user(user)
+    _ensure_tracker_user(user, db)
     return [TrackerUserOut(**item) for item in list_assignee_candidates(db, user, q)]
 
 
@@ -283,7 +277,7 @@ def get_issue(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerIssueDetailOut:
-    _ensure_tracker_user(user)
+    _ensure_tracker_user(user, db)
     token = settings_svc.get_tracker_token(db)
     if not token:
         raise HTTPException(
@@ -309,7 +303,7 @@ def get_comments(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> list[TrackerCommentOut]:
-    _ensure_tracker_user(user)
+    _ensure_tracker_user(user, db)
     token = settings_svc.get_tracker_token(db)
     if not token:
         raise HTTPException(
@@ -329,7 +323,20 @@ def get_comments(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="tracker_upstream_error",
         ) from exc
-    return [TrackerCommentOut(**item) for item in comments]
+    if user.role == RoleSlug.MECHANIC:
+        comments = sig_svc.filter_mechanic_visible_comments(db, comments)
+    return [
+        TrackerCommentOut(
+            **{
+                **item,
+                "attachments": [
+                    TrackerAttachmentOut(**attachment)
+                    for attachment in (item.get("attachments") or [])
+                ],
+            }
+        )
+        for item in comments
+    ]
 
 
 @router.get("/transitions/{key}", response_model=list[TrackerTransitionOut])
@@ -338,7 +345,7 @@ def get_transitions(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> list[TrackerTransitionOut]:
-    _ensure_tracker_user(user)
+    _ensure_tracker_user(user, db)
     token = settings_svc.get_tracker_token(db)
     if not token:
         raise HTTPException(
@@ -359,3 +366,76 @@ def get_transitions(
             detail="tracker_upstream_error",
         ) from exc
     return [TrackerTransitionOut(**item) for item in transitions]
+
+
+def _robot_search_queues(db: Session, user: User) -> list[str]:
+    scoped = allowed_queues_for_user(db, user)
+    if scoped:
+        return scoped
+    parks = (
+        list(db.scalars(select(Park).where(Park.is_active.is_(True))).all())
+        if rbac.is_admin_or_royal(user)
+        else get_user_parks(db, user)
+    )
+    seen: set[str] = set()
+    queues: list[str] = []
+    for park in parks:
+        queue = (park.tracker_queue or "").strip()
+        if queue and queue not in seen:
+            seen.add(queue)
+            queues.append(queue)
+    if queues:
+        return queues
+    if rbac.is_admin_or_royal(user):
+        return [tracker_client.DEFAULT_QUEUE]
+    return []
+
+
+@router.get("/robots/{query}/tickets", response_model=RobotTicketsOut)
+def robot_tickets(
+    query: str,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> RobotTicketsOut:
+    _ensure_tracker_user(user, db)
+    queues = _robot_search_queues(db, user)
+    if not queues:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="no_tracker_parks",
+        )
+
+    token = settings_svc.get_tracker_token(db)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="tracker_token_not_configured",
+        )
+
+    allowed = set(queues)
+    merged: list[dict] = []
+    keys: set[str] = set()
+    try:
+        for queue in queues:
+            for item in tracker_cache.search_robot_tickets(
+                token=token, queue=queue, query=query
+            ):
+                item_queue = (item.get("queue") or "").strip()
+                if item_queue and item_queue not in allowed:
+                    continue
+                if item["key"] in keys:
+                    continue
+                keys.add(item["key"])
+                merged.append(item)
+    except tracker_client.TrackerError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+    sorted_items = tracker_filters.sort_issues_oldest_first(merged)
+    return RobotTicketsOut(
+        query=query,
+        items=[_blocker_out(item) for item in sorted_items],
+    )
+

@@ -1,6 +1,7 @@
 """Tests for assignee suggestions and attachments."""
 
-from robopark_api.models import AccessStatus, User, UserPark, UserRole
+from conftest import role_id_for
+from robopark_api.models import AccessStatus, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services.tracker_assignees import list_assignee_candidates
 from robopark_api.services.tracker_client import issue_to_dict
@@ -31,7 +32,7 @@ def test_list_assignee_candidates_filters_by_park(db_session, seed_park_with_tra
     mechanic = User(
         username="mech-assignee",
         password_hash=hash_password("secret"),
-        role=UserRole.mechanic.value,
+        role_id=role_id_for(db_session, "mechanic"),
         access_status=AccessStatus.approved.value,
         tracker_login="mech.startrek",
         is_active=True,
@@ -44,7 +45,7 @@ def test_list_assignee_candidates_filters_by_park(db_session, seed_park_with_tra
     operator = User(
         username="op-assignee",
         password_hash=hash_password("secret"),
-        role=UserRole.operator.value,
+        role_id=role_id_for(db_session, "operator"),
         access_status=AccessStatus.approved.value,
         is_active=True,
     )
@@ -64,7 +65,7 @@ def test_tracker_users_endpoint(client, db_session, seed_park_with_tracker):
     mechanic = User(
         username="mech-api",
         password_hash=hash_password("secret"),
-        role=UserRole.mechanic.value,
+        role_id=role_id_for(db_session, "mechanic"),
         access_status=AccessStatus.approved.value,
         tracker_login="api.login",
         is_active=True,
@@ -77,7 +78,7 @@ def test_tracker_users_endpoint(client, db_session, seed_park_with_tracker):
     operator = User(
         username="op-api",
         password_hash=hash_password("secret"),
-        role=UserRole.operator.value,
+        role_id=role_id_for(db_session, "operator"),
         access_status=AccessStatus.approved.value,
         is_active=True,
     )

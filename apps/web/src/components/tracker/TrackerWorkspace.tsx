@@ -177,7 +177,12 @@ export function TrackerWorkspace({
           </button>
         )}
 
-        <IssueDetailPanel comments={comments} issue={detail} loading={detailLoading} />
+        <IssueDetailPanel
+          comments={comments}
+          commentsAsHistory={user?.role === 'mechanic'}
+          issue={detail}
+          loading={detailLoading}
+        />
 
         {detail && (
           <IssueActionsPanel
@@ -195,6 +200,10 @@ export function TrackerWorkspace({
             onComment={async (text) => {
               await api.trackerComment(detail.key, text)
               await refreshSelected()
+            }}
+            onAttach={async (file) => {
+              await api.trackerAttach(detail.key, file)
+              await refreshAll()
             }}
             onTransition={async (transition) => {
               await api.trackerTransition(detail.key, transition)

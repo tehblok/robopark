@@ -37,6 +37,7 @@ def test_parse_snapshot_happy_path():
     assert snap["icp_label"] == "ICP"
     assert snap["icp_ok"] is True
     assert snap["lte_label"] == "LTE"
+    assert snap["connection"] == "lte"
     assert snap["error_banner"] == "ERROR: [+0.5s] /RoverChassis/Systems/Control: Offline"
     assert snap["lat"] == 55.7
     assert snap["lon"] == 37.6
@@ -80,3 +81,63 @@ def test_parse_snapshot_manual_mode_and_offline_link():
     assert snap["mode"] == "MANUAL"
     assert snap["lte_ok"] is False
     assert snap["icp_ok"] is False
+    assert snap["connection"] is None
+
+
+def test_parse_snapshot_live_field_shapes():
+    snap = parse_emergency_snapshot(
+        {
+            "isOnline": True,
+            "velocity": 0.0,
+            "disk": {},
+            "diskUsage": 17,
+            "batteriesStatus": {
+                "battery1": {"chargePercentage": 73, "isConnected": True},
+                "battery2": {"chargePercentage": 74, "isConnected": True},
+            },
+            "lte": {"lte24": 7300, "lte50": 8900},
+            "wheelsBroken": {
+                "lf": False,
+                "lm": False,
+                "lr": False,
+                "rf": False,
+                "rm": False,
+                "rr": False,
+            },
+            "position": {"yaw": 80},
+        },
+        vin="YASADR00000001975",
+    )
+    assert snap["battery1_percent"] == 73
+    assert snap["battery2_percent"] == 74
+    assert snap["disk_percent"] == 17
+    assert snap["connection"] == "lte"
+    assert snap["wheels_fault"] == []
+    assert snap["heading_deg"] == 80
+
+
+def test_parse_snapshot_disconnected_battery_wheel_dict_and_wire():
+    snap = parse_emergency_snapshot(
+        {
+            "isOnline": True,
+            "batteriesStatus": {
+                "battery1": {"chargePercentage": 50, "isConnected": True},
+                "battery2": {"chargePercentage": 0, "isConnected": False},
+            },
+            "wheelsBroken": {"lf": True, "lm": False, "rr": True},
+            "lte": {"lte24": 0, "lte50": 0},
+        },
+        vin="YASADR00000000001",
+    )
+    assert snap["battery1_percent"] == 50
+    assert snap["battery2_percent"] is None
+    assert snap["wheels_fault"] == ["fl", "rr"]
+    assert snap["connection"] == "wire"
+
+
+def test_parse_snapshot_explicit_wire_beats_lte():
+    snap = parse_emergency_snapshot(
+        {"isOnline": True, "isWired": True, "lte": {"lte24": 8000}},
+        vin="YASADR00000000001",
+    )
+    assert snap["connection"] == "wire"

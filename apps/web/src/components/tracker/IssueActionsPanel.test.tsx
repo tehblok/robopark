@@ -63,6 +63,45 @@ describe('IssueActionsPanel', () => {
     })
   })
 
+  it('uploads a selected photo when attach handler is provided', async () => {
+    const uploads: File[] = []
+    render(
+      <IssueActionsPanel
+        {...baseProps}
+        onAttach={async (file) => {
+          uploads.push(file)
+        }}
+        onComment={noop}
+      />,
+    )
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['img'], 'break.jpg', { type: 'image/jpeg' })
+    fireEvent.change(input, { target: { files: [file] } })
+
+    fireEvent.click(screen.getByRole('button', { name: ru.tracker.attachPhotoSubmit }))
+
+    await waitFor(() => {
+      expect(uploads).toHaveLength(1)
+    })
+    expect(uploads[0]?.name).toBe('break.jpg')
+  })
+
+  it('shows photo upload even when other write actions are disabled', () => {
+    render(
+      <IssueActionsPanel
+        {...baseProps}
+        canWrite={false}
+        onAttach={noop}
+        onComment={noop}
+      />,
+    )
+
+    expect(screen.getByText(ru.tracker.attachPhoto)).toBeInTheDocument()
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(screen.queryByText(ru.tracker.actionsDisabled)).not.toBeInTheDocument()
+  })
+
   it('does not render write actions when canWrite is false', () => {
     render(
       <IssueActionsPanel

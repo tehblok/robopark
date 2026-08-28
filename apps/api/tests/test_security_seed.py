@@ -76,7 +76,7 @@ def test_ensure_seed_user_rejects_unknown_role(db_session):
         _env_file=None,
         seed_username="royal",
         seed_password="change-me",
-        seed_role="Royal",
+        seed_role="superadmin",
     )
 
     with pytest.raises(ValueError, match="SEED_ROLE"):
@@ -110,6 +110,11 @@ def test_app_lifespan_ensures_seed_user(monkeypatch):
             return None
 
     monkeypatch.setattr(main, "SessionLocal", SessionContext, raising=False)
+    monkeypatch.setattr(main, "ensure_rbac_catalog", lambda _db: None, raising=False)
+    monkeypatch.setattr(main, "ensure_default_section_roles", lambda _db: None, raising=False)
+    monkeypatch.setattr(main, "ensure_dev_seed", lambda _db, _settings: None, raising=False)
+    monkeypatch.setattr(main.settings_svc, "migrate_plaintext_secrets", lambda _db: 0)
+    monkeypatch.setattr(main.settings_svc, "migrate_registration_password_from_env", lambda _db: False)
     monkeypatch.setattr(
         main,
         "ensure_seed_user",

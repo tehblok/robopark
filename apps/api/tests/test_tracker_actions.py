@@ -1,5 +1,6 @@
-from conftest import login_as
-from robopark_api.models import AccessStatus, Report, User, UserPark, UserRole
+from conftest import login_as, role_id_for
+from robopark_api.models import AccessStatus, Report, User, UserPark
+from robopark_api.services.rbac import RoleSlug
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings
 from robopark_api.services import reports as reports_svc
@@ -9,7 +10,7 @@ def _seed_operator(db_session, park):
     operator = User(
         username="op3",
         password_hash=hash_password("secret"),
-        role="operator",
+        role_id=role_id_for(db_session, "operator"),
         access_status=AccessStatus.approved.value,
         is_active=True,
     )
@@ -47,6 +48,162 @@ def test_tracker_action_comment(client, db_session, seed_park_with_tracker, monk
     response = client.post("/tracker/issues/ROBOPARK-1/comment", json={"text": "hello"})
     assert response.status_code == 200
     assert response.json()["action"] == "comment"
+
+
+def test_tracker_action_attach(client, db_session, seed_park_with_tracker, monkeypatch):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+
+    from robopark_api.services import tracker_client
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {
+            "key": "ROBOPARK-1",
+            "summary": "blocker [447]",
+            "status": "Open",
+            "status_key": "open",
+            "queue": "ROBOPARK",
+            "resolution": "",
+            "tags": ["Alpha"],
+        },
+    )
+    monkeypatch.setattr(
+        tracker_client,
+        "upload_temp_attachment",
+        lambda **_kwargs: "temp-55",
+    )
+
+    def _add_comment(**kwargs):
+        captured.update(kwargs)
+        return {"id": "1", "text": kwargs["text"]}
+
+    monkeypatch.setattr(tracker_client, "add_comment", _add_comment)
+
+    assert (
+        client.post("/auth/login", json={"username": "op3", "password": "secret"}).status_code
+        == 204
+    )
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/attachments",
+        files={"file": ("photo.jpg", b"fake-image", "image/jpeg")},
+    )
+    assert response.status_code == 200
+    assert response.json()["action"] == "attach"
+    assert captured["attachment_ids"] == ["temp-55"]
+    assert captured["text"].startswith("Фото неисправности\n")
+
+
+def test_tracker_action_attach_rejects_non_image(client, db_session, seed_park_with_tracker, monkeypatch):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {
+            "key": "ROBOPARK-1",
+            "summary": "blocker [447]",
+            "status": "Open",
+            "status_key": "open",
+            "queue": "ROBOPARK",
+            "resolution": "",
+            "tags": ["Alpha"],
+        },
+    )
+
+    assert (
+        client.post("/auth/login", json={"username": "op3", "password": "secret"}).status_code
+        == 204
+    )
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/attachments",
+        files={"file": ("notes.txt", b"hello", "text/plain")},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "tracker_attachment_invalid_type"
+
+
+def test_mechanic_can_attach_when_write_disabled(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    platform_settings.set_bool_setting(
+        db_session,
+        platform_settings.TRACKER_MECHANIC_WRITE_KEY,
+        False,
+    )
+
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {
+            "key": "ROBOPARK-1",
+            "summary": "blocker [447]",
+            "status": "Open",
+            "status_key": "open",
+            "queue": "ROBOPARK",
+            "resolution": "",
+            "tags": ["Alpha"],
+        },
+    )
+    monkeypatch.setattr(
+        tracker_client,
+        "upload_temp_attachment",
+        lambda **_kwargs: "temp-1",
+    )
+    monkeypatch.setattr(
+        tracker_client,
+        "add_comment",
+        lambda **_kwargs: {"id": "1", "text": "ok"},
+    )
+
+    login_as(client, "mech1", "secret")
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/attachments",
+        files={"file": ("photo.jpg", b"fake-image", "image/jpeg")},
+    )
+    assert response.status_code == 200
+    assert response.json()["action"] == "attach"
+
+
+def test_mechanic_comment_blocked_when_write_disabled(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    platform_settings.set_bool_setting(
+        db_session,
+        platform_settings.TRACKER_MECHANIC_WRITE_KEY,
+        False,
+    )
+
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {
+            "key": "ROBOPARK-1",
+            "summary": "blocker [447]",
+            "status": "Open",
+            "status_key": "open",
+            "queue": "ROBOPARK",
+            "resolution": "",
+            "tags": ["Alpha"],
+        },
+    )
+
+    login_as(client, "mech1", "secret")
+    response = client.post("/tracker/issues/ROBOPARK-1/comment", json={"text": "hello"})
+    assert response.status_code == 403
+    assert response.json()["detail"] == "tracker_write_disabled"
 
 
 def _mock_close_tracker(monkeypatch, *, key: str = "ROBOPARK-1"):
@@ -92,7 +249,7 @@ def test_mechanic_close_creates_close_review(
     assert report.status == reports_svc.STATUS_OPEN
     assert report.park_id == seed_park_with_tracker.id
     assert report.author_user_id == seed_mechanic.id
-    assert report.target_role == UserRole.operator.value
+    assert report.target_role == RoleSlug.OPERATOR
     assert report.tracker_key == "ROBOPARK-1"
     assert report.tracker_url == "https://st.yandex-team.ru/ROBOPARK-1"
     assert report.title == "Закрытие ROBOPARK-1"
@@ -107,7 +264,7 @@ def test_mechanic_close_without_park_rejected_before_tracker(client, db_session,
     mechanic = User(
         username="mech_nopark",
         password_hash=hash_password("secret"),
-        role=UserRole.mechanic.value,
+        role_id=role_id_for(db_session, "mechanic"),
         access_status=AccessStatus.approved.value,
         is_active=True,
     )

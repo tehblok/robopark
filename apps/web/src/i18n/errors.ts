@@ -9,6 +9,9 @@ export function mapApiError(error: unknown, fallback = ''): string {
     if (error.status === 503) return ru.errors.tasks503
     if (error.status === 401) return ru.errors.emergency401
     if (error.status === 409) return ru.errors.tasks409
+    if (error.status === 404) return ru.errors.notFound
+    if (error.status === 502) return ru.errors.details.tracker_upstream_error
+    if (error.detail) return error.detail
   }
   if (error instanceof Error) {
     if (error.message === '403') return ru.errors.register403

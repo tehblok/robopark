@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
-from robopark_api.deps import get_mechanic_park, require_user
-from robopark_api.models import AccessStatus, User, UserRole
+from robopark_api.deps import get_user_parks, require_user
+from robopark_api.models import Park, User
+from robopark_api.services import rbac
+from robopark_api.services.rbac import RoleSlug
 from robopark_api.schemas import (
     TrackerActionOut,
     TrackerAssignIn,
@@ -17,26 +20,32 @@ from robopark_api.schemas import (
 from robopark_api.services import audit, tracker_cache, tracker_client
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import reports as reports_svc
+from robopark_api.services import tracker_signatures as sig_svc
 from robopark_api.services.login_throttle import client_ip
-from robopark_api.services.tracker_policy import ensure_action_allowed
+from robopark_api.services.tracker_policy import ensure_action_allowed, issue_tags
 
 router = APIRouter(prefix="/tracker", tags=["tracker-actions"])
 
+PHOTO_COMMENT_BODY = "Фото неисправности"
+_ATTACHMENT_FILENAME_RE = re.compile(r"[^\w.\-() ]+", re.UNICODE)
 
-def _ensure_tracker_user(user: User) -> None:
-    allowed_roles = {
-        UserRole.admin.value,
-        UserRole.royal.value,
-        UserRole.operator.value,
-        UserRole.mechanic.value,
-    }
-    if user.role not in allowed_roles:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-    if (
-        user.role in {UserRole.operator.value, UserRole.mechanic.value}
-        and user.access_status != AccessStatus.approved.value
-    ):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+def _sanitize_attachment_filename(name: str | None) -> str:
+    raw = (name or "photo.jpg").strip()
+    base = raw.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    cleaned = _ATTACHMENT_FILENAME_RE.sub("_", base).strip("._")
+    return cleaned or "photo.jpg"
+
+
+def _ensure_tracker_user(user: User, db: Session) -> None:
+    rbac.assert_approved_or_staff(user)
+    if rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_READ):
+        return
+    if rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_WRITE):
+        return
+    if rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_ATTACH):
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
 
 def _require_token(db: Session) -> str:
@@ -100,6 +109,21 @@ def _ok(key: str, action: str, user: User, issue: dict) -> TrackerActionOut:
     )
 
 
+def _signed_tracker_text(
+    db: Session,
+    user: User,
+    issue: dict,
+    body: str,
+) -> str:
+    ctx = sig_svc.build_signature_context(db, user, issue)
+    return sig_svc.format_signed_comment(
+        body=body,
+        park_name=ctx.park_name,
+        mechanic_login=ctx.mechanic_login,
+        operator_login=ctx.operator_login,
+    )
+
+
 @router.post("/issues/{key}/comment", response_model=TrackerActionOut)
 def add_comment(
     key: str,
@@ -108,30 +132,102 @@ def add_comment(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _ensure_tracker_user(user)
+    _ensure_tracker_user(user, db)
     token = _require_token(db)
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "comment", request)
 
-    # Tracker sees a single service account, so the real author is signed
-    # into the comment body.
-    text = f"{payload.text}{audit.signature_for(user)}"
+    body = payload.text.strip()
+    signed_text = _signed_tracker_text(db, user, issue, body)
     try:
-        tracker_client.add_comment(token=token, key=key, text=text)
+        tracker_client.add_comment(token=token, key=key, text=signed_text)
     except tracker_client.TrackerError as exc:
         raise _upstream_error(db, user, "comment", key, exc, request) from exc
     tracker_cache.invalidate_issue(key)
 
+    park = sig_svc.resolve_park(db, issue)
     audit.record(
         db,
         action=audit.ACTION_TRACKER_COMMENT,
         actor=user,
+        park_id=park.id if park is not None else None,
         target_type="tracker_issue",
         target_id=key,
-        detail=audit.describe(payload.text, limit=200),
+        detail=audit.describe(body, limit=200),
         client_ip=client_ip(request),
     )
     return _ok(key, "comment", user, issue)
+
+
+@router.post("/issues/{key}/attachments", response_model=TrackerActionOut)
+async def attach_file(
+    key: str,
+    request: Request,
+    file: UploadFile = File(...),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> TrackerActionOut:
+    _ensure_tracker_user(user, db)
+    token = _require_token(db)
+    issue = _get_issue_or_404(token, key)
+    _authorize(db, user, issue, "attach", request)
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="tracker_attachment_empty",
+        )
+    if len(content) > tracker_client.MAX_ATTACHMENT_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="tracker_attachment_too_large",
+        )
+
+    filename = _sanitize_attachment_filename(file.filename)
+    content_type = tracker_client.normalize_attachment_content_type(
+        filename=filename,
+        content=content,
+        content_type=file.content_type,
+    )
+    if not content_type:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="tracker_attachment_invalid_type",
+        )
+    try:
+        temp_id = tracker_client.upload_temp_attachment(
+            token=token,
+            filename=filename,
+            content=content,
+            content_type=content_type,
+        )
+        signed_text = _signed_tracker_text(db, user, issue, PHOTO_COMMENT_BODY)
+        tracker_client.add_comment(
+            token=token,
+            key=key,
+            text=signed_text,
+            attachment_ids=[temp_id],
+        )
+    except tracker_client.TrackerError as exc:
+        raise _upstream_error(db, user, "attach", key, exc, request) from exc
+    tracker_cache.invalidate_issue(key)
+
+    park = sig_svc.resolve_park(db, issue)
+    audit.record(
+        db,
+        action=audit.ACTION_TRACKER_ATTACH,
+        actor=user,
+        park_id=park.id if park is not None else None,
+        target_type="tracker_issue",
+        target_id=key,
+        detail=audit.describe(
+            f"name={filename} size={len(content)}",
+            limit=200,
+        ),
+        client_ip=client_ip(request),
+    )
+    return _ok(key, "attach", user, issue)
 
 
 @router.post("/issues/{key}/assign", response_model=TrackerActionOut)
@@ -142,7 +238,7 @@ def assign_issue(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _ensure_tracker_user(user)
+    _ensure_tracker_user(user, db)
     token = _require_token(db)
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "assign", request)
@@ -153,10 +249,12 @@ def assign_issue(
         raise _upstream_error(db, user, "assign", key, exc, request) from exc
     tracker_cache.invalidate_issue(key)
 
+    park = sig_svc.resolve_park(db, issue)
     audit.record(
         db,
         action=audit.ACTION_TRACKER_ASSIGN,
         actor=user,
+        park_id=park.id if park is not None else None,
         target_type="tracker_issue",
         target_id=key,
         detail=f"assignee={payload.assignee}",
@@ -172,7 +270,7 @@ def unassign_issue(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _ensure_tracker_user(user)
+    _ensure_tracker_user(user, db)
     token = _require_token(db)
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "unassign", request)
@@ -183,10 +281,12 @@ def unassign_issue(
         raise _upstream_error(db, user, "unassign", key, exc, request) from exc
     tracker_cache.invalidate_issue(key)
 
+    park = sig_svc.resolve_park(db, issue)
     audit.record(
         db,
         action=audit.ACTION_TRACKER_UNASSIGN,
         actor=user,
+        park_id=park.id if park is not None else None,
         target_type="tracker_issue",
         target_id=key,
         client_ip=client_ip(request),
@@ -202,7 +302,7 @@ def transition_issue(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _ensure_tracker_user(user)
+    _ensure_tracker_user(user, db)
     token = _require_token(db)
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "transition", request)
@@ -226,10 +326,12 @@ def transition_issue(
         raise _upstream_error(db, user, "transition", key, exc, request) from exc
     tracker_cache.invalidate_issue(key)
 
+    park = sig_svc.resolve_park(db, issue)
     audit.record(
         db,
         action=audit.ACTION_TRACKER_TRANSITION,
         actor=user,
+        park_id=park.id if park is not None else None,
         target_type="tracker_issue",
         target_id=key,
         detail=f"transition={payload.transition} resolution={payload.resolution or '-'}",
@@ -245,13 +347,14 @@ def close_issue(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _ensure_tracker_user(user)
+    _ensure_tracker_user(user, db)
     token = _require_token(db)
 
+    parks: list[Park] = []
     mechanic_park = None
-    if user.role == UserRole.mechanic.value:
-        mechanic_park = get_mechanic_park(db, user)
-        if mechanic_park is None:
+    if user.role == RoleSlug.MECHANIC:
+        parks = get_user_parks(db, user)
+        if not parks:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="mechanic_park_required_for_close_review",
@@ -259,6 +362,15 @@ def close_issue(
 
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "close", request)
+
+    if user.role == RoleSlug.MECHANIC:
+        tags = issue_tags(issue)
+        matched = [
+            park
+            for park in parks
+            if park.tag and str(park.tag).strip() in tags
+        ]
+        mechanic_park = matched[0] if matched else parks[0]
 
     transitions = tracker_cache.list_transitions(token=token, key=key)
     close_transition = next(

@@ -1,6 +1,10 @@
 from functools import lru_cache
+from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_API_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -42,6 +46,24 @@ class Settings(BaseSettings):
     # --- Session hygiene --------------------------------------------------
     #: How often expired sessions are purged from the database.
     session_cleanup_interval_seconds: int = 60 * 60
+
+    @model_validator(mode="after")
+    def resolve_sqlite_database_path(self) -> "Settings":
+        """Anchor relative SQLite paths to ``apps/api`` so daemon starts work."""
+        url = self.database_url
+        if not url.startswith("sqlite:///"):
+            return self
+        raw_path = url.removeprefix("sqlite:///")
+        if raw_path == ":memory:":
+            return self
+        path = Path(raw_path)
+        if path.is_absolute():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            return self
+        resolved = (_API_ROOT / path).resolve()
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        object.__setattr__(self, "database_url", f"sqlite:///{resolved}")
+        return self
 
 
 @lru_cache(maxsize=1)

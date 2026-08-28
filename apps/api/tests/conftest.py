@@ -8,6 +8,8 @@ from robopark_api.config import Settings, get_settings, reset_settings_cache
 from robopark_api.db import get_db
 from robopark_api.models import AccessStatus, Base, Park, User, UserPark
 from robopark_api.security import hash_password
+from robopark_api.services import rbac
+from robopark_api.services.rbac_seed import ensure_rbac_catalog
 
 #: Password satisfying the default policy (length + character classes).
 #: Fixtures hash passwords directly, so only tests going through the API need it.
@@ -16,6 +18,12 @@ VALID_PASSWORD = "Str0ng-Pass!2026"
 
 def login_as(client: TestClient, username: str, password: str):
     return client.post("/auth/login", json={"username": username, "password": password})
+
+
+def role_id_for(db_session: Session, slug: str) -> int:
+    role = rbac.get_role_by_slug(db_session, slug)
+    assert role is not None, f"role {slug!r} missing from RBAC catalog"
+    return role.id
 
 
 @pytest.fixture(autouse=True)
@@ -69,6 +77,7 @@ def db_engine(tmp_path):
 @pytest.fixture
 def db_session(db_engine):
     with Session(db_engine) as session:
+        ensure_rbac_catalog(session)
         yield session
 
 
@@ -107,7 +116,7 @@ def seed_royal(db_session):
     user = User(
         username="royal",
         password_hash=hash_password("secret"),
-        role="royal",
+        role_id=role_id_for(db_session, rbac.RoleSlug.ROYAL),
         access_status="approved",
         is_active=True,
     )
@@ -122,7 +131,7 @@ def seed_pending_operator(db_session):
     user = User(
         username="operator",
         password_hash=hash_password("secret"),
-        role="operator",
+        role_id=role_id_for(db_session, rbac.RoleSlug.OPERATOR),
         access_status="pending",
         is_active=True,
     )
@@ -152,7 +161,7 @@ def seed_mechanic(db_session, seed_park_with_tracker):
     user = User(
         username="mech1",
         password_hash=hash_password("secret"),
-        role="mechanic",
+        role_id=role_id_for(db_session, rbac.RoleSlug.MECHANIC),
         access_status=AccessStatus.approved.value,
         is_active=True,
     )

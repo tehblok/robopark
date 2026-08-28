@@ -2,6 +2,7 @@ import { type ReactNode } from 'react'
 import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import { useAuth } from './auth-context'
 import { AppShell } from './components/AppShell'
+import { Spinner } from './components/ui/Feedback'
 import { ParkProvider } from './ParkProvider'
 import { Admin } from './pages/Admin'
 import { AdminEmergencyConfig } from './pages/AdminEmergencyConfig'
@@ -22,7 +23,16 @@ import { Register } from './pages/Register'
 import { Reports } from './pages/Reports'
 import { RobotSearch } from './pages/RobotSearch'
 import { Tasks } from './pages/Tasks'
-import { NO_CABINET_PATH, pathForUser } from './routes'
+import { ru } from './i18n/ru'
+import { NO_CABINET_PATH, PENDING_PATH, REJECTED_PATH, pathForUser } from './routes'
+
+function RouteFallback() {
+  return (
+    <main className="page page-center">
+      <Spinner label={ru.loading} />
+    </main>
+  )
+}
 
 function RequirePath({
   path,
@@ -32,7 +42,7 @@ function RequirePath({
   children: ReactNode
 }) {
   const { user, loading } = useAuth()
-  if (loading) return null
+  if (loading) return <RouteFallback />
   if (!user) return <Navigate to="/login" replace />
   const userPath = pathForUser(user)
   if (userPath !== path) return <Navigate to={userPath} replace />
@@ -41,27 +51,23 @@ function RequirePath({
 
 function RequirePasswordChanged({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth()
-  if (loading) return null
+  if (loading) return <RouteFallback />
   if (!user) return <Navigate to="/login" replace />
   if (user.must_change_password) return <Navigate to="/change-password" replace />
   return children
 }
 
-function RequireAdmin({ children }: { children: ReactNode }) {
+function RequirePermission({
+  permission,
+  children,
+}: {
+  permission: string
+  children: ReactNode
+}) {
   const { user, loading } = useAuth()
-  if (loading) return null
+  if (loading) return <RouteFallback />
   if (!user) return <Navigate to="/login" replace />
-  if (user.role !== 'admin' && user.role !== 'royal') {
-    return <Navigate to={pathForUser(user)} replace />
-  }
-  return children
-}
-
-function RequireApprovedOperator({ children }: { children: ReactNode }) {
-  const { user, loading } = useAuth()
-  if (loading) return null
-  if (!user) return <Navigate to="/login" replace />
-  if (user.role !== 'operator' || user.access_status !== 'approved') {
+  if (!(user.permissions ?? []).includes(permission)) {
     return <Navigate to={pathForUser(user)} replace />
   }
   return children
@@ -75,33 +81,54 @@ function RequireMechanic({
   requirePark?: boolean
 }) {
   const { user, loading } = useAuth()
-  if (loading) return null
+  if (loading) return <RouteFallback />
   if (!user) return <Navigate to="/login" replace />
   if (user.role !== 'mechanic') return <Navigate to={pathForUser(user)} replace />
-  const hasPark = user.parks?.length === 1
+  const hasPark = (user.parks?.length ?? 0) >= 1
   if (requirePark && !hasPark) return <Navigate to="/mechanic/no-park" replace />
   if (!requirePark && hasPark) return <Navigate to="/dashboard" replace />
   return children
 }
 
+function RequireApprovedOperator({ children }: { children: ReactNode }) {
+  const { user, loading } = useAuth()
+  if (loading) return <RouteFallback />
+  if (!user) return <Navigate to="/login" replace />
+  if (user.must_change_password) return <Navigate to="/change-password" replace />
+  if (user.role !== 'operator' || user.access_status !== 'approved') {
+    return <Navigate to={pathForUser(user)} replace />
+  }
+  return children
+}
+
+function CatchAll() {
+  const { user, loading } = useAuth()
+  if (loading) return <RouteFallback />
+  if (!user) return <Navigate to="/login" replace />
+  return <Navigate to={pathForUser(user)} replace />
+}
+
 function canUseShell(user: NonNullable<ReturnType<typeof useAuth>['user']>): boolean {
-  if (user.role === 'mechanic') return user.parks?.length === 1
-  if (user.role === 'operator') return user.access_status === 'approved'
-  if (user.role === 'admin' || user.role === 'royal') return true
-  return false
+  if (user.role !== 'royal') {
+    if (user.access_status === 'pending' || user.access_status === 'rejected') return false
+  }
+  if (user.role === 'mechanic') return (user.parks?.length ?? 0) >= 1
+  if (user.role === 'driver') return user.access_status === 'approved'
+  return (user.permissions?.length ?? 0) > 0
 }
 
 function AuthenticatedShellLayout() {
   const { user, loading } = useAuth()
-  if (loading) return null
+  if (loading) return <RouteFallback />
   if (!user) return <Navigate to="/login" replace />
   if (user.must_change_password) return <Navigate to="/change-password" replace />
   if (!canUseShell(user)) return <Navigate to={pathForUser(user)} replace />
-  return (
-    <ParkProvider>
+  const shell = (
+    <>
       <AppShell />
-    </ParkProvider>
+    </>
   )
+  return <ParkProvider>{shell}</ParkProvider>
 }
 
 export default function App() {
@@ -114,21 +141,24 @@ export default function App() {
       <Route path={NO_CABINET_PATH} element={<NoCabinet />} />
 
       <Route
-        path="/operator/pending"
+        path={PENDING_PATH}
         element={
-          <RequirePath path="/operator/pending">
+          <RequirePath path={PENDING_PATH}>
             <OperatorPending />
           </RequirePath>
         }
       />
       <Route
-        path="/operator/rejected"
+        path={REJECTED_PATH}
         element={
-          <RequirePath path="/operator/rejected">
+          <RequirePath path={REJECTED_PATH}>
             <OperatorRejected />
           </RequirePath>
         }
       />
+      <Route path="/operator/pending" element={<Navigate to={PENDING_PATH} replace />} />
+      <Route path="/operator/rejected" element={<Navigate to={REJECTED_PATH} replace />} />
+
       <Route
         path="/mechanic/no-park"
         element={
@@ -146,57 +176,107 @@ export default function App() {
             </RequirePasswordChanged>
           }
         >
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/tasks" element={<Tasks />} />
-        <Route path="/robots/search" element={<RobotSearch />} />
-        <Route path="/emergency" element={<Emergency />} />
-        <Route path="/analytics" element={<Analytics />} />
-        <Route path="/reports" element={<Reports />} />
-        <Route path="/map" element={<ComingSoon />} />
-        <Route path="/learning" element={<ComingSoon />} />
-        <Route path="/help" element={<ComingSoon />} />
+        <Route
+          path="/dashboard"
+          element={
+            <RequirePermission permission="nav.dashboard">
+              <Dashboard />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="/tasks"
+          element={
+            <RequirePermission permission="nav.tasks">
+              <Tasks />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="/robots/search"
+          element={
+            <RequirePermission permission="nav.robot_search">
+              <RobotSearch />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="/emergency"
+          element={
+            <RequirePermission permission="nav.emergency">
+              <Emergency />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="/analytics"
+          element={
+            <RequirePermission permission="nav.analytics">
+              <Analytics />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="/reports"
+          element={
+            <RequirePermission permission="nav.reports">
+              <Reports />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="/map"
+          element={
+            <RequirePermission permission="nav.map">
+              <ComingSoon />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="/learning"
+          element={
+            <RequirePermission permission="nav.learning">
+              <ComingSoon />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="/help"
+          element={
+            <RequirePermission permission="nav.help">
+              <ComingSoon />
+            </RequirePermission>
+          }
+        />
 
         <Route
           path="/admin"
           element={
-            <RequireAdmin>
+            <RequirePermission permission="nav.admin">
               <Admin />
-            </RequireAdmin>
+            </RequirePermission>
           }
         />
         <Route
           path="/admin/tracker"
           element={
-            <RequireAdmin>
+            <RequirePermission permission="nav.admin.tracker">
               <AdminTrackerWorkspace />
-            </RequireAdmin>
+            </RequirePermission>
           }
         />
         <Route
           path="/admin/emergency/config"
           element={
-            <RequireAdmin>
+            <RequirePermission permission="nav.admin.emergency">
               <AdminEmergencyConfig />
-            </RequireAdmin>
+            </RequirePermission>
           }
         />
         </Route>
       </Route>
 
-      {/* Legacy redirects */}
       <Route path="/operator" element={<Navigate to="/dashboard" replace />} />
-      <Route path="/operator/blockers" element={<Navigate to="/tasks" replace />} />
-      <Route path="/mechanic/tasks" element={<Navigate to="/tasks" replace />} />
-      <Route path="/operator/robot-search" element={<Navigate to="/robots/search" replace />} />
-      <Route path="/mechanic/robot-search" element={<Navigate to="/robots/search" replace />} />
-      <Route path="/operator/emergency" element={<Navigate to="/emergency" replace />} />
-      <Route path="/mechanic/emergency" element={<Navigate to="/emergency" replace />} />
-      <Route path="/admin/emergency" element={<Navigate to="/emergency" replace />} />
-      <Route path="/operator/now-report" element={<Navigate to="/analytics" replace />} />
-      <Route path="/operator/tracker" element={<Navigate to="/tasks" replace />} />
-      <Route path="/mechanic/tracker" element={<Navigate to="/tasks" replace />} />
-      <Route path="/mechanic" element={<Navigate to="/dashboard" replace />} />
-
       <Route
         path="/operator/parks"
         element={
@@ -205,8 +285,7 @@ export default function App() {
           </RequireApprovedOperator>
         }
       />
-
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<CatchAll />} />
     </Routes>
   )
 }

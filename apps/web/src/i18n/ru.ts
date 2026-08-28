@@ -47,7 +47,19 @@ export const ru = {
     admin: 'Администратор',
     operator: 'Оператор',
     mechanic: 'Механик',
+    driver: 'Водитель',
   } as Record<string, string>,
+
+  screenshotGuard: {
+    title: 'Создание скриншотов запрещено',
+    body: 'Конфиденциальные данные парка роботов. Снимки экрана и копирование содержимого запрещены политикой безопасности.',
+    confidential: 'конфиденциально',
+    dismiss: 'Понятно',
+    watermark: 'Robopark · конфиденциально',
+    adminToggle: (role: string) => `Запрет скриншотов — ${role}`,
+    adminHint:
+      'Десктоп: перехват PrintScreen. Телефоны: постоянный водяной знак с логином (кнопки скриншота ОС перехватить нельзя). Блокировка копирования и long-press на изображениях.',
+  },
 
   accessStatus: {
     pending: 'ожидает',
@@ -60,6 +72,20 @@ export const ru = {
     approved: 'одобрена',
     rejected: 'отклонена',
   } as Record<string, string>,
+
+  parks: {
+    requestPark: 'Запросить парк',
+    requestParkHint: 'Заявка уйдёт администратору на одобрение доступа к парку.',
+    requestParkSubmit: 'Отправить заявку',
+    requestParkSubmitting: 'Отправка',
+    requestParkSuccess: 'Заявка отправлена администратору.',
+    requestParkError: 'Не удалось отправить заявку на парк.',
+    requestParkEmpty: 'Нет парков для запроса',
+    requestParkEmptyHint: 'Возможно, у вас уже есть доступ ко всем активным паркам.',
+    myParks: 'Мои парки',
+    noAssignedParks: 'Нет назначенных парков',
+    noAssignedParksHint: 'Запросите доступ к парку — заявка уйдёт администратору.',
+  },
 
   taskFilters: {
     all: 'Все',
@@ -85,6 +111,7 @@ export const ru = {
     emergency401: 'Cookie Emergency просрочен или недействителен.',
     emergency: 'Не удалось получить данные Emergency.',
     emergencySection: 'Не удалось загрузить раздел.',
+    notFound: 'Действие недоступно — перезапустите API или обновите страницу.',
     details: {
       tracker_token_not_configured:
         'Startrek не настроен — попросите администратора указать OAuth-токен.',
@@ -98,6 +125,9 @@ export const ru = {
       tracker_upstream_error: 'Ошибка интеграции со Startrek.',
       tracker_transition_invalid: 'Этот переход недоступен для тикета.',
       tracker_close_transition_not_found: 'Не найден переход для закрытия тикета.',
+      tracker_attachment_empty: 'Файл пустой.',
+      tracker_attachment_too_large: 'Файл слишком большой (максимум 15 МБ).',
+      tracker_attachment_invalid_type: 'Можно прикреплять только изображения (JPEG, PNG, WebP, HEIC).',
       emergency_cookie_not_configured: 'Cookie Emergency не задан в настройках администратора.',
       emergency_cookie_invalid: 'Cookie Emergency просрочен или недействителен.',
       tasks_disabled_for_park: 'Задачи отключены: проверьте очередь Startrek и флаг blockers у парка.',
@@ -106,6 +136,8 @@ export const ru = {
       no_tracker_parks: 'Нет назначенных парков с очередью Startrek.',
       no_report_parks:
         'Нет парков для отчёта — назначьте парк или включите feature_reports.',
+      cannot_delete_self: 'Нельзя удалить собственный аккаунт.',
+      cannot_delete_last_royal: 'Нельзя удалить последнего владельца.',
     } as Record<string, string>,
   },
 
@@ -162,9 +194,18 @@ export const ru = {
     attachments: 'Вложения',
     comments: 'Комментарии',
     commentsEmpty: 'Комментариев пока нет.',
+    history: 'История действий',
+    historyEmpty: 'Действий через платформу пока нет.',
     commentPlaceholder: 'Написать комментарий…',
     commentSubmit: 'Отправить',
-    commentHint: 'Комментарий уйдёт в Startrek с вашей подписью.',
+    commentHint: 'Подпись (логин / парк / механик) добавится автоматически.',
+
+    attachPhoto: 'Фото неисправности',
+    attachPhotoHint: 'Сфотографируйте или выберите изображение — оно появится во вложениях тикета.',
+    attachPhotoPick: 'Выбрать фото',
+    attachPhotoSubmit: 'Прикрепить',
+    attachPhotoTooLarge: 'Файл слишком большой (максимум 15 МБ).',
+    attachPhotoInvalidType: 'Можно прикреплять только изображения.',
 
     actions: {
       title: 'Действия',
@@ -180,6 +221,15 @@ export const ru = {
       failed: 'Не удалось выполнить действие',
     },
 
+    robotCheck: {
+      title: 'Проверка робота',
+      open: 'Проверить робота',
+      checking: 'Проверяем критические ошибки Emergency…',
+      noCritical: 'Критических ошибок Emergency нет.',
+      found: 'Критические ошибки Emergency',
+      wheelsFault: 'Неисправность колёс',
+    },
+
     priorities: {
       blocker: 'Блокер',
       critical: 'Критичный',
@@ -193,22 +243,29 @@ export const ru = {
   emergency: {
     title: 'Проверка робота',
     subtitle: 'Живой статус, карта и данные Emergency.',
+    driverSubtitle: 'Только Emergency: без проверки блокеров Tracker.',
     searchTitle: 'Робот',
     searchHint: 'Номер или VIN. Данные Emergency обновляются каждые 2.5 с.',
+    driverSearchHint: 'Короткий номер или VIN. Блокеры Tracker не проверяются.',
     robotNumber: 'Номер робота',
     robotPlaceholder: '447',
     resolve: 'Проверить',
-    refresh: 'Обновить',
     follow: 'Следить',
     speed: 'Скорость',
-    speedUnit: 'M/S',
+    speedUnit: 'м/с',
     charge: 'Заряд',
+    battery: 'АКБ',
+    battery1: 'АКБ 1',
+    battery2: 'АКБ 2',
+    disk: 'Диск',
+    statusActive: 'Активен',
+    statusOffline: 'Офлайн',
+    connectionLte: 'LTE',
+    connectionWire: 'Провод',
     offline: 'офлайн',
     noLink: 'нет связи',
     offlineBanner: 'ERROR: робот офлайн',
     noLinkBanner: 'ERROR: нет данных о связи',
-    soundAction: 'Звук и оборудование',
-    powerAction: 'Управление и ошибки',
     map: 'Карта',
     noCoords: 'Нет координат',
     enterRobot: 'Введите номер робота',
@@ -227,6 +284,15 @@ export const ru = {
       fr: 'Переднее правое колесо',
       mr: 'Среднее правое колесо',
       rr: 'Заднее правое колесо',
+    } as Record<string, string>,
+    wheelSlotShort: {
+      fl: 'Лев. пер.',
+      ml: 'Лев. сред.',
+      rl: 'Лев. зад.',
+      fr: 'Прав. пер.',
+      mr: 'Прав. сред.',
+      rr: 'Прав. зад.',
+      body: 'Кузов',
     } as Record<string, string>,
   },
 

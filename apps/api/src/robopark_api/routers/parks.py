@@ -3,9 +3,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
-from robopark_api.deps import require_admin
-from robopark_api.models import Park
+from robopark_api.deps import require_admin, require_user
+from robopark_api.models import Park, User
 from robopark_api.schemas import ParkCreate, ParkOut, ParkUpdate
+from robopark_api.services import rbac
 
 router = APIRouter(
     prefix="/parks",
@@ -26,12 +27,23 @@ def list_parks(db: Session = Depends(get_db)) -> list[Park]:
     return list(db.scalars(select(Park).order_by(Park.id)).all())
 
 
+def _require_parks_manage(
+    user: User = Depends(require_user), db: Session = Depends(get_db)
+) -> User:
+    rbac.require_approved_permission(db, user, rbac.PERMISSION_PARKS_MANAGE)
+    return user
+
+
 @router.post(
     "",
     response_model=ParkOut,
     status_code=status.HTTP_201_CREATED,
 )
-def create_park(payload: ParkCreate, db: Session = Depends(get_db)) -> Park:
+def create_park(
+    payload: ParkCreate,
+    db: Session = Depends(get_db),
+    _actor: User = Depends(_require_parks_manage),
+) -> Park:
     if _tag_exists(db, payload.tag):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT)
 
@@ -47,6 +59,7 @@ def update_park(
     park_id: int,
     payload: ParkUpdate,
     db: Session = Depends(get_db),
+    _actor: User = Depends(_require_parks_manage),
 ) -> Park:
     park = db.get(Park, park_id)
     if park is None:

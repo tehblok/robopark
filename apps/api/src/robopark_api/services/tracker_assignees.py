@@ -5,8 +5,10 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from robopark_api.deps import get_mechanic_park, get_user_parks
-from robopark_api.models import User, UserPark, UserRole
+from robopark_api.deps import get_user_parks
+from robopark_api.models import Role, User, UserPark
+from robopark_api.services import rbac
+from robopark_api.services.rbac import RoleSlug
 
 
 def list_assignee_candidates(
@@ -18,15 +20,10 @@ def list_assignee_candidates(
         return []
 
     park_ids: list[int] | None
-    if user.role in {UserRole.admin.value, UserRole.royal.value}:
+    if rbac.is_admin_or_royal(user):
         park_ids = None
-    elif user.role == UserRole.operator.value:
+    elif rbac.role_slug(user) in {RoleSlug.OPERATOR, RoleSlug.MECHANIC}:
         park_ids = [park.id for park in get_user_parks(db, user)]
-        if not park_ids:
-            return []
-    elif user.role == UserRole.mechanic.value:
-        park = get_mechanic_park(db, user)
-        park_ids = [park.id] if park else []
         if not park_ids:
             return []
     else:
@@ -35,8 +32,9 @@ def list_assignee_candidates(
     stmt = (
         select(User)
         .join(UserPark, UserPark.user_id == User.id)
+        .join(Role)
         .where(
-            User.role == UserRole.mechanic.value,
+            Role.slug == RoleSlug.MECHANIC,
             User.is_active.is_(True),
             User.tracker_login.is_not(None),
             User.tracker_login != "",

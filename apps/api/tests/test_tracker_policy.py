@@ -1,3 +1,4 @@
+from conftest import role_id_for
 from robopark_api.models import AccessStatus, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings
@@ -8,7 +9,7 @@ def test_operator_queues_and_untagged_toggle(db_session, seed_park_with_tracker)
     operator = User(
         username="op1",
         password_hash=hash_password("secret"),
-        role="operator",
+        role_id=role_id_for(db_session, "operator"),
         access_status=AccessStatus.approved.value,
         is_active=True,
     )

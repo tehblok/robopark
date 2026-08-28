@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from conftest import login_as
+from conftest import login_as, role_id_for
 from robopark_api.models import Park, ParkRequest, User, UserPark
 from robopark_api.security import hash_password
 
@@ -9,7 +9,7 @@ def add_operator(db_session, username: str, *, access_status: str = "approved") 
     operator = User(
         username=username,
         password_hash=hash_password("secret"),
-        role="operator",
+        role_id=role_id_for(db_session, "operator"),
         access_status=access_status,
         is_active=True,
     )
@@ -143,6 +143,24 @@ def test_admin_rejects_request_without_assigning_park(client: TestClient, db_ses
     assert request.resolved_by == seed_royal.id
     assert request.resolved_at is not None
     assert db_session.get(UserPark, (operator.id, park.id)) is None
+
+
+def test_approve_park_request_when_already_a_member(client: TestClient, db_session, seed_royal):
+    operator = add_operator(db_session, "operator-already-member")
+    park = add_park(db_session, "already")
+    db_session.add(UserPark(user_id=operator.id, park_id=park.id))
+    request = ParkRequest(user_id=operator.id, park_id=park.id, status="pending")
+    db_session.add(request)
+    db_session.commit()
+    db_session.refresh(request)
+    login_as(client, "royal", "secret")
+
+    response = client.post(f"/admin/park-requests/{request.id}/approve")
+
+    assert response.status_code == 204
+    db_session.refresh(request)
+    assert request.status == "approved"
+    assert db_session.get(UserPark, (operator.id, park.id)) is not None
 
 
 def test_pending_operator_cannot_create_request(client: TestClient, db_session):

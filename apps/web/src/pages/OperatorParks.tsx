@@ -1,7 +1,8 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { useState } from 'react'
 import { api, type Park, type ParkRequest } from '../api'
 import { Alert, Badge, PageShell, Panel } from '../components/PageShell'
-import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
+import { RequestParkModal } from '../components/parks/RequestParkModal'
+import { EmptyBlock, SkeletonList } from '../components/ui/Feedback'
 import { mapApiError } from '../i18n/errors'
 import { requestStatusLabel, ru } from '../i18n/ru'
 import { useAuth } from '../auth-context'
@@ -22,9 +23,7 @@ function requestBadgeClass(status: string): string {
 
 export function OperatorParks() {
   const { logout } = useAuth()
-  const [parkId, setParkId] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [submitError, setSubmitError] = useState('')
+  const [parkModalOpen, setParkModalOpen] = useState(false)
 
   const parksRes = useCachedResource<Park[]>('operator:parks', () => api.operatorParks())
   const availableRes = useCachedResource<Park[]>('operator:available-parks', () => api.availableParks())
@@ -38,125 +37,107 @@ export function OperatorParks() {
   const requests = requestsRes.data ?? []
 
   const parksLoading = parksRes.isLoading && !parksRes.data
-  const availableLoading = availableRes.isLoading && !availableRes.data
   const requestsLoading = requestsRes.isLoading && !requestsRes.data
 
   const loadError = parksRes.error ?? availableRes.error ?? requestsRes.error
-  const error =
-    submitError || (loadError ? mapApiError(loadError, ru.errors.load) : '')
+  const error = loadError ? mapApiError(loadError, ru.errors.load) : ''
 
-  useEffect(() => {
-    if (!parkId && available.length) {
-      setParkId(String(available[0].id))
-    }
-  }, [parkId, available])
-
-  const submit = async (event: FormEvent) => {
-    event.preventDefault()
-    setSubmitError('')
-    setSubmitting(true)
-    try {
-      await api.requestPark(Number(parkId))
-      setParkId('')
-      await Promise.all([parksRes.refresh(), availableRes.refresh(), requestsRes.refresh()])
-    } catch {
-      setSubmitError('Не удалось отправить заявку на парк.')
-    } finally {
-      setSubmitting(false)
-    }
-  }
+  const refreshAll = () =>
+    Promise.all([parksRes.refresh(), availableRes.refresh(), requestsRes.refresh()])
 
   return (
-    <PageShell
-      onLogout={logout}
-      standalone
-      subtitle="Ваши парки, заявки на доступ и история запросов."
-      title="Мои парки"
-    >
-      {error && <Alert tone="error">{error}</Alert>}
+    <>
+      <PageShell
+        actions={
+          <button className="btn btn-secondary" onClick={() => setParkModalOpen(true)} type="button">
+            {ru.parks.requestPark}
+          </button>
+        }
+        onLogout={logout}
+        standalone
+        subtitle="Ваши парки, заявки на доступ и история запросов."
+        title={ru.parks.myParks}
+      >
+        {error && <Alert tone="error">{error}</Alert>}
 
-      <Panel hint="Парки, к которым администратор уже выдал доступ." title="Мои парки">
-        {parksLoading ? (
-          <SkeletonList rows={2} />
-        ) : parks.length ? (
-          <ul className="park-card-list">
-            {parks.map((park) => (
-              <li className="park-card" key={park.id}>
-                <div className="park-card-title">{park.name}</div>
-                <div className="park-card-meta">
-                  <span className="badge badge-muted">{park.tag}</span>
-                  <Badge active={park.is_active ?? true} />
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <EmptyBlock
-            hint="Отправьте заявку ниже или дождитесь одобрения регистрации."
-            icon="🏭"
-            title="Пока нет назначенных парков"
-          />
-        )}
-      </Panel>
-
-      <Panel hint="Можно запросить только активные парки, к которым у вас ещё нет доступа." title="Запросить парк">
-        {availableLoading ? (
-          <SkeletonList rows={1} />
-        ) : (
-          <>
-            <form className="form-grid" onSubmit={(event) => void submit(event)}>
-              <label className="field">
-                <span className="field-label">Парк</span>
-                <select
-                  aria-label="Парк"
-                  disabled={!available.length || submitting}
-                  onChange={(event) => setParkId(event.target.value)}
-                  value={parkId}
-                >
-                  {available.map((park) => (
-                    <option key={park.id} value={park.id}>
-                      {park.name} ({park.tag})
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="form-actions">
-                <button className="btn" disabled={!parkId || submitting} type="submit">
-                  {submitting ? <Spinner label="Отправка" /> : 'Отправить заявку'}
+        <Panel hint="Парки, к которым администратор уже выдал доступ." title={ru.parks.myParks}>
+          {parksLoading ? (
+            <SkeletonList rows={2} />
+          ) : parks.length ? (
+            <ul className="park-card-list">
+              {parks.map((park) => (
+                <li className="park-card" key={park.id}>
+                  <div className="park-card-title">{park.name}</div>
+                  <div className="park-card-meta">
+                    <span className="badge badge-muted">{park.tag}</span>
+                    <Badge active={park.is_active ?? true} />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <EmptyBlock
+              action={
+                <button className="btn" onClick={() => setParkModalOpen(true)} type="button">
+                  {ru.parks.requestPark}
                 </button>
-              </div>
-            </form>
-            {!available.length && (
-              <EmptyBlock
-                hint="Возможно, вы уже привязаны ко всем активным паркам."
-                icon="✓"
-                title="Нет парков для запроса"
-              />
-            )}
-          </>
-        )}
-      </Panel>
+              }
+              hint={ru.parks.noAssignedParksHint}
+              icon="🏭"
+              title={ru.parks.noAssignedParks}
+            />
+          )}
+        </Panel>
 
-      <Panel title="Мои заявки">
-        {requestsLoading ? (
-          <SkeletonList rows={2} />
-        ) : requests.length ? (
-          <ul className="park-card-list">
-            {requests.map((request) => (
-              <li className="park-card" key={request.id}>
-                <div className="park-card-title">Парк #{request.park_id}</div>
-                <div className="park-card-meta">
-                  <span className={requestBadgeClass(request.status)}>
-                    {requestStatusLabel(request.status)}
-                  </span>
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <EmptyBlock icon="📥" title={ru.empty} />
-        )}
-      </Panel>
-    </PageShell>
+        <Panel
+          hint={
+            available.length
+              ? ru.parks.requestParkHint
+              : ru.parks.requestParkEmptyHint
+          }
+          title={ru.parks.requestPark}
+        >
+          <div className="form-actions">
+            <button
+              className="btn"
+              disabled={!available.length && !availableRes.isLoading}
+              onClick={() => setParkModalOpen(true)}
+              type="button"
+            >
+              {ru.parks.requestPark}
+            </button>
+          </div>
+          {!available.length && !availableRes.isLoading && (
+            <EmptyBlock icon="✓" title={ru.parks.requestParkEmpty} />
+          )}
+        </Panel>
+
+        <Panel title="Мои заявки">
+          {requestsLoading ? (
+            <SkeletonList rows={2} />
+          ) : requests.length ? (
+            <ul className="park-card-list">
+              {requests.map((request) => (
+                <li className="park-card" key={request.id}>
+                  <div className="park-card-title">Парк #{request.park_id}</div>
+                  <div className="park-card-meta">
+                    <span className={requestBadgeClass(request.status)}>
+                      {requestStatusLabel(request.status)}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <EmptyBlock icon="📥" title={ru.empty} />
+          )}
+        </Panel>
+      </PageShell>
+      <RequestParkModal
+        onClose={() => setParkModalOpen(false)}
+        onSubmitted={() => void refreshAll()}
+        open={parkModalOpen}
+      />
+    </>
   )
 }

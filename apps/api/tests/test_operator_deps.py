@@ -1,6 +1,7 @@
 import pytest
 from fastapi import HTTPException
 
+from conftest import role_id_for
 from robopark_api.deps import get_operator_parks, require_operator_park
 from robopark_api.models import Park, User, UserPark
 from robopark_api.security import hash_password
@@ -10,7 +11,7 @@ def _approved_operator(db, username: str) -> User:
     user = User(
         username=username,
         password_hash=hash_password("secret"),
-        role="operator",
+        role_id=role_id_for(db, "operator"),
         access_status="approved",
         is_active=True,
     )

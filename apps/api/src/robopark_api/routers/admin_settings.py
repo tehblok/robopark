@@ -3,9 +3,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
-from robopark_api.deps import require_admin
+from robopark_api.deps import require_admin, require_royal
 from robopark_api.models import User
-from robopark_api.schemas import TrackerPolicySettingsIn, TrackerPolicySettingsOut
+from robopark_api.schemas import (
+    ScreenshotGuardSettingsIn,
+    ScreenshotGuardSettingsOut,
+    TrackerPolicySettingsIn,
+    TrackerPolicySettingsOut,
+)
+from robopark_api.services import audit
 from robopark_api.services import platform_settings as settings_svc
 
 router = APIRouter(
@@ -31,6 +37,17 @@ class TrackerTokenUpdate(BaseModel):
 
 class EmergencyCookieUpdate(BaseModel):
     cookie: str = Field(min_length=1)
+
+
+class RegistrationPasswordSettingsOut(BaseModel):
+    configured: bool
+    password_masked: str | None
+    updated_at: str | None
+    encrypted: bool = False
+
+
+class RegistrationPasswordUpdate(BaseModel):
+    password: str = Field(min_length=1, max_length=128)
 
 
 def _to_out(db: Session) -> IntegrationSettingsOut:
@@ -127,3 +144,89 @@ def put_tracker_policy(
             payload.mechanic_can_write,
         )
     return TrackerPolicySettingsOut(**settings_svc.tracker_policy_status(db))
+
+
+@router.get("/screenshot-guard", response_model=ScreenshotGuardSettingsOut)
+def get_screenshot_guard(
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+) -> ScreenshotGuardSettingsOut:
+    return ScreenshotGuardSettingsOut(**settings_svc.screenshot_guard_status(db))
+
+
+@router.put("/screenshot-guard", response_model=ScreenshotGuardSettingsOut)
+def put_screenshot_guard(
+    payload: ScreenshotGuardSettingsIn,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+) -> ScreenshotGuardSettingsOut:
+    if payload.operator is not None:
+        settings_svc.set_bool_setting(
+            db,
+            settings_svc.SCREENSHOT_GUARD_OPERATOR_KEY,
+            payload.operator,
+        )
+    if payload.mechanic is not None:
+        settings_svc.set_bool_setting(
+            db,
+            settings_svc.SCREENSHOT_GUARD_MECHANIC_KEY,
+            payload.mechanic,
+        )
+    if payload.admin is not None:
+        settings_svc.set_bool_setting(
+            db,
+            settings_svc.SCREENSHOT_GUARD_ADMIN_KEY,
+            payload.admin,
+        )
+    if payload.royal is not None:
+        settings_svc.set_bool_setting(
+            db,
+            settings_svc.SCREENSHOT_GUARD_ROYAL_KEY,
+            payload.royal,
+        )
+    if payload.driver is not None:
+        settings_svc.set_bool_setting(
+            db,
+            settings_svc.SCREENSHOT_GUARD_DRIVER_KEY,
+            payload.driver,
+        )
+    return ScreenshotGuardSettingsOut(**settings_svc.screenshot_guard_status(db))
+
+
+@router.get("/registration-password", response_model=RegistrationPasswordSettingsOut)
+def get_registration_password(
+    db: Session = Depends(get_db),
+    _royal: User = Depends(require_royal),
+) -> RegistrationPasswordSettingsOut:
+    return RegistrationPasswordSettingsOut(**settings_svc.registration_password_status(db))
+
+
+@router.put("/registration-password", response_model=RegistrationPasswordSettingsOut)
+def put_registration_password(
+    payload: RegistrationPasswordUpdate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_royal),
+) -> RegistrationPasswordSettingsOut:
+    settings_svc.set_registration_shared_password(db, payload.password)
+    audit.record(
+        db,
+        action=audit.ACTION_SETTINGS_CHANGED,
+        actor=actor,
+        detail="registration shared password updated",
+    )
+    return RegistrationPasswordSettingsOut(**settings_svc.registration_password_status(db))
+
+
+@router.delete("/registration-password", response_model=RegistrationPasswordSettingsOut)
+def delete_registration_password(
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_royal),
+) -> RegistrationPasswordSettingsOut:
+    settings_svc.clear_registration_shared_password(db)
+    audit.record(
+        db,
+        action=audit.ACTION_SETTINGS_CHANGED,
+        actor=actor,
+        detail="registration shared password cleared",
+    )
+    return RegistrationPasswordSettingsOut(**settings_svc.registration_password_status(db))

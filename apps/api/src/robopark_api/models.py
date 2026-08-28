@@ -22,17 +22,58 @@ class Base(DeclarativeBase):
     pass
 
 
-class UserRole(StrEnum):
-    royal = "royal"
-    admin = "admin"
-    operator = "operator"
-    mechanic = "mechanic"
-
-
 class AccessStatus(StrEnum):
     pending = "pending"
     approved = "approved"
     rejected = "rejected"
+
+
+class Permission(Base):
+    __tablename__ = "permissions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    category: Mapped[str] = mapped_column(String(16), default="nav")
+    label: Mapped[str] = mapped_column(String(128))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class Role(Base):
+    __tablename__ = "roles"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    slug: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str] = mapped_column(String(512), default="")
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    permissions: Mapped[list[Permission]] = relationship(
+        secondary="role_permissions",
+        order_by=Permission.sort_order,
+    )
+
+
+class RolePermission(Base):
+    __tablename__ = "role_permissions"
+
+    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True)
+    permission_id: Mapped[int] = mapped_column(
+        ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class UserPermission(Base):
+    """Per-user grant/deny on top of the assigned role."""
+
+    __tablename__ = "user_permissions"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    permission_id: Mapped[int] = mapped_column(
+        ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True
+    )
+    granted: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
 
 
 class User(Base):
@@ -41,19 +82,24 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
-    role: Mapped[str] = mapped_column(String(32))
+    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), index=True)
     access_status: Mapped[str] = mapped_column(String(32), default=AccessStatus.approved.value)
     tracker_login: Mapped[str | None] = mapped_column(String(128), nullable=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    role_ref: Mapped[Role] = relationship(lazy="joined")
     sessions: Mapped[list[AuthSession]] = relationship(back_populates="user")
     parks: Mapped[list[Park]] = relationship(secondary="user_parks")
     park_requests: Mapped[list[ParkRequest]] = relationship(
         back_populates="user",
         foreign_keys="ParkRequest.user_id",
     )
+
+    @property
+    def role(self) -> str:
+        return self.role_ref.slug if self.role_ref is not None else ""
 
 
 class AuthSession(Base):

@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from conftest import login_as
+from conftest import login_as, role_id_for
 from robopark_api.models import Park, User, UserPark
 from robopark_api.security import hash_password
 
@@ -14,7 +14,7 @@ def seed_op_two_queues(db_session):
     op = User(
         username="op-robot",
         password_hash=hash_password("secret"),
-        role="operator",
+        role_id=role_id_for(db_session, "operator"),
         access_status="approved",
         is_active=True,
     )
@@ -30,7 +30,7 @@ def test_robot_search_no_queues(client, db_session, seed_royal):
     op = User(
         username="op-empty",
         password_hash=hash_password("secret"),
-        role="operator",
+        role_id=role_id_for(db_session, "operator"),
         access_status="approved",
         is_active=True,
     )
@@ -94,7 +94,7 @@ def test_robot_search_ticket_key_rejects_foreign_queue(client, db_session, seed_
     op = User(
         username="op-q1",
         password_hash=hash_password("secret"),
-        role="operator",
+        role_id=role_id_for(db_session, "operator"),
         access_status="approved",
         is_active=True,
     )

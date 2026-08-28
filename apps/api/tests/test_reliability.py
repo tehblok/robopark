@@ -4,8 +4,10 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import create_engine, text
 
+from conftest import role_id_for
 from robopark_api.models import AuthSession, Base, User
 from robopark_api.security import hash_password
+from robopark_api.services.rbac_seed import ensure_rbac_catalog
 
 
 def _engine_with_pragmas(path):
@@ -54,10 +56,11 @@ def test_foreign_keys_cascade_on_delete(tmp_path):
     from sqlalchemy.orm import Session
 
     with Session(engine) as session:
+        ensure_rbac_catalog(session)
         user = User(
             username="cascade",
             password_hash=hash_password("x"),
-            role="operator",
+            role_id=role_id_for(session, "operator"),
             access_status="approved",
             is_active=True,
         )

@@ -2,12 +2,13 @@ from datetime import UTC, datetime
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
-from robopark_api.models import AccessStatus, AuthSession, Park, User, UserPark, UserRole
+from robopark_api.models import AccessStatus, AuthSession, Park, Role, User, UserPark
 from robopark_api.security import hash_session_token
+from robopark_api.services import rbac
 
 
 def require_user(
@@ -19,54 +20,68 @@ def require_user(
     if not session_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
-    user = db.scalar(
+    user = db.scalars(
         select(User)
+        .options(joinedload(User.role_ref).joinedload(Role.permissions))
         .join(AuthSession)
         .where(
             AuthSession.token_hash == hash_session_token(session_token),
             AuthSession.expires_at > datetime.now(UTC),
             User.is_active.is_(True),
         )
-    )
+    ).unique().first()
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     return user
 
 
-def require_admin(user: User = Depends(require_user)) -> User:
-    if user.role not in (UserRole.royal.value, UserRole.admin.value):
+def require_admin(user: User = Depends(require_user), db: Session = Depends(get_db)) -> User:
+    if not rbac.has_permission(db, user, rbac.PERMISSION_NAV_ADMIN):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    return user
+
+
+def require_royal(user: User = Depends(require_user)) -> User:
+    return rbac.require_royal(user)
+
+
+def require_approved(user: User = Depends(require_user)) -> User:
+    if user.access_status != AccessStatus.approved.value:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return user
 
 
 def require_approved_operator(user: User = Depends(require_user)) -> User:
-    if user.role != UserRole.operator.value or user.access_status != AccessStatus.approved.value:
+    if user.role != rbac.RoleSlug.OPERATOR or user.access_status != AccessStatus.approved.value:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return user
 
 
 def require_approved_mechanic(user: User = Depends(require_user)) -> User:
-    if user.role != UserRole.mechanic.value or user.access_status != AccessStatus.approved.value:
+    if user.role != rbac.RoleSlug.MECHANIC or user.access_status != AccessStatus.approved.value:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return user
 
 
-def require_emergency_viewer(user: User = Depends(require_user)) -> User:
-    if user.role in (UserRole.royal.value, UserRole.admin.value):
+def require_permission(permission: str):
+    return rbac.require_permission(permission)
+
+
+def require_emergency_viewer(
+    user: User = Depends(require_user), db: Session = Depends(get_db)
+) -> User:
+    if not rbac.has_permission(db, user, rbac.PERMISSION_NAV_EMERGENCY):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    if rbac.role_slug(user) in {rbac.RoleSlug.ROYAL, rbac.RoleSlug.ADMIN}:
         return user
-    if (
-        user.role in (UserRole.mechanic.value, UserRole.operator.value)
-        and user.access_status == AccessStatus.approved.value
-    ):
+    if user.access_status == AccessStatus.approved.value:
         return user
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
 
 def get_mechanic_park(db: Session, user: User) -> Park | None:
-    parks = db.scalars(select(Park).join(UserPark).where(UserPark.user_id == user.id)).all()
-    if len(parks) != 1:
-        return None
-    return parks[0]
+    parks = get_user_parks(db, user)
+    return parks[0] if parks else None
 
 
 def get_user_parks(db: Session, user: User) -> list[Park]:
@@ -101,20 +116,13 @@ def require_dashboard_park(park_id: int, db: Session, user: User) -> Park:
     if park is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
-    if user.role in (UserRole.royal.value, UserRole.admin.value):
+    if rbac.is_admin_or_royal(user):
         return park
 
-    if user.role == UserRole.operator.value:
+    slug = rbac.role_slug(user)
+    if slug in {rbac.RoleSlug.OPERATOR, rbac.RoleSlug.MECHANIC}:
         if user.access_status != AccessStatus.approved.value:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
         return require_operator_park(park_id, db, user)
-
-    if user.role == UserRole.mechanic.value:
-        if user.access_status != AccessStatus.approved.value:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-        mechanic_park = get_mechanic_park(db, user)
-        if mechanic_park is None or mechanic_park.id != park_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-        return park
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)

@@ -19,6 +19,8 @@
 #   from the calling shell would otherwise return 403 and spam the logs.
 # * Web dev server (Vite) listens on http://localhost:5173, proxied to the API
 #   at http://127.0.0.1:8000.
+# * Background start uses scripts/daemon-run.py (new session) so API/web survive
+#   when the launching terminal closes. For debugging, use run-api / run-web.
 
 set -euo pipefail
 
@@ -70,41 +72,87 @@ require_dev_seed() {
     fi
 }
 
+require_api_deps() {
+    [[ -x "$API_DIR/.venv/bin/uvicorn" ]] || fail "missing $API_DIR/.venv — run: cd apps/api && python3 -m venv .venv && .venv/bin/python -m pip install -e ."
+    if ! "$API_DIR/.venv/bin/python" -c "import multipart" 2>/dev/null; then
+        log "python-multipart missing — installing API deps"
+        "$API_DIR/.venv/bin/python" -m pip install -e "$API_DIR" -q
+    fi
+}
+
+run_migrations() {
+    log "running alembic upgrade head"
+    (
+        cd "$API_DIR"
+        if [[ -f .env ]]; then
+            set -a
+            # shellcheck disable=SC1091
+            . ./.env
+            set +a
+        fi
+        .venv/bin/alembic upgrade head
+    )
+}
+
+verify_attach_route() {
+    local code
+    code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$API_PORT/tracker/issues/_smoke_/attachments")"
+    if [[ "$code" == "404" ]]; then
+        fail "POST /tracker/issues/{key}/attachments returns 404 — API is stale; run: scripts/dev-demo.sh restart"
+    fi
+    if [[ "$code" != "401" ]]; then
+        warn "attachments route probe returned HTTP $code (expected 401 without auth)"
+    fi
+}
+
+start_daemon() {
+    local workdir="$1" log_file="$2" pid_file="$3"
+    shift 3
+    : >"$log_file"
+    local python="$API_DIR/.venv/bin/python"
+    [[ -x "$python" ]] || python=python3
+    "$python" "$REPO_ROOT/scripts/daemon-run.py" "$workdir" "$log_file" "$pid_file" "$@"
+}
+
 start() {
     require_dev_seed
+    require_api_deps
 
-    [[ -x "$API_DIR/.venv/bin/uvicorn" ]] || fail "missing $API_DIR/.venv — run: cd apps/api && python3 -m venv .venv && .venv/bin/pip install -e ."
     [[ -d "$WEB_DIR/node_modules" ]]     || fail "missing $WEB_DIR/node_modules — run: cd apps/web && npm ci"
 
-    mkdir -p "$(dirname "$API_LOG")" "$(dirname "$WEB_LOG")"
+    mkdir -p "$(dirname "$API_LOG")" "$(dirname "$WEB_LOG")" "$API_DIR/data"
+    local api_pid_file="$API_DIR/logs/uvicorn.pid"
+    local web_pid_file="$WEB_DIR/logs/vite.pid"
 
     kill_port "$API_PORT" "stale API"
     kill_port "$WEB_PORT" "stale web"
 
     unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy NO_PROXY no_proxy SOCKS_PROXY SOCKS5_PROXY GIT_HTTP_PROXY GIT_HTTPS_PROXY
 
+    if [[ -f "$API_DIR/.env" ]]; then
+        set -a
+        # shellcheck disable=SC1090
+        . "$API_DIR/.env"
+        set +a
+    fi
+
+    run_migrations
+
     log "starting API on 127.0.0.1:$API_PORT"
-    (
-        cd "$API_DIR"
-        nohup .venv/bin/uvicorn robopark_api.main:app \
-            --host 127.0.0.1 --port "$API_PORT" --log-level info \
-            >"$API_LOG" 2>&1 </dev/null &
-        disown
-    )
+    start_daemon "$API_DIR" "$API_LOG" "$api_pid_file" \
+        .venv/bin/uvicorn robopark_api.main:app \
+        --host 127.0.0.1 --port "$API_PORT" --log-level info
 
     log "starting web (vite) on 127.0.0.1:$WEB_PORT"
-    (
-        cd "$WEB_DIR"
-        nohup npm run dev -- --host 127.0.0.1 --port "$WEB_PORT" \
-            >"$WEB_LOG" 2>&1 </dev/null &
-        disown
-    )
+    start_daemon "$WEB_DIR" "$WEB_LOG" "$web_pid_file" \
+        npm run dev -- --host 127.0.0.1 --port "$WEB_PORT"
 
     if ! wait_http "http://127.0.0.1:$API_PORT/health" "API" 60; then
         warn "API health did not come up — last 40 lines:"
         tail -40 "$API_LOG" >&2 || true
         exit 1
     fi
+    verify_attach_route
     if ! wait_http "http://127.0.0.1:$WEB_PORT" "web" 60; then
         warn "Web dev server did not come up — last 40 lines:"
         tail -40 "$WEB_LOG" >&2 || true
@@ -121,6 +169,7 @@ start() {
     admin              RoboparkAdmin!1
     operator           RoboparkOperator!1
     mechanic           RoboparkMechanic!1
+    driver             RoboparkDriver!1
     operator_pending   RoboparkPending!1
     operator_rejected  RoboparkRejected!1
 
@@ -139,6 +188,10 @@ status() {
     printf '\n== listeners ==\n'
     lsof -iTCP:$API_PORT -sTCP:LISTEN -nP 2>/dev/null | head -3 || true
     lsof -iTCP:$WEB_PORT -sTCP:LISTEN -nP 2>/dev/null | head -3 || true
+    if [[ -f "$API_DIR/logs/uvicorn.pid" ]]; then
+        printf '\n== API pid file ==\n'
+        cat "$API_DIR/logs/uvicorn.pid" 2>/dev/null || true
+    fi
     if [[ -f "$API_LOG" ]]; then
         printf '\n== API log (tail) ==\n'
         tail -20 "$API_LOG"
@@ -151,9 +204,16 @@ status() {
 
 run_api() {
     require_dev_seed
-    [[ -x "$API_DIR/.venv/bin/uvicorn" ]] || fail "missing $API_DIR/.venv"
+    require_api_deps
     kill_port "$API_PORT" "stale API"
     unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy NO_PROXY no_proxy SOCKS_PROXY SOCKS5_PROXY GIT_HTTP_PROXY GIT_HTTPS_PROXY
+    if [[ -f "$API_DIR/.env" ]]; then
+        set -a
+        # shellcheck disable=SC1090
+        . "$API_DIR/.env"
+        set +a
+    fi
+    run_migrations
     cd "$API_DIR"
     log "API foreground on 127.0.0.1:$API_PORT (Ctrl-C to stop)"
     exec .venv/bin/uvicorn robopark_api.main:app \

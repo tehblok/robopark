@@ -3,9 +3,11 @@ import { Navigate, useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { useAuth } from '../auth-context'
 import { Alert, PageShell } from '../components/PageShell'
+import { PasswordField } from '../components/ui/PasswordField'
 import { Spinner } from '../components/ui/Feedback'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
+import { passwordChecks } from '../lib/passwordChecks'
 import { pathForUser } from '../routes'
 
 export function ChangePassword() {
@@ -16,6 +18,7 @@ export function ChangePassword() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const checks = passwordChecks(newPassword)
 
   if (loading) {
     return (
@@ -41,6 +44,10 @@ export function ChangePassword() {
       setError('Новый пароль и подтверждение не совпадают.')
       return
     }
+    if (!checks.ok) {
+      setError('Пароль слишком простой: от 12 символов и три типа знаков.')
+      return
+    }
 
     setSubmitting(true)
     try {
@@ -63,38 +70,39 @@ export function ChangePassword() {
       {error && <Alert tone="error">{error}</Alert>}
 
       <form className="login-card form-grid" onSubmit={(event) => void submit(event)}>
-        <label className="field">
-          <span className="field-label">Текущий пароль</span>
-          <input
-            autoComplete="current-password"
-            onChange={(event) => setCurrentPassword(event.target.value)}
-            required
-            type="password"
-            value={currentPassword}
-          />
-        </label>
-        <label className="field">
-          <span className="field-label">Новый пароль</span>
-          <input
-            autoComplete="new-password"
-            onChange={(event) => setNewPassword(event.target.value)}
-            required
-            type="password"
-            value={newPassword}
-          />
-        </label>
-        <label className="field">
-          <span className="field-label">Подтверждение</span>
-          <input
-            autoComplete="new-password"
-            onChange={(event) => setConfirmPassword(event.target.value)}
-            required
-            type="password"
-            value={confirmPassword}
-          />
-        </label>
+        <PasswordField
+          autoComplete="current-password"
+          autoFocus
+          label="Текущий пароль"
+          onChange={setCurrentPassword}
+          required
+          value={currentPassword}
+        />
+        <PasswordField
+          autoComplete="new-password"
+          label="Новый пароль"
+          minLength={12}
+          onChange={setNewPassword}
+          required
+          value={newPassword}
+        />
+        {newPassword.length > 0 && (
+          <ul className="password-meter" aria-live="polite">
+            <li className={checks.length ? 'is-ok' : ''}>От 12 символов</li>
+            <li className={checks.classes >= 3 ? 'is-ok' : ''}>
+              Три типа из четырёх: строчные, заглавные, цифры, спецсимволы
+            </li>
+          </ul>
+        )}
+        <PasswordField
+          autoComplete="new-password"
+          label="Подтверждение"
+          onChange={setConfirmPassword}
+          required
+          value={confirmPassword}
+        />
         <div className="form-actions">
-          <button className="btn" disabled={submitting} type="submit">
+          <button className="btn" disabled={submitting || !checks.ok} type="submit">
             {submitting ? <Spinner label="Сохранение" /> : 'Сохранить пароль'}
           </button>
         </div>

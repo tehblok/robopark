@@ -11,6 +11,7 @@ dependencies = [
   "cryptography>=44.0.0",
   "pydantic-settings>=2.6.0",
   "httpx>=0.28.0",
+  "python-multipart>=0.0.9",
   "yandex-tracker-client>=2.8",
   "importlib-metadata>=9.0.0",
 ]

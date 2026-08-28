@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from sqlalchemy import select
 
 from robopark_api.models import EmergencyField, EmergencySection, EmergencySectionRole
 from robopark_api.services import emergency_config
@@ -189,3 +190,22 @@ def test_config_cache_invalidated_on_seed(db_session, tmp_path):
 
     assert [s[0] for s in first] == ["status"]
     assert [s[0] for s in second] == ["batteries"]
+
+
+def test_ensure_default_section_roles_backfills_driver(db_session):
+    _seed_section(
+        db_session,
+        section_id="status",
+        title="Статус",
+        sort_order=0,
+        roles=["mechanic", "operator", "admin", "royal"],
+    )
+    emergency_config.ensure_default_section_roles(db_session)
+    roles = {
+        row.role
+        for row in db_session.scalars(
+            select(EmergencySectionRole).where(EmergencySectionRole.section_id == "status")
+        )
+    }
+    assert "driver" in roles
+

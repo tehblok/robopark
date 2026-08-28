@@ -23,6 +23,10 @@ def test_metadata_has_required_tables():
         "park_blocker_history",
         "reports",
         "audit_log",
+        "permissions",
+        "roles",
+        "role_permissions",
+        "user_permissions",
     }
 
 
@@ -31,7 +35,7 @@ def test_models_match_required_schema():
         "id",
         "username",
         "password_hash",
-        "role",
+        "role_id",
         "access_status",
         "tracker_login",
         "must_change_password",

@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from conftest import login_as
+from conftest import login_as, role_id_for
 from robopark_api.models import Park, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services.blocker_history import upsert_bucket
@@ -26,7 +26,7 @@ def seed_dashboard_park(db_session, *, username="op-dash", role="operator"):
     user = User(
         username=username,
         password_hash=hash_password("secret"),
-        role=role,
+        role_id=role_id_for(db_session, role),
         access_status="approved",
         is_active=True,
     )
@@ -88,6 +88,18 @@ def test_dashboard_summary_mechanic_other_park_403(client, db_session, seed_mech
     login_as(client, "mech1", "secret")
     response = client.get(f"/dashboard/summary?park_id={foreign.id}")
     assert response.status_code == 403
+
+
+def test_dashboard_summary_mechanic_second_park_ok(client, db_session, seed_mechanic):
+    extra = Park(name="Beta", tag="Beta", is_active=True)
+    db_session.add(extra)
+    db_session.flush()
+    db_session.add(UserPark(user_id=seed_mechanic.id, park_id=extra.id))
+    db_session.commit()
+    login_as(client, "mech1", "secret")
+    response = client.get(f"/dashboard/summary?park_id={extra.id}")
+    assert response.status_code == 200
+    assert response.json()["park_id"] == extra.id
 
 
 def test_dashboard_summary_not_found(client, db_session, seed_mechanic):

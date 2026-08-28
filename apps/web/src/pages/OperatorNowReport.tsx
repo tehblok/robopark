@@ -103,9 +103,8 @@ export function OperatorNowReport() {
   const parksLoading = parksRes.isLoading && !parksRes.data
   const showReportSkeleton = reportRes.isLoading && !report
   const error =
-    (parksRes.error && mapApiError(parksRes.error, ru.errors.load)) ||
-    (reportRes.error && mapApiError(reportRes.error, ru.errors.load)) ||
-    ''
+    (parksRes.error ? mapApiError(parksRes.error, ru.errors.load) : '') ||
+    (reportRes.error ? mapApiError(reportRes.error, ru.errors.load) : '')
 
   return (
     <PageShell

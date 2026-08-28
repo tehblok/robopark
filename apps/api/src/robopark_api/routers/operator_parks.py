@@ -31,6 +31,7 @@ class ParkRequestOut(BaseModel):
     created_at: datetime
     resolved_at: datetime | None
     resolved_by: int | None
+    username: str | None = None
 
 
 @router.get("/parks", response_model=list[ParkOut])

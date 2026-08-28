@@ -6,12 +6,12 @@ from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
 from robopark_api.deps import (
-    get_mechanic_park,
-    require_approved_mechanic,
     require_approved_operator,
+    require_operator_park,
     require_user,
 )
-from robopark_api.models import AccessStatus, Report, User, UserRole
+from robopark_api.models import Report, User
+from robopark_api.services import rbac
 from robopark_api.schemas import (
     ReportBadgeOut,
     ReportCreateIn,
@@ -26,12 +26,18 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 T = TypeVar("T")
 
 
-def _require_inbox_viewer(user: User = Depends(require_user)) -> User:
-    if user.role in (UserRole.admin.value, UserRole.royal.value):
-        return user
-    if user.role == UserRole.operator.value and user.access_status == AccessStatus.approved.value:
-        return user
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+def _require_inbox_viewer(
+    user: User = Depends(require_user), db: Session = Depends(get_db)
+) -> User:
+    rbac.require_approved_permission(db, user, rbac.PERMISSION_REPORTS_RESOLVE)
+    return user
+
+
+def _require_report_author(
+    user: User = Depends(require_user), db: Session = Depends(get_db)
+) -> User:
+    rbac.require_approved_permission(db, user, rbac.PERMISSION_REPORTS_CREATE)
+    return user
 
 
 def _report_out(report: Report) -> ReportOut:
@@ -50,15 +56,13 @@ def _run_svc(fn: Callable[[], T]) -> T:
 
 
 def _require_mechanic_park(db: Session, user: User, park_id: int) -> None:
-    park = get_mechanic_park(db, user)
-    if park is None or park.id != park_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    require_operator_park(park_id, db, user)
 
 
 @router.post("", response_model=ReportOut, status_code=status.HTTP_201_CREATED)
 def create_report(
     payload: ReportCreateIn,
-    user: User = Depends(require_approved_mechanic),
+    user: User = Depends(_require_report_author),
     db: Session = Depends(get_db),
 ) -> ReportOut:
     _require_mechanic_park(db, user, payload.park_id)

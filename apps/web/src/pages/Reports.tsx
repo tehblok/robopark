@@ -12,33 +12,37 @@ import { useCachedResource, resourceStore } from '../lib/resource'
 import { useParkContext } from '../park-context'
 import { refreshReportsBadge } from '../reports-badge'
 
-function isInboxRole(role: string): boolean {
-  return role === 'operator' || role === 'admin' || role === 'royal'
+function hasInbox(user: { permissions?: string[] } | null | undefined): boolean {
+  return (user?.permissions ?? []).includes('reports.resolve')
 }
 
-function isAdminRole(role: string): boolean {
-  return role === 'admin' || role === 'royal'
+function canCreateReports(user: { role: string; permissions?: string[] } | null | undefined): boolean {
+  if (!user) return false
+  if (user.role === 'mechanic') return true
+  const perms = user.permissions ?? []
+  return perms.includes('reports.create') && !perms.includes('reports.resolve')
 }
 
 export function Reports() {
   const { user } = useAuth()
   const { parkId, parks, parksLoading } = useParkContext()
   const role = user?.role ?? ''
+  const inboxEnabled = hasInbox(user)
+  const createEnabled = canCreateReports(user)
   const [selectedId, setSelectedId] = useState<number | null>(null)
 
   const selectedPark = parks.find((park) => park.id === parkId)
 
   const mineRes = useCachedResource<Report[]>(
-    role === 'mechanic' ? 'reports:mine' : '',
+    createEnabled ? 'reports:mine' : '',
     () => api.reportsMine(),
-    { enabled: role === 'mechanic' && !parksLoading },
+    { enabled: createEnabled && !parksLoading },
   )
-  const inboxKey =
-    isInboxRole(role) && parkId != null ? `reports:inbox:${parkId}` : ''
+  const inboxKey = inboxEnabled && parkId != null ? `reports:inbox:${parkId}` : ''
   const inboxRes = useCachedResource<Report[]>(
     inboxKey,
     () => api.reportsInbox(parkId as number),
-    { enabled: isInboxRole(role) && parkId != null && !parksLoading },
+    { enabled: inboxEnabled && parkId != null && !parksLoading },
   )
   const detailRes = useCachedResource<Report>(
     selectedId != null ? `reports:detail:${selectedId}` : '',
@@ -50,16 +54,12 @@ export function Reports() {
   const inbox = inboxRes.data ?? []
   const selectedReport = detailRes.data ?? null
 
-  const listRes = role === 'mechanic' ? mineRes : inboxRes
-  const listError = listRes.error
-    ? mapApiError(listRes.error, ru.errors.load)
-    : ''
+  const listRes = createEnabled ? mineRes : inboxRes
+  const listError = listRes.error ? mapApiError(listRes.error, ru.errors.load) : ''
   const listLoading = listRes.isRevalidating
   const showListSkeleton = listRes.isLoading && !listRes.data && !listError
 
-  const detailError = detailRes.error
-    ? mapApiError(detailRes.error, ru.errors.load)
-    : ''
+  const detailError = detailRes.error ? mapApiError(detailRes.error, ru.errors.load) : ''
   const detailLoading = detailRes.isLoading && !selectedReport && !detailError
 
   function handleSelect(report: Report) {
@@ -72,14 +72,12 @@ export function Reports() {
 
   async function refreshLists() {
     await Promise.all([
-      role === 'mechanic' ? mineRes.refresh() : Promise.resolve(),
+      createEnabled ? mineRes.refresh() : Promise.resolve(),
       inboxKey ? inboxRes.refresh() : Promise.resolve(),
     ])
   }
 
   async function handleDetailUpdated() {
-    // Drop cached inbox/mine so /reports/inbox and /reports/mine reflect the
-    // latest status without waiting for TTL.
     resourceStore.invalidate('reports:', { prefix: true })
     await refreshLists()
     refreshReportsBadge()
@@ -102,8 +100,9 @@ export function Reports() {
     refreshReportsBadge()
   }
 
-  const inboxTitle = isAdminRole(role) ? 'Эскалации' : 'Входящие'
-  const inboxHint = isAdminRole(role)
+  const isAdminInbox = role === 'admin' || role === 'royal'
+  const inboxTitle = isAdminInbox ? 'Эскалации' : 'Входящие'
+  const inboxHint = isAdminInbox
     ? 'Открытые эскалации от операторов. Фильтр по парку — в верхней панели.'
     : 'Открытые репорты механиков по выбранному парку.'
 
@@ -113,7 +112,7 @@ export function Reports() {
         <h1 className="dashboard-title">{ru.nav.reports}</h1>
         <button
           className="btn btn-secondary"
-          disabled={listLoading || parksLoading || (isInboxRole(role) && parkId == null)}
+          disabled={listLoading || parksLoading || (inboxEnabled && parkId == null)}
           onClick={() => void refreshLists()}
           type="button"
         >
@@ -123,7 +122,7 @@ export function Reports() {
 
       {listError && <Alert tone="error">{listError}</Alert>}
 
-      {role === 'mechanic' && (
+      {createEnabled && (
         <>
           <Panel hint="Статусы ваших репортов и комментарии при возврате." title="Мои репорты">
             <ReportList
@@ -153,7 +152,7 @@ export function Reports() {
         </>
       )}
 
-      {isInboxRole(role) && (
+      {inboxEnabled && (
         <>
           {parkId == null && !parksLoading && (
             <EmptyBlock
@@ -193,6 +192,14 @@ export function Reports() {
             </Panel>
           )}
         </>
+      )}
+
+      {!createEnabled && !inboxEnabled && user && (
+        <EmptyBlock
+          hint="Для этой роли нет действий с репортами."
+          icon="✉"
+          title="Раздел недоступен"
+        />
       )}
 
       {!role && !user && <SkeletonList rows={3} />}

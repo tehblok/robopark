@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+from conftest import role_id_for
 from robopark_api.models import Park, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings as settings_svc
@@ -12,7 +13,7 @@ def _operator(db_session, *, parks: list[Park]) -> User:
     user = User(
         username="op-scope",
         password_hash=hash_password("secret"),
-        role="operator",
+        role_id=role_id_for(db_session, "operator"),
         access_status="approved",
         is_active=True,
     )

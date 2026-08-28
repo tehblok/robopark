@@ -4,17 +4,19 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from robopark_api.deps import get_mechanic_park, get_user_parks
-from robopark_api.models import Park, User, UserRole
+from robopark_api.deps import get_user_parks
+from robopark_api.models import Park, User
 from robopark_api.services import platform_settings as settings_svc
+from robopark_api.services import rbac
+from robopark_api.services.rbac import RoleSlug
 
-ALLOWED_ACTIONS = {"comment", "assign", "unassign", "transition", "close"}
+ALLOWED_ACTIONS = {"comment", "assign", "unassign", "transition", "close", "attach"}
 
 
 def allowed_queues_for_user(db: Session, user: User) -> list[str]:
-    if user.role in {UserRole.admin.value, UserRole.royal.value}:
+    if rbac.is_admin_or_royal(user):
         return []
-    if user.role == UserRole.operator.value:
+    if rbac.role_slug(user) in {RoleSlug.OPERATOR, RoleSlug.MECHANIC}:
         parks = get_user_parks(db, user)
         seen: set[str] = set()
         queues: list[str] = []
@@ -24,12 +26,6 @@ def allowed_queues_for_user(db: Session, user: User) -> list[str]:
                 seen.add(queue)
                 queues.append(queue)
         return queues
-    if user.role == UserRole.mechanic.value:
-        park = get_mechanic_park(db, user)
-        if park is None:
-            return []
-        queue = (park.tracker_queue or "").strip()
-        return [queue] if queue else []
     return []
 
 
@@ -40,29 +36,25 @@ def all_park_tags(db: Session) -> set[str]:
 
 
 def allowed_park_tags_for_user(db: Session, user: User) -> set[str]:
-    if user.role in {UserRole.admin.value, UserRole.royal.value}:
+    if rbac.is_admin_or_royal(user):
         return set()
-    if user.role == UserRole.operator.value:
+    if rbac.role_slug(user) in {RoleSlug.OPERATOR, RoleSlug.MECHANIC}:
         return {str(park.tag).strip() for park in get_user_parks(db, user) if park.tag}
-    if user.role == UserRole.mechanic.value:
-        park = get_mechanic_park(db, user)
-        if park and park.tag:
-            return {str(park.tag).strip()}
     return set()
 
 
 def can_view_untagged(db: Session, user: User) -> bool:
-    if user.role in {UserRole.admin.value, UserRole.royal.value}:
+    if rbac.is_admin_or_royal(user):
         return True
-    if user.role == UserRole.operator.value:
+    if rbac.role_slug(user) == RoleSlug.OPERATOR:
         return settings_svc.tracker_policy_status(db)["operator_show_untagged"]
     return False
 
 
 def can_write_tracker(db: Session, user: User) -> bool:
-    if user.role in {UserRole.admin.value, UserRole.royal.value, UserRole.operator.value}:
+    if rbac.is_admin_or_royal(user) or rbac.role_slug(user) == RoleSlug.OPERATOR:
         return True
-    if user.role == UserRole.mechanic.value:
+    if rbac.role_slug(user) == RoleSlug.MECHANIC:
         return settings_svc.tracker_policy_status(db)["mechanic_can_write"]
     return False
 
@@ -108,10 +100,10 @@ def _check_issue_scope(db: Session, user: User, issue: dict) -> None:
     Anything unverifiable (missing queue, unknown tag, no park assigned) is denied
     for non-admin roles instead of being silently allowed.
     """
-    if user.role in {UserRole.admin.value, UserRole.royal.value}:
+    if rbac.is_admin_or_royal(user):
         return
 
-    if user.role not in {UserRole.operator.value, UserRole.mechanic.value}:
+    if rbac.role_slug(user) not in {RoleSlug.OPERATOR, RoleSlug.MECHANIC}:
         _deny()
 
     # 1. Queue must be present and inside the user's allowed set.
@@ -141,6 +133,8 @@ def ensure_action_allowed(db: Session, user: User, issue: dict, action: str) -> 
     if action not in ALLOWED_ACTIONS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
     enforce_issue_scope(db, user, issue)
+    if action == "attach":
+        return
     if not can_write_tracker(db, user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

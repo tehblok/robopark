@@ -4,7 +4,11 @@ import { api } from '../api'
 import { useAuth } from '../auth-context'
 import { ru, roleLabel } from '../i18n/ru'
 import { useCachedResource } from '../lib/resource'
-import { moreNavItems, navItemsForRole, primaryNavItems } from '../nav'
+import {
+  moreNavItemsFromPermissions,
+  navItemsForPermissions,
+  primaryNavItemsFromPermissions,
+} from '../nav-permissions'
 import { useParkContext } from '../park-context'
 import { REPORTS_BADGE_REFRESH } from '../reports-badge'
 import { getStoredTheme, setTheme, type Theme } from '../theme'
@@ -60,11 +64,17 @@ export function AppShell({ children }: AppShellProps) {
 
   if (!user) return null
 
-  const items = navItemsForRole(user.role)
-  const primary = primaryNavItems(user.role)
-  const more = moreNavItems(user.role)
-  const showAdminLink = user.role === 'admin' || user.role === 'royal'
+  const permissions = user.permissions ?? []
+  const items = navItemsForPermissions(permissions)
+  const primary = primaryNavItemsFromPermissions(permissions)
+  const more = moreNavItemsFromPermissions(permissions)
+  const showAdminLink = permissions.includes('nav.admin')
   const selectedPark = parks.find((park) => park.id === parkId)
+  const needsParkSelector =
+    permissions.includes('nav.dashboard') ||
+    permissions.includes('nav.tasks') ||
+    permissions.includes('nav.reports') ||
+    permissions.includes('nav.analytics')
 
   const toggleTheme = () => {
     const next: Theme = theme === 'light' ? 'dark' : 'light'
@@ -105,29 +115,33 @@ export function AppShell({ children }: AppShellProps) {
       </aside>
       <div className="app-main">
         <header className="topbar">
-          <div className="topbar-park">
-            <span className="topbar-field-label">{ru.nav.park}</span>
-            {parkLocked ? (
-              <span className="topbar-pill topbar-park-value">
-                {selectedPark?.name ?? '—'}
-              </span>
-            ) : (
-              <select
-                className="topbar-pill topbar-select"
-                value={parkId ?? ''}
-                disabled={parksLoading || parks.length === 0}
-                onChange={(event) => setParkId(Number(event.target.value))}
-              >
-                {parks.length === 0 ? (
-                  <option value="">—</option>
+          <div className="topbar-leading">
+            {(needsParkSelector && (parks.length > 0 || parksLoading)) && (
+              <div className="topbar-park">
+                <span className="topbar-field-label">{ru.nav.park}</span>
+                {parkLocked ? (
+                  <span className="topbar-pill topbar-park-value">
+                    {selectedPark?.name ?? (parksLoading ? ru.loading : '—')}
+                  </span>
                 ) : (
-                  parks.map((park) => (
-                    <option key={park.id} value={park.id}>
-                      {park.name}
-                    </option>
-                  ))
+                  <select
+                    className="topbar-pill topbar-select"
+                    value={parkId ?? ''}
+                    disabled={parksLoading || parks.length === 0}
+                    onChange={(event) => setParkId(Number(event.target.value))}
+                  >
+                    {parks.length === 0 ? (
+                      <option value="">{parksLoading ? ru.loading : '—'}</option>
+                    ) : (
+                      parks.map((park) => (
+                        <option key={park.id} value={park.id}>
+                          {park.name}
+                        </option>
+                      ))
+                    )}
+                  </select>
                 )}
-              </select>
+              </div>
             )}
           </div>
           <button
@@ -220,6 +234,7 @@ export function AppShell({ children }: AppShellProps) {
                   {ru.nav.close}
                 </button>
               </div>
+              {more.length > 0 ? (
               <nav className="mobile-more-nav">
                 {more.map((item) => (
                   <NavLink
@@ -236,6 +251,7 @@ export function AppShell({ children }: AppShellProps) {
                   </NavLink>
                 ))}
               </nav>
+              ) : null}
               <div className="mobile-more-actions">
                 {showAdminLink ? (
                   <Link className="topbar-menu-item" to="/admin" onClick={() => setMoreOpen(false)}>

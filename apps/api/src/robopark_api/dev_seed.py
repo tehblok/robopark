@@ -12,8 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from robopark_api.config import Settings
-from robopark_api.models import AccessStatus, Park, User, UserPark, UserRole
+from robopark_api.models import AccessStatus, Park, User, UserPark
 from robopark_api.security import hash_password
+from robopark_api.services import rbac
+from robopark_api.services.rbac import RoleSlug
+from robopark_api.services.rbac_seed import ensure_rbac_catalog
 
 DEV_PARK_TAG = "Demo"
 DEV_PARK_NAME = "Demo Park"
@@ -24,7 +27,7 @@ DEV_PARK_QUEUE = "ROBOPARK"
 class DevAccount:
     username: str
     password: str
-    role: UserRole
+    role_slug: str
     access_status: AccessStatus = AccessStatus.approved
     tracker_login: str | None = None
     park_tag: str | None = DEV_PARK_TAG
@@ -32,26 +35,27 @@ class DevAccount:
 
 # Dev-only credentials documented in README and docs/DEV-ACCOUNTS.md.
 DEV_ACCOUNTS: tuple[DevAccount, ...] = (
-    DevAccount("royal", "RoboparkRoyal!1", UserRole.royal),
-    DevAccount("admin", "RoboparkAdmin!1", UserRole.admin),
-    DevAccount("operator", "RoboparkOperator!1", UserRole.operator),
+    DevAccount("royal", "RoboparkRoyal!1", RoleSlug.ROYAL),
+    DevAccount("admin", "RoboparkAdmin!1", RoleSlug.ADMIN),
+    DevAccount("operator", "RoboparkOperator!1", RoleSlug.OPERATOR),
     DevAccount(
         "mechanic",
         "RoboparkMechanic!1",
-        UserRole.mechanic,
+        RoleSlug.MECHANIC,
         tracker_login="mechanic.dev",
     ),
+    DevAccount("driver", "RoboparkDriver!1", RoleSlug.DRIVER, park_tag=None),
     DevAccount(
         "operator_pending",
         "RoboparkPending!1",
-        UserRole.operator,
+        RoleSlug.OPERATOR,
         access_status=AccessStatus.pending,
         park_tag=None,
     ),
     DevAccount(
         "operator_rejected",
         "RoboparkRejected!1",
-        UserRole.operator,
+        RoleSlug.OPERATOR,
         access_status=AccessStatus.rejected,
         park_tag=None,
     ),
@@ -62,6 +66,7 @@ def ensure_dev_seed(db: Session, settings: Settings) -> None:
     if not settings.dev_seed:
         return
 
+    ensure_rbac_catalog(db)
     park = _ensure_demo_park(db)
     for account in DEV_ACCOUNTS:
         user = _ensure_user(db, account)
@@ -94,10 +99,13 @@ def _ensure_user(db: Session, account: DevAccount) -> User:
     if existing is not None:
         return existing
 
+    role = rbac.get_role_by_slug(db, account.role_slug)
+    assert role is not None
+
     user = User(
         username=account.username,
         password_hash=hash_password(account.password),
-        role=account.role.value,
+        role_id=role.id,
         access_status=account.access_status.value,
         tracker_login=account.tracker_login,
         is_active=True,

@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from conftest import login_as
+from conftest import login_as, role_id_for
 from robopark_api.models import Park, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import tracker_metrics
@@ -27,7 +27,7 @@ def seed_op_report(db_session):
     op = User(
         username="op-report",
         password_hash=hash_password("secret"),
-        role="operator",
+        role_id=role_id_for(db_session, "operator"),
         access_status="approved",
         is_active=True,
     )
@@ -112,7 +112,7 @@ def test_now_report_no_parks(client, db_session, seed_royal):
     op = User(
         username="op-none",
         password_hash=hash_password("secret"),
-        role="operator",
+        role_id=role_id_for(db_session, "operator"),
         access_status="approved",
         is_active=True,
     )

@@ -15,7 +15,7 @@ export function ParkProvider({ children }: PropsWithChildren) {
   const [parksLoading, setParksLoading] = useState(false)
   const [parkId, setParkIdState] = useState<number | null>(() => readStoredParkId())
 
-  const parkLocked = user?.role === 'mechanic'
+  const parkLocked = user?.role === 'mechanic' && (user.parks?.length ?? 0) <= 1
 
   useEffect(() => {
     if (!user) {

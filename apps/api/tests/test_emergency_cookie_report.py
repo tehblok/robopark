@@ -5,7 +5,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from conftest import login_as
-from robopark_api.models import Report, User, UserRole
+from robopark_api.models import Report, User
+from robopark_api.services.rbac import RoleSlug
 from robopark_api.services import emergency_cache, emergency_client
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import reports as reports_svc
@@ -19,7 +20,7 @@ def test_ensure_cookie_report_dedupes(db_session, seed_royal):
     assert first is not None and first.id == second.id
     assert first.kind == "emergency_cookie_stale"
     assert first.park_id is None
-    assert first.target_role == UserRole.admin.value
+    assert first.target_role == RoleSlug.ADMIN
     open_rows = db_session.query(Report).filter(Report.status == "open").all()
     assert len(open_rows) == 1
 

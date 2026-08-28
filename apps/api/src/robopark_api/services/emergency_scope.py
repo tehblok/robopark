@@ -15,9 +15,11 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from robopark_api.deps import get_user_parks
-from robopark_api.models import User, UserRole
+from robopark_api.models import User
 from robopark_api.services import platform_settings as settings_svc
+from robopark_api.services import rbac
 from robopark_api.services import tracker_cache, tracker_client
+from robopark_api.services.rbac import RoleSlug
 from robopark_api.services.tracker_policy import is_issue_in_scope
 
 
@@ -36,7 +38,9 @@ def robot_query_from_vin(vin: str) -> str:
 
 def vin_allowed_for_user(db: Session, user: User, vin: str) -> bool:
     """True when *user* may read Emergency diagnostics for *vin*."""
-    if user.role in {UserRole.admin.value, UserRole.royal.value}:
+    if rbac.is_admin_or_royal(user):
+        return True
+    if rbac.role_slug(user) == RoleSlug.DRIVER:
         return True
 
     parks = [park for park in get_user_parks(db, user) if (park.tracker_queue or "").strip()]

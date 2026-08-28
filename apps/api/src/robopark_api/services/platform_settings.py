@@ -19,7 +19,7 @@ from robopark_api.models import PlatformSetting
 logger = logging.getLogger(__name__)
 
 #: Settings whose values are encrypted at rest.
-SECRET_KEYS = frozenset({"tracker_token", "emergency_cookie"})
+SECRET_KEYS = frozenset({"tracker_token", "emergency_cookie", "registration_shared_password"})
 
 TRACKER_TOKEN_KEY = "tracker_token"
 # Legacy cloud-org keys kept for DB compatibility; unused for internal Startrek.
@@ -35,6 +35,12 @@ TRACKER_OPERATOR_UNTAGGED_KEY = "tracker_operator_untagged"
 TRACKER_OPERATOR_RAW_KEY = "tracker_operator_raw"
 TRACKER_OPERATOR_FIRMWARE_KEY = "tracker_operator_firmware_profile"
 TRACKER_MECHANIC_WRITE_KEY = "tracker_mechanic_write"
+SCREENSHOT_GUARD_OPERATOR_KEY = "screenshot_guard_operator"
+SCREENSHOT_GUARD_MECHANIC_KEY = "screenshot_guard_mechanic"
+SCREENSHOT_GUARD_ADMIN_KEY = "screenshot_guard_admin"
+SCREENSHOT_GUARD_ROYAL_KEY = "screenshot_guard_royal"
+SCREENSHOT_GUARD_DRIVER_KEY = "screenshot_guard_driver"
+REGISTRATION_SHARED_PASSWORD_KEY = "registration_shared_password"
 
 _keepalive_ring_lock = threading.Lock()
 
@@ -191,3 +197,78 @@ def tracker_policy_status(db: Session) -> dict[str, bool]:
         "operator_show_firmware_profile": get_bool_setting(db, TRACKER_OPERATOR_FIRMWARE_KEY, True),
         "mechanic_can_write": get_bool_setting(db, TRACKER_MECHANIC_WRITE_KEY, True),
     }
+
+
+def screenshot_guard_status(db: Session) -> dict[str, bool]:
+    return {
+        "operator": get_bool_setting(db, SCREENSHOT_GUARD_OPERATOR_KEY, False),
+        "mechanic": get_bool_setting(db, SCREENSHOT_GUARD_MECHANIC_KEY, False),
+        "admin": get_bool_setting(db, SCREENSHOT_GUARD_ADMIN_KEY, False),
+        "royal": get_bool_setting(db, SCREENSHOT_GUARD_ROYAL_KEY, False),
+        "driver": get_bool_setting(db, SCREENSHOT_GUARD_DRIVER_KEY, False),
+    }
+
+
+_ROLE_SCREENSHOT_GUARD_KEYS: dict[str, str] = {
+    "operator": SCREENSHOT_GUARD_OPERATOR_KEY,
+    "mechanic": SCREENSHOT_GUARD_MECHANIC_KEY,
+    "admin": SCREENSHOT_GUARD_ADMIN_KEY,
+    "royal": SCREENSHOT_GUARD_ROYAL_KEY,
+    "driver": SCREENSHOT_GUARD_DRIVER_KEY,
+}
+
+
+def screenshot_guard_enabled_for_role(db: Session, role: str) -> bool:
+    key = _ROLE_SCREENSHOT_GUARD_KEYS.get(role)
+    if key is None:
+        return False
+    return get_bool_setting(db, key, False)
+
+
+def get_registration_shared_password(db: Session) -> str | None:
+    return get_secret_setting(db, REGISTRATION_SHARED_PASSWORD_KEY)
+
+
+def get_effective_registration_shared_password(
+    db: Session,
+    env_fallback: str | None = None,
+) -> str | None:
+    """DB value wins; env ``OPERATOR_SHARED_PASSWORD`` is legacy fallback."""
+    stored = get_registration_shared_password(db)
+    if stored:
+        return stored
+    return env_fallback
+
+
+def set_registration_shared_password(db: Session, password: str) -> None:
+    set_setting(db, REGISTRATION_SHARED_PASSWORD_KEY, password)
+
+
+def clear_registration_shared_password(db: Session) -> None:
+    row = get_setting(db, REGISTRATION_SHARED_PASSWORD_KEY)
+    if row is not None:
+        db.delete(row)
+        db.commit()
+
+
+def registration_password_status(db: Session) -> dict:
+    row = get_setting(db, REGISTRATION_SHARED_PASSWORD_KEY)
+    value = get_registration_shared_password(db)
+    return {
+        "configured": bool(value),
+        "password_masked": mask_secret(value),
+        "updated_at": row.updated_at.isoformat() if row and row.updated_at else None,
+        "encrypted": is_encrypted(row.value) if row and row.value else False,
+    }
+
+
+def migrate_registration_password_from_env(db: Session) -> bool:
+    """One-time import of ``OPERATOR_SHARED_PASSWORD`` into platform_settings."""
+    if get_registration_shared_password(db) is not None:
+        return False
+    env_value = get_settings().operator_shared_password
+    if not env_value:
+        return False
+    set_registration_shared_password(db, env_value)
+    logger.info("Imported registration shared password from OPERATOR_SHARED_PASSWORD env")
+    return True

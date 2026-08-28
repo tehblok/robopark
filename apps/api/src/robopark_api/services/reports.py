@@ -7,8 +7,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from robopark_api.deps import get_user_parks
-from robopark_api.models import AccessStatus, Report, User, UserRole
+from robopark_api.models import AccessStatus, Report, Role, User
 from robopark_api.services import platform_settings as settings_svc
+from robopark_api.services.rbac import RoleSlug
 
 KIND_TICKET_QUESTION = "ticket_question"
 KIND_TICKET_CLOSE_REVIEW = "ticket_close_review"
@@ -44,7 +45,7 @@ def create_manual_report(
         status=STATUS_OPEN,
         park_id=park_id,
         author_user_id=author.id,
-        target_role=UserRole.operator.value,
+        target_role=RoleSlug.OPERATOR,
         tracker_key=tracker_key,
         tracker_url=tracker_url,
         title=title,
@@ -82,7 +83,7 @@ def get_or_create_close_review(
         status=STATUS_OPEN,
         park_id=park_id,
         author_user_id=author.id,
-        target_role=UserRole.operator.value,
+        target_role=RoleSlug.OPERATOR,
         tracker_key=tracker_key,
         tracker_url=tracker_url,
         title=title,
@@ -108,8 +109,9 @@ def _load_report(db: Session, report_id: int) -> Report:
 def _first_admin(db: Session) -> User | None:
     return db.scalars(
         select(User)
+        .join(Role)
         .where(
-            User.role.in_((UserRole.admin.value, UserRole.royal.value)),
+            Role.slug.in_((RoleSlug.ADMIN, RoleSlug.ROYAL)),
             User.is_active.is_(True),
         )
         .order_by(User.id.asc())
@@ -139,7 +141,7 @@ def ensure_open_emergency_cookie_report(db: Session, *, author: User | None) -> 
         status=STATUS_OPEN,
         park_id=None,
         author_user_id=user.id,
-        target_role=UserRole.admin.value,
+        target_role=RoleSlug.ADMIN,
         title="Emergency cookie протухла",
         body=body,
     )
@@ -180,13 +182,11 @@ def resolve_open_emergency_cookie_reports(db: Session) -> int:
 
 
 def _is_admin_inbox_user(user: User) -> bool:
-    return user.role in (UserRole.admin.value, UserRole.royal.value)
+    return user.role in (RoleSlug.ADMIN, RoleSlug.ROYAL)
 
 
 def _is_approved_operator(user: User) -> bool:
-    return (
-        user.role == UserRole.operator.value and user.access_status == AccessStatus.approved.value
-    )
+    return user.role == RoleSlug.OPERATOR and user.access_status == AccessStatus.approved.value
 
 
 def _can_view_report(db: Session, user: User, report: Report) -> bool:
@@ -196,7 +196,7 @@ def _can_view_report(db: Session, user: User, report: Report) -> bool:
         return True
     return bool(
         _is_approved_operator(user)
-        and report.target_role == UserRole.operator.value
+        and report.target_role == RoleSlug.OPERATOR
         and report.park_id in _user_park_ids(db, user)
     )
 
@@ -204,9 +204,9 @@ def _can_view_report(db: Session, user: User, report: Report) -> bool:
 def _can_act_on_report(db: Session, user: User, report: Report) -> bool:
     if report.status != STATUS_OPEN:
         return False
-    if report.target_role == UserRole.admin.value:
+    if report.target_role == RoleSlug.ADMIN:
         return _is_admin_inbox_user(user)
-    if report.target_role == UserRole.operator.value:
+    if report.target_role == RoleSlug.OPERATOR:
         return (
             _is_approved_operator(user)
             and report.park_id is not None
@@ -236,7 +236,7 @@ def list_inbox(db: Session, user: User, *, park_id: int | None = None) -> list[R
     if _is_admin_inbox_user(user):
         stmt = select(Report).where(
             Report.status == STATUS_OPEN,
-            Report.target_role == UserRole.admin.value,
+            Report.target_role == RoleSlug.ADMIN,
         )
     elif _is_approved_operator(user):
         park_ids = _user_park_ids(db, user)
@@ -248,7 +248,7 @@ def list_inbox(db: Session, user: User, *, park_id: int | None = None) -> list[R
             return []
         stmt = select(Report).where(
             Report.status == STATUS_OPEN,
-            Report.target_role == UserRole.operator.value,
+            Report.target_role == RoleSlug.OPERATOR,
             Report.park_id.in_(park_ids),
         )
     else:
@@ -308,7 +308,7 @@ def escalate_report(db: Session, user: User, report_id: int, comment: str) -> Re
     parent = _load_report(db, report_id)
     if parent.status != STATUS_OPEN:
         raise PermissionError("forbidden")
-    if parent.target_role != UserRole.operator.value:
+    if parent.target_role != RoleSlug.OPERATOR:
         raise PermissionError("forbidden")
     if parent.park_id not in _user_park_ids(db, user):
         raise PermissionError("forbidden")
@@ -319,7 +319,7 @@ def escalate_report(db: Session, user: User, report_id: int, comment: str) -> Re
         status=STATUS_OPEN,
         park_id=parent.park_id,
         author_user_id=user.id,
-        target_role=UserRole.admin.value,
+        target_role=RoleSlug.ADMIN,
         tracker_key=parent.tracker_key,
         tracker_url=parent.tracker_url,
         title=parent.title,
@@ -333,7 +333,7 @@ def escalate_report(db: Session, user: User, report_id: int, comment: str) -> Re
 
 
 def badge_counts(db: Session, user: User, *, park_id: int | None = None) -> dict:
-    if user.role == UserRole.mechanic.value:
+    if user.role == RoleSlug.MECHANIC:
         count = db.scalar(
             select(func.count())
             .select_from(Report)
@@ -350,7 +350,7 @@ def badge_counts(db: Session, user: User, *, park_id: int | None = None) -> dict
             .select_from(Report)
             .where(
                 Report.status == STATUS_OPEN,
-                Report.target_role == UserRole.admin.value,
+                Report.target_role == RoleSlug.ADMIN,
             )
         )
         return {"count": count or 0}
@@ -368,7 +368,7 @@ def badge_counts(db: Session, user: User, *, park_id: int | None = None) -> dict
             .select_from(Report)
             .where(
                 Report.status == STATUS_OPEN,
-                Report.target_role == UserRole.operator.value,
+                Report.target_role == RoleSlug.OPERATOR,
                 Report.park_id.in_(park_ids),
             )
         )

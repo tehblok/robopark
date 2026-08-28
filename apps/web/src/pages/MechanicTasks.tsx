@@ -14,14 +14,17 @@ import { EmptyBlock, SkeletonList } from '../components/ui/Feedback'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
 import { useCachedResource } from '../lib/resource'
+import { useParkContext } from '../park-context'
 
 export function MechanicTasks() {
+  const { parkId, parksLoading } = useParkContext()
   const [status, setStatus] = useState('all')
   const [openKey, setOpenKey] = useState('')
 
   const tasksRes = useCachedResource(
-    `mechanic:tasks:${status}`,
-    () => api.mechanicTasks(status),
+    parkId == null ? '' : `mechanic:tasks:${parkId}:${status}`,
+    () => api.mechanicTasks(status, parkId as number),
+    { enabled: parkId != null && !parksLoading },
   )
   const items = tasksRes.data?.items ?? []
   const counts = tasksRes.data?.counts ?? {}

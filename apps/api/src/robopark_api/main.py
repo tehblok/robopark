@@ -8,12 +8,12 @@ from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
 from robopark_api.dev_seed import ensure_dev_seed
 from robopark_api.routers import (
-    admin_access,
     admin_audit,
     admin_emergency,
-    admin_mechanics,
     admin_park_requests,
+    admin_roles,
     admin_settings,
+    admin_users,
     auth,
     dashboard,
     emergency,
@@ -32,6 +32,8 @@ from robopark_api.routers import (
 )
 from robopark_api.seed import ensure_seed_user
 from robopark_api.services import platform_settings as settings_svc
+from robopark_api.services.rbac_seed import ensure_rbac_catalog
+from robopark_api.services.emergency_config import ensure_default_section_roles
 from robopark_api.services.blocker_history_job import run_blocker_history_loop
 from robopark_api.services.emergency_keepalive import run_keepalive_loop
 from robopark_api.services.session_cleanup import run_session_cleanup_loop
@@ -43,6 +45,8 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         with SessionLocal() as db:
+            ensure_rbac_catalog(db)
+            ensure_default_section_roles(db)
             ensure_seed_user(db, settings)
             ensure_dev_seed(db, settings)
             # Databases from before the encryption feature can still hold
@@ -50,6 +54,7 @@ def create_app() -> FastAPI:
             # so ``SECRET_KEY`` actually protects an existing install, not
             # only fresh writes from the admin UI.
             settings_svc.migrate_plaintext_secrets(db)
+            settings_svc.migrate_registration_password_from_env(db)
         stop_event = asyncio.Event()
         tasks = [
             asyncio.create_task(run_keepalive_loop(stop_event)),
@@ -88,11 +93,11 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(health.router)
     app.include_router(parks.router)
-    app.include_router(admin_access.router)
+    app.include_router(admin_roles.router)
+    app.include_router(admin_users.router)
     app.include_router(admin_audit.router)
     app.include_router(admin_emergency.router)
     app.include_router(admin_settings.router)
-    app.include_router(admin_mechanics.router)
     app.include_router(operator_parks.router)
     app.include_router(operator_blockers.router)
     app.include_router(operator_report.router)

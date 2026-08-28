@@ -33,6 +33,7 @@ ACTION_TRACKER_ASSIGN = "tracker.assign"
 ACTION_TRACKER_UNASSIGN = "tracker.unassign"
 ACTION_TRACKER_TRANSITION = "tracker.transition"
 ACTION_TRACKER_CLOSE = "tracker.close"
+ACTION_TRACKER_ATTACH = "tracker.attach"
 
 # Administration
 ACTION_SETTINGS_CHANGED = "admin.settings.changed"
@@ -47,6 +48,7 @@ TRACKER_ACTIONS = {
     "unassign": ACTION_TRACKER_UNASSIGN,
     "transition": ACTION_TRACKER_TRANSITION,
     "close": ACTION_TRACKER_CLOSE,
+    "attach": ACTION_TRACKER_ATTACH,
 }
 
 OUTCOME_SUCCESS = "success"

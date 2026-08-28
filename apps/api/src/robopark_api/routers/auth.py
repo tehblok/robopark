@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
 from robopark_api.deps import require_user
-from robopark_api.models import AccessStatus, AuthSession, Park, User, UserPark, UserRole
+from robopark_api.models import AccessStatus, AuthSession, Park, User, UserPark
 from robopark_api.schemas import (
     ChangePasswordRequest,
     LoginRequest,
@@ -17,6 +17,9 @@ from robopark_api.schemas import (
     RegisterRequest,
     UserOut,
 )
+from robopark_api.services import platform_settings as settings_svc
+from robopark_api.services import rbac
+from robopark_api.services.rbac import RoleSlug
 from robopark_api.security import (
     PasswordPolicyError,
     hash_password,
@@ -83,7 +86,12 @@ def register(
     if retry_after:
         raise _too_many_requests(retry_after)
 
-    if not shared_passwords_match(registration.shared_password, settings.operator_shared_password):
+    if not shared_passwords_match(
+        registration.shared_password,
+        settings_svc.get_effective_registration_shared_password(
+            db, settings.operator_shared_password
+        ),
+    ):
         # Rate-limited: the shared password is otherwise brute-forceable.
         throttle.register_failure(throttle_key)
         logger.warning("Rejected registration attempt from %s", throttle_key)
@@ -103,11 +111,22 @@ def register(
     if existing_user is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT)
 
+    from robopark_api.services.rbac_seed import ensure_rbac_catalog
+
+    ensure_rbac_catalog(db)
+    role_slug = registration.role_slug.strip().lower()
+    if role_slug not in RoleSlug.SELF_REGISTER:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_role_slug")
+
+    role = rbac.get_role_by_slug(db, role_slug)
+    if role is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="roles_not_seeded")
+
     throttle.reset(throttle_key)
     user = User(
         username=registration.username,
         password_hash=hash_password(registration.password),
-        role=UserRole.operator.value,
+        role_id=role.id,
         access_status=AccessStatus.pending.value,
         is_active=True,
     )
@@ -238,6 +257,8 @@ def me(
         access_status=user.access_status,
         tracker_login=user.tracker_login,
         must_change_password=user.must_change_password,
+        screenshot_guard=settings_svc.screenshot_guard_enabled_for_role(db, user.role),
+        permissions=sorted(rbac.permissions_for_user(db, user)),
         parks=[ParkOut.model_validate(park) for park in parks],
     )
 

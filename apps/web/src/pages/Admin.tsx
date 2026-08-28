@@ -2,104 +2,141 @@ import { type FormEvent, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   api,
-  type AccessRequest,
   type IntegrationSettings,
-  type Mechanic,
   type Park,
   type ParkRequest,
+  type RegistrationPasswordSettings,
+  type ScreenshotGuardSettings,
   type TrackerPolicySettings,
 } from '../api'
 import { Alert, Badge, PageShell, Panel } from '../components/PageShell'
 import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
 import { TabPanel, Tabs, Toggle } from '../components/ui/Tabs'
+import { PasswordField } from '../components/ui/PasswordField'
+import { AdminRolesPanel } from '../components/admin/AdminRolesPanel'
+import { AdminUsersPanel } from '../components/admin/AdminUsersPanel'
+import { useAuth } from '../auth-context'
 import { mapApiError } from '../i18n/errors'
-import { ru } from '../i18n/ru'
+import { roleLabel, ru } from '../i18n/ru'
 import { useCachedResource } from '../lib/resource'
 
-type TabId = 'integrations' | 'parks' | 'mechanics' | 'requests'
+type TabId = 'integrations' | 'parks' | 'users' | 'roles'
 
 type AdminBootstrap = {
   parks: Park[]
-  accessRequests: AccessRequest[]
   parkRequests: ParkRequest[]
-  mechanics: Mechanic[]
   settings: IntegrationSettings
   trackerPolicy: TrackerPolicySettings
+  screenshotGuard: ScreenshotGuardSettings
+  screenshotGuardLive?: boolean
+  pendingUserCount: number
+}
+
+const DEFAULT_SCREENSHOT_GUARD: ScreenshotGuardSettings = {
+  operator: false,
+  mechanic: false,
+  admin: false,
+  royal: false,
+  driver: false,
+}
+
+async function loadScreenshotGuardSettings(): Promise<{
+  settings: ScreenshotGuardSettings
+  live: boolean
+}> {
+  try {
+    return { settings: await api.screenshotGuardSettings(), live: true }
+  } catch {
+    return { settings: DEFAULT_SCREENSHOT_GUARD, live: false }
+  }
 }
 
 async function loadAdminBootstrap(): Promise<AdminBootstrap> {
-  const [parks, accessRequests, parkRequests, mechanics, settings, trackerPolicy] =
+  const [parks, parkRequests, settings, trackerPolicy, screenshotGuardResult, pendingUsers] =
     await Promise.all([
       api.parks(),
-      api.accessRequests(),
       api.adminParkRequests(),
-      api.mechanics(),
       api.integrationSettings(),
       api.trackerPolicy(),
+      loadScreenshotGuardSettings(),
+      api.adminUsers({ access_status: 'pending' }).catch(() => []),
     ])
-  return { parks, accessRequests, parkRequests, mechanics, settings, trackerPolicy }
+  return {
+    parks,
+    parkRequests,
+    settings,
+    trackerPolicy,
+    screenshotGuard: screenshotGuardResult.settings,
+    screenshotGuardLive: screenshotGuardResult.live,
+    pendingUserCount: pendingUsers.length,
+  }
 }
 
-function draftsFromMechanics(mechanicList: Mechanic[]) {
-  return Object.fromEntries(
-    mechanicList.map((mechanic) => [
-      mechanic.id,
-      {
-        parkId: String(mechanic.park.id),
-        password: '',
-        trackerLogin: mechanic.tracker_login ?? '',
-      },
-    ]),
+function worksBadge(ok: boolean) {
+  return ok ? (
+    <span className="badge badge-ok">работает</span>
+  ) : (
+    <span className="badge badge-warn">нет</span>
   )
 }
 
-function cookieBadge(valid: boolean | null | undefined) {
-  if (valid === true) return <span className="badge badge-ok">cookie действует</span>
-  if (valid === false) return <span className="badge badge-danger">cookie недействителен</span>
-  return <span className="badge badge-warn">не проверялся</span>
-}
-
 export function Admin() {
+  const { user } = useAuth()
+  const perms = user?.permissions ?? []
+  const canParks = perms.includes('parks.manage')
+  const canUsers = perms.includes('users.manage')
+  const canRoles = perms.includes('roles.manage')
   const [tab, setTab] = useState<TabId>('integrations')
   const bootRes = useCachedResource<AdminBootstrap>('admin:bootstrap', loadAdminBootstrap)
   const boot = bootRes.data
 
   const [parks, setParks] = useState<Park[]>(boot?.parks ?? [])
-  const [accessRequests, setAccessRequests] = useState<AccessRequest[]>(boot?.accessRequests ?? [])
   const [parkRequests, setParkRequests] = useState<ParkRequest[]>(boot?.parkRequests ?? [])
-  const [mechanics, setMechanics] = useState<Mechanic[]>(boot?.mechanics ?? [])
   const [settings, setSettings] = useState<IntegrationSettings | null>(boot?.settings ?? null)
   const [trackerPolicy, setTrackerPolicy] = useState<TrackerPolicySettings | null>(
     boot?.trackerPolicy ?? null,
   )
-  const [selections, setSelections] = useState<Record<number, number[]>>({})
+  const [screenshotGuard, setScreenshotGuard] = useState<ScreenshotGuardSettings>(
+    boot?.screenshotGuard ?? DEFAULT_SCREENSHOT_GUARD,
+  )
+  const [screenshotGuardLive, setScreenshotGuardLive] = useState(true)
   const [name, setName] = useState('')
   const [tag, setTag] = useState('')
   const [trackerToken, setTrackerToken] = useState('')
   const [emergencyCookie, setEmergencyCookie] = useState('')
-  const [mechanicUsername, setMechanicUsername] = useState('')
-  const [mechanicPassword, setMechanicPassword] = useState('')
-  const [mechanicParkId, setMechanicParkId] = useState('')
-  const [mechanicDrafts, setMechanicDrafts] = useState<
-    Record<number, { parkId: string; password: string; trackerLogin: string }>
-  >({})
+  const [registrationPassword, setRegistrationPassword] = useState('')
+  const [registrationSettings, setRegistrationSettings] =
+    useState<RegistrationPasswordSettings | null>(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
+    if (tab === 'parks' && !canParks) setTab('integrations')
+    if (tab === 'users' && !canUsers) setTab('integrations')
+    if (tab === 'roles' && !canRoles) setTab('integrations')
+  }, [tab, canParks, canUsers, canRoles])
+
+  useEffect(() => {
     if (!boot) return
     setParks(boot.parks)
-    setAccessRequests(boot.accessRequests)
     setParkRequests(boot.parkRequests)
-    setMechanics(boot.mechanics)
     setSettings(boot.settings)
     setTrackerPolicy(boot.trackerPolicy)
-    setMechanicDrafts(draftsFromMechanics(boot.mechanics))
-    setMechanicParkId(
-      (current) => current || String(boot.parks.find((park) => park.is_active)?.id ?? ''),
-    )
+    setScreenshotGuard(boot.screenshotGuard)
+    setScreenshotGuardLive(boot.screenshotGuardLive ?? true)
   }, [boot])
+
+  useEffect(() => {
+    if (user?.role !== 'royal') {
+      setRegistrationSettings(null)
+      return
+    }
+    void api
+      .registrationPasswordSettings()
+      .then(setRegistrationSettings)
+      .catch(() => setRegistrationSettings(null))
+  }, [user?.role, success])
 
   const run = async (action: () => Promise<unknown>, message = 'Сохранено') => {
     setError('')
@@ -125,15 +162,6 @@ export function Admin() {
     }, 'Парк создан')
   }
 
-  const createMechanic = async (event: FormEvent) => {
-    event.preventDefault()
-    await run(async () => {
-      await api.createMechanic(mechanicUsername, mechanicPassword, Number(mechanicParkId))
-      setMechanicUsername('')
-      setMechanicPassword('')
-    }, 'Механик создан')
-  }
-
   const saveIntegration = async (event: FormEvent) => {
     event.preventDefault()
     await run(async () => {
@@ -148,16 +176,23 @@ export function Admin() {
     }, 'Секреты обновлены')
   }
 
-  const toggleSelection = (userId: number, parkId: number) => {
-    setSelections((current) => {
-      const selected = current[userId] ?? []
-      return {
-        ...current,
-        [userId]: selected.includes(parkId)
-          ? selected.filter((id) => id !== parkId)
-          : [...selected, parkId],
-      }
-    })
+  const saveRegistrationPassword = async (event: FormEvent) => {
+    event.preventDefault()
+    const next = registrationPassword.trim()
+    if (!next) return
+    await run(async () => {
+      const updated = await api.setRegistrationPassword(next)
+      setRegistrationSettings(updated)
+      setRegistrationPassword('')
+    }, 'Общий пароль регистрации сохранён')
+  }
+
+  const disableRegistration = async () => {
+    await run(async () => {
+      const updated = await api.clearRegistrationPassword()
+      setRegistrationSettings(updated)
+      setRegistrationPassword('')
+    }, 'Регистрация закрыта')
   }
 
   const editPark = (parkId: number, changes: Partial<Park>) => {
@@ -166,40 +201,12 @@ export function Admin() {
     )
   }
 
-  const editMechanicDraft = (
-    mechanicId: number,
-    changes: Partial<{ parkId: string; password: string; trackerLogin: string }>,
-  ) => {
-    setMechanicDrafts((current) => ({
-      ...current,
-      [mechanicId]: { ...current[mechanicId], ...changes },
-    }))
-  }
-
   const parseOptionalInt = (value: string) => {
     const trimmed = value.trim()
     if (!trimmed) return null
     const parsed = Number(trimmed)
     return Number.isFinite(parsed) ? parsed : null
   }
-
-  const saveMechanic = (mechanicId: number) => {
-    const draft = mechanicDrafts[mechanicId]
-    if (!draft) return
-    return run(async () => {
-      await api.updateMechanic(mechanicId, {
-        park_id: Number(draft.parkId),
-        tracker_login: draft.trackerLogin.trim() || null,
-        ...(draft.password ? { password: draft.password } : {}),
-      })
-    }, 'Механик обновлён')
-  }
-
-  const pendingAccess = accessRequests.filter(
-    (request) => request.access_status === 'pending',
-  )
-  const requestsCount = pendingAccess.length + parkRequests.length
-  const activeParks = parks.filter((park) => park.is_active)
 
   const parkName = (parkId: number) =>
     parks.find((park) => park.id === parkId)?.name ?? `#${parkId}`
@@ -218,7 +225,7 @@ export function Admin() {
   return (
     <PageShell
       actions={busy ? <Spinner label="Сохранение" /> : undefined}
-      subtitle="Парки, доступы, механики и интеграции Tracker / Emergency."
+      subtitle="Парки, роли, пользователи и интеграции Tracker / Emergency."
       title="Администрирование"
     >
       {displayError && <Alert tone="error">{displayError}</Alert>}
@@ -227,9 +234,11 @@ export function Admin() {
       <Tabs
         items={[
           { id: 'integrations', label: 'Интеграции' },
-          { id: 'parks', label: 'Парки', count: parks.length },
-          { id: 'mechanics', label: 'Механики', count: mechanics.length },
-          { id: 'requests', label: 'Заявки', count: requestsCount },
+          ...(canParks ? [{ id: 'parks', label: 'Парки', count: parkRequests.length }] : []),
+          ...(canUsers
+            ? [{ id: 'users', label: 'Пользователи', count: boot?.pendingUserCount }]
+            : []),
+          ...(canRoles ? [{ id: 'roles', label: 'Роли' }] : []),
         ]}
         onChange={(id) => setTab(id as TabId)}
         value={tab}
@@ -237,8 +246,66 @@ export function Admin() {
 
       {/* --- Integrations ------------------------------------------------- */}
       <TabPanel active={tab === 'integrations'}>
+        {user?.role === 'royal' && (
+          <Panel
+            hint="Если пароль не задан, регистрация на /register закрыта."
+            title="Общий пароль регистрации"
+          >
+            {registrationSettings && (
+              <div className="stat-grid">
+                <div className="stat">
+                  <span className="stat-label">Статус</span>
+                  <span className="stat-value">
+                    {registrationSettings.configured ? (
+                      <span className="badge badge-ok">открыта</span>
+                    ) : (
+                      <span className="badge badge-warn">закрыта</span>
+                    )}
+                  </span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">Текущий пароль</span>
+                  <span className="stat-value">
+                    {registrationSettings.password_masked ?? 'не задан'}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <form className="form-grid" onSubmit={saveRegistrationPassword}>
+              <PasswordField
+                autoComplete="new-password"
+                hint="Минимум как у личного пароля: 12 символов и три класса знаков."
+                label="Новый общий пароль"
+                onChange={setRegistrationPassword}
+                placeholder="Задайте или смените пароль для /register"
+                value={registrationPassword}
+              />
+              <div className="form-actions">
+                <button
+                  className="btn"
+                  disabled={busy || !registrationPassword.trim()}
+                  type="submit"
+                >
+                  Сохранить пароль
+                </button>
+                {registrationSettings?.configured && (
+                  <button
+                    className="btn btn-secondary"
+                    disabled={busy}
+                    onClick={() => void disableRegistration()}
+                    type="button"
+                  >
+                    Закрыть регистрацию
+                  </button>
+                )}
+              </div>
+            </form>
+          </Panel>
+        )}
+
         <Panel
-          hint="Секреты хранятся зашифрованными; в интерфейсе видно только маску."
+          hint="Секреты хранятся зашифрованными. Здесь только статус — без маски значения."
           title="Секреты"
         >
           {settings && (
@@ -246,19 +313,13 @@ export function Admin() {
               <div className="stat">
                 <span className="stat-label">Tracker OAuth</span>
                 <span className="stat-value">
-                  {settings.tracker_token_masked ?? 'не задан'}
+                  {worksBadge(Boolean(settings.tracker_token_masked))}
                 </span>
               </div>
               <div className="stat">
                 <span className="stat-label">Emergency cookie</span>
                 <span className="stat-value">
-                  {settings.emergency_cookie_masked ?? 'не задан'}
-                </span>
-              </div>
-              <div className="stat">
-                <span className="stat-label">Статус cookie</span>
-                <span className="stat-value">
-                  {cookieBadge(settings.emergency_cookie_valid)}
+                  {worksBadge(settings.emergency_cookie_valid === true)}
                 </span>
               </div>
             </div>
@@ -324,6 +385,32 @@ export function Admin() {
           </Panel>
         )}
 
+        <Panel hint={ru.screenshotGuard.adminHint} title="Защита от скриншотов">
+          {!screenshotGuardLive && (
+            <Alert tone="warning">
+              API не отвечает на /admin/settings/screenshot-guard — перезапустите backend
+              (uvicorn). Переключатели не сохранятся, пока сервер не обновлён.
+            </Alert>
+          )}
+          <div className="toggle-list">
+            {(['operator', 'mechanic', 'driver', 'admin', 'royal'] as const).map((role) => (
+              <Toggle
+                key={role}
+                checked={Boolean(screenshotGuard[role])}
+                disabled={busy || !screenshotGuardLive}
+                label={ru.screenshotGuard.adminToggle(roleLabel(role))}
+                onChange={(next) =>
+                  run(async () => {
+                    const updated = await api.updateScreenshotGuardSettings({ [role]: next })
+                    setScreenshotGuard(updated)
+                    setScreenshotGuardLive(true)
+                  }, 'Защита обновлена')
+                }
+              />
+            ))}
+          </div>
+        </Panel>
+
         <Panel title="Быстрые переходы">
           <div className="link-row">
             <Link className="btn btn-secondary" to="/admin/tracker">
@@ -339,8 +426,54 @@ export function Admin() {
         </Panel>
       </TabPanel>
 
-      {/* --- Parks --------------------------------------------------------- */}
+      {canParks && (
       <TabPanel active={tab === 'parks'}>
+        {parkRequests.length > 0 && (
+        <Panel
+          hint="Операторы запрашивают дополнительные парки из своего кабинета."
+          title={`Заявки на парки (${parkRequests.length})`}
+        >
+          <ul className="card-list">
+            {parkRequests.map((request) => (
+              <li className="card action-row" key={request.id}>
+                <div>
+                  <div className="card-title">{request.username ?? `Пользователь #${request.user_id}`}</div>
+                  <div className="card-meta">Парк: {parkName(request.park_id)}</div>
+                </div>
+                <div className="form-actions">
+                  <button
+                    className="btn"
+                    disabled={busy}
+                    onClick={() =>
+                      run(
+                        () => api.resolveParkRequest(request.id, 'approve'),
+                        'Заявка одобрена',
+                      )
+                    }
+                    type="button"
+                  >
+                    {ru.approve}
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={busy}
+                    onClick={() =>
+                      run(
+                        () => api.resolveParkRequest(request.id, 'reject'),
+                        'Заявка отклонена',
+                      )
+                    }
+                    type="button"
+                  >
+                    {ru.reject}
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+        )}
+
         <Panel hint="Тег используется в Tracker; очередь нужна для задач и поиска." title="Новый парк">
           <form className="form-grid" onSubmit={createPark}>
             <label className="field">
@@ -510,255 +643,19 @@ export function Admin() {
           ))
         )}
       </TabPanel>
+      )}
 
-      {/* --- Mechanics ----------------------------------------------------- */}
-      <TabPanel active={tab === 'mechanics'}>
-        <Panel
-          hint="Механик получает ровно один активный парк и сразу одобренный доступ."
-          title="Новый механик"
-        >
-          <form className="form-grid" onSubmit={createMechanic}>
-            <label className="field">
-              <span className="field-label">Логин</span>
-              <input
-                onChange={(event) => setMechanicUsername(event.target.value)}
-                required
-                value={mechanicUsername}
-              />
-            </label>
-            <label className="field">
-              <span className="field-label">Пароль</span>
-              <input
-                onChange={(event) => setMechanicPassword(event.target.value)}
-                required
-                type="password"
-                value={mechanicPassword}
-              />
-              <span className="field-hint">
-                Минимум 12 символов и три типа символов.
-              </span>
-            </label>
-            <label className="field">
-              <span className="field-label">Парк</span>
-              <select
-                onChange={(event) => setMechanicParkId(event.target.value)}
-                required
-                value={mechanicParkId}
-              >
-                {activeParks.map((park) => (
-                  <option key={park.id} value={park.id}>
-                    {park.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="form-actions">
-              <button className="btn" disabled={busy || !activeParks.length} type="submit">
-                Создать механика
-              </button>
-            </div>
-          </form>
-        </Panel>
-
-        {mechanics.length === 0 ? (
-          <EmptyBlock icon="🔧" title="Механики ещё не созданы" />
-        ) : (
-          mechanics.map((mechanic) => (
-            <Panel
-              actions={<Badge active={mechanic.is_active} />}
-              key={mechanic.id}
-              title={mechanic.username}
-            >
-              <div className="form-grid">
-                <label className="field">
-                  <span className="field-label">Парк</span>
-                  <select
-                    onChange={(event) =>
-                      editMechanicDraft(mechanic.id, { parkId: event.target.value })
-                    }
-                    value={mechanicDrafts[mechanic.id]?.parkId ?? String(mechanic.park.id)}
-                  >
-                    {activeParks.map((park) => (
-                      <option key={park.id} value={park.id}>
-                        {park.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  <span className="field-label">Startrek-логин</span>
-                  <input
-                    onChange={(event) =>
-                      editMechanicDraft(mechanic.id, { trackerLogin: event.target.value })
-                    }
-                    placeholder="ivan.petrov"
-                    value={mechanicDrafts[mechanic.id]?.trackerLogin ?? ''}
-                  />
-                  <span className="field-hint">
-                    Нужен для фильтра «Мои» и назначения «На себя» в Tracker.
-                  </span>
-                </label>
-                <label className="field">
-                  <span className="field-label">Новый пароль</span>
-                  <input
-                    onChange={(event) =>
-                      editMechanicDraft(mechanic.id, { password: event.target.value })
-                    }
-                    placeholder="необязательно"
-                    type="password"
-                    value={mechanicDrafts[mechanic.id]?.password ?? ''}
-                  />
-                  <span className="field-hint">
-                    Смена пароля завершит активные сессии механика.
-                  </span>
-                </label>
-              </div>
-
-              <div className="toggle-list">
-                <Toggle
-                  checked={mechanic.must_change_password ?? false}
-                  disabled={busy}
-                  label="Запросить смену пароля при входе"
-                  onChange={(next) =>
-                    run(
-                      () => api.updateMechanic(mechanic.id, { must_change_password: next }),
-                      'Флаг смены пароля обновлён',
-                    )
-                  }
-                />
-              </div>
-
-              <div className="form-actions">
-                <button
-                  className="btn"
-                  disabled={busy}
-                  onClick={() => saveMechanic(mechanic.id)}
-                  type="button"
-                >
-                  {ru.save}
-                </button>
-                <button
-                  className="btn btn-secondary"
-                  disabled={busy}
-                  onClick={() =>
-                    run(() =>
-                      api.updateMechanic(mechanic.id, { is_active: !mechanic.is_active }),
-                    )
-                  }
-                  type="button"
-                >
-                  {mechanic.is_active ? ru.deactivate : ru.activate}
-                </button>
-              </div>
-            </Panel>
-          ))
-        )}
+      {canUsers && (
+      <TabPanel active={tab === 'users'}>
+        <AdminUsersPanel parks={parks} />
       </TabPanel>
+      )}
 
-      {/* --- Requests ------------------------------------------------------ */}
-      <TabPanel active={tab === 'requests'}>
-        <Panel
-          hint="Одобрение требует выбора хотя бы одного активного парка."
-          title={`Заявки на доступ (${pendingAccess.length})`}
-        >
-          {pendingAccess.length === 0 ? (
-            <EmptyBlock icon="✅" title="Нет заявок на первичный доступ" />
-          ) : (
-            pendingAccess.map((request) => (
-              <article className="inbox-item" key={request.id}>
-                <strong>{request.username}</strong>
-                <p className="field-hint">Выберите парки для назначения оператору.</p>
-                <div className="checks">
-                  {activeParks.map((park) => (
-                    <label key={park.id}>
-                      <input
-                        checked={(selections[request.id] ?? []).includes(park.id)}
-                        onChange={() => toggleSelection(request.id, park.id)}
-                        type="checkbox"
-                      />
-                      {park.name}
-                    </label>
-                  ))}
-                </div>
-                <div className="form-actions">
-                  <button
-                    className="btn"
-                    disabled={!selections[request.id]?.length || busy}
-                    onClick={() =>
-                      run(
-                        () =>
-                          api.approveAccessRequest(request.id, selections[request.id] ?? []),
-                        'Доступ одобрен',
-                      )
-                    }
-                    type="button"
-                  >
-                    {ru.approve}
-                  </button>
-                  <button
-                    className="btn btn-secondary"
-                    disabled={busy}
-                    onClick={() =>
-                      run(() => api.rejectAccessRequest(request.id), 'Заявка отклонена')
-                    }
-                    type="button"
-                  >
-                    {ru.reject}
-                  </button>
-                </div>
-              </article>
-            ))
-          )}
-        </Panel>
-
-        <Panel
-          hint="Операторы запрашивают дополнительные парки из своего кабинета."
-          title={`Заявки на парки (${parkRequests.length})`}
-        >
-          {parkRequests.length === 0 ? (
-            <EmptyBlock icon="✅" title="Нет заявок на дополнительные парки" />
-          ) : (
-            <ul className="card-list">
-              {parkRequests.map((request) => (
-                <li className="card action-row" key={request.id}>
-                  <div>
-                    <div className="card-title">Пользователь #{request.user_id}</div>
-                    <div className="card-meta">Парк: {parkName(request.park_id)}</div>
-                  </div>
-                  <div className="form-actions">
-                    <button
-                      className="btn"
-                      disabled={busy}
-                      onClick={() =>
-                        run(
-                          () => api.resolveParkRequest(request.id, 'approve'),
-                          'Заявка одобрена',
-                        )
-                      }
-                      type="button"
-                    >
-                      {ru.approve}
-                    </button>
-                    <button
-                      className="btn btn-secondary"
-                      disabled={busy}
-                      onClick={() =>
-                        run(
-                          () => api.resolveParkRequest(request.id, 'reject'),
-                          'Заявка отклонена',
-                        )
-                      }
-                      type="button"
-                    >
-                      {ru.reject}
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Panel>
+      {canRoles && (
+      <TabPanel active={tab === 'roles'}>
+        <AdminRolesPanel />
       </TabPanel>
+      )}
     </PageShell>
   )
 }

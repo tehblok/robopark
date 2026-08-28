@@ -38,14 +38,34 @@ def list_park_requests(
         alias="status",
     ),
     db: Session = Depends(get_db),
-) -> list[ParkRequest]:
-    return list(
+) -> list[ParkRequestOut]:
+    rows = list(
         db.scalars(
             select(ParkRequest)
             .where(ParkRequest.status == request_status.value)
             .order_by(ParkRequest.id)
         ).all()
     )
+    if not rows:
+        return []
+    names = dict(
+        db.execute(
+            select(User.id, User.username).where(User.id.in_({row.user_id for row in rows}))
+        ).all()
+    )
+    return [
+        ParkRequestOut(
+            id=row.id,
+            user_id=row.user_id,
+            park_id=row.park_id,
+            status=row.status,
+            created_at=row.created_at,
+            resolved_at=row.resolved_at,
+            resolved_by=row.resolved_by,
+            username=names.get(row.user_id),
+        )
+        for row in rows
+    ]
 
 
 @router.post("/{request_id}/approve", status_code=status.HTTP_204_NO_CONTENT)
@@ -60,12 +80,14 @@ def approve_park_request(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
 
     _resolve(park_request, admin, AccessStatus.approved)
-    db.add(
-        UserPark(
-            user_id=park_request.user_id,
-            park_id=park_request.park_id,
+    existing = db.get(UserPark, (park_request.user_id, park_request.park_id))
+    if existing is None:
+        db.add(
+            UserPark(
+                user_id=park_request.user_id,
+                park_id=park_request.park_id,
+            )
         )
-    )
     db.commit()
 
 

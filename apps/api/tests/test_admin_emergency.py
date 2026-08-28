@@ -1,7 +1,7 @@
 import json
 
-from conftest import login_as
-from robopark_api.models import AccessStatus, User, UserRole
+from conftest import login_as, role_id_for
+from robopark_api.models import AccessStatus, User
 from robopark_api.security import hash_password
 
 
@@ -114,7 +114,7 @@ def test_operator_gets_403_for_admin_emergency(client, db_session):
     operator = User(
         username="operator-admin-test",
         password_hash=hash_password("secret"),
-        role=UserRole.operator.value,
+        role_id=role_id_for(db_session, "operator"),
         access_status=AccessStatus.approved.value,
         is_active=True,
     )

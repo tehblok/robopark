@@ -41,7 +41,8 @@ export function IssueDrawer({
   const detail = detailRes.data ?? null
   const comments = commentsRes.data ?? []
   const transitions = transitionsRes.data ?? []
-  const loadError = detailRes.error ?? commentsRes.error ?? transitionsRes.error
+  const loadError =
+    detailRes.error ?? commentsRes.error ?? (canWrite ? transitionsRes.error : null)
   const errorText = loadError ? mapApiError(loadError) || ru.tracker.detailsError : ''
   const loading = detailRes.isLoading && !detail
 
@@ -72,7 +73,12 @@ export function IssueDrawer({
 
       {errorText && <p className="alert alert-error">{errorText}</p>}
 
-      <IssueDetailPanel comments={comments} issue={detail} loading={loading} />
+      <IssueDetailPanel
+        comments={comments}
+        commentsAsHistory={user?.role === 'mechanic'}
+        issue={detail}
+        loading={loading}
+      />
 
       {detail && (
         <IssueActionsPanel
@@ -89,6 +95,10 @@ export function IssueDrawer({
           }}
           onComment={async (text) => {
             await api.trackerComment(issueKey, text)
+            await reload()
+          }}
+          onAttach={async (file) => {
+            await api.trackerAttach(issueKey, file)
             await reload()
           }}
           onTransition={async (transition) => {
