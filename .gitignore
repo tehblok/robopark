@@ -51,3 +51,5 @@ startrek_client-2.8/
 
 # Agent / local SDD artifacts (not part of the product)
 .superpowers/
+docs/superpowers/
+.skaroignore

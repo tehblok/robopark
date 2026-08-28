@@ -10,15 +10,11 @@ Web-first fleet operations system (admin / operator / mechanic).
 
 Platform skeleton: FastAPI + React monorepo, session auth, role cabinets, SQLite on host, Docker Compose on the host; public access through [Tuna](https://tuna.am/docs/).
 
-Design: [`docs/superpowers/specs/2026-08-21-robopark-platform-phase1-design.md`](docs/superpowers/specs/2026-08-21-robopark-platform-phase1-design.md)
-
 ## Phase 2
 
 Operator onboarding and parks: shared-password registration, admin/royal access
 approval with park assignment, minimal park CRUD, and operator park-request
 inbox.
-
-Design: [`docs/superpowers/specs/2026-08-22-robopark-phase2-operator-onboarding-design.md`](docs/superpowers/specs/2026-08-22-robopark-phase2-operator-onboarding-design.md)
 
 Set `OPERATOR_SHARED_PASSWORD` in `.env` (local) or `host.env` (deploy). When
 unset or empty, `POST /auth/register` returns 403 and the register page is
@@ -47,8 +43,6 @@ approved), integration settings for Tracker token and Emergency cookie, extended
 park Tracker fields, and mechanic tools for own-park tasks, cross-park robot
 search, and Emergency VIN checks.
 
-Design: [`docs/superpowers/specs/2026-08-22-robopark-phase3-mechanic-flows-design.md`](docs/superpowers/specs/2026-08-22-robopark-phase3-mechanic-flows-design.md)
-
 Tracker token and Emergency cookie are stored in the database and configured from
 `/admin` — they are not environment variables. After creating a park with
 `tracker_queue` and a mechanic assigned to it, the shared shell exposes
@@ -60,8 +54,6 @@ Operator tools: approved operators use the hub at `/dashboard` for read-only
 Tracker workflows — blockers by assigned park (`/tasks`), cross-park robot search
 (`/robots/search`), and the «Сейчас по Tracker» live metrics snapshot
 (`/analytics`). Park assignment and park requests remain at `/operator/parks`.
-
-Design: [`docs/superpowers/specs/2026-08-22-robopark-phase4-operator-tools-design.md`](docs/superpowers/specs/2026-08-22-robopark-phase4-operator-tools-design.md)
 
 These tools require a platform Tracker OAuth token in `/admin` and, per park,
 `tracker_queue` plus feature flags: `feature_blockers` for the blockers list and
@@ -148,14 +140,10 @@ user actions and do not poll from browser timers.
 **Заглушки «Скоро»:** Карта, Обучение, Помощь — пункты меню видны, контент
 появится позже.
 
-Design: [`docs/superpowers/specs/2026-08-24-robopark-ui-shell-dashboard-design.md`](docs/superpowers/specs/2026-08-24-robopark-ui-shell-dashboard-design.md)
-
 ## Репорты
 
 Цепочка «механик → оператор → админ» в `/reports`. KPI Tracker (now-report)
 остаётся на **Дашборде**, не смешивается с человеческими репортами.
-
-Design: [`docs/superpowers/specs/2026-08-24-robopark-reports-workflow-design.md`](docs/superpowers/specs/2026-08-24-robopark-reports-workflow-design.md)
 
 ### Виды (`kind`)
 
