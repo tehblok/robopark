@@ -29,3 +29,12 @@ export function pushRecentRobot(query: string, limit = MAX_RECENT): string[] {
   }
   return next
 }
+
+export function clearRecentRobots(): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.removeItem(STORAGE_KEY)
+  } catch {
+    /* ignore */
+  }
+}

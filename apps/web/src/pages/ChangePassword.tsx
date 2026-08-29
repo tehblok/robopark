@@ -11,7 +11,7 @@ import { passwordChecks } from '../lib/passwordChecks'
 import { pathForUser } from '../routes'
 
 export function ChangePassword() {
-  const { user, loading, login } = useAuth()
+  const { user, loading, refreshUser, logout } = useAuth()
   const navigate = useNavigate()
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -52,7 +52,7 @@ export function ChangePassword() {
     setSubmitting(true)
     try {
       await api.changePassword(currentPassword, newPassword)
-      const refreshed = await login(user.username, newPassword)
+      const refreshed = await refreshUser()
       navigate(pathForUser(refreshed), { replace: true })
     } catch (caught) {
       setError(mapApiError(caught, ru.errors.generic))
@@ -63,6 +63,7 @@ export function ChangePassword() {
 
   return (
     <PageShell
+      onLogout={logout}
       standalone
       subtitle="Администратор запросил смену пароля перед продолжением работы."
       title="Смена пароля"
