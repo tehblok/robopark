@@ -2,7 +2,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from robopark_api.config import Settings, get_settings
@@ -62,9 +62,19 @@ def _enforce_password_policy(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-def purge_expired_sessions(db: Session) -> int:
-    """Delete sessions past their expiry; returns the number removed."""
-    result = db.execute(delete(AuthSession).where(AuthSession.expires_at <= datetime.now(UTC)))
+def purge_expired_sessions(db: Session, settings: Settings | None = None) -> int:
+    """Delete sessions past idle or absolute expiry; returns the number removed."""
+    now = datetime.now(UTC)
+    cfg = settings or get_settings()
+    absolute_cutoff = now - timedelta(seconds=cfg.session_absolute_ttl_seconds)
+    result = db.execute(
+        delete(AuthSession).where(
+            or_(
+                AuthSession.expires_at <= now,
+                AuthSession.created_at <= absolute_cutoff,
+            )
+        )
+    )
     db.commit()
     return int(result.rowcount or 0)
 
@@ -208,26 +218,30 @@ def login(
         client_ip=client_ip(request),
     )
     # Opportunistic cleanup: expired rows would otherwise accumulate forever.
-    purge_expired_sessions(db)
+    purge_expired_sessions(db, settings)
 
     raw_token = new_session_token()
+    now = datetime.now(UTC)
     db.add(
         AuthSession(
             user_id=user.id,
             token_hash=hash_session_token(raw_token),
-            expires_at=datetime.now(UTC) + timedelta(seconds=settings.session_ttl_seconds),
+            expires_at=now + timedelta(seconds=settings.session_idle_seconds),
         )
     )
     db.commit()
-    response.set_cookie(
-        key=settings.session_cookie_name,
-        value=raw_token,
-        max_age=settings.session_ttl_seconds,
-        path="/",
-        secure=settings.cookie_secure,
-        httponly=True,
-        samesite=settings.cookie_samesite,
-    )
+    common = {
+        "key": settings.session_cookie_name,
+        "value": raw_token,
+        "path": "/",
+        "secure": settings.cookie_secure,
+        "httponly": True,
+        "samesite": settings.cookie_samesite,
+    }
+    if credentials.remember_me:
+        response.set_cookie(**common, max_age=settings.session_absolute_ttl_seconds)
+    else:
+        response.set_cookie(**common)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

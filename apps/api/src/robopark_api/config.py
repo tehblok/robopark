@@ -12,7 +12,12 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///./data/robopark.db"
     session_cookie_name: str = "robopark_session"
-    session_ttl_seconds: int = 60 * 60 * 24 * 14
+    #: Sliding idle timeout: no authenticated request for this long → re-login.
+    session_idle_seconds: int = 60 * 60 * 24 * 3
+    #: Hard cap from login (also Max-Age when remember_me is set).
+    session_absolute_ttl_seconds: int = 60 * 60 * 24 * 30
+    #: Do not rewrite expires_at on every request (SQLite write load).
+    session_slide_min_interval_seconds: int = 60 * 60
     cookie_secure: bool = False
     cookie_samesite: str = "lax"
     cors_origins: str = "http://localhost:5173"

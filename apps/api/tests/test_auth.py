@@ -14,6 +14,12 @@ from robopark_api.security import hash_session_token
 from robopark_api.services.rbac import ALL_PERMISSIONS
 
 
+def _utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
 def test_login_me_logout_flow(client: TestClient, seed_royal):
     response = login_as(client, "royal", "secret")
     assert response.status_code == 204
@@ -50,6 +56,81 @@ def test_login_cookie_is_httponly_and_samesite_lax(client: TestClient, seed_roya
     set_cookie = response.headers["set-cookie"]
     assert "HttpOnly" in set_cookie
     assert "SameSite=lax" in set_cookie
+    assert "Max-Age" not in set_cookie
+
+
+def test_remember_me_sets_persistent_cookie(client: TestClient, seed_royal, test_settings):
+    response = client.post(
+        "/auth/login",
+        json={"username": "royal", "password": "secret", "remember_me": True},
+    )
+
+    set_cookie = response.headers["set-cookie"]
+    assert f"Max-Age={test_settings.session_absolute_ttl_seconds}" in set_cookie
+
+
+def test_idle_expired_session_cannot_access_me(client: TestClient, db_session: Session, seed_royal):
+    raw_token = "idle-expired-token"
+    db_session.add(
+        AuthSession(
+            user_id=seed_royal.id,
+            token_hash=hash_session_token(raw_token),
+            expires_at=datetime.now(UTC) - timedelta(seconds=1),
+        )
+    )
+    db_session.commit()
+    client.cookies.set("robopark_session", raw_token)
+
+    assert client.get("/auth/me").status_code == 401
+
+
+def test_absolute_expired_session_cannot_access_me(
+    client: TestClient, db_session: Session, seed_royal
+):
+    raw_token = "absolute-expired-token"
+    now = datetime.now(UTC)
+    session = AuthSession(
+        user_id=seed_royal.id,
+        token_hash=hash_session_token(raw_token),
+        expires_at=now + timedelta(days=3),
+    )
+    db_session.add(session)
+    db_session.commit()
+    session.created_at = now - timedelta(days=31)
+    db_session.commit()
+    client.cookies.set("robopark_session", raw_token)
+
+    assert client.get("/auth/me").status_code == 401
+
+
+def test_authenticated_request_slides_idle_expiry(
+    client: TestClient, db_session: Session, seed_royal, test_settings
+):
+    login_as(client, "royal", "secret")
+    auth_session = db_session.scalar(select(AuthSession))
+    assert auth_session is not None
+    shortened = datetime.now(UTC) + timedelta(hours=2)
+    auth_session.expires_at = shortened
+    db_session.commit()
+
+    assert client.get("/auth/me").status_code == 200
+
+    db_session.refresh(auth_session)
+    expected = datetime.now(UTC) + timedelta(seconds=test_settings.session_idle_seconds)
+    assert abs((_utc(auth_session.expires_at) - expected).total_seconds()) < 5
+    assert _utc(auth_session.expires_at) > _utc(shortened) + timedelta(days=1)
+
+
+def test_idle_slide_is_throttled(client: TestClient, db_session: Session, seed_royal):
+    login_as(client, "royal", "secret")
+    auth_session = db_session.scalar(select(AuthSession))
+    assert auth_session is not None
+    original = auth_session.expires_at
+
+    assert client.get("/auth/me").status_code == 200
+
+    db_session.refresh(auth_session)
+    assert auth_session.expires_at == original
 
 
 def test_login_stores_only_session_token_hash(client: TestClient, db_session: Session, seed_royal):

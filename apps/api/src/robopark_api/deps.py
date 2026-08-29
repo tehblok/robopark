@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
@@ -24,6 +24,21 @@ _MUST_CHANGE_PASSWORD_ALLOW = frozenset(
 )
 
 
+def _aware(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
+def _touch_session(db: Session, auth_session: AuthSession, settings: Settings, now: datetime) -> None:
+    next_idle = now + timedelta(seconds=settings.session_idle_seconds)
+    remaining = (_aware(auth_session.expires_at) - now).total_seconds()
+    if remaining >= settings.session_idle_seconds - settings.session_slide_min_interval_seconds:
+        return
+    auth_session.expires_at = next_idle
+    db.commit()
+
+
 def require_user(
     request: Request,
     db: Session = Depends(get_db),
@@ -33,18 +48,31 @@ def require_user(
     if not session_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
-    user = db.scalars(
-        select(User)
-        .options(joinedload(User.role_ref).joinedload(Role.permissions))
-        .join(AuthSession)
-        .where(
-            AuthSession.token_hash == hash_session_token(session_token),
-            AuthSession.expires_at > datetime.now(UTC),
-            User.is_active.is_(True),
+    now = datetime.now(UTC)
+    auth_session = db.scalar(
+        select(AuthSession)
+        .options(
+            joinedload(AuthSession.user).joinedload(User.role_ref).joinedload(Role.permissions)
         )
-    ).unique().first()
-    if user is None:
+        .where(AuthSession.token_hash == hash_session_token(session_token))
+    )
+    if auth_session is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+
+    user = auth_session.user
+    created = _aware(auth_session.created_at)
+    expires = _aware(auth_session.expires_at)
+    absolute_deadline = created + timedelta(seconds=settings.session_absolute_ttl_seconds)
+    if (
+        user is None
+        or not user.is_active
+        or expires <= now
+        or now >= absolute_deadline
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+
+    _touch_session(db, auth_session, settings, now)
+
     if user.must_change_password and request.url.path not in _MUST_CHANGE_PASSWORD_ALLOW:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
