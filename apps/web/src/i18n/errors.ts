@@ -10,7 +10,10 @@ export function mapApiError(error: unknown, fallback = ''): string {
       return ru.maintenance.title
     }
     if (error.status === 503) return ru.errors.tasks503
-    if (error.status === 401) return ru.errors.emergency401
+    if (error.status === 401) {
+      if (error.detail === 'emergency_cookie_invalid') return ru.errors.emergency401
+      return ru.errors.sessionExpired
+    }
     if (error.status === 409) return ru.errors.tasks409
     if (error.status === 404) return ru.errors.notFound
     if (error.status === 502) return ru.errors.details.tracker_upstream_error
@@ -21,4 +24,11 @@ export function mapApiError(error: unknown, fallback = ''): string {
     if (error.message === '409') return ru.errors.register409
   }
   return fallback
+}
+
+export function mapLoginError(error: unknown): string {
+  if (error instanceof ApiError && error.status === 401) {
+    return ru.errors.login
+  }
+  return mapApiError(error, ru.errors.login)
 }
