@@ -37,7 +37,13 @@ def robot_query_from_vin(vin: str) -> str:
 
 
 def vin_allowed_for_user(db: Session, user: User, vin: str) -> bool:
-    """True when *user* may read Emergency diagnostics for *vin*."""
+    """True when *user* may read Emergency diagnostics for *vin*.
+
+    Product note (intentional): approved drivers may open any VIN without a
+    Tracker park/ticket check — the driver cabinet is Emergency-only and does
+    not assign parks. Admins/royals are also unrestricted. Operators and
+    mechanics require a matching in-scope Tracker ticket.
+    """
     if rbac.is_admin_or_royal(user):
         return True
     if rbac.role_slug(user) == RoleSlug.DRIVER:

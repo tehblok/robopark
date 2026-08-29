@@ -46,11 +46,10 @@ _keepalive_ring_lock = threading.Lock()
 
 
 def mask_secret(value: str | None) -> str | None:
+    """Show that a secret exists without revealing any characters."""
     if not value:
         return None
-    if len(value) <= 4:
-        return "****"
-    return "*" * (len(value) - 4) + value[-4:]
+    return f"•••• ({len(value)})"
 
 
 def _secret_key() -> str | None:

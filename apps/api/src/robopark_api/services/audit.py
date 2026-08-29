@@ -37,6 +37,8 @@ ACTION_TRACKER_ATTACH = "tracker.attach"
 
 # Administration
 ACTION_SETTINGS_CHANGED = "admin.settings.changed"
+ACTION_TRACKER_TOKEN_SET = "admin.settings.tracker_token"
+ACTION_EMERGENCY_COOKIE_SET = "admin.settings.emergency_cookie"
 ACTION_MECHANIC_CREATED = "admin.mechanic.created"
 ACTION_MECHANIC_UPDATED = "admin.mechanic.updated"
 ACTION_ACCESS_APPROVED = "admin.access.approved"

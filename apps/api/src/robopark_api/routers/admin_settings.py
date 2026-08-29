@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from robopark_api.crypto import MissingSecretKeyError
 from robopark_api.db import get_db
 from robopark_api.deps import require_admin, require_royal
 from robopark_api.models import User
@@ -19,6 +20,13 @@ router = APIRouter(
     tags=["admin-settings"],
     dependencies=[Depends(require_admin)],
 )
+
+
+def _require_secret_key(exc: MissingSecretKeyError) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="secret_key_required",
+    )
 
 
 class IntegrationSettingsOut(BaseModel):
@@ -80,14 +88,23 @@ def get_integrations(db: Session = Depends(get_db)) -> IntegrationSettingsOut:
 def put_tracker_token(
     payload: TrackerTokenUpdate,
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ) -> IntegrationSettingsOut:
     from robopark_api.services import tracker_cache, tracker_client, tracker_metrics
 
-    settings_svc.set_setting(db, settings_svc.TRACKER_TOKEN_KEY, payload.token)
+    try:
+        settings_svc.set_setting(db, settings_svc.TRACKER_TOKEN_KEY, payload.token)
+    except MissingSecretKeyError as exc:
+        raise _require_secret_key(exc) from exc
     tracker_client.clear_tracker_clients()
     tracker_metrics.clear_metrics_cache()
     tracker_cache.clear_all()
+    audit.record(
+        db,
+        action=audit.ACTION_TRACKER_TOKEN_SET,
+        actor=admin,
+        detail="tracker token updated",
+    )
     return _to_out(db)
 
 
@@ -95,13 +112,22 @@ def put_tracker_token(
 def put_emergency_cookie(
     payload: EmergencyCookieUpdate,
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ) -> IntegrationSettingsOut:
-    settings_svc.set_setting(db, settings_svc.EMERGENCY_COOKIE_KEY, payload.cookie)
-    settings_svc.set_emergency_cookie_valid(db, True)
+    try:
+        settings_svc.set_setting(db, settings_svc.EMERGENCY_COOKIE_KEY, payload.cookie)
+        settings_svc.set_emergency_cookie_valid(db, True)
+    except MissingSecretKeyError as exc:
+        raise _require_secret_key(exc) from exc
     from robopark_api.services import reports as reports_svc
 
     reports_svc.resolve_open_emergency_cookie_reports(db)
+    audit.record(
+        db,
+        action=audit.ACTION_EMERGENCY_COOKIE_SET,
+        actor=admin,
+        detail="emergency cookie updated",
+    )
     return _to_out(db)
 
 
@@ -207,7 +233,10 @@ def put_registration_password(
     db: Session = Depends(get_db),
     actor: User = Depends(require_royal),
 ) -> RegistrationPasswordSettingsOut:
-    settings_svc.set_registration_shared_password(db, payload.password)
+    try:
+        settings_svc.set_registration_shared_password(db, payload.password)
+    except MissingSecretKeyError as exc:
+        raise _require_secret_key(exc) from exc
     audit.record(
         db,
         action=audit.ACTION_SETTINGS_CHANGED,

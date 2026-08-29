@@ -18,8 +18,9 @@ def test_set_tracker_token_masked(client, seed_royal):
     )
     assert put.status_code == 200
     body = put.json()
-    assert body["tracker_token_masked"] == "**************oken"
+    assert body["tracker_token_masked"] == f"•••• ({len('oauth-secret-token')})"
     assert "oauth-secret-token" not in str(body)
+    assert "oken" not in body["tracker_token_masked"]
 
 
 def test_set_emergency_cookie(client, seed_royal):

@@ -13,6 +13,7 @@ import { Alert, Badge, PageShell, Panel } from '../components/PageShell'
 import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
 import { TabPanel, Tabs, Toggle } from '../components/ui/Tabs'
 import { PasswordField } from '../components/ui/PasswordField'
+import { AdminOpsPanel } from '../components/admin/AdminOpsPanel'
 import { AdminRolesPanel } from '../components/admin/AdminRolesPanel'
 import { AdminUsersPanel } from '../components/admin/AdminUsersPanel'
 import { useAuth } from '../auth-context'
@@ -20,7 +21,7 @@ import { mapApiError } from '../i18n/errors'
 import { roleLabel, ru } from '../i18n/ru'
 import { useCachedResource } from '../lib/resource'
 
-type TabId = 'integrations' | 'parks' | 'users' | 'roles'
+type TabId = 'integrations' | 'parks' | 'users' | 'roles' | 'ops'
 
 type AdminBootstrap = {
   parks: Park[]
@@ -87,7 +88,9 @@ export function Admin() {
   const canUsers = perms.includes('users.manage')
   const canRoles = perms.includes('roles.manage')
   const [tab, setTab] = useState<TabId>('integrations')
-  const bootRes = useCachedResource<AdminBootstrap>('admin:bootstrap', loadAdminBootstrap)
+  const bootRes = useCachedResource<AdminBootstrap>('admin:bootstrap', loadAdminBootstrap, {
+    persist: false,
+  })
   const boot = bootRes.data
 
   const [parks, setParks] = useState<Park[]>(boot?.parks ?? [])
@@ -115,7 +118,8 @@ export function Admin() {
     if (tab === 'parks' && !canParks) setTab('integrations')
     if (tab === 'users' && !canUsers) setTab('integrations')
     if (tab === 'roles' && !canRoles) setTab('integrations')
-  }, [tab, canParks, canUsers, canRoles])
+    if (tab === 'ops' && user?.role !== 'royal') setTab('integrations')
+  }, [tab, canParks, canUsers, canRoles, user?.role])
 
   useEffect(() => {
     if (!boot) return
@@ -225,7 +229,7 @@ export function Admin() {
   return (
     <PageShell
       actions={busy ? <Spinner label="Сохранение" /> : undefined}
-      subtitle="Парки, роли, пользователи и интеграции Tracker / Emergency."
+      subtitle="Парки, роли, пользователи, интеграции и снимок системы."
       title="Администрирование"
     >
       {displayError && <Alert tone="error">{displayError}</Alert>}
@@ -239,6 +243,7 @@ export function Admin() {
             ? [{ id: 'users', label: 'Пользователи', count: boot?.pendingUserCount }]
             : []),
           ...(canRoles ? [{ id: 'roles', label: 'Роли' }] : []),
+          ...(user?.role === 'royal' ? [{ id: 'ops', label: ru.ops.tab }] : []),
         ]}
         onChange={(id) => setTab(id as TabId)}
         value={tab}
@@ -655,6 +660,14 @@ export function Admin() {
       <TabPanel active={tab === 'roles'}>
         <AdminRolesPanel />
       </TabPanel>
+      )}
+
+      {user?.role === 'royal' && (
+        <TabPanel active={tab === 'ops'}>
+          <Panel hint={ru.ops.hint} title={ru.ops.title}>
+            <AdminOpsPanel />
+          </Panel>
+        </TabPanel>
       )}
     </PageShell>
   )

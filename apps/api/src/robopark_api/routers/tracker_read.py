@@ -430,7 +430,7 @@ def robot_tickets(
     except tracker_client.TrackerError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
+            detail="tracker_upstream_error",
         ) from exc
 
     sorted_items = tracker_filters.sort_issues_oldest_first(merged)

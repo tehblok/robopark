@@ -45,14 +45,14 @@ def validate_password(
     password was valid for operators and admin-created mechanics alike.
     """
     if len(password) < min_length:
-        raise PasswordPolicyError(f"password must be at least {min_length} characters long")
+        raise PasswordPolicyError("password_too_short")
 
     normalized = password.strip().lower()
     if normalized in _COMMON_PASSWORDS:
-        raise PasswordPolicyError("password is too common")
+        raise PasswordPolicyError("password_too_common")
 
     if username and username.strip().lower() in normalized:
-        raise PasswordPolicyError("password must not contain the username")
+        raise PasswordPolicyError("password_contains_username")
 
     if require_complexity:
         classes = (
@@ -62,10 +62,7 @@ def validate_password(
             any(not c.isalnum() for c in password),
         )
         if sum(classes) < 3:
-            raise PasswordPolicyError(
-                "password must combine at least three of: lowercase, uppercase, "
-                "digits, special characters"
-            )
+            raise PasswordPolicyError("password_complexity")
 
 
 def hash_password(plain: str) -> str:

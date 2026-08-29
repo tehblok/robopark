@@ -7,9 +7,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
 from robopark_api.dev_seed import ensure_dev_seed
+from robopark_api.middleware.maintenance import MaintenanceGateMiddleware
 from robopark_api.routers import (
     admin_audit,
     admin_emergency,
+    admin_ops,
     admin_park_requests,
     admin_roles,
     admin_settings,
@@ -32,10 +34,12 @@ from robopark_api.routers import (
 )
 from robopark_api.seed import ensure_seed_user
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services.rbac_seed import ensure_rbac_catalog
-from robopark_api.services.emergency_config import ensure_default_section_roles
 from robopark_api.services.blocker_history_job import run_blocker_history_loop
+from robopark_api.services.emergency_config import ensure_default_section_roles
 from robopark_api.services.emergency_keepalive import run_keepalive_loop
+from robopark_api.services.ops.context import build_ops_context, resolved_ops_dir
+from robopark_api.services.ops.reconcile import reconcile_pending_rebuild
+from robopark_api.services.rbac_seed import ensure_rbac_catalog
 from robopark_api.services.session_cleanup import run_session_cleanup_loop
 
 
@@ -55,6 +59,18 @@ def create_app() -> FastAPI:
             # only fresh writes from the admin UI.
             settings_svc.migrate_plaintext_secrets(db)
             settings_svc.migrate_registration_password_from_env(db)
+        try:
+            ctx = build_ops_context(settings)
+            reconcile_pending_rebuild(
+                ctx.ops_dir,
+                database_url=ctx.database_url,
+                config_files=ctx.config_files,
+                data_dir=ctx.data_dir,
+            )
+        except Exception:  # noqa: BLE001
+            import logging
+
+            logging.getLogger(__name__).exception("ops rebuild reconcile failed on startup")
         stop_event = asyncio.Event()
         tasks = [
             asyncio.create_task(run_keepalive_loop(stop_event)),
@@ -78,11 +94,21 @@ def create_app() -> FastAPI:
                 with suppress(asyncio.CancelledError):
                     await task
 
-    app = FastAPI(title="Robopark API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title="Robopark API",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url="/docs" if settings.openapi_enabled else None,
+        redoc_url="/redoc" if settings.openapi_enabled else None,
+        openapi_url="/openapi.json" if settings.openapi_enabled else None,
+    )
+    app.state.ops_dir = resolved_ops_dir(settings)
+    app.state.session_cookie_name = settings.session_cookie_name
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     # Explicit method/header allowlists paired with ``allow_credentials=True``:
     # a wildcard here would let the browser send credentialed requests with
     # arbitrary custom headers to every configured origin.
+    app.add_middleware(MaintenanceGateMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
@@ -98,6 +124,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_audit.router)
     app.include_router(admin_emergency.router)
     app.include_router(admin_settings.router)
+    app.include_router(admin_ops.router)
     app.include_router(operator_parks.router)
     app.include_router(operator_blockers.router)
     app.include_router(operator_report.router)

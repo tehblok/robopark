@@ -46,7 +46,7 @@ def _get_robot_payload(db: Session, vin: str) -> dict:
     except emergency_client.EmergencyError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
+            detail="emergency_upstream_error",
         ) from exc
 
 
@@ -61,7 +61,7 @@ def _enforce_vin_scope(db: Session, user: User, vin: str) -> None:
     except tracker_client.TrackerError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
+            detail="tracker_upstream_error",
         ) from exc
     if not allowed:
         raise HTTPException(
@@ -76,7 +76,10 @@ def resolve_robot_for_user(
     try:
         vin = emergency_vin.normalize_robot_id(payload.robot_number)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid_robot_number",
+        ) from exc
 
     _require_emergency_cookie(db)
     _enforce_vin_scope(db, user, vin)
@@ -95,7 +98,10 @@ def emergency_section_for_user(
     try:
         vin = emergency_vin.normalize_robot_id(vin)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid_robot_number",
+        ) from exc
 
     _enforce_vin_scope(db, user, vin)
 
@@ -119,7 +125,10 @@ def emergency_snapshot_for_user(vin: str, user: User, db: Session) -> EmergencyS
     try:
         vin = emergency_vin.normalize_robot_id(vin)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid_robot_number",
+        ) from exc
 
     _enforce_vin_scope(db, user, vin)
 

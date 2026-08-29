@@ -21,7 +21,8 @@ class RoleSlug:
     DRIVER = "driver"
 
     SYSTEM = frozenset({ROYAL, ADMIN, OPERATOR, MECHANIC, DRIVER})
-    SELF_REGISTER = frozenset({ADMIN, OPERATOR, MECHANIC, DRIVER})
+    #: Admins/royals are created by an existing royal — never self-serve.
+    SELF_REGISTER = frozenset({OPERATOR, MECHANIC, DRIVER})
 
 
 # Permission keys referenced across API and frontend nav.
@@ -227,13 +228,17 @@ def has_permission(db: Session, user: User, permission: str) -> bool:
     return permission in permissions_for_user(db, user)
 
 
-def assert_approved_or_staff(user: User) -> None:
+def assert_approved(user: User) -> None:
+    """Every privileged API caller must be approved — including admin/royal."""
     from robopark_api.models import AccessStatus
 
-    if is_admin_or_royal(user):
-        return
     if user.access_status != AccessStatus.approved.value:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+
+def assert_approved_or_staff(user: User) -> None:
+    """Deprecated alias — staff no longer bypass approval."""
+    assert_approved(user)
 
 
 def require_approved_permission(db: Session, user: User, permission: str) -> None:
@@ -263,6 +268,7 @@ def is_last_active_royal(db: Session, user: User) -> bool:
 
 def require_permission(permission: str):
     def dep(user: User = Depends(require_user), db: Session = Depends(get_db)) -> User:
+        assert_approved(user)
         if not has_permission(db, user, permission):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
         return user
@@ -271,12 +277,14 @@ def require_permission(permission: str):
 
 
 def require_royal(user: User = Depends(require_user)) -> User:
+    assert_approved(user)
     if not is_royal(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return user
 
 
 def require_admin_panel(user: User = Depends(require_user), db: Session = Depends(get_db)) -> User:
+    assert_approved(user)
     if not has_permission(db, user, PERMISSION_NAV_ADMIN):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return user

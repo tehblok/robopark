@@ -357,6 +357,27 @@ export type ReportCreatePayload = {
   tracker_url?: string | null
 }
 
+export type OpsJob = {
+  id: string
+  kind: 'snapshot' | 'restore' | 'update' | string
+  state: 'queued' | 'running' | 'succeeded' | 'failed' | string
+  phase: string
+  log: string
+  error: string | null
+  artifact_ready: boolean
+  restart_required: boolean
+  created_at: string
+  updated_at: string
+  restore_phrase: string
+  update_phrase: string
+}
+
+export type OpsMaintenance = {
+  active: boolean
+  kind: string | null
+  operator: boolean
+}
+
 export class ApiError extends Error {
   status: number
   detail: string | null
@@ -789,4 +810,21 @@ export const api = {
         ? '/reports/badge'
         : `/reports/badge?park_id=${parkId}`,
     ),
+  opsMaintenance: () => request<OpsMaintenance>('/ops/maintenance'),
+  opsJob: () => request<OpsJob>('/admin/ops/job'),
+  opsAbort: () => request<OpsJob>('/admin/ops/abort', { method: 'POST' }),
+  opsSnapshot: () => request<OpsJob>('/admin/ops/snapshot', { method: 'POST' }),
+  opsArtifact: () => requestBlob('/admin/ops/artifact'),
+  opsRestore: (file: File, confirm: string) => {
+    const form = new FormData()
+    form.append('confirm', confirm)
+    form.append('archive', file, file.name)
+    return requestForm<OpsJob>('/admin/ops/restore', form)
+  },
+  opsUpdate: (file: File, confirm: string) => {
+    const form = new FormData()
+    form.append('confirm', confirm)
+    form.append('archive', file, file.name)
+    return requestForm<OpsJob>('/admin/ops/update', form)
+  },
 }

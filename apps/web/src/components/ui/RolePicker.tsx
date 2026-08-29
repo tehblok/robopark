@@ -1,6 +1,6 @@
 import { roleLabel } from '../../i18n/ru'
 
-export const REGISTER_ROLES = ['operator', 'mechanic', 'driver', 'admin'] as const
+export const REGISTER_ROLES = ['operator', 'mechanic', 'driver'] as const
 
 export type RegisterRole = (typeof REGISTER_ROLES)[number]
 
@@ -8,7 +8,6 @@ const ROLE_HINT: Record<RegisterRole, string> = {
   operator: 'Мониторинг парка, блокеры и репорты',
   mechanic: 'Задачи на площадке и обращения',
   driver: 'Только проверка робота в Emergency',
-  admin: 'Парки, пользователи и настройки',
 }
 
 export function RolePicker({

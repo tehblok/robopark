@@ -36,9 +36,9 @@ def create_manual_report(
     tracker_url: str | None,
 ) -> Report:
     if kind not in MANUAL_KINDS:
-        raise ValueError(f"invalid manual report kind: {kind}")
+        raise ValueError("invalid_report_kind")
     if kind == KIND_TICKET_QUESTION and not tracker_key:
-        raise ValueError("tracker_key is required for ticket_question")
+        raise ValueError("tracker_key_required")
 
     report = Report(
         kind=kind,
@@ -228,7 +228,7 @@ def _require_act(db: Session, user: User, report: Report) -> None:
 def _require_non_empty_comment(comment: str) -> str:
     trimmed = comment.strip()
     if not trimmed:
-        raise ValueError("comment is required")
+        raise ValueError("comment_required")
     return trimmed
 
 

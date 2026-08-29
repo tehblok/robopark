@@ -11,6 +11,19 @@ from robopark_api.security import hash_session_token
 from robopark_api.services import rbac
 
 
+#: Paths allowed while ``must_change_password`` is set (SPA + API).
+_MUST_CHANGE_PASSWORD_ALLOW = frozenset(
+    {
+        "/auth/me",
+        "/auth/change-password",
+        "/auth/logout",
+        "/ops/maintenance",
+        "/health",
+        "/health/ready",
+    }
+)
+
+
 def require_user(
     request: Request,
     db: Session = Depends(get_db),
@@ -32,10 +45,16 @@ def require_user(
     ).unique().first()
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    if user.must_change_password and request.url.path not in _MUST_CHANGE_PASSWORD_ALLOW:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="must_change_password",
+        )
     return user
 
 
 def require_admin(user: User = Depends(require_user), db: Session = Depends(get_db)) -> User:
+    rbac.assert_approved(user)
     if not rbac.has_permission(db, user, rbac.PERMISSION_NAV_ADMIN):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return user
@@ -72,11 +91,8 @@ def require_emergency_viewer(
 ) -> User:
     if not rbac.has_permission(db, user, rbac.PERMISSION_NAV_EMERGENCY):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-    if rbac.role_slug(user) in {rbac.RoleSlug.ROYAL, rbac.RoleSlug.ADMIN}:
-        return user
-    if user.access_status == AccessStatus.approved.value:
-        return user
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    rbac.assert_approved(user)
+    return user
 
 
 def get_mechanic_park(db: Session, user: User) -> Park | None:

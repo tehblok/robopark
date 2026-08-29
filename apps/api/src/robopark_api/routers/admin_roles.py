@@ -113,6 +113,7 @@ def create_role(
     db: Session = Depends(get_db),
     actor: User = Depends(require_user),
 ) -> RoleOut:
+    rbac.assert_approved(actor)
     if not rbac.is_royal(actor) and not rbac.has_permission(db, actor, rbac.PERMISSION_ROLES_MANAGE):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     if payload.slug in rbac.RoleSlug.SYSTEM:
@@ -150,6 +151,7 @@ def update_role(
     db: Session = Depends(get_db),
     actor: User = Depends(require_user),
 ) -> RoleOut:
+    rbac.assert_approved(actor)
     if not rbac.is_royal(actor) and not rbac.has_permission(db, actor, rbac.PERMISSION_ROLES_MANAGE):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     role = _load_role(db, role_id)
@@ -163,6 +165,11 @@ def update_role(
     if "description" in changes and changes["description"] is not None:
         role.description = changes["description"]
     if "is_active" in changes and changes["is_active"] is not None:
+        if role.is_system and changes["is_active"] is False:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="system_role_protected",
+            )
         role.is_active = changes["is_active"]
     if payload.permissions is not None:
         if role.slug == rbac.RoleSlug.ROYAL and not rbac.is_royal(actor):

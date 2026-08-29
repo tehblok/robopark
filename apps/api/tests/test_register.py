@@ -51,7 +51,8 @@ def test_register_duplicate_username(client, test_settings, monkeypatch, seed_ro
         },
     )
 
-    assert response.status_code == 409
+    assert response.status_code == 403
+    assert response.json()["detail"] == "register_denied"
 
 
 def test_register_rejects_weak_password(client, test_settings, monkeypatch):

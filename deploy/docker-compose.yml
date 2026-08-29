@@ -7,11 +7,17 @@ services:
     build:
       context: ../apps/api
     env_file:
-      - ${HOST_ENV_FILE:-./host.env.example}
+      # Copy deploy/host.env.example → deploy/host.env and point HOST_ENV_FILE at it.
+      # Do not fall back to the example file (empty SECRET_KEY).
+      - ${HOST_ENV_FILE:-./host.env}
     environment:
       DATABASE_URL: sqlite:////data/robopark.db
+      OPS_DIR: /data/ops
+      OPS_HOST_ENV_PATH: /host-repo/deploy/host.env
     volumes:
       - robopark_data:/data
+      # Royal ZIP updates copy onto the checkout; ops-agent rebuilds images.
+      - ..:/host-repo
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
@@ -41,6 +47,24 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  ops-agent:
+    image: docker:27-cli
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ..:/host-repo
+      - robopark_data:/data
+    working_dir: /host-repo/deploy
+    command: ["sh", "/host-repo/deploy/ops-agent.sh"]
+    restart: unless-stopped
     logging:
       driver: json-file
       options:
