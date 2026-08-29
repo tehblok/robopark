@@ -15,7 +15,9 @@ export const NAV_PERMISSION: Record<NavId, string> = {
 
 export function navItemsForPermissions(permissions: readonly string[]): NavItem[] {
   const allowed = new Set(permissions)
-  return ALL_NAV_ITEMS.filter((item) => allowed.has(NAV_PERMISSION[item.id]))
+  return ALL_NAV_ITEMS.filter(
+    (item) => !item.stub && allowed.has(NAV_PERMISSION[item.id]),
+  )
 }
 
 export function hasNavPermission(permissions: readonly string[], id: NavId): boolean {

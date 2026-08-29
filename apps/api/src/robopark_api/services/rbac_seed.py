@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from robopark_api.models import Permission, Role, RolePermission
@@ -59,13 +59,17 @@ def ensure_rbac_catalog(db: Session) -> None:
             role.is_system = True
             role.is_active = True
 
-        existing_links = db.scalar(
-            select(func.count()).where(RolePermission.role_id == role.id)
+        existing_keys = set(
+            db.scalars(
+                select(Permission.key)
+                .join(RolePermission, RolePermission.permission_id == Permission.id)
+                .where(RolePermission.role_id == role.id)
+            )
         )
-        if existing_links:
-            continue
         desired = DEFAULT_ROLE_PERMISSIONS.get(slug, frozenset())
         for key in desired:
+            if key in existing_keys:
+                continue
             perm = perm_by_key.get(key)
             if perm is not None:
                 db.add(RolePermission(role_id=role.id, permission_id=perm.id))

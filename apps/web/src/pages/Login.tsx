@@ -4,6 +4,7 @@ import { Alert } from '../components/PageShell'
 import { AuthBrand } from '../components/ui/AuthBrand'
 import { PasswordField } from '../components/ui/PasswordField'
 import { Spinner } from '../components/ui/Feedback'
+import { mapLoginError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
 import { useAuth } from '../auth-context'
 import { pathForUser } from '../routes'
@@ -24,6 +25,7 @@ export function Login() {
   const location = useLocation()
   const [username, setUsername] = useState(readLastUsername)
   const [password, setPassword] = useState('')
+  const [rememberMe, setRememberMe] = useState(false)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -45,15 +47,15 @@ export function Login() {
     setSubmitting(true)
 
     try {
-      const authenticatedUser = await login(username, password)
+      const authenticatedUser = await login(username, password, rememberMe)
       try {
         window.localStorage.setItem(LAST_USERNAME_KEY, username.trim())
       } catch {
         /* ignore */
       }
       navigate(pathForUser(authenticatedUser), { replace: true })
-    } catch {
-      setError(ru.errors.login)
+    } catch (caught) {
+      setError(mapLoginError(caught))
     } finally {
       setSubmitting(false)
     }
@@ -84,6 +86,14 @@ export function Login() {
           required
           value={password}
         />
+        <label className="field-check">
+          <input
+            checked={rememberMe}
+            onChange={(event) => setRememberMe(event.target.checked)}
+            type="checkbox"
+          />
+          {ru.auth.rememberMe}
+        </label>
         {error && <Alert tone="error">{error}</Alert>}
         <button className="btn" disabled={submitting} type="submit">
           {submitting ? <Spinner label="Вход…" /> : 'Войти'}

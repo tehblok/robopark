@@ -1,9 +1,13 @@
+import { Navigate } from 'react-router-dom'
 import { PageShell } from '../components/PageShell'
 import { EmptyBlock } from '../components/ui/Feedback'
 import { useAuth } from '../auth-context'
 
 export function OperatorPending() {
-  const { logout } = useAuth()
+  const { user, loading, logout } = useAuth()
+
+  if (loading) return null
+  if (!user) return <Navigate to="/login" replace />
 
   return (
     <PageShell

@@ -9,7 +9,7 @@ export function isScreenshotShortcut(event: KeyboardEvent): boolean {
   if (event.key === 'PrintScreen' || event.code === 'PrintScreen') return true
 
   const meta = event.metaKey || event.ctrlKey
-  if (meta && event.shiftKey) {
+  if (event.metaKey && event.shiftKey) {
     const key = event.key.toLowerCase()
     if (key === 's') return true
     if (['3', '4', '5', '6'].includes(event.key)) return true

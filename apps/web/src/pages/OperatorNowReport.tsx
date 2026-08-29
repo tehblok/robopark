@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, type NowReport, type Park } from '../api'
+import { api, type NowReport } from '../api'
 import { Alert, PageShell, Panel } from '../components/PageShell'
 import { EmptyBlock, SkeletonKpi, SkeletonList, Spinner } from '../components/ui/Feedback'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
 import { useCachedResource } from '../lib/resource'
+import { useParkContext } from '../park-context'
 
 const TOTAL_KEYS = [
   'blocker',
@@ -86,32 +87,31 @@ function MetricsGrid({ metrics }: { metrics: Record<string, number> }) {
 
 /** Live Tracker snapshot for operators — shown under /analytics. */
 export function OperatorNowReport() {
-  const [parkFilter, setParkFilter] = useState<number | null>(null)
+  const { parkId, setParkId, parks, parksLoading } = useParkContext()
+  const [scopeAll, setScopeAll] = useState(false)
 
-  const parksRes = useCachedResource<Park[]>('operator:parks', () => api.operatorParks())
-  const parks = parksRes.data ?? []
-
-  const reportKey =
-    parks.length === 0 ? '' : parkFilter == null ? 'now-report:all' : `now-report:park:${parkFilter}`
+  const reportEnabled = parks.length > 0 && (scopeAll || parkId != null)
+  const reportKey = !reportEnabled
+    ? ''
+    : scopeAll
+      ? 'now-report:all'
+      : `now-report:park:${parkId}`
   const reportRes = useCachedResource<NowReport>(
     reportKey,
-    () => api.operatorNowReport(parkFilter ?? undefined),
-    { enabled: parks.length > 0 },
+    () => api.operatorNowReport(scopeAll ? undefined : parkId ?? undefined),
+    { enabled: reportEnabled },
   )
 
   const report = reportRes.data
-  const parksLoading = parksRes.isLoading && !parksRes.data
-  const showReportSkeleton = reportRes.isLoading && !report
-  const error =
-    (parksRes.error ? mapApiError(parksRes.error, ru.errors.load) : '') ||
-    (reportRes.error ? mapApiError(reportRes.error, ru.errors.load) : '')
+  const showReportSkeleton = reportEnabled && reportRes.isLoading && !report
+  const error = reportRes.error ? mapApiError(reportRes.error, ru.errors.load) : ''
 
   return (
     <PageShell
       actions={
         <button
           className="btn btn-secondary"
-          disabled={reportRes.isRevalidating || parksLoading || !parks.length}
+          disabled={reportRes.isRevalidating || parksLoading || !reportEnabled}
           onClick={() => void reportRes.refresh()}
           type="button"
         >
@@ -135,9 +135,14 @@ export function OperatorNowReport() {
                 disabled={!parks.length}
                 onChange={(event) => {
                   const value = event.target.value
-                  setParkFilter(value ? Number(value) : null)
+                  if (!value) {
+                    setScopeAll(true)
+                    return
+                  }
+                  setParkId(Number(value))
+                  setScopeAll(false)
                 }}
-                value={parkFilter ?? ''}
+                value={scopeAll ? '' : (parkId ?? '')}
               >
                 <option value="">Все парки</option>
                 {parks.map((park) => (
@@ -172,7 +177,7 @@ export function OperatorNowReport() {
       <Panel title="Итого">
         {showReportSkeleton && <SkeletonKpi items={4} />}
         {report && <MetricsGrid metrics={report.totals} />}
-        {!showReportSkeleton && !report && !error && parks.length > 0 && (
+        {!showReportSkeleton && !report && !error && reportEnabled && (
           <EmptyBlock hint="Нажмите «Обновить» в шапке." icon="◔" title="Сводка ещё не загружена" />
         )}
       </Panel>

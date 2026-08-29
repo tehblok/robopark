@@ -75,6 +75,24 @@ ALL_PERMISSIONS: tuple[str, ...] = (
     PERMISSION_PARKS_MANAGE,
 )
 
+PRIVILEGED_PERMISSIONS: frozenset[str] = frozenset(
+    {
+        PERMISSION_NAV_ADMIN,
+        PERMISSION_NAV_ADMIN_TRACKER,
+        PERMISSION_NAV_ADMIN_EMERGENCY,
+        PERMISSION_ROLES_MANAGE,
+        PERMISSION_USERS_MANAGE,
+        PERMISSION_USERS_APPROVE,
+        PERMISSION_PARKS_MANAGE,
+    }
+)
+
+
+def privileged_grant_blocked(actor: User, existing: set[str], desired: set[str]) -> bool:
+    if is_royal(actor):
+        return False
+    return bool((desired - existing) & PRIVILEGED_PERMISSIONS)
+
 
 @dataclass(frozen=True)
 class PermissionDef:
@@ -139,6 +157,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             PERMISSION_NAV_EMERGENCY,
             PERMISSION_NAV_REPORTS,
             PERMISSION_TRACKER_READ,
+            PERMISSION_TRACKER_WRITE,
             PERMISSION_TRACKER_ATTACH,
             PERMISSION_REPORTS_CREATE,
         }

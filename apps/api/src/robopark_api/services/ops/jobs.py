@@ -37,6 +37,10 @@ class JobConflict(RuntimeError):
     """Another ops job is already running."""
 
 
+class JobAborted(RuntimeError):
+    """Disk job is already failed; refusing to resurrect it."""
+
+
 @dataclass
 class OpsJob:
     id: str
@@ -119,8 +123,12 @@ def load_job(ops_dir: Path) -> OpsJob | None:
     return OpsJob(**filtered, extra=extra)
 
 
-def save_job(ops_dir: Path, job: OpsJob) -> None:
+def _save_job_unlocked(ops_dir: Path, job: OpsJob) -> None:
+    """Write job.json. Caller must hold the exclusive ops lock."""
     paths = ensure_ops_dir(ops_dir)
+    disk = load_job(ops_dir)
+    if disk is not None and disk.id == job.id and disk.state == STATE_FAILED:
+        raise JobAborted(disk.error or "aborted")
     job.updated_at = _now()
     payload = asdict(job)
     encoded = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -132,6 +140,13 @@ def save_job(ops_dir: Path, job: OpsJob) -> None:
     except Exception:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+def save_job(ops_dir: Path, job: OpsJob) -> None:
+    paths = ensure_ops_dir(ops_dir)
+    with paths["lock"].open("a+", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        _save_job_unlocked(ops_dir, job)
 
 
 def append_log(ops_dir: Path, job: OpsJob, line: str) -> None:
@@ -153,7 +168,8 @@ def begin_exclusive(ops_dir: Path, kind: str, *, exempt_token_hash: str) -> OpsJ
         require_idle(ops_dir)
         job = new_job(kind, exempt_token_hash=exempt_token_hash)
         job.state = STATE_RUNNING
-        save_job(ops_dir, job)
+        # Already holding the lock; nested flock deadlocks on Darwin.
+        _save_job_unlocked(ops_dir, job)
         return job
 
 

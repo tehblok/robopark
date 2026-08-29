@@ -5,13 +5,13 @@ import { useAuth } from '../auth-context'
 import { Alert, PageShell } from '../components/PageShell'
 import { PasswordField } from '../components/ui/PasswordField'
 import { Spinner } from '../components/ui/Feedback'
-import { mapApiError } from '../i18n/errors'
+import { mapLoginError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
 import { passwordChecks } from '../lib/passwordChecks'
 import { pathForUser } from '../routes'
 
 export function ChangePassword() {
-  const { user, loading, login } = useAuth()
+  const { user, loading, refreshUser, logout } = useAuth()
   const navigate = useNavigate()
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -52,10 +52,10 @@ export function ChangePassword() {
     setSubmitting(true)
     try {
       await api.changePassword(currentPassword, newPassword)
-      const refreshed = await login(user.username, newPassword)
+      const refreshed = await refreshUser()
       navigate(pathForUser(refreshed), { replace: true })
     } catch (caught) {
-      setError(mapApiError(caught, ru.errors.generic))
+      setError(mapLoginError(caught))
     } finally {
       setSubmitting(false)
     }
@@ -63,6 +63,7 @@ export function ChangePassword() {
 
   return (
     <PageShell
+      onLogout={logout}
       standalone
       subtitle="Администратор запросил смену пароля перед продолжением работы."
       title="Смена пароля"

@@ -31,4 +31,33 @@ def test_ensure_rbac_catalog_does_not_wipe_custom_role_permissions(db_session):
         )
     )
     assert "nav.map" in keys
-    assert "tracker.read" not in keys
+    assert "tracker.read" in keys
+
+
+def test_ensure_rbac_catalog_adds_missing_system_role_permissions(db_session):
+    mechanic = db_session.scalar(select(Role).where(Role.slug == "mechanic"))
+    extra = db_session.scalar(select(Permission).where(Permission.key == "nav.map"))
+    write_perm = db_session.scalar(select(Permission).where(Permission.key == "tracker.write"))
+    read_perm = db_session.scalar(select(Permission).where(Permission.key == "tracker.read"))
+    assert mechanic is not None
+    assert extra is not None
+    assert write_perm is not None
+    assert read_perm is not None
+
+    db_session.execute(delete(RolePermission).where(RolePermission.role_id == mechanic.id))
+    db_session.add(RolePermission(role_id=mechanic.id, permission_id=read_perm.id))
+    db_session.add(RolePermission(role_id=mechanic.id, permission_id=extra.id))
+    db_session.commit()
+
+    ensure_rbac_catalog(db_session)
+
+    keys = set(
+        db_session.scalars(
+            select(Permission.key)
+            .join(RolePermission, RolePermission.permission_id == Permission.id)
+            .where(RolePermission.role_id == mechanic.id)
+        )
+    )
+    assert "tracker.write" in keys
+    assert "tracker.read" in keys
+    assert "nav.map" in keys

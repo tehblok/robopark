@@ -1,25 +1,35 @@
 import { useCallback, useEffect, useMemo, useState, type PropsWithChildren } from 'react'
-import { api, type Park } from './api'
+import { api, type Park, type User } from './api'
 import { useAuth } from './auth-context'
 import {
   isAdminRole,
   ParkContext,
-  readStoredParkId,
   resolveParkId,
   writeStoredParkId,
 } from './park-context'
 
+function assignedParks(user: User | null): Park[] {
+  return user && !isAdminRole(user.role) ? (user.parks ?? []) : []
+}
+
+function parkLockedFor(user: User | null): boolean {
+  return user?.role === 'mechanic' && (user.parks?.length ?? 0) <= 1
+}
+
 export function ParkProvider({ children }: PropsWithChildren) {
   const { user } = useAuth()
-  const [parks, setParks] = useState<Park[]>([])
-  const [parksLoading, setParksLoading] = useState(false)
-  const [parkId, setParkIdState] = useState<number | null>(() => readStoredParkId())
+  const [parks, setParks] = useState<Park[]>(() => assignedParks(user))
+  const [parksLoading, setParksLoading] = useState(() => Boolean(user && isAdminRole(user.role)))
+  const [parkId, setParkIdState] = useState<number | null>(() =>
+    resolveParkId(assignedParks(user), parkLockedFor(user)),
+  )
 
-  const parkLocked = user?.role === 'mechanic' && (user.parks?.length ?? 0) <= 1
+  const parkLocked = parkLockedFor(user)
 
   useEffect(() => {
     if (!user) {
       setParks([])
+      setParksLoading(false)
       setParkIdState(null)
       writeStoredParkId(null)
       return
@@ -36,6 +46,7 @@ export function ParkProvider({ children }: PropsWithChildren) {
     }
 
     setParks(user.parks ?? [])
+    setParksLoading(false)
   }, [user])
 
   useEffect(() => {

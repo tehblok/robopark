@@ -113,6 +113,32 @@ def test_expired_sessions_are_purged(db_session, seed_royal):
     assert [row.token_hash for row in remaining] == ["valid"]
 
 
+def test_absolute_expired_sessions_are_purged(db_session, seed_royal, test_settings):
+    from robopark_api.routers.auth import purge_expired_sessions
+
+    now = datetime.now(UTC)
+    stale = AuthSession(
+        user_id=seed_royal.id,
+        token_hash="absolute-stale",
+        expires_at=now + timedelta(days=2),
+    )
+    fresh = AuthSession(
+        user_id=seed_royal.id,
+        token_hash="absolute-fresh",
+        expires_at=now + timedelta(days=2),
+    )
+    db_session.add_all([stale, fresh])
+    db_session.commit()
+    stale.created_at = now - timedelta(seconds=test_settings.session_absolute_ttl_seconds + 60)
+    db_session.commit()
+
+    removed = purge_expired_sessions(db_session, test_settings)
+
+    assert removed == 1
+    remaining = db_session.query(AuthSession).all()
+    assert [row.token_hash for row in remaining] == ["absolute-fresh"]
+
+
 def test_login_purges_expired_sessions(client, db_session, seed_royal):
     from conftest import login_as
 

@@ -98,3 +98,77 @@ def test_admin_cannot_change_access_status(client, seed_royal, seed_pending_oper
     db_session.refresh(seed_pending_operator)
     assert seed_pending_operator.access_status == "pending"
 
+
+def test_admin_cannot_grant_nav_admin_to_mechanic(client, seed_royal, seed_mechanic, db_session):
+    admin = User(
+        username="admin-user-perms",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "admin"),
+        access_status="approved",
+        is_active=True,
+    )
+    db_session.add(admin)
+    db_session.commit()
+
+    login_as(client, "admin-user-perms", "secret")
+    response = client.patch(
+        f"/admin/users/{seed_mechanic.id}",
+        json={"permissions": ["nav.emergency", "nav.dashboard", "nav.admin"]},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "privileged_grant_forbidden"
+
+
+def test_admin_can_keep_royal_privileged_override(client, seed_royal, seed_mechanic, db_session):
+    admin = User(
+        username="admin-keep-override",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "admin"),
+        access_status="approved",
+        is_active=True,
+    )
+    operator = User(
+        username="op-no-nav-admin",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "operator"),
+        access_status="approved",
+        is_active=True,
+    )
+    db_session.add_all([admin, operator])
+    db_session.commit()
+    db_session.refresh(operator)
+
+    login_as(client, "royal", "secret")
+    listed = client.get("/admin/users").json()
+    role_perms = next(row["permissions"] for row in listed if row["id"] == seed_mechanic.id)
+    granted = client.patch(
+        f"/admin/users/{seed_mechanic.id}",
+        json={"permissions": sorted(set(role_perms) | {"nav.admin"})},
+    )
+    assert granted.status_code == 200
+    permissions = granted.json()["permissions"]
+    assert "nav.admin" in permissions
+    park_ids = [park["id"] for park in granted.json()["parks"]]
+
+    login_as(client, "admin-keep-override", "secret")
+    keep = client.patch(
+        f"/admin/users/{seed_mechanic.id}",
+        json={"permissions": permissions},
+    )
+    assert keep.status_code == 200
+    assert "nav.admin" in keep.json()["permissions"]
+
+    parks = client.patch(
+        f"/admin/users/{seed_mechanic.id}",
+        json={"park_ids": park_ids, "permissions": permissions},
+    )
+    assert parks.status_code == 200
+    assert "nav.admin" in parks.json()["permissions"]
+
+    add = client.patch(
+        f"/admin/users/{operator.id}",
+        json={"permissions": ["nav.admin"]},
+    )
+    assert add.status_code == 403
+    assert add.json()["detail"] == "privileged_grant_forbidden"
+

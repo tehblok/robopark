@@ -15,7 +15,7 @@ COPY pyproject.toml ./
 COPY src ./src
 COPY alembic.ini ./
 COPY alembic ./alembic
-COPY data ./data
+COPY data/emergency_sections.json ./data/emergency_sections.json
 
 RUN pip install --no-cache-dir . pytest
 

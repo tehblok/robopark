@@ -10,21 +10,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from datetime import UTC, datetime
-
-from sqlalchemy import delete
 
 from robopark_api.db import SessionLocal
-from robopark_api.models import AuthSession
+from robopark_api.routers.auth import purge_expired_sessions
 
 logger = logging.getLogger(__name__)
 
 
 def purge_expired_sessions_once() -> int:
     with SessionLocal() as db:
-        result = db.execute(delete(AuthSession).where(AuthSession.expires_at <= datetime.now(UTC)))
-        db.commit()
-        removed = int(result.rowcount or 0)
+        removed = purge_expired_sessions(db)
     if removed:
         logger.info("Purged %s expired session(s)", removed)
     return removed

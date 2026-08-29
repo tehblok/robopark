@@ -449,10 +449,10 @@ async function requestForm<T>(path: string, formData: FormData): Promise<T> {
 
 export const api = {
   me: () => request<User>('/auth/me'),
-  login: (username: string, password: string) =>
+  login: (username: string, password: string, rememberMe = false) =>
     request<void>('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, remember_me: rememberMe }),
     }),
   logout: () => request<void>('/auth/logout', { method: 'POST' }),
   changePassword: (current_password: string, new_password: string) =>

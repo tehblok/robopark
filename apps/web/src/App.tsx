@@ -185,6 +185,14 @@ export default function App() {
           }
         />
         <Route
+          path="/operator/parks"
+          element={
+            <RequireApprovedOperator>
+              <OperatorParks />
+            </RequireApprovedOperator>
+          }
+        />
+        <Route
           path="/tasks"
           element={
             <RequirePermission permission="nav.tasks">
@@ -277,14 +285,6 @@ export default function App() {
       </Route>
 
       <Route path="/operator" element={<Navigate to="/dashboard" replace />} />
-      <Route
-        path="/operator/parks"
-        element={
-          <RequireApprovedOperator>
-            <OperatorParks />
-          </RequireApprovedOperator>
-        }
-      />
       <Route path="*" element={<CatchAll />} />
     </Routes>
   )

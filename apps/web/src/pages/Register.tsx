@@ -45,8 +45,6 @@ export function Register() {
     } catch (registrationError) {
       if (registrationError instanceof ApiError && registrationError.status === 403) {
         setError(ru.errors.register403)
-      } else if (registrationError instanceof ApiError && registrationError.status === 409) {
-        setError(ru.errors.register409)
       } else if (registrationError instanceof ApiError && registrationError.status === 422) {
         setError(ru.errors.register)
       } else {

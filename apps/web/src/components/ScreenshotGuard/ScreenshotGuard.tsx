@@ -50,19 +50,6 @@ export function ScreenshotGuard({ username, userId }: ScreenshotGuardProps) {
       show()
     }
 
-    const onBlur = () => {
-      show()
-    }
-
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-        show()
-        return
-      }
-      // Returning to the tab after a capture tool was used.
-      show()
-    }
-
     const onContextMenu = (event: MouseEvent) => {
       if (!shouldBlockProtectedAction(event)) return
       event.preventDefault()
@@ -90,14 +77,6 @@ export function ScreenshotGuard({ username, userId }: ScreenshotGuardProps) {
       show()
     }
 
-    const onPageHide = () => {
-      show()
-    }
-
-    const onPageShow = () => {
-      show()
-    }
-
     const onSelectStart = (event: Event) => {
       if (!shouldBlockProtectedAction(event)) return
       event.preventDefault()
@@ -112,10 +91,6 @@ export function ScreenshotGuard({ username, userId }: ScreenshotGuardProps) {
     }
 
     window.addEventListener('keydown', onKeyDown, true)
-    window.addEventListener('blur', onBlur)
-    window.addEventListener('pagehide', onPageHide)
-    window.addEventListener('pageshow', onPageShow)
-    document.addEventListener('visibilitychange', onVisibilityChange)
     document.addEventListener('contextmenu', onContextMenu, true)
     document.addEventListener('copy', onCopy, true)
     document.addEventListener('cut', onCut, true)
@@ -126,10 +101,6 @@ export function ScreenshotGuard({ username, userId }: ScreenshotGuardProps) {
 
     return () => {
       window.removeEventListener('keydown', onKeyDown, true)
-      window.removeEventListener('blur', onBlur)
-      window.removeEventListener('pagehide', onPageHide)
-      window.removeEventListener('pageshow', onPageShow)
-      document.removeEventListener('visibilitychange', onVisibilityChange)
       document.removeEventListener('contextmenu', onContextMenu, true)
       document.removeEventListener('copy', onCopy, true)
       document.removeEventListener('cut', onCut, true)

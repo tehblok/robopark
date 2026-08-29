@@ -278,8 +278,8 @@ Put the printed `https://…` origin into `CORS_ORIGINS` and restart the API con
 
 The Tracker OAuth token and the Emergency cookie are stored in the database and
 encrypted with a key derived from `SECRET_KEY` (Fernet, AES-128-CBC + HMAC).
-Without `SECRET_KEY` the API still runs but keeps secrets as plaintext and logs
-a warning — set it in `.env` / `host.env`:
+Without `SECRET_KEY` the API still starts, but refuses to persist Tracker and
+Emergency secrets (`MissingSecretKeyError`) — set it in `.env` / `host.env`:
 
 ```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
