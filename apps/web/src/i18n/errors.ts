@@ -25,3 +25,10 @@ export function mapApiError(error: unknown, fallback = ''): string {
   }
   return fallback
 }
+
+export function mapLoginError(error: unknown): string {
+  if (error instanceof ApiError && error.status === 401) {
+    return ru.errors.login
+  }
+  return mapApiError(error, ru.errors.login)
+}

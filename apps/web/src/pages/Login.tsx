@@ -4,7 +4,7 @@ import { Alert } from '../components/PageShell'
 import { AuthBrand } from '../components/ui/AuthBrand'
 import { PasswordField } from '../components/ui/PasswordField'
 import { Spinner } from '../components/ui/Feedback'
-import { mapApiError } from '../i18n/errors'
+import { mapLoginError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
 import { useAuth } from '../auth-context'
 import { pathForUser } from '../routes'
@@ -55,7 +55,7 @@ export function Login() {
       }
       navigate(pathForUser(authenticatedUser), { replace: true })
     } catch (caught) {
-      setError(mapApiError(caught, ru.errors.login))
+      setError(mapLoginError(caught))
     } finally {
       setSubmitting(false)
     }

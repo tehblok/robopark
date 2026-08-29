@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from '../api'
-import { mapApiError } from './errors'
+import { mapApiError, mapLoginError } from './errors'
 import { ru } from './ru'
 
 describe('mapApiError', () => {
@@ -16,5 +16,18 @@ describe('mapApiError', () => {
   it('maps too_many_attempts', () => {
     const err = new ApiError(429, 'too_many_attempts')
     expect(mapApiError(err, ru.errors.login)).toBe(ru.errors.details.too_many_attempts)
+  })
+})
+
+describe('mapLoginError', () => {
+  it('maps bare 401 to credential copy, not sessionExpired', () => {
+    expect(mapLoginError(new ApiError(401))).toBe(ru.errors.login)
+    expect(mapLoginError(new ApiError(401, null))).toBe(ru.errors.login)
+  })
+
+  it('maps too_many_attempts via mapApiError', () => {
+    expect(mapLoginError(new ApiError(429, 'too_many_attempts'))).toBe(
+      ru.errors.details.too_many_attempts,
+    )
   })
 })
