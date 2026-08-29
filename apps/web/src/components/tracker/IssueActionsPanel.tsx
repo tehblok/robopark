@@ -2,6 +2,7 @@ import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'r
 import { api, type TrackerTransition, type TrackerUserSuggestion } from '../../api'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
+import { safeHttpUrl } from '../../lib/safeUrl'
 
 const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
 
@@ -9,7 +10,7 @@ export function IssueActionsPanel({
   canWrite,
   transitions,
   currentUser,
-  issueUrl,
+  issueUrl: issueUrlRaw,
   onComment,
   onAttach,
   onAssign,
@@ -28,6 +29,7 @@ export function IssueActionsPanel({
   onTransition: (transition: string) => Promise<void>
   onClose: () => Promise<void>
 }) {
+  const issueUrl = safeHttpUrl(issueUrlRaw) ?? undefined
   const [comment, setComment] = useState('')
   const [assignee, setAssignee] = useState('')
   const [suggestions, setSuggestions] = useState<TrackerUserSuggestion[]>([])

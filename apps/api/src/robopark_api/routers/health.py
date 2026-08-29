@@ -43,17 +43,16 @@ def readiness(response: Response, db: Session = Depends(get_db)) -> dict:
         checks["database"] = f"error: {type(exc).__name__}"
         ready = False
 
-    # Integrations are reported but do not fail readiness: the UI stays usable
-    # (parks, reports, admin) while a token is being re-issued.
+    # Integrations are soft signals for operators; do not name which secret is
+    # missing (anonymous callers can hit this via the reverse proxy).
     try:
-        checks["tracker_token"] = "configured" if settings_svc.get_tracker_token(db) else "missing"
+        has_tracker = bool(settings_svc.get_tracker_token(db))
+        has_emergency = bool(settings_svc.get_emergency_cookie(db))
         cookie_valid = settings_svc.get_emergency_cookie_valid(db)
-        if not settings_svc.get_emergency_cookie(db):
-            checks["emergency_cookie"] = "missing"
-        elif cookie_valid is False:
-            checks["emergency_cookie"] = "invalid"
+        if has_tracker and has_emergency and cookie_valid is not False:
+            checks["integrations"] = "ok"
         else:
-            checks["emergency_cookie"] = "ok"
+            checks["integrations"] = "degraded"
     except Exception:  # noqa: BLE001
         logger.exception("Readiness: integration check failed")
         checks["integrations"] = "error"

@@ -1,4 +1,5 @@
 import { reportKindLabel, reportStatusLabel } from '../../i18n/ru'
+import { safeHttpUrl } from '../../lib/safeUrl'
 
 export function formatReportDate(value: string): string {
   const date = new Date(value)
@@ -7,8 +8,11 @@ export function formatReportDate(value: string): string {
 }
 
 export function trackerHref(key: string | null, url: string | null): string | null {
-  if (url) return url
-  if (key) return `https://st.yandex-team.ru/${key}`
+  const fromUrl = safeHttpUrl(url)
+  if (fromUrl) return fromUrl
+  if (key && /^[A-Z][A-Z0-9]+-\d+$/i.test(key)) {
+    return `https://st.yandex-team.ru/${encodeURIComponent(key)}`
+  }
   return null
 }
 

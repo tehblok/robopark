@@ -17,7 +17,7 @@ COPY alembic.ini ./
 COPY alembic ./alembic
 COPY data ./data
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir . pytest
 
 # Run as an unprivileged user; /data is the mounted SQLite volume.
 RUN useradd --create-home --uid 10001 robopark \

@@ -9,10 +9,10 @@ Design notes:
 
 * Ciphertext is tagged with :data:`ENC_PREFIX`. Anything without the prefix is
   treated as a legacy plaintext value and returned as-is, so an existing
-  database keeps working; values are re-encrypted on the next write.
-* Without ``SECRET_KEY`` the app degrades to the legacy plaintext behaviour and
-  logs a warning instead of refusing to boot — an operator upgrading in place
-  must not end up with a dead installation.
+  database keeps working; values are re-encrypted on the next write / migrate.
+* Writing secrets without ``SECRET_KEY`` raises :class:`MissingSecretKeyError`
+  (fail closed). Set ``SECRET_KEY`` in `.env` / ``host.env`` before storing
+  Tracker or Emergency credentials.
 """
 
 from __future__ import annotations
@@ -26,11 +26,14 @@ from cryptography.fernet import Fernet, InvalidToken
 logger = logging.getLogger(__name__)
 
 ENC_PREFIX = "enc:v1:"
-_MISSING_KEY_WARNED = False
 
 
 class SecretDecryptionError(Exception):
     """Stored ciphertext cannot be decrypted with the configured key."""
+
+
+class MissingSecretKeyError(ValueError):
+    """SECRET_KEY is required to encrypt secrets at rest."""
 
 
 def _derive_fernet_key(secret_key: str) -> bytes:
@@ -48,18 +51,13 @@ def is_encrypted(value: str | None) -> bool:
 
 
 def encrypt_secret(value: str, secret_key: str | None) -> str:
-    """Encrypt *value*; return it unchanged when no key is configured."""
+    """Encrypt *value*. Raises if no ``SECRET_KEY`` is configured."""
     if not value:
         return value
     if not secret_key:
-        global _MISSING_KEY_WARNED
-        if not _MISSING_KEY_WARNED:
-            logger.warning(
-                "SECRET_KEY is not set — integration secrets are stored as "
-                "plaintext. Set SECRET_KEY to enable encryption at rest."
-            )
-            _MISSING_KEY_WARNED = True
-        return value
+        raise MissingSecretKeyError(
+            "SECRET_KEY is required to store integration secrets at rest"
+        )
     token = _cipher(secret_key).encrypt(value.encode("utf-8")).decode("ascii")
     return f"{ENC_PREFIX}{token}"
 

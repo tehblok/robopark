@@ -33,9 +33,10 @@ def test_wrong_key_is_rejected():
         crypto.decrypt_secret(encrypted, crypto.generate_secret_key())
 
 
-def test_missing_key_falls_back_to_plaintext():
-    """Without SECRET_KEY the app must keep working, not crash."""
-    assert crypto.encrypt_secret("value", None) == "value"
+def test_missing_key_refuses_encrypt():
+    """Without SECRET_KEY, secret writes fail closed."""
+    with pytest.raises(crypto.MissingSecretKeyError):
+        crypto.encrypt_secret("value", None)
     assert crypto.decrypt_secret("value", None) == "value"
 
 
@@ -85,7 +86,7 @@ def test_masking_uses_plaintext_not_ciphertext(db_session, with_secret_key):
     settings_svc.set_setting(db_session, settings_svc.TRACKER_TOKEN_KEY, "abcdefgh")
 
     status = settings_svc.integration_status(db_session)
-    assert status["tracker_token_masked"] == "****efgh"
+    assert status["tracker_token_masked"] == "•••• (8)"
     assert status["tracker_token_encrypted"] is True
 
 
@@ -130,8 +131,10 @@ def test_migrate_plaintext_secrets_reseals_legacy_rows(db_session, with_secret_k
     assert settings_svc.get_emergency_cookie(db_session) == "Session_id=old"
 
 
-def test_migrate_plaintext_secrets_is_noop_without_key(db_session):
+def test_migrate_plaintext_secrets_is_noop_without_key(db_session, monkeypatch):
     """Without SECRET_KEY the migration must not touch anything."""
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    reset_settings_cache()
     db_session.add(
         PlatformSetting(key=settings_svc.TRACKER_TOKEN_KEY, value="legacy-token")
     )

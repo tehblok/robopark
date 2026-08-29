@@ -155,7 +155,7 @@ def test_create_manual_ticket_question_requires_tracker_key(
 def test_create_manual_rejects_non_manual_kind(
     db_session, seed_mechanic, seed_park_with_tracker, kind
 ):
-    with pytest.raises(ValueError, match="invalid manual report kind"):
+    with pytest.raises(ValueError, match="invalid_report_kind"):
         reports_svc.create_manual_report(
             db_session,
             author=seed_mechanic,

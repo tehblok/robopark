@@ -142,8 +142,29 @@ Optional Tuna extras (cabinet / docs): basic-auth / key-auth in front of the app
 
 ## Backup
 
-Back up the `robopark_data` volume / SQLite file on the host regularly.  
+Royal (owner) can take a full snapshot and restore it from **Администрирование → Снимок и обновление**.
+The archive is a ZIP with a `snapshot` manifest: SQLite, data files, and `host.env`.
+
+To move to another host: install and start Compose once, sign in as royal, restore the ZIP, type `ВОССТАНОВИТЬ`. Keep the same `SECRET_KEY` or re-enter Tracker/Emergency secrets.
+
 Do **not** commit `host.env`, `tuna.env`, or Tuna tokens.
+
+## Updates
+
+Pack a *release* ZIP on a machine with the repo (not a snapshot):
+
+```sh
+chmod +x scripts/pack-release.sh
+scripts/pack-release.sh ./robopark-release.zip
+```
+
+Royal uploads that ZIP on the same admin tab, types `ОБНОВИТЬ`. The API checks the archive, runs tests on a copy, snapshots, then copies files onto the checkout. The `ops-agent` compose service rebuilds `api` and `web`.
+
+## Residual risk (accepted)
+
+* **ops-agent + `docker.sock`** — a compromised royal session (or a release that passes tests) can rewrite the checkout and rebuild containers. Keep the royal account offline-only and treat release ZIPs as trusted code.
+* **Driver Emergency** — approved drivers may open any VIN without a Tracker park ticket (product: Emergency-only cabinet).
+* **Session cookies** — CSRF relies on `SameSite=lax` + same-origin nginx proxy; do not loosen cookie flags without adding CSRF tokens.
 
 ## Quick reference
 

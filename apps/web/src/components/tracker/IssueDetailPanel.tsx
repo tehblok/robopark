@@ -1,4 +1,5 @@
 import type { TrackerAttachment, TrackerComment, TrackerIssueDetail } from '../../api'
+import { safeHttpUrl } from '../../lib/safeUrl'
 import { ru } from '../../i18n/ru'
 import {
   isImageAttachment,
@@ -28,13 +29,14 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 function CommentAttachmentImage({ attachment }: { attachment: TrackerAttachment }) {
-  if (!attachment.url || !isImageAttachment(attachment)) {
+  const safeUrl = safeHttpUrl(attachment.url)
+  if (!safeUrl || !isImageAttachment(attachment)) {
     const size = formatFileSize(attachment.size)
     const label = size ? `${attachment.name} (${size})` : attachment.name
     return (
       <span className="issue-comment-file">
-        {attachment.url ? (
-          <a href={attachment.url} rel="noreferrer" target="_blank">
+        {safeUrl ? (
+          <a href={safeUrl} rel="noreferrer" target="_blank">
             {label}
           </a>
         ) : (
@@ -47,12 +49,12 @@ function CommentAttachmentImage({ attachment }: { attachment: TrackerAttachment 
   return (
     <a
       className="issue-comment-image-link"
-      href={attachment.url}
+      href={safeUrl}
       rel="noreferrer"
       target="_blank"
       title={attachment.name}
     >
-      <img alt={attachment.name} className="issue-comment-image" src={attachment.url} />
+      <img alt={attachment.name} className="issue-comment-image" src={safeUrl} />
     </a>
   )
 }
@@ -132,20 +134,25 @@ export function IssueDetailPanel({
   const chatLayout = sortedComments.some(
     (comment) => (comment.attachments?.length ?? 0) > 0 || commentsAsHistory,
   )
+  const issueUrl = safeHttpUrl(issue.url)
 
   return (
     <article className="issue-detail">
       <header className="issue-detail-head">
         <div className="issue-detail-title-row">
-          <a
-            className="issue-detail-key"
-            href={issue.url}
-            rel="noreferrer"
-            target="_blank"
-            title={ru.tracker.actions.openInTracker}
-          >
-            {issue.key}
-          </a>
+          {issueUrl ? (
+            <a
+              className="issue-detail-key"
+              href={issueUrl}
+              rel="noreferrer"
+              target="_blank"
+              title={ru.tracker.actions.openInTracker}
+            >
+              {issue.key}
+            </a>
+          ) : (
+            <span className="issue-detail-key">{issue.key}</span>
+          )}
           <span className={`issue-status tone-${statusTone(issue)}`}>{issue.status}</span>
           {priority && (
             <span className={`issue-badge tone-${priorityTone(issue.priority)}`}>
@@ -219,10 +226,11 @@ export function IssueDetailPanel({
             {issue.attachments.map((attachment) => {
               const size = formatFileSize(attachment.size)
               const label = size ? `${attachment.name} (${size})` : attachment.name
+              const fileUrl = safeHttpUrl(attachment.url)
               return (
                 <li className="issue-attachment" key={attachment.id}>
-                  {attachment.url ? (
-                    <a href={attachment.url} rel="noreferrer" target="_blank">
+                  {fileUrl ? (
+                    <a href={fileUrl} rel="noreferrer" target="_blank">
                       {label}
                     </a>
                   ) : (

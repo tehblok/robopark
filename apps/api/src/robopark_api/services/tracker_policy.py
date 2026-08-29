@@ -134,6 +134,9 @@ def ensure_action_allowed(db: Session, user: User, issue: dict, action: str) -> 
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
     enforce_issue_scope(db, user, issue)
     if action == "attach":
+        # Photos are allowed even when tracker write (comment/assign/close) is
+        # disabled for the role — intentional so mechanics can still upload
+        # evidence under a read-heavy policy.
         return
     if not can_write_tracker(db, user):
         raise HTTPException(

@@ -142,9 +142,10 @@ def test_readiness_reports_database_and_integrations(client):
     body = response.json()
     assert body["status"] == "ready"
     assert body["checks"]["database"] == "ok"
-    # Nothing configured in a fresh test database.
-    assert body["checks"]["tracker_token"] == "missing"
-    assert body["checks"]["emergency_cookie"] == "missing"
+    # Soft signal only — do not name which secret is missing.
+    assert body["checks"]["integrations"] == "degraded"
+    assert "tracker_token" not in body["checks"]
+    assert "emergency_cookie" not in body["checks"]
 
 
 def test_readiness_reports_configured_integrations(client, db_session):
@@ -154,8 +155,7 @@ def test_readiness_reports_configured_integrations(client, db_session):
     platform_settings.set_setting(db_session, platform_settings.EMERGENCY_COOKIE_KEY, "cookie")
 
     checks = client.get("/health/ready").json()["checks"]
-    assert checks["tracker_token"] == "configured"
-    assert checks["emergency_cookie"] == "ok"
+    assert checks["integrations"] == "ok"
 
 
 def test_readiness_degrades_when_database_fails(client):

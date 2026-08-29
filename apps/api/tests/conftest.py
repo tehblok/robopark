@@ -37,6 +37,12 @@ def ignore_local_env_file(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def default_test_secret_key(monkeypatch):
+    """Fail-closed crypto needs a key; suite code calls get_settings() directly."""
+    monkeypatch.setenv("SECRET_KEY", "test-suite-secret-key")
+
+
+@pytest.fixture(autouse=True)
 def clear_settings_cache():
     """`get_settings()` is process-wide cached; isolate it between tests."""
     reset_settings_cache()
@@ -82,12 +88,18 @@ def db_session(db_engine):
 
 
 @pytest.fixture
-def test_settings(db_engine):
+def test_settings(db_engine, tmp_path):
+    (tmp_path / "host.env").write_text("SECRET_KEY=test-ops-key\n", encoding="utf-8")
     return Settings(
         _env_file=None,
         database_url=str(db_engine.url),
         seed_username=None,
         seed_password=None,
+        secret_key="test-suite-secret-key",
+        ops_dir=str(tmp_path / "ops"),
+        ops_apply_root=str(tmp_path / "apply"),
+        ops_host_env_path=str(tmp_path / "host.env"),
+        ops_sync=True,
     )
 
 

@@ -55,6 +55,8 @@ class UserApproval(BaseModel):
 
 
 def _can_manage_users(db: Session, actor: User) -> bool:
+    if actor.access_status != AccessStatus.approved.value:
+        return False
     return rbac.is_royal(actor) or rbac.has_permission(db, actor, rbac.PERMISSION_USERS_MANAGE)
 
 

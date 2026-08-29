@@ -25,9 +25,14 @@ class Settings(BaseSettings):
     dev_seed: bool = False
 
     #: Master key for encrypting integration secrets at rest (Tracker token,
-    #: Emergency cookie). When unset, secrets fall back to plaintext storage and
-    #: the API logs a warning — set it in `.env` / `host.env`.
+    #: Emergency cookie). Required to write secrets — empty key fails closed.
     secret_key: str | None = None
+
+    #: Expose FastAPI /docs and /openapi.json (local only; keep false in deploy).
+    openapi_enabled: bool = False
+
+    #: Auto-fail stuck ops jobs older than this (seconds). 0 disables.
+    ops_job_ttl_seconds: int = 2 * 60 * 60
 
     # --- Password policy -------------------------------------------------
     password_min_length: int = 12
@@ -46,6 +51,18 @@ class Settings(BaseSettings):
     # --- Session hygiene --------------------------------------------------
     #: How often expired sessions are purged from the database.
     session_cleanup_interval_seconds: int = 60 * 60
+
+    # --- Royal ops (snapshot / restore / ZIP update) -----------------------
+    #: Directory for job state, staging, and snapshot artifacts.
+    ops_dir: str | None = None
+    #: Tree that a successful release is copied onto (repo root in local/dev).
+    ops_apply_root: str | None = None
+    #: Optional path to deploy/host.env (or a test stand-in) packed into snapshots.
+    ops_host_env_path: str | None = None
+    #: When true, ops jobs finish inside the request (tests). When false, they
+    #: run after the response so the royal UI can poll.
+    ops_sync: bool = False
+    ops_max_upload_bytes: int = 512 * 1024 * 1024
 
     @model_validator(mode="after")
     def resolve_sqlite_database_path(self) -> "Settings":

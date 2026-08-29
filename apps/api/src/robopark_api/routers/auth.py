@@ -103,13 +103,22 @@ def register(
             detail="wrong shared password",
             client_ip=throttle_key,
         )
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="register_denied")
 
     _enforce_password_policy(registration.password, settings, username=registration.username)
 
     existing_user = db.scalar(select(User).where(User.username == registration.username))
     if existing_user is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT)
+        # Same status/detail as a wrong gate password — do not confirm the username exists.
+        audit.record(
+            db,
+            action=audit.ACTION_REGISTER,
+            actor_username=registration.username,
+            outcome=audit.OUTCOME_DENIED,
+            detail="username_taken",
+            client_ip=throttle_key,
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="register_denied")
 
     from robopark_api.services.rbac_seed import ensure_rbac_catalog
 
@@ -266,6 +275,7 @@ def me(
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
 def change_password(
     payload: ChangePasswordRequest,
+    request: Request,
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -275,4 +285,11 @@ def change_password(
     _enforce_password_policy(payload.new_password, settings, username=user.username)
     user.password_hash = hash_password(payload.new_password)
     user.must_change_password = False
+    # Drop other sessions so a stolen cookie does not survive the change.
+    raw = request.cookies.get(settings.session_cookie_name)
+    keep_hash = hash_session_token(raw) if raw else None
+    stmt = delete(AuthSession).where(AuthSession.user_id == user.id)
+    if keep_hash:
+        stmt = stmt.where(AuthSession.token_hash != keep_hash)
+    db.execute(stmt)
     db.commit()

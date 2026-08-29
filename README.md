@@ -315,6 +315,18 @@ comments written through the platform are signed with the real author.
 
 Denied attempts are recorded too, so a blocked cross-park action leaves a trace.
 
+### Snapshot and ZIP update (royal only)
+
+The owner tab **Администрирование → Снимок и обновление** can:
+
+- download a full snapshot (database, files, `host.env`);
+- restore that snapshot on this host or another (after one first Compose start and royal login);
+- upload a *release* ZIP packed with `scripts/pack-release.sh`.
+
+Release flow: integrity check → tests on a copy → automatic snapshot → copy onto the checkout → `ops-agent` rebuilds `api` and `web`. Failed tests leave the live system unchanged. Other users see a maintenance screen for the whole job.
+
+Admin cannot open this tab or call the APIs. Confirmation phrases: `ВОССТАНОВИТЬ` / `ОБНОВИТЬ`.
+
 ## Health and operations
 
 - `GET /health` — liveness, dependency-free.

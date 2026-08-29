@@ -118,9 +118,15 @@ def reset_throttles() -> None:
 
 
 def client_ip(request) -> str:
-    """Best-effort client address behind the nginx reverse proxy."""
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """Client address as seen by the reverse proxy.
+
+    Prefer ``X-Real-IP`` (set by nginx from the corrected ``$remote_addr``).
+    Do **not** trust the first ``X-Forwarded-For`` hop — any client that can
+    reach the API socket directly could rotate forged values and bypass
+    login/register lockouts.
+    """
+    real = (request.headers.get("x-real-ip") or "").strip()
+    if real:
+        return real
     client = getattr(request, "client", None)
     return getattr(client, "host", None) or "unknown"
