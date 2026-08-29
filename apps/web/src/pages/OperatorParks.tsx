@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, type Park, type ParkRequest } from '../api'
 import { Alert, Badge, PageShell, Panel } from '../components/PageShell'
 import { RequestParkModal } from '../components/parks/RequestParkModal'
@@ -22,8 +22,14 @@ function requestBadgeClass(status: string): string {
 }
 
 export function OperatorParks() {
-  const { logout } = useAuth()
+  const { refreshUser } = useAuth()
   const [parkModalOpen, setParkModalOpen] = useState(false)
+
+  useEffect(() => {
+    void refreshUser()
+    // AuthProvider recreates refreshUser each render; mount-only refresh is required.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only
+  }, [])
 
   const parksRes = useCachedResource<Park[]>('operator:parks', () => api.operatorParks())
   const availableRes = useCachedResource<Park[]>('operator:available-parks', () => api.availableParks())
@@ -53,8 +59,6 @@ export function OperatorParks() {
             {ru.parks.requestPark}
           </button>
         }
-        onLogout={logout}
-        standalone
         subtitle="Ваши парки, заявки на доступ и история запросов."
         title={ru.parks.myParks}
       >
@@ -135,7 +139,10 @@ export function OperatorParks() {
       </PageShell>
       <RequestParkModal
         onClose={() => setParkModalOpen(false)}
-        onSubmitted={() => void refreshAll()}
+        onSubmitted={() => {
+          void refreshUser()
+          void refreshAll()
+        }}
         open={parkModalOpen}
       />
     </>

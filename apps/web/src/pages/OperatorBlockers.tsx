@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { api, type Park } from '../api'
-import { Alert, PageShell, Panel } from '../components/PageShell'
+import { useAuth } from '../auth-context'
+import { Alert, PageShell } from '../components/PageShell'
 import { RequestParkModal } from '../components/parks/RequestParkModal'
 import { IssueDrawer } from '../components/tracker/IssueDrawer'
 import { TaskFilterBar, TaskList } from '../components/tracker/TaskBoard'
@@ -8,23 +9,17 @@ import { EmptyBlock, SkeletonList } from '../components/ui/Feedback'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
 import { useCachedResource } from '../lib/resource'
+import { useParkContext } from '../park-context'
 
 export function OperatorBlockers() {
-  const [parkId, setParkId] = useState<number | null>(null)
+  const { refreshUser } = useAuth()
+  const { parkId, parks, parksLoading } = useParkContext()
   const [status, setStatus] = useState('all')
   const [openKey, setOpenKey] = useState('')
   const [parkModalOpen, setParkModalOpen] = useState(false)
 
-  const parksRes = useCachedResource<Park[]>('operator:parks', () => api.operatorParks())
   const availableRes = useCachedResource<Park[]>('operator:available-parks', () => api.availableParks())
-  const parks = parksRes.data ?? []
   const canRequestPark = (availableRes.data ?? []).length > 0
-
-  useEffect(() => {
-    if (parkId == null && parks.length > 0) {
-      setParkId(parks[0].id)
-    }
-  }, [parkId, parks])
 
   const blockersKey = parkId == null ? '' : `operator:blockers:${parkId}:${status}`
   const blockersRes = useCachedResource(
@@ -37,10 +32,14 @@ export function OperatorBlockers() {
   const counts = blockersRes.data?.counts ?? {}
   const parkTag = blockersRes.data?.park_tag ?? ''
 
-  const loadError = blockersRes.error ?? parksRes.error
-  const errorText = loadError
-    ? mapApiError(loadError, blockersRes.error ? ru.errors.tasks : ru.errors.load)
+  const errorText = blockersRes.error
+    ? mapApiError(blockersRes.error, ru.errors.tasks)
     : ''
+
+  const handleParkSubmitted = () => {
+    void refreshUser()
+    void availableRes.refresh()
+  }
 
   const requestParkButton = (
     <button
@@ -73,9 +72,7 @@ export function OperatorBlockers() {
         </PageShell>
         <RequestParkModal
           onClose={() => setParkModalOpen(false)}
-          onSubmitted={() => {
-            void Promise.all([parksRes.refresh(), availableRes.refresh()])
-          }}
+          onSubmitted={handleParkSubmitted}
           open={parkModalOpen}
         />
       </>
@@ -94,24 +91,7 @@ export function OperatorBlockers() {
       >
         {errorText && <Alert tone="error">{errorText}</Alert>}
 
-        {parks.length > 1 && (
-          <Panel hint="Задачи показываются по выбранному парку." title="Парк">
-            <select
-              aria-label="Парк"
-              className="park-select"
-              onChange={(event) => setParkId(Number(event.target.value))}
-              value={parkId ?? ''}
-            >
-              {parks.map((park) => (
-                <option key={park.id} value={park.id}>
-                  {park.name} ({park.tag})
-                </option>
-              ))}
-            </select>
-          </Panel>
-        )}
-
-        {!parks.length && !errorText && !parksRes.isLoading && (
+        {!parks.length && !errorText && !parksLoading && (
           <EmptyBlock
             action={
               <button className="btn" onClick={() => setParkModalOpen(true)} type="button">
@@ -144,9 +124,7 @@ export function OperatorBlockers() {
       </PageShell>
       <RequestParkModal
         onClose={() => setParkModalOpen(false)}
-        onSubmitted={() => {
-          void Promise.all([parksRes.refresh(), availableRes.refresh()])
-        }}
+        onSubmitted={handleParkSubmitted}
         open={parkModalOpen}
       />
     </>
