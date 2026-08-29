@@ -52,11 +52,11 @@ def can_view_untagged(db: Session, user: User) -> bool:
 
 
 def can_write_tracker(db: Session, user: User) -> bool:
-    if rbac.is_admin_or_royal(user) or rbac.role_slug(user) == RoleSlug.OPERATOR:
-        return True
+    if not rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_WRITE):
+        return False
     if rbac.role_slug(user) == RoleSlug.MECHANIC:
         return settings_svc.tracker_policy_status(db)["mechanic_can_write"]
-    return False
+    return True
 
 
 class IssueOutOfScope(Exception):

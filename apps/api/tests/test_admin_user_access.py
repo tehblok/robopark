@@ -98,3 +98,23 @@ def test_admin_cannot_change_access_status(client, seed_royal, seed_pending_oper
     db_session.refresh(seed_pending_operator)
     assert seed_pending_operator.access_status == "pending"
 
+
+def test_admin_cannot_grant_nav_admin_to_mechanic(client, seed_royal, seed_mechanic, db_session):
+    admin = User(
+        username="admin-user-perms",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "admin"),
+        access_status="approved",
+        is_active=True,
+    )
+    db_session.add(admin)
+    db_session.commit()
+
+    login_as(client, "admin-user-perms", "secret")
+    response = client.patch(
+        f"/admin/users/{seed_mechanic.id}",
+        json={"permissions": ["nav.emergency", "nav.dashboard", "nav.admin"]},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "privileged_grant_forbidden"
+

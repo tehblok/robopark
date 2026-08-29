@@ -120,6 +120,13 @@ def create_role(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="role_slug_reserved")
     if db.scalar(select(Role.id).where(Role.slug == payload.slug)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT)
+    existing: set[str] = set()
+    desired = set(payload.permissions or [])
+    if rbac.privileged_grant_blocked(actor, existing, desired):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="privileged_grant_forbidden",
+        )
     role = Role(
         slug=payload.slug,
         name=payload.name,
@@ -174,6 +181,13 @@ def update_role(
     if payload.permissions is not None:
         if role.slug == rbac.RoleSlug.ROYAL and not rbac.is_royal(actor):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+        existing = {perm.key for perm in role.permissions}
+        desired = set(payload.permissions or [])
+        if rbac.privileged_grant_blocked(actor, existing, desired):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="privileged_grant_forbidden",
+            )
         _set_role_permissions(db, role, payload.permissions)
     db.commit()
     role = _load_role(db, role.id)

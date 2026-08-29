@@ -118,6 +118,17 @@ def _revoke_sessions(db: Session, user_id: int) -> None:
     db.execute(delete(AuthSession).where(AuthSession.user_id == user_id))
 
 
+def _assert_privileged_grant_allowed(
+    db: Session, actor: User, user: User, desired: list[str] | set[str]
+) -> None:
+    existing = rbac.role_permission_keys(db, user)
+    if rbac.privileged_grant_blocked(actor, existing, set(desired)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="privileged_grant_forbidden",
+        )
+
+
 @router.get("", response_model=list[UserAdminOut])
 def list_users(
     role: str | None = Query(default=None),
@@ -170,6 +181,7 @@ def create_user(
     if payload.permissions is not None:
         user = _load_user(db, user.id)
         assert user is not None
+        _assert_privileged_grant_allowed(db, actor, user, payload.permissions)
         rbac.set_user_effective_permissions(db, user, payload.permissions)
     db.commit()
     user = _load_user(db, user.id)
@@ -250,11 +262,13 @@ def update_user(
     user = _load_user(db, user.id)
     assert user is not None
     if "permissions" in changes:
-        rbac.set_user_effective_permissions(db, user, list(changes["permissions"] or []))
+        desired = list(changes["permissions"] or [])
+        _assert_privileged_grant_allowed(db, actor, user, desired)
+        rbac.set_user_effective_permissions(db, user, desired)
     elif "role_slug" in changes:
-        rbac.set_user_effective_permissions(
-            db, user, sorted(rbac.role_permission_keys(db, user))
-        )
+        desired = sorted(rbac.role_permission_keys(db, user))
+        _assert_privileged_grant_allowed(db, actor, user, desired)
+        rbac.set_user_effective_permissions(db, user, desired)
     db.commit()
     user = _load_user(db, user.id)
     assert user is not None
