@@ -34,6 +34,18 @@ describe('isScreenshotShortcut', () => {
     expect(isScreenshotShortcut(keyEvent({ key: 'a' }))).toBe(false)
     expect(isScreenshotShortcut(keyEvent({ key: 's', ctrlKey: true }))).toBe(false)
   })
+
+  it('does not treat Ctrl+Shift+S as a screenshot', () => {
+    expect(
+      isScreenshotShortcut(keyEvent({ key: 's', shiftKey: true, ctrlKey: true })),
+    ).toBe(false)
+  })
+
+  it('still treats Meta+Shift+S as a snipping shortcut', () => {
+    expect(
+      isScreenshotShortcut(keyEvent({ key: 's', shiftKey: true, metaKey: true })),
+    ).toBe(true)
+  })
 })
 
 describe('buildWatermarkLabel', () => {

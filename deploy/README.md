@@ -134,7 +134,7 @@ Files: `tuna.service`, `tuna.env.example`, `tuna-http.sh`.
 | App auth | Session cookie (`COOKIE_SECURE=true`), login throttle |
 | Secrets at rest | `SECRET_KEY` (Fernet) for Tracker / Emergency |
 
-Tuna makes the app reachable by **URL**. Rely on Robopark login; rotate `TUNA_TOKEN` if leaked; use a reserved subdomain or custom domain in production. Set **`SECRET_KEY`** in `host.env` before first boot — without it Tracker and Emergency secrets are stored as plaintext.
+Tuna makes the app reachable by **URL**. Rely on Robopark login; rotate `TUNA_TOKEN` if leaked; use a reserved subdomain or custom domain in production. Set **`SECRET_KEY`** in `host.env` before first boot — without it the API refuses to persist Tracker and Emergency secrets (`MissingSecretKeyError`).
 
 Login throttle and audit IPs depend on Tuna forwarding `X-Forwarded-For` / `X-Forwarded-Proto`; nginx trusts those headers from `127.0.0.1` (the agent).
 
