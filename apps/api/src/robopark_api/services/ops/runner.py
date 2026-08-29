@@ -31,8 +31,8 @@ from robopark_api.services.ops.jobs import (
 from robopark_api.services.ops.jobs import (
     PHASE_AWAITING_REBUILD,
     STATE_FAILED,
-    STATE_RUNNING,
     STATE_SUCCEEDED,
+    JobAborted,
     JobConflict,
     OpsJob,
     append_log,
@@ -85,22 +85,36 @@ def begin_job(ctx: OpsContext, kind: str, *, exempt_token_hash: str) -> OpsJob:
     return begin_exclusive(ctx.ops_dir, kind, exempt_token_hash=exempt_token_hash)
 
 
+def _aborted_job(ctx: OpsContext, job: OpsJob) -> OpsJob:
+    disk = load_job(ctx.ops_dir)
+    return disk if disk is not None else job
+
+
 def fail_job(ctx: OpsContext, job: OpsJob, token: str, log: str = "") -> OpsJob:
-    if log:
-        append_log(ctx.ops_dir, job, log)
-    job.state = STATE_FAILED
-    job.error = token
-    job.phase = "failed"
-    save_job(ctx.ops_dir, job)
-    return job
+    try:
+        if log:
+            append_log(ctx.ops_dir, job, log)
+        disk = load_job(ctx.ops_dir)
+        if disk is not None and disk.id == job.id and disk.state == STATE_FAILED:
+            return disk
+        job.state = STATE_FAILED
+        job.error = token
+        job.phase = "failed"
+        save_job(ctx.ops_dir, job)
+        return job
+    except JobAborted:
+        return _aborted_job(ctx, job)
 
 
 def succeed_job(ctx: OpsContext, job: OpsJob, *, phase: str = "done") -> OpsJob:
-    job.state = STATE_SUCCEEDED
-    job.phase = phase
-    job.error = None
-    save_job(ctx.ops_dir, job)
-    return job
+    try:
+        job.state = STATE_SUCCEEDED
+        job.phase = phase
+        job.error = None
+        save_job(ctx.ops_dir, job)
+        return job
+    except JobAborted:
+        return _aborted_job(ctx, job)
 
 
 def _run_tests(ctx: OpsContext, staging: Path) -> str:
@@ -218,6 +232,8 @@ def run_snapshot(ctx: OpsContext, job: OpsJob) -> OpsJob:
         _write_artifact(ctx, job, blob)
         append_log(ctx.ops_dir, job, "Снимок готов.")
         return succeed_job(ctx, job, phase="ready")
+    except JobAborted:
+        return _aborted_job(ctx, job)
     except (SnapshotError, ArchiveError, OSError) as exc:
         token = str(exc) if isinstance(exc, SnapshotError | ArchiveError) else "snapshot_failed"
         return fail_job(ctx, job, token, log=str(exc))
@@ -234,12 +250,14 @@ def run_restore(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) -
         tree = paths["staging"] / "restore-tree"
         if tree.exists():
             shutil.rmtree(tree)
+        save_job(ctx.ops_dir, job)
         unpack_archive(archive, tree, expected_kind=KIND_SNAPSHOT)
         job.phase = "replacing_data"
         save_job(ctx.ops_dir, job)
         append_log(ctx.ops_dir, job, "Восстановление данных…")
         if ctx.before_db_replace:
             ctx.before_db_replace()
+        save_job(ctx.ops_dir, job)
         restore_snapshot_tree(
             tree,
             database_path=sqlite_path_from_url(ctx.database_url),
@@ -250,6 +268,8 @@ def run_restore(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) -
         append_log(ctx.ops_dir, job, "Восстановление завершено.")
         job.restart_required = True
         return succeed_job(ctx, job, phase="restored")
+    except JobAborted:
+        return _aborted_job(ctx, job)
     except ArchiveError as exc:
         return fail_job(ctx, job, str(exc))
     except SnapshotError as exc:
@@ -276,6 +296,7 @@ def run_update(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) ->
         inspect_archive(archive, expected_kind=KIND_RELEASE)
         if staging.exists():
             shutil.rmtree(staging)
+        save_job(ctx.ops_dir, job)
         unpack_archive(archive, staging, expected_kind=KIND_RELEASE)
         append_log(ctx.ops_dir, job, "Архив проверен, запуск тестов…")
         job.phase = "testing"
@@ -319,6 +340,7 @@ def run_update(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) ->
         code_backup = paths["rollbacks"] / f"{job.id}-code"
         if ctx.apply_root.exists():
             _copy_tree(ctx.apply_root, code_backup)
+        save_job(ctx.ops_dir, job)
         _copy_tree(staging, ctx.apply_root)
         check = ctx.health_check or (lambda: True)
         if not check():
@@ -339,11 +361,12 @@ def run_update(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) ->
         job.restart_required = True
         append_log(ctx.ops_dir, job, "Выкладка завершена.")
         return succeed_job(ctx, job, phase="applied")
+    except JobAborted:
+        return _aborted_job(ctx, job)
     except ArchiveError as exc:
         return fail_job(ctx, job, str(exc))
     except ReleaseTestsFailed as exc:
-        append_log(ctx.ops_dir, job, exc.log)
-        return fail_job(ctx, job, "tests_failed")
+        return fail_job(ctx, job, "tests_failed", log=exc.log)
     except (SnapshotError, OSError) as exc:
         token = str(exc) if isinstance(exc, SnapshotError) else "update_failed"
         return fail_job(ctx, job, token, log=str(exc))
@@ -356,17 +379,20 @@ def execute_job(
     archive: bytes | None = None,
     confirm: str = "",
 ) -> OpsJob:
-    if job.kind == JOB_SNAPSHOT:
-        return run_snapshot(ctx, job)
-    if job.kind == JOB_RESTORE:
-        if archive is None:
-            return fail_job(ctx, job, "archive_required")
-        return run_restore(ctx, job, archive, confirm=confirm)
-    if job.kind == JOB_UPDATE:
-        if archive is None:
-            return fail_job(ctx, job, "archive_required")
-        return run_update(ctx, job, archive, confirm=confirm)
-    return fail_job(ctx, job, "unknown_job")
+    try:
+        if job.kind == JOB_SNAPSHOT:
+            return run_snapshot(ctx, job)
+        if job.kind == JOB_RESTORE:
+            if archive is None:
+                return fail_job(ctx, job, "archive_required")
+            return run_restore(ctx, job, archive, confirm=confirm)
+        if job.kind == JOB_UPDATE:
+            if archive is None:
+                return fail_job(ctx, job, "archive_required")
+            return run_update(ctx, job, archive, confirm=confirm)
+        return fail_job(ctx, job, "unknown_job")
+    except JobAborted:
+        return _aborted_job(ctx, job)
 
 
 def start_and_run(
