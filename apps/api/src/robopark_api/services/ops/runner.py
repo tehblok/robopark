@@ -322,6 +322,7 @@ def run_update(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) ->
             job.restart_required = True
             save_job(ctx.ops_dir, job)
             paths["rebuild_result"].unlink(missing_ok=True)
+            save_job(ctx.ops_dir, job)
             paths["rebuild_requested"].write_text(
                 f"{job.id}\n{staging.resolve()}\n",
                 encoding="utf-8",
@@ -362,6 +363,7 @@ def run_update(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) ->
         append_log(ctx.ops_dir, job, "Выкладка завершена.")
         return succeed_job(ctx, job, phase="applied")
     except JobAborted:
+        paths["rebuild_requested"].unlink(missing_ok=True)
         return _aborted_job(ctx, job)
     except ArchiveError as exc:
         return fail_job(ctx, job, str(exc))

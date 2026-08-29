@@ -127,12 +127,7 @@ def _save_job_unlocked(ops_dir: Path, job: OpsJob) -> None:
     """Write job.json. Caller must hold the exclusive ops lock."""
     paths = ensure_ops_dir(ops_dir)
     disk = load_job(ops_dir)
-    if (
-        disk is not None
-        and disk.id == job.id
-        and disk.state == STATE_FAILED
-        and job.state in {STATE_QUEUED, STATE_RUNNING, STATE_SUCCEEDED}
-    ):
+    if disk is not None and disk.id == job.id and disk.state == STATE_FAILED:
         raise JobAborted(disk.error or "aborted")
     job.updated_at = _now()
     payload = asdict(job)

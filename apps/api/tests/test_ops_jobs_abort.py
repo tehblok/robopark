@@ -34,16 +34,18 @@ def test_save_job_does_not_resurrect_aborted(tmp_path: Path):
 
 
 def test_save_job_allows_terminal_failed_write_after_abort(tmp_path: Path):
-    """fail_job after abort must not crash; disk stays failed."""
+    """A later failed save must not overwrite abort; disk error stays aborted."""
     ops = tmp_path / "ops"
     job = new_job("update", exempt_token_hash="x")
     job.state = STATE_RUNNING
     save_job(ops, job)
     abort_job(ops)
     job.state = STATE_FAILED
-    job.error = "aborted"
+    job.error = "tests_failed"
     job.phase = "failed"
-    save_job(ops, job)
+    with pytest.raises(JobAborted):
+        save_job(ops, job)
     disk = load_job(ops)
     assert disk is not None
     assert disk.state == STATE_FAILED
+    assert disk.error == "aborted"

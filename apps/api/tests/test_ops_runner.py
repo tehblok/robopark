@@ -6,8 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from robopark_api.services.ops import runner as runner_mod
 from robopark_api.services.ops.archives import KIND_RELEASE, KIND_SNAPSHOT, build_archive
 from robopark_api.services.ops.jobs import (
+    PHASE_AWAITING_REBUILD,
     STATE_FAILED,
     STATE_RUNNING,
     STATE_SUCCEEDED,
@@ -252,3 +254,31 @@ def test_abort_during_test_runner_keeps_aborted(tmp_path: Path):
     assert disk.error == "aborted"
     assert (apply / "keep.txt").read_text(encoding="utf-8") == "old"
     assert not (apply / "apps").exists()
+
+
+def test_abort_during_awaiting_rebuild_does_not_leave_rebuild_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    db = tmp_path / "data" / "robopark.db"
+    _tiny_db(db)
+    apply = tmp_path / "dest"
+    ctx = _ctx(tmp_path, db, apply, test_runner=lambda _s: "ok", use_ops_agent=True)
+    original = runner_mod.save_job
+
+    def save_then_abort_on_awaiting(ops_dir: Path, job) -> None:
+        original(ops_dir, job)
+        if job.phase == PHASE_AWAITING_REBUILD and job.state == STATE_RUNNING:
+            aborted = abort_job(ops_dir)
+            assert aborted is not None
+
+    monkeypatch.setattr(runner_mod, "save_job", save_then_abort_on_awaiting)
+    job = start_and_run(
+        ctx,
+        "update",
+        exempt_token_hash="x",
+        archive=_release_zip(tmp_path, tests_ok=True),
+        confirm=UPDATE_PHRASE,
+    )
+    assert job.state == STATE_FAILED
+    assert job.error == "aborted"
+    assert not (ctx.ops_dir / "rebuild.requested").exists()

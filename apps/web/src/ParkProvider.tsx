@@ -11,8 +11,10 @@ import {
 
 export function ParkProvider({ children }: PropsWithChildren) {
   const { user } = useAuth()
-  const [parks, setParks] = useState<Park[]>([])
-  const [parksLoading, setParksLoading] = useState(false)
+  const [parks, setParks] = useState<Park[]>(() =>
+    user && !isAdminRole(user.role) ? (user.parks ?? []) : [],
+  )
+  const [parksLoading, setParksLoading] = useState(() => Boolean(user && isAdminRole(user.role)))
   const [parkId, setParkIdState] = useState<number | null>(() => readStoredParkId())
 
   const parkLocked = user?.role === 'mechanic' && (user.parks?.length ?? 0) <= 1
@@ -20,6 +22,7 @@ export function ParkProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!user) {
       setParks([])
+      setParksLoading(false)
       setParkIdState(null)
       writeStoredParkId(null)
       return
@@ -36,6 +39,7 @@ export function ParkProvider({ children }: PropsWithChildren) {
     }
 
     setParks(user.parks ?? [])
+    setParksLoading(false)
   }, [user])
 
   useEffect(() => {
