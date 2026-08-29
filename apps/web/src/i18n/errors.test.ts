@@ -21,6 +21,7 @@ describe('mapApiError', () => {
 
 describe('mapLoginError', () => {
   it('maps bare 401 to credential copy, not sessionExpired', () => {
+    // ChangePassword uses this mapper so a failed current password is not «Сессия истекла».
     expect(mapLoginError(new ApiError(401))).toBe(ru.errors.login)
     expect(mapLoginError(new ApiError(401, null))).toBe(ru.errors.login)
   })

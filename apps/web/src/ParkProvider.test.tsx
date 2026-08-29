@@ -34,11 +34,11 @@ describe('ParkProvider', () => {
 
   it('uses assigned parks on the first render for operators', () => {
     const parks = [park]
-    const first: { parks: Park[]; parksLoading: boolean }[] = []
+    const first: { parks: Park[]; parksLoading: boolean; parkId: number | null }[] = []
 
     function Observer() {
       const value = useParkContext()
-      first.push({ parks: value.parks, parksLoading: value.parksLoading })
+      first.push({ parks: value.parks, parksLoading: value.parksLoading, parkId: value.parkId })
       return null
     }
 
@@ -52,5 +52,6 @@ describe('ParkProvider', () => {
 
     expect(first[0]?.parks).toEqual(parks)
     expect(first[0]?.parksLoading).toBe(false)
+    expect(first[0]?.parkId).toBe(park.id)
   })
 })

@@ -121,7 +121,8 @@ def _revoke_sessions(db: Session, user_id: int) -> None:
 def _assert_privileged_grant_allowed(
     db: Session, actor: User, user: User, desired: list[str] | set[str]
 ) -> None:
-    existing = rbac.role_permission_keys(db, user)
+    role_keys = rbac.role_permission_keys(db, user)
+    existing = role_keys | (rbac.permissions_for_user(db, user) & rbac.PRIVILEGED_PERMISSIONS)
     if rbac.privileged_grant_blocked(actor, existing, set(desired)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
