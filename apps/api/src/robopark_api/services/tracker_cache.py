@@ -23,13 +23,12 @@ _TTL_COMMENTS = 15.0
 _TTL_TRANSITIONS = 60.0
 _TTL_BLOCKERS = 20.0
 _TTL_ROBOT_TICKETS = 30.0
+_TTL_COUNTS = 20.0
 
 _issues_cache: ResponseCache[list[dict[str, Any]]] = ResponseCache(
     _TTL_ISSUES, name="tracker.issues"
 )
-_issue_cache: ResponseCache[dict[str, Any] | None] = ResponseCache(
-    _TTL_ISSUE, name="tracker.issue"
-)
+_issue_cache: ResponseCache[dict[str, Any] | None] = ResponseCache(_TTL_ISSUE, name="tracker.issue")
 _comments_cache: ResponseCache[list[dict[str, Any]]] = ResponseCache(
     _TTL_COMMENTS, name="tracker.comments"
 )
@@ -42,6 +41,8 @@ _blockers_cache: ResponseCache[list[dict[str, Any]]] = ResponseCache(
 _robot_tickets_cache: ResponseCache[list[dict[str, Any]]] = ResponseCache(
     _TTL_ROBOT_TICKETS, name="tracker.robot_tickets"
 )
+_count_cache: ResponseCache[int] = ResponseCache(_TTL_COUNTS, name="tracker.counts")
+_metrics_cache: ResponseCache[dict[str, int]] = ResponseCache(_TTL_COUNTS, name="tracker.metrics")
 
 _ALL_CACHES: tuple[ResponseCache[Any], ...] = (
     _issues_cache,
@@ -50,6 +51,8 @@ _ALL_CACHES: tuple[ResponseCache[Any], ...] = (
     _transitions_cache,
     _blockers_cache,
     _robot_tickets_cache,
+    _count_cache,
+    _metrics_cache,
 )
 
 
@@ -111,13 +114,43 @@ def fetch_park_blockers(
     )
 
 
-def search_robot_tickets(
-    *, token: str, queue: str, query: str
-) -> list[dict[str, Any]]:
+def search_robot_tickets(*, token: str, queue: str, query: str) -> list[dict[str, Any]]:
     ck = f"{queue}|{query}"
     return _robot_tickets_cache.get_or_load(
         ck,
         lambda: tracker_client.search_robot_tickets(token=token, queue=queue, query=query),
+    )
+
+
+def count_issues(*, token: str, query: str) -> int:
+    """Merge identical Startrek count queries across cabinets (not per user)."""
+    return _count_cache.get_or_load(
+        query,
+        lambda: tracker_client.count_issues(token=token, query=query),
+    )
+
+
+def collect_park_metrics(
+    *,
+    token: str,
+    queue: str,
+    tag: str,
+    priority: str = "blocker",
+    issue_type: str | None = None,
+) -> dict[str, int]:
+    """Park KPI bundle keyed by park query shape, never ``user_id``."""
+    from robopark_api.services import tracker_metrics as metrics_svc
+
+    key = f"{queue}|{tag}|{priority}|{issue_type or ''}"
+    return _metrics_cache.get_or_load(
+        key,
+        lambda: metrics_svc.collect_park_metrics(
+            token=token,
+            queue=queue,
+            tag=tag,
+            priority=priority,
+            issue_type=issue_type,
+        ),
     )
 
 
@@ -129,6 +162,8 @@ def invalidate_issue(key: str) -> None:
     _issues_cache.clear()
     _blockers_cache.clear()
     _robot_tickets_cache.clear()
+    _count_cache.clear()
+    _metrics_cache.clear()
 
 
 def invalidate_all_lists() -> None:
@@ -136,6 +171,8 @@ def invalidate_all_lists() -> None:
     _issues_cache.clear()
     _blockers_cache.clear()
     _robot_tickets_cache.clear()
+    _count_cache.clear()
+    _metrics_cache.clear()
 
 
 def clear_all() -> None:

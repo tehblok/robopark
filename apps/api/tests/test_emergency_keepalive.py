@@ -46,6 +46,22 @@ def test_ring_vin_fetches_and_records_success(db_session, monkeypatch):
     )
 
 
+def test_keepalive_shares_emergency_cache(db_session, monkeypatch):
+    vin = "YASADR00000000447"
+    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "cookie")
+    settings_svc.touch_keepalive_ring(db_session, vin)
+    calls = []
+
+    def fake_fetch(**kwargs):
+        calls.append(kwargs)
+        return {"vin": kwargs["vin"]}
+
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
+    emergency_keepalive.keepalive_once(db_session)
+    emergency_keepalive.keepalive_once(db_session)
+    assert len(calls) == 1
+
+
 def test_seed_vin_is_used_when_ring_is_empty(db_session, monkeypatch):
     vin = "YASADR00000000448"
     settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "cookie")
@@ -118,6 +134,7 @@ def test_keepalive_once_stops_between_vins_when_requested(db_session, monkeypatc
         calls.append(kwargs["vin"])
         if len(calls) == 1:
             stop_event.set()
+        return {"vin": kwargs["vin"]}
 
     monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
     monkeypatch.setattr(emergency_keepalive, "INTER_VIN_GAP_SECONDS", 5.0, raising=False)

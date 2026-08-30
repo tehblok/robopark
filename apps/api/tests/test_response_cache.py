@@ -111,3 +111,52 @@ def test_loader_exception_propagates_to_all_waiters():
 def test_ttl_must_be_positive():
     with pytest.raises(ValueError):
         ResponseCache(0, name="unit")
+
+
+def test_loader_failure_returns_last_good_within_ttl():
+    cache: ResponseCache[int] = ResponseCache(0.05, name="last-good")
+    assert cache.get_or_load("k", lambda: 1) == 1
+    time.sleep(0.06)
+    calls = 0
+
+    def boom() -> int:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("429")
+
+    assert cache.get_or_load("k", boom) == 1
+    assert calls == 1
+
+
+def test_overlapping_failure_without_prior_is_one_shared_error():
+    cache: ResponseCache[int] = ResponseCache(60, name="shared-err")
+    calls = 0
+    started = threading.Event()
+    release = threading.Event()
+
+    def boom() -> int:
+        nonlocal calls
+        calls += 1
+        started.set()
+        assert release.wait(timeout=1.0)
+        raise RuntimeError("429")
+
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            cache.get_or_load("k", boom)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    assert started.wait(timeout=1.0)
+    release.set()
+    for t in threads:
+        t.join(timeout=1.0)
+
+    assert calls == 1
+    assert len(errors) == 4
+    assert all(isinstance(exc, RuntimeError) for exc in errors)

@@ -60,7 +60,7 @@ def test_dashboard_summary_operator_ok(client, db_session, seed_royal):
     ]
     with (
         patch(
-            "robopark_api.services.tracker_metrics.collect_park_metrics",
+            "robopark_api.services.tracker_cache.collect_park_metrics",
             return_value=fake_metrics,
         ),
         patch(

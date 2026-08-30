@@ -12,7 +12,7 @@ from robopark_api.schemas import (
     DashboardSummaryOut,
 )
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_cache, tracker_client, tracker_filters, tracker_metrics
+from robopark_api.services import tracker_cache, tracker_client, tracker_filters
 from robopark_api.services.blocker_history import history_series
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -71,7 +71,7 @@ def dashboard_summary(
 
     try:
         priority, issue_type = tracker_filters.park_priority_type(park)
-        metrics = tracker_metrics.collect_park_metrics(
+        metrics = tracker_cache.collect_park_metrics(
             token=token,
             queue=queue,
             tag=park.tag,

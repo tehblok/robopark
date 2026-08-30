@@ -33,6 +33,7 @@ Edit `host.env`:
 | `CORS_ORIGINS` | Exact HTTPS origin users open, e.g. `https://robopark.<region>.tuna.am` |
 | `COOKIE_SECURE` | **`true`** — Tuna terminates TLS |
 | `SECRET_KEY` | Required for encrypting Tracker / Emergency secrets at rest |
+| `UVICORN_WORKERS` | API processes inside the one `api` container (default **2**, cap **4**) |
 
 Start the stack (web listens on **localhost only**):
 

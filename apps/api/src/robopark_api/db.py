@@ -1,4 +1,6 @@
 from collections.abc import Generator
+from contextvars import ContextVar, Token
+from typing import Any
 
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
@@ -52,13 +54,67 @@ SessionLocal = sessionmaker(
 )
 
 
+class RequestSession:
+    """Request-scoped Session that can drop its pool connection during a wait.
+
+    ORM objects already loaded stay usable as detached instances after
+    ``release_connection`` (expunge, then close). The next attribute access
+    opens a new Session.
+    """
+
+    def __init__(self, factory: sessionmaker[Session] | None = None) -> None:
+        self._factory = factory or SessionLocal
+        self._inner: Session | None = None
+
+    def _live(self) -> Session:
+        if self._inner is None:
+            self._inner = self._factory()
+        return self._inner
+
+    def release_connection(self) -> None:
+        if self._inner is None:
+            return
+        self._inner.expunge_all()
+        self._inner.close()
+        self._inner = None
+
+    def close(self) -> None:
+        if self._inner is not None:
+            self._inner.close()
+            self._inner = None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._live(), name)
+
+
+_request_session: ContextVar[RequestSession | None] = ContextVar(
+    "robopark_request_session", default=None
+)
+
+
+def bind_request_session(wrapper: RequestSession) -> Token[RequestSession | None]:
+    return _request_session.set(wrapper)
+
+
+def reset_request_session(token: Token[RequestSession | None]) -> None:
+    _request_session.reset(token)
+
+
+def release_request_session() -> None:
+    wrapper = _request_session.get()
+    if wrapper is not None:
+        wrapper.release_connection()
+
+
 def get_engine() -> Engine:
     return engine
 
 
 def get_db() -> Generator[Session, None, None]:
-    db = SessionLocal()
+    wrapper = RequestSession()
+    token = bind_request_session(wrapper)
     try:
-        yield db
+        yield wrapper  # type: ignore[misc]
     finally:
-        db.close()
+        wrapper.close()
+        reset_request_session(token)

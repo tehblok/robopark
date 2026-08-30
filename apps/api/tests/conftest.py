@@ -64,6 +64,17 @@ def clear_response_caches():
     emergency_cache.clear_cache_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def disable_live_merge_by_default(monkeypatch):
+    """Unit tests stay in-process; multiprocess modules opt into a tmp store."""
+    monkeypatch.setenv("ROBOPARK_LIVE_MERGE", "0")
+    from robopark_api.services.live_merge import reset_live_merge_store
+
+    reset_live_merge_store()
+    yield
+    reset_live_merge_store()
+
+
 @pytest.fixture
 def sqlite_database_url(tmp_path):
     return f"sqlite:///{tmp_path / 'alembic.db'}"

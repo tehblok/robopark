@@ -214,6 +214,27 @@ def test_success_marks_cookie_valid_and_touches_ring(db_session, monkeypatch):
     assert settings_svc.get_keepalive_ring(db_session) == [VIN]
 
 
+def test_cache_hit_does_not_touch_keepalive_ring(db_session, monkeypatch):
+    touches = 0
+
+    def fake_touch(db, vin):
+        nonlocal touches
+        touches += 1
+
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        lambda **kwargs: {"vin": kwargs["vin"]},
+    )
+    monkeypatch.setattr(settings_svc, "touch_keepalive_ring", fake_touch)
+    _set_cookie(db_session)
+
+    emergency_cache.get_robot_payload(db=db_session, vin=VIN)
+    emergency_cache.get_robot_payload(db=db_session, vin=VIN)
+
+    assert touches == 1
+
+
 def test_keepalive_ring_moves_vin_to_end_and_keeps_latest_twenty(db_session):
     for number in range(21):
         settings_svc.touch_keepalive_ring(db_session, f"VIN-{number}")

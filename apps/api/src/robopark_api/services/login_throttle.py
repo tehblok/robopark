@@ -4,9 +4,9 @@
 a user's password and the shared registration password could be guessed at
 network speed.
 
-State is kept in memory on purpose: Robopark runs as a single API container on
-one host, so a shared store would add operational weight without a real benefit.
-Restarting the API clears the counters — acceptable for this threat model.
+Counters live in the API process. With ``uvicorn --workers`` each worker has
+its own map, so the limit is best-effort per process (follow-up: host-wide
+file/SQLite throttle). Restarting the API still clears the counters.
 """
 
 from __future__ import annotations

@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from robopark_api.db import SessionLocal
-from robopark_api.services import emergency_client, reports
+from robopark_api.services import emergency_cache, emergency_client, reports
 from robopark_api.services import platform_settings as settings_svc
 
 MIN_INTERVAL_SECONDS = 90.0
@@ -70,7 +70,7 @@ def _keepalive_once_with_db(db: Session, stop_event: threading.Event | None) -> 
             return
 
         try:
-            emergency_client.fetch_robot_payload(cookie=cookie, vin=vin)
+            emergency_cache.get_robot_payload(db=db, vin=vin)
         except emergency_client.EmergencyAuthError:
             settings_svc.set_emergency_cookie_valid(db, False)
             return

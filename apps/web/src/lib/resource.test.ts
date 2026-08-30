@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { resourceStore } from './resource'
+import { coalesceLoader, resetCoalescingForTests, resourceStore } from './resource'
 
 describe('resourceStore', () => {
   afterEach(() => {
@@ -43,5 +43,47 @@ describe('resourceStore', () => {
     )
     expect(resourceStore.get(key)).toBeUndefined()
     expect(window.localStorage.getItem(`robopark:res:${key}`)).toBeNull()
+  })
+})
+
+describe('coalesceLoader', () => {
+  afterEach(() => {
+    resetCoalescingForTests()
+  })
+
+  it('shares one loader for the same key', async () => {
+    let calls = 0
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const loader = async () => {
+      calls += 1
+      await gate
+      return { n: calls }
+    }
+    const first = coalesceLoader('now-report:all', loader)
+    const second = coalesceLoader('now-report:all', loader)
+    release()
+    expect(await first).toEqual({ n: 1 })
+    expect(await second).toEqual({ n: 1 })
+    expect(calls).toBe(1)
+  })
+
+  it('does not share different keys', async () => {
+    let calls = 0
+    const loader = async () => {
+      calls += 1
+      return { n: calls }
+    }
+    await Promise.all([
+      coalesceLoader('tracker:issue:A', loader),
+      coalesceLoader('tracker:issue:B', loader),
+    ])
+    expect(calls).toBe(2)
+  })
+
+  it('does not talk to Startrek or Emergency from the browser', () => {
+    expect(coalesceLoader.toString()).not.toMatch(/st-api\.yandex|tracker\.yandex|emergency\./i)
   })
 })

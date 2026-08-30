@@ -181,6 +181,23 @@ class InFlightCounter {
 export const resourceStore = new ResourceStore()
 export const inFlight = new InFlightCounter()
 
+const inflightLoaders = new Map<string, Promise<unknown>>()
+
+/** Overlapping loaders for the same key share one in-flight Promise. */
+export function coalesceLoader<T>(key: string, loader: () => Promise<T>): Promise<T> {
+  const existing = inflightLoaders.get(key)
+  if (existing) return existing as Promise<T>
+  const pending = loader().finally(() => {
+    if (inflightLoaders.get(key) === pending) inflightLoaders.delete(key)
+  })
+  inflightLoaders.set(key, pending)
+  return pending as Promise<T>
+}
+
+export function resetCoalescingForTests(): void {
+  inflightLoaders.clear()
+}
+
 export function useIsRevalidating(): boolean {
   return useSyncExternalStore(
     (fn) => inFlight.subscribe(fn),
@@ -248,7 +265,7 @@ export function useCachedResource<T>(
     setIsRevalidating(true)
     if (trackProgress) inFlight.begin()
     try {
-      const fresh = await loaderRef.current()
+      const fresh = await coalesceLoader(key, () => loaderRef.current())
       if (requestId !== requestIdRef.current) return
       resourceStore.set(key, fresh, persist)
       setError(null)

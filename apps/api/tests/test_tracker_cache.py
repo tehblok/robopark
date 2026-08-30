@@ -95,3 +95,18 @@ def test_clear_all_resets_every_cache(monkeypatch):
 
     monkeypatch.setattr(tracker_client, "get_issue", counter)
     assert tracker_cache.get_issue(token="t", key="SD-1") == {"key": "SD-1", "n": 1}
+
+
+def test_count_issues_merges_by_query_not_token(monkeypatch):
+    calls = 0
+
+    def fake_count(*, token, query):
+        nonlocal calls
+        calls += 1
+        return 9
+
+    monkeypatch.setattr(tracker_client, "count_issues", fake_count)
+    assert tracker_cache.count_issues(token="a", query="Queue: ROBOPARK") == 9
+    assert tracker_cache.count_issues(token="b", query="Queue: ROBOPARK") == 9
+    assert tracker_cache.count_issues(token="a", query="Queue: OTHER") == 9
+    assert calls == 2

@@ -6,6 +6,7 @@ HTTP-запросов, межзапросный интервал, retry на 429
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import re
 import threading
@@ -92,24 +93,54 @@ def _release_stuck_slots() -> None:
         reset_tracker_slots(reason=f"stuck threads={stuck}")
 
 
+def _acquire_host_slot(*, timeout: float):
+    """Cap unique Tracker HTTP at MAX_INFLIGHT across processes when merge is on."""
+    from robopark_api.services.live_merge import get_live_merge_store
+
+    store = get_live_merge_store()
+    if store is None:
+        return None
+    folder = store.root / "tracker-slots"
+    folder.mkdir(parents=True, exist_ok=True)
+    paths = [folder / f"slot-{index}.lock" for index in range(MAX_INFLIGHT)]
+    deadline = time.monotonic() + max(1.0, timeout)
+    while True:
+        for path in paths:
+            fh = path.open("a+", encoding="utf-8")
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fh
+            except BlockingIOError:
+                fh.close()
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Tracker API slot wait timed out")
+        time.sleep(0.02)
+
+
 @contextmanager
 def tracker_slot(*, timeout: float = DEFAULT_SLOT_WAIT_SEC) -> Iterator[None]:
     _release_stuck_slots()
-    if not _inflight.acquire(timeout=max(1.0, timeout)):
-        _release_stuck_slots()
-        if not _inflight.acquire(timeout=2.0):
-            raise TimeoutError("Tracker API slot wait timed out")
-    tid = threading.get_ident()
-    with _lock:
-        _slot_holder_since[tid] = time.monotonic()
+    host_fh = _acquire_host_slot(timeout=timeout)
     try:
-        _rate_limit_wait()
-        yield
-    finally:
+        if not _inflight.acquire(timeout=max(1.0, timeout)):
+            _release_stuck_slots()
+            if not _inflight.acquire(timeout=2.0):
+                raise TimeoutError("Tracker API slot wait timed out")
+        tid = threading.get_ident()
         with _lock:
-            _slot_holder_since.pop(tid, None)
-        with suppress(ValueError):
-            _inflight.release()
+            _slot_holder_since[tid] = time.monotonic()
+        try:
+            _rate_limit_wait()
+            yield
+        finally:
+            with _lock:
+                _slot_holder_since.pop(tid, None)
+            with suppress(ValueError):
+                _inflight.release()
+    finally:
+        if host_fh is not None:
+            fcntl.flock(host_fh.fileno(), fcntl.LOCK_UN)
+            host_fh.close()
 
 
 def call_with_retry(
