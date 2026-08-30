@@ -13,7 +13,7 @@ from robopark_api.deps import (
 from robopark_api.models import User
 from robopark_api.schemas import NowReportOut, ParkMetricsOut, SkippedParkOut
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_client, tracker_filters, tracker_metrics
+from robopark_api.services import tracker_cache, tracker_client, tracker_filters, tracker_metrics
 
 router = APIRouter(prefix="/operator", tags=["operator-report"])
 
@@ -105,7 +105,7 @@ def operator_now_report(
             continue
         try:
             priority, issue_type = tracker_filters.park_priority_type(park)
-            metrics = tracker_metrics.collect_park_metrics(
+            metrics = tracker_cache.collect_park_metrics(
                 token=token,
                 queue=queue,
                 tag=park.tag,

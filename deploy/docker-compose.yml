@@ -14,6 +14,7 @@ services:
       DATABASE_URL: sqlite:////data/robopark.db
       OPS_DIR: /data/ops
       OPS_HOST_ENV_PATH: /host-repo/deploy/host.env
+      UVICORN_WORKERS: "2"
     volumes:
       - robopark_data:/data
       # Royal ZIP updates copy onto the checkout; ops-agent rebuilds images.

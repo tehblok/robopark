@@ -6,11 +6,11 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+from robopark_api.services.tracker_cache import count_issues
 from robopark_api.services.tracker_client import (
     DEFAULT_ISSUE_TYPES,
     DEFAULT_QUEUE,
     build_open_blockers_query,
-    count_issues,
     exclude_tag,
     join_query,
     ql_quote,

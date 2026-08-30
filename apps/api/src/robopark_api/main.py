@@ -37,6 +37,7 @@ from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.blocker_history_job import run_blocker_history_loop
 from robopark_api.services.emergency_config import ensure_default_section_roles
 from robopark_api.services.emergency_keepalive import run_keepalive_loop
+from robopark_api.services.live_merge import JobLease, default_live_merge_root, live_merge_enabled
 from robopark_api.services.ops.context import build_ops_context, resolved_ops_dir
 from robopark_api.services.ops.reconcile import reconcile_pending_rebuild
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
@@ -72,16 +73,20 @@ def create_app() -> FastAPI:
 
             logging.getLogger(__name__).exception("ops rebuild reconcile failed on startup")
         stop_event = asyncio.Event()
-        tasks = [
-            asyncio.create_task(run_keepalive_loop(stop_event)),
-            asyncio.create_task(run_blocker_history_loop(stop_event)),
-            asyncio.create_task(
-                run_session_cleanup_loop(
-                    stop_event,
-                    interval_seconds=settings.session_cleanup_interval_seconds,
-                )
-            ),
-        ]
+        job_lease = JobLease(default_live_merge_root(), "lifespan-jobs")
+        run_background_jobs = (not live_merge_enabled()) or job_lease.try_acquire()
+        tasks = []
+        if run_background_jobs:
+            tasks = [
+                asyncio.create_task(run_keepalive_loop(stop_event)),
+                asyncio.create_task(run_blocker_history_loop(stop_event)),
+                asyncio.create_task(
+                    run_session_cleanup_loop(
+                        stop_event,
+                        interval_seconds=settings.session_cleanup_interval_seconds,
+                    )
+                ),
+            ]
         try:
             yield
         finally:
@@ -93,6 +98,7 @@ def create_app() -> FastAPI:
             for task in tasks:
                 with suppress(asyncio.CancelledError):
                     await task
+            job_lease.release()
 
     app = FastAPI(
         title="Robopark API",

@@ -61,7 +61,7 @@ def test_now_report_skips_disabled_and_aggregates(client, db_session, seed_royal
         "done": 5,
     }
     with patch(
-        "robopark_api.services.tracker_metrics.collect_park_metrics",
+        "robopark_api.services.tracker_cache.collect_park_metrics",
         return_value=fake_metrics,
     ):
         r = client.get("/operator/now-report")
@@ -91,7 +91,7 @@ def test_now_report_uses_cache(client, db_session, seed_royal):
     client.put("/admin/settings/tracker-token", json={"token": "fake"})
     login_as(client, "op-report", "secret")
     with patch(
-        "robopark_api.services.tracker_metrics.collect_park_metrics",
+        "robopark_api.services.tracker_cache.collect_park_metrics",
         return_value={
             "open_blockers": 1,
             "backlog": 0,

@@ -19,7 +19,12 @@ COPY data/emergency_sections.json ./data/emergency_sections.json
 
 RUN pip install --no-cache-dir . pytest
 
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
 # Run as an unprivileged user; /data is the mounted SQLite volume.
+# UVICORN_WORKERS default 2, cap 4 (see docker-entrypoint.sh). Do not raise
+# above 1 until live-merge overlap tests pass in CI.
 RUN useradd --create-home --uid 10001 robopark \
     && mkdir -p /data \
     && chown -R robopark:robopark /app /data
@@ -30,4 +35,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8000/health || exit 1
 
-CMD ["sh", "-c", "alembic upgrade head && uvicorn robopark_api.main:app --host 0.0.0.0 --port 8000"]
+CMD ["/app/docker-entrypoint.sh"]
