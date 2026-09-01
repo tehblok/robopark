@@ -1,12 +1,26 @@
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+from alembic import command as alembic_command
+from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from conftest import role_id_for
-from robopark_api.models import AccessStatus, Park, ReportAttachment, User, UserPark
+from robopark_api.models import (
+    AccessStatus,
+    Park,
+    Report,
+    ReportAttachment,
+    Role,
+    User,
+    UserPark,
+)
 from robopark_api.security import hash_password
 from robopark_api.services import report_attachments as att_svc
 from robopark_api.services import reports as reports_svc
@@ -50,6 +64,89 @@ def _open_report(db_session, author, park_id):
         tracker_key=None,
         tracker_url=None,
     )
+
+
+def _migrate_temporary_database(database_url: str, monkeypatch) -> Path:
+    api_dir = Path(__file__).parents[1]
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    alembic_command.upgrade(Config(api_dir / "alembic.ini"), "head")
+    return api_dir
+
+
+def _clean_cli_env(api_dir: Path, database_url: str, storage_root: Path) -> dict[str, str]:
+    return {
+        "DATABASE_URL": database_url,
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": str(api_dir / "src"),
+        "REPORT_ATTACHMENTS_DIR": str(storage_root),
+        "SECRET_KEY": "clean-process-test-key",
+    }
+
+
+def _seed_attachment_metadata(database_url: str, *, storage_key: str) -> None:
+    engine = create_engine(database_url, future=True)
+    with Session(engine) as db:
+        role = Role(
+            slug="attachment-review-role",
+            name="Attachment review role",
+            description="",
+            is_system=False,
+            is_active=True,
+        )
+        park = Park(name="Attachment review park", tag="attachment-review", is_active=True)
+        user = User(
+            username="attachment-review-user",
+            password_hash="not-used",
+            role_ref=role,
+            access_status=AccessStatus.approved.value,
+            is_active=True,
+        )
+        db.add_all([park, user])
+        db.flush()
+        report = Report(
+            kind="mechanic_problem",
+            status="open",
+            park_id=park.id,
+            author_user_id=user.id,
+            target_role="operator",
+            title="Attachment review",
+            body="",
+        )
+        db.add(report)
+        db.flush()
+        db.add(
+            ReportAttachment(
+                report_id=report.id,
+                kind=att_svc.KIND_CLIENT_LOG,
+                filename="client.txt",
+                content_type="text/plain",
+                size_bytes=1,
+                storage_key=storage_key,
+            )
+        )
+        db.commit()
+
+
+def test_verify_command_runs_in_clean_process_with_migrated_database(
+    sqlite_database_url, tmp_path, monkeypatch
+):
+    api_dir = _migrate_temporary_database(sqlite_database_url, monkeypatch)
+    storage_root = tmp_path / "clean-process-attachments"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "robopark_api.verify_report_attachments"],
+        cwd=tmp_path,
+        env=_clean_cli_env(api_dir, sqlite_database_url, storage_root),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "report attachment storage verified\n"
+    assert result.stderr == ""
 
 
 def test_author_can_attach_ui_snapshot_and_log(
@@ -333,6 +430,36 @@ def test_commit_failure_removes_only_new_file_and_rolls_back_metadata(
     assert not root.exists() or not any(path.is_file() for path in root.rglob("*"))
 
 
+def test_commit_and_rollback_failure_still_removes_new_file(
+    db_session, seed_mechanic, seed_park_with_tracker, test_settings, monkeypatch
+):
+    monkeypatch.setattr(att_svc, "get_settings", lambda: test_settings)
+    report = _open_report(db_session, seed_mechanic, seed_park_with_tracker.id)
+    root = Path(test_settings.report_attachments_dir)
+
+    def fail_commit() -> None:
+        raise OSError("simulated commit failure")
+
+    def fail_rollback() -> None:
+        raise OSError("simulated rollback failure")
+
+    monkeypatch.setattr(db_session, "commit", fail_commit)
+    monkeypatch.setattr(db_session, "rollback", fail_rollback)
+
+    with pytest.raises(OSError):
+        att_svc.add_attachment(
+            db_session,
+            seed_mechanic,
+            report.id,
+            kind=att_svc.KIND_CLIENT_LOG,
+            filename="client.txt",
+            content=b"safe test content",
+            content_type="text/plain",
+        )
+
+    assert not root.exists() or not any(path.is_file() for path in root.rglob("*"))
+
+
 def test_atomic_write_never_replaces_existing_destination(tmp_path):
     destination = tmp_path / "attachment.bin"
     destination.write_bytes(b"stale")
@@ -341,6 +468,84 @@ def test_atomic_write_never_replaces_existing_destination(tmp_path):
         att_svc._atomic_write(destination, b"replacement")
 
     assert destination.read_bytes() == b"stale"
+
+
+def test_outside_root_symlink_is_not_downloadable(
+    db_session, seed_mechanic, seed_park_with_tracker, test_settings, monkeypatch
+):
+    monkeypatch.setattr(att_svc, "get_settings", lambda: test_settings)
+    report = _open_report(db_session, seed_mechanic, seed_park_with_tracker.id)
+    root = Path(test_settings.report_attachments_dir)
+    root.mkdir(parents=True)
+    outside = root.parent / "outside-symlink-target.bin"
+    outside.write_bytes(b"outside")
+    (root / "outside-link").symlink_to(outside)
+    attachment = ReportAttachment(
+        report_id=report.id,
+        kind=att_svc.KIND_CLIENT_LOG,
+        filename="private-name.txt",
+        content_type="text/plain",
+        size_bytes=7,
+        storage_key="outside-link",
+    )
+    db_session.add(attachment)
+    db_session.commit()
+
+    with pytest.raises(LookupError, match="report_attachment_not_found"):
+        att_svc.get_attachment(db_session, seed_mechanic, report.id, attachment.id)
+
+
+def test_symlink_loop_is_normalized_at_direct_and_validation_boundaries(
+    db_session, seed_mechanic, seed_park_with_tracker, test_settings, monkeypatch
+):
+    monkeypatch.setattr(att_svc, "get_settings", lambda: test_settings)
+    report = _open_report(db_session, seed_mechanic, seed_park_with_tracker.id)
+    root = Path(test_settings.report_attachments_dir)
+    root.mkdir(parents=True)
+    (root / "private-loop").symlink_to("private-loop")
+    attachment = ReportAttachment(
+        report_id=report.id,
+        kind=att_svc.KIND_CLIENT_LOG,
+        filename="private-name.txt",
+        content_type="text/plain",
+        size_bytes=1,
+        storage_key="private-loop",
+    )
+    db_session.add(attachment)
+    db_session.commit()
+
+    with pytest.raises(LookupError, match="report_attachment_not_found"):
+        att_svc.get_attachment(db_session, seed_mechanic, report.id, attachment.id)
+
+    with pytest.raises(att_svc.AttachmentStorageError) as error:
+        att_svc.validate_attachment_storage(db_session)
+    assert str(error.value) == "report attachment storage validation failed"
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__ is True
+
+
+def test_verify_command_symlink_loop_failure_is_generic_in_clean_process(
+    sqlite_database_url, tmp_path, monkeypatch
+):
+    api_dir = _migrate_temporary_database(sqlite_database_url, monkeypatch)
+    storage_root = tmp_path / "clean-process-loop-attachments"
+    storage_root.mkdir()
+    (storage_root / "private-loop").symlink_to("private-loop")
+    _seed_attachment_metadata(sqlite_database_url, storage_key="private-loop")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "robopark_api.verify_report_attachments"],
+        cwd=tmp_path,
+        env=_clean_cli_env(api_dir, sqlite_database_url, storage_root),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr == "report attachment storage validation failed\n"
 
 
 def test_validate_attachment_storage_reports_only_generic_failure(

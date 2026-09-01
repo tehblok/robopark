@@ -13,7 +13,6 @@ from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
 from robopark_api.models import ReportAttachment, User
-from robopark_api.services.reports import _can_view_report, _load_report
 from robopark_api.services.tracker_client import (
     ALLOWED_ATTACHMENT_MIMES,
     MAX_ATTACHMENT_BYTES,
@@ -60,8 +59,11 @@ def max_bytes_for_kind(kind: str) -> int:
 
 
 def _resolve_storage_key(storage_key: str) -> Path:
-    root = attachments_root().resolve()
-    candidate = (root / storage_key).resolve()
+    try:
+        root = attachments_root().resolve()
+        candidate = (root / storage_key).resolve()
+    except RuntimeError:
+        raise LookupError("report_attachment_not_found") from None
     if not candidate.is_relative_to(root):
         raise LookupError("report_attachment_not_found")
     return candidate
@@ -104,6 +106,8 @@ def add_attachment(
     content: bytes,
     content_type: str | None,
 ) -> ReportAttachment:
+    from robopark_api.services.reports import _load_report
+
     limit = max_bytes_for_kind(kind)
     report = _load_report(db, report_id)
     if report.author_user_id != user.id or report.status != "open":
@@ -151,10 +155,12 @@ def add_attachment(
         row.storage_key = relative
         db.commit()
     except Exception:
-        db.rollback()
-        if placed and destination is not None:
-            with suppress(OSError):
-                destination.unlink()
+        try:
+            db.rollback()
+        finally:
+            if placed and destination is not None:
+                with suppress(OSError):
+                    destination.unlink()
         raise
 
     db.refresh(row)
@@ -167,6 +173,8 @@ def get_attachment(
     report_id: int,
     attachment_id: int,
 ) -> tuple[ReportAttachment, Path]:
+    from robopark_api.services.reports import _can_view_report, _load_report
+
     report = _load_report(db, report_id)
     if not _can_view_report(db, user, report):
         raise PermissionError("forbidden")
