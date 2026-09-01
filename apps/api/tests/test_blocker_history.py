@@ -90,6 +90,22 @@ def test_history_series_filters_by_days(db_session, seed_park):
     assert rows[0]["arrived_count"] == 1
 
 
+def test_history_series_retains_record_exactly_at_cutoff(db_session, seed_park):
+    cutoff = FIXED_NOW - timedelta(days=7)
+    upsert_bucket(
+        db_session,
+        park_id=seed_park.id,
+        bucket_start=cutoff,
+        arrived_count=4,
+        departed_count=0,
+    )
+
+    rows = history_series(db_session, park_id=seed_park.id, days=7, now=FIXED_NOW)
+
+    assert len(rows) == 1
+    assert rows[0]["bucket_start"].replace(tzinfo=UTC) == cutoff
+
+
 def test_delete_old_buckets(db_session, seed_park):
     recent = FIXED_NOW.replace(minute=0, second=0, microsecond=0)
     old = recent - timedelta(days=40)
@@ -114,6 +130,26 @@ def test_delete_old_buckets(db_session, seed_park):
     rows = history_series(db_session, park_id=seed_park.id, days=365, now=FIXED_NOW)
     assert len(rows) == 1
     assert rows[0]["arrived_count"] == 1
+
+
+def test_delete_old_buckets_retains_record_exactly_at_cutoff(db_session, seed_park):
+    cutoff = FIXED_NOW - timedelta(days=30)
+    upsert_bucket(
+        db_session,
+        park_id=seed_park.id,
+        bucket_start=cutoff,
+        arrived_count=4,
+        departed_count=0,
+    )
+
+    deleted = delete_old_buckets(
+        db_session, park_id=seed_park.id, retention_days=30, now=FIXED_NOW
+    )
+
+    assert deleted == 0
+    rows = history_series(db_session, park_id=seed_park.id, days=365, now=FIXED_NOW)
+    assert len(rows) == 1
+    assert rows[0]["bucket_start"].replace(tzinfo=UTC) == cutoff
 
 
 def test_align_bucket_start_even_hour_grid():
