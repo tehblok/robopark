@@ -46,13 +46,26 @@ function renderForRole(role: string) {
 
 describe('Analytics', () => {
   it('can switch from operator to admin without changing hook order', () => {
-    const view = render(renderForRole('operator'))
-    expect(screen.getByText('Сейчас по Tracker')).toBeInTheDocument()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    view.rerender(renderForRole('admin'))
+    try {
+      const view = render(renderForRole('operator'))
+      expect(screen.getByText('Сейчас по Tracker')).toBeInTheDocument()
 
-    expect(
-      screen.getByText('Расширенная аналитика скоро появится'),
-    ).toBeInTheDocument()
+      view.rerender(renderForRole('admin'))
+
+      expect(
+        screen.getByText('Расширенная аналитика скоро появится'),
+      ).toBeInTheDocument()
+
+      view.rerender(renderForRole('operator'))
+
+      expect(screen.getByText('Сейчас по Tracker')).toBeInTheDocument()
+      expect(errorSpy.mock.calls.flat().join(' ')).not.toMatch(
+        /change in the order of Hooks|Expected static flag/,
+      )
+    } finally {
+      errorSpy.mockRestore()
+    }
   })
 })
