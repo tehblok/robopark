@@ -246,6 +246,20 @@ def test_verification_script_missing_docker_is_explicit(tmp_path: Path):
     assert commands == []
 
 
+def test_verification_script_docker_target_runs_only_docker_commands(tmp_path: Path):
+    result, commands = _run_verify(tmp_path, "docker")
+    assert result.returncode == 0, result.stderr
+    assert commands == [
+        "sh\t-n\tdeploy/ops-agent.sh",
+        "docker\tHOST_ENV_FILE=./host.env.example\tcompose\t-f\tdeploy/docker-compose.yml\tconfig\t--quiet",
+        "docker\tHOST_ENV_FILE=\tbuild\t-t\trobopark-api:verify\tapps/api",
+        "docker\tHOST_ENV_FILE=\tbuild\t-t\trobopark-web:verify\tapps/web",
+        "docker\tHOST_ENV_FILE=\trun\t--rm\t--entrypoint\tpython\trobopark-api:verify\t-c\t"
+        "import importlib.util, multipart, robopark_api; "
+        "assert importlib.util.find_spec('pytest') is None",
+    ]
+
+
 def test_root_gitignore_tracks_api_lockfile():
     ignored_lines = {
         line.strip()
