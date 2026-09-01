@@ -18,6 +18,8 @@ from robopark_api.services.blocker_history import (
 )
 from robopark_api.services.tracker_client import TrackerError
 
+FIXED_NOW = datetime(2026, 8, 24, 14, 30, tzinfo=UTC)
+
 
 @pytest.fixture
 def seed_park(db_session):
@@ -60,15 +62,14 @@ def test_upsert_bucket_idempotent(db_session, seed_park):
         arrived_count=5,
         departed_count=3,
     )
-    rows = history_series(db_session, park_id=seed_park.id, days=7)
+    rows = history_series(db_session, park_id=seed_park.id, days=7, now=FIXED_NOW)
     assert len(rows) == 1
     assert rows[0]["arrived_count"] == 5
     assert rows[0]["departed_count"] == 3
 
 
 def test_history_series_filters_by_days(db_session, seed_park):
-    now = datetime.now(UTC)
-    recent = now.replace(minute=0, second=0, microsecond=0)
+    recent = FIXED_NOW.replace(minute=0, second=0, microsecond=0)
     old = recent - timedelta(days=10)
     upsert_bucket(
         db_session,
@@ -84,14 +85,13 @@ def test_history_series_filters_by_days(db_session, seed_park):
         arrived_count=9,
         departed_count=9,
     )
-    rows = history_series(db_session, park_id=seed_park.id, days=7)
+    rows = history_series(db_session, park_id=seed_park.id, days=7, now=FIXED_NOW)
     assert len(rows) == 1
     assert rows[0]["arrived_count"] == 1
 
 
 def test_delete_old_buckets(db_session, seed_park):
-    now = datetime.now(UTC)
-    recent = now.replace(minute=0, second=0, microsecond=0)
+    recent = FIXED_NOW.replace(minute=0, second=0, microsecond=0)
     old = recent - timedelta(days=40)
     upsert_bucket(
         db_session,
@@ -107,9 +107,11 @@ def test_delete_old_buckets(db_session, seed_park):
         arrived_count=9,
         departed_count=9,
     )
-    deleted = delete_old_buckets(db_session, park_id=seed_park.id, retention_days=30)
+    deleted = delete_old_buckets(
+        db_session, park_id=seed_park.id, retention_days=30, now=FIXED_NOW
+    )
     assert deleted == 1
-    rows = history_series(db_session, park_id=seed_park.id, days=365)
+    rows = history_series(db_session, park_id=seed_park.id, days=365, now=FIXED_NOW)
     assert len(rows) == 1
     assert rows[0]["arrived_count"] == 1
 
@@ -197,7 +199,9 @@ def test_scan_park_bucket_upserts_counts(db_session, seed_park_with_tracker, mon
     assert arrived == 3
     assert departed == 1
     assert len(calls) == 2
-    rows = history_series(db_session, park_id=seed_park_with_tracker.id, days=7)
+    rows = history_series(
+        db_session, park_id=seed_park_with_tracker.id, days=7, now=FIXED_NOW
+    )
     assert len(rows) == 1
     assert rows[0]["arrived_count"] == 3
     assert rows[0]["departed_count"] == 1
@@ -274,7 +278,7 @@ def test_scan_all_parks_once_continues_on_tracker_error(
     )
 
     assert scanned == 1
-    rows = history_series(db_session, park_id=other.id, days=7)
+    rows = history_series(db_session, park_id=other.id, days=7, now=FIXED_NOW)
     assert rows[0]["arrived_count"] == 2
 
 
@@ -289,7 +293,7 @@ def test_scan_all_parks_once_runs_retention_after_success(
     db_session, seed_park_with_tracker, monkeypatch
 ):
     settings_svc.set_setting(db_session, settings_svc.TRACKER_TOKEN_KEY, "token")
-    retention_calls: list[int] = []
+    retention_calls: list[tuple[int, datetime]] = []
 
     monkeypatch.setattr(
         history_svc,
@@ -299,16 +303,18 @@ def test_scan_all_parks_once_runs_retention_after_success(
     monkeypatch.setattr(
         history_svc,
         "delete_old_buckets",
-        lambda db, **kwargs: retention_calls.append(kwargs.get("retention_days", 30)),
+        lambda db, **kwargs: retention_calls.append(
+            (kwargs["retention_days"], kwargs["now"])
+        ),
     )
 
     scanned = scan_all_parks_once(
         db_session,
-        now=datetime(2026, 8, 24, 14, 30, tzinfo=UTC),
+        now=FIXED_NOW.replace(tzinfo=None),
     )
 
     assert scanned == 1
-    assert retention_calls == [30]
+    assert retention_calls == [(30, FIXED_NOW)]
 
 
 def test_scan_all_parks_once_skips_retention_when_nothing_scanned(

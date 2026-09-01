@@ -125,7 +125,7 @@ def scan_all_parks_once(db: Session, *, now: datetime | None = None) -> int:
             continue
         scanned += 1
     if scanned > 0:
-        delete_old_buckets(db, retention_days=30)
+        delete_old_buckets(db, retention_days=30, now=now_utc)
     return scanned
 
 
@@ -170,8 +170,9 @@ def history_series(
     *,
     park_id: int,
     days: int = 7,
+    now: datetime | None = None,
 ) -> list[dict]:
-    cutoff = datetime.now(UTC) - timedelta(days=days)
+    cutoff = _as_utc(now or datetime.now(UTC)) - timedelta(days=days)
     rows = db.scalars(
         select(ParkBlockerHistory)
         .where(
@@ -195,8 +196,9 @@ def delete_old_buckets(
     *,
     park_id: int | None = None,
     retention_days: int = 30,
+    now: datetime | None = None,
 ) -> int:
-    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+    cutoff = _as_utc(now or datetime.now(UTC)) - timedelta(days=retention_days)
     stmt = delete(ParkBlockerHistory).where(ParkBlockerHistory.bucket_start < cutoff)
     if park_id is not None:
         stmt = stmt.where(ParkBlockerHistory.park_id == park_id)
