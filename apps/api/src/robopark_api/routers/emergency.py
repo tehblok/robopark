@@ -103,6 +103,7 @@ def emergency_section_for_user(
             detail="invalid_robot_number",
         ) from exc
 
+    _enforce_vin_scope(db, user, vin)
     payload = _get_robot_payload(db, vin)
     try:
         rendered = emergency_sections.render_section(db, payload, section_id, role=user.role)
@@ -128,6 +129,7 @@ def emergency_snapshot_for_user(vin: str, user: User, db: Session) -> EmergencyS
             detail="invalid_robot_number",
         ) from exc
 
+    _enforce_vin_scope(db, user, vin)
     payload = _get_robot_payload(db, vin)
     snap = parse_emergency_snapshot(payload, vin=vin)
     return EmergencySnapshotOut(**snap)

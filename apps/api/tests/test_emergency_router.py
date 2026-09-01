@@ -161,43 +161,43 @@ def test_operator_out_of_scope_resolve_returns_403(
     assert response.json()["detail"] == "emergency_vin_out_of_scope"
 
 
-def test_snapshot_and_section_skip_vin_acl(
+def test_operator_out_of_scope_snapshot_returns_403(
     client, db_session, seed_operator, monkeypatch, emergency_payload
 ):
-    """Poll endpoints do not re-check Startrek ACL (R11)."""
     configure_emergency(db_session, monkeypatch, emergency_payload, allow_vin=False)
     monkeypatch.setattr(emergency_scope, "vin_allowed_for_user", lambda *_a, **_k: False)
     login_as(client, "operator1", "secret")
 
-    snapshot = client.get("/emergency/YASADR00000000447/snapshot")
-    section = client.get("/emergency/YASADR00000000447/sections/status")
-
-    assert snapshot.status_code == 200
-    assert section.status_code == 200
+    response = client.get("/emergency/YASADR00000000447/snapshot")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "emergency_vin_out_of_scope"
 
 
-def test_snapshots_after_resolve_do_not_call_acl(
+def test_operator_out_of_scope_section_returns_403(
     client, db_session, seed_operator, monkeypatch, emergency_payload
 ):
-    acl_calls = 0
-
-    def allow(*_a, **_k):
-        nonlocal acl_calls
-        acl_calls += 1
-        return True
-
     configure_emergency(db_session, monkeypatch, emergency_payload, allow_vin=False)
-    monkeypatch.setattr(emergency_scope, "vin_allowed_for_user", allow)
+    monkeypatch.setattr(emergency_scope, "vin_allowed_for_user", lambda *_a, **_k: False)
     login_as(client, "operator1", "secret")
 
-    assert client.post("/emergency/resolve", json={"robot_number": "447"}).status_code == 200
-    assert acl_calls == 1
-    for _ in range(3):
-        assert client.get("/emergency/YASADR00000000447/snapshot").status_code == 200
-    assert acl_calls == 1
+    response = client.get("/emergency/YASADR00000000447/sections/status")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "emergency_vin_out_of_scope"
 
 
-def test_revoke_mid_view_keeps_snapshot_until_next_open(
+def test_mechanic_alias_out_of_scope_section_returns_403(
+    client, db_session, seed_mechanic, monkeypatch, emergency_payload
+):
+    configure_emergency(db_session, monkeypatch, emergency_payload, allow_vin=False)
+    monkeypatch.setattr(emergency_scope, "vin_allowed_for_user", lambda *_a, **_k: False)
+    login_as(client, "mech1", "secret")
+
+    response = client.get("/mechanic/emergency/YASADR00000000447/sections/status")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "emergency_vin_out_of_scope"
+
+
+def test_snapshot_rechecks_scope_after_resolve_before_redis_grants(
     client, db_session, seed_operator, monkeypatch, emergency_payload
 ):
     allowed = True
@@ -211,8 +211,9 @@ def test_revoke_mid_view_keeps_snapshot_until_next_open(
 
     assert client.post("/emergency/resolve", json={"robot_number": "447"}).status_code == 200
     allowed = False
-    assert client.get("/emergency/YASADR00000000447/snapshot").status_code == 200
-    assert client.post("/emergency/resolve", json={"robot_number": "447"}).status_code == 403
+    response = client.get("/emergency/YASADR00000000447/snapshot")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "emergency_vin_out_of_scope"
 
 
 def test_snapshot_returns_hud_when_allowed(
