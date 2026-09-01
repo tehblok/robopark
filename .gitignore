@@ -36,6 +36,7 @@ data/
 !apps/api/data/
 !apps/api/data/emergency_sections.json
 apps/api/data/ops/
+apps/api/data/report-attachments/
 apps/api/logs/
 *.log
 *.sqlite

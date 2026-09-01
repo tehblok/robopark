@@ -318,3 +318,30 @@ class Report(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attachments: Mapped[list["ReportAttachment"]] = relationship(
+        back_populates="report",
+        cascade="all, delete-orphan",
+        order_by="ReportAttachment.id",
+    )
+
+
+class ReportAttachment(Base):
+    __tablename__ = "report_attachments"
+    __table_args__ = (
+        UniqueConstraint("report_id", "kind", name="uq_report_attachments_report_kind"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    report_id: Mapped[int] = mapped_column(
+        ForeignKey("reports.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32))
+    filename: Mapped[str] = mapped_column(String(256))
+    content_type: Mapped[str] = mapped_column(String(128))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    storage_key: Mapped[str] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    report: Mapped[Report] = relationship(back_populates="attachments")

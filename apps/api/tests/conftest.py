@@ -107,6 +107,7 @@ def test_settings(db_engine, tmp_path):
         seed_username=None,
         seed_password=None,
         secret_key="test-suite-secret-key",
+        report_attachments_dir=str(tmp_path / "report-attachments"),
         ops_dir=str(tmp_path / "ops"),
         ops_apply_root=str(tmp_path / "apply"),
         ops_host_env_path=str(tmp_path / "host.env"),

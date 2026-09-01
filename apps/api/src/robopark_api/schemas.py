@@ -431,6 +431,16 @@ class DashboardHistoryOut(BaseModel):
 ReportKindManual = Literal["ticket_question", "mechanic_problem"]
 
 
+class ReportAttachmentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    kind: str
+    filename: str
+    content_type: str
+    size_bytes: int
+
+
 class ReportCreateIn(BaseModel):
     kind: ReportKindManual
     park_id: int
@@ -466,6 +476,7 @@ class ReportOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     resolved_at: datetime | None
+    attachments: list[ReportAttachmentOut] = Field(default_factory=list)
 
 
 class ReportBadgeOut(BaseModel):

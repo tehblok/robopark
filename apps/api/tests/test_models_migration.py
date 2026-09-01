@@ -4,6 +4,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
 
 from robopark_api.models import AuthSession, Base, User
@@ -22,12 +23,50 @@ def test_metadata_has_required_tables():
         "emergency_section_roles",
         "park_blocker_history",
         "reports",
+        "report_attachments",
         "audit_log",
         "permissions",
         "roles",
         "role_permissions",
         "user_permissions",
     }
+
+
+def test_alembic_head_is_report_attachments():
+    api_dir = Path(__file__).parents[1]
+    script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
+    assert script.get_heads() == ["0015_report_attachments"]
+
+
+def test_migrated_report_attachments_contract(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    api_dir = Path(__file__).parents[1]
+    command.upgrade(Config(api_dir / "alembic.ini"), "head")
+    inspector = inspect(create_engine(sqlite_database_url, future=True))
+
+    assert {column["name"] for column in inspector.get_columns("report_attachments")} == {
+        "id",
+        "report_id",
+        "kind",
+        "filename",
+        "content_type",
+        "size_bytes",
+        "storage_key",
+        "created_at",
+    }
+    foreign_keys = inspector.get_foreign_keys("report_attachments")
+    assert len(foreign_keys) == 1
+    assert foreign_keys[0]["constrained_columns"] == ["report_id"]
+    assert foreign_keys[0]["referred_table"] == "reports"
+    assert foreign_keys[0]["options"]["ondelete"] == "CASCADE"
+    assert any(
+        constraint["column_names"] == ["report_id", "kind"]
+        for constraint in inspector.get_unique_constraints("report_attachments")
+    )
+    assert any(
+        index["column_names"] == ["report_id"]
+        for index in inspector.get_indexes("report_attachments")
+    )
 
 
 def test_models_match_required_schema():

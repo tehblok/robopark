@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from robopark_api.deps import get_user_parks
 from robopark_api.models import AccessStatus, Report, Role, User
@@ -100,7 +100,9 @@ def _user_park_ids(db: Session, user: User) -> set[int]:
 
 
 def _load_report(db: Session, report_id: int) -> Report:
-    report = db.get(Report, report_id)
+    report = db.scalar(
+        select(Report).options(selectinload(Report.attachments)).where(Report.id == report_id)
+    )
     if report is None:
         raise LookupError(f"report not found: {report_id}")
     return report
@@ -234,9 +236,13 @@ def _require_non_empty_comment(comment: str) -> str:
 
 def list_inbox(db: Session, user: User, *, park_id: int | None = None) -> list[Report]:
     if _is_admin_inbox_user(user):
-        stmt = select(Report).where(
-            Report.status == STATUS_OPEN,
-            Report.target_role == RoleSlug.ADMIN,
+        stmt = (
+            select(Report)
+            .options(selectinload(Report.attachments))
+            .where(
+                Report.status == STATUS_OPEN,
+                Report.target_role == RoleSlug.ADMIN,
+            )
         )
     elif _is_approved_operator(user):
         park_ids = _user_park_ids(db, user)
@@ -246,10 +252,14 @@ def list_inbox(db: Session, user: User, *, park_id: int | None = None) -> list[R
             park_ids = {park_id}
         if not park_ids:
             return []
-        stmt = select(Report).where(
-            Report.status == STATUS_OPEN,
-            Report.target_role == RoleSlug.OPERATOR,
-            Report.park_id.in_(park_ids),
+        stmt = (
+            select(Report)
+            .options(selectinload(Report.attachments))
+            .where(
+                Report.status == STATUS_OPEN,
+                Report.target_role == RoleSlug.OPERATOR,
+                Report.park_id.in_(park_ids),
+            )
         )
     else:
         return []
@@ -269,6 +279,7 @@ def list_mine(db: Session, user: User) -> list[Report]:
     return list(
         db.scalars(
             select(Report)
+            .options(selectinload(Report.attachments))
             .where(Report.author_user_id == user.id)
             .order_by(Report.created_at.desc(), Report.id.desc())
         ).all()

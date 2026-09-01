@@ -12,6 +12,7 @@ services:
       - ${HOST_ENV_FILE:-./host.env}
     environment:
       DATABASE_URL: sqlite:////data/robopark.db
+      REPORT_ATTACHMENTS_DIR: /data/report-attachments
       OPS_DIR: /data/ops
       OPS_HOST_ENV_PATH: /host-repo/deploy/host.env
       UVICORN_WORKERS: "2"

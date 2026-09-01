@@ -16,6 +16,9 @@ dependencies = [
   "importlib-metadata>=9.0.0",
 ]
 
+[project.scripts]
+robopark-verify-attachments = "robopark_api.verify_report_attachments:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3.0",

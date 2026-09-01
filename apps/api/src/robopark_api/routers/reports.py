@@ -1,7 +1,8 @@
 from collections.abc import Callable
 from typing import TypeVar
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
@@ -14,11 +15,13 @@ from robopark_api.models import Report, User
 from robopark_api.services import rbac
 from robopark_api.schemas import (
     ReportBadgeOut,
+    ReportAttachmentOut,
     ReportCreateIn,
     ReportEscalateIn,
     ReportOut,
     ReportReturnIn,
 )
+from robopark_api.services import report_attachments as att_svc
 from robopark_api.services import reports as reports_svc
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -108,6 +111,47 @@ def report_badge(
 ) -> ReportBadgeOut:
     counts = _run_svc(lambda: reports_svc.badge_counts(db, user, park_id=park_id))
     return ReportBadgeOut(count=counts["count"])
+
+
+@router.post(
+    "/{report_id}/attachments",
+    response_model=ReportAttachmentOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_report_attachment(
+    report_id: int,
+    kind: str = Form(...),
+    file: UploadFile = File(...),
+    user: User = Depends(_require_report_author),
+    db: Session = Depends(get_db),
+) -> ReportAttachmentOut:
+    limit = _run_svc(lambda: att_svc.max_bytes_for_kind(kind))
+    content = await file.read(limit + 1)
+    row = _run_svc(
+        lambda: att_svc.add_attachment(
+            db,
+            user,
+            report_id,
+            kind=kind,
+            filename=file.filename,
+            content=content,
+            content_type=file.content_type,
+        )
+    )
+    return ReportAttachmentOut.model_validate(row)
+
+
+@router.get("/{report_id}/attachments/{attachment_id}")
+def download_report_attachment(
+    report_id: int,
+    attachment_id: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    row, path = _run_svc(
+        lambda: att_svc.get_attachment(db, user, report_id, attachment_id)
+    )
+    return FileResponse(path, media_type=row.content_type, filename=row.filename)
 
 
 @router.get("/{report_id}", response_model=ReportOut)
