@@ -164,10 +164,13 @@ commands or logs.
 Run these commands from the Robopark checkout root on the host:
 
 ```sh
+test -s deploy/host.env
+HOST_ENV_FILE=./host.env docker compose -f deploy/docker-compose.yml \
+  stop ops-agent
 git pull --ff-only origin main
 test -s deploy/host.env
 HOST_ENV_FILE=./host.env docker compose -f deploy/docker-compose.yml \
-  up -d --build --wait --wait-timeout 180 api web ops-agent
+  up -d --build --force-recreate --wait --wait-timeout 180 api web ops-agent
 ```
 
 After this manual bootstrap succeeds, later Royal ZIP updates can use the fixed

@@ -10,6 +10,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 OPS_AGENT = REPO_ROOT / "deploy" / "ops-agent.sh"
+DEPLOY_README = REPO_ROOT / "deploy" / "README.md"
 
 
 @dataclass(frozen=True)
@@ -83,9 +84,15 @@ exit "$FAKE_DOCKER_EXIT"
     )
 
 
-def _run_agent(tree: AgentTree, *, copy_mode: str = "copy", docker_exit: int = 0):
+def _run_agent(
+    tree: AgentTree,
+    *,
+    copy_mode: str = "copy",
+    docker_exit: int = 0,
+    mode: str = "once",
+):
     return subprocess.run(
-        ["sh", str(OPS_AGENT), "once"],
+        ["sh", str(OPS_AGENT), mode],
         env=tree.environment(copy_mode=copy_mode, docker_exit=docker_exit),
         check=False,
         capture_output=True,
@@ -324,3 +331,68 @@ done
     assert live_file.read_text(encoding="utf-8") == "staged-new\n"
     assert _result(tree) == {"job_id": "job-1", "ok": True}
     assert not tree.job_flag.exists()
+
+
+def test_first_upgrade_stops_old_agent_before_pull_and_force_recreates_it():
+    readme = DEPLOY_README.read_text(encoding="utf-8")
+    section = readme.split("### First upgrade to the secret-safe ops-agent", 1)[1]
+    section = section.split("Pack a *release* ZIP", 1)[0]
+    normalized = " ".join(section.replace("\\\n", " ").split())
+    backup = "access-restricted host backup of `deploy/host.env` outside the checkout"
+    stop = (
+        "HOST_ENV_FILE=./host.env docker compose -f deploy/docker-compose.yml "
+        "stop ops-agent"
+    )
+    pull = "git pull --ff-only origin main"
+    recreate = (
+        "HOST_ENV_FILE=./host.env docker compose -f deploy/docker-compose.yml "
+        "up -d --build --force-recreate --wait --wait-timeout 180 api web ops-agent"
+    )
+
+    for required in (backup, stop, pull, recreate):
+        assert required in normalized
+    assert normalized.index(backup) < normalized.index(stop) < normalized.index(pull)
+    assert normalized.index(pull) < normalized.index(recreate)
+
+
+def test_watch_result_write_failure_keeps_job_and_does_not_claim_success(tmp_path: Path):
+    tree = _agent_tree(tmp_path)
+    tree.result_file.mkdir()
+
+    completed = _run_agent(tree, mode="watch")
+
+    assert completed.returncode != 0
+    assert tree.job_flag.is_file()
+    assert tree.result_file.is_dir()
+    assert "rebuild finished ok" not in completed.stdout
+    assert "ops-agent: result_write_failed" in completed.stderr
+    assert "ops-agent: job processing failed" in completed.stderr
+
+
+@pytest.mark.parametrize("docker_exit", [0, 17], ids=["success", "failure-result"])
+def test_watch_flag_remove_failure_keeps_job_and_reports_explicit_failure(
+    tmp_path: Path, docker_exit: int
+):
+    tree = _agent_tree(tmp_path)
+    _write_executable(
+        tree.bin_dir / "rm",
+        """
+last=
+for argument in "$@"; do
+    last="$argument"
+done
+case "$last" in
+    "$OPS_ROOT/rebuild.requested") exit 9 ;;
+esac
+exec /bin/rm "$@"
+""".strip(),
+    )
+
+    completed = _run_agent(tree, mode="watch", docker_exit=docker_exit)
+
+    assert completed.returncode != 0
+    assert tree.job_flag.is_file()
+    assert _result(tree) == {"job_id": "job-1", "ok": False, "error": "flag_remove_failed"}
+    assert "rebuild finished ok" not in completed.stdout
+    assert "ops-agent: flag_remove_failed" in completed.stderr
+    assert "ops-agent: job processing failed" in completed.stderr

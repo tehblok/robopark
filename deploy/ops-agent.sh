@@ -18,18 +18,41 @@ write_result() {
   ok="$2"
   err="${3:-}"
   # Sanitize fields so rebuild.result stays valid JSON.
-  job_id=$(printf '%s' "$job_id" | tr -cd 'A-Za-z0-9._-')
-  err=$(printf '%s' "$err" | tr -cd 'A-Za-z0-9._-')
+  job_id=$(printf '%s' "$job_id" | tr -cd 'A-Za-z0-9._-') || return 1
+  err=$(printf '%s' "$err" | tr -cd 'A-Za-z0-9._-') || return 1
   if [ "$ok" = "true" ]; then
-    printf '{"job_id":"%s","ok":true}\n' "$job_id" > "$RESULT_FILE"
+    printf '{"job_id":"%s","ok":true}\n' "$job_id" > "$RESULT_FILE" || return 1
   else
-    printf '{"job_id":"%s","ok":false,"error":"%s"}\n' "$job_id" "${err:-unknown}" > "$RESULT_FILE"
+    printf '{"job_id":"%s","ok":false,"error":"%s"}\n' \
+      "$job_id" "${err:-unknown}" > "$RESULT_FILE" || return 1
   fi
+  return 0
+}
+
+complete_job() {
+  job_id="$1"
+  ok="$2"
+  err="${3:-}"
+
+  if ! write_result "$job_id" "$ok" "$err"; then
+    echo "ops-agent: result_write_failed" >&2
+    return 1
+  fi
+  if ! rm -f "$JOB_FLAG"; then
+    echo "ops-agent: flag_remove_failed" >&2
+    if ! write_result "$job_id" false "flag_remove_failed"; then
+      echo "ops-agent: result_write_failed" >&2
+      if ! rm -f "$RESULT_FILE"; then
+        echo "ops-agent: result_cleanup_failed" >&2
+      fi
+    fi
+    return 1
+  fi
+  return 0
 }
 
 fail_job() {
-  write_result "$1" false "$2"
-  rm -f "$JOB_FLAG"
+  complete_job "$1" false "$2"
 }
 
 sanitize_staging() {
@@ -59,22 +82,30 @@ process_job() {
   echo "ops-agent: rebuild job=${JOB_ID:-?} from ${SRC:-unknown}"
 
   if [ ! -d "$SRC" ] || [ ! -d "$OPS_ROOT/staging" ]; then
-    fail_job "${JOB_ID:-unknown}" "staging_missing"
+    if ! fail_job "${JOB_ID:-unknown}" "staging_missing"; then
+      return 1
+    fi
     return 1
   fi
 
   STAGING_ROOT_REAL=$(realpath "$OPS_ROOT/staging") || {
-    fail_job "${JOB_ID:-unknown}" "unsafe_src"
+    if ! fail_job "${JOB_ID:-unknown}" "unsafe_src"; then
+      return 1
+    fi
     return 1
   }
   SRC_REAL=$(realpath "$SRC") || {
-    fail_job "${JOB_ID:-unknown}" "unsafe_src"
+    if ! fail_job "${JOB_ID:-unknown}" "unsafe_src"; then
+      return 1
+    fi
     return 1
   }
   case "$SRC_REAL" in
     "$STAGING_ROOT_REAL"/*) SRC="$SRC_REAL" ;;
     *)
-      fail_job "${JOB_ID:-unknown}" "unsafe_src"
+      if ! fail_job "${JOB_ID:-unknown}" "unsafe_src"; then
+        return 1
+      fi
       return 1
       ;;
   esac
@@ -89,13 +120,17 @@ process_job() {
       ;;
     rsync|copy) copy_mode="$OPS_AGENT_COPY_MODE" ;;
     *)
-      fail_job "$JOB_ID" "invalid_copy_mode"
+      if ! fail_job "$JOB_ID" "invalid_copy_mode"; then
+        return 1
+      fi
       return 1
       ;;
   esac
 
   if ! sanitize_staging; then
-    fail_job "$JOB_ID" "sanitize_failed"
+    if ! fail_job "$JOB_ID" "sanitize_failed"; then
+      return 1
+    fi
     return 1
   fi
 
@@ -113,13 +148,17 @@ process_job() {
         --exclude '__pycache__/' \
         --exclude '.git/' \
         "$SRC"/ "$HOST_REPO"/; then
-        fail_job "$JOB_ID" "copy_failed"
+        if ! fail_job "$JOB_ID" "copy_failed"; then
+          return 1
+        fi
         return 1
       fi
       ;;
     copy)
       if ! cp -a "$SRC"/. "$HOST_REPO"/; then
-        fail_job "$JOB_ID" "copy_failed"
+        if ! fail_job "$JOB_ID" "copy_failed"; then
+          return 1
+        fi
         return 1
       fi
       ;;
@@ -130,13 +169,16 @@ process_job() {
     --wait --wait-timeout "$READY_TIMEOUT_SECONDS" api web; then
     # Result may land after the new API has already started; API reconciles on
     # /ops/maintenance and /admin/ops/job polls (and on lifespan).
-    write_result "$JOB_ID" true
-    rm -f "$JOB_FLAG"
+    if ! complete_job "$JOB_ID" true; then
+      return 1
+    fi
     echo "ops-agent: rebuild finished ok"
     return 0
   fi
 
-  fail_job "$JOB_ID" "compose_failed"
+  if ! fail_job "$JOB_ID" "compose_failed"; then
+    return 1
+  fi
   echo "ops-agent: rebuild failed"
   return 1
 }
@@ -146,7 +188,9 @@ case "$MODE" in
   watch)
     echo "robopark ops-agent watching $JOB_FLAG"
     while true; do
-      process_job || true
+      if ! process_job; then
+        echo "ops-agent: job processing failed" >&2
+      fi
       sleep 4
     done
     ;;
