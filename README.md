@@ -339,16 +339,23 @@ enforced foreign keys so the background jobs do not collide with requests.
 
 ## Continuous integration
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and
-pull request: ruff lint, the pytest suite (including model/migration parity),
-web lint + type check + build + vitest, and a build of both Docker images.
+[`scripts/verify.sh`](scripts/verify.sh) is the single source of truth for local
+and CI verification. The workflow runs its canonical no-argument form on every
+push and pull request; this checks the frozen API environment, API lint and
+tests, the frozen web install, web lint/build/tests/navigation, Compose config,
+both Docker images, and the API runtime dependency boundary.
 
 Locally:
 
 ```bash
-cd apps/api && .venv/bin/ruff check . && .venv/bin/python -m pytest -q
-cd apps/web && npm run build && npm test && npm run lint && npm run check-nav
+./scripts/verify.sh api
+./scripts/verify.sh web
+./scripts/verify.sh       # canonical full gate; requires Docker
 ```
+
+Update API dependencies deliberately with `cd apps/api && uv lock && uv lock
+--check`, then run the canonical full gate. Base-image digest updates are also
+deliberate changes and require the full gate to pass before merge.
 
 Remaining UI/UX backlog: [`docs/UI-REFACTOR-SPEC.md`](docs/UI-REFACTOR-SPEC.md).
 

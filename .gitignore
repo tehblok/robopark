@@ -43,7 +43,6 @@ apps/api/logs/
 *.db
 *.db-shm
 *.db-wal
-uv.lock
 
 # Vendored Startrek client (local copy; same as bot_otchet layout)
 startrek_client-2.8/

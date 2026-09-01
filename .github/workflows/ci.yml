@@ -10,78 +10,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  api:
-    name: API (lint + tests)
+  verify:
+    name: Verify repository
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/api
+    timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
+          version: 0.11.31
           enable-cache: true
 
-      - name: Set up Python
-        run: uv venv --python 3.12 .venv
-
-      - name: Install dependencies
-        run: uv pip install -e ".[dev]" --python .venv/bin/python
-
-      - name: Lint (ruff)
-        run: .venv/bin/ruff check .
-
-      - name: Format (ruff)
-        run: .venv/bin/ruff format --check .
-
-      - name: Tests
-        run: .venv/bin/python -m pytest -q
-
-      - name: Migration parity (models vs alembic)
-        run: .venv/bin/python -m pytest tests/test_models_migration.py -q
-
-  web:
-    name: Web (lint + build + tests)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/web
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '22'
+          node-version: 24.18.0
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Lint
-        run: npm run lint --if-present
-
-      - name: Type check and build
-        run: npm run build
-
-      - name: Tests
-        run: npm test
-
-      - name: Nav parity
-        run: node scripts/check-nav.mjs
-
-  docker:
-    name: Docker images build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build API image
-        run: docker build -t robopark-api:ci apps/api
-
-      - name: Build web image
-        run: docker build -t robopark-web:ci apps/web
+      - name: Verify repository
+        run: ./scripts/verify.sh

@@ -176,6 +176,23 @@ HOST_ENV_FILE=./host.env docker compose -f deploy/docker-compose.yml \
 After this manual bootstrap succeeds, later Royal ZIP updates can use the fixed
 current ops-agent.
 
+### Release verification
+
+[`../scripts/verify.sh`](../scripts/verify.sh) is the single source of truth for
+local and CI verification. From the checkout root, run the focused gates while
+developing and the canonical full gate on a Docker-capable host before a host
+upgrade or release ZIP:
+
+```sh
+./scripts/verify.sh api
+./scripts/verify.sh web
+./scripts/verify.sh       # canonical full gate; requires Docker
+```
+
+Update API dependencies deliberately with `cd apps/api && uv lock && uv lock
+--check`, then run the canonical full gate. Base-image digest updates are also
+deliberate changes and require the full gate to pass before release.
+
 Pack a *release* ZIP on a machine with the repo (not a snapshot):
 
 ```sh
