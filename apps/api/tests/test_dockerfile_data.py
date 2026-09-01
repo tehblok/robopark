@@ -1,5 +1,6 @@
 import re
 import stat
+import subprocess
 from pathlib import Path
 
 API_ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +16,86 @@ WEB_RUNTIME_IMAGE = (
     "nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de"
 )
 OPS_IMAGE = "docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c"
+VERIFY_SCRIPT = REPO_ROOT / "scripts/verify.sh"
+UV_SYNC_RUNS = [
+    "RUN uv sync --frozen --no-dev --no-install-project",
+    "RUN uv sync --frozen --no-dev",
+]
+
+
+def _uv_sync_runs(dockerfile: Path) -> list[str]:
+    return [
+        line
+        for line in dockerfile.read_text(encoding="utf-8").splitlines()
+        if line.startswith("RUN uv sync ")
+    ]
+
+
+def _write_fake_tool(fake_bin: Path, name: str, *, log_host_env: bool = False) -> None:
+    env_field = (
+        '\nprintf \'\\tHOST_ENV_FILE=%s\' "${HOST_ENV_FILE-}" >> "$VERIFY_LOG"'
+        if log_host_env
+        else ""
+    )
+    tool = fake_bin / name
+    tool.write_text(
+        f"""#!/bin/sh
+set -eu
+printf '%s' '{name}' >> "$VERIFY_LOG"{env_field}
+for arg in "$@"; do
+  printf '\\t%s' "$arg" >> "$VERIFY_LOG"
+done
+printf '\\n' >> "$VERIFY_LOG"
+""",
+        encoding="utf-8",
+    )
+    tool.chmod(0o755)
+
+
+def _write_fake_dirname(fake_bin: Path) -> None:
+    tool = fake_bin / "dirname"
+    tool.write_text(
+        """#!/bin/sh
+set -eu
+value=$1
+case "$value" in
+  */*) directory=${value%/*} ;;
+  *) directory=. ;;
+esac
+if [ -z "$directory" ]; then
+  directory=/
+fi
+printf '%s\\n' "$directory"
+""",
+        encoding="utf-8",
+    )
+    tool.chmod(0o755)
+
+
+def _run_verify(
+    tmp_path: Path, *args: str, include_docker: bool = True
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    fake_bin = tmp_path / "bin"
+    outside_checkout = tmp_path / "outside"
+    fake_bin.mkdir(parents=True)
+    outside_checkout.mkdir()
+    _write_fake_dirname(fake_bin)
+    for name in ("uv", "npm", "sh"):
+        _write_fake_tool(fake_bin, name)
+    if include_docker:
+        _write_fake_tool(fake_bin, "docker", log_host_env=True)
+
+    log = tmp_path / "commands.log"
+    result = subprocess.run(
+        [str(VERIFY_SCRIPT), *args],
+        cwd=outside_checkout,
+        env={"PATH": str(fake_bin), "VERIFY_LOG": str(log)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    commands = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return result, commands
 
 
 def test_dockerignore_excludes_ops():
@@ -50,11 +131,13 @@ def test_api_dockerfile_uses_pinned_frozen_runtime_dependencies():
     assert "ARG UV_VERSION=0.11.31" in text
     assert 'pip install --no-cache-dir "uv==${UV_VERSION}"' in text
     assert "COPY pyproject.toml uv.lock ./" in text
-    assert "uv sync --frozen --no-dev --no-install-project" in text
-    assert "uv sync --frozen --no-dev" in text
     assert "pip install --no-cache-dir . pytest" not in text
     assert "apt-get" not in text
     assert "curl" not in text
+
+
+def test_api_dockerfile_runs_exact_ordered_production_sync_phases():
+    assert _uv_sync_runs(API_ROOT / "Dockerfile") == UV_SYNC_RUNS
 
 
 def test_api_healthchecks_use_python_stdlib_readiness_probe():
@@ -94,21 +177,73 @@ def test_ci_uses_only_the_canonical_verification_entrypoint():
     assert "uv pip install" not in workflow
 
 
-def test_verification_script_has_frozen_targets_and_is_executable():
-    script_path = REPO_ROOT / "scripts/verify.sh"
-    text = script_path.read_text(encoding="utf-8")
+def test_verification_script_is_an_executable_posix_entrypoint():
+    text = VERIFY_SCRIPT.read_text(encoding="utf-8")
     assert text.startswith("#!/bin/sh\nset -eu\n")
-    assert "uv sync --frozen --extra dev" in text
-    assert "uv run --frozen --extra dev ruff check ." in text
-    assert "uv run --frozen --extra dev ruff format --check ." in text
-    assert "python -m pytest -p no:cacheprovider -q" in text
-    assert "npm ci" in text
-    assert "npm run lint" in text
-    assert "npm run build" in text
-    assert "npm test" in text
-    assert "npm run check-nav" in text
-    assert "docker is required for the docker verification target" in text
-    assert script_path.stat().st_mode & stat.S_IXUSR
+    assert VERIFY_SCRIPT.stat().st_mode & stat.S_IXUSR
+
+
+def test_verification_script_api_target_runs_only_frozen_api_commands(tmp_path: Path):
+    result, commands = _run_verify(tmp_path, "api")
+    assert result.returncode == 0, result.stderr
+    assert commands == [
+        "uv\tsync\t--frozen\t--extra\tdev",
+        "uv\trun\t--frozen\t--extra\tdev\truff\tcheck\t.",
+        "uv\trun\t--frozen\t--extra\tdev\truff\tformat\t--check\t.",
+        "uv\trun\t--frozen\t--extra\tdev\tpython\t-m\tpytest\t-p\tno:cacheprovider\t-q",
+    ]
+
+
+def test_verification_script_web_target_runs_only_web_commands(tmp_path: Path):
+    result, commands = _run_verify(tmp_path, "web")
+    assert result.returncode == 0, result.stderr
+    assert commands == [
+        "npm\tci",
+        "npm\trun\tlint",
+        "npm\trun\tbuild",
+        "npm\ttest",
+        "npm\trun\tcheck-nav",
+    ]
+
+
+def test_verification_script_default_runs_all_targets_in_order(tmp_path: Path):
+    result, commands = _run_verify(tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert commands == [
+        "uv\tsync\t--frozen\t--extra\tdev",
+        "uv\trun\t--frozen\t--extra\tdev\truff\tcheck\t.",
+        "uv\trun\t--frozen\t--extra\tdev\truff\tformat\t--check\t.",
+        "uv\trun\t--frozen\t--extra\tdev\tpython\t-m\tpytest\t-p\tno:cacheprovider\t-q",
+        "npm\tci",
+        "npm\trun\tlint",
+        "npm\trun\tbuild",
+        "npm\ttest",
+        "npm\trun\tcheck-nav",
+        "sh\t-n\tdeploy/ops-agent.sh",
+        "docker\tHOST_ENV_FILE=./host.env.example\tcompose\t-f\tdeploy/docker-compose.yml\tconfig\t--quiet",
+        "docker\tHOST_ENV_FILE=\tbuild\t-t\trobopark-api:verify\tapps/api",
+        "docker\tHOST_ENV_FILE=\tbuild\t-t\trobopark-web:verify\tapps/web",
+        "docker\tHOST_ENV_FILE=\trun\t--rm\t--entrypoint\tpython\trobopark-api:verify\t-c\t"
+        "import importlib.util, multipart, robopark_api; "
+        "assert importlib.util.find_spec('pytest') is None",
+    ]
+
+
+def test_verification_script_rejects_invalid_or_excess_arguments(tmp_path: Path):
+    for index, args in enumerate((("invalid",), ("api", "extra"))):
+        result, commands = _run_verify(tmp_path / str(index), *args)
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr == f"usage: {VERIFY_SCRIPT} [api|web|docker]\n"
+        assert commands == []
+
+
+def test_verification_script_missing_docker_is_explicit(tmp_path: Path):
+    result, commands = _run_verify(tmp_path, "docker", include_docker=False)
+    assert result.returncode == 127
+    assert result.stdout == ""
+    assert result.stderr == "docker is required for the docker verification target\n"
+    assert commands == []
 
 
 def test_root_gitignore_tracks_api_lockfile():
