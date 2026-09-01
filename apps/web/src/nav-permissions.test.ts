@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { expect, it } from 'vitest'
 import { navItemsForPermissions } from './nav-permissions'
 
 it('hides stub nav items even when the permission is granted', () => {

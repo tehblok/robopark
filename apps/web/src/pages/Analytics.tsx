@@ -20,15 +20,20 @@ function analyticsHint(role: string): string {
   }
 }
 
-export function Analytics() {
-  const { user } = useAuth()
-  const { parkId, parksLoading } = useParkContext()
+type DashboardAnalyticsProps = {
+  role: string
+  permissions: string[]
+  parkId: number | null
+  parksLoading: boolean
+}
 
-  if (user?.role === 'operator') {
-    return <OperatorNowReport />
-  }
-
-  const hasDashboard = (user?.permissions ?? []).includes('nav.dashboard')
+function DashboardAnalytics({
+  role,
+  permissions,
+  parkId,
+  parksLoading,
+}: DashboardAnalyticsProps) {
+  const hasDashboard = permissions.includes('nav.dashboard')
   const summaryRes = useCachedResource(
     parkId == null ? '' : `dashboard:summary:${parkId}`,
     () => api.dashboardSummary(parkId as number),
@@ -71,10 +76,28 @@ export function Analytics() {
             </Link>
           ) : undefined
         }
-        hint={analyticsHint(user?.role ?? '')}
+        hint={analyticsHint(role)}
         icon="◔"
         title="Расширенная аналитика скоро появится"
       />
     </PageShell>
+  )
+}
+
+export function Analytics() {
+  const { user } = useAuth()
+  const { parkId, parksLoading } = useParkContext()
+
+  if (user?.role === 'operator') {
+    return <OperatorNowReport />
+  }
+
+  return (
+    <DashboardAnalytics
+      parkId={parkId}
+      parksLoading={parksLoading}
+      permissions={user?.permissions ?? []}
+      role={user?.role ?? ''}
+    />
   )
 }
