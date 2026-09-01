@@ -123,9 +123,7 @@ def test_delete_old_buckets(db_session, seed_park):
         arrived_count=9,
         departed_count=9,
     )
-    deleted = delete_old_buckets(
-        db_session, park_id=seed_park.id, retention_days=30, now=FIXED_NOW
-    )
+    deleted = delete_old_buckets(db_session, park_id=seed_park.id, retention_days=30, now=FIXED_NOW)
     assert deleted == 1
     rows = history_series(db_session, park_id=seed_park.id, days=365, now=FIXED_NOW)
     assert len(rows) == 1
@@ -142,9 +140,7 @@ def test_delete_old_buckets_retains_record_exactly_at_cutoff(db_session, seed_pa
         departed_count=0,
     )
 
-    deleted = delete_old_buckets(
-        db_session, park_id=seed_park.id, retention_days=30, now=FIXED_NOW
-    )
+    deleted = delete_old_buckets(db_session, park_id=seed_park.id, retention_days=30, now=FIXED_NOW)
 
     assert deleted == 0
     rows = history_series(db_session, park_id=seed_park.id, days=365, now=FIXED_NOW)
@@ -235,9 +231,7 @@ def test_scan_park_bucket_upserts_counts(db_session, seed_park_with_tracker, mon
     assert arrived == 3
     assert departed == 1
     assert len(calls) == 2
-    rows = history_series(
-        db_session, park_id=seed_park_with_tracker.id, days=7, now=FIXED_NOW
-    )
+    rows = history_series(db_session, park_id=seed_park_with_tracker.id, days=7, now=FIXED_NOW)
     assert len(rows) == 1
     assert rows[0]["arrived_count"] == 3
     assert rows[0]["departed_count"] == 1
@@ -339,9 +333,7 @@ def test_scan_all_parks_once_runs_retention_after_success(
     monkeypatch.setattr(
         history_svc,
         "delete_old_buckets",
-        lambda db, **kwargs: retention_calls.append(
-            (kwargs["retention_days"], kwargs["now"])
-        ),
+        lambda db, **kwargs: retention_calls.append((kwargs["retention_days"], kwargs["now"])),
     )
 
     scanned = scan_all_parks_once(

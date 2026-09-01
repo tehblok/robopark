@@ -152,9 +152,7 @@ def _should_skip_apply_path(path: Path, root: Path) -> bool:
     rel_parts = path.relative_to(root).parts
     if any(part in _SKIP_APPLY_PARTS for part in rel_parts):
         return True
-    if path.name in _SECRET_BASENAMES:
-        return True
-    return False
+    return path.name in _SECRET_BASENAMES
 
 
 def _copy_tree(src: Path, dest: Path) -> None:

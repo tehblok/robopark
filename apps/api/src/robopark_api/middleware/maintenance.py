@@ -55,7 +55,9 @@ class MaintenanceGateMiddleware:
             return
         app = scope.get("app")
         ops_dir = getattr(getattr(app, "state", None), "ops_dir", None)
-        cookie_name = getattr(getattr(app, "state", None), "session_cookie_name", "robopark_session")
+        cookie_name = getattr(
+            getattr(app, "state", None), "session_cookie_name", "robopark_session"
+        )
         if ops_dir is None or not is_maintenance_active(ops_dir):
             await self.app(scope, receive, send)
             return

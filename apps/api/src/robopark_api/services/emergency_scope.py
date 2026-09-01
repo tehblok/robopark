@@ -17,8 +17,7 @@ from sqlalchemy.orm import Session
 from robopark_api.deps import get_user_parks
 from robopark_api.models import User
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import rbac
-from robopark_api.services import tracker_cache, tracker_client
+from robopark_api.services import rbac, tracker_cache
 from robopark_api.services.rbac import RoleSlug
 from robopark_api.services.tracker_policy import is_issue_in_scope
 

@@ -77,15 +77,11 @@ def _user_out(db: Session, user: User, parks: list[Park]) -> UserAdminOut:
 
 
 def _load_user(db: Session, user_id: int) -> User | None:
-    return db.scalar(
-        select(User).options(joinedload(User.role_ref)).where(User.id == user_id)
-    )
+    return db.scalar(select(User).options(joinedload(User.role_ref)).where(User.id == user_id))
 
 
 def _user_parks(db: Session, user_id: int) -> list[Park]:
-    return list(
-        db.scalars(select(Park).join(UserPark).where(UserPark.user_id == user_id)).all()
-    )
+    return list(db.scalars(select(Park).join(UserPark).where(UserPark.user_id == user_id)).all())
 
 
 def _set_parks(db: Session, user: User, park_ids: list[int]) -> None:

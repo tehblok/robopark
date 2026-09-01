@@ -62,11 +62,11 @@ def _role_out(role: Role, user_count: int = 0) -> RoleOut:
 
 
 def _load_role(db: Session, role_id: int) -> Role | None:
-    return db.scalars(
-        select(Role)
-        .options(joinedload(Role.permissions))
-        .where(Role.id == role_id)
-    ).unique().one_or_none()
+    return (
+        db.scalars(select(Role).options(joinedload(Role.permissions)).where(Role.id == role_id))
+        .unique()
+        .one_or_none()
+    )
 
 
 def _set_role_permissions(db: Session, role: Role, keys: list[str]) -> None:
@@ -88,7 +88,9 @@ def list_permission_catalog(
     _user: User = Depends(require_admin),
 ) -> list[PermissionOut]:
     return [
-        PermissionOut(key=item.key, category=item.category, label=item.label, sort_order=item.sort_order)
+        PermissionOut(
+            key=item.key, category=item.category, label=item.label, sort_order=item.sort_order
+        )
         for item in PERMISSION_CATALOG
     ]
 
@@ -98,12 +100,12 @@ def list_roles(
     db: Session = Depends(get_db),
     _user: User = Depends(require_admin),
 ) -> list[RoleOut]:
-    counts = dict(
-        db.execute(select(User.role_id, func.count()).group_by(User.role_id)).all()
+    counts = dict(db.execute(select(User.role_id, func.count()).group_by(User.role_id)).all())
+    roles = (
+        db.scalars(select(Role).options(joinedload(Role.permissions)).order_by(Role.id))
+        .unique()
+        .all()
     )
-    roles = db.scalars(
-        select(Role).options(joinedload(Role.permissions)).order_by(Role.id)
-    ).unique().all()
     return [_role_out(role, int(counts.get(role.id, 0))) for role in roles]
 
 
@@ -114,7 +116,9 @@ def create_role(
     actor: User = Depends(require_user),
 ) -> RoleOut:
     rbac.assert_approved(actor)
-    if not rbac.is_royal(actor) and not rbac.has_permission(db, actor, rbac.PERMISSION_ROLES_MANAGE):
+    if not rbac.is_royal(actor) and not rbac.has_permission(
+        db, actor, rbac.PERMISSION_ROLES_MANAGE
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     if payload.slug in rbac.RoleSlug.SYSTEM:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="role_slug_reserved")
@@ -159,7 +163,9 @@ def update_role(
     actor: User = Depends(require_user),
 ) -> RoleOut:
     rbac.assert_approved(actor)
-    if not rbac.is_royal(actor) and not rbac.has_permission(db, actor, rbac.PERMISSION_ROLES_MANAGE):
+    if not rbac.is_royal(actor) and not rbac.has_permission(
+        db, actor, rbac.PERMISSION_ROLES_MANAGE
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     role = _load_role(db, role_id)
     if role is None:

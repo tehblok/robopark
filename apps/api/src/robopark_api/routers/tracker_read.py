@@ -10,8 +10,6 @@ from robopark_api.db import get_db
 from robopark_api.deps import get_user_parks, require_user
 from robopark_api.models import Park, User
 from robopark_api.routers._blockers import blocker_out as _blocker_out
-from robopark_api.services import rbac
-from robopark_api.services.rbac import RoleSlug
 from robopark_api.schemas import (
     RobotTicketsOut,
     TrackerAttachmentOut,
@@ -24,8 +22,9 @@ from robopark_api.schemas import (
     TrackerUserOut,
 )
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_cache, tracker_client, tracker_filters
+from robopark_api.services import rbac, tracker_cache, tracker_client, tracker_filters
 from robopark_api.services import tracker_signatures as sig_svc
+from robopark_api.services.rbac import RoleSlug
 from robopark_api.services.tracker_assignees import list_assignee_candidates
 from robopark_api.services.tracker_policy import (
     allowed_park_tags_for_user,
@@ -165,10 +164,7 @@ def _build_query(
 
     if park:
         allowed_tags = allowed_park_tags_for_user(db, user)
-        if (
-            user.role not in {RoleSlug.ADMIN, RoleSlug.ROYAL}
-            and park not in allowed_tags
-        ):
+        if user.role not in {RoleSlug.ADMIN, RoleSlug.ROYAL} and park not in allowed_tags:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="tracker_park_forbidden",
@@ -417,9 +413,7 @@ def robot_tickets(
     keys: set[str] = set()
     try:
         for queue in queues:
-            for item in tracker_cache.search_robot_tickets(
-                token=token, queue=queue, query=query
-            ):
+            for item in tracker_cache.search_robot_tickets(token=token, queue=queue, query=query):
                 item_queue = (item.get("queue") or "").strip()
                 if item_queue and item_queue not in allowed:
                     continue
@@ -438,4 +432,3 @@ def robot_tickets(
         query=query,
         items=[_blocker_out(item) for item in sorted_items],
     )
-

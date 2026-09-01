@@ -1,4 +1,4 @@
-from conftest import VALID_PASSWORD, login_as, role_id_for
+from conftest import login_as, role_id_for
 from robopark_api.models import User
 from robopark_api.security import hash_password
 
@@ -171,4 +171,3 @@ def test_admin_can_keep_royal_privileged_override(client, seed_royal, seed_mecha
     )
     assert add.status_code == 403
     assert add.json()["detail"] == "privileged_grant_forbidden"
-

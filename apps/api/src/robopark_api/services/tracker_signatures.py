@@ -69,9 +69,9 @@ def resolve_mechanic_login(db: Session, issue: dict, user: User) -> str:
     assignee_login = _assignee_login(issue)
     if assignee_login:
         matched = db.scalar(
-            select(User).where(
-                (User.tracker_login == assignee_login) | (User.username == assignee_login)
-            ).limit(1)
+            select(User)
+            .where((User.tracker_login == assignee_login) | (User.username == assignee_login))
+            .limit(1)
         )
         if matched is not None:
             return (matched.tracker_login or matched.username).strip()

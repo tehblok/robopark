@@ -55,9 +55,7 @@ def encrypt_secret(value: str, secret_key: str | None) -> str:
     if not value:
         return value
     if not secret_key:
-        raise MissingSecretKeyError(
-            "SECRET_KEY is required to store integration secrets at rest"
-        )
+        raise MissingSecretKeyError("SECRET_KEY is required to store integration secrets at rest")
     token = _cipher(secret_key).encrypt(value.encode("utf-8")).decode("ascii")
     return f"{ENC_PREFIX}{token}"
 

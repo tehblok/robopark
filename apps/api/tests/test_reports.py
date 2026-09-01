@@ -3,9 +3,9 @@ from fastapi.testclient import TestClient
 
 from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, Park, Report, User, UserPark
-from robopark_api.services.rbac import RoleSlug
 from robopark_api.security import hash_password
 from robopark_api.services import reports as reports_svc
+from robopark_api.services.rbac import RoleSlug
 
 
 @pytest.fixture

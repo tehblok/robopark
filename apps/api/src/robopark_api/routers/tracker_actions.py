@@ -9,19 +9,18 @@ from sqlalchemy.orm import Session
 from robopark_api.db import get_db
 from robopark_api.deps import get_user_parks, require_user
 from robopark_api.models import Park, User
-from robopark_api.services import rbac
-from robopark_api.services.rbac import RoleSlug
 from robopark_api.schemas import (
     TrackerActionOut,
     TrackerAssignIn,
     TrackerCommentIn,
     TrackerTransitionIn,
 )
-from robopark_api.services import audit, tracker_cache, tracker_client
+from robopark_api.services import audit, rbac, tracker_cache, tracker_client
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import reports as reports_svc
 from robopark_api.services import tracker_signatures as sig_svc
 from robopark_api.services.login_throttle import client_ip
+from robopark_api.services.rbac import RoleSlug
 from robopark_api.services.tracker_policy import ensure_action_allowed, issue_tags
 
 router = APIRouter(prefix="/tracker", tags=["tracker-actions"])
@@ -365,11 +364,7 @@ def close_issue(
 
     if user.role == RoleSlug.MECHANIC:
         tags = issue_tags(issue)
-        matched = [
-            park
-            for park in parks
-            if park.tag and str(park.tag).strip() in tags
-        ]
+        matched = [park for park in parks if park.tag and str(park.tag).strip() in tags]
         mechanic_park = matched[0] if matched else parks[0]
 
     transitions = tracker_cache.list_transitions(token=token, key=key)

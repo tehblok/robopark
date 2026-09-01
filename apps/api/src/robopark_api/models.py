@@ -58,7 +58,9 @@ class Role(Base):
 class RolePermission(Base):
     __tablename__ = "role_permissions"
 
-    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True)
+    role_id: Mapped[int] = mapped_column(
+        ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True
+    )
     permission_id: Mapped[int] = mapped_column(
         ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True
     )
@@ -69,7 +71,9 @@ class UserPermission(Base):
 
     __tablename__ = "user_permissions"
 
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
     permission_id: Mapped[int] = mapped_column(
         ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True
     )
@@ -318,7 +322,7 @@ class Report(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    attachments: Mapped[list["ReportAttachment"]] = relationship(
+    attachments: Mapped[list[ReportAttachment]] = relationship(
         back_populates="report",
         cascade="all, delete-orphan",
         order_by="ReportAttachment.id",
@@ -332,16 +336,12 @@ class ReportAttachment(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    report_id: Mapped[int] = mapped_column(
-        ForeignKey("reports.id", ondelete="CASCADE"), index=True
-    )
+    report_id: Mapped[int] = mapped_column(ForeignKey("reports.id", ondelete="CASCADE"), index=True)
     kind: Mapped[str] = mapped_column(String(32))
     filename: Mapped[str] = mapped_column(String(256))
     content_type: Mapped[str] = mapped_column(String(128))
     size_bytes: Mapped[int] = mapped_column(Integer)
     storage_key: Mapped[str] = mapped_column(String(512))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     report: Mapped[Report] = relationship(back_populates="attachments")

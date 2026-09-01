@@ -48,9 +48,7 @@ def test_mechanic_tasks_disabled_when_feature_off(
     assert response.json()["detail"] == "tasks_disabled_for_park"
 
 
-def test_mechanic_tasks_second_park_by_id(
-    client, seed_mechanic, seed_royal, db_session
-):
+def test_mechanic_tasks_second_park_by_id(client, seed_mechanic, seed_royal, db_session):
     extra = Park(
         name="Beta",
         tag="Beta",

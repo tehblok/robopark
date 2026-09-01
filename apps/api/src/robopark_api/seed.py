@@ -3,10 +3,10 @@ from sqlalchemy.orm import Session
 
 from robopark_api.config import Settings
 from robopark_api.models import AccessStatus, User
+from robopark_api.security import hash_password
 from robopark_api.services import rbac
 from robopark_api.services.rbac import RoleSlug
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
-from robopark_api.security import hash_password
 
 
 def ensure_seed_user(db: Session, settings: Settings) -> None:
@@ -39,7 +39,5 @@ def _validated_role_slug(seed_role: str) -> str:
     slug = seed_role.strip().lower()
     if slug not in RoleSlug.SYSTEM:
         known = ", ".join(sorted(RoleSlug.SYSTEM))
-        raise ValueError(
-            f"SEED_ROLE={seed_role!r} is not a known role. Expected one of: {known}."
-        )
+        raise ValueError(f"SEED_ROLE={seed_role!r} is not a known role. Expected one of: {known}.")
     return slug

@@ -51,9 +51,7 @@ def _agent_tree(tmp_path: Path) -> AgentTree:
 
     host_repo = tmp_path / "host"
     (host_repo / "deploy").mkdir(parents=True)
-    (host_repo / "deploy" / "docker-compose.yml").write_text(
-        "services: {}\n", encoding="utf-8"
-    )
+    (host_repo / "deploy" / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -173,9 +171,7 @@ def test_compose_failure_is_reported(tmp_path: Path):
 
 
 @pytest.mark.parametrize("source_case", ["outside", "traversal", "symlink"])
-def test_unsafe_source_is_rejected_without_touching_host_repo(
-    tmp_path: Path, source_case: str
-):
+def test_unsafe_source_is_rejected_without_touching_host_repo(tmp_path: Path, source_case: str):
     tree = _agent_tree(tmp_path)
     outside = tree.ops_root / "outside"
     outside.mkdir()
@@ -339,10 +335,7 @@ def test_first_upgrade_stops_old_agent_before_pull_and_force_recreates_it():
     section = section.split("Pack a *release* ZIP", 1)[0]
     normalized = " ".join(section.replace("\\\n", " ").split())
     backup = "access-restricted host backup of `deploy/host.env` outside the checkout"
-    stop = (
-        "HOST_ENV_FILE=./host.env docker compose -f deploy/docker-compose.yml "
-        "stop ops-agent"
-    )
+    stop = "HOST_ENV_FILE=./host.env docker compose -f deploy/docker-compose.yml stop ops-agent"
     pull = "git pull --ff-only origin main"
     recreate = (
         "HOST_ENV_FILE=./host.env docker compose -f deploy/docker-compose.yml "

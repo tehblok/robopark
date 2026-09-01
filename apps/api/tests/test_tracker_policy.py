@@ -48,7 +48,9 @@ def test_operator_denied_tracker_write_cannot_write(db_session, seed_park_with_t
 
     operator = rbac.load_user_with_role(db_session, operator.id)
     assert operator is not None
-    denied = sorted(rbac.role_permission_keys(db_session, operator) - {rbac.PERMISSION_TRACKER_WRITE})
+    denied = sorted(
+        rbac.role_permission_keys(db_session, operator) - {rbac.PERMISSION_TRACKER_WRITE}
+    )
     rbac.set_user_effective_permissions(db_session, operator, denied)
     db_session.commit()
 

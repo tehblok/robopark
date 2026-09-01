@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from starlette.requests import Request
+
 from conftest import VALID_PASSWORD, login_as, role_id_for
 from robopark_api.models import AccessStatus, User
 from robopark_api.security import hash_password
@@ -16,7 +18,6 @@ from robopark_api.services.ops.jobs import (
     save_job,
 )
 from robopark_api.services.ops.runner import artifact_path
-from starlette.requests import Request
 
 
 def test_admin_not_in_self_register():

@@ -45,9 +45,7 @@ def test_get_issue_and_invalidate(monkeypatch):
 
 def test_invalidate_issue_clears_related_list_caches(monkeypatch):
     monkeypatch.setattr(tracker_client, "search_issues", lambda **_kw: [{"key": "SD-9"}])
-    monkeypatch.setattr(
-        tracker_client, "fetch_park_blockers", lambda **_kw: [{"key": "SD-9"}]
-    )
+    monkeypatch.setattr(tracker_client, "fetch_park_blockers", lambda **_kw: [{"key": "SD-9"}])
     monkeypatch.setattr(
         tracker_client,
         "search_robot_tickets",
@@ -62,9 +60,7 @@ def test_invalidate_issue_clears_related_list_caches(monkeypatch):
 
     # New loaders (updated status) should be picked up because the list caches were dropped.
     monkeypatch.setattr(tracker_client, "search_issues", lambda **_kw: [{"key": "SD-9-v2"}])
-    monkeypatch.setattr(
-        tracker_client, "fetch_park_blockers", lambda **_kw: [{"key": "SD-9-v2"}]
-    )
+    monkeypatch.setattr(tracker_client, "fetch_park_blockers", lambda **_kw: [{"key": "SD-9-v2"}])
     monkeypatch.setattr(
         tracker_client,
         "search_robot_tickets",

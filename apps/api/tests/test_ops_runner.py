@@ -98,7 +98,9 @@ def test_successful_update_copies_tree(tmp_path: Path):
         confirm=UPDATE_PHRASE,
     )
     assert job.state == STATE_SUCCEEDED
-    assert (apply / "apps" / "api" / "src" / "pkg" / "mod.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+    assert (apply / "apps" / "api" / "src" / "pkg" / "mod.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 2\n"
 
 
 def test_snapshot_archive_rejected_as_update(tmp_path: Path):

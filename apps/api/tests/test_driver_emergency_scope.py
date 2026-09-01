@@ -36,8 +36,11 @@ def test_pending_driver_cannot_use_emergency(client, db_session):
     db_session.add(driver)
     db_session.commit()
 
-    assert client.post(
-        "/auth/login", json={"username": "driver_pending", "password": "secret"}
-    ).status_code == 204
+    assert (
+        client.post(
+            "/auth/login", json={"username": "driver_pending", "password": "secret"}
+        ).status_code
+        == 204
+    )
     response = client.post("/emergency/resolve", json={"robot_number": "447"})
     assert response.status_code == 403

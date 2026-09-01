@@ -129,11 +129,7 @@ PERMISSION_CATALOG: tuple[PermissionDef, ...] = (
 
 DEFAULT_ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     RoleSlug.ROYAL: frozenset(ALL_PERMISSIONS),
-    RoleSlug.ADMIN: frozenset(
-        perm
-        for perm in ALL_PERMISSIONS
-        if perm != PERMISSION_USERS_APPROVE
-    ),
+    RoleSlug.ADMIN: frozenset(perm for perm in ALL_PERMISSIONS if perm != PERMISSION_USERS_APPROVE),
     RoleSlug.OPERATOR: frozenset(
         {
             PERMISSION_NAV_DASHBOARD,
@@ -238,9 +234,7 @@ def set_user_effective_permissions(db: Session, user: User, keys: list[str]) -> 
         perm_id = perm_ids.get(key)
         if perm_id is None:
             continue
-        db.add(
-            UserPermission(user_id=user.id, permission_id=perm_id, granted=in_desired)
-        )
+        db.add(UserPermission(user_id=user.id, permission_id=perm_id, granted=in_desired))
 
 
 def has_permission(db: Session, user: User, permission: str) -> bool:

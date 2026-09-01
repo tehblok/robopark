@@ -14,7 +14,6 @@ from robopark_api.services.ops.jobs import (
     append_log,
     ensure_ops_dir,
     load_job,
-    ops_paths,
     save_job,
 )
 from robopark_api.services.ops.snapshot import restore_snapshot_tree, sqlite_path_from_url

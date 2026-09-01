@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from functools import partial
 
 from fastapi import (
@@ -83,15 +84,13 @@ def _token_hash(request: Request, settings: Settings) -> str:
 def _reconcile_if_needed(settings: Settings) -> None:
     """Finalize Docker cutover when ops-agent writes rebuild.result after API boot."""
     ctx = build_ops_context(settings)
-    try:
+    with suppress(Exception):
         reconcile_pending_rebuild(
             ctx.ops_dir,
             database_url=ctx.database_url,
             config_files=ctx.config_files,
             data_dir=ctx.data_dir,
         )
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def _job_out(job) -> OpsJobOut:
@@ -108,7 +107,9 @@ async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
             break
         total += len(piece)
         if total > max_bytes:
-            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="archive_too_large")
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="archive_too_large"
+            )
         chunks.append(piece)
     if not chunks:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="archive_required")
@@ -116,7 +117,9 @@ async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
 
 
 @router.get("/ops/maintenance", response_model=MaintenanceOut)
-def maintenance_status(request: Request, settings: Settings = Depends(get_settings)) -> MaintenanceOut:
+def maintenance_status(
+    request: Request, settings: Settings = Depends(get_settings)
+) -> MaintenanceOut:
     _reconcile_if_needed(settings)
     ops_dir = resolved_ops_dir(settings)
     job = load_job(ops_dir)
@@ -239,7 +242,9 @@ def post_snapshot(
         )
     except JobConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="job_in_progress") from exc
-    audit.record(db, action=ACTION_OPS_SNAPSHOT, actor=royal, outcome=audit.OUTCOME_SUCCESS, detail=job.state)
+    audit.record(
+        db, action=ACTION_OPS_SNAPSHOT, actor=royal, outcome=audit.OUTCOME_SUCCESS, detail=job.state
+    )
     return _job_out(job)
 
 

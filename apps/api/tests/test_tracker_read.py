@@ -119,7 +119,12 @@ def test_mechanic_comments_filtered_to_platform_and_staff(
         tracker_client,
         "list_comments",
         lambda **_kwargs: [
-            {"id": "1", "text": "ok\nAlpha / mech1 / operator1", "author": "bot", "author_login": "bot"},
+            {
+                "id": "1",
+                "text": "ok\nAlpha / mech1 / operator1",
+                "author": "bot",
+                "author_login": "bot",
+            },
             {
                 "id": "2",
                 "text": "plain comment",
@@ -137,7 +142,9 @@ def test_mechanic_comments_filtered_to_platform_and_staff(
     assert [item["id"] for item in payload] == ["1", "2"]
 
 
-def test_tracker_robot_search_royal(client, db_session, seed_royal, seed_park_with_tracker, monkeypatch):
+def test_tracker_robot_search_royal(
+    client, db_session, seed_royal, seed_park_with_tracker, monkeypatch
+):
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
 
     from robopark_api.services import tracker_cache

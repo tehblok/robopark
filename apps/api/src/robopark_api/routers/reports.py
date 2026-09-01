@@ -12,15 +12,15 @@ from robopark_api.deps import (
     require_user,
 )
 from robopark_api.models import Report, User
-from robopark_api.services import rbac
 from robopark_api.schemas import (
-    ReportBadgeOut,
     ReportAttachmentOut,
+    ReportBadgeOut,
     ReportCreateIn,
     ReportEscalateIn,
     ReportOut,
     ReportReturnIn,
 )
+from robopark_api.services import rbac
 from robopark_api.services import report_attachments as att_svc
 from robopark_api.services import reports as reports_svc
 
@@ -53,9 +53,11 @@ def _run_svc(fn: Callable[[], T]) -> T:
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except LookupError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="report_not_found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="report_not_found"
+        ) from None
     except PermissionError:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden") from None
 
 
 def _require_mechanic_park(db: Session, user: User, park_id: int) -> None:
@@ -148,9 +150,7 @@ def download_report_attachment(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> FileResponse:
-    row, path = _run_svc(
-        lambda: att_svc.get_attachment(db, user, report_id, attachment_id)
-    )
+    row, path = _run_svc(lambda: att_svc.get_attachment(db, user, report_id, attachment_id))
     return FileResponse(path, media_type=row.content_type, filename=row.filename)
 
 

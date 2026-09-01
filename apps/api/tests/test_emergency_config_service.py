@@ -208,4 +208,3 @@ def test_ensure_default_section_roles_backfills_driver(db_session):
         )
     }
     assert "driver" in roles
-

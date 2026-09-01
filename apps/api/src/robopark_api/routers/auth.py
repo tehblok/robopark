@@ -17,9 +17,6 @@ from robopark_api.schemas import (
     RegisterRequest,
     UserOut,
 )
-from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import rbac
-from robopark_api.services.rbac import RoleSlug
 from robopark_api.security import (
     PasswordPolicyError,
     hash_password,
@@ -29,12 +26,14 @@ from robopark_api.security import (
     validate_password,
     verify_password,
 )
-from robopark_api.services import audit
+from robopark_api.services import audit, rbac
+from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.login_throttle import (
     client_ip,
     get_login_throttle,
     get_register_throttle,
 )
+from robopark_api.services.rbac import RoleSlug
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -139,7 +138,9 @@ def register(
 
     role = rbac.get_role_by_slug(db, role_slug)
     if role is None:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="roles_not_seeded")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="roles_not_seeded"
+        )
 
     throttle.reset(throttle_key)
     user = User(

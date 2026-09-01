@@ -108,12 +108,8 @@ def test_settings_cache_is_effective():
 
 def test_migrate_plaintext_secrets_reseals_legacy_rows(db_session, with_secret_key):
     """Plaintext rows from an older install must be re-encrypted on boot."""
-    db_session.add(
-        PlatformSetting(key=settings_svc.TRACKER_TOKEN_KEY, value="legacy-token")
-    )
-    db_session.add(
-        PlatformSetting(key=settings_svc.EMERGENCY_COOKIE_KEY, value="Session_id=old")
-    )
+    db_session.add(PlatformSetting(key=settings_svc.TRACKER_TOKEN_KEY, value="legacy-token"))
+    db_session.add(PlatformSetting(key=settings_svc.EMERGENCY_COOKIE_KEY, value="Session_id=old"))
     db_session.commit()
 
     rewritten = settings_svc.migrate_plaintext_secrets(db_session)
@@ -135,9 +131,7 @@ def test_migrate_plaintext_secrets_is_noop_without_key(db_session, monkeypatch):
     """Without SECRET_KEY the migration must not touch anything."""
     monkeypatch.delenv("SECRET_KEY", raising=False)
     reset_settings_cache()
-    db_session.add(
-        PlatformSetting(key=settings_svc.TRACKER_TOKEN_KEY, value="legacy-token")
-    )
+    db_session.add(PlatformSetting(key=settings_svc.TRACKER_TOKEN_KEY, value="legacy-token"))
     db_session.commit()
 
     assert settings_svc.migrate_plaintext_secrets(db_session) == 0

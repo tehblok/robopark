@@ -82,7 +82,17 @@ def _status_ok(value: Any) -> bool | None:
             return None
         if text in {"ok", "online", "good", "true", "connected", "active", "1"}:
             return True
-        return text not in {"fail", "failed", "offline", "bad", "false", "error", "0", "none", "n/a"}
+        return text not in {
+            "fail",
+            "failed",
+            "offline",
+            "bad",
+            "false",
+            "error",
+            "0",
+            "none",
+            "n/a",
+        }
     if isinstance(value, dict):
         for key in ("ok", "isOk", "online", "connected", "active", "healthy"):
             if key in value:
@@ -149,9 +159,7 @@ def _connection(payload: dict[str, Any], online: bool | None) -> str | None:
     if isinstance(lte, dict):
         ok = _status_ok(lte)
         strengths = [
-            _as_float(value)
-            for value in lte.values()
-            if not isinstance(value, (dict, list, bool))
+            _as_float(value) for value in lte.values() if not isinstance(value, (dict, list, bool))
         ]
         if ok is True or any(value is not None and value > 0 for value in strengths):
             return "lte"
@@ -277,7 +285,9 @@ def _error_banner(payload: dict[str, Any]) -> str | None:
             for item in value:
                 text = _as_label(item) if not isinstance(item, str) else item.strip()
                 if isinstance(item, dict):
-                    text = _as_label(item.get("message") or item.get("text") or item.get("path") or item)
+                    text = _as_label(
+                        item.get("message") or item.get("text") or item.get("path") or item
+                    )
                 if text:
                     return text if text.upper().startswith("ERROR") else f"ERROR: {text}"
             continue

@@ -12,7 +12,6 @@ from robopark_api.services.rbac import (
     RoleSlug,
 )
 
-
 SYSTEM_ROLE_META: dict[str, tuple[str, str]] = {
     RoleSlug.ROYAL: ("Владелец", "Полный доступ, одобрение регистраций"),
     RoleSlug.ADMIN: ("Администратор", "Управление парками и пользователями"),

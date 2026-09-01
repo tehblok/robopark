@@ -6,10 +6,10 @@ from sqlalchemy.orm import Session
 
 from conftest import login_as
 from robopark_api.models import Report, User
-from robopark_api.services.rbac import RoleSlug
 from robopark_api.services import emergency_cache, emergency_client
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import reports as reports_svc
+from robopark_api.services.rbac import RoleSlug
 
 VIN = "YASADR00000000447"
 

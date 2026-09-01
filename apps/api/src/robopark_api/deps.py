@@ -10,7 +10,6 @@ from robopark_api.models import AccessStatus, AuthSession, Park, Role, User, Use
 from robopark_api.security import hash_session_token
 from robopark_api.services import rbac
 
-
 #: Paths allowed while ``must_change_password`` is set (SPA + API).
 _MUST_CHANGE_PASSWORD_ALLOW = frozenset(
     {
@@ -30,7 +29,9 @@ def _aware(value: datetime) -> datetime:
     return value
 
 
-def _touch_session(db: Session, auth_session: AuthSession, settings: Settings, now: datetime) -> None:
+def _touch_session(
+    db: Session, auth_session: AuthSession, settings: Settings, now: datetime
+) -> None:
     next_idle = now + timedelta(seconds=settings.session_idle_seconds)
     remaining = (_aware(auth_session.expires_at) - now).total_seconds()
     if remaining >= settings.session_idle_seconds - settings.session_slide_min_interval_seconds:
@@ -63,12 +64,7 @@ def require_user(
     created = _aware(auth_session.created_at)
     expires = _aware(auth_session.expires_at)
     absolute_deadline = created + timedelta(seconds=settings.session_absolute_ttl_seconds)
-    if (
-        user is None
-        or not user.is_active
-        or expires <= now
-        or now >= absolute_deadline
-    ):
+    if user is None or not user.is_active or expires <= now or now >= absolute_deadline:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
     _touch_session(db, auth_session, settings, now)

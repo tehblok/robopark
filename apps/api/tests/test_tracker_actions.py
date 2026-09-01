@@ -1,9 +1,9 @@
 from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, Report, User, UserPark
-from robopark_api.services.rbac import RoleSlug
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings
 from robopark_api.services import reports as reports_svc
+from robopark_api.services.rbac import RoleSlug
 
 
 def _seed_operator(db_session, park):
@@ -97,7 +97,9 @@ def test_tracker_action_attach(client, db_session, seed_park_with_tracker, monke
     assert captured["text"].startswith("Фото неисправности\n")
 
 
-def test_tracker_action_attach_rejects_non_image(client, db_session, seed_park_with_tracker, monkeypatch):
+def test_tracker_action_attach_rejects_non_image(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
     _seed_operator(db_session, seed_park_with_tracker)
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
 

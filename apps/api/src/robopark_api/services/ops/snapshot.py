@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+from contextlib import suppress
 from pathlib import Path
 
 from sqlalchemy.engine.url import make_url
@@ -158,10 +159,8 @@ def restore_snapshot_tree(
             continue
         if path.name == "robopark.db":
             continue
-        try:
+        with suppress(OSError):
             path.unlink()
-        except OSError:
-            pass
 
     src_data = tree / SNAPSHOT_DATA_DIR
     if not src_data.is_dir():

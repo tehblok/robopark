@@ -68,8 +68,7 @@ def test_resolve_operator_login_from_park(db_session, seed_park_with_tracker, se
     db_session.commit()
 
     assert (
-        resolve_operator_login(db_session, seed_park_with_tracker, seed_mechanic)
-        == "park.operator"
+        resolve_operator_login(db_session, seed_park_with_tracker, seed_mechanic) == "park.operator"
     )
 
 

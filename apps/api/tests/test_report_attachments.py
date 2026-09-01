@@ -275,7 +275,12 @@ def test_http_royal_cannot_attach(
 
 
 def test_http_rejects_garbage_file(
-    client: TestClient, db_session, seed_mechanic, seed_park_with_tracker, test_settings, monkeypatch
+    client: TestClient,
+    db_session,
+    seed_mechanic,
+    seed_park_with_tracker,
+    test_settings,
+    monkeypatch,
 ):
     monkeypatch.setattr(att_svc, "get_settings", lambda: test_settings)
     report = _open_report(db_session, seed_mechanic, seed_park_with_tracker.id)
@@ -660,9 +665,7 @@ def test_verify_command_failure_is_generic(monkeypatch, capsys):
             pass
 
     def fail_validation(_db) -> int:
-        raise att_svc.AttachmentStorageError(
-            "report attachment storage validation failed"
-        )
+        raise att_svc.AttachmentStorageError("report attachment storage validation failed")
 
     monkeypatch.setattr(command, "SessionLocal", FakeSession)
     monkeypatch.setattr(command, "validate_attachment_storage", fail_validation)

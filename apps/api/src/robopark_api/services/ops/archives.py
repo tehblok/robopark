@@ -136,7 +136,10 @@ def _inspect_open(zf: zipfile.ZipFile, *, expected_kind: str | None) -> ArchiveM
         uncompressed += max(info.file_size, 0)
         if uncompressed > MAX_UNCOMPRESSED_BYTES:
             raise ArchiveError("archive_too_large")
-        if info.compress_size and info.file_size / max(info.compress_size, 1) > MAX_COMPRESSION_RATIO:
+        if (
+            info.compress_size
+            and info.file_size / max(info.compress_size, 1) > MAX_COMPRESSION_RATIO
+        ):
             raise ArchiveError("archive_too_large")
     try:
         manifest_raw = zf.read(MANIFEST_NAME)

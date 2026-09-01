@@ -86,7 +86,9 @@ def test_release_tests_fail_leaves_apply_root_empty(client, seed_royal, tmp_path
     root = tmp_path / "rel"
     api = root / "apps" / "api"
     (api / "tests").mkdir(parents=True)
-    (api / "tests" / "test_ok.py").write_text("def test_ok():\n    assert False\n", encoding="utf-8")
+    (api / "tests" / "test_ok.py").write_text(
+        "def test_ok():\n    assert False\n", encoding="utf-8"
+    )
     blob = build_archive(kind=KIND_RELEASE, source_root=root, app_version="9")
     updated = client.post(
         "/admin/ops/update",
