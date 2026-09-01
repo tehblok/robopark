@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { User } from '../api'
@@ -31,13 +32,15 @@ function renderForRole(role: string) {
     logout: vi.fn(),
   }
   return (
-    <MemoryRouter>
-      <AuthContext.Provider value={auth}>
-        <ParkContext.Provider value={parkContext}>
-          <Analytics />
-        </ParkContext.Provider>
-      </AuthContext.Provider>
-    </MemoryRouter>
+    <StrictMode>
+      <MemoryRouter>
+        <AuthContext.Provider value={auth}>
+          <ParkContext.Provider value={parkContext}>
+            <Analytics />
+          </ParkContext.Provider>
+        </AuthContext.Provider>
+      </MemoryRouter>
+    </StrictMode>
   )
 }
 
