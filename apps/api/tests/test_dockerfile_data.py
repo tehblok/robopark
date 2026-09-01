@@ -267,3 +267,33 @@ def test_root_gitignore_tracks_api_lockfile():
         if line.strip() and not line.lstrip().startswith("#")
     }
     assert "uv.lock" not in ignored_lines
+
+
+def test_api_data_gitignore_allows_only_the_tracked_seed_file():
+    runtime = subprocess.run(
+        [
+            "git",
+            "check-ignore",
+            "--no-index",
+            "--quiet",
+            "--",
+            "apps/api/data/runtime-cache/session.bin",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    seed = subprocess.run(
+        [
+            "git",
+            "check-ignore",
+            "--no-index",
+            "--quiet",
+            "--",
+            "apps/api/data/emergency_sections.json",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+    )
+
+    assert runtime.returncode == 0
+    assert seed.returncode == 1

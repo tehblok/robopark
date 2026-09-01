@@ -7,6 +7,7 @@ import re
 import tempfile
 from contextlib import suppress
 from pathlib import Path
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,6 +27,7 @@ KIND_CLIENT_LOG = "client_log"
 
 ATTACHMENT_KINDS = frozenset({KIND_UI_SNAPSHOT, KIND_DEVICE_PHOTO, KIND_CLIENT_LOG})
 MAX_LOG_BYTES = 64 * 1024
+MAX_FILENAME_BYTES = 240
 _FILENAME_RE = re.compile(r"[^\w.\-() ]+", re.UNICODE)
 _STORAGE_ERROR = "report attachment storage validation failed"
 
@@ -47,7 +49,20 @@ def sanitize_filename(name: str | None, *, fallback: str) -> str:
     raw = (name or fallback).strip()
     base = raw.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
     cleaned = _FILENAME_RE.sub("_", base).strip("._")
-    return cleaned or fallback
+    cleaned = cleaned or fallback
+    encoded = cleaned.encode("utf-8")
+    if len(encoded) <= MAX_FILENAME_BYTES:
+        return cleaned
+
+    suffix = Path(cleaned).suffix
+    suffix_bytes = suffix.encode("utf-8")
+    if len(suffix_bytes) > 16:
+        suffix = ""
+        suffix_bytes = b""
+    stem = cleaned[: -len(suffix)] if suffix else cleaned
+    stem_bytes = stem.encode("utf-8")[: MAX_FILENAME_BYTES - len(suffix_bytes)]
+    bounded_stem = stem_bytes.decode("utf-8", errors="ignore").rstrip(" ._")
+    return f"{bounded_stem}{suffix}" or fallback
 
 
 def max_bytes_for_kind(kind: str) -> int:
@@ -123,7 +138,7 @@ def add_attachment(
         resolved_type = "text/plain"
         safe_name = sanitize_filename(filename, fallback="client-log.txt")
         if not safe_name.lower().endswith(".txt"):
-            safe_name = f"{safe_name}.txt"
+            safe_name = sanitize_filename(f"{safe_name}.txt", fallback="client-log.txt")
     else:
         resolved_type = normalize_attachment_content_type(
             filename=filename or "photo.png",
@@ -148,7 +163,7 @@ def add_attachment(
     try:
         db.add(row)
         db.flush()
-        relative = f"{report.id}/{row.id}_{safe_name}"
+        relative = f"{report.id}/{uuid4().hex}"
         destination = _resolve_storage_key(relative)
         _atomic_write(destination, content)
         placed = True

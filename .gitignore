@@ -34,6 +34,7 @@ coverage/
 # Local runtime / data
 data/
 !apps/api/data/
+apps/api/data/*
 !apps/api/data/emergency_sections.json
 apps/api/data/ops/
 apps/api/data/report-attachments/

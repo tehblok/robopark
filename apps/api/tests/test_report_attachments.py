@@ -261,6 +261,48 @@ def test_http_attach_and_download(
     assert as_operator.content == TINY_PNG
 
 
+def test_http_overlong_log_and_image_filenames_are_bounded_and_downloadable(
+    client: TestClient,
+    db_session,
+    seed_mechanic,
+    seed_park_with_tracker,
+    test_settings,
+    monkeypatch,
+):
+    monkeypatch.setattr(att_svc, "get_settings", lambda: test_settings)
+    report = _open_report(db_session, seed_mechanic, seed_park_with_tracker.id)
+    _login(client, "mech1")
+    root = Path(test_settings.report_attachments_dir)
+    uploads = [
+        (att_svc.KIND_CLIENT_LOG, f"{'l' * 320}.log", b"client log", "text/plain", ".txt"),
+        (att_svc.KIND_UI_SNAPSHOT, f"{'i' * 320}.png", TINY_PNG, "image/png", ".png"),
+    ]
+
+    for kind, filename, content, content_type, expected_suffix in uploads:
+        uploaded = client.post(
+            f"/reports/{report.id}/attachments",
+            data={"kind": kind},
+            files={"file": (filename, content, content_type)},
+        )
+
+        assert uploaded.status_code == 201
+        payload = uploaded.json()
+        display_filename = payload["filename"]
+        assert len(display_filename.encode("utf-8")) <= 240
+        assert display_filename.lower().endswith(expected_suffix)
+
+        attachment = db_session.get(ReportAttachment, payload["id"])
+        assert attachment is not None
+        storage_component = Path(attachment.storage_key).name
+        assert len(storage_component) == 32
+        assert set(storage_component) <= set("0123456789abcdef")
+        assert (root / attachment.storage_key).read_bytes() == content
+
+        downloaded = client.get(f"/reports/{report.id}/attachments/{attachment.id}")
+        assert downloaded.status_code == 200
+        assert downloaded.content == content
+
+
 def test_http_royal_cannot_attach(
     client: TestClient, db_session, seed_royal, seed_mechanic, seed_park_with_tracker
 ):
