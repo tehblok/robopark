@@ -152,6 +152,27 @@ Do **not** commit `host.env`, `tuna.env`, or Tuna tokens.
 
 ## Updates
 
+### First upgrade to the secret-safe ops-agent
+
+The first upgrade containing the secret-safe ops-agent **must be a protected,
+manual operation on the host**. Do not send this release through the Royal ZIP
+flow while the old fallback agent is still running. Before starting, make an
+access-restricted host backup of `deploy/host.env` outside the checkout and
+verify that the backup exists. Do not print or paste the file contents into
+commands or logs.
+
+Run these commands from the Robopark checkout root on the host:
+
+```sh
+git pull --ff-only origin main
+test -s deploy/host.env
+HOST_ENV_FILE=./host.env docker compose -f deploy/docker-compose.yml \
+  up -d --build --wait --wait-timeout 180 api web ops-agent
+```
+
+After this manual bootstrap succeeds, later Royal ZIP updates can use the fixed
+current ops-agent.
+
 Pack a *release* ZIP on a machine with the repo (not a snapshot):
 
 ```sh
