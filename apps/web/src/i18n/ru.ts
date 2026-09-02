@@ -135,7 +135,7 @@ export const ru = {
     tasks: 'Не удалось загрузить задачи. Проверьте настройки Tracker и парка.',
     robotSearch: 'Поиск не удался. Проверьте токен Tracker.',
     emergency503: 'Emergency cookie не задан — обратитесь к администратору.',
-    emergency401: 'Cookie Emergency просрочен или недействителен.',
+    emergency401: 'Интеграция проверки робота требует внимания.',
     sessionExpired: 'Сессия истекла. Войдите снова.',
     emergency: 'Не удалось получить данные Emergency.',
     emergencySection: 'Не удалось загрузить раздел.',
@@ -169,8 +169,10 @@ export const ru = {
       tracker_attachment_empty: 'Файл пустой.',
       tracker_attachment_too_large: 'Файл слишком большой (максимум 15 МБ).',
       tracker_attachment_invalid_type: 'Можно прикреплять только изображения (JPEG, PNG, WebP, HEIC).',
-      emergency_cookie_not_configured: 'Cookie Emergency не задан в настройках администратора.',
-      emergency_cookie_invalid: 'Cookie Emergency просрочен или недействителен.',
+      emergency_cookie_not_configured:
+        'Интеграция проверки робота требует внимания.',
+      emergency_cookie_invalid:
+        'Интеграция проверки робота требует внимания.',
       too_many_attempts: 'Слишком много попыток. Подождите минуту.',
       emergency_vin_out_of_scope: 'Нет доступа к диагностике этого робота.',
       tasks_disabled_for_park: 'Задачи отключены: проверьте очередь Startrek и флаг blockers у парка.',

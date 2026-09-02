@@ -5,12 +5,18 @@ import {
 } from 'react'
 import { api, ApiError, type User } from './api'
 import { AuthContext } from './auth-context'
-import { clearRecentRobots } from './lib/recentRobots'
 import { resourceStore } from './lib/resource'
+import { clearProtectedBrowserStorage } from './shared/auth/protectedBrowserStorage'
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
+
+  const clearSessionState = () => {
+    resourceStore.clearAll()
+    clearProtectedBrowserStorage()
+    setUser(null)
+  }
 
   useEffect(() => {
     api
@@ -18,10 +24,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
       .then(setUser)
       .catch((error) => {
         if (error instanceof ApiError && error.status === 401) {
-          resourceStore.clearAll()
-          clearRecentRobots()
+          clearSessionState()
+        } else {
+          setUser(null)
         }
-        setUser(null)
       })
       .finally(() => setLoading(false))
   }, [])
@@ -30,8 +36,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     // Any cache mirrored from a previous session (potentially a different
     // account) is dropped before we authenticate — different roles see
     // different rows and we must not paint the previous user's data.
-    resourceStore.clearAll()
-    clearRecentRobots()
+    clearSessionState()
     await api.login(username, password, rememberMe)
     const authenticatedUser = await api.me()
     setUser(authenticatedUser)
@@ -39,16 +44,24 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }
 
   const refreshUser = async () => {
-    const authenticatedUser = await api.me()
-    setUser(authenticatedUser)
-    return authenticatedUser
+    try {
+      const authenticatedUser = await api.me()
+      setUser(authenticatedUser)
+      return authenticatedUser
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        clearSessionState()
+      }
+      throw error
+    }
   }
 
   const logout = async () => {
-    await api.logout()
-    resourceStore.clearAll()
-    clearRecentRobots()
-    setUser(null)
+    try {
+      await api.logout()
+    } finally {
+      clearSessionState()
+    }
   }
 
   return (

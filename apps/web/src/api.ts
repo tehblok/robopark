@@ -381,13 +381,61 @@ export type OpsMaintenance = {
 export class ApiError extends Error {
   status: number
   detail: string | null
+  requestId?: string
 
-  constructor(status: number, detail: string | null = null) {
+  constructor(status: number, detail: string | null = null, requestId?: string) {
     super(detail ?? String(status))
     this.name = 'ApiError'
     this.status = status
     this.detail = detail
+    this.requestId = requestId
   }
+}
+
+export class ApiTimeoutError extends Error {
+  readonly timeoutMs: number
+
+  constructor(timeoutMs: number) {
+    super(`Request timed out after ${timeoutMs}ms`)
+    this.name = 'ApiTimeoutError'
+    this.timeoutMs = timeoutMs
+  }
+}
+
+const JSON_TIMEOUT_MS = 30_000
+const BLOB_TIMEOUT_MS = 60_000
+const FORM_TIMEOUT_MS = 90_000
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController()
+  const sourceSignal = init.signal
+  let timedOut = false
+  const forwardAbort = () => controller.abort(sourceSignal?.reason)
+  if (sourceSignal?.aborted) forwardAbort()
+  else sourceSignal?.addEventListener('abort', forwardAbort, { once: true })
+  const timer = globalThis.setTimeout(() => {
+    if (controller.signal.aborted) return
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+
+  try {
+    return await fetch(input, { ...init, signal: controller.signal })
+  } catch (error) {
+    if (timedOut) throw new ApiTimeoutError(timeoutMs)
+    throw error
+  } finally {
+    globalThis.clearTimeout(timer)
+    sourceSignal?.removeEventListener('abort', forwardAbort)
+  }
+}
+
+function responseRequestId(response: Response): string | undefined {
+  return response.headers.get('X-Request-ID')?.trim() || undefined
 }
 
 async function readErrorDetail(response: Response): Promise<string | null> {
@@ -402,18 +450,22 @@ async function readErrorDetail(response: Response): Promise<string | null> {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
+  const response = await fetchWithTimeout(
+    `/api${path}`,
+    {
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+      ...init,
     },
-    ...init,
-  })
+    JSON_TIMEOUT_MS,
+  )
 
   if (!response.ok) {
     const detail = await readErrorDetail(response)
-    throw new ApiError(response.status, detail)
+    throw new ApiError(response.status, detail, responseRequestId(response))
   }
 
   if (response.status === 204) {
@@ -424,24 +476,32 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 async function requestBlob(path: string): Promise<Blob> {
-  const response = await fetch(`/api${path}`, { credentials: 'include' })
+  const response = await fetchWithTimeout(
+    `/api${path}`,
+    { credentials: 'include' },
+    BLOB_TIMEOUT_MS,
+  )
   if (!response.ok) {
     const detail = await readErrorDetail(response)
-    throw new ApiError(response.status, detail)
+    throw new ApiError(response.status, detail, responseRequestId(response))
   }
   return response.blob()
 }
 
 async function requestForm<T>(path: string, formData: FormData): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    credentials: 'include',
-    method: 'POST',
-    body: formData,
-  })
+  const response = await fetchWithTimeout(
+    `/api${path}`,
+    {
+      credentials: 'include',
+      method: 'POST',
+      body: formData,
+    },
+    FORM_TIMEOUT_MS,
+  )
 
   if (!response.ok) {
     const detail = await readErrorDetail(response)
-    throw new ApiError(response.status, detail)
+    throw new ApiError(response.status, detail, responseRequestId(response))
   }
 
   return response.json() as Promise<T>

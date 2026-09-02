@@ -11,7 +11,6 @@ export function mapApiError(error: unknown, fallback = ''): string {
     }
     if (error.status === 503) return ru.errors.tasks503
     if (error.status === 401) {
-      if (error.detail === 'emergency_cookie_invalid') return ru.errors.emergency401
       return ru.errors.sessionExpired
     }
     if (error.status === 409) return ru.errors.tasks409
