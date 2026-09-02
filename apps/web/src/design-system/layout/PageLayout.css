@@ -29,13 +29,13 @@
   text-transform: uppercase;
 }
 
-.rp-page-layout h1,
-.rp-panel h2 {
+.rp-page-layout__title,
+.rp-panel__title {
   color: var(--rp-text);
   margin: 0;
 }
 
-.rp-page-layout h1 {
+.rp-page-layout__title {
   font-size: var(--rp-font-size-display);
   line-height: var(--rp-line-height-compact);
 }
@@ -69,7 +69,7 @@
   padding: var(--rp-density-panel-padding);
 }
 
-.rp-panel h2 {
+.rp-panel__title {
   font-size: var(--rp-font-size-title);
   line-height: var(--rp-line-height-compact);
 }

@@ -39,10 +39,11 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
 export function IconButton({
   label,
   icon,
+  className = '',
   ...props
 }: Omit<ButtonProps, 'children' | 'leadingIcon'> & { label: string; icon: IconName }) {
   return (
-    <Button {...props} aria-label={label} className="rp-icon-button">
+    <Button {...props} aria-label={label} className={`rp-icon-button ${className}`.trim()}>
       <Icon name={icon} />
     </Button>
   )

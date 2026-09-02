@@ -28,4 +28,13 @@ describe('IconButton', () => {
 
     expect(screen.getByRole('button', { name: 'Обновить данные' })).toBeVisible()
   })
+
+  it('preserves a caller class alongside its icon-button class', () => {
+    render(<IconButton className="toolbar-refresh" icon="refresh" label="Обновить" />)
+
+    expect(screen.getByRole('button', { name: 'Обновить' })).toHaveClass(
+      'rp-icon-button',
+      'toolbar-refresh',
+    )
+  })
 })

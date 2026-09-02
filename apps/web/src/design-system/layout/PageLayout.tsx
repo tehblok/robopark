@@ -23,7 +23,7 @@ export function PageLayout({
       <header className="rp-page-layout__header">
         <div className="rp-page-layout__heading">
           {eyebrow ? <div className="rp-page-layout__eyebrow">{eyebrow}</div> : null}
-          <h1>{title}</h1>
+          <h1 className="rp-page-layout__title">{title}</h1>
           {description ? <div className="rp-page-layout__description">{description}</div> : null}
         </div>
         {actions ? <div className="rp-page-layout__actions">{actions}</div> : null}
@@ -58,7 +58,7 @@ export function Panel({
       {title || description || actions ? (
         <header className="rp-panel__header">
           <div className="rp-panel__heading">
-            {title ? <h2 id={headingId}>{title}</h2> : null}
+            {title ? <h2 className="rp-panel__title" id={headingId}>{title}</h2> : null}
             {description ? <div className="rp-panel__description">{description}</div> : null}
           </div>
           {actions ? <div className="rp-panel__actions">{actions}</div> : null}
