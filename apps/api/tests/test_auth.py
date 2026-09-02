@@ -1,15 +1,18 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import login_as, role_id_for
 from park_helpers import PARK_DEFAULTS
+from robopark_api import db as db_module
+from robopark_api.config import get_settings
 from robopark_api.deps import require_admin, require_approved_operator
 from robopark_api.models import AuthSession, Park, User, UserPark
+from robopark_api.routers import auth as auth_router
 from robopark_api.security import hash_session_token
 from robopark_api.services.rbac import ALL_PERMISSIONS
 
@@ -180,6 +183,25 @@ def test_expired_session_cannot_access_me(client: TestClient, db_session: Sessio
 
 def test_me_without_cookie(client: TestClient):
     assert client.get("/auth/me").status_code == 401
+
+
+def test_me_without_cookie_unwinds_real_db_dependency_in_same_context(
+    db_engine, test_settings, monkeypatch
+):
+    monkeypatch.setattr(
+        db_module,
+        "SessionLocal",
+        sessionmaker(bind=db_engine, future=True),
+    )
+    app = FastAPI()
+    app.include_router(auth_router.router)
+    app.dependency_overrides[get_settings] = lambda: test_settings
+
+    with TestClient(app, raise_server_exceptions=False) as isolated_client:
+        response = isolated_client.get("/auth/me")
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Unauthorized"
 
 
 def test_me_includes_assigned_parks(client: TestClient, db_session: Session, seed_royal):
