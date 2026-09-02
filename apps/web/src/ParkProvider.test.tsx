@@ -1,11 +1,19 @@
-import { render } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Park, User } from './api'
 import { AuthContext, type AuthContextValue } from './auth-context'
+import { useParkScope } from './app/park/parkScope'
 import { ParkProvider } from './ParkProvider'
 import { PARK_STORAGE_KEY, useParkContext } from './park-context'
 
-const park: Park = { id: 7, name: 'Север', tag: 'north' }
+const park = (id: number): Park => ({
+  id,
+  name: `Парк ${id}`,
+  tag: `park-${id}`,
+  is_active: true,
+})
 
 function operatorUser(parks: Park[]): User {
   return {
@@ -13,6 +21,7 @@ function operatorUser(parks: Park[]): User {
     username: 'op',
     role: 'operator',
     access_status: 'approved',
+    permissions: ['nav.dashboard'],
     parks,
   }
 }
@@ -27,31 +36,52 @@ function authValue(user: User | null): AuthContextValue {
   }
 }
 
-describe('ParkProvider', () => {
+describe('ParkProvider compatibility bridge', () => {
   afterEach(() => {
-    sessionStorage.removeItem(PARK_STORAGE_KEY)
+    sessionStorage.clear()
   })
 
-  it('uses assigned parks on the first render for operators', () => {
-    const parks = [park]
-    const first: { parks: Park[]; parksLoading: boolean; parkId: number | null }[] = []
+  it('derives legacy aliases and selection from the same URL-backed scope', async () => {
+    const actor = userEvent.setup()
 
     function Observer() {
-      const value = useParkContext()
-      first.push({ parks: value.parks, parksLoading: value.parksLoading, parkId: value.parkId })
-      return null
+      const scope = useParkScope()
+      const legacy = useParkContext()
+      const location = useLocation()
+      return (
+        <>
+          <output data-testid="core-park">{scope.parkId ?? 'none'}</output>
+          <output data-testid="legacy-park">{legacy.parkId ?? 'none'}</output>
+          <output data-testid="legacy-loading">{String(legacy.parksLoading)}</output>
+          <output data-testid="legacy-locked">{String(legacy.parkLocked)}</output>
+          <output data-testid="location">{location.search}</output>
+          <button type="button" onClick={() => legacy.setParkId(9)}>
+            Выбрать парк 9
+          </button>
+        </>
+      )
     }
 
     render(
-      <AuthContext.Provider value={authValue(operatorUser(parks))}>
-        <ParkProvider>
-          <Observer />
-        </ParkProvider>
-      </AuthContext.Provider>,
+      <MemoryRouter initialEntries={['/overview?park=7']}>
+        <AuthContext.Provider value={authValue(operatorUser([park(7), park(9)]))}>
+          <ParkProvider>
+            <Observer />
+          </ParkProvider>
+        </AuthContext.Provider>
+      </MemoryRouter>,
     )
 
-    expect(first[0]?.parks).toEqual(parks)
-    expect(first[0]?.parksLoading).toBe(false)
-    expect(first[0]?.parkId).toBe(park.id)
+    expect(await screen.findByTestId('core-park')).toHaveTextContent('7')
+    expect(screen.getByTestId('legacy-park')).toHaveTextContent('7')
+    expect(screen.getByTestId('legacy-loading')).toHaveTextContent('false')
+    expect(screen.getByTestId('legacy-locked')).toHaveTextContent('false')
+
+    await actor.click(screen.getByRole('button', { name: 'Выбрать парк 9' }))
+
+    expect(screen.getByTestId('core-park')).toHaveTextContent('9')
+    expect(screen.getByTestId('legacy-park')).toHaveTextContent('9')
+    expect(screen.getByTestId('location')).toHaveTextContent('?park=9')
+    expect(sessionStorage.getItem(PARK_STORAGE_KEY)).toBe('9')
   })
 })
