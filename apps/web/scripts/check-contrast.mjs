@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 
-const css = readFileSync(new URL('../src/design-system/styles/tokens.css', import.meta.url), 'utf8')
+const tokensPath = process.argv[2] ?? new URL('../src/design-system/styles/tokens.css', import.meta.url)
+const css = readFileSync(tokensPath, 'utf8')
 
 const commonTokens = [
   '--rp-font-sans',
@@ -63,6 +64,13 @@ const themeTokens = [
   '--rp-shadow-panel',
 ]
 
+const densityTokens = [
+  '--rp-control-min-size',
+  '--rp-row-min-size',
+  '--rp-density-gap',
+  '--rp-density-panel-padding',
+]
+
 const contrastPairs = [
   ['text', 'surface'],
   ['text', 'canvas'],
@@ -116,6 +124,26 @@ function contrast(foreground, background) {
 const common = blockFor(/:root\s*\{([\s\S]*?)\}/, 'common')
 const failures = []
 
+function requireTokens(tokens, requiredTokens, label) {
+  for (const token of requiredTokens) {
+    if (!tokens.has(token)) failures.push(`${label}: missing ${token}`)
+  }
+}
+
+for (const density of ['comfortable', 'compact']) {
+  const tokens = blockFor(
+    new RegExp(`:root\\[data-density=['"]${density}['"]\\]\\s*\\{([\\s\\S]*?)\\}`),
+    `${density} density`,
+  )
+  requireTokens(tokens, densityTokens, density)
+}
+
+const narrowTokens = blockFor(
+  /@media\s*\(max-width:\s*899px\)\s*\{\s*:root\s*\{([\s\S]*?)\}\s*\}/,
+  'narrow density override',
+)
+requireTokens(narrowTokens, densityTokens, 'narrow')
+
 for (const theme of ['light', 'dark']) {
   const themed = blockFor(
     new RegExp(`:root\\[data-theme=['"]${theme}['"]\\]\\s*\\{([\\s\\S]*?)\\}`),
@@ -123,9 +151,7 @@ for (const theme of ['light', 'dark']) {
   )
   const tokens = new Map([...common, ...themed])
 
-  for (const token of [...commonTokens, ...themeTokens]) {
-    if (!tokens.has(token)) failures.push(`${theme}: missing ${token}`)
-  }
+  requireTokens(tokens, [...commonTokens, ...themeTokens], theme)
 
   for (const [foregroundName, backgroundName] of contrastPairs) {
     const foreground = tokens.get(`--rp-${foregroundName}`)
