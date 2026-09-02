@@ -723,7 +723,7 @@ textarea {
 }
 
 .btn-secondary {
-  color: var(--brand-strong);
+  color: var(--rp-text);
   background: var(--surface-muted);
   border: 1px solid var(--border);
 }

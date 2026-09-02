@@ -160,7 +160,7 @@ def test_web_and_ops_images_are_digest_pinned():
     assert f"image: {OPS_IMAGE}" in compose
 
 
-def test_ci_uses_only_the_canonical_verification_entrypoint():
+def test_ci_uses_only_the_pinned_verification_entrypoints():
     workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     expected_actions = {
         "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
@@ -173,7 +173,10 @@ def test_ci_uses_only_the_canonical_verification_entrypoint():
     assert "version: 0.11.31" in workflow
     assert "node-version: 24.18.0" in workflow
     assert "timeout-minutes: 30" in workflow
-    assert re.findall(r"^\s+run:\s+(.+)$", workflow, flags=re.MULTILINE) == ["./scripts/verify.sh"]
+    assert re.findall(r"^\s+run:\s+(.+)$", workflow, flags=re.MULTILINE) == [
+        "./scripts/verify.sh",
+        "npm run test:e2e:linux",
+    ]
     assert "uv pip install" not in workflow
 
 
