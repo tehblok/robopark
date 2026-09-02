@@ -1,11 +1,14 @@
+import { useLayoutEffect } from 'react'
+import { readFileSync } from 'node:fs'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api'
 import { AuthContext } from '../../auth-context'
 import { ThemeProvider } from '../../design-system/theme/ThemeProvider'
 import { ParkProvider } from '../../ParkProvider'
+import { ParkScopeContext } from '../park/parkScope'
 import {
   installMatchMedia,
   renderApp,
@@ -14,6 +17,8 @@ import {
 } from '../../test/renderApp'
 import { AppShell } from './AppShell'
 import { REPORTS_BADGE_REFRESH } from '../../reports-badge'
+
+const shellCss = readFileSync('src/app/shell/AppShell.css', 'utf8')
 
 const north = { id: 7, name: 'Северный', tag: 'north', is_active: true }
 const operator = testUser({
@@ -28,10 +33,49 @@ const operator = testUser({
   parks: [north],
 })
 
+function HistoryControls() {
+  const navigate = useNavigate()
+  return (
+    <>
+      <button onClick={() => navigate(-1)} type="button">Назад в истории</button>
+      <button onClick={() => navigate(1)} type="button">Вперёд в истории</button>
+      <button onClick={() => navigate('/overview', { replace: true })} type="button">
+        Заменить на обзор
+      </button>
+    </>
+  )
+}
+
+function BadgeCommitProbe({ parkId, snapshots }: { parkId: number; snapshots: string[] }) {
+  useLayoutEffect(() => {
+    const badges = Array.from(document.querySelectorAll('.rp-shell__badge'))
+      .map((badge) => badge.textContent ?? '')
+      .join(',')
+    snapshots.push(`${parkId}:${badges}`)
+  })
+  return null
+}
+
+function declaredCssValue(element: Element, property: string): string {
+  let value = ''
+  for (const sheet of Array.from(document.styleSheets)) {
+    for (const rule of Array.from(sheet.cssRules)) {
+      if ('selectorText' in rule && 'style' in rule) {
+        const styleRule = rule as CSSStyleRule
+        if (element.matches(styleRule.selectorText)) {
+          value = styleRule.style.getPropertyValue(property) || value
+        }
+      }
+    }
+  }
+  return value
+}
+
 describe('AppShell', () => {
   let media: MatchMediaController
 
   beforeEach(() => {
+    vi.clearAllMocks()
     localStorage.clear()
     sessionStorage.clear()
     media = installMatchMedia({ width: 1200 })
@@ -109,6 +153,72 @@ describe('AppShell', () => {
     expect(desktopWork).not.toHaveFocus()
   })
 
+  it('moves focus off a desktop navigation link when the phone layout replaces it', () => {
+    renderApp('/overview', operator)
+
+    const desktopNavigation = screen.getAllByRole('navigation', {
+      name: 'Основная навигация',
+    })[0]
+    const desktopWork = within(desktopNavigation).getByRole('link', { name: 'Работа' })
+    desktopWork.focus()
+    expect(desktopWork).toHaveFocus()
+
+    act(() => media.setWidth(899))
+
+    const mobileNavigation = screen.getAllByRole('navigation', {
+      name: 'Основная навигация',
+    })[1]
+    expect(within(mobileNavigation).getByRole('link', { name: 'Работа' })).toHaveFocus()
+  })
+
+  it('prevents scroll only when restoring focus after POP history navigation', async () => {
+    const actor = userEvent.setup()
+    render(
+      <MemoryRouter initialEntries={['/overview']}>
+        <ThemeProvider>
+          <AuthContext.Provider value={{
+            user: operator,
+            loading: false,
+            login: vi.fn(),
+            refreshUser: vi.fn(),
+            logout: vi.fn(),
+          }}>
+            <ParkProvider>
+              <HistoryControls />
+              <Routes>
+                <Route element={<AppShell />}>
+                  <Route path="/overview" element={<h1>Обзор истории</h1>} />
+                  <Route path="/work" element={<h1>Работа истории</h1>} />
+                </Route>
+              </Routes>
+            </ParkProvider>
+          </AuthContext.Provider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    )
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus')
+    const lastFocusOptions = () => focus.mock.calls[focus.mock.calls.length - 1]
+
+    const navigation = screen.getAllByRole('navigation', {
+      name: 'Основная навигация',
+    })[0]
+    await actor.click(within(navigation).getByRole('link', { name: 'Работа' }))
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Работа истории' })).toHaveFocus())
+    expect(lastFocusOptions()).toEqual([])
+
+    await actor.click(screen.getByRole('button', { name: 'Назад в истории' }))
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Обзор истории' })).toHaveFocus())
+    expect(lastFocusOptions()).toEqual([{ preventScroll: true }])
+
+    await actor.click(screen.getByRole('button', { name: 'Вперёд в истории' }))
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Работа истории' })).toHaveFocus())
+    expect(lastFocusOptions()).toEqual([{ preventScroll: true }])
+
+    await actor.click(screen.getByRole('button', { name: 'Заменить на обзор' }))
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Обзор истории' })).toHaveFocus())
+    expect(lastFocusOptions()).toEqual([])
+  })
+
   it('does not move focus for query-only park changes', async () => {
     const actor = userEvent.setup()
     const south = { id: 9, name: 'Южный', tag: 'south', is_active: true }
@@ -146,6 +256,119 @@ describe('AppShell', () => {
     })[0]
     await actor.click(within(desktopNavigation).getByRole('link', { name: 'Репорты' }))
     await waitFor(() => expect(badge.mock.calls.length).toBeGreaterThan(beforeReports))
+  })
+
+  it('never commits a report badge count under a different operator park key', async () => {
+    const snapshots: string[] = []
+    const south = { id: 9, name: 'Южный', tag: 'south', is_active: true }
+    let resolveSouth: ((value: { count: number }) => void) | undefined
+    const southResponse = new Promise<{ count: number }>((resolve) => {
+      resolveSouth = resolve
+    })
+    vi.mocked(api.reportsBadge).mockImplementation((parkId) => (
+      parkId === 7 ? Promise.resolve({ count: 12 }) : southResponse
+    ))
+
+    const badgeUser = testUser({
+      permissions: ['nav.dashboard', 'nav.reports'],
+      parks: [north, south],
+    })
+    const tree = (parkId: number) => (
+      <MemoryRouter initialEntries={['/overview']}>
+        <ThemeProvider>
+          <AuthContext.Provider value={{
+            user: badgeUser,
+            loading: false,
+            login: vi.fn(),
+            refreshUser: vi.fn(),
+            logout: vi.fn(),
+          }}>
+            <ParkScopeContext.Provider value={{
+              parkId,
+              selectedPark: parkId === 7 ? north : south,
+              parks: [north, south],
+              loading: false,
+              locked: false,
+              setParkId: vi.fn(),
+              refreshParks: vi.fn(),
+            }}>
+              <Routes>
+                <Route element={<AppShell />}>
+                  <Route path="/overview" element={<h1>Дашборд</h1>} />
+                </Route>
+              </Routes>
+              <BadgeCommitProbe parkId={parkId} snapshots={snapshots} />
+            </ParkScopeContext.Provider>
+          </AuthContext.Provider>
+        </ThemeProvider>
+      </MemoryRouter>
+    )
+    const app = render(tree(7))
+
+    expect(await screen.findByText('12')).toBeVisible()
+    app.rerender(tree(9))
+
+    expect(snapshots).not.toContain('9:12')
+    expect(screen.queryByText('12')).not.toBeInTheDocument()
+
+    await act(async () => resolveSouth?.({ count: 0 }))
+  })
+
+  it.each([
+    ['/admin/tracker', 'Startrek'],
+    ['/admin/emergency/config', 'Настройка проверки робота'],
+  ])('marks only the exact nested destination active at %s', (path, destinationName) => {
+    const adminUser = testUser({
+      permissions: ['nav.admin', 'nav.admin.tracker', 'nav.admin.emergency'],
+      parks: [north],
+    })
+    render(
+      <MemoryRouter initialEntries={[path]}>
+        <ThemeProvider>
+          <AuthContext.Provider value={{
+            user: adminUser,
+            loading: false,
+            login: vi.fn(),
+            refreshUser: vi.fn(),
+            logout: vi.fn(),
+          }}>
+            <ParkProvider>
+              <Routes>
+                <Route element={<AppShell />}>
+                  <Route path="/admin/tracker" element={<h1>Startrek route</h1>} />
+                  <Route path="/admin/emergency/config" element={<h1>Config route</h1>} />
+                </Route>
+              </Routes>
+            </ParkProvider>
+          </AuthContext.Provider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    )
+
+    const navigation = screen.getAllByRole('navigation', {
+      name: 'Основная навигация',
+    })[0]
+    const parent = within(navigation).getByRole('link', { name: 'Администрирование' })
+    const destination = within(navigation).getByRole('link', { name: destinationName })
+    expect(parent).not.toHaveClass('is-active')
+    expect(parent).not.toHaveAttribute('aria-current')
+    expect(destination).toHaveClass('is-active')
+    expect(destination).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('gives the skip link and Dashboard quick links the shared minimum control size', () => {
+    const style = document.createElement('style')
+    style.textContent = shellCss
+    document.head.append(style)
+    renderApp('/overview', operator)
+
+    const skipLink = screen.getByRole('link', { name: 'К содержанию' })
+    const quickLink = within(screen.getByRole('main')).getByRole('link', { name: 'Задачи' })
+    expect(declaredCssValue(skipLink, 'min-height')).toBe('var(--rp-control-min-size)')
+    expect(getComputedStyle(skipLink).display).toBe('inline-flex')
+    expect(declaredCssValue(quickLink, 'min-height')).toBe('var(--rp-control-min-size)')
+    expect(getComputedStyle(quickLink).display).toBe('inline-flex')
+    style.remove()
   })
 
   it('falls back to the main landmark when a destination has no h1', async () => {

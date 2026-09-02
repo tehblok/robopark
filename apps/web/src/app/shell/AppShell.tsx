@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { NavLink, Outlet, useLocation, useNavigationType } from 'react-router-dom'
 import { api } from '../../api'
 import { useAuth } from '../../auth-context'
 import { Button, IconButton } from '../../design-system/actions/Button'
@@ -8,7 +8,7 @@ import { BottomSheet } from '../../design-system/overlays/BottomSheet'
 import { useTheme } from '../../design-system/theme/ThemeProvider'
 import { DENSITY_MEDIA_QUERY } from '../../design-system/theme/theme'
 import { ru, roleLabel } from '../../i18n/ru'
-import { useCachedResource } from '../../lib/resource'
+import { resourceStore, useCachedResource } from '../../lib/resource'
 import { useParkScope } from '../park/parkScope'
 import { navigationForUser } from '../routing/accessPolicy'
 import type { NavigationItem, NavGroup } from '../routing/routeManifest'
@@ -55,6 +55,8 @@ function NavigationLink({
   return (
     <NavLink
       className={({ isActive }) => `${className}${isActive ? ' is-active' : ''}`}
+      data-route-id={item.id}
+      end
       onClick={onClick}
       to={item.path}
     >
@@ -77,6 +79,8 @@ export function AppShell() {
     setDensityPreference,
   } = useTheme()
   const location = useLocation()
+  const navigationType = useNavigationType()
+  const navigationTypeRef = useRef(navigationType)
   const previousPathname = useRef(location.pathname)
   const [moreOpen, setMoreOpen] = useState(false)
   const [railCollapsed, setRailCollapsed] = useState(false)
@@ -94,13 +98,20 @@ export function AppShell() {
   const primaryMobileItems = mobileItems.slice(0, 4)
   const secondaryMobileItems = mobileItems.slice(4)
   const badgeParkId = user?.role === 'operator' ? parkId ?? undefined : undefined
+  const badgeKey = user ? `reports:badge:${user.role}:${badgeParkId ?? 'all'}` : ''
   const badgeResource = useCachedResource(
-    user ? `reports:badge:${user.role}:${badgeParkId ?? 'all'}` : '',
+    badgeKey,
     () => api.reportsBadge(badgeParkId),
     { enabled: Boolean(user), persist: false },
   )
-  const reportsBadge = badgeResource.data?.count ?? 0
+  const reportsBadge = user
+    ? resourceStore.get<{ count: number }>(badgeKey)?.count ?? 0
+    : 0
   const refreshBadge = badgeResource.refresh
+
+  useLayoutEffect(() => {
+    navigationTypeRef.current = navigationType
+  }, [navigationType])
 
   useEffect(() => {
     if (location.pathname.startsWith('/reports')) void refreshBadge()
@@ -116,6 +127,7 @@ export function AppShell() {
     if (previousPathname.current === location.pathname) return
     previousPathname.current = location.pathname
     setMoreOpen(false)
+    const focusNavigationType = navigationTypeRef.current
 
     const timer = window.setTimeout(() => {
       const main = document.querySelector<HTMLElement>('#main-content')
@@ -124,7 +136,8 @@ export function AppShell() {
       const target = heading ?? main
       const addedTabIndex = heading != null && !heading.hasAttribute('tabindex')
       if (addedTabIndex) heading.setAttribute('tabindex', '-1')
-      target.focus()
+      if (focusNavigationType === 'POP') target.focus({ preventScroll: true })
+      else target.focus()
       if (addedTabIndex) {
         heading.addEventListener('blur', () => heading.removeAttribute('tabindex'), { once: true })
       }
@@ -132,6 +145,23 @@ export function AppShell() {
 
     return () => window.clearTimeout(timer)
   }, [location.pathname])
+
+  useEffect(() => {
+    if (!phoneViewport) return
+    const activeElement = document.activeElement
+    if (!(activeElement instanceof HTMLElement)) return
+    const desktopLink = activeElement.closest<HTMLElement>('.rp-shell__desktop-link')
+    if (!desktopLink) return
+
+    const routeId = desktopLink.dataset.routeId
+    const mobileTarget = routeId
+      ? document.querySelector<HTMLElement>(
+          `.rp-shell__bottom-nav [data-route-id="${routeId}"]`,
+        )
+      : null
+    const focusTarget = mobileTarget ?? document.querySelector<HTMLElement>('#main-content')
+    focusTarget?.focus()
+  }, [phoneViewport])
 
   if (!user) return null
 

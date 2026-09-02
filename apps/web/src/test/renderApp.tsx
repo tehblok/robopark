@@ -101,14 +101,21 @@ function LocationProbe() {
   return <output data-testid="location">{location.pathname}{location.search}</output>
 }
 
-export function renderApp(path: string, user: User | null) {
-  vi.spyOn(api, 'reportsBadge').mockResolvedValue({ count: 0 })
-  return render(
+export function renderApp(
+  path: string,
+  user: User | null,
+  { loading = false }: { loading?: boolean } = {},
+) {
+  if (!vi.isMockFunction(api.reportsBadge)) {
+    vi.spyOn(api, 'reportsBadge').mockResolvedValue({ count: 0 })
+  }
+
+  const tree = (currentUser: User | null, authLoading: boolean) => (
     <MemoryRouter initialEntries={[path]}>
       <ThemeProvider>
         <AuthContext.Provider value={{
-          user,
-          loading: false,
+          user: currentUser,
+          loading: authLoading,
           login: vi.fn(),
           refreshUser: vi.fn(),
           logout: vi.fn(),
@@ -117,6 +124,14 @@ export function renderApp(path: string, user: User | null) {
           <LocationProbe />
         </AuthContext.Provider>
       </ThemeProvider>
-    </MemoryRouter>,
+    </MemoryRouter>
   )
+
+  const result = render(tree(user, loading))
+  return {
+    ...result,
+    rerenderAuth(nextUser: User | null, nextLoading = false) {
+      result.rerender(tree(nextUser, nextLoading))
+    },
+  }
 }

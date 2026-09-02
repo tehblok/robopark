@@ -69,6 +69,24 @@ function CatchAll() {
   return <Navigate replace to={user ? landingPathForUser(user) : '/login'} />
 }
 
+function ShellBoundary() {
+  const { user, loading } = useAuth()
+  if (loading) return <RouteFallback />
+  if (!user) return <Navigate replace to="/login" />
+
+  const landingPath = landingPathForUser(user)
+  const landingRoute = ROUTE_MANIFEST.find((route) => route.path === landingPath)
+  if (landingRoute?.surface !== 'shell') {
+    return <Navigate replace to={landingPath} />
+  }
+
+  return (
+    <ParkProvider>
+      <AppShell />
+    </ParkProvider>
+  )
+}
+
 function gatedElement(routeId: AppRouteId) {
   return (
     <RouteGate loadingElement={<RouteFallback />} routeId={routeId}>
@@ -100,7 +118,7 @@ export function AppRouter() {
         />
       ))}
 
-      <Route element={<ParkProvider><AppShell /></ParkProvider>}>
+      <Route element={<ShellBoundary />}>
         {shellRoutes.map((route) => (
           <Route element={gatedElement(route.id)} key={route.id} path={route.path} />
         ))}

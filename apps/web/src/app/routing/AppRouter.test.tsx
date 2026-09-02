@@ -1,11 +1,13 @@
 import { screen, waitFor, within } from '@testing-library/react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { api } from '../../api'
 import { installMatchMedia, renderApp, testUser } from '../../test/renderApp'
 
 const north = { id: 7, name: 'Северный', tag: 'north', is_active: true }
 
 describe('AppRouter', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     localStorage.clear()
     sessionStorage.clear()
     installMatchMedia()
@@ -45,6 +47,60 @@ describe('AppRouter', () => {
     await waitFor(() => {
       expect(screen.getByTestId('location')).toHaveTextContent('/access/pending')
     })
+    expect(screen.queryByRole('navigation', { name: 'Основная навигация' }))
+      .not.toBeInTheDocument()
+  })
+
+  it('redirects a direct unauthenticated shell request to login', async () => {
+    renderApp('/overview', null)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/login')
+    })
+    expect(screen.queryByRole('navigation', { name: 'Основная навигация' }))
+      .not.toBeInTheDocument()
+  })
+
+  it('renders one top-level fallback while shell authentication is loading', () => {
+    renderApp('/overview', null, { loading: true })
+
+    expect(screen.getAllByRole('main')).toHaveLength(1)
+    expect(screen.getByRole('main')).toHaveTextContent(/загрузка/i)
+    expect(api.reportsBadge).not.toHaveBeenCalled()
+  })
+
+  it('leaves the shell when the authenticated user becomes logged out', async () => {
+    const app = renderApp('/overview', testUser({
+      permissions: ['nav.dashboard'],
+      parks: [north],
+    }))
+    expect(await screen.findByRole('heading', { name: /дашборд/i })).toBeVisible()
+
+    app.rerenderAuth(null)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/login')
+    })
+    expect(screen.queryByRole('navigation', { name: 'Основная навигация' }))
+      .not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['pending', testUser({ access_status: 'pending' }), '/access/pending'],
+    ['password change', testUser({ must_change_password: true }), '/change-password'],
+    [
+      'mechanic without park',
+      testUser({ role: 'mechanic', permissions: ['nav.dashboard'], parks: [] }),
+      '/mechanic/no-park',
+    ],
+    ['no cabinet', testUser({ role: 'driver' }), '/no-cabinet'],
+  ])('redirects %s before mounting shell API effects', async (_case, user, landingPath) => {
+    renderApp('/overview', user)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent(landingPath)
+    })
+    expect(api.reportsBadge).not.toHaveBeenCalled()
     expect(screen.queryByRole('navigation', { name: 'Основная навигация' }))
       .not.toBeInTheDocument()
   })
