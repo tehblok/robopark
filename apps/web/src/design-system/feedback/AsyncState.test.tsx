@@ -34,6 +34,15 @@ describe('async states', () => {
     expect(screen.getByText(/Данные устарели/).closest('.rp-status-badge')?.querySelector('svg')).toBeTruthy()
   })
 
+  it('keeps canonical freshness text when a supplementary label is provided', () => {
+    render(<StaleBadge state="stale" label="Последний интервал" updatedAt="2026-09-02T08:00:00Z" />)
+    const badge = screen.getByText(/Последний интервал/).closest('.rp-status-badge')
+    const expectedTime = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' }).format(new Date('2026-09-02T08:00:00Z'))
+    expect(badge).toHaveTextContent('Последний интервал')
+    expect(badge).toHaveTextContent('Данные устарели')
+    expect(badge).toHaveTextContent(expectedTime)
+  })
+
   it('omits time for invalid freshness timestamps and supports every state', () => {
     for (const state of ['live', 'fresh', 'stale', 'offline'] as const) {
       const { unmount } = render(<StaleBadge state={state} updatedAt="not-a-date" />)

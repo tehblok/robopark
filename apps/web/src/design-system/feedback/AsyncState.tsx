@@ -50,7 +50,7 @@ export function StaleBadge({ state, updatedAt, label }: { state: Freshness; upda
   const time = date && !Number.isNaN(date.getTime())
     ? new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' }).format(date)
     : null
-  const text = label ?? freshness.text
+  const text = label ? `${label}: ${freshness.text}` : freshness.text
 
   return (
     <StatusBadge tone={freshness.tone} icon={freshness.icon} className="rp-freshness-badge">
