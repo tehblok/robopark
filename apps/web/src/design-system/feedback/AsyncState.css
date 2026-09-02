@@ -1,0 +1,61 @@
+.rp-async-state {
+  color: var(--rp-text);
+  font-family: var(--rp-font-sans);
+}
+
+.rp-loading-state {
+  align-items: center;
+  display: flex;
+  gap: var(--rp-space-3);
+  min-height: var(--rp-control-min-size);
+}
+
+.rp-loading-state--panel {
+  background: var(--rp-surface);
+  border: 1px solid var(--rp-border);
+  border-radius: var(--rp-radius-panel);
+  padding: var(--rp-density-panel-padding);
+}
+
+.rp-loading-state--page {
+  justify-content: center;
+  min-height: 160px;
+}
+
+.rp-loading-state__indicator {
+  border: 3px solid var(--rp-divider);
+  border-top-color: var(--rp-action);
+  border-radius: 50%;
+  height: var(--rp-space-4);
+  width: var(--rp-space-4);
+}
+
+.rp-empty-state,
+.rp-error-state {
+  background: var(--rp-surface);
+  border: 1px solid var(--rp-border);
+  border-radius: var(--rp-radius-panel);
+  padding: var(--rp-density-panel-padding);
+}
+
+.rp-empty-state h2,
+.rp-error-state h2 {
+  font-size: var(--rp-font-size-title);
+  margin: var(--rp-space-3) 0 var(--rp-space-2);
+}
+
+.rp-empty-state p,
+.rp-error-state p {
+  color: var(--rp-text-muted);
+  margin: 0;
+}
+
+.rp-async-state__action {
+  margin-top: var(--rp-space-4);
+}
+
+.rp-error-state small {
+  color: var(--rp-text-muted);
+  display: block;
+  margin-top: var(--rp-space-2);
+}
