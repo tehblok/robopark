@@ -406,11 +406,12 @@ const JSON_TIMEOUT_MS = 30_000
 const BLOB_TIMEOUT_MS = 60_000
 const FORM_TIMEOUT_MS = 90_000
 
-async function fetchWithTimeout(
+async function fetchWithTimeout<T>(
   input: RequestInfo | URL,
   init: RequestInit,
   timeoutMs: number,
-): Promise<Response> {
+  consume: (response: Response) => Promise<T>,
+): Promise<T> {
   const controller = new AbortController()
   const sourceSignal = init.signal
   let timedOut = false
@@ -424,9 +425,11 @@ async function fetchWithTimeout(
   }, timeoutMs)
 
   try {
-    return await fetch(input, { ...init, signal: controller.signal })
+    const response = await fetch(input, { ...init, signal: controller.signal })
+    return await consume(response)
   } catch (error) {
     if (timedOut) throw new ApiTimeoutError(timeoutMs)
+    if (sourceSignal?.aborted) throw sourceSignal.reason
     throw error
   } finally {
     globalThis.clearTimeout(timer)
@@ -450,7 +453,7 @@ async function readErrorDetail(response: Response): Promise<string | null> {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetchWithTimeout(
+  return fetchWithTimeout(
     `/api${path}`,
     {
       credentials: 'include',
@@ -461,35 +464,38 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
     },
     JSON_TIMEOUT_MS,
+    async (response) => {
+      if (!response.ok) {
+        const detail = await readErrorDetail(response)
+        throw new ApiError(response.status, detail, responseRequestId(response))
+      }
+
+      if (response.status === 204) {
+        return undefined as T
+      }
+
+      return response.json() as Promise<T>
+    },
   )
-
-  if (!response.ok) {
-    const detail = await readErrorDetail(response)
-    throw new ApiError(response.status, detail, responseRequestId(response))
-  }
-
-  if (response.status === 204) {
-    return undefined as T
-  }
-
-  return response.json() as Promise<T>
 }
 
 async function requestBlob(path: string): Promise<Blob> {
-  const response = await fetchWithTimeout(
+  return fetchWithTimeout(
     `/api${path}`,
     { credentials: 'include' },
     BLOB_TIMEOUT_MS,
+    async (response) => {
+      if (!response.ok) {
+        const detail = await readErrorDetail(response)
+        throw new ApiError(response.status, detail, responseRequestId(response))
+      }
+      return response.blob()
+    },
   )
-  if (!response.ok) {
-    const detail = await readErrorDetail(response)
-    throw new ApiError(response.status, detail, responseRequestId(response))
-  }
-  return response.blob()
 }
 
 async function requestForm<T>(path: string, formData: FormData): Promise<T> {
-  const response = await fetchWithTimeout(
+  return fetchWithTimeout(
     `/api${path}`,
     {
       credentials: 'include',
@@ -497,14 +503,15 @@ async function requestForm<T>(path: string, formData: FormData): Promise<T> {
       body: formData,
     },
     FORM_TIMEOUT_MS,
+    async (response) => {
+      if (!response.ok) {
+        const detail = await readErrorDetail(response)
+        throw new ApiError(response.status, detail, responseRequestId(response))
+      }
+
+      return response.json() as Promise<T>
+    },
   )
-
-  if (!response.ok) {
-    const detail = await readErrorDetail(response)
-    throw new ApiError(response.status, detail, responseRequestId(response))
-  }
-
-  return response.json() as Promise<T>
 }
 
 export const api = {
@@ -783,7 +790,11 @@ export const api = {
     return request<Paged<AuditEntry>>(`/admin/audit?${q.toString()}`)
   },
   auditActions: () => request<string[]>('/admin/audit/actions'),
-  trackerIssue: (key: string) => request<TrackerIssueDetail>(`/tracker/issues/${encodeURIComponent(key)}`),
+  trackerIssue: (key: string, signal?: AbortSignal) =>
+    request<TrackerIssueDetail>(
+      `/tracker/issues/${encodeURIComponent(key)}`,
+      signal ? { signal } : undefined,
+    ),
   trackerComments: (key: string) =>
     request<TrackerComment[]>(`/tracker/issues/${encodeURIComponent(key)}/comments`),
   trackerTransitions: (key: string) =>
