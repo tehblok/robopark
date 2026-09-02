@@ -7,6 +7,7 @@ function snapshot(overrides: Partial<EmergencySnapshot> = {}): EmergencySnapshot
   return {
     vin: 'YASADR00000001555',
     short_number: '1555',
+    observed_at: '2026-09-02T09:00:00Z',
     online: true,
     speed: 0,
     charge_percent: 80,

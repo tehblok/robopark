@@ -115,7 +115,7 @@ def test_approve_rejects_non_pending_user(
     assert response.status_code == 400
 
 
-def test_driver_registration_gets_emergency_only_permissions(
+def test_driver_registration_gets_overview_robot_and_check_permissions(
     client: TestClient,
     seed_royal,
     test_settings,
@@ -127,7 +127,7 @@ def test_driver_registration_gets_emergency_only_permissions(
 
     client.post("/auth/logout")
     login_as(client, "driver1", VALID_PASSWORD)
-    me = client.get("/auth/me").json()
-    assert me["role"] == "driver"
-    assert "nav.emergency" in me["permissions"]
-    assert "nav.dashboard" not in me["permissions"]
+    permissions = set(client.get("/auth/me").json()["permissions"])
+
+    assert {"nav.dashboard", "nav.robot_search", "nav.emergency"} <= permissions
+    assert "tracker.read" not in permissions

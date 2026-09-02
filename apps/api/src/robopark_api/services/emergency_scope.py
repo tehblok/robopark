@@ -1,9 +1,9 @@
 """Park-scope ACL for Emergency VIN access.
 
 Emergency exposes live diagnostics for *any* robot to anyone with the shared
-cookie. To keep operator/mechanic access matched to what they can already see
-in Tracker, we only let a non-admin user open a VIN when the same robot has a
-Tracker ticket in one of their parks. Admins/royals are unrestricted.
+cookie. To keep operational access matched to what users can already see in
+Tracker, we only let a non-admin, non-driver user open a VIN when the same robot
+has a Tracker ticket in one of their parks. Admins/royals are unrestricted.
 
 This is a fail-closed check: if Tracker has no token, no matching queue, or
 no ticket, the VIN is denied. Any Tracker call errors are propagated so the
@@ -40,8 +40,8 @@ def vin_allowed_for_user(db: Session, user: User, vin: str) -> bool:
 
     Product note (intentional): approved drivers may open any VIN without a
     Tracker park/ticket check — the driver cabinet is Emergency-only and does
-    not assign parks. Admins/royals are also unrestricted. Operators and
-    mechanics require a matching in-scope Tracker ticket.
+    not assign parks. Admins/royals are also unrestricted. Other operational
+    roles require a matching in-scope Tracker ticket.
     """
     if rbac.is_admin_or_royal(user):
         return True

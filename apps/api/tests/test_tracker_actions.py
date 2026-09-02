@@ -176,6 +176,43 @@ def test_mechanic_can_attach_when_write_disabled(
     assert response.json()["action"] == "attach"
 
 
+def test_attachment_is_denied_without_tracker_attach_permission(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import rbac, tracker_client
+
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    mechanic = rbac.load_user_with_role(db_session, seed_mechanic.id)
+    assert mechanic is not None
+    desired = sorted(
+        rbac.role_permission_keys(db_session, mechanic) - {rbac.PERMISSION_TRACKER_ATTACH}
+    )
+    rbac.set_user_effective_permissions(db_session, mechanic, desired)
+    db_session.commit()
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {
+            "key": "ROBOPARK-1",
+            "summary": "blocker [447]",
+            "status": "Open",
+            "status_key": "open",
+            "queue": "ROBOPARK",
+            "resolution": "",
+            "tags": ["Alpha"],
+        },
+    )
+    login_as(client, "mech1", "secret")
+
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/attachments",
+        files={"file": ("robot.jpg", b"image", "image/jpeg")},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "tracker_attach_disabled"
+
+
 def test_mechanic_comment_blocked_when_write_disabled(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):

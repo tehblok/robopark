@@ -106,7 +106,7 @@ PERMISSION_CATALOG: tuple[PermissionDef, ...] = (
     PermissionDef(PERMISSION_NAV_DASHBOARD, "nav", "Дашборд", 10),
     PermissionDef(PERMISSION_NAV_TASKS, "nav", "Задачи", 20),
     PermissionDef(PERMISSION_NAV_ROBOT_SEARCH, "nav", "Поиск робота", 30),
-    PermissionDef(PERMISSION_NAV_EMERGENCY, "nav", "Emergency", 40),
+    PermissionDef(PERMISSION_NAV_EMERGENCY, "nav", "Проверка робота", 40),
     PermissionDef(PERMISSION_NAV_MAP, "nav", "Карта", 50),
     PermissionDef(PERMISSION_NAV_ANALYTICS, "nav", "Аналитика", 60),
     PermissionDef(PERMISSION_NAV_REPORTS, "nav", "Обращения", 70),
@@ -158,7 +158,13 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             PERMISSION_REPORTS_CREATE,
         }
     ),
-    RoleSlug.DRIVER: frozenset({PERMISSION_NAV_EMERGENCY}),
+    RoleSlug.DRIVER: frozenset(
+        {
+            PERMISSION_NAV_DASHBOARD,
+            PERMISSION_NAV_ROBOT_SEARCH,
+            PERMISSION_NAV_EMERGENCY,
+        }
+    ),
 }
 
 

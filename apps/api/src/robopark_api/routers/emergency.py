@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -132,7 +134,7 @@ def emergency_snapshot_for_user(vin: str, user: User, db: Session) -> EmergencyS
     _enforce_vin_scope(db, user, vin)
     payload = _get_robot_payload(db, vin)
     snap = parse_emergency_snapshot(payload, vin=vin)
-    return EmergencySnapshotOut(**snap)
+    return EmergencySnapshotOut(**snap, observed_at=datetime.now(UTC))
 
 
 @router.post("/resolve", response_model=EmergencyResolveOut)

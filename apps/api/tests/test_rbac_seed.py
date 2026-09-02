@@ -61,3 +61,31 @@ def test_ensure_rbac_catalog_adds_missing_system_role_permissions(db_session):
     assert "tracker.write" in keys
     assert "tracker.read" in keys
     assert "nav.map" in keys
+
+
+def test_ensure_rbac_catalog_adds_driver_overview_and_robot_search(db_session):
+    driver = db_session.scalar(select(Role).where(Role.slug == "driver"))
+    assert driver is not None
+    removed_ids = list(
+        db_session.scalars(
+            select(Permission.id).where(Permission.key.in_(["nav.dashboard", "nav.robot_search"]))
+        )
+    )
+    db_session.execute(
+        delete(RolePermission).where(
+            RolePermission.role_id == driver.id,
+            RolePermission.permission_id.in_(removed_ids),
+        )
+    )
+    db_session.commit()
+
+    ensure_rbac_catalog(db_session)
+
+    keys = set(
+        db_session.scalars(
+            select(Permission.key)
+            .join(RolePermission, RolePermission.permission_id == Permission.id)
+            .where(RolePermission.role_id == driver.id)
+        )
+    )
+    assert {"nav.dashboard", "nav.robot_search", "nav.emergency"} <= keys

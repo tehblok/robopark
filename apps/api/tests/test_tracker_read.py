@@ -19,6 +19,20 @@ def _seed_operator(db_session, park):
     return operator
 
 
+def _scoped_issue(key: str, created: str) -> dict:
+    return {
+        "key": key,
+        "summary": f"blocker [{key[-1]}]",
+        "status": "Open",
+        "status_key": "open",
+        "queue": "ROBOPARK",
+        "created": created,
+        "hours_created": "1",
+        "tags": ["Alpha"],
+        "robot": key[-1],
+    }
+
+
 def test_tracker_read_list_issues(client, db_session, seed_park_with_tracker, monkeypatch):
     _seed_operator(db_session, seed_park_with_tracker)
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
@@ -50,6 +64,61 @@ def test_tracker_read_list_issues(client, db_session, seed_park_with_tracker, mo
     response = client.get("/tracker/issues")
     assert response.status_code == 200
     assert response.json()["items"][0]["key"] == "ROBOPARK-1"
+
+
+def test_tracker_list_honors_oldest_and_newest_sort(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [
+            _scoped_issue("ROBOPARK-2", "2026-01-02T00:00:00Z"),
+            _scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"),
+        ],
+    )
+    login_as(client, "op2", "secret")
+
+    oldest = client.get("/tracker/issues?sort=oldest").json()["items"]
+    newest = client.get("/tracker/issues?sort=newest").json()["items"]
+
+    assert [item["key"] for item in oldest] == ["ROBOPARK-1", "ROBOPARK-2"]
+    assert [item["key"] for item in newest] == ["ROBOPARK-2", "ROBOPARK-1"]
+
+
+def test_mechanic_issue_capabilities_respect_write_policy_but_keep_attachment(
+    client, db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_client
+
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    platform_settings.set_bool_setting(
+        db_session,
+        platform_settings.TRACKER_MECHANIC_WRITE_KEY,
+        False,
+    )
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: _scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"),
+    )
+    login_as(client, "mech1", "secret")
+
+    response = client.get("/tracker/issues/ROBOPARK-1")
+
+    assert response.status_code == 200
+    assert response.json()["capabilities"] == {
+        "comment": False,
+        "assign": False,
+        "unassign": False,
+        "transition": False,
+        "close": False,
+        "attach": True,
+    }
 
 
 def test_tracker_read_assignee_filter(client, db_session, seed_park_with_tracker, monkeypatch):

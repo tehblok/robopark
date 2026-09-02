@@ -16,7 +16,9 @@ ALLOWED_ACTIONS = {"comment", "assign", "unassign", "transition", "close", "atta
 def allowed_queues_for_user(db: Session, user: User) -> list[str]:
     if rbac.is_admin_or_royal(user):
         return []
-    if rbac.role_slug(user) in {RoleSlug.OPERATOR, RoleSlug.MECHANIC}:
+    if rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_READ) or rbac.has_permission(
+        db, user, rbac.PERMISSION_TRACKER_WRITE
+    ):
         parks = get_user_parks(db, user)
         seen: set[str] = set()
         queues: list[str] = []
@@ -38,7 +40,9 @@ def all_park_tags(db: Session) -> set[str]:
 def allowed_park_tags_for_user(db: Session, user: User) -> set[str]:
     if rbac.is_admin_or_royal(user):
         return set()
-    if rbac.role_slug(user) in {RoleSlug.OPERATOR, RoleSlug.MECHANIC}:
+    if rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_READ) or rbac.has_permission(
+        db, user, rbac.PERMISSION_TRACKER_WRITE
+    ):
         return {str(park.tag).strip() for park in get_user_parks(db, user) if park.tag}
     return set()
 
@@ -103,9 +107,6 @@ def _check_issue_scope(db: Session, user: User, issue: dict) -> None:
     if rbac.is_admin_or_royal(user):
         return
 
-    if rbac.role_slug(user) not in {RoleSlug.OPERATOR, RoleSlug.MECHANIC}:
-        _deny()
-
     # 1. Queue must be present and inside the user's allowed set.
     issue_queue = str(issue.get("queue") or "").strip()
     queues = allowed_queues_for_user(db, user)
@@ -134,9 +135,11 @@ def ensure_action_allowed(db: Session, user: User, issue: dict, action: str) -> 
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
     enforce_issue_scope(db, user, issue)
     if action == "attach":
-        # Photos are allowed even when tracker write (comment/assign/close) is
-        # disabled for the role — intentional so mechanics can still upload
-        # evidence under a read-heavy policy.
+        if not rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_ATTACH):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="tracker_attach_disabled",
+            )
         return
     if not can_write_tracker(db, user):
         raise HTTPException(

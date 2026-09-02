@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -14,6 +15,7 @@ from robopark_api.schemas import (
     RobotTicketsOut,
     TrackerAttachmentOut,
     TrackerCommentOut,
+    TrackerIssueCapabilitiesOut,
     TrackerIssueDetailOut,
     TrackerIssueOut,
     TrackerIssuesOut,
@@ -30,6 +32,7 @@ from robopark_api.services.tracker_policy import (
     allowed_park_tags_for_user,
     allowed_queues_for_user,
     can_view_untagged,
+    can_write_tracker,
     enforce_issue_scope,
     is_issue_in_scope,
 )
@@ -79,8 +82,9 @@ def _issue_out(issue: dict) -> TrackerIssueOut:
     )
 
 
-def _detail_out(issue: dict) -> TrackerIssueDetailOut:
+def _detail_out(issue: dict, *, db: Session, user: User) -> TrackerIssueDetailOut:
     attachments = [TrackerAttachmentOut(**item) for item in (issue.get("attachments") or [])]
+    writable = can_write_tracker(db, user)
     return TrackerIssueDetailOut(
         **_issue_out(issue).model_dump(),
         resolution=str(issue.get("resolution") or ""),
@@ -88,6 +92,14 @@ def _detail_out(issue: dict) -> TrackerIssueDetailOut:
         reporter=_person_out(issue.get("reporter")),
         components=[str(item) for item in (issue.get("components") or [])],
         attachments=attachments,
+        capabilities=TrackerIssueCapabilitiesOut(
+            comment=writable,
+            assign=writable,
+            unassign=writable,
+            transition=writable,
+            close=writable,
+            attach=rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_ATTACH),
+        ),
     )
 
 
@@ -199,6 +211,7 @@ def list_issues(
     assignee: str | None = Query(default=None, max_length=128),
     untagged: bool = Query(default=False),
     age_hours: int | None = Query(default=None, ge=1),
+    sort_order: Literal["oldest", "newest"] = Query(default="oldest", alias="sort"),
     limit: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     offset: int = Query(default=0, ge=0),
     user: User = Depends(require_user),
@@ -232,8 +245,12 @@ def list_issues(
             detail="tracker_upstream_error",
         ) from exc
 
+    ordered = tracker_filters.sort_issues_oldest_first(items)
+    if sort_order == "newest":
+        ordered.reverse()
+
     scoped: list[TrackerIssueOut] = []
-    for issue in items:
+    for issue in ordered:
         # Out-of-scope issues are filtered out, not fatal: a single foreign issue
         # in the upstream response must not fail the whole listing.
         if not is_issue_in_scope(db, user, issue):
@@ -290,7 +307,7 @@ def get_issue(
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     enforce_issue_scope(db, user, issue)
-    return _detail_out(issue)
+    return _detail_out(issue, db=db, user=user)
 
 
 @router.get("/issues/{key}/comments", response_model=list[TrackerCommentOut])

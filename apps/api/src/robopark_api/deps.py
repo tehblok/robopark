@@ -155,14 +155,7 @@ def require_dashboard_park(park_id: int, db: Session, user: User) -> Park:
     park = db.get(Park, park_id)
     if park is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-
-    if rbac.is_admin_or_royal(user):
+    rbac.require_approved_permission(db, user, rbac.PERMISSION_NAV_DASHBOARD)
+    if rbac.is_admin_or_royal(user) or rbac.has_permission(db, user, rbac.PERMISSION_PARKS_MANAGE):
         return park
-
-    slug = rbac.role_slug(user)
-    if slug in {rbac.RoleSlug.OPERATOR, rbac.RoleSlug.MECHANIC}:
-        if user.access_status != AccessStatus.approved.value:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-        return require_operator_park(park_id, db, user)
-
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    return require_operator_park(park_id, db, user)

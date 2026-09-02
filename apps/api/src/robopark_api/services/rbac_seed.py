@@ -17,7 +17,10 @@ SYSTEM_ROLE_META: dict[str, tuple[str, str]] = {
     RoleSlug.ADMIN: ("Администратор", "Управление парками и пользователями"),
     RoleSlug.OPERATOR: ("Оператор", "Операционный мониторинг парков"),
     RoleSlug.MECHANIC: ("Механик", "Работа с задачами на площадке"),
-    RoleSlug.DRIVER: ("Водитель", "Только Emergency без проверки блокеров"),
+    RoleSlug.DRIVER: (
+        "Водитель",
+        "Обзор, поиск и проверка робота без доступа к задачам Tracker",
+    ),
 }
 
 

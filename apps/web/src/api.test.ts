@@ -89,6 +89,23 @@ describe('API transport metadata', () => {
     })
   })
 
+  it('sends the deterministic oldest sort when work filters omit it', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ items: [], total: 0, limit: 50, offset: 0, has_more: false }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.trackerIssues({ limit: 50, offset: 0 })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/tracker/issues?sort=oldest&limit=50&offset=0',
+      expect.objectContaining({ credentials: 'include' }),
+    )
+  })
+
   it.each(timeoutCases)(
     'cancels a stalled %s request at the %dms transport deadline',
     async (_label, timeoutMs, call) => {

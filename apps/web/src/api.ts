@@ -174,6 +174,7 @@ export type EmergencySectionDetail = {
 export type EmergencySnapshot = {
   vin: string
   short_number: string
+  observed_at: string
   online: boolean | null
   speed: number | null
   charge_percent: number | null
@@ -267,12 +268,22 @@ export type AuditEntry = {
   created_at: string
 }
 
+export type TrackerIssueCapabilities = {
+  comment: boolean
+  assign: boolean
+  unassign: boolean
+  transition: boolean
+  close: boolean
+  attach: boolean
+}
+
 export type TrackerIssueDetail = TrackerIssue & {
   resolution?: string | null
   description?: string | null
   reporter?: TrackerPerson | null
   components?: string[]
   attachments?: TrackerAttachment[]
+  capabilities: TrackerIssueCapabilities
 }
 
 export type TrackerAttachment = {
@@ -306,6 +317,7 @@ export type DashboardMovingItem = {
 
 export type DashboardSummary = {
   park_id: number
+  generated_at: string
   arrived: number
   done: number
   queued: number
@@ -760,11 +772,13 @@ export const api = {
     assignee?: string
     untagged?: boolean
     age_hours?: number
+    sort?: 'oldest' | 'newest'
     limit?: number
     offset?: number
   }) => {
-    const q = new URLSearchParams()
+    const q = new URLSearchParams({ sort: params.sort ?? 'oldest' })
     Object.entries(params).forEach(([key, value]) => {
+      if (key === 'sort') return
       if (value !== undefined && value !== null && value !== '') {
         q.set(key, String(value))
       }

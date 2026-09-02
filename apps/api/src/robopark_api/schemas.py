@@ -188,6 +188,7 @@ class EmergencySectionOut(BaseModel):
 class EmergencySnapshotOut(BaseModel):
     vin: str
     short_number: str
+    observed_at: datetime
     online: bool | None = None
     speed: float | None = None
     charge_percent: float | None = None
@@ -316,12 +317,22 @@ class TrackerIssueOut(BaseModel):
     assignee: TrackerPersonOut | None = None
 
 
+class TrackerIssueCapabilitiesOut(BaseModel):
+    comment: bool
+    assign: bool
+    unassign: bool
+    transition: bool
+    close: bool
+    attach: bool
+
+
 class TrackerIssueDetailOut(TrackerIssueOut):
     resolution: str | None = None
     description: str | None = None
     reporter: TrackerPersonOut | None = None
     components: list[str] = Field(default_factory=list)
     attachments: list[TrackerAttachmentOut] = Field(default_factory=list)
+    capabilities: TrackerIssueCapabilitiesOut
 
 
 class TrackerUserOut(BaseModel):
@@ -410,6 +421,7 @@ class DashboardMovingItemOut(BaseModel):
 
 class DashboardSummaryOut(BaseModel):
     park_id: int
+    generated_at: datetime
     arrived: int
     done: int
     queued: int
