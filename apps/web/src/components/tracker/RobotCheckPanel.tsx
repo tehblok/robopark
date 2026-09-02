@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { Alert } from '../PageShell'
 import { Spinner } from '../ui/Feedback'
 import { ru } from '../../i18n/ru'
-import { emergencyPathForRobot, inspectRobotHealth } from './robotHealth'
+import { inspectRobotHealth, robotCheckPathForRobot } from './robotHealth'
 
 export function RobotCheckPanel({
   robot,
@@ -49,7 +49,7 @@ export function RobotCheckPanel({
     <section className="robot-check">
       <div className="robot-check-head">
         <h3>{ru.tracker.robotCheck.title}</h3>
-        <Link className="btn" to={emergencyPathForRobot(query)}>
+        <Link className="btn" to={robotCheckPathForRobot(query)}>
           {ru.tracker.robotCheck.open} {query}
         </Link>
       </div>

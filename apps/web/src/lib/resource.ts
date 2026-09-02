@@ -30,6 +30,63 @@ type StoredEntry = {
   data: unknown
 }
 
+type LoadGeneration = {
+  all: symbol
+  key: symbol
+}
+
+const inflightLoaders = new Map<string, Promise<unknown>>()
+const loadGenerations = new Map<string, symbol>()
+let allLoadsGeneration = Symbol('all-resource-loads')
+
+function currentKeyGeneration(key: string): symbol {
+  const current = loadGenerations.get(key)
+  if (current) return current
+  const initial = Symbol(key)
+  loadGenerations.set(key, initial)
+  return initial
+}
+
+function captureLoadGeneration(key: string): LoadGeneration {
+  return {
+    all: allLoadsGeneration,
+    key: currentKeyGeneration(key),
+  }
+}
+
+function isLoadGenerationCurrent(key: string, generation: LoadGeneration): boolean {
+  return (
+    generation.all === allLoadsGeneration &&
+    generation.key === currentKeyGeneration(key)
+  )
+}
+
+function invalidatePendingLoads(
+  keyOrPrefix: string,
+  prefix: boolean,
+): void {
+  if (prefix) {
+    for (const key of loadGenerations.keys()) {
+      if (key.startsWith(keyOrPrefix)) {
+        loadGenerations.set(key, Symbol(key))
+      }
+    }
+    for (const key of inflightLoaders.keys()) {
+      if (key.startsWith(keyOrPrefix)) inflightLoaders.delete(key)
+    }
+    return
+  }
+
+  loadGenerations.set(keyOrPrefix, Symbol(keyOrPrefix))
+  inflightLoaders.delete(keyOrPrefix)
+}
+
+function invalidateAllPendingLoads(): void {
+  allLoadsGeneration = Symbol('all-resource-loads')
+  loadGenerations.clear()
+  inflightLoaders.clear()
+}
+
 class ResourceStore {
   private mem = new Map<string, StoredEntry>()
   private subs = new Map<string, Set<() => void>>()
@@ -58,6 +115,7 @@ class ResourceStore {
   }
 
   invalidate(keyOrPrefix: string, { prefix = false }: { prefix?: boolean } = {}): void {
+    invalidatePendingLoads(keyOrPrefix, prefix)
     const notified = new Set<string>()
     if (prefix) {
       for (const k of Array.from(this.mem.keys())) {
@@ -75,6 +133,7 @@ class ResourceStore {
   }
 
   clearAll(): void {
+    invalidateAllPendingLoads()
     const keys = Array.from(this.subs.keys())
     this.mem.clear()
     removeFromStorageByPrefix('')
@@ -181,8 +240,6 @@ class InFlightCounter {
 export const resourceStore = new ResourceStore()
 export const inFlight = new InFlightCounter()
 
-const inflightLoaders = new Map<string, Promise<unknown>>()
-
 /** Overlapping loaders for the same key share one in-flight Promise. */
 export function coalesceLoader<T>(key: string, loader: () => Promise<T>): Promise<T> {
   const existing = inflightLoaders.get(key)
@@ -262,15 +319,22 @@ export function useCachedResource<T>(
   const runLoad = useCallback(async () => {
     if (!enabled) return
     const requestId = ++requestIdRef.current
+    const loadGeneration = captureLoadGeneration(key)
     setIsRevalidating(true)
     if (trackProgress) inFlight.begin()
     try {
       const fresh = await coalesceLoader(key, () => loaderRef.current())
-      if (requestId !== requestIdRef.current) return
+      if (
+        requestId !== requestIdRef.current ||
+        !isLoadGenerationCurrent(key, loadGeneration)
+      ) return
       resourceStore.set(key, fresh, persist)
       setError(null)
     } catch (loadError) {
-      if (requestId !== requestIdRef.current) return
+      if (
+        requestId !== requestIdRef.current ||
+        !isLoadGenerationCurrent(key, loadGeneration)
+      ) return
       setError(loadError)
     } finally {
       if (requestId === requestIdRef.current) {

@@ -1,0 +1,202 @@
+.rp-work-domain,
+.rp-workbench,
+.rp-work-list-pane,
+.rp-work-detail-pane,
+.rp-work-list-scroll,
+.rp-work-warning__copy,
+.rp-work-filters > *,
+.rp-workbench .issue-row-body,
+.rp-workbench .issue-detail,
+.rp-workbench .issue-detail-head {
+  min-width: 0;
+}
+
+.rp-work-domain {
+  display: grid;
+  gap: var(--rp-space-4);
+}
+
+.rp-workbench {
+  display: grid;
+  gap: var(--rp-space-4);
+}
+
+.rp-work-filters {
+  align-items: end;
+  background: var(--rp-surface);
+  border: 1px solid var(--rp-border);
+  border-radius: var(--rp-radius-panel);
+  display: grid;
+  gap: var(--rp-space-3);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  padding: var(--rp-density-panel-padding);
+}
+
+.rp-work-filters__checkbox {
+  align-items: center;
+  color: var(--rp-text);
+  display: inline-flex;
+  font-size: var(--rp-font-size-body);
+  gap: var(--rp-space-2);
+  min-height: var(--rp-control-min-size);
+}
+
+.rp-work-filters__checkbox input {
+  height: 20px;
+  margin: 0;
+  width: 20px;
+}
+
+.rp-work-filters__actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rp-space-2);
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+}
+
+.rp-work-list-pane,
+.rp-work-detail-pane {
+  align-content: start;
+}
+
+.rp-work-list-scroll {
+  max-height: min(68vh, 52rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.rp-work-pagination {
+  align-items: center;
+  color: var(--rp-text-muted);
+  display: flex;
+  gap: var(--rp-space-2);
+  justify-content: space-between;
+  padding-top: var(--rp-space-3);
+}
+
+.rp-work-warning {
+  align-items: flex-start;
+  background: var(--rp-warning-surface);
+  border: 1px solid var(--rp-warning);
+  border-radius: var(--rp-radius-control);
+  color: var(--rp-text);
+  display: flex;
+  gap: var(--rp-space-3);
+  margin-bottom: var(--rp-space-3);
+  padding: var(--rp-space-3);
+}
+
+.rp-work-warning__copy {
+  display: grid;
+  flex: 1;
+  gap: var(--rp-space-1);
+  overflow-wrap: anywhere;
+}
+
+.rp-work-warning__copy span,
+.rp-work-warning__copy small {
+  color: var(--rp-text-muted);
+}
+
+.rp-work-detail-back {
+  display: none;
+  margin-bottom: var(--rp-space-3);
+}
+
+.rp-workbench :where(.issue-summary, .issue-detail-summary, .issue-description, a) {
+  overflow-wrap: anywhere;
+}
+
+.rp-workbench .issue-row {
+  transition: background-color var(--rp-motion-fast),
+    border-color var(--rp-motion-fast);
+}
+
+.rp-workbench :where(.issue-row, a, button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--rp-focus);
+  outline-offset: 2px;
+}
+
+@media (max-width: 599px) {
+  .rp-work-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .rp-work-filters__actions > * {
+    flex: 1;
+  }
+
+  .rp-workbench[data-has-detail='true'] .rp-work-list-pane,
+  .rp-workbench[data-has-detail='false'] .rp-work-detail-pane {
+    display: none;
+  }
+
+  .rp-work-detail-back {
+    display: inline-flex;
+    min-height: 44px;
+  }
+
+  .rp-workbench .issue-row {
+    min-height: 44px;
+  }
+
+  .rp-work-list-scroll {
+    max-height: none;
+    overflow-y: visible;
+  }
+
+  .rp-work-warning {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+@media (min-width: 600px) and (max-width: 899px) {
+  .rp-work-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .rp-workbench[data-has-detail='true'] .rp-work-list-pane,
+  .rp-workbench[data-has-detail='false'] .rp-work-detail-pane {
+    display: none;
+  }
+
+  .rp-work-detail-back {
+    display: inline-flex;
+    min-height: 44px;
+  }
+
+  .rp-work-list-scroll {
+    max-height: none;
+    overflow-y: visible;
+  }
+}
+
+@media (min-width: 900px) and (max-width: 1199px) {
+  .rp-workbench {
+    grid-template-columns: minmax(20rem, 42%) minmax(0, 1fr);
+  }
+
+  .rp-work-filters {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1200px) {
+  .rp-workbench {
+    grid-template-columns: minmax(22rem, 38%) minmax(0, 1fr);
+  }
+
+  .rp-work-filters {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rp-workbench .issue-row {
+    transition: none;
+  }
+}

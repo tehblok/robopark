@@ -14,7 +14,7 @@ describe('RobotCheckPanel', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('links to Emergency and reports critical findings', async () => {
+  it('links to the canonical robot check and reports critical findings', async () => {
     render(
       <MemoryRouter>
         <RobotCheckPanel
@@ -25,14 +25,27 @@ describe('RobotCheckPanel', () => {
     )
 
     const link = screen.getByRole('link', {
-      name: `${ru.tracker.robotCheck.open} a1555`,
+      name: 'Проверить робота a1555',
     })
-    expect(link).toHaveAttribute('href', '/emergency?q=a1555')
+    expect(link).toHaveAttribute('href', '/robots/a1555/check')
 
     await waitFor(() => {
       expect(screen.getByText('ERROR: MCU')).toBeInTheDocument()
     })
     expect(screen.getByText(ru.tracker.robotCheck.found)).toBeInTheDocument()
+  })
+
+  it('trims and encodes the robot route segment once', () => {
+    render(
+      <MemoryRouter>
+        <RobotCheckPanel inspect={async () => []} robot=" A/42 ?# " />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByRole('link', { name: 'Проверить робота A/42 ?#' })).toHaveAttribute(
+      'href',
+      '/robots/A%2F42%20%3F%23/check',
+    )
   })
 
   it('shows a clear state when Emergency has no critical errors', async () => {

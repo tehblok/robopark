@@ -52,6 +52,7 @@ export function IssueList({
           return (
             <li key={item.key}>
               <button
+                aria-label={`Открыть задачу ${item.key}: ${item.summary}`}
                 aria-current={isSelected}
                 className={`issue-row${isSelected ? ' is-selected' : ''}`}
                 onClick={() => onSelect(item.key)}

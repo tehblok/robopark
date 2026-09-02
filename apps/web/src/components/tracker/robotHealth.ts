@@ -1,9 +1,9 @@
 import { api, type EmergencySnapshot } from '../../api'
 import { ru } from '../../i18n/ru'
 
-export function emergencyPathForRobot(robot: string): string {
+export function robotCheckPathForRobot(robot: string): string {
   const query = robot.trim()
-  return `/emergency?q=${encodeURIComponent(query)}`
+  return `/robots/${encodeURIComponent(query)}/check`
 }
 
 export function criticalFindings(snapshot: EmergencySnapshot): string[] {
