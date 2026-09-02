@@ -46,6 +46,29 @@ export const ru = {
     dark: 'Тёмная тема',
   },
 
+  appShell: {
+    mainNavigation: 'Основная навигация',
+    secondaryNavigation: 'Дополнительная навигация',
+    work: 'Работа',
+    skipToContent: 'К содержанию',
+    collapseNavigation: 'Свернуть навигацию',
+    expandNavigation: 'Развернуть навигацию',
+    themeLabel: 'Тема оформления',
+    themeSystem: 'Системная',
+    themeLight: 'Светлая',
+    themeDark: 'Тёмная',
+    densityLabel: 'Плотность интерфейса',
+    densityComfortable: 'Комфортная',
+    densityCompact: 'Компактная',
+    phoneDensity: 'На телефоне используется комфортная плотность',
+    groups: {
+      operations: 'Операции',
+      collaboration: 'Взаимодействие',
+      insights: 'Аналитика',
+      administration: 'Управление',
+    },
+  },
+
   roles: {
     royal: 'Владелец',
     admin: 'Администратор',
