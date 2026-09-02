@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import { api } from '../api'
 import { useAuth } from '../auth-context'
+import { useTheme } from '../design-system/theme/ThemeProvider'
 import { ru, roleLabel } from '../i18n/ru'
 import { useCachedResource } from '../lib/resource'
 import {
@@ -11,7 +12,6 @@ import {
 } from '../nav-permissions'
 import { useParkContext } from '../park-context'
 import { REPORTS_BADGE_REFRESH } from '../reports-badge'
-import { getStoredTheme, setTheme, type Theme } from '../theme'
 
 type AppShellProps = {
   children?: ReactNode
@@ -20,7 +20,7 @@ type AppShellProps = {
 export function AppShell({ children }: AppShellProps) {
   const { user, logout } = useAuth()
   const { parkId, setParkId, parks, parksLoading, parkLocked } = useParkContext()
-  const [theme, setThemeState] = useState<Theme>(() => getStoredTheme())
+  const { resolvedTheme: theme, resolvedDensity: density, setPreference } = useTheme()
   const [moreOpen, setMoreOpen] = useState(false)
   const location = useLocation()
   const badgeParkId = user?.role === 'operator' ? parkId ?? undefined : undefined
@@ -77,13 +77,11 @@ export function AppShell({ children }: AppShellProps) {
     permissions.includes('nav.analytics')
 
   const toggleTheme = () => {
-    const next: Theme = theme === 'light' ? 'dark' : 'light'
-    setTheme(next)
-    setThemeState(next)
+    setPreference(theme === 'light' ? 'dark' : 'light')
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-theme={theme} data-density={density}>
       <aside className="sidebar">
         <div className="sidebar-brand">
           <span className="brand-mark-grid" aria-hidden>

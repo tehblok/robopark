@@ -3,6 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <script>
+      (() => {
+        const media = window.matchMedia('(prefers-color-scheme: dark)')
+        let preference = 'system'
+        let density = 'comfortable'
+        try {
+          const stored = window.localStorage.getItem('robopark-theme')
+          if (stored === 'light' || stored === 'dark' || stored === 'system') preference = stored
+        } catch {
+          preference = 'system'
+        }
+        try {
+          if (window.localStorage.getItem('robopark-density') === 'compact') density = 'compact'
+        } catch {
+          density = 'comfortable'
+        }
+        const resolved = preference === 'system' ? (media.matches ? 'dark' : 'light') : preference
+        const resolvedDensity = window.matchMedia('(max-width: 899px)').matches ? 'comfortable' : density
+        document.documentElement.dataset.theme = resolved
+        document.documentElement.dataset.density = resolvedDensity
+        document.documentElement.style.colorScheme = resolved
+        window.__roboparkThemeBootstrappedAt = performance.now()
+      })()
+    </script>
     <title>Robopark — управление парком</title>
   </head>
   <body>
