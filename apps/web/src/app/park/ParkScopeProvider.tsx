@@ -1,12 +1,14 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type PropsWithChildren,
 } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { api, type Park } from '../../api'
+import { api, type Park, type User } from '../../api'
 import { useAuth } from '../../auth-context'
 import {
   hasFleetParkScope,
@@ -20,54 +22,106 @@ function activeParks(parks: Park[]): Park[] {
   return parks.filter((park) => park.is_active !== false)
 }
 
+const EMPTY_PARKS: Park[] = []
+
+type ParkLoadState = {
+  user: User | null
+  fleetScope: boolean
+  parks: Park[]
+  loading: boolean
+}
+
+type ParkSelectionState = {
+  user: User | null
+  fleetScope: boolean
+  parkId: number | null
+}
+
 export function ParkScopeProvider({ children }: PropsWithChildren) {
   const { user, refreshUser } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const fleetScope = Boolean(user && hasFleetParkScope(user))
-  const [parks, setParks] = useState<Park[]>(() =>
-    user && !hasFleetParkScope(user) ? user.parks : [],
-  )
-  const [loading, setLoading] = useState(fleetScope)
-  const [parkId, setParkIdState] = useState<number | null>(null)
+  const [loadState, setLoadState] = useState<ParkLoadState | null>(null)
+  const [selectionState, setSelectionState] = useState<ParkSelectionState | null>(null)
+  const currentLoadState = loadState?.user === user && loadState.fleetScope === fleetScope
+    ? loadState
+    : null
+  const currentSelectionState =
+    selectionState?.user === user && selectionState.fleetScope === fleetScope
+      ? selectionState
+      : null
+  const loadGeneration = useRef(0)
+  const currentScope = useRef({ user, fleetScope })
+  const parks = !user
+    ? EMPTY_PARKS
+    : fleetScope
+      ? (currentLoadState?.parks ?? EMPTY_PARKS)
+      : (currentLoadState?.parks ?? user.parks)
+  const loading = !user
+    ? false
+    : fleetScope
+      ? (currentLoadState?.loading ?? true)
+      : (currentLoadState?.loading ?? false)
+  const parkId = currentSelectionState?.parkId ?? null
 
   const locked = user?.role === 'mechanic' && parks.length <= 1
 
+  useLayoutEffect(() => {
+    currentScope.current = { user, fleetScope }
+  }, [fleetScope, user])
+
+  const beginLoad = useCallback((
+    requestUser: User | null,
+    requestFleetScope: boolean,
+    currentParks: Park[],
+  ) => {
+    const generation = ++loadGeneration.current
+    setLoadState({
+      user: requestUser,
+      fleetScope: requestFleetScope,
+      parks: currentParks,
+      loading: true,
+    })
+    return generation
+  }, [])
+
+  const commitLoad = useCallback((
+    generation: number,
+    requestUser: User | null,
+    requestFleetScope: boolean,
+    nextParks: Park[],
+  ) => {
+    if (
+      generation !== loadGeneration.current
+      || requestUser !== currentScope.current.user
+      || requestFleetScope !== currentScope.current.fleetScope
+    ) return
+
+    setLoadState({
+      user: requestUser,
+      fleetScope: requestFleetScope,
+      parks: nextParks,
+      loading: false,
+    })
+  }, [])
+
+  useEffect(() => () => {
+    loadGeneration.current += 1
+  }, [])
+
   useEffect(() => {
-    let cancelled = false
+    if (!user || !hasFleetParkScope(user)) return
 
-    if (!user) {
-      setParks([])
-      setLoading(false)
-      return () => {
-        cancelled = true
-      }
-    }
-
-    if (!hasFleetParkScope(user)) {
-      setParks(user.parks)
-      setLoading(false)
-      return () => {
-        cancelled = true
-      }
-    }
-
-    setLoading(true)
+    const generation = beginLoad(user, true, [])
     void api
       .parks()
       .then((nextParks) => {
-        if (!cancelled) setParks(activeParks(nextParks))
+        commitLoad(generation, user, true, activeParks(nextParks))
       })
       .catch(() => {
-        if (!cancelled) setParks([])
+        commitLoad(generation, user, true, [])
       })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [user])
+  }, [beginLoad, commitLoad, user])
 
   const writeSelection = useCallback(
     (nextParkId: number | null, replace: boolean) => {
@@ -94,33 +148,46 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
     const storedParkId = validParkId(parks, sessionStorage.getItem(PARK_STORAGE_KEY))
     const nextParkId = urlParkId ?? storedParkId ?? parks[0]?.id ?? null
 
-    setParkIdState(nextParkId)
+    setSelectionState({ user, fleetScope, parkId: nextParkId })
     writeSelection(nextParkId, true)
-  }, [loading, parks, searchParams, writeSelection])
+  }, [fleetScope, loading, parks, searchParams, user, writeSelection])
 
   const setParkId = useCallback(
     (id: number, options?: { replace?: boolean }) => {
       if (locked || !parks.some((park) => park.id === id)) return
-      setParkIdState(id)
+      setSelectionState({ user, fleetScope, parkId: id })
       writeSelection(id, options?.replace ?? false)
     },
-    [locked, parks, writeSelection],
+    [fleetScope, locked, parks, user, writeSelection],
   )
 
   const refreshParks = useCallback(async () => {
-    setLoading(true)
+    const requestUser = user
+    const requestFleetScope = Boolean(requestUser && hasFleetParkScope(requestUser))
+    const generation = beginLoad(requestUser, requestFleetScope, parks)
     try {
-      if (user && hasFleetParkScope(user)) {
-        setParks(activeParks(await api.parks()))
+      if (requestFleetScope) {
+        commitLoad(
+          generation,
+          requestUser,
+          requestFleetScope,
+          activeParks(await api.parks()),
+        )
         return
       }
 
       const refreshedUser = await refreshUser()
-      setParks(refreshedUser.parks)
-    } finally {
-      setLoading(false)
+      commitLoad(
+        generation,
+        requestUser,
+        requestFleetScope,
+        refreshedUser.parks,
+      )
+    } catch (error) {
+      commitLoad(generation, requestUser, requestFleetScope, parks)
+      throw error
     }
-  }, [refreshUser, user])
+  }, [beginLoad, commitLoad, parks, refreshUser, user])
 
   const selectedPark = parks.find((park) => park.id === parkId) ?? null
   const value = useMemo(
