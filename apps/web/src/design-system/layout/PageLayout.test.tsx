@@ -26,6 +26,21 @@ describe('PageLayout', () => {
     expect(screen.getByRole('button', { name: 'Обновить' })).toBeVisible()
     expect(screen.getByText('Содержимое')).toBeVisible()
   })
+
+  it('does not create a second main landmark inside the application shell main', () => {
+    const { container } = render(
+      <main id="main-content">
+        <PageLayout title="Обзор">
+          <p>Содержимое</p>
+        </PageLayout>
+      </main>,
+    )
+
+    expect(container.querySelectorAll('main')).toHaveLength(1)
+    expect(screen.getByRole('heading', { level: 1, name: 'Обзор' })).toHaveClass(
+      'rp-page-layout__title',
+    )
+  })
 })
 
 it('styles only headings owned by the layout primitives', () => {

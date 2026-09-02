@@ -19,7 +19,7 @@ export function PageLayout({
   className = '',
 }: PageLayoutProps): ReactElement {
   return (
-    <main className={`rp-page-layout ${className}`.trim()}>
+    <div className={`rp-page-layout ${className}`.trim()}>
       <header className="rp-page-layout__header">
         <div className="rp-page-layout__heading">
           {eyebrow ? <div className="rp-page-layout__eyebrow">{eyebrow}</div> : null}
@@ -29,7 +29,7 @@ export function PageLayout({
         {actions ? <div className="rp-page-layout__actions">{actions}</div> : null}
       </header>
       <div className="rp-page-layout__content">{children}</div>
-    </main>
+    </div>
   )
 }
 

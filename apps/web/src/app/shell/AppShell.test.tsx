@@ -171,6 +171,31 @@ describe('AppShell', () => {
     expect(within(mobileNavigation).getByRole('link', { name: 'Работа' })).toHaveFocus()
   })
 
+  it('keeps explicit accessible labels when the tablet rail is collapsed', async () => {
+    const actor = userEvent.setup()
+    act(() => media.setWidth(1000))
+    renderApp('/overview', operator)
+
+    await actor.click(screen.getByRole('button', { name: 'Свернуть навигацию' }))
+
+    const desktopNavigation = screen.getAllByRole('navigation', {
+      name: 'Основная навигация',
+    })[0]
+    const expectedLabels = [
+      ['overview', 'Дашборд'],
+      ['work', 'Работа'],
+      ['robots', 'Поиск по роботу'],
+      ['robot-check', 'Проверка робота'],
+      ['reports', 'Репорты'],
+      ['analytics', 'Аналитика'],
+    ] as const
+
+    for (const [routeId, label] of expectedLabels) {
+      expect(desktopNavigation.querySelector(`[data-route-id="${routeId}"]`))
+        .toHaveAttribute('aria-label', label)
+    }
+  })
+
   it('prevents scroll only when restoring focus after POP history navigation', async () => {
     const actor = userEvent.setup()
     render(

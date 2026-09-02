@@ -54,6 +54,7 @@ function NavigationLink({
   const label = item.id === 'work' ? ru.appShell.work : item.label
   return (
     <NavLink
+      aria-label={label}
       className={({ isActive }) => `${className}${isActive ? ' is-active' : ''}`}
       data-route-id={item.id}
       end
