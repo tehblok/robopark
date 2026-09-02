@@ -6,7 +6,7 @@ export const ru = {
     dashboard: 'Дашборд',
     tasks: 'Задачи',
     robot_search: 'Поиск по роботу',
-    emergency: 'Проверка по роботу',
+    emergency: 'Проверка робота',
     map: 'Карта',
     analytics: 'Аналитика',
     reports: 'Репорты',
