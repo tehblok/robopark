@@ -1,3 +1,5 @@
+from unittest.mock import Mock
+
 from sqlalchemy import select
 
 from conftest import login_as
@@ -20,7 +22,7 @@ def _issue(key: str, tag: str) -> dict:
     }
 
 
-def _seed_field_lead(db_session):
+def _seed_field_lead(db_session, *, assign_alpha: bool = True):
     alpha = Park(name="Alpha", tag="Alpha", is_active=True, tracker_queue="ROBOPARK")
     beta = Park(name="Beta", tag="Beta", is_active=True, tracker_queue="ROBOPARK")
     db_session.add_all([alpha, beta])
@@ -55,7 +57,8 @@ def _seed_field_lead(db_session):
     )
     db_session.add(user)
     db_session.flush()
-    db_session.add(UserPark(user_id=user.id, park_id=alpha.id))
+    if assign_alpha:
+        db_session.add(UserPark(user_id=user.id, park_id=alpha.id))
     db_session.commit()
     db_session.refresh(user)
     return user, alpha, beta
@@ -104,3 +107,22 @@ def test_custom_role_without_backend_capability_is_denied(client, db_session, mo
 
     assert client.get(f"/dashboard/summary?park_id={alpha.id}").status_code == 403
     assert client.get("/tracker/issues").status_code == 403
+
+
+def test_custom_tracker_role_without_assigned_parks_never_runs_upstream_search(
+    client, db_session, monkeypatch
+):
+    user, _alpha, _beta = _seed_field_lead(db_session, assign_alpha=False)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+
+    from robopark_api.services import tracker_client
+
+    search_issues = Mock(return_value=[])
+    monkeypatch.setattr(tracker_client, "search_issues", search_issues)
+    login_as(client, user.username, "secret")
+
+    response = client.get("/tracker/issues")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "tracker_scope_empty"
+    search_issues.assert_not_called()

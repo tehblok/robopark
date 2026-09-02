@@ -139,6 +139,11 @@ def _build_query(
     queues = allowed_queues_for_user(db, user)
     selected_queue = (queue or "").strip() or None
     if user.role not in {RoleSlug.ADMIN, RoleSlug.ROYAL}:
+        if not queues:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="tracker_scope_empty",
+            )
         if selected_queue and selected_queue not in queues:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -245,7 +250,10 @@ def list_issues(
             detail="tracker_upstream_error",
         ) from exc
 
-    ordered = tracker_filters.sort_issues_oldest_first(items)
+    # Give the existing age/date ordering a stable final key independent of
+    # whichever order the upstream service happened to return equal records.
+    keyed_items = sorted(items, key=lambda issue: str(issue.get("key") or ""))
+    ordered = tracker_filters.sort_issues_oldest_first(keyed_items)
     if sort_order == "newest":
         ordered.reverse()
 

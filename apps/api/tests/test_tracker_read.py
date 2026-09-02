@@ -90,6 +90,30 @@ def test_tracker_list_honors_oldest_and_newest_sort(
     assert [item["key"] for item in newest] == ["ROBOPARK-2", "ROBOPARK-1"]
 
 
+def test_tracker_list_uses_issue_key_as_a_deterministic_sort_tiebreaker(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [
+            _scoped_issue("ROBOPARK-2", "2026-01-01T00:00:00Z"),
+            _scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"),
+        ],
+    )
+    login_as(client, "op2", "secret")
+
+    oldest = client.get("/tracker/issues?sort=oldest").json()["items"]
+    newest = client.get("/tracker/issues?sort=newest").json()["items"]
+
+    assert [item["key"] for item in oldest] == ["ROBOPARK-1", "ROBOPARK-2"]
+    assert [item["key"] for item in newest] == ["ROBOPARK-2", "ROBOPARK-1"]
+
+
 def test_mechanic_issue_capabilities_respect_write_policy_but_keep_attachment(
     client, db_session, seed_mechanic, monkeypatch
 ):
