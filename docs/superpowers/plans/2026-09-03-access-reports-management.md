@@ -23,7 +23,7 @@
 ### Task 1: Permission integrity and report scope
 
 **Files:**
-- Modify `apps/api/src/robopark_api/routers/admin_users.py`, `services/rbac.py`, `services/rbac_seed.py`, `routers/reports.py`, `services/reports.py`, relevant tests.
+- Modify `apps/api/src/robopark_api/routers/admin_users.py`, `routers/admin_roles.py`, `services/rbac.py`, `services/rbac_seed.py`, `routers/reports.py`, `services/reports.py`, relevant tests.
 - Create `apps/api/alembic/versions/0017_driver_work_reports.py` (after insights plan's 0016) for existing driver default task/read/report capabilities. Preserve UserPermission denies. New installations seed updated defaults. Migration does not grant writes/attachments.
 - Add `apps/api/tests/test_management_permissions.py` or focused tests in existing role/user/report suites.
 
@@ -41,6 +41,7 @@ assert db_session.scalar(select(User).where(User.username == 'unauthorized-admin
 
 - [ ] Add RED tests: revoked system-role permission remains revoked after `ensure_rbac_catalog`; driver's explicit per-user report deny survives upgrade; standard driver gains task/read/report defaults but no writes. Creation works for approved assigned mechanic/driver/operator and admin/royal in authorized fleet park; denied/unapproved/foreign-park cases fail.
 - [ ] Implement validation before applying user changes. Compute proposed permissions from requested role or explicit payload without treating the new role as pre-existing authority. Protect existing owner invariants. Default seeding must not overwrite explicit system role changes; migration upgrades only intended driver capability delta and is idempotent.
+- [ ] Users.manage-only accounts need read access to role choices and permission catalogue to edit users correctly. Permit these read-only catalogue/list operations for users.manage or roles.manage; role mutations still require roles.manage. Test that this does not grant role editing or privileged assignments.
 - [ ] Unify report park authorization for creation/read/actions. Admin/royal have fleet scope; others assigned active parks. Keep target-role routing (operator inbox, admin escalation) and make permissions gate processing consistently. A creator can read own report independent of report processing permission. Do not allow a driver to read arbitrary others' reports merely because creation is now enabled.
 - [ ] Run focused role/user/report tests GREEN and Ruff; test migration on isolated temporary DB only. Commit exact files and report TDD/results.
 

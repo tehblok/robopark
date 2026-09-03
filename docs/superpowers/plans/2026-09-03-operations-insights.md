@@ -55,6 +55,7 @@ def test_departures_use_resolution_date():
 - [ ] Require driver new/moving check in shared tracker_policy before list/detail/comments/actions exposure, preserving assigned queues/tags. Do not grant writes. Do not unnecessarily restrict other roles' Work detail access.
 - [ ] Let Work's `/tracker/issues` status filter accept canonical new/moving/queued/diagnostics/waiting_team/waiting_parts buckets by compiling their aliases into a safe OR query. Preserve explicit raw Tracker status filtering. Do not send canonical bucket names as raw custom status keys when they differ. Cover requested bucket compilation and driver scope enforcement with route tests.
 - [ ] Correct departure query to `Resolved` per official Tracker query docs: https://yandex.ru/support/tracker/ru/user/query-filter ; response field `resolvedAt`: https://yandex.ru/support/tracker/en/api-ref/issues/response-fields . Keep existing supported date formatting unless verified improvement. Add versioned history migration/scanner handling; never relabel legacy data v2 without recomputation.
+- [ ] Arrival v2 queries count all scoped creations, regardless of later resolution; do not drop cancelled or duplicate tasks by retaining the old `Resolution: empty(), fixed` restriction. Current outstanding load comes from its own snapshot, not from subtracting the two flow series.
 - [ ] GREEN focused API suites, Ruff, migration upgrade on isolated temporary SQLite only (no project env). Commit owned files and report exact output and assumptions.
 
 ### Task 2: Overview, Analytics and SLA controls
