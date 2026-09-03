@@ -5,7 +5,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 from robopark_api.models import AuthSession, Base, User
 
@@ -32,10 +32,34 @@ def test_metadata_has_required_tables():
     }
 
 
-def test_alembic_head_is_report_attachments():
+def test_alembic_head_is_history_definition():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0015_report_attachments"]
+    assert script.get_heads() == ["0016_history_definition"]
+
+
+def test_history_migration_preserves_legacy_definition(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0015_report_attachments")
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO parks (id, name, tag, is_active) VALUES (1, 'Test', 'test', 1)")
+        )
+        connection.execute(
+            text(
+                "INSERT INTO park_blocker_history (park_id, bucket_start, arrived_count, departed_count) VALUES (1, '2026-09-01 00:00:00', 4, 9)"
+            )
+        )
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT definition_version, arrived_count, departed_count FROM park_blocker_history"
+            )
+        ).one()
+    assert tuple(row) == (1, 4, 9)
 
 
 def test_migrated_report_attachments_contract(sqlite_database_url, monkeypatch):
@@ -199,6 +223,7 @@ def test_migrated_parks_have_tracker_columns_and_history_table(sqlite_database_u
         "arrived_count",
         "departed_count",
         "scanned_at",
+        "definition_version",
     }
 
     unique_indexes = {

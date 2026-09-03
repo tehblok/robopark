@@ -9,6 +9,7 @@ from robopark_api.models import Park, User
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import rbac
 from robopark_api.services.rbac import RoleSlug
+from robopark_api.services.tracker_filters import status_bucket
 
 ALLOWED_ACTIONS = {"comment", "assign", "unassign", "transition", "close", "attach"}
 
@@ -78,6 +79,13 @@ def issue_tags(issue: dict) -> set[str]:
     return {str(tag).strip() for tag in raw if str(tag).strip()}
 
 
+def is_issue_status_visible(user: User, issue: dict) -> bool:
+    """Driver authorization uses exact workflow status, never relocation hints."""
+    return rbac.role_slug(user) != RoleSlug.DRIVER or status_bucket(
+        str(issue.get("status_key") or ""), str(issue.get("status") or "")
+    ) in {"new", "moving"}
+
+
 def is_issue_in_scope(db: Session, user: User, issue: dict) -> bool:
     """Non-raising scope check, used to filter list responses."""
     try:
@@ -106,6 +114,9 @@ def _check_issue_scope(db: Session, user: User, issue: dict) -> None:
     """
     if rbac.is_admin_or_royal(user):
         return
+
+    if not is_issue_status_visible(user, issue):
+        _deny()
 
     # 1. Queue must be present and inside the user's allowed set.
     issue_queue = str(issue.get("queue") or "").strip()

@@ -4,6 +4,15 @@ from unittest.mock import patch
 from robopark_api.services import tracker_cache, tracker_metrics
 
 
+def test_daily_flow_counts_creations_and_resolutions():
+    arrived = tracker_metrics.build_arrived_today_query("ROBOPARK", "north")
+    departed = tracker_metrics.build_done_today_query("ROBOPARK", "north")
+    assert "Created: today()" in arrived
+    assert "Resolution:" not in arrived
+    assert "Resolved: today()" in departed
+    assert "Updated:" not in departed
+
+
 def test_build_backlog_query_no_donor_exclude_when_empty():
     q = tracker_metrics.build_backlog_query("ROBOPARK", "Alpha", "")
     assert "Queue: ROBOPARK" in q

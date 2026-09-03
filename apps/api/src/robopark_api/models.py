@@ -158,6 +158,8 @@ class ParkBlockerHistory(Base):
     arrived_count: Mapped[int] = mapped_column(Integer, default=0)
     departed_count: Mapped[int] = mapped_column(Integer, default=0)
     scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Unversioned/manual inserts are legacy until explicitly recomputed.
+    definition_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
     park: Mapped[Park] = relationship(back_populates="blocker_history")
 

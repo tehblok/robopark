@@ -139,7 +139,6 @@ def build_arrived_today_query(
 ) -> str:
     return join_query(
         *_park_scoped_parts(queue, tag, priority=priority, issue_type=issue_type),
-        "Resolution: empty(), fixed",
         "Created: today()",
     )
 
@@ -154,7 +153,7 @@ def build_done_today_query(
     return join_query(
         *_park_scoped_parts(queue, tag, priority=priority, issue_type=issue_type),
         "Resolution: fixed",
-        "Updated: today()",
+        "Resolved: today()",
     )
 
 
@@ -176,7 +175,6 @@ def build_arrived_in_window_query(
             priority=priority,
             issue_type=issue_type,
         ),
-        "Resolution: empty(), fixed",
         f'Created: >= "{start}"',
         f'Created: < "{end}"',
     )
@@ -201,8 +199,8 @@ def build_departed_in_window_query(
             issue_type=issue_type,
         ),
         "Resolution: fixed",
-        f'Updated: >= "{start}"',
-        f'Updated: < "{end}"',
+        f'Resolved: >= "{start}"',
+        f'Resolved: < "{end}"',
     )
 
 

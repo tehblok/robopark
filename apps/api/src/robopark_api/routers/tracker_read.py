@@ -132,9 +132,30 @@ def _build_query(
     ]
     # Explicit Status replaces the default open-issues clause (avoid conflicting QL).
     if status_filter:
-        parts.append(f"Status: {tracker_client.ql_token(status_filter)}")
+        bucket = tracker_filters.status_bucket(status_filter)
+        if user.role == RoleSlug.DRIVER and bucket not in {"new", "moving"}:
+            raise HTTPException(status_code=403, detail="tracker_status_forbidden")
+        aliases = tracker_filters.STATUS_BUCKETS.get(status_filter)
+        if aliases:
+            parts.append(
+                "("
+                + " OR ".join(f"Status: {tracker_client.ql_token(alias)}" for alias in aliases)
+                + ")"
+            )
+        else:
+            parts.append(f"Status: {tracker_client.ql_token(status_filter)}")
     else:
         parts.append(tracker_client.open_issues_clause())
+    if user.role == RoleSlug.DRIVER:
+        aliases = (
+            *tracker_filters.STATUS_BUCKETS["new"],
+            *tracker_filters.STATUS_BUCKETS["moving"],
+        )
+        parts.append(
+            "("
+            + " OR ".join(f"Status: {tracker_client.ql_token(alias)}" for alias in aliases)
+            + ")"
+        )
 
     queues = allowed_queues_for_user(db, user)
     selected_queue = (queue or "").strip() or None
@@ -198,11 +219,8 @@ def _build_query(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="tracker_queue_required_for_untagged",
             )
-        # Replace the generic Priority/open/type parts with the dedicated untagged builder.
-        return tracker_client.build_untagged_blockers_query(
-            selected_queue,
-            _untagged_park_tags(db, user),
-        )
+        # Retain explicit status/robot/assignee filters while excluding park tags.
+        parts.extend(tracker_client.exclude_tag(tag) for tag in _untagged_park_tags(db, user))
 
     return tracker_client.join_query(*parts)
 
@@ -242,7 +260,9 @@ def list_issues(
         untagged=untagged,
     )
     try:
-        items = tracker_cache.search_issues(token=token, query=query_text)
+        items = tracker_cache.search_issues(
+            token=token, query=query_text, filter_open=not bool(status_filter)
+        )
     except tracker_client.TrackerError as exc:
         logger.exception("tracker search failed query=%r", query_text)
         raise HTTPException(
@@ -452,7 +472,9 @@ def robot_tickets(
             detail="tracker_upstream_error",
         ) from exc
 
-    sorted_items = tracker_filters.sort_issues_oldest_first(merged)
+    sorted_items = tracker_filters.sort_issues_oldest_first(
+        [item for item in merged if is_issue_in_scope(db, user, item)]
+    )
     return RobotTicketsOut(
         query=query,
         items=[_blocker_out(item) for item in sorted_items],

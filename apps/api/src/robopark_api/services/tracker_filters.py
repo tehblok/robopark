@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 STATUS_BUCKETS: dict[str, tuple[str, ...]] = {
+    "new": ("new", "open", "новый", "новая", "открыт", "открыта"),
+    "diagnostics": ("diagnostics", "diagnostic", "diagnosis", "диагностика", "на диагностике"),
     "queued": ("queued", "в очереди"),
     "moving": ("moving", "перемещение"),
     "waiting_team": ("waitingforanotherteam", "ждём смежников", "ждем смежников"),
@@ -13,8 +15,10 @@ STATUS_BUCKETS: dict[str, tuple[str, ...]] = {
 
 STATUS_FILTER_BUTTONS: tuple[tuple[str, str], ...] = (
     ("all", "All"),
+    ("new", "New"),
     ("moving", "Moving"),
     ("queued", "Queued"),
+    ("diagnostics", "Diagnostics"),
     ("waiting_team", "Waiting team"),
     ("waiting_parts", "Waiting parts"),
     ("other", "Other"),
@@ -33,11 +37,10 @@ def park_priority_type(park: Any) -> tuple[str, str | None]:
 def status_bucket(status_key: str, status_display: str = "") -> str | None:
     key = (status_key or "").strip().lower().replace("ё", "е")
     display = (status_display or "").strip().lower().replace("ё", "е")
-    blob = f"{key} {display}".strip()
     for bucket, aliases in STATUS_BUCKETS.items():
         for alias in aliases:
             normalized = alias.lower().replace("ё", "е")
-            if key == normalized or display == normalized or (normalized and normalized in blob):
+            if key == normalized or display == normalized:
                 return bucket
     return None
 
@@ -49,10 +52,6 @@ def issue_status_bucket(item: dict[str, Any]) -> str:
     bucket = status_bucket(str(item.get("status_key") or ""), display)
     if bucket:
         return bucket
-    low = display.strip().lower().replace("ё", "е")
-    for name, aliases in STATUS_BUCKETS.items():
-        if any(len(alias) > 3 and alias in low for alias in aliases):
-            return name
     return "other"
 
 
@@ -60,7 +59,7 @@ def filter_issues_by_status(issues: list[dict[str, Any]], bucket: str) -> list[d
     if bucket in ("", "all", None):
         return list(issues)
     if bucket == "other":
-        known = {"moving", "queued", "waiting_team", "waiting_parts"}
+        known = set(STATUS_BUCKETS)
         return [item for item in issues if issue_status_bucket(item) not in known]
     return [item for item in issues if issue_status_bucket(item) == bucket]
 
