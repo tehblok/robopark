@@ -37,6 +37,19 @@ describe('RobotScanner', () => {
     vi.restoreAllMocks()
   })
 
+  it('uses Foundation controls for both manual camera exits', () => {
+    render(<RobotScanner onCancel={vi.fn()} onDetected={vi.fn()} open />)
+
+    expect(screen.getByRole('button', { name: 'Отменить' })).toHaveClass(
+      'rp-button',
+      'rp-button--secondary',
+    )
+    expect(screen.getByRole('button', { name: 'Ввести номер вручную' })).toHaveClass(
+      'rp-button',
+      'rp-button--secondary',
+    )
+  })
+
   it('starts only while open and stops every camera track after detection', async () => {
     const frames = installFrameQueue()
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()

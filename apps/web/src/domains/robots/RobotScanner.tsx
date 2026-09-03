@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Button } from '../../design-system/actions/Button'
 import { BottomSheet } from '../../design-system/overlays/BottomSheet'
 
 export type BarcodeDetectorLike = {
@@ -145,8 +146,8 @@ export function RobotScanner({
         <video muted playsInline ref={videoRef} />
         {error ? <p role="alert">{error}</p> : <p>Наведите камеру на код робота.</p>}
         <div className="rp-robot-scanner__actions">
-          <button onClick={cancel} type="button">Отменить</button>
-          <button onClick={cancel} type="button">Ввести номер вручную</button>
+          <Button onClick={cancel} type="button" variant="secondary">Отменить</Button>
+          <Button onClick={cancel} type="button" variant="secondary">Ввести номер вручную</Button>
         </div>
       </div>
     </BottomSheet>
