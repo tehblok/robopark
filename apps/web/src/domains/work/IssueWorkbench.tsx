@@ -86,6 +86,15 @@ function failureFor(error: unknown, fallback: string): DomainError | null {
   return error ? classifyApiError(error, fallback) : null
 }
 
+function workAccessKey(user: User, selectedPark: Park): string {
+  const parkScope = (park: Park) => [park.id, park.tag?.trim(), park.tracker_queue?.trim(), park.is_active !== false]
+  return JSON.stringify([
+    user.id, user.username, user.tracker_login, user.role, user.access_status,
+    Boolean(user.must_change_password), [...new Set(user.permissions ?? [])].sort(),
+    [...user.parks].sort((a, b) => a.id - b.id).map(parkScope), parkScope(selectedPark),
+  ])
+}
+
 function ResourceWarning({
   failure,
   onRetry,
@@ -150,8 +159,14 @@ function IssueWorkbenchOwner({
   onOpenIssue,
   onCloseIssue,
   onAuthorizationFailure,
-}: Required<Pick<IssueWorkbenchProps, 'apiClient'>> & Omit<IssueWorkbenchProps, 'apiClient'>) {
+  accessKey,
+  getAccessGeneration,
+}: Required<Pick<IssueWorkbenchProps, 'apiClient'>> & Omit<IssueWorkbenchProps, 'apiClient'> & {
+  accessKey: string
+  getAccessGeneration: () => number
+}) {
   const cachePrefix = `work:${user.id}:`
+  const accessPrefix = `${cachePrefix}${accessKey}:`
   const allowUntagged = user.role === 'operator'
     || user.role === 'admin'
     || user.role === 'royal'
@@ -161,17 +176,20 @@ function IssueWorkbenchOwner({
     delete filters.untagged
     return { ...state, filters }
   }, [allowUntagged, state])
-  const listKey = `${cachePrefix}list:${selectedPark.id}:${JSON.stringify(requestState)}`
-  const detailKey = issueKey ? `${cachePrefix}issue:${issueKey}` : ''
-  const commentsKey = issueKey ? `${cachePrefix}comments:${issueKey}` : ''
+  const listKey = `${accessPrefix}list:${selectedPark.id}:${JSON.stringify(requestState)}`
+  const detailKey = issueKey ? `${accessPrefix}issue:${issueKey}` : ''
+  const commentsKey = issueKey ? `${accessPrefix}comments:${issueKey}` : ''
   const blockedRef = useRef(false)
   const blockedErrorRef = useRef<unknown>(null)
   const refreshStartedRef = useRef(false)
+  const ownerGeneration = useRef(0)
   const [authorizationFailure, setAuthorizationFailure] = useState<DomainError | null>(null)
+
+  useLayoutEffect(() => () => { ++ownerGeneration.current }, [])
 
   const observeAuthorizationFailure = useCallback((error: unknown) => {
     const failure = classifyApiError(error, 'Не удалось загрузить рабочие данные.')
-    if (!isAuthorizationFailure(failure)) return
+    if (!isAuthorizationFailure(failure) || blockedRef.current) return
 
     blockedRef.current = true
     blockedErrorRef.current = error
@@ -184,20 +202,24 @@ function IssueWorkbenchOwner({
   }, [cachePrefix, onAuthorizationFailure])
 
   const guarded = useCallback(async <T,>(loader: () => Promise<T>): Promise<T> => {
+    const generation = ownerGeneration.current
+    const accessGeneration = getAccessGeneration()
+    if (accessGeneration < 0) throw new Error('work_access_changed')
     if (blockedRef.current) {
       throw blockedErrorRef.current ?? new Error('work_authorization_blocked')
     }
     try {
       const value = await loader()
+      if (getAccessGeneration() !== accessGeneration) throw new Error('work_access_changed')
       if (blockedRef.current) {
         throw blockedErrorRef.current ?? new Error('work_authorization_blocked')
       }
       return value
     } catch (error) {
-      observeAuthorizationFailure(error)
+      if (generation === ownerGeneration.current && getAccessGeneration() === accessGeneration) observeAuthorizationFailure(error)
       throw error
     }
-  }, [observeAuthorizationFailure])
+  }, [getAccessGeneration, observeAuthorizationFailure])
 
   const list = useCachedResource(
     listKey,
@@ -217,13 +239,21 @@ function IssueWorkbenchOwner({
     issueKey && detail.data?.capabilities.transition,
   )
   const transitionsKey = transitionsEnabled
-    ? `${cachePrefix}transitions:${issueKey}`
+    ? `${accessPrefix}transitions:${issueKey}`
     : ''
   const transitions = useCachedResource(
     transitionsKey,
     () => guarded(() => apiClient.trackerTransitions(issueKey as string)),
     { enabled: transitionsEnabled },
   )
+
+  // Coalesced same-access reads can outlive their initiating render (including
+  // StrictMode cleanup). Only the current resource owner handles their denial.
+  useEffect(() => {
+    for (const error of [list.error, detail.error, comments.error, transitions.error]) {
+      if (error) observeAuthorizationFailure(error)
+    }
+  }, [comments.error, detail.error, list.error, observeAuthorizationFailure, transitions.error])
 
   const listFailure = failureFor(
     list.error,
@@ -247,8 +277,8 @@ function IssueWorkbenchOwner({
     if (detailFailure?.kind !== 'not-found') return
     resourceStore.invalidate(detailKey)
     resourceStore.invalidate(commentsKey)
-    resourceStore.invalidate(`${cachePrefix}transitions:${issueKey}`)
-  }, [cachePrefix, commentsKey, detailFailure?.kind, detailKey, issueKey])
+    resourceStore.invalidate(`${accessPrefix}transitions:${issueKey}`)
+  }, [accessPrefix, commentsKey, detailFailure?.kind, detailKey, issueKey])
 
   const search = buildWorkSearch(state, selectedPark.id)
   const listDataAvailable = list.data !== undefined
@@ -292,13 +322,13 @@ function IssueWorkbenchOwner({
   }
 
   const invalidateMutationResources = useCallback(() => {
-    resourceStore.invalidate(`${cachePrefix}list:${selectedPark.id}:`, {
+    resourceStore.invalidate(`${accessPrefix}list:${selectedPark.id}:`, {
       prefix: true,
     })
     if (!issueKey) return
     resourceStore.invalidate(detailKey)
     resourceStore.invalidate(commentsKey)
-    resourceStore.invalidate(`${cachePrefix}transitions:${issueKey}`)
+    resourceStore.invalidate(`${accessPrefix}transitions:${issueKey}`)
     void Promise.allSettled([
       list.refresh(),
       detail.refresh(),
@@ -306,7 +336,7 @@ function IssueWorkbenchOwner({
       ...(transitionsEnabled ? [transitions.refresh()] : []),
     ])
   }, [
-    cachePrefix,
+    accessPrefix,
     comments,
     commentsKey,
     detail,
@@ -318,10 +348,14 @@ function IssueWorkbenchOwner({
     transitionsEnabled,
   ])
 
-  const mutate = useCallback(async (action: () => Promise<unknown>) => {
+  const mutate = useCallback(async (action: () => Promise<unknown>, onSuccess?: () => void) => {
+    const generation = ownerGeneration.current
+    const accessGeneration = getAccessGeneration()
     await guarded(action)
+    if (generation !== ownerGeneration.current || getAccessGeneration() !== accessGeneration) return
     invalidateMutationResources()
-  }, [guarded, invalidateMutationResources])
+    onSuccess?.()
+  }, [getAccessGeneration, guarded, invalidateMutationResources])
 
   const detailSideFailure = useMemo(() => {
     const failures = [
@@ -481,10 +515,7 @@ function IssueWorkbenchOwner({
                       onAttach={(file) => mutate(
                         () => apiClient.trackerAttach(detail.data!.key, file),
                       )}
-                      onClose={async () => {
-                        await mutate(() => apiClient.trackerClose(detail.data!.key))
-                        onCloseIssue()
-                      }}
+                      onClose={() => mutate(() => apiClient.trackerClose(detail.data!.key), onCloseIssue)}
                       onComment={(text) => mutate(
                         () => apiClient.trackerComment(detail.data!.key, text),
                       )}
@@ -511,17 +542,39 @@ export function IssueWorkbench({
   apiClient = api,
   ...props
 }: IssueWorkbenchProps) {
+  const accessKey = workAccessKey(props.user, props.selectedPark)
+  const currentAccess = useRef({ key: accessKey, generation: 0 })
+  const getAccessGeneration = useCallback(() => currentAccess.current.key === accessKey
+    ? currentAccess.current.generation : -1, [accessKey])
+  const accessPrefix = `work:${props.user.id}:${accessKey}:`
+  const committedAccessPrefix = useRef(accessPrefix)
+  useLayoutEffect(() => {
+    if (currentAccess.current.key !== accessKey) {
+      currentAccess.current = { key: accessKey, generation: currentAccess.current.generation + 1 }
+    }
+    if (committedAccessPrefix.current !== accessPrefix) {
+      // Retire the exited access, including pending loads, so A→B→A cannot
+      // coalesce A's obsolete request. Same-access remount/cache is preserved.
+      resourceStore.invalidate(committedAccessPrefix.current, { prefix: true })
+      committedAccessPrefix.current = accessPrefix
+    }
+  }, [accessKey, accessPrefix])
   const ownerKey = [
-    props.user.id,
-    props.selectedPark.id,
+    accessKey,
     buildWorkSearch(props.state, null),
     props.issueKey ?? '',
   ].join(':')
+
+  if (!(props.user.permissions ?? []).includes('tracker.read')) {
+    return <ErrorState title="Нет доступа" description="Нет доступа к задачам Tracker." />
+  }
 
   return (
     <IssueWorkbenchOwner
       {...props}
       apiClient={apiClient}
+      accessKey={accessKey}
+      getAccessGeneration={getAccessGeneration}
       key={ownerKey}
     />
   )

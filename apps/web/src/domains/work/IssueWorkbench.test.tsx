@@ -162,15 +162,26 @@ function renderWorkbench({
 }
 
 function listKey(currentUser = user, currentPark = park, currentState = state) {
-  return `work:${currentUser.id}:list:${currentPark.id}:${JSON.stringify(currentState)}`
+  return `${accessPrefix(currentUser, currentPark)}list:${currentPark.id}:${JSON.stringify(currentState)}`
+}
+
+// Cache fixture serialization only; regression expectations use rendered data,
+// action availability and external effects, not this key builder.
+function accessPrefix(currentUser = user, currentPark = park) {
+  const scope = (item: Park) => [item.id, item.tag?.trim(), item.tracker_queue?.trim(), item.is_active !== false]
+  return `work:${currentUser.id}:${JSON.stringify([
+    currentUser.id, currentUser.username, currentUser.tracker_login, currentUser.role, currentUser.access_status,
+    Boolean(currentUser.must_change_password), [...new Set(currentUser.permissions ?? [])].sort(),
+    [...currentUser.parks].sort((a, b) => a.id - b.id).map(scope), scope(currentPark),
+  ])}:`
 }
 
 function seedCurrentWork(currentUser = user, currentIssue = issue) {
   resourceStore.set(listKey(currentUser), page([currentIssue]), true)
-  resourceStore.set(`work:${currentUser.id}:issue:${currentIssue.key}`, currentIssue, true)
-  resourceStore.set(`work:${currentUser.id}:comments:${currentIssue.key}`, [], true)
+  resourceStore.set(`${accessPrefix(currentUser)}issue:${currentIssue.key}`, currentIssue, true)
+  resourceStore.set(`${accessPrefix(currentUser)}comments:${currentIssue.key}`, [], true)
   resourceStore.set(
-    `work:${currentUser.id}:transitions:${currentIssue.key}`,
+    `${accessPrefix(currentUser)}transitions:${currentIssue.key}`,
     [{ id: 'resolve', display: 'Решить' }],
     true,
   )
@@ -185,6 +196,140 @@ afterEach(() => {
 })
 
 describe('IssueWorkbench', () => {
+  it.each(['permissions', 'read-revoked', 'tag', 'queue'] as const)(
+    'isolates cached payload and actions after a same-ID %s change, including remount',
+    async (change) => {
+      const client = apiClient()
+      const commits: string[] = []
+      const renderTree = (currentUser: User, currentPark: Park) => (
+        <Harness><Profiler id="access" onRender={() => commits.push(document.body.textContent ?? '')}>
+          <IssueWorkbench apiClient={client} user={currentUser} selectedPark={currentPark}
+            state={state} issueKey={issue.key} onAuthorizationFailure={vi.fn(async () => undefined)}
+            onStateChange={vi.fn()} onOpenIssue={vi.fn()} onCloseIssue={vi.fn()} />
+        </Profiler></Harness>
+      )
+      const view = render(renderTree(user, park))
+      await screen.findByRole('heading', { name: issue.summary })
+      const pendingDetail = deferred<TrackerIssueDetail>()
+      const pendingList = deferred<Paged<TrackerIssue>>()
+      vi.mocked(client.trackerIssue).mockImplementation(() => pendingDetail.promise)
+      vi.mocked(client.trackerIssues).mockImplementation(() => pendingList.promise)
+      const nextPark = { ...park, ...(change === 'tag' ? { tag: 'Beta' } : {}),
+        ...(change === 'queue' ? { tracker_queue: 'NEWQUEUE' } : {}) }
+      const nextUser = { ...user, parks: [nextPark], permissions: change === 'permissions'
+        ? ['nav.tasks', 'tracker.read'] : change === 'read-revoked' ? ['nav.tasks'] : user.permissions }
+      const before = commits.length
+      view.rerender(renderTree(nextUser, nextPark))
+      expect(commits.slice(before).every((text) => !text.includes(issue.summary))).toBe(true)
+      expect(screen.queryByRole('button', { name: ru.tracker.actions.close })).not.toBeInTheDocument()
+      view.unmount()
+      render(renderTree(nextUser, nextPark))
+      expect(screen.queryByText(issue.summary)).not.toBeInTheDocument()
+      await act(async () => {
+        if (change === 'read-revoked') {
+          pendingDetail.resolve(issue)
+          pendingList.resolve(page())
+        } else {
+          pendingDetail.reject(new TypeError('offline'))
+          pendingList.reject(new TypeError('offline'))
+        }
+      })
+      expect(screen.queryByText(issue.summary)).not.toBeInTheDocument()
+      if (change === 'read-revoked') {
+        expect(client.trackerIssue).toHaveBeenCalledTimes(1)
+        expect(client.trackerIssues).toHaveBeenCalledTimes(1)
+      }
+    },
+  )
+
+  it.each(['success', '401'] as const)('does not reuse an old access in-flight %s for the new scope', async (result) => {
+    const pending = deferred<TrackerIssueDetail>()
+    const nextIssue = { ...issue, summary: 'Задача новой области', capabilities: { ...capabilities, close: false } }
+    const client = apiClient({ trackerIssue: vi.fn().mockImplementationOnce(() => pending.promise).mockResolvedValue(nextIssue) })
+    const onAuthorizationFailure = vi.fn(async () => undefined)
+    const tree = (currentPark: Park) => <Harness><IssueWorkbench apiClient={client}
+      user={{ ...user, parks: [currentPark] }} selectedPark={currentPark} state={state} issueKey={issue.key}
+      onAuthorizationFailure={onAuthorizationFailure} onStateChange={vi.fn()} onOpenIssue={vi.fn()} onCloseIssue={vi.fn()} /></Harness>
+    const view = render(tree(park), { reactStrictMode: true })
+    const nextPark = { ...park, tag: 'Beta' }
+    view.rerender(tree(nextPark))
+    expect(await screen.findByRole('heading', { name: nextIssue.summary })).toBeInTheDocument()
+    await act(async () => {
+      if (result === 'success') pending.resolve(issue)
+      else pending.reject(new ApiError(401))
+    })
+    expect(screen.getByRole('heading', { name: nextIssue.summary })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: ru.tracker.actions.close })).not.toBeInTheDocument()
+    expect(onAuthorizationFailure).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['issue', 'success'], ['issue', '401'],
+    ['park', 'success'], ['park', '401'],
+    ['principal', 'success'], ['principal', '401'],
+  ] as const)('ignores a pending close %s replacement followed by old %s', async (change, result) => {
+    const pending = deferred<ReturnType<typeof actionResult>>()
+    const nextIssue = { ...issue, key: change === 'issue' ? 'ROBOPARK-99' : issue.key, summary: 'Новый открытый экран' }
+    const nextPark = change === 'park' ? { ...park, id: 8, tag: 'Beta' } : park
+    const nextUser = change === 'principal' ? { ...user, id: 4, username: 'next-operator' } : user
+    const client = apiClient({ trackerClose: vi.fn(() => pending.promise) })
+    const onCloseIssue = vi.fn()
+    const onAuthorizationFailure = vi.fn(async () => undefined)
+    const tree = (replacement: boolean) => <Harness><IssueWorkbench apiClient={client}
+      user={replacement ? nextUser : user} selectedPark={replacement ? nextPark : park}
+      issueKey={replacement ? nextIssue.key : issue.key} state={state}
+      onCloseIssue={onCloseIssue} onAuthorizationFailure={onAuthorizationFailure}
+      onOpenIssue={vi.fn()} onStateChange={vi.fn()} /></Harness>
+    const view = render(tree(false), { reactStrictMode: true })
+    await screen.findByRole('heading', { name: issue.summary })
+    fireEvent.click(screen.getByRole('button', { name: ru.tracker.actions.close }))
+    fireEvent.click(screen.getByRole('button', { name: 'Подтвердить закрытие' }))
+    expect(client.trackerClose).toHaveBeenCalledWith(issue.key)
+    vi.mocked(client.trackerIssue).mockResolvedValue(nextIssue)
+    view.rerender(tree(true))
+    await screen.findByRole('heading', { name: nextIssue.summary })
+    const invalidate = vi.spyOn(resourceStore, 'invalidate')
+    const readCounts = [vi.mocked(client.trackerIssues).mock.calls.length, vi.mocked(client.trackerIssue).mock.calls.length]
+    await act(async () => {
+      if (result === 'success') pending.resolve(actionResult('close'))
+      else pending.reject(new ApiError(401))
+    })
+
+    expect(onCloseIssue).not.toHaveBeenCalled()
+    expect(onAuthorizationFailure).not.toHaveBeenCalled()
+    expect(invalidate).not.toHaveBeenCalled()
+    expect([vi.mocked(client.trackerIssues).mock.calls.length, vi.mocked(client.trackerIssue).mock.calls.length]).toEqual(readCounts)
+    expect(screen.getByRole('heading', { name: nextIssue.summary })).toBeInTheDocument()
+  })
+
+  it('starts a fresh load when access returns before its obsolete first load finishes', async () => {
+    const pending = deferred<TrackerIssueDetail>()
+    const currentIssue = { ...issue, summary: 'Актуальная задача после возврата' }
+    const client = apiClient({ trackerIssue: vi.fn().mockImplementationOnce(() => pending.promise).mockResolvedValue(currentIssue) })
+    const tree = (selectedPark: Park) => <Harness><IssueWorkbench apiClient={client} user={user}
+      selectedPark={selectedPark} state={state} issueKey={issue.key} onCloseIssue={vi.fn()}
+      onAuthorizationFailure={vi.fn(async () => undefined)} onOpenIssue={vi.fn()} onStateChange={vi.fn()} /></Harness>
+    const view = render(tree(park), { reactStrictMode: true })
+    view.rerender(tree({ ...park, tag: 'Beta' }))
+    await screen.findByRole('heading', { name: currentIssue.summary })
+    view.rerender(tree(park))
+    await waitFor(() => expect(client.trackerIssue).toHaveBeenCalledTimes(3))
+    await act(async () => { pending.resolve(issue) })
+    expect(screen.getByRole('heading', { name: currentIssue.summary })).toBeInTheDocument()
+  })
+
+  it('still closes and refreshes the current owner after StrictMode re-setup', async () => {
+    const pending = deferred<ReturnType<typeof actionResult>>()
+    const client = apiClient({ trackerClose: vi.fn(() => pending.promise) })
+    const { onCloseIssue } = renderWorkbench({ client, strictMode: true })
+    await screen.findByRole('heading', { name: issue.summary })
+    fireEvent.click(screen.getByRole('button', { name: ru.tracker.actions.close }))
+    fireEvent.click(screen.getByRole('button', { name: 'Подтвердить закрытие' }))
+    await act(async () => { pending.resolve(actionResult('close')) })
+    expect(onCloseIssue).toHaveBeenCalledOnce()
+    expect(client.trackerIssue).toHaveBeenCalledTimes(2)
+  })
+
   it('loads the URL-selected issue, exposes its robot and paginates through URL state', async () => {
     const client = apiClient()
     const { onStateChange } = renderWorkbench({ client })
@@ -286,12 +431,12 @@ describe('IssueWorkbench', () => {
 
     await screen.findByText('Действие выполнено')
     expect(invalidate).toHaveBeenCalledTimes(4)
-    expect(invalidate).toHaveBeenCalledWith(`work:${user.id}:list:${park.id}:`, {
+    expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}list:${park.id}:`, {
       prefix: true,
     })
-    expect(invalidate).toHaveBeenCalledWith(`work:${user.id}:issue:${issue.key}`)
-    expect(invalidate).toHaveBeenCalledWith(`work:${user.id}:comments:${issue.key}`)
-    expect(invalidate).toHaveBeenCalledWith(`work:${user.id}:transitions:${issue.key}`)
+    expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}issue:${issue.key}`)
+    expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}comments:${issue.key}`)
+    expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}transitions:${issue.key}`)
     expect(clearAll).not.toHaveBeenCalled()
   })
 
@@ -383,7 +528,7 @@ describe('IssueWorkbench', () => {
       expect(screen.queryByLabelText(ru.tracker.comments)).not.toBeInTheDocument()
       expect(onAuthorizationFailure).toHaveBeenCalledTimes(1)
       expect(resourceStore.get(listKey())).toBeUndefined()
-      expect(resourceStore.get(`work:${user.id}:issue:${issue.key}`)).toBeUndefined()
+      expect(resourceStore.get(`${accessPrefix()}issue:${issue.key}`)).toBeUndefined()
       expect(resourceStore.get('work:30:list:7:other')).toEqual({ secret: 'other-user' })
       expect(resourceStore.get('overview:3')).toEqual({ secret: 'other-domain' })
 

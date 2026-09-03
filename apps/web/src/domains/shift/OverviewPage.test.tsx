@@ -12,6 +12,7 @@ import {
 } from '../../api'
 import { AuthContext } from '../../auth-context'
 import { ParkScopeProvider } from '../../app/park/ParkScopeProvider'
+import { ParkScopeContext } from '../../app/park/parkScope'
 import { resourceStore, resetCoalescingForTests } from '../../lib/resource'
 import type { OverviewApiClient, OverviewPayload } from './overviewData'
 import { OverviewPage } from './OverviewPage'
@@ -75,18 +76,36 @@ function client(overrides: Partial<OverviewApiClient> = {}): OverviewApiClient {
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise
+    reject = rejectPromise
   })
-  return { promise, resolve }
+  return { promise, resolve, reject }
+}
+
+function scopedOverviewTree(user: User, selectedPark: Park, apiClient: OverviewApiClient,
+  refreshUser = vi.fn(async () => user), onRender = () => {}) {
+  return <MemoryRouter><AuthContext.Provider value={{ user, loading: false,
+    refreshUser, login: async () => user, logout: async () => undefined }}>
+    <ParkScopeContext.Provider value={{ selectedPark, parkId: selectedPark.id, parks: user.parks,
+      loading: false, locked: false, setParkId: vi.fn(), refreshParks: async () => undefined }}>
+      <Profiler id="access" onRender={onRender}><OverviewPage apiClient={apiClient} /></Profiler>
+    </ParkScopeContext.Provider>
+  </AuthContext.Provider></MemoryRouter>
 }
 
 function cacheKey(user: User, parkId: number | null = park.id): string {
-  if (user.role === 'royal') {
-    const ids = user.parks.filter((item) => item.is_active !== false).map((item) => item.id).sort((a, b) => a - b)
-    return `overview:${user.id}:royal:fleet:${ids.join(',')}`
-  }
-  return `overview:${user.id}:${user.role}:${parkId ?? 'fleet'}`
+  const scope = (item: Park) => [item.id, item.tag?.trim(), item.tracker_queue?.trim(), item.is_active !== false]
+  const parks = [...user.parks].sort((a, b) => a.id - b.id)
+  const selected = parks.find((item) => item.id === parkId)
+  const keyScope = user.role === 'royal'
+    ? `fleet:${parks.filter((item) => item.is_active !== false).map((item) => item.id).join(',')}` : parkId
+  return `overview:${user.id}:${user.role}:${keyScope}:${JSON.stringify([
+    user.username, user.tracker_login, user.access_status, Boolean(user.must_change_password),
+    [...new Set(user.permissions ?? [])].sort(), parks.map(scope), parks.map(scope),
+    user.role !== 'royal' && selected ? scope(selected) : null,
+  ])}`
 }
 
 function payload(): OverviewPayload {
@@ -158,6 +177,72 @@ afterEach(() => {
 })
 
 describe('OverviewPage', () => {
+  it.each(['permissions', 'read-revoked', 'tag', 'queue'] as const)(
+    'suppresses old scope cache after a same-ID %s change, including remount', async (change) => {
+      const user = makeUser({ role: 'field_lead' })
+      const apiClient = client()
+      const commits: string[] = []
+      const record = () => { commits.push(document.body.textContent ?? '') }
+      const view = render(scopedOverviewTree(user, park, apiClient, undefined, record))
+      await screen.findByTestId('overview-scope')
+      expect(document.body).toHaveTextContent('ROBOPARK-42')
+      const pending = deferred<DashboardSummary>()
+      vi.mocked(apiClient.dashboardSummary).mockImplementation(() => pending.promise)
+      const nextPark = { ...park, ...(change === 'tag' ? { tag: 'Beta' } : {}),
+        ...(change === 'queue' ? { tracker_queue: 'NEWQUEUE' } : {}) }
+      const nextUser = { ...user, parks: [nextPark], permissions: change === 'permissions'
+        ? ['nav.dashboard', 'nav.tasks', 'tracker.read']
+        : change === 'read-revoked' ? ['nav.dashboard', 'nav.tasks'] : user.permissions }
+      const before = commits.length
+      view.rerender(scopedOverviewTree(nextUser, nextPark, apiClient, undefined, record))
+      expect(commits.slice(before).every((text) => !text.includes('ROBOPARK-42'))).toBe(true)
+      view.unmount()
+      render(scopedOverviewTree(nextUser, nextPark, apiClient))
+      expect(document.body).not.toHaveTextContent('ROBOPARK-42')
+      await act(async () => { pending.reject(new TypeError('offline')) })
+      expect(await screen.findByText('Нет сети')).toBeInTheDocument()
+      expect(document.body).not.toHaveTextContent('ROBOPARK-42')
+      if (change === 'read-revoked') expect(apiClient.trackerIssues).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it.each(['success', '401'] as const)('ignores an old scope in-flight %s after access changes in StrictMode', async (result) => {
+    const pending = deferred<DashboardSummary>()
+    const user = makeUser({ role: 'field_lead' })
+    const nextUser = { ...user, permissions: ['nav.dashboard', 'nav.tasks'] }
+    const apiClient = client({ dashboardSummary: vi.fn().mockImplementationOnce(() => pending.promise)
+      .mockResolvedValue({ ...summary, moving: [], arrived: 9 }) })
+    const refreshUser = vi.fn(async () => nextUser)
+    const view = render(scopedOverviewTree(user, park, apiClient, refreshUser), { reactStrictMode: true })
+    view.rerender(scopedOverviewTree(nextUser, park, apiClient, refreshUser))
+    expect(await screen.findByTestId('overview-scope')).toBeInTheDocument()
+    expect(screen.getByTestId('overview-metrics')).toHaveTextContent('9')
+    await act(async () => {
+      if (result === 'success') pending.resolve(summary)
+      else pending.reject(new ApiError(401))
+    })
+    expect(screen.getByTestId('overview-metrics')).toHaveTextContent('9')
+    expect(document.body).not.toHaveTextContent('ROBOPARK-42')
+    expect(apiClient.trackerIssues).not.toHaveBeenCalled()
+    expect(refreshUser).not.toHaveBeenCalled()
+  })
+
+  it('starts a fresh summary when access returns before its obsolete first load finishes', async () => {
+    const pending = deferred<DashboardSummary>()
+    const user = makeUser({ role: 'field_lead' })
+    const nextUser = { ...user, permissions: ['nav.dashboard', 'nav.tasks'] }
+    const apiClient = client({ dashboardSummary: vi.fn().mockImplementationOnce(() => pending.promise)
+      .mockResolvedValue({ ...summary, moving: [], arrived: 9 }) })
+    const view = render(scopedOverviewTree(user, park, apiClient), { reactStrictMode: true })
+    view.rerender(scopedOverviewTree(nextUser, park, apiClient))
+    await screen.findByTestId('overview-scope')
+    view.rerender(scopedOverviewTree(user, park, apiClient))
+    await waitFor(() => expect(apiClient.dashboardSummary).toHaveBeenCalledTimes(3))
+    await act(async () => { pending.resolve(summary) })
+    expect(screen.getByTestId('overview-metrics')).toHaveTextContent('9')
+    expect(document.body).not.toHaveTextContent('ROBOPARK-42')
+  })
+
   it('renders scope, state, risk, action, queue and current metrics in semantic order', async () => {
     const dashboardHistory = vi.spyOn(api, 'dashboardHistory')
     const operatorNowReport = vi.spyOn(api, 'operatorNowReport')

@@ -1,5 +1,5 @@
 import { act, render, screen } from '@testing-library/react'
-import { useEffect } from 'react'
+import { StrictMode, useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, ApiTimeoutError, api, type User } from './api'
 import { AuthProvider } from './auth'
@@ -32,6 +32,13 @@ const legacyRecentKey = 'robopark.recentRobots'
 const resourceKey = 'protected:test'
 
 let currentAuth: AuthContextValue | null = null
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
+}
 
 function AuthProbe() {
   const auth = useAuth()
@@ -82,6 +89,87 @@ describe('AuthProvider session boundaries', () => {
     resourceStore.clearAll()
     localStorage.clear()
     vi.restoreAllMocks()
+  })
+
+  it.each(['success', '401'] as const)('ignores an old refresh %s after a replacement login', async (result) => {
+    const pending = deferred<User>()
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount)
+      .mockImplementationOnce(() => pending.promise).mockResolvedValueOnce(replacementAccount)
+    vi.spyOn(api, 'login').mockResolvedValueOnce(undefined)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    const refresh = currentAuth!.refreshUser().catch(() => undefined)
+    await act(async () => { await currentAuth!.login('replacement-account', 'password') })
+    seedProtectedState()
+
+    await act(async () => {
+      if (result === 'success') pending.resolve(oldAccount)
+      else pending.reject(new ApiError(401))
+      await refresh
+    })
+
+    expect(screen.getByText('replacement-account')).toBeInTheDocument()
+    expectProtectedStateRetained()
+  })
+
+  it('does not republish an old refresh after logout completed', async () => {
+    const pending = deferred<User>()
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockImplementationOnce(() => pending.promise)
+    vi.spyOn(api, 'logout').mockResolvedValueOnce(undefined)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    const refresh = currentAuth!.refreshUser()
+    await act(async () => { await currentAuth!.logout() })
+    await act(async () => { pending.resolve(oldAccount); await refresh })
+
+    expect(screen.getByText('anonymous')).toBeInTheDocument()
+  })
+
+  it.each(['bootstrap', 'login'] as const)('does not publish an old %s response over a replacement login', async (origin) => {
+    const pending = deferred<User>()
+    const me = vi.spyOn(api, 'me')
+    vi.spyOn(api, 'login').mockResolvedValue(undefined)
+    if (origin === 'login') me.mockResolvedValueOnce(oldAccount)
+    me.mockImplementationOnce(() => pending.promise).mockResolvedValueOnce(replacementAccount)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    let oldLogin: Promise<unknown> | undefined
+    if (origin === 'login') {
+      await screen.findByText('old-account')
+      await act(async () => { oldLogin = currentAuth!.login('old-account', 'password').catch(() => undefined) })
+    }
+    await act(async () => { await currentAuth!.login('replacement-account', 'password') })
+    await act(async () => { pending.resolve(oldAccount); await oldLogin })
+
+    expect(screen.getByText('replacement-account')).toBeInTheDocument()
+  })
+
+  it('does not let a pending logout clear the next login or its protected state', async () => {
+    const pending = deferred<void>()
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockResolvedValueOnce(replacementAccount)
+    vi.spyOn(api, 'logout').mockImplementationOnce(() => pending.promise)
+    vi.spyOn(api, 'login').mockResolvedValueOnce(undefined)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    let logout!: Promise<void>
+    act(() => { logout = currentAuth!.logout() })
+    await act(async () => { await currentAuth!.login('replacement-account', 'password') })
+    seedProtectedState()
+    await act(async () => { pending.resolve(); await logout })
+
+    expect(screen.getByText('replacement-account')).toBeInTheDocument()
+    expectProtectedStateRetained()
+  })
+
+  it('ignores a superseded StrictMode bootstrap denial', async () => {
+    const first = deferred<User>()
+    vi.spyOn(api, 'me').mockImplementationOnce(() => first.promise).mockResolvedValueOnce(replacementAccount)
+    render(<StrictMode><AuthProvider><AuthProbe /></AuthProvider></StrictMode>)
+    await screen.findByText('replacement-account')
+    seedProtectedState()
+    await act(async () => { first.reject(new ApiError(401)) })
+
+    expect(screen.getByText('replacement-account')).toBeInTheDocument()
+    expectProtectedStateRetained()
   })
 
   it('clears protected state when the initial session request returns 401', async () => {

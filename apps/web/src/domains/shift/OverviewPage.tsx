@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, type Park, type User } from '../../api'
 import { useAuth } from '../../auth-context'
 import { useParkScope } from '../../app/park/parkScope'
@@ -46,9 +46,17 @@ function activeParkScope(parks: Park[]): string {
     .join(',')
 }
 
-function overviewResourceKey(user: User, parkId: number | null, parks: Park[]): string {
+function overviewResourceKey(user: User, parkId: number | null, parks: Park[], selectedPark: Park | null): string {
   const scope = user.role === 'royal' ? `fleet:${activeParkScope(parks)}` : parkId
-  return `overview:${user.id}:${user.role}:${scope}`
+  const parkScope = (park: Park) => [park.id, park.tag?.trim(), park.tracker_queue?.trim(), park.is_active !== false]
+  const access = JSON.stringify([
+    user.username, user.tracker_login, user.access_status, Boolean(user.must_change_password),
+    [...new Set(user.permissions ?? [])].sort(),
+    [...parks].sort((a, b) => a.id - b.id).map(parkScope),
+    [...user.parks].sort((a, b) => a.id - b.id).map(parkScope),
+    user.role !== 'royal' && selectedPark ? parkScope(selectedPark) : null,
+  ])
+  return `overview:${user.id}:${user.role}:${scope}:${access}`
 }
 
 function projectOverviewPayload(
@@ -155,6 +163,7 @@ function OverviewResourceOwner({
   parkId,
   selectedPark,
   parks,
+  onAuthorizationFailure,
 }: {
   resourceKey: string
   load: () => Promise<OverviewPayload>
@@ -162,6 +171,7 @@ function OverviewResourceOwner({
   parkId: number | null
   selectedPark: Park | null
   parks: Park[]
+  onAuthorizationFailure: (error: unknown) => void
 }) {
   const [now, setNow] = useState(() => new Date())
 
@@ -171,6 +181,11 @@ function OverviewResourceOwner({
   }, [])
 
   const overview = useCachedResource(resourceKey, load)
+  // Error ownership belongs to the currently rendered resource, even when
+  // StrictMode or a same-access remount coalesces an earlier request.
+  useEffect(() => {
+    if (overview.error) onAuthorizationFailure(overview.error)
+  }, [onAuthorizationFailure, overview.error])
   const payload = projectOverviewPayload(overview.data, user, selectedPark, parks)
   const failure = overview.error
     ? classifyApiError(overview.error, 'Не удалось загрузить обзор смены.')
@@ -179,6 +194,9 @@ function OverviewResourceOwner({
     payload && failure && retainableFailureKinds.has(failure.kind),
   )
 
+  // The principal boundary owns the denial UI; never briefly paint a second
+  // error node (or cached data) while that boundary is being notified.
+  if (failure?.kind === 'unauthorized' || failure?.kind === 'forbidden') return null
   if (failure && !canRetainData) {
     return (
       <ErrorState
@@ -239,32 +257,56 @@ function OverviewUserPage({
   const blockedErrorRef = useRef<unknown>(null)
   const refreshStartedRef = useRef(false)
   const [authorizationFailure, setAuthorizationFailure] = useState<DomainError | null>(null)
+  const resourceKey = overviewResourceKey(user, parkId, parks, selectedPark)
+  const currentAccess = useRef({ key: resourceKey, generation: 0 })
+  const committedResourceKey = useRef(resourceKey)
+  useLayoutEffect(() => {
+    if (currentAccess.current.key !== resourceKey) {
+      currentAccess.current = { key: resourceKey, generation: currentAccess.current.generation + 1 }
+    }
+    if (committedResourceKey.current !== resourceKey) {
+      resourceStore.invalidate(committedResourceKey.current)
+      committedResourceKey.current = resourceKey
+    }
+  }, [resourceKey])
+
+  const observeAuthorizationFailure = useCallback((error: unknown) => {
+    const failure = classifyApiError(error, 'Не удалось загрузить обзор смены.')
+    if (failure.kind !== 'unauthorized' && failure.kind !== 'forbidden') return
+    blockedRef.current = true
+    blockedErrorRef.current = error
+    resourceStore.invalidate(cachePrefix, { prefix: true })
+    setAuthorizationFailure(failure)
+    if (!refreshStartedRef.current) {
+      refreshStartedRef.current = true
+      void refreshUser().catch(() => undefined)
+    }
+  }, [cachePrefix, refreshUser])
 
   const guardedLoad = useCallback(async () => {
-    if (blockedRef.current) {
-      throw blockedErrorRef.current ?? new Error('overview_authorization_blocked')
-    }
-    try {
-      const next = await loadOverview(apiClient, user, selectedPark, parks)
+    const accessGeneration = currentAccess.current.generation
+    const assertCurrentAccess = () => {
+      if (currentAccess.current.key !== resourceKey || currentAccess.current.generation !== accessGeneration) {
+        throw new Error('overview_access_changed')
+      }
       if (blockedRef.current) {
         throw blockedErrorRef.current ?? new Error('overview_authorization_blocked')
       }
-      return next
-    } catch (error) {
-      const failure = classifyApiError(error, 'Не удалось загрузить обзор смены.')
-      if (failure.kind === 'unauthorized' || failure.kind === 'forbidden') {
-        blockedRef.current = true
-        blockedErrorRef.current = error
-        resourceStore.invalidate(cachePrefix, { prefix: true })
-        setAuthorizationFailure(failure)
-        if (!refreshStartedRef.current) {
-          refreshStartedRef.current = true
-          void refreshUser().catch(() => undefined)
-        }
-      }
-      throw error
     }
-  }, [apiClient, cachePrefix, parks, refreshUser, selectedPark, user])
+    assertCurrentAccess()
+    const next = await loadOverview({
+      ...apiClient,
+      dashboardSummary: async (id) => {
+        const summary = await apiClient.dashboardSummary(id)
+        // Do not enter the old queue stage after access was replaced while
+        // the summary request was pending.
+        assertCurrentAccess()
+        return summary
+      },
+    }, user, selectedPark, parks)
+    assertCurrentAccess()
+    return next
+  }, [apiClient, parks, resourceKey, selectedPark, user])
 
   if (authorizationFailure) {
     return (
@@ -290,8 +332,6 @@ function OverviewUserPage({
     )
   }
 
-  const resourceKey = overviewResourceKey(user, parkId, parks)
-
   return (
     <PageLayout title="Смена / Обзор">
       {user.role === 'driver' ? (
@@ -309,6 +349,7 @@ function OverviewUserPage({
         <OverviewResourceOwner
           key={resourceKey}
           load={guardedLoad}
+          onAuthorizationFailure={observeAuthorizationFailure}
           parkId={parkId}
           parks={parks}
           resourceKey={resourceKey}
