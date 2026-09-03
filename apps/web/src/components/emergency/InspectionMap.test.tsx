@@ -1,0 +1,57 @@
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { ThemeProvider, useTheme } from '../../design-system/theme/ThemeProvider'
+import { InspectionMap } from './InspectionMap'
+const mocks = vi.hoisted(() => {
+  const map = { setView: vi.fn(), on: vi.fn(), invalidateSize: vi.fn(), remove: vi.fn(), panTo: vi.fn(), stop: vi.fn() }
+  const marker = { addTo: vi.fn(), getLatLng: vi.fn(() => ({ lat: 55, lng: 37 })), setLatLng: vi.fn() }
+  return { map, marker, create: vi.fn(), tiles: vi.fn() }
+})
+vi.mock('leaflet', () => ({ default: { Icon: { Default: { prototype: {}, mergeOptions: vi.fn() } }, map: mocks.create, marker: () => mocks.marker, tileLayer: mocks.tiles } }))
+let reduced = false
+const listeners = new Set<(event: MediaQueryListEvent) => void>()
+function Controls() { const { setPreference } = useTheme(); return <button onClick={() => setPreference('light')}>light</button> }
+function tree(lat = 55, follow = true, onUserPan = vi.fn()) { return <ThemeProvider><Controls /><InspectionMap lat={lat} lon={37} follow={follow} onUserPan={onUserPan} /></ThemeProvider> }
+beforeEach(() => {
+  vi.clearAllMocks(); reduced = false; listeners.clear(); localStorage.clear()
+  mocks.map.setView.mockReturnValue(mocks.map); mocks.create.mockReturnValue(mocks.map)
+  mocks.marker.addTo.mockReturnValue(mocks.marker); mocks.tiles.mockReturnValue({ addTo: vi.fn() })
+  vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduced-motion') ? reduced : query.includes('dark'), addEventListener: (_name: string, cb: (e: MediaQueryListEvent) => void) => { if (query.includes('reduced-motion')) listeners.add(cb) }, removeEventListener: (_name: string, cb: (e: MediaQueryListEvent) => void) => listeners.delete(cb) }))
+})
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+function motion(value: boolean) { reduced = value; act(() => listeners.forEach(listener => listener({ matches: value } as MediaQueryListEvent))) }
+it('changes resolved theme on the same map and preserves provider attribution and manual pan', () => {
+  const pan = vi.fn(); const view = render(tree(55, true, pan))
+  expect(view.container.querySelector('.inspection-map')).toHaveAttribute('data-map-theme', 'dark')
+  fireEvent.click(screen.getByRole('button', { name: 'light' }))
+  expect(view.container.querySelector('.inspection-map')).toHaveAttribute('data-map-theme', 'light')
+  expect(mocks.create).toHaveBeenCalledTimes(1)
+  expect(mocks.tiles).toHaveBeenCalledWith('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', expect.objectContaining({ attribution: expect.stringContaining('OpenStreetMap') }))
+  const drag = mocks.map.on.mock.calls.find(call => call[0] === 'dragstart')![1]; drag(); expect(pan).toHaveBeenCalledOnce()
+  view.rerender(tree(56, false, pan)); expect(mocks.map.panTo).not.toHaveBeenCalled()
+})
+it('reduced motion moves synchronously without RAF and follows without animation', () => {
+  reduced = true
+  const raf = vi.spyOn(window, 'requestAnimationFrame')
+  const view = render(tree()); view.rerender(tree(56))
+  expect(mocks.marker.setLatLng).toHaveBeenLastCalledWith([56, 37])
+  expect(raf).not.toHaveBeenCalled()
+  expect(mocks.map.panTo).toHaveBeenLastCalledWith([56, 37], { animate: false })
+})
+it('switching motion off cancels marker and map animation; switching back restores interpolation', () => {
+  let tick!: FrameRequestCallback
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation(cb => { tick = cb; return 42 })
+  const cancel = vi.spyOn(window, 'cancelAnimationFrame')
+  const view = render(tree()); view.rerender(tree(57))
+  expect(mocks.map.panTo).toHaveBeenLastCalledWith([57, 37], { animate: true, duration: 2.4 })
+  tick(performance.now() + 1250)
+  expect(mocks.marker.setLatLng.mock.calls.at(-1)![0][0]).toBeGreaterThan(55)
+  motion(true)
+  expect(cancel).toHaveBeenCalledWith(42); expect(mocks.map.stop).toHaveBeenCalled()
+  expect(mocks.marker.setLatLng).toHaveBeenLastCalledWith([57, 37])
+  expect(mocks.map.panTo).toHaveBeenLastCalledWith([57, 37], { animate: false })
+  motion(false); view.rerender(tree(58))
+  expect(mocks.map.panTo).toHaveBeenLastCalledWith([58, 37], { animate: true, duration: 2.4 })
+  expect(mocks.create).toHaveBeenCalledTimes(1)
+  view.unmount(); expect(listeners.size).toBe(0)
+})

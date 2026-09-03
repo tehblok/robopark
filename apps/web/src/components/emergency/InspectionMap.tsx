@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useTheme } from '../../design-system/theme/ThemeProvider'
 import L from 'leaflet'
 import iconUrl from 'leaflet/dist/images/marker-icon.png'
 import iconRetinaUrl from 'leaflet/dist/images/marker-icon-2x.png'
@@ -26,12 +27,21 @@ export function InspectionMap({
   onUserPan: () => void
   visible?: boolean
 }) {
+  const { resolvedTheme } = useTheme()
+  const [reducedMotion, setReducedMotion] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
   const rootRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
   const markerRef = useRef<L.Marker | null>(null)
   const skipPanRef = useRef(false)
   const onUserPanRef = useRef(onUserPan)
   const animRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    const media = matchMedia('(prefers-reduced-motion: reduce)')
+    const change = (event: MediaQueryListEvent) => setReducedMotion(event.matches)
+    media.addEventListener('change', change)
+    return () => media.removeEventListener('change', change)
+  }, [])
 
   useEffect(() => {
     onUserPanRef.current = onUserPan
@@ -73,6 +83,7 @@ export function InspectionMap({
     const map = mapRef.current
     if (!map || lat == null || lon == null) return
     skipPanRef.current = true
+    if (reducedMotion) map.stop()
     if (animRef.current != null) {
       window.cancelAnimationFrame(animRef.current)
       animRef.current = null
@@ -80,6 +91,9 @@ export function InspectionMap({
     if (!markerRef.current) {
       markerRef.current = L.marker([lat, lon]).addTo(map)
       map.setView([lat, lon], 17, { animate: false })
+    } else if (reducedMotion) {
+      markerRef.current.setLatLng([lat, lon])
+      if (follow) map.panTo([lat, lon], { animate: false })
     } else {
       const marker = markerRef.current
       const from = marker.getLatLng()
@@ -103,12 +117,12 @@ export function InspectionMap({
     }
     const release = window.setTimeout(() => {
       skipPanRef.current = false
-    }, FOLLOW_PAN_S * 1000 + 300)
+    }, reducedMotion ? 0 : FOLLOW_PAN_S * 1000 + 300)
     return () => window.clearTimeout(release)
-  }, [lat, lon, follow])
+  }, [lat, lon, follow, reducedMotion])
 
   if (lat == null || lon == null) {
     return null
   }
-  return <div className="inspection-map" ref={rootRef} />
+  return <div className="inspection-map" data-map-theme={resolvedTheme} ref={rootRef} />
 }
