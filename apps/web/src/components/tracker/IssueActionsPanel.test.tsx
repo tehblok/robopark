@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api, type TrackerIssueCapabilities } from '../../api'
@@ -5,6 +6,34 @@ import { ru } from '../../i18n/ru'
 import { IssueActionsPanel } from './IssueActionsPanel'
 
 const noop = async () => {}
+const workCss = readFileSync('src/domains/work/work.css', 'utf8')
+
+function declaredStyles(element: Element, mediaCondition?: string): Record<string, string> {
+  const style = document.createElement('style')
+  style.textContent = workCss
+  document.head.append(style)
+
+  const sheet = style.sheet as CSSStyleSheet
+  const rules = mediaCondition
+    ? Array.from(sheet.cssRules).find(
+        (rule): rule is CSSMediaRule =>
+          'conditionText' in rule && rule.conditionText === mediaCondition,
+      )?.cssRules ?? []
+    : sheet.cssRules
+  const declarations: Record<string, string> = {}
+
+  for (const rule of Array.from(rules)) {
+    if (!('selectorText' in rule && 'style' in rule)) continue
+    const styleRule = rule as CSSStyleRule
+    if (!element.matches(styleRule.selectorText)) continue
+    for (const property of Array.from(styleRule.style)) {
+      declarations[property] = styleRule.style.getPropertyValue(property)
+    }
+  }
+
+  style.remove()
+  return declarations
+}
 
 const disabledCapabilities: TrackerIssueCapabilities = {
   comment: false,
@@ -240,6 +269,37 @@ describe('IssueActionsPanel', () => {
 
     expect(trackerUsers).toHaveBeenCalledOnce()
     expect(trackerUsers).toHaveBeenCalledWith('ivan')
+  })
+
+  it('stacks the assignment form without an intrinsic-width overflow on compact screens', () => {
+    render(
+      <div className="rp-workbench">
+        <IssueActionsPanel
+          {...baseProps}
+          capabilities={{ ...disabledCapabilities, assign: true }}
+        />
+      </div>,
+    )
+
+    const input = screen.getByLabelText(ru.tracker.actions.assignPlaceholder)
+    const form = input.closest('form')
+    const submit = screen.getByRole('button', { name: ru.tracker.actions.assign })
+
+    expect(form).not.toBeNull()
+    const formStyles = declaredStyles(form!)
+    expect(formStyles).toMatchObject({
+      'flex-wrap': 'wrap',
+      'max-width': '100%',
+    })
+    expect(Number.parseFloat(formStyles['min-width'] ?? '')).toBe(0)
+    expect(Number.parseFloat(declaredStyles(input)['min-width'] ?? '')).toBe(0)
+    expect(declaredStyles(form!, '(max-width: 599px)')).toMatchObject({
+      display: 'grid',
+      'grid-template-columns': 'minmax(0, 1fr)',
+      width: '100%',
+    })
+    expect(declaredStyles(input, '(max-width: 599px)')).toMatchObject({ width: '100%' })
+    expect(declaredStyles(submit, '(max-width: 599px)')).toMatchObject({ width: '100%' })
   })
 
   it('keeps one dialog alert after close failure and closes only after success', async () => {

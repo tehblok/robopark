@@ -182,7 +182,8 @@ export function IssueDetailPanel({
         {robotReference && (
           <Field label={ru.tracker.fields.robot}>
             <Link
-              aria-label={`Карточка робота ${robotReference}`}
+              aria-label={`${ru.tracker.robotCheck.open} ${robotReference}`}
+              className="rp-work-robot-link"
               to={`/robots/${encodeURIComponent(robotReference)}/check`}
             >
               {robotReference}

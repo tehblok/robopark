@@ -16,7 +16,12 @@ import { ru } from '../../i18n/ru'
 import { resetCoalescingForTests, resourceStore } from '../../lib/resource'
 import { IssueWorkbench, type IssueWorkbenchApiClient } from './IssueWorkbench'
 import { WorkPage } from './WorkPage'
-import type { WorkUrlState } from './workUrl'
+import {
+  buildWorkSearch,
+  readWorkScroll,
+  saveWorkScroll,
+  type WorkUrlState,
+} from './workUrl'
 
 const state: WorkUrlState = {
   filters: { queue: 'ROBOPARK' },
@@ -183,9 +188,15 @@ describe('IssueWorkbench', () => {
     expect(
       await screen.findByRole('heading', { name: issue.summary }),
     ).toBeInTheDocument()
+    const robotCheckLinks = screen.getAllByRole('link', {
+      name: 'Проверить робота 447',
+    })
+    expect(robotCheckLinks).toHaveLength(2)
     expect(
-      screen.getByRole('link', { name: 'Проверить робота 447' }),
-    ).toHaveAttribute('href', '/robots/447/check')
+      robotCheckLinks.every(
+        (link) => link.getAttribute('href') === '/robots/447/check',
+      ),
+    ).toBe(true)
 
     fireEvent.click(screen.getByRole('button', { name: 'Следующая страница' }))
     expect(onStateChange).toHaveBeenCalledWith(
@@ -193,6 +204,28 @@ describe('IssueWorkbench', () => {
       { replace: false },
     )
     expect(client.trackerIssue).toHaveBeenCalledWith(issue.key)
+  })
+
+  it('uses one canonical search key to restore and save list scroll position', async () => {
+    const canonicalSearch = buildWorkSearch(state, park.id)
+    window.history.replaceState(
+      {},
+      '',
+      `/work?sort=oldest&page=1&queue=ROBOPARK&park=${park.id}`,
+    )
+    saveWorkScroll(user.id, canonicalSearch, 384)
+
+    const { container } = renderWorkbench({ selectedIssue: '' })
+    const issueButton = await screen.findByRole('button', {
+      name: `Открыть задачу ${issue.key}: ${issue.summary}`,
+    })
+    const scroller = container.querySelector<HTMLDivElement>('.rp-work-list-scroll')
+    expect(scroller).not.toBeNull()
+    expect(scroller?.scrollTop).toBe(384)
+
+    if (scroller) scroller.scrollTop = 512
+    fireEvent.click(issueButton)
+    expect(readWorkScroll(user.id, canonicalSearch)).toBe(512)
   })
 
   it('never loads transitions when the selected issue capability denies them', async () => {
@@ -431,11 +464,54 @@ describe('IssueWorkbench', () => {
       role: 'dispatcher',
       permissions: ['tracker.read', 'tracker.write', 'nav.tasks'],
     }
-    renderWorkbench({ currentUser: customUser, selectedIssue: '' })
+    const client = apiClient()
+    renderWorkbench({
+      client,
+      currentState: {
+        filters: { queue: 'ROBOPARK', untagged: true },
+        sort: 'oldest',
+        page: 1,
+      },
+      currentUser: customUser,
+      selectedIssue: '',
+    })
 
     await waitFor(() => expect(screen.queryByText(ru.loading)).not.toBeInTheDocument())
     expect(screen.queryByRole('checkbox', { name: 'Без тега парка' })).not.toBeInTheDocument()
+    expect(client.trackerIssues).toHaveBeenCalledWith(expect.objectContaining({
+      park: park.tag,
+      untagged: undefined,
+    }))
+    expect(resourceStore.get(listKey(customUser))).toEqual(page())
+    expect(resourceStore.get(listKey(customUser, park, {
+      filters: { queue: 'ROBOPARK', untagged: true },
+      sort: 'oldest',
+      page: 1,
+    }))).toBeUndefined()
   })
+
+  it.each(['operator', 'admin', 'royal'] as const)(
+    'keeps the untagged request scope for the %s system role',
+    async (role) => {
+      const client = apiClient()
+      renderWorkbench({
+        client,
+        currentState: {
+          filters: { queue: 'ROBOPARK', untagged: true },
+          sort: 'oldest',
+          page: 1,
+        },
+        currentUser: { ...user, role },
+        selectedIssue: '',
+      })
+
+      await waitFor(() => expect(screen.queryByText(ru.loading)).not.toBeInTheDocument())
+      expect(client.trackerIssues).toHaveBeenCalledWith(expect.objectContaining({
+        park: undefined,
+        untagged: true,
+      }))
+    },
+  )
 })
 
 describe('WorkPage cold states', () => {

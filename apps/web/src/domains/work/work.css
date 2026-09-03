@@ -120,6 +120,25 @@
   outline-offset: 2px;
 }
 
+.rp-workbench .issue-assign-form {
+  flex-wrap: wrap;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.rp-workbench .issue-assign-form input {
+  flex: 1 1 9rem;
+  min-width: 0;
+}
+
+.rp-workbench .rp-work-robot-link {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  min-height: var(--rp-control-min-size);
+  min-width: var(--rp-control-min-size);
+}
+
 @media (max-width: 599px) {
   .rp-work-filters {
     grid-template-columns: 1fr;
@@ -151,6 +170,17 @@
   .rp-work-warning {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .rp-workbench .issue-assign-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+  }
+
+  .rp-workbench .issue-assign-form input,
+  .rp-workbench .issue-assign-form .rp-button {
+    width: 100%;
   }
 }
 

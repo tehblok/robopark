@@ -152,7 +152,16 @@ function IssueWorkbenchOwner({
   onAuthorizationFailure,
 }: Required<Pick<IssueWorkbenchProps, 'apiClient'>> & Omit<IssueWorkbenchProps, 'apiClient'>) {
   const cachePrefix = `work:${user.id}:`
-  const listKey = `${cachePrefix}list:${selectedPark.id}:${JSON.stringify(state)}`
+  const allowUntagged = user.role === 'operator'
+    || user.role === 'admin'
+    || user.role === 'royal'
+  const requestState = useMemo<WorkUrlState>(() => {
+    if (allowUntagged || !state.filters.untagged) return state
+    const filters = { ...state.filters }
+    delete filters.untagged
+    return { ...state, filters }
+  }, [allowUntagged, state])
+  const listKey = `${cachePrefix}list:${selectedPark.id}:${JSON.stringify(requestState)}`
   const detailKey = issueKey ? `${cachePrefix}issue:${issueKey}` : ''
   const commentsKey = issueKey ? `${cachePrefix}comments:${issueKey}` : ''
   const blockedRef = useRef(false)
@@ -192,7 +201,7 @@ function IssueWorkbenchOwner({
 
   const list = useCachedResource(
     listKey,
-    () => guarded(() => loadWorkPage(apiClient, state, selectedPark.tag)),
+    () => guarded(() => loadWorkPage(apiClient, requestState, selectedPark.tag)),
   )
   const detail = useCachedResource<TrackerIssueDetail>(
     detailKey,
@@ -241,15 +250,17 @@ function IssueWorkbenchOwner({
     resourceStore.invalidate(`${cachePrefix}transitions:${issueKey}`)
   }, [cachePrefix, commentsKey, detailFailure?.kind, detailKey, issueKey])
 
-  const search = typeof window === 'undefined' ? '' : window.location.search
+  const search = buildWorkSearch(state, selectedPark.id)
+  const listDataAvailable = list.data !== undefined
   const listScrollRef = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
     const element = listScrollRef.current
-    if (element) element.scrollTop = readWorkScroll(user.id, search)
+    if (!element) return undefined
+    element.scrollTop = readWorkScroll(user.id, search)
     return () => {
-      saveWorkScroll(user.id, search, element?.scrollTop ?? 0)
+      saveWorkScroll(user.id, search, element.scrollTop)
     }
-  }, [search, user.id])
+  }, [listDataAvailable, search, user.id])
 
   const saveAndOpenIssue = (key: string) => {
     saveWorkScroll(user.id, search, listScrollRef.current?.scrollTop ?? 0)
@@ -323,10 +334,6 @@ function IssueWorkbenchOwner({
       />
     )
   }
-
-  const allowUntagged = user.role === 'operator'
-    || user.role === 'admin'
-    || user.role === 'royal'
 
   return (
     <div className="rp-work-domain">
