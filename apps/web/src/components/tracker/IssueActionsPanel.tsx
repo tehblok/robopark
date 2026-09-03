@@ -1,6 +1,7 @@
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react'
 import {
   api,
+  ApiError,
   type TrackerIssueCapabilities,
   type TrackerTransition,
   type TrackerUserSuggestion,
@@ -201,7 +202,10 @@ export function IssueActionsPanel({
       setSuccess('Действие выполнено')
       return true
     } catch (caught) {
-      const message = mapApiError(caught) || ru.tracker.actions.failed
+      const safeMessage = mapApiError(caught) || ru.tracker.actions.failed
+      const message = caught instanceof ApiError && caught.requestId
+        ? `${safeMessage} Код запроса: ${caught.requestId}`
+        : safeMessage
       if (name === 'close') {
         setCloseError(message)
       } else {

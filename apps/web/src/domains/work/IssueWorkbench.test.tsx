@@ -125,6 +125,7 @@ function renderWorkbench({
   currentUser = user,
   selectedPark = park,
   onAuthorizationFailure = vi.fn(async () => undefined),
+  strictMode = false,
 }: {
   client?: IssueWorkbenchApiClient
   selectedIssue?: string
@@ -132,6 +133,7 @@ function renderWorkbench({
   currentUser?: User
   selectedPark?: Park
   onAuthorizationFailure?: () => Promise<unknown>
+  strictMode?: boolean
 } = {}) {
   const onStateChange = vi.fn()
   const onOpenIssue = vi.fn()
@@ -148,7 +150,7 @@ function renderWorkbench({
       state={currentState}
       user={currentUser}
     />,
-    { wrapper: Harness },
+    { wrapper: Harness, reactStrictMode: strictMode },
   )
   return {
     ...view,
@@ -176,6 +178,7 @@ function seedCurrentWork(currentUser = user, currentIssue = issue) {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   resourceStore.clearAll()
   resetCoalescingForTests()
   window.history.replaceState({}, '', '/')
@@ -227,6 +230,28 @@ describe('IssueWorkbench', () => {
     if (scroller) scroller.scrollTop = 512
     fireEvent.click(issueButton)
     expect(readWorkScroll(user.id, canonicalSearch)).toBe(512)
+  })
+
+  it('restores and saves document scroll below 900px without detail cleanup erasing it', async () => {
+    vi.stubGlobal('innerWidth', 390)
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    vi.stubGlobal('scrollY', 540)
+    const canonicalSearch = buildWorkSearch(state, park.id)
+    saveWorkScroll(user.id, canonicalSearch, 384)
+    seedCurrentWork()
+    const list = renderWorkbench({ selectedIssue: '', strictMode: true })
+    const row = await screen.findByRole('button', { name: `Открыть задачу ${issue.key}: ${issue.summary}` })
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ top: 384, behavior: 'instant' }))
+    fireEvent.click(row)
+    expect(readWorkScroll(user.id, canonicalSearch)).toBe(540)
+    list.unmount()
+    vi.stubGlobal('scrollY', 0)
+    scrollTo.mockClear()
+    const detail = renderWorkbench()
+    await screen.findByRole('heading', { name: issue.summary })
+    detail.unmount()
+    expect(scrollTo).not.toHaveBeenCalled()
+    expect(readWorkScroll(user.id, canonicalSearch)).toBe(540)
   })
 
   it('never loads transitions when the selected issue capability denies them', async () => {

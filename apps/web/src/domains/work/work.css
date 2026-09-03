@@ -110,6 +110,46 @@
   overflow-wrap: anywhere;
 }
 
+.rp-workbench :is(.issue-status, .issue-badge, .issue-chip, .issue-fields dt, .issue-age, .issue-action-label, .issue-list-count, .issue-key) {
+  font-size: var(--rp-font-size-body);
+}
+
+.rp-workbench .issue-detail-key {
+  align-items: center;
+  display: inline-flex;
+  min-height: 44px;
+  min-width: 44px;
+}
+
+.rp-workbench :is(.issue-key, .issue-detail-key, .rp-work-robot-link) {
+  color: var(--rp-info);
+}
+
+.rp-workbench .issue-status.tone-open {
+  background: var(--rp-info-surface);
+  color: var(--rp-info);
+}
+
+.rp-workbench .issue-avatar {
+  background: var(--rp-action);
+  color: var(--rp-action-on);
+}
+
+.rp-workbench a.btn:not(.btn-secondary):not(.btn-ghost):not(.btn-filter):not(.btn-danger) {
+  background: var(--rp-action);
+  color: var(--rp-action-on);
+}
+
+.rp-workbench a.btn:not(.btn-secondary):not(.btn-ghost):not(.btn-filter):not(.btn-danger):hover {
+  background: var(--rp-action-hover);
+  color: var(--rp-action-on);
+}
+
+.rp-workbench .alert-error {
+  background: var(--rp-critical-surface);
+  color: var(--rp-critical);
+}
+
 .rp-workbench .issue-row {
   transition: background-color var(--rp-motion-fast),
     border-color var(--rp-motion-fast);
@@ -174,6 +214,7 @@
 
   .rp-workbench .issue-assign-form {
     display: grid;
+    flex: 1 0 100%;
     grid-template-columns: minmax(0, 1fr);
     width: 100%;
   }

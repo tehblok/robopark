@@ -253,17 +253,41 @@ function IssueWorkbenchOwner({
   const search = buildWorkSearch(state, selectedPark.id)
   const listDataAvailable = list.data !== undefined
   const listScrollRef = useRef<HTMLDivElement>(null)
+  const savedOnOpenRef = useRef(false)
   useLayoutEffect(() => {
     const element = listScrollRef.current
     if (!element) return undefined
-    element.scrollTop = readWorkScroll(user.id, search)
+    const documentScrolled = window.innerWidth < 900
+    // Sequential detail has no visible list; it must not restore or overwrite
+    // the list's saved document position during its own mount/cleanup.
+    if (documentScrolled && issueKey) return undefined
+    const position = readWorkScroll(user.id, search)
+    let restored = !documentScrolled
+    let frame: number | undefined
+    const timer = documentScrolled ? window.setTimeout(() => {
+      // Shell route focus runs after commit. Restore once after that focus,
+      // leaving browser history policy and the desktop inner scroller alone.
+      frame = window.requestAnimationFrame(() => {
+        window.scrollTo({ top: position, behavior: 'instant' })
+        restored = true
+      })
+    }, 0) : undefined
+    if (!documentScrolled) element.scrollTop = position
     return () => {
-      saveWorkScroll(user.id, search, element.scrollTop)
+      if (timer != null) window.clearTimeout(timer)
+      if (frame != null) window.cancelAnimationFrame(frame)
+      // StrictMode can clean up a freshly mounted cached list before its
+      // deferred restoration. Never replace its saved position in that gap.
+      if (restored && !savedOnOpenRef.current) {
+        saveWorkScroll(user.id, search, documentScrolled ? window.scrollY : element.scrollTop)
+      }
     }
-  }, [listDataAvailable, search, user.id])
+  }, [issueKey, listDataAvailable, search, user.id])
 
   const saveAndOpenIssue = (key: string) => {
-    saveWorkScroll(user.id, search, listScrollRef.current?.scrollTop ?? 0)
+    const position = window.innerWidth < 900 ? window.scrollY : listScrollRef.current?.scrollTop ?? 0
+    saveWorkScroll(user.id, search, position)
+    savedOnOpenRef.current = window.innerWidth < 900
     onOpenIssue(key)
   }
 

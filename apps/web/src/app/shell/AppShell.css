@@ -66,7 +66,7 @@
 
 .rp-shell__nav-group h2 {
   color: var(--rp-text-muted);
-  font-size: var(--rp-font-size-caption);
+  font-size: var(--rp-font-size-body);
   letter-spacing: 0.04em;
   margin: var(--rp-space-3) var(--rp-space-3) 0;
   text-transform: uppercase;
@@ -140,7 +140,7 @@
 .rp-shell__park-context label > span,
 .rp-shell__user > span {
   color: var(--rp-text-muted);
-  font-size: var(--rp-font-size-caption);
+  font-size: var(--rp-font-size-body);
 }
 
 .rp-shell__park-context select {
@@ -281,7 +281,7 @@
   .rp-shell__mobile-link {
     background: transparent;
     flex-direction: column;
-    font-size: var(--rp-font-size-caption);
+    font-size: var(--rp-font-size-body);
     gap: 0;
     justify-content: center;
     min-height: var(--rp-control-min-size);

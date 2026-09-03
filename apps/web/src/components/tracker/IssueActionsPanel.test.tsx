@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { api, type TrackerIssueCapabilities } from '../../api'
+import { api, ApiError, type TrackerIssueCapabilities } from '../../api'
 import { ru } from '../../i18n/ru'
 import { IssueActionsPanel } from './IssueActionsPanel'
 
@@ -58,6 +58,23 @@ describe('IssueActionsPanel', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.restoreAllMocks()
+  })
+
+  it.each(['close', 'comment'] as const)('keeps safe %s failure copy and request ID in one alert', async action => {
+    const failure = async () => { throw new ApiError(409, 'tracker_transition_invalid', 'action-conflict-42') }
+    render(<IssueActionsPanel {...baseProps} onClose={failure} onComment={failure} />)
+    if (action === 'close') {
+      fireEvent.click(screen.getByRole('button', { name: ru.tracker.actions.close }))
+      fireEvent.click(screen.getByRole('button', { name: 'Подтвердить закрытие' }))
+    } else {
+      fireEvent.change(screen.getByLabelText(ru.tracker.comments), { target: { value: 'Проверено' } })
+      fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
+    }
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Этот переход недоступен для тикета.')
+    expect(alert).toHaveTextContent('Код запроса: action-conflict-42')
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    if (action === 'close') expect(screen.getByRole('alertdialog')).toBeInTheDocument()
   })
 
   it('shows an error alert when a comment request fails', async () => {

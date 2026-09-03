@@ -40,7 +40,7 @@
 .rp-check-tabs button:focus-visible, .rp-check-views button:focus-visible, .rp-check-wheel:focus-visible { outline: 3px solid var(--rp-focus); outline-offset: 2px; }
 .rp-check-panel { margin-block-start: var(--rp-space-2); }
 .rp-check-backlinks { display: flex; flex-wrap: wrap; gap: var(--rp-space-4); margin-block-end: var(--rp-space-4); }
-.rp-check-backlinks a { display: inline-flex; align-items: center; min-height: 44px; }
+.rp-check-backlinks a { display: inline-flex; align-items: center; min-height: 44px; color: var(--rp-info); }
 .rp-check-field-lines { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--rp-font-mono); margin: 0; }
 .rp-check-field { padding-block: var(--rp-space-3); border-bottom: 1px solid var(--rp-divider); }
 .rp-check-field h3 { font-size: var(--rp-font-size-control); }
@@ -78,7 +78,9 @@
 .rp-check-diagram-lid { fill: var(--rp-surface-sunken); stroke: var(--rp-border); }
 .rp-check-diagram-sensor { fill: var(--rp-text-muted); }
 .rp-check-diagram-divider { stroke: var(--rp-divider); }
-.rp-check-panel .inspection-map { height: min(60vh, 560px); min-height: 300px; width: 100%; margin-block-start: var(--rp-space-3); border-radius: var(--rp-radius-control); z-index: 0; }
+.rp-check-panel .inspection-map { position: relative; inset: auto; height: min(60vh, 560px); min-height: 300px; width: 100%; margin-block-start: var(--rp-space-3); border-radius: var(--rp-radius-control); z-index: 0; }
+.rp-check-panel .leaflet-control-attribution { font-size: var(--rp-font-size-body); }
+.rp-check-panel .leaflet-control-attribution a { display: inline-flex; align-items: center; min-width: 44px; min-height: 44px; font-size: var(--rp-font-size-body); }
 .inspection-map[data-map-theme='dark'] .leaflet-tile-pane { filter: brightness(.7) saturate(.7); }
 @media (min-width: 900px) {
   .rp-check-workspace { grid-template-columns: minmax(240px, 1fr) minmax(0, 2fr); align-items: start; }
