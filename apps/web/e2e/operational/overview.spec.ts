@@ -10,8 +10,10 @@ const actions = {
   mechanic: 'Открыть задачу ROBOPARK-42', operator: 'Разобрать ROBOPARK-42',
   driver: 'Найти или сканировать робота', admin: 'Настроить парк', royal: 'Открыть работу парка Южный парк',
 }
-for (const role of roles) {
-  test(`${role}: primary operation is reachable within two clicks`, async ({ page }) => {
+for (const viewport of ['desktop', 'phone'] as const) for (const role of roles) {
+  if (viewport === 'phone' && role !== 'operator' && role !== 'admin') continue
+  test(`${role}${viewport === 'phone' ? ' phone' : ''}: primary operation is reachable within two clicks`, async ({ page }) => {
+    if (viewport === 'phone') await page.setViewportSize({ width: 390, height: 900 })
     const trackerRequests: string[] = []
     page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/tracker/')) trackerRequests.push(request.url()) })
     const user = userForRole(role)
@@ -22,6 +24,14 @@ for (const role of roles) {
     await expect(page.getByTestId('overview-action').getByRole('link')).toHaveText(actions[role])
     await settlePage(page)
     await assertNoSeriousA11yViolations(page)
+    if (viewport === 'phone') {
+      const action = page.getByTestId('overview-action').getByRole('link')
+      await action.scrollIntoViewIfNeeded()
+      await expect(action).toBeInViewport()
+      const box = await action.boundingBox()
+      expect(box!.width).toBeGreaterThanOrEqual(44)
+      expect(box!.height).toBeGreaterThanOrEqual(44)
+    }
     await page.getByTestId('overview-action').getByRole('link').click()
     if (role === 'driver') {
       await page.getByLabel('Номер или VIN робота').fill('447')
@@ -39,6 +49,10 @@ for (const role of roles) {
     } else {
       await expect(page).toHaveURL(/\/work\/ROBOPARK-42\?park=7/)
       await expect(page.getByRole('heading', { name: 'Задача ROBOPARK-42', exact: true })).toBeVisible()
+      if (viewport === 'phone') {
+        await expect(page.locator('.rp-work-list-pane')).toBeHidden()
+        await expect(page.getByRole('button', { name: 'Назад к списку', exact: true })).toBeVisible()
+      }
     }
   })
 }

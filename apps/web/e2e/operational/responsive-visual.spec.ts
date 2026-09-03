@@ -67,6 +67,43 @@ async function assertPhotoGeometry(page: Page) {
   await expect(page.getByRole('button', { name: 'Переднее левое колесо: неисправность', exact: true })).toBeVisible()
 }
 
+async function assertWorkMode(page: Page, width: number) {
+  await expect(page.locator('.rp-work-detail-pane')).toBeVisible()
+  if (width >= 900) {
+    await expect(page.locator('.rp-work-list-pane')).toBeInViewport()
+    await expect(page.locator('.rp-work-detail-pane')).toBeInViewport()
+  } else await expect(page.locator('.rp-work-list-pane')).toBeHidden()
+}
+
+for (const boundary of [
+  { width: 899, mode: 'sequential', filterColumns: 2 },
+  { width: 900, mode: 'compact split', filterColumns: 3 },
+  { width: 1199, mode: 'compact split', filterColumns: 3 },
+  { width: 1200, mode: 'wide split', filterColumns: 6 },
+] as const) {
+  test(`responsive boundary ${boundary.width}: ${boundary.mode}`, async ({ page }) => {
+    await page.setViewportSize({ width: boundary.width, height: 900 })
+    await installOperational(page)
+    await page.goto('/work/ROBOPARK-42?park=7&status=open&sort=newest&page=2')
+    await expect(page.locator('.issue-actions')).toBeVisible()
+    await settlePage(page)
+    await assertWorkMode(page, boundary.width)
+    await expect(page.getByRole('heading', { name: 'Задача ROBOPARK-42', exact: true })).toBeVisible()
+    const columns = await page.locator('.rp-work-filters').evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length)
+    expect(columns).toBe(boundary.filterColumns)
+    if (boundary.mode === 'sequential') {
+      await expect(page.getByRole('button', { name: 'Назад к списку', exact: true })).toBeVisible()
+    } else {
+      const list = await page.locator('.rp-work-list-pane').boundingBox()
+      const detail = await page.locator('.rp-work-detail-pane').boundingBox()
+      expect(list!.x + list!.width).toBeLessThanOrEqual(detail!.x)
+      expect(Math.abs(list!.y - detail!.y)).toBeLessThan(1)
+      await expect(page.getByRole('button', { name: 'Назад к списку', exact: true })).toBeHidden()
+    }
+    await assertResponsiveContracts(page, boundary.width)
+  })
+}
+
 for (const width of widths) for (const theme of themes) for (const state of states) {
   test(`${state.name}-${theme}-${width}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
@@ -76,16 +113,12 @@ for (const width of widths) for (const theme of themes) for (const state of stat
     await expect(page.locator(state.ready)).toBeVisible()
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
     await settlePage(page)
-    if (state.name === 'overview' && width >= 1024) {
+    if (state.name === 'overview' && width >= 900) {
       await expect(page.getByTestId('overview-state')).toBeInViewport()
       await expect(page.getByTestId('overview-queue')).toBeInViewport()
     }
     if (state.name === 'work') {
-      await expect(page.locator('.rp-work-detail-pane')).toBeVisible()
-      if (width >= 1024) {
-        await expect(page.locator('.rp-work-list-pane')).toBeInViewport()
-        await expect(page.locator('.rp-work-detail-pane')).toBeInViewport()
-      } else await expect(page.locator('.rp-work-list-pane')).toBeHidden()
+      await assertWorkMode(page, width)
     }
     if (state.name === 'robot-check') {
       await page.locator('.rp-check-photo-frame img').scrollIntoViewIfNeeded()

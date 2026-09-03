@@ -93,6 +93,30 @@ for (const route of [`/robots/${snapshot.vin}/check?tab=wheels&park=7`, '/emerge
   })
 }
 
+test('driver canonical check loads sections and refreshes without Tracker requests', async ({ page }) => {
+  const trackerRequests: string[] = []
+  page.on('request', request => {
+    if (new URL(request.url()).pathname.startsWith('/api/tracker/')) trackerRequests.push(request.url())
+  })
+  await installOperational(page, { role: 'driver' })
+  await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=wheels`)
+  await expect(page).toHaveURL(`/robots/${snapshot.vin}/check?park=7&tab=wheels`)
+  await expect(page.getByRole('heading', { name: 'Робот 447', exact: true })).toBeVisible()
+  await expect(page.getByText('Робот на связи', { exact: true })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Колёса', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('tabpanel')).toContainText('Неисправность: требуется проверка')
+  await settlePage(page)
+  await Promise.all([
+    page.waitForResponse(response => new URL(response.url()).pathname === `/api/emergency/${snapshot.vin}/snapshot` && response.status() === 200),
+    page.getByRole('button', { name: 'Повторить проверку', exact: true }).click(),
+  ])
+  await page.getByRole('tab', { name: 'Схема', exact: true }).click()
+  await expect(page.getByRole('tab', { name: 'Схема', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('button', { name: 'Переднее левое колесо: неисправность', exact: true })).toBeVisible()
+  await settlePage(page)
+  expect(trackerRequests).toEqual([])
+})
+
 test('robot offline and browser offline remain different actionable states', async ({ page, context }) => {
   await installOperational(page, { snapshot: { ...snapshot, online: false } })
   await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=wheels`)
