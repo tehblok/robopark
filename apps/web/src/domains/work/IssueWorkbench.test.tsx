@@ -196,6 +196,50 @@ afterEach(() => {
 })
 
 describe('IssueWorkbench', () => {
+  it('never paints a released detail on a synchronous same-scope full remount', async () => {
+    const client = apiClient()
+    const first = renderWorkbench({ client })
+    await screen.findByRole('heading', { name: issue.summary })
+    vi.mocked(client.trackerIssue).mockImplementation(() => new Promise(() => undefined))
+    first.unmount()
+    renderWorkbench({ client })
+    expect(screen.queryByRole('heading', { name: issue.summary })).not.toBeInTheDocument()
+  })
+
+  it.each(['pending', 'cached'] as const)('releases %s first-A detail across A unmount, B unmount, A', async (mode) => {
+    const old = deferred<TrackerIssueDetail>()
+    const fresh = deferred<TrackerIssueDetail>()
+    const client = apiClient({ trackerIssue: vi.fn()
+      .mockImplementationOnce(() => mode === 'pending' ? old.promise : Promise.resolve(issue))
+      .mockResolvedValueOnce({ ...issue, summary: 'Область B' })
+      .mockImplementationOnce(() => fresh.promise) })
+    const first = renderWorkbench({ client })
+    if (mode === 'cached') await screen.findByRole('heading', { name: issue.summary })
+    first.unmount()
+    const second = renderWorkbench({ client, selectedPark: { ...park, id: 8, tag: 'Beta' } })
+    await screen.findByRole('heading', { name: 'Область B' })
+    second.unmount()
+    if (mode === 'pending') await act(async () => old.resolve(issue))
+    renderWorkbench({ client })
+    expect(screen.queryByRole('heading', { name: issue.summary })).not.toBeInTheDocument()
+    await waitFor(() => expect(client.trackerIssue).toHaveBeenCalledTimes(3))
+    await act(async () => fresh.resolve({ ...issue, summary: 'Свежая область A' }))
+    expect(await screen.findByRole('heading', { name: 'Свежая область A' })).toBeInTheDocument()
+  })
+
+  it('keeps same-mounted-scope cached detail when selecting another issue and returning', async () => {
+    const client = apiClient()
+    const tree = (key: string) => <Harness><IssueWorkbench apiClient={client} user={user}
+      selectedPark={park} state={state} issueKey={key} onCloseIssue={vi.fn()}
+      onAuthorizationFailure={vi.fn(async () => undefined)} onOpenIssue={vi.fn()} onStateChange={vi.fn()} /></Harness>
+    const view = render(tree(issue.key), { reactStrictMode: true })
+    await screen.findByRole('heading', { name: issue.summary })
+    vi.mocked(client.trackerIssue).mockImplementation(() => new Promise(() => undefined))
+    view.rerender(tree('ROBOPARK-99'))
+    view.rerender(tree(issue.key))
+    expect(screen.getByRole('heading', { name: issue.summary })).toBeInTheDocument()
+  })
+
   it('links to all unfinished work for the known robot without carrying restrictive filters', async () => {
     renderWorkbench({ currentState: {
       filters: { queue: 'ROBOPARK', status: 'closed', assignee: 'ivan', ageHours: 24 },
@@ -328,7 +372,10 @@ describe('IssueWorkbench', () => {
   it('starts a fresh load when access returns before its obsolete first load finishes', async () => {
     const pending = deferred<TrackerIssueDetail>()
     const currentIssue = { ...issue, summary: 'Актуальная задача после возврата' }
-    const client = apiClient({ trackerIssue: vi.fn().mockImplementationOnce(() => pending.promise).mockResolvedValue(currentIssue) })
+    const client = apiClient({ trackerIssue: vi.fn()
+      .mockImplementationOnce(() => pending.promise)
+      .mockImplementationOnce(() => pending.promise)
+      .mockResolvedValue(currentIssue) })
     const tree = (selectedPark: Park) => <Harness><IssueWorkbench apiClient={client} user={user}
       selectedPark={selectedPark} state={state} issueKey={issue.key} onCloseIssue={vi.fn()}
       onAuthorizationFailure={vi.fn(async () => undefined)} onOpenIssue={vi.fn()} onStateChange={vi.fn()} /></Harness>
@@ -336,7 +383,8 @@ describe('IssueWorkbench', () => {
     view.rerender(tree({ ...park, tag: 'Beta' }))
     await screen.findByRole('heading', { name: currentIssue.summary })
     view.rerender(tree(park))
-    await waitFor(() => expect(client.trackerIssue).toHaveBeenCalledTimes(3))
+    // Initial setup + safe StrictMode replay, then B and returning A.
+    await waitFor(() => expect(client.trackerIssue).toHaveBeenCalledTimes(4))
     await act(async () => { pending.resolve(issue) })
     expect(screen.getByRole('heading', { name: currentIssue.summary })).toBeInTheDocument()
   })
@@ -350,7 +398,7 @@ describe('IssueWorkbench', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Подтвердить закрытие' }))
     await act(async () => { pending.resolve(actionResult('close')) })
     expect(onCloseIssue).toHaveBeenCalledOnce()
-    expect(client.trackerIssue).toHaveBeenCalledTimes(2)
+    expect(client.trackerIssue).toHaveBeenCalledTimes(3)
   })
 
   it('loads the URL-selected issue, exposes its robot and paginates through URL state', async () => {

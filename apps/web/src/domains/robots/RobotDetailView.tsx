@@ -10,7 +10,8 @@ import { buildRobotDetailModel } from './robotDetailModel'
 import './robots.css'
 
 export type RobotDetailViewProps = {
-  snapshot: EmergencySnapshot
+  snapshot: EmergencySnapshot | null
+  reference?: string
   relatedWork: Blocker[] | null
   relatedWorkError: DomainError | null
   relatedWorkLoading?: boolean
@@ -24,21 +25,24 @@ export type RobotDetailViewProps = {
   onRetryWork: () => void
 }
 
-export function RobotDetailView({ snapshot, relatedWork, relatedWorkError, relatedWorkLoading = false, snapshotError, workScopeLabel, parkId, browserOnline, canOpenCheck, canOpenWork, onRetrySnapshot, onRetryWork }: RobotDetailViewProps) {
+export function RobotDetailView({ snapshot, reference, relatedWork, relatedWorkError, relatedWorkLoading = false, snapshotError, workScopeLabel, parkId, browserOnline, canOpenCheck, canOpenWork, onRetrySnapshot, onRetryWork }: RobotDetailViewProps) {
   const [now, setNow] = useState(() => new Date())
   useEffect(() => {
     const clock = globalThis.setInterval(() => setNow(new Date()), 30_000)
     return () => globalThis.clearInterval(clock)
   }, [])
-  const model = buildRobotDetailModel(snapshot, browserOnline, now)
-  if (snapshotError) model.freshness = snapshotError.kind === 'offline' ? 'offline' : 'stale'
+  const model = snapshot ? buildRobotDetailModel(snapshot, browserOnline, now) : null
+  if (snapshotError && model) model.freshness = snapshotError.kind === 'offline' ? 'offline' : 'stale'
   const search = parkId == null ? '' : `?park=${parkId}`
   return (
     <div className="rp-robot-detail">
-      <RobotIdentityCard model={model} canOpenCheck={canOpenCheck} parkId={parkId}>
+      {model ? <RobotIdentityCard model={model} canOpenCheck={canOpenCheck} parkId={parkId}>
         {snapshotError ? <ErrorState {...snapshotError} onRetry={snapshotError.retryable ? onRetrySnapshot : undefined} /> : null}
         <Button variant="secondary" leadingIcon="refresh" onClick={onRetrySnapshot}>Обновить данные робота</Button>
-      </RobotIdentityCard>
+      </RobotIdentityCard> : <Panel className="rp-robot-detail__identity" title={`Робот ${reference}`}>
+        <p>Идентификатор из адреса: {reference}. Сведения о роботе не подтверждены диагностикой.</p>
+        <p>Диагностика недоступна: нет разрешения на проверку робота.</p>
+      </Panel>}
       <Panel className="rp-robot-detail__work" title="Связанные задачи">
         <p>Область связанных задач: {workScopeLabel}</p>
         {parkId != null ? <p>Выбранный парк: {parkId}; он применяется к переходам в Работу</p> : null}

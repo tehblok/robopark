@@ -19,7 +19,7 @@ function snapshot(overrides: Partial<EmergencySnapshot> = {}): EmergencySnapshot
     vin: VIN, short_number: '447', observed_at: new Date().toISOString(), online: true,
     speed: 0, charge_percent: 80, battery1_percent: 80, battery2_percent: 80, disk_percent: 20,
     mode: 'AUTO', icp_label: 'ICP', icp_ok: true, lte_label: 'LTE', lte_ok: true,
-    connection: 'lte', error_banner: null, lat: 55, lon: 37, heading_deg: 0, wheels_fault: [], ...overrides,
+    connection: 'lte', error_banner: null, lat: null, lon: null, heading_deg: null, wheels_fault: [], ...overrides,
   }
 }
 function user(overrides: Partial<User> = {}): User {
@@ -100,9 +100,9 @@ describe('robot detail presentation', () => {
 })
 
 describe('RobotPage ownership and lifecycle', () => {
-  it.each(['447', 'yasadr00000000447'])('canonicalizes literal %s, preserves search and remembers the current user', async (reference) => {
+  it.each(['447', 'yasadr00000000447'])('canonicalizes literal %s, preserves park and remembers the current user', async (reference) => {
     render(tree(client(), user(), reference))
-    await waitFor(() => expect(screen.getByLabelText('Адрес')).toHaveTextContent(`/robots/${VIN}?park=7&source=search`))
+    await waitFor(() => expect(screen.getByLabelText('Адрес')).toHaveTextContent(`/robots/${VIN}?park=7`))
     expect(loadRecentRobots(3)[0]).toMatchObject({ vin: VIN })
     expect(loadRecentRobots(4)).toEqual([])
   })
@@ -220,21 +220,24 @@ describe('RobotPage ownership and lifecycle', () => {
     expect(screen.getByLabelText('Адрес')).toHaveTextContent('/robots/YASADR00000000448')
     expect(apiClient.emergencySnapshot).not.toHaveBeenCalledWith(VIN)
   })
-  it('invalidates pending loads on unmount before cache publication or recent writes', async () => {
+  it('drops a pending snapshot on unmount without cache publication or new recent writes', async () => {
     const pending = deferred<EmergencySnapshot>()
     const set = vi.spyOn(resourceStore, 'set')
     const apiClient = client({ emergencySnapshot: vi.fn(() => pending.promise) })
     const rendered = render(tree(apiClient))
     await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(1))
+    const rememberedAtResolution = loadRecentRobots(3)
     rendered.unmount()
     await act(async () => pending.resolve(snapshot()))
     expect(set).not.toHaveBeenCalled()
-    expect(loadRecentRobots(3)).toEqual([])
+    expect(loadRecentRobots(3)).toEqual(rememberedAtResolution)
   })
-  it('does not revive a released generation during StrictMode effect replay', async () => {
+  it('does not revive a released resolver after a StrictMode owner changes scope', async () => {
     const old = deferred<{ vin: string; sections: [] }>()
     const apiClient = client({ emergencyResolve: vi.fn().mockReturnValueOnce(old.promise).mockResolvedValue({ vin: VIN, sections: [] }) })
-    render(<StrictMode>{tree(apiClient)}</StrictMode>)
+    const view = render(<StrictMode>{tree(apiClient)}</StrictMode>)
+    await waitFor(() => expect(apiClient.emergencyResolve).toHaveBeenCalledTimes(1))
+    view.rerender(<StrictMode>{tree(apiClient, user({ permissions: [...user().permissions!, 'scope.new'] }))}</StrictMode>)
     await screen.findByRole('heading', { name: 'Робот 447' })
     const snapshotsBefore = vi.mocked(apiClient.emergencySnapshot).mock.calls.length
     await act(async () => old.resolve({ vin: 'YASADR00000000999', sections: [] }))
@@ -251,7 +254,9 @@ describe('RobotPage ownership and lifecycle', () => {
     await screen.findByRole('heading', { name: 'Робот 448' })
     await act(async () => old.resolve(snapshot()))
     expect(screen.queryByRole('heading', { name: 'Робот 447' })).not.toBeInTheDocument()
-    expect(loadRecentRobots(3).map((item) => item.vin)).toEqual(['YASADR00000000448'])
+    // Resolving identity is enough to remember it in the unified check workflow;
+    // the old snapshot must neither reorder recents nor overwrite the new robot.
+    expect(loadRecentRobots(3).map((item) => item.vin)).toEqual(['YASADR00000000448', VIN])
   })
   it('drops late related work when effective queue scope changes and starts its new owner', async () => {
     const old = deferred<{ query: string; items: Blocker[] }>()
@@ -309,14 +314,16 @@ describe('RobotPage ownership and lifecycle', () => {
     expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(1)
     expect(screen.queryByText(VIN)).not.toBeInTheDocument()
   })
-  it('ages freshness locally without polling and retains the same snapshot when device goes offline', async () => {
+  it('ages freshness while background polling is suspended and retains the snapshot offline', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-09-02T09:05:00Z'))
     const apiClient = client()
     render(tree(apiClient))
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
     expect(screen.getByText(/Данные актуальны/)).toBeInTheDocument()
-    act(() => { vi.advanceTimersByTime(330_000) })
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    fireEvent(document, new Event('visibilitychange'))
+    await act(async () => { vi.advanceTimersByTime(330_000) })
     expect(screen.getByText(/Данные устарели/)).toBeInTheDocument()
     vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
     act(() => { window.dispatchEvent(new Event('offline')) })

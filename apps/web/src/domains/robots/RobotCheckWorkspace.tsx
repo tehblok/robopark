@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type EmergencySection, type EmergencySectionDetail, type EmergencySnapshot } from '../../api'
 import { canAccessRoute, type AccessUser } from '../../app/routing/accessPolicy'
@@ -19,12 +19,13 @@ export type RobotCheckWorkspaceProps = {
   vin: string; user: AccessUser; sections: EmergencySection[]; activeTab: string
   onTabChange: (tab: string) => void; apiClient?: RobotCheckApiClient
   onAuthorizationFailure?: (failure: DomainError) => void
+  renderSummary?: (snapshot: EmergencySnapshot, failure: DomainError | null, refresh: () => void) => ReactNode
 }
 export function CheckError({ failure, user, onRetry }: { failure: DomainError; user: AccessUser; onRetry?: () => void }) {
   return <><ErrorState {...failure} onRetry={failure.retryable ? onRetry : undefined} />
     {failure.kind === 'configuration' && canAccessRoute(user, 'admin-robot-check') ? <Link to="/admin/robot-check">Открыть настройки</Link> : null}</>
 }
-function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient = api, onAuthorizationFailure }: RobotCheckWorkspaceProps) {
+function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient = api, onAuthorizationFailure, renderSummary }: RobotCheckWorkspaceProps) {
   const online = useOnlineStatus()
   const [snapshot, setSnapshot] = useState<EmergencySnapshot | null>(null)
   const [snapshotError, setSnapshotError] = useState<DomainError | null>(null)
@@ -73,15 +74,20 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
   if (denied) return <CheckError failure={denied} user={user} />
   const section = details[tab.id]
   const sectionError = errors[tab.id]
-  return <div className="rp-check-workspace">
+  const retainSnapshot = !snapshotError || ['offline', 'timeout', 'server'].includes(snapshotError.kind)
+  if (renderSummary && snapshotError && (!snapshot || !retainSnapshot)) return <>
+    <CheckError failure={snapshotError} user={user} onRetry={refresh} />
+    {snapshotError.kind === 'not-found' ? <Link to="/robots">К поиску роботов</Link> : null}
+  </>
+  return <div className="rp-check-workspace" data-unified={Boolean(renderSummary)}>
     <div className="rp-check-first-level">
-      {snapshot ? <RobotCheckSummary snapshot={snapshot} online={online} failed={Boolean(snapshotError)} pending={pending} onRefresh={refresh} />
+      {snapshot ? renderSummary ? renderSummary(snapshot, snapshotError, refresh) : <RobotCheckSummary snapshot={snapshot} online={online} failed={Boolean(snapshotError)} pending={pending} onRefresh={refresh} />
         : <section className="rp-check-summary" aria-busy={pending}>
           {!online ? <p role="status">Нет сети на этом устройстве</p> : null}
           {!snapshotError && online ? <LoadingState label="Загружаем данные робота" /> : null}
           <Button leadingIcon="refresh" onClick={refresh}>{!online ? 'Повторить проверку' : 'Обновить данные'}</Button>
         </section>}
-      {snapshotError ? <div className="rp-check-warning"><CheckError failure={snapshotError} user={user} />{snapshot ? <p>Показаны последние полученные данные.</p> : null}</div> : null}
+      {snapshotError && !renderSummary ? <div className="rp-check-warning"><CheckError failure={snapshotError} user={user} />{snapshot ? <p>Показаны последние полученные данные.</p> : null}</div> : null}
     </div>
     <div className="rp-check-detail">
       <RobotCheckTabs tabs={tabs} activeId={tab.id} onChange={onTabChange} />

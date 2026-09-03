@@ -27,8 +27,8 @@ afterEach(() => vi.restoreAllMocks())
 it.each(['447', VIN.toLowerCase()])('canonicalizes literal %s, keeps numeric park and valid tab, remembers current success', async reference => {
   const resolver = { emergencyResolve: vi.fn(async () => ({ vin: VIN, sections })) }
   render(tree(resolver, { reference })); await waitFor(() => expect(screen.getByLabelText('Адрес')).toHaveTextContent(`/robots/${VIN}/check?park=7&tab=wheels`))
-  expect(await screen.findByRole('heading', { name: 'Проверка робота' })).toBeInTheDocument()
-  expect(screen.getByRole('link', { name: 'Карточка робота' })).toHaveAttribute('href', `/robots/${VIN}?park=7`)
+  expect(await screen.findByRole('heading', { name: 'Рабочее пространство робота' })).toBeInTheDocument()
+  expect(screen.queryByRole('link', { name: 'Карточка робота' })).not.toBeInTheDocument()
   expect(loadRecentRobots(user.id)[0].vin).toBe(VIN)
 })
 it('removes invalid tab and nonnumeric park', async () => {
@@ -36,7 +36,7 @@ it('removes invalid tab and nonnumeric park', async () => {
   await waitFor(() => expect(screen.getByLabelText('Адрес').textContent).toBe(`/robots/${VIN}/check`))
 })
 it.each([false, true])('classifies configuration 403 before scope and permits settings only by capability %s', async allowed => {
-  render(tree({ emergencyResolve: vi.fn().mockRejectedValue(new ApiError(403, 'emergency_cookie_invalid', 'config-id')) }, { currentUser: { ...user, role: allowed ? 'custom' : 'operator', permissions: allowed ? ['nav.admin.emergency'] : [] } }))
+  render(tree({ emergencyResolve: vi.fn().mockRejectedValue(new ApiError(403, 'emergency_cookie_invalid', 'config-id')) }, { currentUser: { ...user, role: allowed ? 'custom' : 'operator', permissions: allowed ? ['nav.emergency', 'nav.admin.emergency'] : ['nav.emergency'] } }))
   await screen.findByRole('heading', { name: 'Интеграция проверки робота требует внимания' })
   expect(screen.getByText(/config-id/)).toBeInTheDocument()
   expect(Boolean(screen.queryByRole('link', { name: 'Открыть настройки' }))).toBe(allowed)

@@ -563,17 +563,28 @@ export function IssueWorkbench({
 }: IssueWorkbenchProps) {
   const accessKey = workAccessKey(props.user, props.selectedPark)
   const currentAccess = useRef({ key: accessKey, generation: 0 })
-  const getAccessGeneration = useCallback(() => currentAccess.current.key === accessKey
+  const mounted = useRef(true)
+  const getAccessGeneration = useCallback(() => mounted.current && currentAccess.current.key === accessKey
     ? currentAccess.current.generation : -1, [accessKey])
   const accessPrefix = `work:${props.user.id}:${accessKey}:`
   const committedAccessPrefix = useRef(accessPrefix)
+  useLayoutEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      // Release synchronously: even an immediate new mount must not paint this
+      // owner's protected cache. StrictMode replay safely starts a fresh read.
+      currentAccess.current.generation += 1
+      resourceStore.invalidate(committedAccessPrefix.current, { prefix: true })
+    }
+  }, [])
   useLayoutEffect(() => {
     if (currentAccess.current.key !== accessKey) {
       currentAccess.current = { key: accessKey, generation: currentAccess.current.generation + 1 }
     }
     if (committedAccessPrefix.current !== accessPrefix) {
       // Retire the exited access, including pending loads, so A→B→A cannot
-      // coalesce A's obsolete request. Same-access remount/cache is preserved.
+      // coalesce A's obsolete request. Mounted same-access navigation keeps cache.
       resourceStore.invalidate(committedAccessPrefix.current, { prefix: true })
       committedAccessPrefix.current = accessPrefix
     }

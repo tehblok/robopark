@@ -111,6 +111,15 @@
   overflow-wrap: anywhere;
 }
 
+/* The unified workspace already supplies its two-column layout. */
+.rp-check-workspace[data-unified='true'] .rp-robot-detail {
+  grid-template-columns: minmax(0, 1fr);
+}
+.rp-check-workspace[data-unified='true'] .rp-robot-detail__events {
+  grid-column: auto;
+  grid-row: auto;
+}
+
 .rp-robot-detail__identity,
 .rp-robot-identity__status {
   display: flex;
