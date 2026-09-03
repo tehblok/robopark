@@ -132,20 +132,31 @@ function RobotUserPage({ apiClient, user, refreshUser }: {
   const { vin = '' } = useParams()
   const reference = parseRobotReference(vin)
   const { loading } = useParkScope()
-  const [authorizationFailure, setAuthorizationFailure] = useState<DomainError | null>(null)
+  const key = `robot-detail-identity:${user.id}:${reference?.toUpperCase()}:${user.role}:${parkScope(user)}:${(user.permissions ?? []).includes('nav.emergency')}`
+  const [unauthorizedFailure, setUnauthorizedFailure] = useState<DomainError | null>(null)
+  const [forbiddenFailure, setForbiddenFailure] = useState<{ key: string; failure: DomainError } | null>(null)
   const refreshStarted = useRef(false)
+  const currentKey = useRef<string | null>(key)
+  useLayoutEffect(() => {
+    currentKey.current = key
+    return () => { currentKey.current = null }
+  }, [key])
   const onFailure = useCallback((error: unknown) => {
+    if (currentKey.current !== key) return
     const failure = classifyApiError(error, 'Не удалось загрузить робота.')
     if (failure.kind !== 'unauthorized' && failure.kind !== 'forbidden') return
     resourceStore.invalidate(`robot-detail-identity:${user.id}:`, { prefix: true })
     resourceStore.invalidate(`robot-detail-work:${user.id}:`, { prefix: true })
-    setAuthorizationFailure(failure)
+    if (failure.kind === 'unauthorized') setUnauthorizedFailure(failure)
+    else setForbiddenFailure({ key, failure })
     if (failure.kind === 'unauthorized' && !refreshStarted.current) {
       refreshStarted.current = true
       void refreshUser().catch(() => undefined)
     }
-  }, [refreshUser, user.id])
-  const key = `robot-detail-identity:${user.id}:${reference?.toUpperCase()}:${user.role}:${parkScope(user)}:${(user.permissions ?? []).includes('nav.emergency')}`
+  }, [key, refreshUser, user.id])
+  // A 401 belongs to the principal; a 403 belongs only to the denied identity scope.
+  // Project during render so a new scope never paints an obsolete denial.
+  const authorizationFailure = unauthorizedFailure ?? (forbiddenFailure?.key === key ? forbiddenFailure.failure : null)
   return <PageLayout title="Карточка робота">
     {authorizationFailure ? <ErrorState {...authorizationFailure} />
       : !reference ? <ErrorState title="Робот не указан" description="Проверьте номер или VIN робота." />

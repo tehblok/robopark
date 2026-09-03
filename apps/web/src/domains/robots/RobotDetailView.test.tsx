@@ -134,6 +134,66 @@ describe('RobotPage ownership and lifecycle', () => {
     expect(screen.queryByRole('button', { name: 'Повторить' })).not.toBeInTheDocument()
     if (status === 404) expect(screen.getByRole('link', { name: 'К поиску роботов' })).toHaveAttribute('href', '/robots')
   })
+  it('opens a different permitted VIN after identity 403 without a stale denial frame', async () => {
+    const apiClient = client({
+      emergencyResolve: vi.fn(async (reference) => ({ vin: reference.endsWith('448') ? 'YASADR00000000448' : VIN, sections: [] })),
+      emergencySnapshot: vi.fn(async (vin) => {
+        if (vin === VIN) throw new ApiError(403, 'denied')
+        return snapshot({ vin, short_number: '448' })
+      }),
+    })
+    let capture = false
+    const frames: string[] = []
+    render(tree(apiClient, user(), VIN, undefined, () => { if (capture) frames.push(document.body.textContent ?? '') }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Нет доступа')
+    capture = true
+    fireEvent.click(screen.getByRole('button', { name: 'Другой робот' }))
+    expect(await screen.findByRole('heading', { name: 'Робот 448' })).toBeInTheDocument()
+    expect(apiClient.emergencySnapshot).toHaveBeenCalledWith('YASADR00000000448')
+    expect(frames.length).toBeGreaterThan(0)
+    expect(frames.every((frame) => !frame.includes('Нет доступа'))).toBe(true)
+  })
+  it('opens a new effective scope after identity 403 for the same principal without a stale denial frame', async () => {
+    const apiClient = client({ emergencySnapshot: vi.fn().mockRejectedValueOnce(new ApiError(403, 'denied')).mockResolvedValue(snapshot()) })
+    let capture = false
+    const frames: string[] = []
+    const onRender = () => { if (capture) frames.push(document.body.textContent ?? '') }
+    const rendered = render(tree(apiClient, user(), VIN, undefined, onRender))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Нет доступа')
+    capture = true
+    rendered.rerender(tree(apiClient, user({ parks: [{ ...park, tracker_queue: 'NEW' }] }), VIN, undefined, onRender))
+    expect(await screen.findByRole('heading', { name: 'Робот 447' })).toBeInTheDocument()
+    expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2)
+    expect(frames.length).toBeGreaterThan(0)
+    expect(frames.every((frame) => !frame.includes('Нет доступа'))).toBe(true)
+  })
+  it('keeps same-scope 403 fail-closed across same-ID auth publication and temporary park loading', async () => {
+    const apiClient = client({ emergencySnapshot: vi.fn().mockRejectedValue(new ApiError(403, 'denied')) })
+    const principal = user({ role: 'admin' })
+    const rendered = render(tree(apiClient, principal))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Нет доступа')
+    const parks = deferred<typeof principal.parks>()
+    vi.mocked(api.parks).mockReturnValueOnce(parks.promise)
+    rendered.rerender(tree(apiClient, { ...principal }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Нет доступа')
+    await act(async () => parks.resolve([park]))
+    expect(screen.getByRole('alert')).toHaveTextContent('Нет доступа')
+    expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('heading', { name: 'Робот 447' })).not.toBeInTheDocument()
+  })
+  it.each([401, 403])('ignores an old scope late %s instead of blocking its newly permitted owner', async (status) => {
+    const old = deferred<EmergencySnapshot>()
+    const apiClient = client({ emergencySnapshot: vi.fn().mockReturnValueOnce(old.promise).mockResolvedValue(snapshot()) })
+    const refresh = vi.fn(async () => user())
+    const rendered = render(tree(apiClient, user(), VIN, refresh))
+    await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(1))
+    rendered.rerender(tree(apiClient, user({ parks: [{ ...park, tracker_queue: 'NEW' }] }), VIN, refresh))
+    await screen.findByRole('heading', { name: 'Робот 447' })
+    await act(async () => old.reject(new ApiError(status, 'old_scope_denied')))
+    expect(screen.getByRole('heading', { name: 'Робот 447' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(refresh).not.toHaveBeenCalled()
+  })
   it('does not expose old tasks in any committed frame after tracker.read removal', async () => {
     const apiClient = client()
     let capture = false
