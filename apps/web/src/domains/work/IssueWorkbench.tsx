@@ -65,7 +65,7 @@ export type IssueWorkbenchProps = {
   ): void
   onOpenIssue(key: string): void
   onCloseIssue(): void
-  onAuthorizationFailure(): Promise<unknown>
+  onAuthorizationFailure(error: unknown): Promise<unknown>
 }
 
 const retainableFailureKinds = new Set<DomainError['kind']>([
@@ -179,7 +179,7 @@ function IssueWorkbenchOwner({
     setAuthorizationFailure(failure)
     if (!refreshStartedRef.current) {
       refreshStartedRef.current = true
-      void onAuthorizationFailure().catch(() => undefined)
+      void onAuthorizationFailure(error).catch(() => undefined)
     }
   }, [cachePrefix, onAuthorizationFailure])
 

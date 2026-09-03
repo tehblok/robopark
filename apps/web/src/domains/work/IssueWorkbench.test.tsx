@@ -1,4 +1,4 @@
-import { Profiler, type ReactNode } from 'react'
+import { Profiler, type ReactNode, useLayoutEffect, useState } from 'react'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -12,6 +12,7 @@ import {
 } from '../../api'
 import { AuthContext } from '../../auth-context'
 import { ParkScopeContext } from '../../app/park/parkScope'
+import { ParkScopeProvider } from '../../app/park/ParkScopeProvider'
 import { ru } from '../../i18n/ru'
 import { resetCoalescingForTests, resourceStore } from '../../lib/resource'
 import { IssueWorkbench, type IssueWorkbenchApiClient } from './IssueWorkbench'
@@ -582,5 +583,88 @@ describe('WorkPage cold states', () => {
 
     expect(screen.getByRole('heading', { name: 'Очередь не настроена' })).toBeInTheDocument()
     expect(client.trackerIssues).not.toHaveBeenCalled()
+  })
+})
+
+describe('WorkPage authorization lifetime', () => {
+  function renderRefreshingPage(client: IssueWorkbenchApiClient) {
+    let replaceUser: (next: User) => void = () => undefined
+    const refreshUser = vi.fn(async () => {
+      const refreshed = { ...user, parks: [...user.parks] }
+      // A second refresh does not publish again, so a regression cannot loop forever.
+      if (refreshUser.mock.calls.length === 1) replaceUser(refreshed)
+      return refreshed
+    })
+
+    function LiveAuth() {
+      const [currentUser, setCurrentUser] = useState(user)
+      useLayoutEffect(() => {
+        replaceUser = setCurrentUser
+      }, [])
+      return (
+        <AuthContext.Provider value={{
+          user: currentUser,
+          loading: false,
+          login: vi.fn(async () => currentUser),
+          logout: vi.fn(async () => undefined),
+          refreshUser,
+        }}>
+          <ParkScopeProvider>
+            <Routes>
+              <Route element={<WorkPage apiClient={client} />} path="/work" />
+            </Routes>
+          </ParkScopeProvider>
+        </AuthContext.Provider>
+      )
+    }
+
+    render(<MemoryRouter initialEntries={['/work?park=7']}><LiveAuth /></MemoryRouter>)
+    return { refreshUser, replaceUser: (next: User) => replaceUser(next) }
+  }
+
+  it('keeps one exact denial across a same-principal auth refresh and park reselection', async () => {
+    seedCurrentWork()
+    resourceStore.set('work:30:list:7:other', { secret: 'other-user' }, true)
+    resourceStore.set('overview:3', { secret: 'other-domain' }, true)
+    const client = apiClient({
+      trackerIssues: vi.fn(async () => {
+        throw new ApiError(403, 'tracker_park_forbidden', 'req-work-denied')
+      }),
+    })
+    const { refreshUser } = renderRefreshingPage(client)
+
+    await screen.findByRole('heading', { name: 'Нет доступа' })
+    await act(async () => { await Promise.resolve() })
+
+    expect(client.trackerIssues).toHaveBeenCalledTimes(1)
+    expect(refreshUser).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('alert')).toHaveTextContent('Нет доступа к этому парку.')
+    expect(screen.getByRole('alert')).toHaveTextContent('Код запроса: req-work-denied')
+    expect(screen.queryByRole('button', { name: 'Повторить' })).not.toBeInTheDocument()
+    expect(screen.queryByText(issue.summary)).not.toBeInTheDocument()
+    expect(resourceStore.get(listKey())).toBeUndefined()
+    expect(resourceStore.get('work:30:list:7:other')).toEqual({ secret: 'other-user' })
+    expect(resourceStore.get('overview:3')).toEqual({ secret: 'other-domain' })
+  })
+
+  it('resets the denial only when the actual principal changes', async () => {
+    const client = apiClient({
+      trackerIssues: vi.fn(async () => {
+        throw new ApiError(403, 'tracker_park_forbidden', 'req-old-principal')
+      }),
+    })
+    const { refreshUser, replaceUser } = renderRefreshingPage(client)
+    await screen.findByRole('heading', { name: 'Нет доступа' })
+    await act(async () => { await Promise.resolve() })
+
+    vi.mocked(client.trackerIssues).mockResolvedValue(page())
+    act(() => replaceUser({ ...user, id: 4, username: 'operator-2' }))
+
+    expect(await screen.findByRole('button', {
+      name: `Открыть задачу ${issue.key}: ${issue.summary}`,
+    })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Нет доступа' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Код запроса: req-old-principal')).not.toBeInTheDocument()
+    expect(refreshUser).toHaveBeenCalledTimes(1)
   })
 })
