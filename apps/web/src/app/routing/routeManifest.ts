@@ -12,6 +12,7 @@ export type AppRouteId =
   | 'home' | 'login' | 'register' | 'change-password' | 'no-cabinet'
   | 'access-pending' | 'access-rejected' | 'mechanic-no-park'
   | 'overview' | 'operator-parks' | 'work' | 'robots' | 'robot-check'
+  | 'work-issue' | 'robot-detail' | 'legacy-robot-check'
   | 'analytics' | 'reports' | 'admin' | 'admin-tracker'
   | 'admin-robot-check' | 'not-found'
 export type NavGroup = 'operations' | 'collaboration' | 'insights' | 'administration'
@@ -125,6 +126,10 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
     },
   },
   {
+    id: 'work-issue', path: '/work/:issueKey', label: 'Работа', icon: 'work',
+    permission: 'nav.tasks', prerequisites: SHELL_PREREQUISITES, surface: 'shell',
+  },
+  {
     id: 'robots',
     path: '/robots',
     legacyPaths: ['/robots/search'],
@@ -140,18 +145,21 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
     },
   },
   {
-    id: 'robot-check',
+    id: 'robot-detail', path: '/robots/:vin', label: 'Робот', icon: 'robot',
+    permission: 'nav.robot_search', prerequisites: SHELL_PREREQUISITES, surface: 'shell',
+  },
+  {
+    id: 'robot-check', path: '/robots/:vin/check', label: ru.nav.emergency, icon: 'robot-check',
+    permission: 'nav.emergency', prerequisites: SHELL_PREREQUISITES, surface: 'shell',
+  },
+  {
+    id: 'legacy-robot-check',
     path: '/emergency',
     label: ru.nav.emergency,
     icon: 'robot-check',
     permission: 'nav.emergency',
     prerequisites: SHELL_PREREQUISITES,
     surface: 'shell',
-    nav: {
-      group: 'operations',
-      desktopOrder: 50,
-      mobilePriority: { royal: 4, admin: 4, mechanic: 2, driver: 1 },
-    },
   },
   {
     id: 'reports',

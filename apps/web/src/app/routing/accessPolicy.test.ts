@@ -42,12 +42,15 @@ const landingCases = [
   { role: 'mechanic', status: 'approved', parks: [], permissions: ['nav.dashboard'], expected: '/mechanic/no-park' },
   { role: 'operator', status: 'pending', parks: [], permissions: ['nav.dashboard'], expected: '/access/pending' },
   { role: 'operator', status: 'rejected', parks: [], permissions: ['nav.dashboard'], expected: '/access/rejected' },
-  { role: 'driver', status: 'approved', parks: [], permissions: ['nav.emergency'], expected: '/emergency' },
+  { role: 'driver', status: 'approved', parks: [], permissions: ['nav.dashboard', 'nav.robot_search', 'nav.emergency'], expected: '/overview' },
   { role: 'admin', status: 'approved', parks: [], permissions: ['nav.admin'], expected: '/admin' },
   { role: 'royal', status: 'approved', parks: [], permissions: ['nav.dashboard'], expected: '/overview' },
 ] as const
 
 const protectedRoutes = [
+  { id: 'work-issue', permission: 'nav.tasks', operatorOnly: false, mechanicPark: true },
+  { id: 'robot-detail', permission: 'nav.robot_search', operatorOnly: false, mechanicPark: true },
+  { id: 'legacy-robot-check', permission: 'nav.emergency', operatorOnly: false, mechanicPark: true },
   { id: 'overview', permission: 'nav.dashboard', operatorOnly: false, mechanicPark: true },
   { id: 'operator-parks', permission: null, operatorOnly: true, mechanicPark: false },
   { id: 'work', permission: 'nav.tasks', operatorOnly: false, mechanicPark: true },
@@ -71,6 +74,19 @@ const accessCases = protectedRoutes.flatMap((route) =>
 )
 
 describe('canAccessRoute', () => {
+  it('shares canonical and legacy permission gates without granting drivers Work', () => {
+    const driver = user({ role: 'driver', permissions: ['nav.dashboard', 'nav.robot_search', 'nav.emergency'] })
+    for (const id of ['overview', 'robots', 'robot-detail', 'robot-check', 'legacy-robot-check'] as const) {
+      expect(canAccessRoute(driver, id)).toBe(true)
+    }
+    for (const id of ['work', 'work-issue'] as const) {
+      expect(canAccessRoute(driver, id)).toBe(false)
+      expect(canAccessRoute(user({ permissions: ['nav.tasks'] }), id)).toBe(true)
+    }
+    for (const id of ['robot-check', 'legacy-robot-check'] as const) {
+      expect(canAccessRoute(user({ permissions: ['nav.robot_search'] }), id)).toBe(false)
+    }
+  })
   it.each(accessCases)(
     '$route.id role=$role status=$status permission=$permissionPresent',
     ({ route, role, status, permissionPresent }) => {
@@ -120,6 +136,15 @@ describe('canAccessRoute', () => {
 })
 
 describe('landingPathForUser', () => {
+  it.each(matrixRoles)('never lands %s on a parameterized route', (role) => {
+    expect(landingPathForUser(user({ role, parks: [north], permissions: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency'] }))).not.toContain(':')
+    expect(landingPathForUser(user({ role, parks: [north], permissions: ['nav.emergency'] }))).not.toContain(':')
+  })
+
+  it('lands drivers on static robots or no cabinet when overview is unavailable', () => {
+    expect(landingPathForUser(user({ role: 'driver', permissions: ['nav.robot_search', 'nav.emergency'] }))).toBe('/robots')
+    expect(landingPathForUser(user({ role: 'driver', permissions: ['nav.emergency'] }))).toBe('/no-cabinet')
+  })
   it.each(landingCases)('lands $role/$status on $expected', ({ role, status, parks, permissions, expected }) => {
     expect(landingPathForUser(user({ role, access_status: status, parks: [...parks], permissions: [...permissions] })))
       .toBe(expected)
@@ -144,7 +169,7 @@ describe('landingPathForUser', () => {
 
     expect(landingPathForUser(user({ role: 'admin', parks: [north], permissions: all }))).toBe('/admin')
     expect(landingPathForUser(user({ role: 'mechanic', parks: [north], permissions: all }))).toBe('/work')
-    expect(landingPathForUser(user({ role: 'driver', parks: [north], permissions: all }))).toBe('/emergency')
+    expect(landingPathForUser(user({ role: 'driver', parks: [north], permissions: all }))).toBe('/overview')
   })
 
   it('falls back to permission-driven navigation for a custom role slug', () => {

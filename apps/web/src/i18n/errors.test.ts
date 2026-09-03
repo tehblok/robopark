@@ -4,6 +4,12 @@ import { mapApiError, mapLoginError } from './errors'
 import { ru } from './ru'
 
 describe('mapApiError', () => {
+  it('never presents the technical Emergency product name in robot-check failures', () => {
+    for (const detail of ['emergency_upstream_error', 'emergency_cookie_not_configured', 'emergency_cookie_invalid', 'unmapped']) {
+      expect(mapApiError(new ApiError(503, detail), ru.errors.emergency)).not.toMatch(/\bEmergency\b/i)
+    }
+    expect(ru.errors.emergency503).not.toMatch(/\bEmergency\b/i)
+  })
   it('uses product-safe robot-check copy for integration configuration errors', () => {
     const expected = 'Интеграция проверки робота требует внимания.'
     expect(mapApiError(new ApiError(403, 'emergency_cookie_invalid'), 'fb')).toBe(expected)

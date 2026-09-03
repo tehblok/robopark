@@ -30,7 +30,7 @@ const ROLE_LANDING_PREFERENCES: Record<UserRole, readonly AppRouteId[]> = {
     'admin-tracker', 'admin-robot-check',
   ],
   driver: [
-    'robot-check', 'robots', 'overview', 'work', 'reports', 'analytics', 'admin',
+    'overview', 'robots', 'work', 'reports', 'analytics', 'admin',
     'admin-tracker', 'admin-robot-check',
   ],
 }

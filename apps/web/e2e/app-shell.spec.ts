@@ -1,7 +1,23 @@
 import { expect, test } from '@playwright/test'
 import { assertNoSeriousA11yViolations } from './support/assertA11y'
-import { installMockApi } from './support/mockApi'
+import { installMockApi, type MockRoute } from './support/mockApi'
 import { mechanicUser, operatorUser } from './support/users'
+
+const currentOverviewRoutes: MockRoute[] = [{
+  method: 'GET',
+  path: '/api/dashboard/summary',
+  handler: request => ({ json: {
+    park_id: Number(new URL(request.url).searchParams.get('park_id')),
+    generated_at: '2026-09-02T09:00:00Z',
+    arrived: 0, done: 0, queued: 0, in_transit: 0, moving: [],
+  } }),
+}]
+
+test.beforeEach(async ({ page }) => {
+  // A fixed Date keeps the five-minute freshness boundary deterministic while
+  // ordinary timers and animations remain available to the shell.
+  await page.clock.setFixedTime(new Date('2026-09-02T09:05:00Z'))
+})
 
 async function waitForStableAudit(page: import('@playwright/test').Page) {
   await expect(page.locator('.global-progress')).toHaveAttribute('aria-hidden', 'true')
@@ -19,7 +35,7 @@ test('operator shell is accessible in the light theme', async ({ page }) => {
     if (request.resourceType() === 'font') fontRequests.push(request.url())
   })
   await page.addInitScript(() => localStorage.setItem('robopark-theme', 'light'))
-  await installMockApi(page, { user: operatorUser, parks: operatorUser.parks })
+  await installMockApi(page, { user: operatorUser, parks: operatorUser.parks, routes: currentOverviewRoutes })
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/overview')
   const appOrigin = new URL(page.url()).origin
@@ -35,7 +51,7 @@ test('operator shell is accessible in the light theme', async ({ page }) => {
 
 test('mechanic shell keeps primary actions at 390px in dark theme', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('robopark-theme', 'dark'))
-  await installMockApi(page, { user: mechanicUser, parks: mechanicUser.parks })
+  await installMockApi(page, { user: mechanicUser, parks: mechanicUser.parks, routes: currentOverviewRoutes })
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/overview')
   await expect(page.getByRole('navigation', { name: 'Основная навигация' })).toBeVisible()
@@ -47,10 +63,10 @@ test('mechanic shell keeps primary actions at 390px in dark theme', async ({ pag
 test('system theme is applied before paint and follows live OS changes without losing context', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'dark' })
   await page.addInitScript(() => localStorage.setItem('robopark-theme', 'system'))
-  await installMockApi(page, { user: operatorUser, parks: operatorUser.parks })
+  await installMockApi(page, { user: operatorUser, parks: operatorUser.parks, routes: currentOverviewRoutes })
   await page.goto('/robots?park=7')
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
-  await page.getByLabel('Номер робота или ключ тикета').fill('ROBOPARK-42')
+  await page.getByLabel('Номер или VIN робота').fill('447')
   const timing = await page.evaluate(() => ({
     bootstrap: window.__roboparkThemeBootstrappedAt,
     firstPaint: performance.getEntriesByType('paint')[0]?.startTime ?? Number.POSITIVE_INFINITY,
@@ -59,8 +75,8 @@ test('system theme is applied before paint and follows live OS changes without l
 
   await page.emulateMedia({ colorScheme: 'light' })
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
-  await expect(page).toHaveURL(/\/robots\?park=7$/)
-  await expect(page.getByLabel('Номер робота или ключ тикета')).toHaveValue('ROBOPARK-42')
+  await expect(page).toHaveURL(/\/robots\?park=7&q=447$/)
+  await expect(page.getByLabel('Номер или VIN робота')).toHaveValue('447')
 })
 
 test('desktop compact density becomes comfortable on phone and restores without losing context', async ({ page }) => {
@@ -69,18 +85,20 @@ test('desktop compact density becomes comfortable on phone and restores without 
     localStorage.setItem('robopark-theme', 'light')
     localStorage.setItem('robopark-density', 'compact')
   })
-  await installMockApi(page, { user: operatorUser, parks: operatorUser.parks })
+  await installMockApi(page, { user: operatorUser, parks: operatorUser.parks, routes: currentOverviewRoutes })
   await page.goto('/robots?park=7')
-  await page.getByLabel('Номер робота или ключ тикета').fill('ROBOPARK-42')
+  await page.getByLabel('Номер или VIN робота').fill('447')
   await expect(page.locator('html')).toHaveAttribute('data-density', 'compact')
 
   await page.setViewportSize({ width: 390, height: 844 })
   await expect(page.locator('html')).toHaveAttribute('data-density', 'comfortable')
-  await expect(page.getByLabel('Номер робота или ключ тикета')).toHaveValue('ROBOPARK-42')
-  await expect(page).toHaveURL(/\/robots\?park=7$/)
+  await expect(page.getByLabel('Номер или VIN робота')).toHaveValue('447')
+  await expect(page).toHaveURL(/\/robots\?park=7&q=447$/)
 
   await page.setViewportSize({ width: 1440, height: 900 })
   await expect(page.locator('html')).toHaveAttribute('data-density', 'compact')
   expect(await page.evaluate(() => localStorage.getItem('robopark-density'))).toBe('compact')
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+  await expect(page.getByLabel('Номер или VIN робота')).toHaveValue('447')
+  await expect(page).toHaveURL(/\/robots\?park=7&q=447$/)
 })

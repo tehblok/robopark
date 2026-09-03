@@ -11,8 +11,11 @@ import { AdminEmergencyConfig } from '../../pages/AdminEmergencyConfig'
 import { AdminTrackerWorkspace } from '../../pages/AdminTrackerWorkspace'
 import { Analytics } from '../../pages/Analytics'
 import { ChangePassword } from '../../pages/ChangePassword'
-import { Dashboard } from '../../pages/Dashboard'
-import { Emergency } from '../../pages/Emergency'
+import { OverviewPage } from '../../domains/shift/OverviewPage'
+import { WorkPage } from '../../domains/work/WorkPage'
+import { RobotsPage } from '../../domains/robots/RobotsPage'
+import { RobotPage } from '../../domains/robots/RobotPage'
+import { RobotCheckPage } from '../../domains/robots/RobotCheckPage'
 import { Home } from '../../pages/Home'
 import { Login } from '../../pages/Login'
 import { MechanicNoPark } from '../../pages/MechanicNoPark'
@@ -22,8 +25,7 @@ import { OperatorPending } from '../../pages/OperatorPending'
 import { OperatorRejected } from '../../pages/OperatorRejected'
 import { Register } from '../../pages/Register'
 import { Reports } from '../../pages/Reports'
-import { RobotSearch } from '../../pages/RobotSearch'
-import { Tasks } from '../../pages/Tasks'
+import { LegacyEmergencyRedirect } from './LegacyEmergencyRedirect'
 import { landingPathForUser } from './accessPolicy'
 import { ROUTE_MANIFEST, type AppRouteId } from './routeManifest'
 import { RouteGate } from './RouteGate'
@@ -45,11 +47,14 @@ export const ROUTE_ELEMENTS: Record<AppRouteId, ReactElement> = {
   'access-pending': <OperatorPending />,
   'access-rejected': <OperatorRejected />,
   'mechanic-no-park': <MechanicNoPark />,
-  'overview': <Dashboard />,
+  overview: <OverviewPage />,
   'operator-parks': <OperatorParks />,
-  'work': <Tasks />,
-  'robots': <RobotSearch />,
-  'robot-check': <Emergency />,
+  work: <WorkPage />,
+  'work-issue': <WorkPage />,
+  robots: <RobotsPage />,
+  'robot-detail': <RobotPage />,
+  'robot-check': <RobotCheckPage />,
+  'legacy-robot-check': <LegacyEmergencyRedirect />,
   'analytics': <Analytics />,
   'reports': <Reports />,
   'admin': <Admin />,

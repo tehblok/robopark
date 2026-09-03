@@ -19,8 +19,9 @@ import { AppShell } from './AppShell'
 import { REPORTS_BADGE_REFRESH } from '../../reports-badge'
 
 const shellCss = readFileSync('src/app/shell/AppShell.css', 'utf8')
+const overviewCss = readFileSync('src/domains/shift/overview.css', 'utf8')
 
-const north = { id: 7, name: 'Северный', tag: 'north', is_active: true }
+const north = { id: 7, name: 'Северный', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
 const operator = testUser({
   permissions: [
     'nav.dashboard',
@@ -80,6 +81,9 @@ describe('AppShell', () => {
     sessionStorage.clear()
     media = installMatchMedia({ width: 1200 })
     vi.spyOn(api, 'reportsBadge').mockResolvedValue({ count: 0 })
+    vi.spyOn(api, 'dashboardSummary').mockResolvedValue({ park_id: 7, generated_at: '2026-09-02T09:00:00Z', arrived: 0, done: 0, queued: 0, in_transit: 0, moving: [] })
+    vi.spyOn(api, 'operatorBlockers').mockResolvedValue({ park_id: 7, park_tag: 'north', status: 'all', counts: {}, items: [] })
+    vi.spyOn(api, 'trackerIssues').mockResolvedValue({ items: [], total: 0, limit: 30, offset: 0, has_more: false })
   })
 
   it('uses the accessible More sheet for appearance and secondary navigation', async () => {
@@ -148,7 +152,7 @@ describe('AppShell', () => {
     })[1]
     await actor.click(within(mobileNavigation).getByRole('link', { name: 'Работа' }))
 
-    const heading = await screen.findByRole('heading', { level: 1, name: 'Блокеры' })
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Работа' })
     await waitFor(() => expect(heading).toHaveFocus())
     expect(desktopWork).not.toHaveFocus()
   })
@@ -182,10 +186,9 @@ describe('AppShell', () => {
       name: 'Основная навигация',
     })[0]
     const expectedLabels = [
-      ['overview', 'Дашборд'],
+      ['overview', 'Обзор'],
       ['work', 'Работа'],
-      ['robots', 'Поиск по роботу'],
-      ['robot-check', 'Проверка робота'],
+      ['robots', 'Роботы'],
       ['reports', 'Репорты'],
       ['analytics', 'Аналитика'],
     ] as const
@@ -381,18 +384,18 @@ describe('AppShell', () => {
     expect(destination).toHaveAttribute('aria-current', 'page')
   })
 
-  it('gives the skip link and Dashboard quick links the shared minimum control size', () => {
+  it('gives the skip link and Overview primary action the shared minimum control size', async () => {
     const style = document.createElement('style')
-    style.textContent = shellCss
+    style.textContent = `${shellCss}\n${overviewCss}`
     document.head.append(style)
     renderApp('/overview', operator)
 
     const skipLink = screen.getByRole('link', { name: 'К содержанию' })
-    const quickLink = within(screen.getByRole('main')).getByRole('link', { name: 'Задачи' })
+    const quickLink = await within(screen.getByRole('main')).findByRole('link', { name: 'Открыть работу' })
     expect(declaredCssValue(skipLink, 'min-height')).toBe('var(--rp-control-min-size)')
     expect(getComputedStyle(skipLink).display).toBe('inline-flex')
     expect(declaredCssValue(quickLink, 'min-height')).toBe('var(--rp-control-min-size)')
-    expect(getComputedStyle(quickLink).display).toBe('inline-flex')
+    expect(getComputedStyle(quickLink).display).toBe('flex')
     style.remove()
   })
 

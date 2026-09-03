@@ -1,9 +1,9 @@
 import { screen, waitFor, within } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api'
 import { installMatchMedia, renderApp, testUser } from '../../test/renderApp'
 
-const north = { id: 7, name: 'Северный', tag: 'north', is_active: true }
+const north = { id: 7, name: 'Северный', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
 
 describe('AppRouter', () => {
   beforeEach(() => {
@@ -11,7 +11,15 @@ describe('AppRouter', () => {
     localStorage.clear()
     sessionStorage.clear()
     installMatchMedia()
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('No live requests in routing tests'))
+    vi.spyOn(api, 'dashboardSummary').mockResolvedValue({ park_id: 7, generated_at: '2026-09-02T09:00:00Z', arrived: 0, done: 0, queued: 0, in_transit: 0, moving: [] })
+    vi.spyOn(api, 'operatorBlockers').mockResolvedValue({ park_id: 7, park_tag: 'north', status: 'all', counts: {}, items: [] })
+    vi.spyOn(api, 'trackerIssues').mockImplementation(() => new Promise(() => undefined))
+    vi.spyOn(api, 'trackerIssue').mockImplementation(() => new Promise(() => undefined))
+    vi.spyOn(api, 'emergencyResolve').mockImplementation(() => new Promise(() => undefined))
   })
+
+  afterEach(() => vi.restoreAllMocks())
 
   it('canonicalizes the dashboard alias into the manifest shell without stealing focus', async () => {
     const approvedOperator = testUser({
@@ -19,15 +27,15 @@ describe('AppRouter', () => {
       parks: [north],
     })
 
-    renderApp('/dashboard', approvedOperator)
+    renderApp('/dashboard?park=7', approvedOperator)
 
-    expect(await screen.findByRole('heading', { name: /дашборд/i })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Смена / Обзор' })).toBeVisible()
     expect(screen.getByTestId('location')).toHaveTextContent('/overview?park=7')
     const navigation = screen.getAllByRole('navigation', { name: 'Основная навигация' })[0]
     const workLink = within(navigation).getByRole('link', { name: 'Работа' })
     expect(workLink).toHaveAttribute('href', '/work')
     expect(workLink.querySelector('svg')).not.toBeNull()
-    expect(screen.getByRole('heading', { name: /дашборд/i })).not.toHaveFocus()
+    expect(screen.getByRole('heading', { name: 'Смена / Обзор' })).not.toHaveFocus()
   })
 
   it('preserves meaningful search parameters through legacy redirects', async () => {
@@ -39,6 +47,25 @@ describe('AppRouter', () => {
     await waitFor(() => {
       expect(screen.getByTestId('location')).toHaveTextContent('/overview?park=7')
     })
+  })
+
+  it.each([
+    ['/tasks?park=7&status=open', '/work?park=7&status=open', 'Работа'],
+    ['/robots/search?q=447&park=7', '/robots?q=447&park=7', 'Роботы'],
+    ['/work/ROBOPARK-42?park=7&status=open', '/work/ROBOPARK-42?park=7&status=open', 'Работа'],
+    ['/robots/YASADR00000000447/check?park=7&tab=map', '/robots/YASADR00000000447/check?park=7&tab=map', 'Проверка робота'],
+    ['/robots/YASADR00000000447?park=7', '/robots/YASADR00000000447?park=7', 'Карточка робота'],
+  ])('registers canonical operational content for %s', async (path, expected, heading) => {
+    renderApp(path, testUser({ permissions: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'tracker.read'], parks: [north] }))
+    expect(await screen.findByRole('heading', { name: heading })).toBeVisible()
+    expect(screen.getByTestId('location').textContent).toBe(expected)
+  })
+
+  it.each(['/work/ROBOPARK-42?park=7', '/robots/YASADR00000000447/check?park=7', '/emergency?q=447&park=7'])('gates direct protected route %s before its data effects', async path => {
+    renderApp(path, testUser({ role: 'driver', permissions: ['nav.robot_search'], parks: [north] }))
+    expect(await screen.findByRole('heading', { name: 'Роботы' })).toBeVisible()
+    expect(api.trackerIssue).not.toHaveBeenCalled()
+    expect(api.emergencyResolve).not.toHaveBeenCalled()
   })
 
   it('gates pending access before mounting the shell', async () => {
@@ -74,7 +101,7 @@ describe('AppRouter', () => {
       permissions: ['nav.dashboard'],
       parks: [north],
     }))
-    expect(await screen.findByRole('heading', { name: /дашборд/i })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Смена / Обзор' })).toBeVisible()
 
     app.rerenderAuth(null)
 
@@ -131,23 +158,24 @@ describe('AppRouter', () => {
   it('renders only permitted role-aware navigation', async () => {
     renderApp('/emergency', testUser({
       role: 'driver',
-      permissions: ['nav.emergency'],
+      permissions: ['nav.robot_search', 'nav.emergency'],
     }))
 
-    expect(await screen.findByRole('heading', { name: 'Проверка робота' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Роботы' })).toBeVisible()
     expect(screen.getAllByRole('navigation', { name: 'Основная навигация' })[0])
-      .toHaveTextContent('Проверка робота')
+      .toHaveTextContent('Роботы')
+    expect(screen.queryByRole('link', { name: 'Проверка робота' })).not.toBeInTheDocument()
     expect(screen.queryByText('Аналитика')).not.toBeInTheDocument()
   })
 
   it('keeps catch-all redirect-to-landing semantics', async () => {
     renderApp('/missing-route', testUser({
-      permissions: ['nav.emergency'],
+      permissions: ['nav.dashboard', 'nav.robot_search', 'nav.emergency'],
       role: 'driver',
     }))
 
     await waitFor(() => {
-      expect(screen.getByTestId('location')).toHaveTextContent('/emergency')
+      expect(screen.getByTestId('location')).toHaveTextContent('/overview')
     })
   })
 })
