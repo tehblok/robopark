@@ -13,7 +13,7 @@ function emptyPage(offset: number): Paged<TrackerIssue> {
 }
 
 describe('loadWorkPage', () => {
-  it('maps canonical URL state and Tracker park tag to pagination', async () => {
+  it('maps filters and pagination while forcing oldest even for legacy caller state', async () => {
     const result = emptyPage(WORK_PAGE_SIZE * 2)
     const trackerIssues = vi.fn(async () => result)
     const client = { trackerIssues } as WorkApiClient
@@ -44,7 +44,7 @@ describe('loadWorkPage', () => {
       assignee: 'ivan',
       untagged: undefined,
       age_hours: 24,
-      sort: 'newest',
+      sort: 'oldest',
       limit: 50,
       offset: 100,
     })

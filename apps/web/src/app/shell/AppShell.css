@@ -34,12 +34,18 @@
 }
 
 .rp-shell__sidebar {
+  align-self: start;
   background: var(--rp-surface);
   border-right: 1px solid var(--rp-border);
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: var(--rp-density-gap);
+  height: 100dvh;
+  overflow-y: auto;
   padding: var(--rp-density-panel-padding);
+  position: sticky;
+  top: 0;
 }
 
 .rp-shell__brand,
@@ -131,6 +137,9 @@
   gap: var(--rp-density-gap);
   justify-content: space-between;
   padding: var(--rp-space-3) var(--rp-density-panel-padding);
+  position: sticky;
+  top: 0;
+  z-index: 40;
 }
 
 .rp-shell__park-context {
@@ -160,8 +169,12 @@
 
 .rp-shell__content {
   min-width: 0;
-  overflow: auto;
+  overflow: visible;
   padding: var(--rp-density-panel-padding);
+}
+
+.rp-shell__content :where(h1, button, a, input, select, textarea) {
+  scroll-margin-top: calc(2 * var(--rp-control-min-size) + var(--rp-space-6));
 }
 
 .rp-shell__bottom-nav {

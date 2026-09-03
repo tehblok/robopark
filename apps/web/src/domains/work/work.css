@@ -56,6 +56,20 @@
   justify-content: flex-end;
 }
 
+.rp-work-filters__ordering {
+  color: var(--rp-text-muted);
+  margin: 0;
+  padding-block: var(--rp-space-3);
+}
+
+.rp-work-related-tasks {
+  margin-block: var(--rp-space-3);
+}
+
+.rp-work-related-tasks p {
+  color: var(--rp-text-muted);
+}
+
 .rp-work-list-pane,
 .rp-work-detail-pane {
   align-content: start;

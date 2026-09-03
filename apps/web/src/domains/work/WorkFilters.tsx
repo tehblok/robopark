@@ -1,7 +1,16 @@
 import { type FormEvent, useState } from 'react'
 import { Button } from '../../design-system/actions/Button'
 import { FormField } from '../../design-system/forms/FormField'
-import type { WorkSort, WorkUrlState } from './workUrl'
+import type { WorkUrlState } from './workUrl'
+
+const STATUS_CHOICES = [
+  ['', 'Все незавершённые'],
+  ['open', 'Открытые'],
+  ['inProgress', 'В работе'],
+  ['ready', 'Готовые'],
+  ['resolved', 'Решённые'],
+  ['closed', 'Закрытые'],
+] as const
 
 export type WorkFiltersProps = {
   value: WorkUrlState
@@ -36,7 +45,7 @@ export function WorkFilters({
           ? { ageHours }
           : {}),
       },
-      sort: draft.sort,
+      sort: 'oldest',
       page: 1,
     })
   }
@@ -57,13 +66,18 @@ export function WorkFilters({
         />
       </FormField>
       <FormField id="work-status" label="Статус">
-        <input
+        <select
           onChange={(event) => setDraft({
             ...draft,
             filters: { ...draft.filters, status: event.target.value },
           })}
           value={draft.filters.status ?? ''}
-        />
+        >
+          {STATUS_CHOICES.map(([status, label]) => <option key={status} value={status}>{label}</option>)}
+          {draft.filters.status && !STATUS_CHOICES.some(([status]) => status === draft.filters.status) ? (
+            <option value={draft.filters.status}>Другой статус: {draft.filters.status}</option>
+          ) : null}
+        </select>
       </FormField>
       <FormField id="work-robot" label="Робот">
         <input
@@ -102,18 +116,7 @@ export function WorkFilters({
           value={draft.filters.ageHours ?? ''}
         />
       </FormField>
-      <FormField id="work-sort" label="Сортировка">
-        <select
-          onChange={(event) => setDraft({
-            ...draft,
-            sort: event.target.value as WorkSort,
-          })}
-          value={draft.sort}
-        >
-          <option value="oldest">Сначала старые</option>
-          <option value="newest">Сначала новые</option>
-        </select>
-      </FormField>
+      <p className="rp-work-filters__ordering">Сначала старые</p>
       {allowUntagged ? (
         <label className="rp-work-filters__checkbox">
           <input

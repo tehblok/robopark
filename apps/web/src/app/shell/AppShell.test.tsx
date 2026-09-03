@@ -47,6 +47,23 @@ function HistoryControls() {
   )
 }
 
+function renderShellPath(path: string, currentUser = operator) {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <ThemeProvider>
+        <AuthContext.Provider value={{ user: currentUser, loading: false,
+          login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn() }}>
+          <ParkProvider>
+            <Routes><Route element={<AppShell />}>
+              <Route path="*" element={<h1>Рабочий экран</h1>} />
+            </Route></Routes>
+          </ParkProvider>
+        </AuthContext.Provider>
+      </ThemeProvider>
+    </MemoryRouter>,
+  )
+}
+
 function BadgeCommitProbe({ parkId, snapshots }: { parkId: number; snapshots: string[] }) {
   useLayoutEffect(() => {
     const badges = Array.from(document.querySelectorAll('.rp-shell__badge'))
@@ -84,6 +101,36 @@ describe('AppShell', () => {
     vi.spyOn(api, 'dashboardSummary').mockResolvedValue({ park_id: 7, generated_at: '2026-09-02T09:00:00Z', arrived: 0, done: 0, queued: 0, in_transit: 0, moving: [] })
     vi.spyOn(api, 'operatorBlockers').mockResolvedValue({ park_id: 7, park_tag: 'north', status: 'all', counts: {}, items: [] })
     vi.spyOn(api, 'trackerIssues').mockResolvedValue({ items: [], total: 0, limit: 30, offset: 0, has_more: false })
+  })
+
+  it.each([
+    ['/work/ROBOPARK-1', 'Работа'],
+    ['/robots/VIN/check', 'Роботы'],
+  ])('keeps the parent section current at %s on desktop and mobile', (path, label) => {
+    act(() => media.setWidth(390))
+    renderShellPath(path)
+    for (const navigation of screen.getAllByRole('navigation', { name: 'Основная навигация' })) {
+      expect(within(navigation).getByRole('link', { name: label }))
+        .toHaveAttribute('aria-current', 'page')
+      expect(navigation.querySelectorAll('[aria-current="page"]')).toHaveLength(1)
+    }
+  })
+
+  it('does not activate a route with only a shared text prefix', () => {
+    renderShellPath('/workbench')
+    expect(screen.getByRole('link', { name: 'Работа' })).not.toHaveAttribute('aria-current')
+  })
+
+  it('keeps More current after entering a secondary route and closing the sheet', async () => {
+    const actor = userEvent.setup()
+    act(() => media.setWidth(390))
+    renderShellPath('/overview')
+    await actor.click(screen.getByRole('button', { name: 'Ещё' }))
+    const dialog = screen.getByRole('dialog', { name: 'Ещё' })
+    await actor.click(within(dialog).getByRole('link', { name: 'Репорты' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ещё' })).toHaveClass('is-active')
+    expect(screen.getByRole('button', { name: 'Ещё' })).toHaveAttribute('aria-current', 'page')
   })
 
   it('uses the accessible More sheet for appearance and secondary navigation', async () => {
@@ -344,7 +391,9 @@ describe('AppShell', () => {
 
   it.each([
     ['/admin/tracker', 'Startrek'],
+    ['/admin/tracker/settings', 'Startrek'],
     ['/admin/emergency/config', 'Настройка проверки робота'],
+    ['/admin/emergency/config/sections', 'Настройка проверки робота'],
   ])('marks only the exact nested destination active at %s', (path, destinationName) => {
     const adminUser = testUser({
       permissions: ['nav.admin', 'nav.admin.tracker', 'nav.admin.emergency'],
@@ -363,8 +412,8 @@ describe('AppShell', () => {
             <ParkProvider>
               <Routes>
                 <Route element={<AppShell />}>
-                  <Route path="/admin/tracker" element={<h1>Startrek route</h1>} />
-                  <Route path="/admin/emergency/config" element={<h1>Config route</h1>} />
+                  <Route path="/admin/tracker/*" element={<h1>Startrek route</h1>} />
+                  <Route path="/admin/emergency/config/*" element={<h1>Config route</h1>} />
                 </Route>
               </Routes>
             </ParkProvider>
@@ -382,6 +431,7 @@ describe('AppShell', () => {
     expect(parent).not.toHaveAttribute('aria-current')
     expect(destination).toHaveClass('is-active')
     expect(destination).toHaveAttribute('aria-current', 'page')
+    expect(navigation.querySelectorAll('[aria-current="page"]')).toHaveLength(1)
   })
 
   it('gives the skip link and Overview primary action the shared minimum control size', async () => {

@@ -1,0 +1,44 @@
+import { expect, test } from '@playwright/test'
+import { installOperational, issue, settlePage } from './fixtures'
+
+for (const width of [390, 1440]) {
+  test(`shell stays pinned and last work controls remain reachable at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 720 })
+    await installOperational(page, { role: 'admin', listCount: 50, issue: {
+      ...issue, description: Array.from({ length: 70 }, () => 'Подробности осмотра робота.').join('\n\n'),
+    } })
+    await page.goto('/work/ROBOPARK-42?park=7')
+    await expect(page.getByRole('heading', { name: issue.summary, exact: true })).toBeVisible()
+    await settlePage(page)
+    await page.getByRole('button', { name: 'Закрыть тикет', exact: true }).scrollIntoViewIfNeeded()
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(100)
+    expect((await page.locator('.rp-shell__topbar').boundingBox())?.y).toBe(0)
+    if (width >= 900) {
+      expect((await page.locator('.rp-shell__sidebar').boundingBox())?.y).toBe(0)
+      await page.locator('.rp-shell__sidebar').evaluate(element => { element.scrollTop = element.scrollHeight })
+      await expect(page.locator('.rp-shell__desktop-nav').getByRole('link', { name: 'Настройка проверки робота' })).toBeInViewport()
+    } else {
+      await expect(page.locator('.rp-shell__bottom-nav')).toBeInViewport()
+    }
+    await page.getByRole('button', { name: 'Закрыть тикет', exact: true }).click()
+    await expect(page.getByRole('alertdialog', { name: 'Закрыть задачу?' })).toBeVisible()
+    await page.getByRole('button', { name: 'Отмена', exact: true }).click()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  })
+}
+
+test('robot remaining-work link opens oldest scoped work with only the robot filter', async ({ page }) => {
+  const queries: URLSearchParams[] = []
+  page.on('request', request => {
+    const url = new URL(request.url())
+    if (url.pathname === '/api/tracker/issues') queries.push(url.searchParams)
+  })
+  await installOperational(page)
+  await page.goto('/work/ROBOPARK-42?park=7&status=closed&assignee=other&age=24&page=2')
+  await page.getByRole('link', { name: 'Незавершённые задачи робота 447' }).click()
+  await expect(page).toHaveURL(/\/work\?park=7&queue=ROBOPARK&robot=447$/)
+  await expect.poll(() => queries.at(-1)?.get('robot')).toBe('447')
+  expect(Object.fromEntries(queries.at(-1)!)).toMatchObject({ park: 'north', queue: 'ROBOPARK', robot: '447', sort: 'oldest', offset: '0' })
+  expect(queries.at(-1)!.has('status')).toBe(false)
+  expect(queries.at(-1)!.has('assignee')).toBe(false)
+})

@@ -64,7 +64,7 @@ export function parseWorkUrl(
       ...(untagged ? { untagged: true } : {}),
       ...(ageHours ? { ageHours } : {}),
     },
-    sort: params.get('sort') === 'newest' ? 'newest' : 'oldest',
+    sort: 'oldest',
     page: pageNumber(params.get('page')) ?? 1,
   }
 }
@@ -87,7 +87,6 @@ export function buildWorkSearch(state: WorkUrlState, parkId: number | null): str
   ) {
     params.set('age', String(filters.ageHours))
   }
-  if (state.sort !== 'oldest') params.set('sort', state.sort)
   if (serializablePage(state.page)) params.set('page', String(state.page))
 
   const query = params.toString()

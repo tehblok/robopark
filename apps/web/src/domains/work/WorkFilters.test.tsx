@@ -17,12 +17,13 @@ describe('WorkFilters', () => {
 
     fireEvent.change(screen.getByLabelText('Статус'), { target: { value: 'open' } })
     fireEvent.change(screen.getByLabelText('Робот'), { target: { value: '447' } })
-    fireEvent.change(screen.getByLabelText('Сортировка'), { target: { value: 'newest' } })
+    expect(screen.getByRole('combobox', { name: 'Статус' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'Сначала новые' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Применить фильтры' }))
 
     expect(onApply).toHaveBeenCalledWith({
       filters: { queue: 'ROBOPARK', status: 'open', robot: '447' },
-      sort: 'newest',
+      sort: 'oldest',
       page: 1,
     })
   })
@@ -43,12 +44,22 @@ describe('WorkFilters', () => {
 
     fireEvent.change(screen.getByLabelText('Статус'), { target: { value: 'closed' } })
     fireEvent.change(screen.getByLabelText('Робот'), { target: { value: '447' } })
-    fireEvent.change(screen.getByLabelText('Сортировка'), { target: { value: 'newest' } })
     fireEvent.click(screen.getByRole('button', { name: 'Сбросить фильтры' }))
 
     expect(screen.getByLabelText('Статус')).toHaveValue('ready')
     expect(screen.getByLabelText('Робот')).toHaveValue('1555')
-    expect(screen.getByLabelText('Сортировка')).toHaveValue('oldest')
+    expect(screen.getByText('Сначала старые')).toBeVisible()
+  })
+
+  it('submits named statuses with oldest sorting even when incoming state is legacy', () => {
+    const onApply = vi.fn()
+    render(<WorkFilters allowUntagged={false} loading={false} onApply={onApply}
+      value={{ filters: { queue: 'ROBOPARK' }, sort: 'newest', page: 5 }} />)
+    const status = screen.getByRole('combobox', { name: 'Статус' })
+    expect(screen.getByRole('option', { name: 'Все незавершённые' })).toHaveValue('')
+    fireEvent.change(status, { target: { value: 'inProgress' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Применить фильтры' }))
+    expect(onApply).toHaveBeenCalledWith({ filters: { queue: 'ROBOPARK', status: 'inProgress' }, sort: 'oldest', page: 1 })
   })
 
   it('does not expose or submit the untagged scope when it is not allowed', () => {

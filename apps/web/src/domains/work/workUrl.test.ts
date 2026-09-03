@@ -16,7 +16,7 @@ describe('work URL state', () => {
     sessionStorage.clear()
   })
 
-  it('parses filters, sort and a positive page', () => {
+  it('parses filters and a positive page while normalizing legacy newest sorting', () => {
     const state = parseWorkUrl(
       new URLSearchParams({
         park: '7',
@@ -41,7 +41,7 @@ describe('work URL state', () => {
         untagged: true,
         ageHours: 24,
       },
-      sort: 'newest',
+      sort: 'oldest',
       page: 3,
     })
   })
@@ -143,13 +143,13 @@ describe('work URL state', () => {
     )
 
     expect(buildWorkSearch(state, 7)).toBe(
-      '?park=7&queue=ROBOPARK&status=open&sort=newest&page=2',
+      '?park=7&queue=ROBOPARK&status=open&page=2',
     )
     expect(workListHref(state, 7)).toBe(
-      '/work?park=7&queue=ROBOPARK&status=open&sort=newest&page=2',
+      '/work?park=7&queue=ROBOPARK&status=open&page=2',
     )
     expect(workIssueHref('ROBOPARK-42', state, 7)).toBe(
-      '/work/ROBOPARK-42?park=7&queue=ROBOPARK&status=open&sort=newest&page=2',
+      '/work/ROBOPARK-42?park=7&queue=ROBOPARK&status=open&page=2',
     )
   })
 
@@ -174,8 +174,13 @@ describe('work URL state', () => {
 
     expect(parseWorkUrl(new URLSearchParams(search), defaults)).toEqual(initial)
     expect(buildWorkSearch(initial, 7)).toBe(
-      '?park=7&queue=ROBOPARK&robot=447&age=24&sort=newest&page=2',
+      '?park=7&queue=ROBOPARK&robot=447&age=24&page=2',
     )
+  })
+
+  it('does not serialize a legacy newest state supplied by a caller', () => {
+    expect(buildWorkSearch({ filters: { queue: 'ROBOPARK' }, sort: 'newest', page: 2 }, 7))
+      .toBe('?park=7&queue=ROBOPARK&page=2')
   })
 
   it('encodes an issue key without changing the stable query order', () => {

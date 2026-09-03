@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { Link } from 'react-router-dom'
 import {
   api,
   type Park,
@@ -35,6 +36,7 @@ import {
   buildWorkSearch,
   readWorkScroll,
   saveWorkScroll,
+  workListHref,
   type WorkUrlState,
 } from './workUrl'
 import './work.css'
@@ -503,6 +505,23 @@ function IssueWorkbenchOwner({
                     issue={detail.data ?? null}
                     loading={detail.isLoading && !detail.data}
                   />
+                  {detail.data ? (
+                    <div className="rp-work-related-tasks">
+                      {detail.data.robot?.trim() ? (
+                        <Link className="rp-work-robot-link" to={workListHref({
+                          filters: {
+                            queue: detail.data.queue || selectedPark.tracker_queue || requestState.filters.queue,
+                            robot: detail.data.robot.trim(),
+                            ...(requestState.filters.untagged ? { untagged: true } : {}),
+                          },
+                          sort: 'oldest',
+                          page: 1,
+                        }, selectedPark.id)}>
+                          Незавершённые задачи робота {detail.data.robot.trim()}
+                        </Link>
+                      ) : <p>Робот в задаче не указан — связанные задачи недоступны.</p>}
+                    </div>
+                  ) : null}
                   {canRenderDetailActions && detail.data ? (
                     <IssueActionsPanel
                       capabilities={detail.data.capabilities}

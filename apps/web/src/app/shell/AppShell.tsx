@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
-import { NavLink, Outlet, useLocation, useNavigationType } from 'react-router-dom'
+import { Link, Outlet, useLocation, useNavigationType } from 'react-router-dom'
 import { api } from '../../api'
 import { useAuth } from '../../auth-context'
 import { Button, IconButton } from '../../design-system/actions/Button'
@@ -40,31 +40,40 @@ function ReportsBadge({ count }: { count: number }) {
   return count > 0 ? <span className="rp-shell__badge">{count}</span> : null
 }
 
+function currentNavigationItem(items: readonly NavigationItem[], pathname: string) {
+  return items.reduce<NavigationItem | undefined>((current, item) => {
+    const matches = pathname === item.path || pathname.startsWith(`${item.path}/`)
+    return matches && (!current || item.path.length > current.path.length) ? item : current
+  }, undefined)
+}
+
 function NavigationLink({
   item,
   reportsBadge,
   className,
+  active,
   onClick,
 }: {
   item: NavigationItem
   reportsBadge: number
   className: string
+  active: boolean
   onClick?: () => void
 }) {
   const label = item.id === 'work' ? ru.appShell.work : item.label
   return (
-    <NavLink
+    <Link
       aria-label={label}
-      className={({ isActive }) => `${className}${isActive ? ' is-active' : ''}`}
+      aria-current={active ? 'page' : undefined}
+      className={`${className}${active ? ' is-active' : ''}`}
       data-route-id={item.id}
-      end
       onClick={onClick}
       to={item.path}
     >
       <Icon name={item.icon} size={20} />
       <span className="rp-shell__nav-label">{label}</span>
       {item.id === 'reports' ? <ReportsBadge count={reportsBadge} /> : null}
-    </NavLink>
+    </Link>
   )
 }
 
@@ -98,6 +107,9 @@ export function AppShell() {
   )
   const primaryMobileItems = mobileItems.slice(0, 4)
   const secondaryMobileItems = mobileItems.slice(4)
+  const desktopCurrent = currentNavigationItem(desktopItems, location.pathname)
+  const mobileCurrent = currentNavigationItem(mobileItems, location.pathname)
+  const moreCurrent = secondaryMobileItems.some((item) => item.id === mobileCurrent?.id)
   const badgeParkId = user?.role === 'operator' ? parkId ?? undefined : undefined
   const badgeKey = user ? `reports:badge:${user.role}:${badgeParkId ?? 'all'}` : ''
   const badgeResource = useCachedResource(
@@ -205,6 +217,7 @@ export function AppShell() {
                 <h2>{groupLabels[group]}</h2>
                 {items.map((item) => (
                   <NavigationLink
+                    active={item.id === desktopCurrent?.id}
                     className="rp-shell__desktop-link"
                     item={item}
                     key={item.id}
@@ -266,6 +279,7 @@ export function AppShell() {
           <nav aria-label={ru.appShell.mainNavigation} className="rp-shell__bottom-nav">
             {primaryMobileItems.map((item) => (
               <NavigationLink
+                active={item.id === mobileCurrent?.id}
                 className="rp-shell__mobile-link"
                 item={item}
                 key={item.id}
@@ -273,8 +287,9 @@ export function AppShell() {
               />
             ))}
             <button
+              aria-current={moreCurrent ? 'page' : undefined}
               aria-expanded={moreOpen}
-              className={`rp-shell__mobile-link${moreOpen ? ' is-active' : ''}`}
+              className={`rp-shell__mobile-link${moreOpen || moreCurrent ? ' is-active' : ''}`}
               onClick={() => setMoreOpen(true)}
               type="button"
             >
@@ -295,6 +310,7 @@ export function AppShell() {
           <nav aria-label={ru.appShell.secondaryNavigation} className="rp-shell__more-nav">
             {secondaryMobileItems.map((item) => (
               <NavigationLink
+                active={item.id === mobileCurrent?.id}
                 className="rp-shell__more-link"
                 item={item}
                 key={item.id}

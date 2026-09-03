@@ -26,7 +26,7 @@ export function loadWorkPage(
     assignee: filters.assignee,
     untagged: filters.untagged,
     age_hours: filters.ageHours,
-    sort: state.sort,
+    sort: 'oldest',
     limit: WORK_PAGE_SIZE,
     offset: pageOffset(state.page),
   })

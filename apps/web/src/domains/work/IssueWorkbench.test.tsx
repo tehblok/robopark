@@ -196,6 +196,29 @@ afterEach(() => {
 })
 
 describe('IssueWorkbench', () => {
+  it('links to all unfinished work for the known robot without carrying restrictive filters', async () => {
+    renderWorkbench({ currentState: {
+      filters: { queue: 'ROBOPARK', status: 'closed', assignee: 'ivan', ageHours: 24 },
+      sort: 'oldest', page: 3,
+    } })
+    const link = await screen.findByRole('link', { name: 'Незавершённые задачи робота 447' })
+    expect(link).toHaveAttribute('href', '/work?park=7&queue=ROBOPARK&robot=447')
+  })
+
+  it('preserves the permitted untagged context when opening the robot queue', async () => {
+    renderWorkbench({ currentState: { ...state, filters: { queue: 'ROBOPARK', untagged: true } } })
+    expect(await screen.findByRole('link', { name: 'Незавершённые задачи робота 447' }))
+      .toHaveAttribute('href', '/work?park=7&queue=ROBOPARK&robot=447&untagged=1')
+  })
+
+  it('does not invent robot identity from an issue summary', async () => {
+    renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => ({
+      ...issue, robot: null, summary: 'Проверить YASADR00000000447',
+    })) }) })
+    expect(await screen.findByText('Робот в задаче не указан — связанные задачи недоступны.')).toBeVisible()
+    expect(screen.queryByRole('link', { name: /Незавершённые задачи робота/ })).not.toBeInTheDocument()
+  })
+
   it.each(['permissions', 'read-revoked', 'tag', 'queue'] as const)(
     'isolates cached payload and actions after a same-ID %s change, including remount',
     async (change) => {
