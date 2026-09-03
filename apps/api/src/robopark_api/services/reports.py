@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from robopark_api.deps import get_user_parks
-from robopark_api.models import AccessStatus, Report, Role, User
+from robopark_api.models import AccessStatus, Park, Report, Role, User, UserPark
 from robopark_api.services import platform_settings as settings_svc
+from robopark_api.services import rbac
 from robopark_api.services.rbac import RoleSlug
 
 KIND_TICKET_QUESTION = "ticket_question"
@@ -35,6 +35,11 @@ def create_manual_report(
     tracker_key: str | None,
     tracker_url: str | None,
 ) -> Report:
+    if not _is_approved(author) or not rbac.has_permission(
+        db, author, rbac.PERMISSION_REPORTS_CREATE
+    ):
+        raise PermissionError("forbidden")
+    _require_park(db, author, park_id)
     if kind not in MANUAL_KINDS:
         raise ValueError("invalid_report_kind")
     if kind == KIND_TICKET_QUESTION and not tracker_key:
@@ -96,7 +101,33 @@ def get_or_create_close_review(
 
 
 def _user_park_ids(db: Session, user: User) -> set[int]:
-    return {park.id for park in get_user_parks(db, user)}
+    query = select(Park.id).where(Park.is_active.is_(True))
+    if not rbac.is_admin_or_royal(user):
+        query = query.join(UserPark).where(UserPark.user_id == user.id)
+    return set(db.scalars(query))
+
+
+def _is_approved(user: User) -> bool:
+    return user.is_active and user.access_status == AccessStatus.approved.value
+
+
+def _require_park(db: Session, user: User, park_id: int) -> None:
+    if db.get(Park, park_id) is None:
+        raise LookupError("park not found")
+    if park_id not in _user_park_ids(db, user):
+        raise PermissionError("forbidden")
+
+
+def _scope_clause(db: Session, user: User, park_id: int | None = None):
+    park_ids = _user_park_ids(db, user)
+    if park_id is not None:
+        if park_id not in park_ids:
+            raise PermissionError("forbidden")
+        park_ids = {park_id}
+    clause = Report.park_id.in_(park_ids)
+    if rbac.is_admin_or_royal(user):
+        return or_(clause, Report.park_id.is_(None))
+    return clause
 
 
 def _load_report(db: Session, report_id: int) -> Report:
@@ -188,32 +219,44 @@ def _is_admin_inbox_user(user: User) -> bool:
 
 
 def _is_approved_operator(user: User) -> bool:
-    return user.role == RoleSlug.OPERATOR and user.access_status == AccessStatus.approved.value
+    return user.role == RoleSlug.OPERATOR and _is_approved(user)
+
+
+def _can_resolve(db: Session, user: User) -> bool:
+    return _is_approved(user) and rbac.has_permission(db, user, rbac.PERMISSION_REPORTS_RESOLVE)
+
+
+def _in_scope(db: Session, user: User, report: Report) -> bool:
+    if not _is_approved(user):
+        return False
+    if report.park_id is None:
+        return _is_admin_inbox_user(user)
+    return report.park_id in _user_park_ids(db, user)
 
 
 def _can_view_report(db: Session, user: User, report: Report) -> bool:
+    if not _in_scope(db, user, report):
+        return False
     if report.author_user_id == user.id:
         return True
+    if not _can_resolve(db, user):
+        return False
     if _is_admin_inbox_user(user):
         return True
-    return bool(
-        _is_approved_operator(user)
-        and report.target_role == RoleSlug.OPERATOR
-        and report.park_id in _user_park_ids(db, user)
-    )
+    return bool(_is_approved_operator(user) and report.target_role == RoleSlug.OPERATOR)
 
 
 def _can_act_on_report(db: Session, user: User, report: Report) -> bool:
-    if report.status != STATUS_OPEN:
+    if (
+        report.status != STATUS_OPEN
+        or not _can_resolve(db, user)
+        or not _in_scope(db, user, report)
+    ):
         return False
     if report.target_role == RoleSlug.ADMIN:
         return _is_admin_inbox_user(user)
     if report.target_role == RoleSlug.OPERATOR:
-        return (
-            _is_approved_operator(user)
-            and report.park_id is not None
-            and report.park_id in _user_park_ids(db, user)
-        )
+        return _is_approved_operator(user)
     return False
 
 
@@ -235,6 +278,9 @@ def _require_non_empty_comment(comment: str) -> str:
 
 
 def list_inbox(db: Session, user: User, *, park_id: int | None = None) -> list[Report]:
+    if not _can_resolve(db, user):
+        raise PermissionError("forbidden")
+    scope = _scope_clause(db, user, park_id)
     if _is_admin_inbox_user(user):
         stmt = (
             select(Report)
@@ -245,42 +291,30 @@ def list_inbox(db: Session, user: User, *, park_id: int | None = None) -> list[R
             )
         )
     elif _is_approved_operator(user):
-        park_ids = _user_park_ids(db, user)
-        if park_id is not None:
-            if park_id not in park_ids:
-                raise PermissionError("forbidden")
-            park_ids = {park_id}
-        if not park_ids:
-            return []
         stmt = (
             select(Report)
             .options(selectinload(Report.attachments))
             .where(
                 Report.status == STATUS_OPEN,
                 Report.target_role == RoleSlug.OPERATOR,
-                Report.park_id.in_(park_ids),
             )
         )
     else:
         return []
 
-    if park_id is not None and _is_admin_inbox_user(user):
-        stmt = stmt.where(
-            or_(
-                Report.park_id == park_id,
-                Report.kind == KIND_EMERGENCY_COOKIE_STALE,
-            )
-        )
-
-    return list(db.scalars(stmt.order_by(Report.created_at.desc(), Report.id.desc())).all())
+    return list(
+        db.scalars(stmt.where(scope).order_by(Report.created_at.desc(), Report.id.desc())).all()
+    )
 
 
 def list_mine(db: Session, user: User) -> list[Report]:
+    if not _is_approved(user):
+        raise PermissionError("forbidden")
     return list(
         db.scalars(
             select(Report)
             .options(selectinload(Report.attachments))
-            .where(Report.author_user_id == user.id)
+            .where(Report.author_user_id == user.id, _scope_clause(db, user))
             .order_by(Report.created_at.desc(), Report.id.desc())
         ).all()
     )
@@ -317,13 +351,9 @@ def escalate_report(db: Session, user: User, report_id: int, comment: str) -> Re
         raise PermissionError("forbidden")
 
     parent = _load_report(db, report_id)
-    if parent.status != STATUS_OPEN:
-        raise PermissionError("forbidden")
+    _require_act(db, user, parent)
     if parent.target_role != RoleSlug.OPERATOR:
         raise PermissionError("forbidden")
-    if parent.park_id not in _user_park_ids(db, user):
-        raise PermissionError("forbidden")
-
     body = _require_non_empty_comment(comment)
     child = Report(
         kind=KIND_ESCALATION,
@@ -344,45 +374,22 @@ def escalate_report(db: Session, user: User, report_id: int, comment: str) -> Re
 
 
 def badge_counts(db: Session, user: User, *, park_id: int | None = None) -> dict:
-    if user.role == RoleSlug.MECHANIC:
-        count = db.scalar(
-            select(func.count())
-            .select_from(Report)
-            .where(
-                Report.author_user_id == user.id,
-                Report.status == STATUS_RETURNED,
+    if not _is_approved(user):
+        raise PermissionError("forbidden")
+    visible = [and_(Report.author_user_id == user.id, Report.status == STATUS_RETURNED)]
+    if _can_resolve(db, user):
+        if _is_admin_inbox_user(user):
+            visible.append(and_(Report.target_role == RoleSlug.ADMIN, Report.status == STATUS_OPEN))
+        elif _is_approved_operator(user):
+            visible.append(
+                and_(Report.target_role == RoleSlug.OPERATOR, Report.status == STATUS_OPEN)
             )
+    count = db.scalar(
+        select(func.count())
+        .select_from(Report)
+        .where(
+            _scope_clause(db, user, park_id),
+            or_(*visible),
         )
-        return {"count": count or 0}
-
-    if _is_admin_inbox_user(user):
-        count = db.scalar(
-            select(func.count())
-            .select_from(Report)
-            .where(
-                Report.status == STATUS_OPEN,
-                Report.target_role == RoleSlug.ADMIN,
-            )
-        )
-        return {"count": count or 0}
-
-    if _is_approved_operator(user):
-        park_ids = _user_park_ids(db, user)
-        if not park_ids:
-            return {"count": 0}
-        if park_id is not None:
-            if park_id not in park_ids:
-                raise PermissionError("forbidden")
-            park_ids = {park_id}
-        count = db.scalar(
-            select(func.count())
-            .select_from(Report)
-            .where(
-                Report.status == STATUS_OPEN,
-                Report.target_role == RoleSlug.OPERATOR,
-                Report.park_id.in_(park_ids),
-            )
-        )
-        return {"count": count or 0}
-
-    return {"count": 0}
+    )
+    return {"count": count or 0}

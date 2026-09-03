@@ -73,16 +73,21 @@ def seed_operator_other_park(db_session, seed_other_park):
 
 
 def _create_open_report(db_session, *, author, park_id, title="Test report"):
-    return reports_svc.create_manual_report(
-        db_session,
-        author=author,
+    # Seed historical reports even when the author no longer has park access.
+    report = Report(
+        author_user_id=author.id,
         park_id=park_id,
         kind=reports_svc.KIND_TICKET_QUESTION,
+        status=reports_svc.STATUS_OPEN,
+        target_role=RoleSlug.OPERATOR,
         title=title,
         body="Body",
         tracker_key="ROBO-1",
         tracker_url="https://st.yandex-team.ru/ROBO-1",
     )
+    db_session.add(report)
+    db_session.commit()
+    return report
 
 
 def test_create_manual_ticket_question_success(db_session, seed_mechanic, seed_park_with_tracker):

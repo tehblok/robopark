@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from robopark_api.db import get_db
 from robopark_api.deps import require_user
-from robopark_api.models import Permission, Role, User, UserPermission
+from robopark_api.models import AccessStatus, Permission, Role, User, UserPermission
 
 
 class RoleSlug:
@@ -161,8 +161,12 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     RoleSlug.DRIVER: frozenset(
         {
             PERMISSION_NAV_DASHBOARD,
+            PERMISSION_NAV_TASKS,
             PERMISSION_NAV_ROBOT_SEARCH,
             PERMISSION_NAV_EMERGENCY,
+            PERMISSION_NAV_REPORTS,
+            PERMISSION_TRACKER_READ,
+            PERMISSION_REPORTS_CREATE,
         }
     ),
 }
@@ -199,6 +203,14 @@ def role_permission_keys(db: Session, user: User) -> set[str]:
     if user.role_ref is None:
         return set()
     return {perm.key for perm in user.role_ref.permissions}
+
+
+def proposed_user_permissions(role: Role, keys: list[str] | None = None) -> set[str]:
+    """Compute a proposed effective grant without changing the target user."""
+    if role.slug == RoleSlug.ROYAL:
+        return set(ALL_PERMISSIONS)
+    desired = {perm.key for perm in role.permissions} if keys is None else set(keys)
+    return desired & (set(ALL_PERMISSIONS) - {PERMISSION_USERS_APPROVE})
 
 
 def overrides_for_user(db: Session, user_id: int) -> dict[str, bool]:
@@ -273,6 +285,7 @@ def count_active_royals(db: Session, *, exclude_user_id: int | None = None) -> i
     query = select(func.count()).where(
         User.role_id == royal.id,
         User.is_active.is_(True),
+        User.access_status == AccessStatus.approved.value,
     )
     if exclude_user_id is not None:
         query = query.where(User.id != exclude_user_id)
@@ -280,7 +293,11 @@ def count_active_royals(db: Session, *, exclude_user_id: int | None = None) -> i
 
 
 def is_last_active_royal(db: Session, user: User) -> bool:
-    if role_slug(user) != RoleSlug.ROYAL:
+    if (
+        role_slug(user) != RoleSlug.ROYAL
+        or not user.is_active
+        or user.access_status != AccessStatus.approved.value
+    ):
         return False
     return count_active_royals(db) <= 1
 

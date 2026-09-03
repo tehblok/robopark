@@ -6,11 +6,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
-from robopark_api.deps import (
-    require_approved_operator,
-    require_operator_park,
-    require_user,
-)
+from robopark_api.deps import require_user
 from robopark_api.models import Report, User
 from robopark_api.schemas import (
     ReportAttachmentOut,
@@ -60,17 +56,12 @@ def _run_svc(fn: Callable[[], T]) -> T:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden") from None
 
 
-def _require_mechanic_park(db: Session, user: User, park_id: int) -> None:
-    require_operator_park(park_id, db, user)
-
-
 @router.post("", response_model=ReportOut, status_code=status.HTTP_201_CREATED)
 def create_report(
     payload: ReportCreateIn,
     user: User = Depends(_require_report_author),
     db: Session = Depends(get_db),
 ) -> ReportOut:
-    _require_mechanic_park(db, user, payload.park_id)
     report = _run_svc(
         lambda: reports_svc.create_manual_report(
             db,
@@ -101,7 +92,7 @@ def list_mine(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> list[ReportOut]:
-    reports = reports_svc.list_mine(db, user)
+    reports = _run_svc(lambda: reports_svc.list_mine(db, user))
     return [_report_out(report) for report in reports]
 
 
@@ -189,7 +180,7 @@ def done_report(
 def escalate_report(
     report_id: int,
     payload: ReportEscalateIn,
-    user: User = Depends(require_approved_operator),
+    user: User = Depends(_require_inbox_viewer),
     db: Session = Depends(get_db),
 ) -> ReportOut:
     report = _run_svc(lambda: reports_svc.escalate_report(db, user, report_id, payload.comment))

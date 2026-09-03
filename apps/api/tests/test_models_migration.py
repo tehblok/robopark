@@ -32,10 +32,10 @@ def test_metadata_has_required_tables():
     }
 
 
-def test_alembic_head_is_history_definition():
+def test_alembic_head_is_driver_work_reports():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0016_history_definition"]
+    assert script.get_heads() == ["0017_driver_work_reports"]
 
 
 def test_history_migration_preserves_legacy_definition(sqlite_database_url, monkeypatch):
