@@ -25,7 +25,7 @@
 
 **Files:**
 - Create: `apps/api/src/robopark_api/routers/operations.py`, `services/operations.py`, `operations_schemas.py`, `tests/test_operations.py`.
-- Modify: `main.py` router registration; `services/tracker_filters.py`, `services/tracker_policy.py`, `services/tracker_metrics.py`, `services/blocker_history.py`, `models.py`, relevant tests.
+- Modify: `main.py` router registration; `services/tracker_filters.py`, `services/tracker_policy.py`, `services/tracker_metrics.py`, `services/blocker_history.py`, `routers/tracker_read.py`, `models.py`, relevant tests.
 - Create: `apps/api/alembic/versions/0016_history_definition.py` for `ParkBlockerHistory.definition_version` (existing rows 1, new scanner rows 2).
 - Driver default permission migration is owned by the later accounts plan; do not change rbac seed in this task.
 
@@ -53,6 +53,7 @@ def test_departures_use_resolution_date():
 
 - [ ] Run these focused tests RED, then implement typed API, pure calculations, read scopes and error handling. Reuse cached park blockers once per request for counts/SLA/workload. Counts are calculated before list truncation; cap rendered tasks at 200 with truthful tasks_total/truncated. If source has a hard search limit, expose incompleteness rather than claiming fleet totals.
 - [ ] Require driver new/moving check in shared tracker_policy before list/detail/comments/actions exposure, preserving assigned queues/tags. Do not grant writes. Do not unnecessarily restrict other roles' Work detail access.
+- [ ] Let Work's `/tracker/issues` status filter accept canonical new/moving/queued/diagnostics/waiting_team/waiting_parts buckets by compiling their aliases into a safe OR query. Preserve explicit raw Tracker status filtering. Do not send canonical bucket names as raw custom status keys when they differ. Cover requested bucket compilation and driver scope enforcement with route tests.
 - [ ] Correct departure query to `Resolved` per official Tracker query docs: https://yandex.ru/support/tracker/ru/user/query-filter ; response field `resolvedAt`: https://yandex.ru/support/tracker/en/api-ref/issues/response-fields . Keep existing supported date formatting unless verified improvement. Add versioned history migration/scanner handling; never relabel legacy data v2 without recomputation.
 - [ ] GREEN focused API suites, Ruff, migration upgrade on isolated temporary SQLite only (no project env). Commit owned files and report exact output and assumptions.
 
@@ -62,6 +63,7 @@ def test_departures_use_resolution_date():
 - Modify: `apps/web/src/api.ts`, `domains/shift/OverviewPage.tsx`, `overviewData.ts`, `overviewModel.ts`, `OverviewSections.tsx`, `overview.css`, tests.
 - Create: `apps/web/src/domains/insights/operations.ts`, `FlowChart.tsx`, `OperationsPanels.tsx`, `InsightsPage.tsx`, `insights.css`, adjacent tests.
 - Modify: `apps/web/src/pages/Analytics.tsx`, `Analytics.test.tsx`, relevant fixture/test routes in `apps/web/e2e/support`.
+- Modify: `apps/web/src/domains/work/WorkFilters.tsx` and tests to offer fleet workflow statuses (new, moving, queued, diagnostics, waiting_team, waiting_parts) alongside supported terminal/raw status filters, using Task 1 backend canonical buckets.
 - May add SLA policy editor as reusable `domains/insights/SlaPolicyEditor.tsx`; later Management plan mounts it.
 
 **Interfaces:**
