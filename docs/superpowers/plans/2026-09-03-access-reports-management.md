@@ -51,8 +51,10 @@ assert db_session.scalar(select(User).where(User.username == 'unauthorized-admin
 - Create `apps/web/src/domains/management/ManagementPage.tsx`, `UserManagementPage.tsx`, `RoleManagementPage.tsx`, `management.css`, tests.
 - Modify `apps/web/src/pages/Admin.tsx`, `components/admin/AdminUsersPanel.tsx`, `AdminRolesPanel.tsx` as needed for independent loading and guards.
 - Modify `apps/web/src/pages/Reports.tsx`, report components and adjacent tests; optionally split scoped resource owner/list/detail into `domains/reports` rather than growing a monolith.
+- Modify `apps/web/src/api.ts` for existing server report attachment DTO/upload endpoint (currently missing client wrapper); preserve Insights types. Use server's allowed kinds/size limits; upload to existing report ID, so attachment retry cannot create a duplicate report. Detail exposes authorized attachment links.
 - Modify `apps/web/src/app/routing/routeManifest.ts`, `accessPolicy.ts`, `AppRouter.tsx`, routing tests and `scripts/check-nav.mjs` expected inventory if needed.
 - Modify `apps/web/src/app/shell/AppShell.tsx`, `AppShell.css`, tests for grouped More/profile link, preserving workspace corrections.
+- Modify `apps/web/src/pages/ChangePassword.tsx` and tests so voluntary password change works: existing component redirects away unless must_change_password. Keep forced-password gate, add ordinary change flow/back navigation and appropriate copy; no bypass of current-password verification.
 
 **Interfaces:**
 - `/admin` becomes Management hub; legacy integration/parks/operations UI moves to `/admin/settings`, reusing existing Admin component with URL tab (`integrations`, `parks`, `ops`) and loading only what that module needs.
