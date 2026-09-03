@@ -1,0 +1,82 @@
+name: Temporary operational acceptance bootstrap
+
+on:
+  push:
+    branches: [codex/robopark-redesign]
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    name: Verify operations and generate pinned Linux baselines
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          version: 0.11.31
+          enable-cache: true
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.18.0
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Verify repository including Docker builds
+        run: ./scripts/verify.sh
+
+      - name: Verify semantic contrast
+        working-directory: apps/web
+        run: npm run check:contrast
+
+      - name: Generate baselines in the pinned Linux image
+        working-directory: apps/web
+        run: npm run test:e2e:update:linux
+
+      - name: Compare baselines in a fresh pinned Linux run
+        working-directory: apps/web
+        run: npm run test:e2e:linux
+
+      - name: Validate and commit only the 42 baseline PNGs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { existsSync } from 'node:fs';
+          const expected = [
+            'apps/web/e2e/app-shell.spec.ts-snapshots/mechanic-shell-dark-390.png',
+            'apps/web/e2e/app-shell.spec.ts-snapshots/operator-shell-light-1440.png',
+          ];
+          for (const state of ['overview', 'work', 'robots', 'robot-check']) {
+            for (const theme of ['light', 'dark']) {
+              for (const width of [320, 390, 768, 1024, 1440]) {
+                expected.push(`apps/web/e2e/operational/responsive-visual.spec.ts-snapshots/${state}-${theme}-${width}.png`);
+              }
+            }
+          }
+          expected.sort();
+          if (expected.length !== 42 || expected.some(path => !existsSync(path))) throw Error('Missing required baseline');
+          const stagedBefore = execFileSync('git', ['diff', '--cached', '--name-only'], { encoding: 'utf8' }).trim();
+          if (stagedBefore) throw Error('Unexpected pre-existing staged changes');
+          const changed = [
+            ...execFileSync('git', ['diff', '--name-only', '-z'], { encoding: 'utf8' }).split('\0'),
+            ...execFileSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], { encoding: 'utf8' }).split('\0'),
+          ].filter(Boolean).sort();
+          if (JSON.stringify(changed) !== JSON.stringify(expected)) throw Error('Generated paths differ from the exact 42-file allowlist');
+          execFileSync('git', ['add', '--', ...expected]);
+          execFileSync('git', ['diff', '--cached', '--check'], { stdio: 'inherit' });
+          const staged = execFileSync('git', ['diff', '--cached', '--name-only', '-z'], { encoding: 'utf8' }).split('\0').filter(Boolean).sort();
+          if (JSON.stringify(staged) !== JSON.stringify(expected)) throw Error('Staged baseline allowlist mismatch');
+          NODE
+          git config user.name "robopark-ci"
+          git config user.email "robopark-ci@users.noreply.github.com"
+          git commit -m "test(operations): add verified pinned Linux baselines [skip ci]"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:codex/robopark-redesign
