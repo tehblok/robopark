@@ -97,3 +97,122 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+
+.rp-robot-detail {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.rp-robot-detail > *,
+.rp-robot-identity {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rp-robot-detail__identity,
+.rp-robot-identity__status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.rp-robot-identity {
+  background: var(--rp-surface);
+  border: 1px solid var(--rp-border);
+  box-shadow: var(--rp-shadow-panel);
+  width: 100%;
+}
+
+.rp-robot-identity__illustration {
+  background: var(--rp-surface-sunken);
+  border-radius: var(--rp-radius-control);
+  margin: 0;
+  padding: 1rem;
+  text-align: center;
+}
+
+.rp-robot-identity__illustration img {
+  display: block;
+  height: 15rem;
+  max-width: 100%;
+  object-fit: contain;
+  width: 100%;
+}
+
+.rp-robot-identity__illustration figcaption {
+  color: var(--rp-text-muted);
+  margin-top: 0.5rem;
+}
+
+.rp-robot-identity__vin {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.rp-robot-detail__identity .rp-error-state {
+  background: var(--rp-warning-surface);
+}
+
+.rp-robot-detail__work .rp-error-state {
+  background: var(--rp-critical-surface);
+}
+
+.rp-robot-detail__tasks {
+  display: grid;
+  gap: 1rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rp-robot-detail__tasks li {
+  border-bottom: 1px solid var(--rp-border);
+  padding-bottom: 0.75rem;
+}
+
+.rp-robot-detail__tasks a {
+  align-items: center;
+  display: inline-flex;
+  min-height: 44px;
+}
+
+.rp-robot-detail__primary {
+  background: var(--rp-surface);
+  padding: 0.5rem;
+  position: sticky;
+  grid-row: 4;
+  bottom: calc(var(--rp-mobile-nav-height, 4rem) + env(safe-area-inset-bottom, 0px));
+  z-index: 2;
+}
+
+.rp-robot-detail__primary a {
+  text-align: center;
+  text-decoration: none;
+  white-space: normal;
+  width: 100%;
+}
+
+@media (min-width: 900px) {
+  .rp-robot-detail {
+    grid-template-columns: minmax(18rem, 0.8fr) minmax(0, 1.2fr);
+  }
+  .rp-robot-detail__events {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .rp-robot-detail__primary {
+    grid-column: 1;
+    grid-row: 2;
+    position: static;
+    align-self: start;
+  }
+}
+
+@media (min-width: 1200px) {
+  .rp-robot-detail {
+    grid-template-columns: minmax(22rem, 0.8fr) minmax(0, 1.2fr);
+  }
+}
