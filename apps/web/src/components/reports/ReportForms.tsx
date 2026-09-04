@@ -1,27 +1,75 @@
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, type ReportAttachmentKind, type ReportKindManual } from '../../api'
+import { reportDraftKey, type ReportsApiClient } from '../../domains/reports/reports'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
 import { Alert } from '../PageShell'
 import { Spinner } from '../ui/Feedback'
 
 type ReportFormsProps = {
+  apiClient?: ReportsApiClient
+  ownerKey: string
   parkId: number
+  principalId: number
+  restoreDraft?: boolean
   onCreated: () => void
 }
 
 type FormKind = 'question' | 'problem'
+
+type ReportDraft = {
+  activeForm: FormKind
+  trackerKey: string
+  title: string
+  body: string
+}
+
+const EMPTY_DRAFT: ReportDraft = {
+  activeForm: 'question',
+  trackerKey: '',
+  title: '',
+  body: '',
+}
+
+function loadDraft(principalId: number, parkId: number): ReportDraft {
+  try {
+    const stored = localStorage.getItem(reportDraftKey(principalId, parkId))
+    if (!stored) return EMPTY_DRAFT
+    const parsed = JSON.parse(stored) as Partial<ReportDraft>
+    return {
+      activeForm: parsed.activeForm === 'problem' ? 'problem' : 'question',
+      trackerKey: typeof parsed.trackerKey === 'string' ? parsed.trackerKey : '',
+      title: typeof parsed.title === 'string' ? parsed.title : '',
+      body: typeof parsed.body === 'string' ? parsed.body : '',
+    }
+  } catch {
+    return EMPTY_DRAFT
+  }
+}
+
+function saveDraft(principalId: number, parkId: number, draft: ReportDraft) {
+  try {
+    const key = reportDraftKey(principalId, parkId)
+    const hasContent = draft.activeForm !== 'question'
+      || Boolean(draft.trackerKey || draft.title || draft.body)
+    if (hasContent) localStorage.setItem(key, JSON.stringify(draft))
+    else localStorage.removeItem(key)
+  } catch {
+    // Browser storage is optional; the in-memory form remains usable.
+  }
+}
 
 function trackerUrlFromKey(key: string): string | null {
   const trimmed = key.trim()
   return trimmed ? `https://st.yandex-team.ru/${trimmed}` : null
 }
 
-export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
-  const [activeForm, setActiveForm] = useState<FormKind>('question')
-  const [trackerKey, setTrackerKey] = useState('')
-  const [title, setTitle] = useState('')
-  const [body, setBody] = useState('')
+export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, restoreDraft = true, onCreated }: ReportFormsProps) {
+  const [initial] = useState(() => restoreDraft ? loadDraft(principalId, parkId) : EMPTY_DRAFT)
+  const [activeForm, setActiveForm] = useState<FormKind>(initial.activeForm)
+  const [trackerKey, setTrackerKey] = useState(initial.trackerKey)
+  const [title, setTitle] = useState(initial.title)
+  const [body, setBody] = useState(initial.body)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -31,8 +79,50 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
   const [attachmentError, setAttachmentError] = useState('')
   const [attachmentSuccess, setAttachmentSuccess] = useState('')
   const [attaching, setAttaching] = useState(false)
+  const ownerRef = useRef({ key: ownerKey, parkId, principalId })
+  const generationRef = useRef(0)
+  const mountedRef = useRef(true)
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      generationRef.current += 1
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    if (ownerRef.current.key === ownerKey) return
+    try {
+      localStorage.removeItem(reportDraftKey(ownerRef.current.principalId, ownerRef.current.parkId))
+    } catch {
+      // Browser storage is optional.
+    }
+    ownerRef.current = { key: ownerKey, parkId, principalId }
+    generationRef.current += 1
+    const next = loadDraft(principalId, parkId)
+    setActiveForm(next.activeForm)
+    setTrackerKey(next.trackerKey)
+    setTitle(next.title)
+    setBody(next.body)
+    setError('')
+    setSuccess('')
+    setSubmitting(false)
+    setCreatedReportId(null)
+    setAttachment(null)
+    setAttachmentKind('device_photo')
+    setAttachmentError('')
+    setAttachmentSuccess('')
+    setAttaching(false)
+  }, [ownerKey, parkId, principalId])
+
+  useEffect(() => {
+    if (ownerRef.current.key !== ownerKey) return
+    saveDraft(principalId, parkId, { activeForm, trackerKey, title, body })
+  }, [activeForm, body, ownerKey, parkId, principalId, title, trackerKey])
 
   function resetFields() {
+    setActiveForm('question')
     setTrackerKey('')
     setTitle('')
     setBody('')
@@ -59,8 +149,13 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
     }
 
     setSubmitting(true)
+    const generation = generationRef.current
+    const requestedOwner = ownerKey
+    const current = () => mountedRef.current
+      && generationRef.current === generation
+      && ownerRef.current.key === requestedOwner
     try {
-      const created = await api.createReport({
+      const created = await apiClient.createReport({
         kind,
         park_id: parkId,
         title: trimmedTitle,
@@ -68,14 +163,16 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
         tracker_key: trimmedKey || null,
         tracker_url: trackerUrlFromKey(trimmedKey),
       })
+      if (!current()) return
       setCreatedReportId(created.id)
       setSuccess('Репорт отправлен оператору.')
       resetFields()
       onCreated()
     } catch (submitError) {
+      if (!current()) return
       setError(mapApiError(submitError, ru.errors.generic))
     } finally {
-      setSubmitting(false)
+      if (current()) setSubmitting(false)
     }
   }
 
@@ -102,14 +199,21 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
     setAttaching(true)
     setAttachmentError('')
     setAttachmentSuccess('')
+    const generation = generationRef.current
+    const requestedOwner = ownerKey
+    const current = () => mountedRef.current
+      && generationRef.current === generation
+      && ownerRef.current.key === requestedOwner
     try {
-      await api.reportAttach(createdReportId, attachmentKind, attachment)
+      await apiClient.reportAttach(createdReportId, attachmentKind, attachment)
+      if (!current()) return
       setAttachment(null)
       setAttachmentSuccess('Файл прикреплён к созданному репорту.')
     } catch (caught) {
+      if (!current()) return
       setAttachmentError(mapApiError(caught, ru.errors.generic))
     } finally {
-      setAttaching(false)
+      if (current()) setAttaching(false)
     }
   }
 

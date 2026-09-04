@@ -1,4 +1,5 @@
 import { screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api'
 import { installMatchMedia, renderApp, testUser } from '../../test/renderApp'
@@ -179,11 +180,51 @@ describe('AppRouter', () => {
     }))
 
     expect(await screen.findByRole('heading', { name: 'Репорты' })).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Создать репорт' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Создать репорт' })).toHaveAttribute('href', '/reports/new?park=7')
     expect(screen.getByRole('tab', { name: 'Входящие' })).toBeVisible()
     await waitFor(() => expect(api.reportsMine).toHaveBeenCalled())
     expect(Object.keys(localStorage).filter((key) => key.startsWith('robopark:res:reports:')))
       .toEqual([])
+  })
+
+  it('restores the report pane and author status filter from the canonical URL', async () => {
+    vi.spyOn(api, 'reportsMine').mockResolvedValue([])
+    vi.spyOn(api, 'reportsInbox').mockResolvedValue([])
+    const actor = userEvent.setup()
+    renderApp('/reports?pane=inbox', testUser({
+      permissions: ['nav.reports', 'reports.create', 'reports.resolve'],
+      parks: [north],
+    }))
+
+    expect(await screen.findByRole('tab', { name: 'Входящие' })).toHaveAttribute('aria-selected', 'true')
+    await actor.click(screen.getByRole('tab', { name: 'Мои репорты' }))
+    await actor.selectOptions(screen.getByRole('combobox', { name: 'Статус репортов' }), 'returned')
+    expect(screen.getByTestId('location')).toHaveTextContent('/reports?park=7&status=returned')
+  })
+
+  it('opens canonical report creation and direct detail routes with Reports nav current', async () => {
+    const report = {
+      id: 19, kind: 'mechanic_problem' as const, status: 'open' as const, park_id: 7,
+      author_user_id: 1, target_role: 'operator', tracker_key: null, tracker_url: null,
+      title: 'Прямой репорт', body: '', parent_report_id: null, return_comment: null,
+      created_at: '2026-09-04T08:00:00Z', updated_at: '2026-09-04T08:00:00Z', resolved_at: null,
+    }
+    vi.spyOn(api, 'reportsMine').mockResolvedValue([])
+    vi.spyOn(api, 'report').mockResolvedValue(report)
+    const currentUser = testUser({
+      permissions: ['nav.reports', 'reports.create'],
+      parks: [north],
+    })
+
+    const createView = renderApp('/reports/new?park=7', currentUser)
+    expect(await screen.findByRole('heading', { name: 'Создать репорт' })).toBeVisible()
+    expect(screen.getAllByRole('link', { name: 'Репорты' })[0]).toHaveAttribute('aria-current', 'page')
+    createView.unmount()
+
+    renderApp('/reports/19?park=7', currentUser)
+    expect(await screen.findByRole('heading', { name: 'Прямой репорт' })).toBeVisible()
+    expect(screen.getAllByRole('link', { name: 'Репорты' })[0]).toHaveAttribute('aria-current', 'page')
+    expect(api.report).toHaveBeenCalledWith(19)
   })
 
   it('opens the only permitted reports pane and keeps inbox open-only', async () => {
@@ -199,6 +240,7 @@ describe('AppRouter', () => {
   })
 
   it('labels an author report with its own park rather than the current shell park', async () => {
+    const actor = userEvent.setup()
     const south = { id: 8, name: 'Южный', tag: 'south', tracker_queue: 'SOUTH', is_active: true }
     const report = {
       id: 19, kind: 'mechanic_problem' as const, status: 'open' as const, park_id: 8,
@@ -213,8 +255,9 @@ describe('AppRouter', () => {
     }))
 
     await screen.findByRole('button', { name: /в другом парке/i })
-    await screen.getByRole('button', { name: /в другом парке/i }).click()
-    expect(await screen.findByText('Южный')).toBeVisible()
+    await actor.click(screen.getByRole('button', { name: /в другом парке/i }))
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/reports/19?park=7'))
+    expect(within(await screen.findByRole('article')).getByText('Южный')).toBeVisible()
   })
 
   it('renders only permitted role-aware navigation', async () => {

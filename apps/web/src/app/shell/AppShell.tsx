@@ -13,6 +13,7 @@ import { useParkScope } from '../park/parkScope'
 import { navigationForUser } from '../routing/accessPolicy'
 import type { NavigationItem, NavGroup } from '../routing/routeManifest'
 import { REPORTS_BADGE_REFRESH } from '../../reports-badge'
+import { reportsAccessIdentity } from '../../domains/reports/reports'
 import './AppShell.css'
 
 const GROUPS: readonly NavGroup[] = [
@@ -111,18 +112,30 @@ export function AppShell() {
   const mobileCurrent = currentNavigationItem(mobileItems, location.pathname)
   const moreCurrent = secondaryMobileItems.some((item) => item.id === mobileCurrent?.id)
   const badgeParkId = parkId ?? undefined
-  const badgeKey = user
-    ? `reports:badge:${user.id}:${[...(user.permissions ?? [])].sort().join(',')}:${badgeParkId ?? 'all'}`
-    : ''
+  const badgeIdentity = user ? reportsAccessIdentity(user, selectedPark) : ''
+  const badgeKey = user ? `reports:badge:${user.id}:${badgeIdentity}` : ''
+  const committedBadgeKey = useRef(badgeKey)
+  const [visibleBadgeKey, setVisibleBadgeKey] = useState(badgeKey)
   const badgeResource = useCachedResource(
     badgeKey,
     () => api.reportsBadge(badgeParkId),
     { enabled: Boolean(user), persist: false },
   )
-  const reportsBadge = user
-    ? resourceStore.get<{ count: number }>(badgeKey)?.count ?? 0
+  const reportsBadge = user && visibleBadgeKey === badgeKey
+    ? badgeResource.data?.count ?? 0
     : 0
   const refreshBadge = badgeResource.refresh
+
+  useLayoutEffect(() => {
+    if (committedBadgeKey.current === badgeKey) return
+    if (committedBadgeKey.current) resourceStore.invalidate(committedBadgeKey.current)
+    committedBadgeKey.current = badgeKey
+    setVisibleBadgeKey(badgeKey)
+  }, [badgeKey])
+
+  useLayoutEffect(() => () => {
+    if (committedBadgeKey.current) resourceStore.invalidate(committedBadgeKey.current)
+  }, [])
 
   useLayoutEffect(() => {
     navigationTypeRef.current = navigationType

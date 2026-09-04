@@ -393,6 +393,62 @@ describe('AppShell', () => {
     await act(async () => resolveSouth?.({ count: 0 }))
   })
 
+  it('releases a pending badge owner across a same-id identity change and fresh A remount', async () => {
+    let resolveOld!: (value: { count: number }) => void
+    const old = new Promise<{ count: number }>((resolve) => { resolveOld = resolve })
+    vi.mocked(api.reportsBadge)
+      .mockImplementationOnce(() => old)
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 3 })
+    const first = testUser({
+      id: 17,
+      username: 'first-name',
+      tracker_login: 'first.login',
+      permissions: ['nav.reports'],
+      parks: [north],
+    })
+    const changed = { ...first, username: 'changed-name' }
+    const tree = (currentUser: typeof first) => (
+      <MemoryRouter initialEntries={['/overview']}>
+        <ThemeProvider>
+          <AuthContext.Provider value={{
+            user: currentUser,
+            loading: false,
+            login: vi.fn(),
+            refreshUser: vi.fn(),
+            logout: vi.fn(),
+          }}>
+            <ParkScopeContext.Provider value={{
+              parkId: 7,
+              selectedPark: north,
+              parks: currentUser.parks,
+              loading: false,
+              locked: false,
+              setParkId: vi.fn(),
+              refreshParks: vi.fn(),
+            }}>
+              <Routes><Route element={<AppShell />}>
+                <Route path="/overview" element={<h1>Дашборд</h1>} />
+              </Route></Routes>
+            </ParkScopeContext.Provider>
+          </AuthContext.Provider>
+        </ThemeProvider>
+      </MemoryRouter>
+    )
+
+    const view = render(tree(first))
+    await waitFor(() => expect(api.reportsBadge).toHaveBeenCalledTimes(1))
+    view.rerender(tree(changed))
+    await waitFor(() => expect(api.reportsBadge).toHaveBeenCalledTimes(2))
+    view.rerender(tree(first))
+    expect(await screen.findAllByText('3')).not.toHaveLength(0)
+    expect(api.reportsBadge).toHaveBeenCalledTimes(3)
+
+    await act(async () => resolveOld({ count: 12 }))
+    expect(screen.queryByText('12')).not.toBeInTheDocument()
+    expect(screen.getAllByText('3')).not.toHaveLength(0)
+  })
+
   it.each([
     ['/admin/tracker', 'Startrek'],
     ['/admin/tracker/settings', 'Startrek'],

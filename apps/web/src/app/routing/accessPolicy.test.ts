@@ -58,6 +58,8 @@ const protectedRoutes = [
   { id: 'robot-check', permission: 'nav.emergency', operatorOnly: false, mechanicPark: true },
   { id: 'analytics', permission: 'nav.analytics', operatorOnly: false, mechanicPark: true },
   { id: 'reports', permission: 'nav.reports', operatorOnly: false, mechanicPark: true },
+  { id: 'reports-new', permission: 'nav.reports', operatorOnly: false, mechanicPark: true },
+  { id: 'report-detail', permission: 'nav.reports', operatorOnly: false, mechanicPark: true },
   { id: 'admin', permission: 'nav.admin', operatorOnly: false, mechanicPark: true },
   { id: 'admin-tracker', permission: 'nav.admin.tracker', operatorOnly: false, mechanicPark: true },
   { id: 'admin-robot-check', permission: 'nav.admin.emergency', operatorOnly: false, mechanicPark: true },

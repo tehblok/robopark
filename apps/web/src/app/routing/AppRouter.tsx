@@ -60,6 +60,8 @@ export const ROUTE_ELEMENTS: Record<AppRouteId, ReactElement> = {
   'legacy-robot-check': <LegacyEmergencyRedirect />,
   'analytics': <Analytics />,
   'reports': <Reports />,
+  'reports-new': <Reports />,
+  'report-detail': <Reports />,
   'admin': <ManagementPage />,
   'admin-settings': <Admin />,
   'admin-users': <UserManagementPage />,

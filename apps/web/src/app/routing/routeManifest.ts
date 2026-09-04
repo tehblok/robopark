@@ -13,7 +13,7 @@ export type AppRouteId =
   | 'access-pending' | 'access-rejected' | 'mechanic-no-park'
   | 'overview' | 'operator-parks' | 'work' | 'robots' | 'robot-check'
   | 'work-issue' | 'robot-detail' | 'legacy-robot-check'
-  | 'analytics' | 'reports' | 'admin' | 'admin-settings' | 'admin-users' | 'admin-roles' | 'admin-tracker'
+  | 'analytics' | 'reports' | 'reports-new' | 'report-detail' | 'admin' | 'admin-settings' | 'admin-users' | 'admin-roles' | 'admin-tracker'
   | 'admin-robot-check' | 'not-found'
 export type NavGroup = 'operations' | 'collaboration' | 'insights' | 'administration'
 export type NavSurface = 'desktop' | 'mobile'
@@ -175,6 +175,24 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
       desktopOrder: 60,
       mobilePriority: { driver: 4 },
     },
+  },
+  {
+    id: 'reports-new',
+    path: '/reports/new',
+    label: 'Создать репорт',
+    icon: 'reports',
+    permission: 'nav.reports',
+    prerequisites: SHELL_PREREQUISITES,
+    surface: 'shell',
+  },
+  {
+    id: 'report-detail',
+    path: '/reports/:reportId',
+    label: 'Репорт',
+    icon: 'reports',
+    permission: 'nav.reports',
+    prerequisites: SHELL_PREREQUISITES,
+    surface: 'shell',
   },
   {
     id: 'analytics',

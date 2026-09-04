@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { api, type Report } from '../../api'
+import type { ReportsApiClient } from '../../domains/reports/reports'
 import { mapApiError } from '../../i18n/errors'
 import { ru, reportKindLabel, reportStatusLabel } from '../../i18n/ru'
 import { Alert } from '../PageShell'
@@ -7,7 +8,9 @@ import { Spinner } from '../ui/Feedback'
 import { formatReportDate, statusBadgeClass, trackerHref } from './report-utils'
 
 type ReportDetailProps = {
+  apiClient?: ReportsApiClient
   report: Report
+  ownerKey: string
   parkName?: string
   canAct: boolean
   showEscalate: boolean
@@ -16,7 +19,9 @@ type ReportDetailProps = {
 }
 
 export function ReportDetail({
+  apiClient = api,
   report,
+  ownerKey,
   parkName,
   canAct,
   showEscalate,
@@ -29,25 +34,55 @@ export function ReportDetail({
   const [returnComment, setReturnComment] = useState('')
   const [escalateComment, setEscalateComment] = useState('')
   const [actionMode, setActionMode] = useState<'idle' | 'return' | 'escalate'>('idle')
+  const ownerRef = useRef(ownerKey)
+  const generationRef = useRef(0)
+  const mountedRef = useRef(true)
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      generationRef.current += 1
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    if (ownerRef.current === ownerKey) return
+    ownerRef.current = ownerKey
+    generationRef.current += 1
+    setError('')
+    setSuccess('')
+    setBusy(false)
+    setReturnComment('')
+    setEscalateComment('')
+    setActionMode('idle')
+  }, [ownerKey])
 
   const trackerLink = trackerHref(report.tracker_key, report.tracker_url)
   const actionsEnabled = canAct && report.status === 'open'
 
   async function runAction(action: () => Promise<unknown>) {
+    const generation = generationRef.current
+    const requestedOwner = ownerKey
+    const current = () => mountedRef.current
+      && generationRef.current === generation
+      && ownerRef.current === requestedOwner
     setBusy(true)
     setError('')
     setSuccess('')
     try {
       await action()
+      if (!current()) return
       setSuccess('Действие выполнено.')
       setActionMode('idle')
       setReturnComment('')
       setEscalateComment('')
       onUpdated()
     } catch (actionError) {
+      if (!current()) return
       setError(mapApiError(actionError, ru.errors.generic))
     } finally {
-      setBusy(false)
+      if (current()) setBusy(false)
     }
   }
 
@@ -57,7 +92,7 @@ export function ReportDetail({
       setError('Комментарий обязателен.')
       return
     }
-    void runAction(() => api.reportReturn(report.id, comment))
+    void runAction(() => apiClient.reportReturn(report.id, comment))
   }
 
   function handleEscalate() {
@@ -66,7 +101,7 @@ export function ReportDetail({
       setError('Комментарий обязателен.')
       return
     }
-    void runAction(() => api.reportEscalate(report.id, comment))
+    void runAction(() => apiClient.reportEscalate(report.id, comment))
   }
 
   return (
@@ -122,7 +157,7 @@ export function ReportDetail({
           <ul>
             {report.attachments?.map((attachment) => (
               <li key={attachment.id}>
-                <a href={api.reportAttachmentUrl(report.id, attachment.id)}>
+                <a href={apiClient.reportAttachmentUrl(report.id, attachment.id)}>
                   {attachment.filename}
                 </a>
               </li>
@@ -222,7 +257,7 @@ export function ReportDetail({
               <button
                 className="btn"
                 disabled={busy}
-                onClick={() => void runAction(() => api.reportDone(report.id))}
+                onClick={() => void runAction(() => apiClient.reportDone(report.id))}
                 type="button"
               >
                 {busy ? <Spinner label={ru.reports.actions.done} /> : ru.reports.actions.done}
