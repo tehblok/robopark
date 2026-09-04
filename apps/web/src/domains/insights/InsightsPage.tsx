@@ -55,14 +55,40 @@ function OperationsOwner({ resourceKey, load, parkId, onAuthorizationFailure }: 
   </>
 }
 
-function InsightsBoundary({ apiClient, mode, user, query }: { apiClient: OperationsApiClient; mode: InsightsMode; user: User; query: OperationsQuery }) {
+function InsightsBoundary({ apiClient, mode, user, query, authorizationBlocked, onAuthorizationFailure }: {
+  apiClient: OperationsApiClient
+  mode: InsightsMode
+  user: User
+  query: OperationsQuery
+  authorizationBlocked: () => boolean
+  onAuthorizationFailure: (error: unknown) => void
+}) {
   const { selectedPark } = useParkScope()
   const cachePrefix = `operations:${user.id}:`
   const identity = operationsAccessIdentity(user, selectedPark)
   const resourceKey = selectedPark ? `${cachePrefix}${identity}:${selectedPark.id}:${query.days}:${query.status}` : `${cachePrefix}${identity}:none`
+
+  const load = useCallback(async () => {
+    if (authorizationBlocked()) throw new Error('operations_authorization_blocked')
+    const result = await apiClient.operationsOverview(selectedPark!.id, query.days, query.status)
+    if (authorizationBlocked()) throw new Error('operations_authorization_blocked')
+    return result
+  }, [apiClient, authorizationBlocked, query.days, query.status, selectedPark])
+
+  if (!canReadOperations(user, mode)) return <ErrorState title="Нет доступа" description="Для этого раздела нужны доступ к Tracker и разрешение на раздел." />
+  if (!selectedPark) return <EmptyState title="Парк не выбран" description="Выберите доступный парк, чтобы увидеть задачи и SLA." icon="parks" />
+  return <OperationsOwner key={resourceKey} resourceKey={resourceKey} load={load} parkId={selectedPark.id} onAuthorizationFailure={onAuthorizationFailure} />
+}
+
+function InsightsSessionPage({ apiClient, mode, user }: { apiClient: OperationsApiClient; mode: InsightsMode; user: User }) {
+  const { refreshUser } = useAuth()
+  const { selectedPark, loading } = useParkScope()
+  const [params, setParams] = useSearchParams()
+  const query = useMemo(() => parseOperationsQuery(params, user.role), [params, user.role])
+  const normalized = useMemo(() => operationsSearch(params, query), [params, query])
+  const cachePrefix = `operations:${user.id}:`
   const blocked = useRef(false)
   const refreshStarted = useRef(false)
-  const { refreshUser } = useAuth()
   const [authorizationFailure, setAuthorizationFailure] = useState<DomainError | null>(null)
 
   const observeAuthorizationFailure = useCallback((error: unknown) => {
@@ -76,30 +102,11 @@ function InsightsBoundary({ apiClient, mode, user, query }: { apiClient: Operati
       void refreshUser().catch(() => undefined)
     }
   }, [cachePrefix, refreshUser])
+  const authorizationBlocked = useCallback(() => blocked.current, [])
 
-  const load = useCallback(async () => {
-    if (blocked.current) throw new Error('operations_authorization_blocked')
-    const result = await apiClient.operationsOverview(selectedPark!.id, query.days, query.status)
-    if (blocked.current) throw new Error('operations_authorization_blocked')
-    return result
-  }, [apiClient, query.days, query.status, selectedPark])
-
-  if (authorizationFailure) return <ErrorState title={authorizationFailure.title} description={authorizationFailure.description} requestId={authorizationFailure.requestId} />
-  if (!canReadOperations(user, mode)) return <ErrorState title="Нет доступа" description="Для этого раздела нужны доступ к Tracker и разрешение на раздел." />
-  if (!selectedPark) return <EmptyState title="Парк не выбран" description="Выберите доступный парк, чтобы увидеть задачи и SLA." icon="parks" />
-  return <OperationsOwner key={resourceKey} resourceKey={resourceKey} load={load} parkId={selectedPark.id} onAuthorizationFailure={observeAuthorizationFailure} />
-}
-
-export function InsightsPage({ apiClient = api, mode }: InsightsPageProps) {
-  const { user } = useAuth()
-  const { selectedPark, loading } = useParkScope()
-  const [params, setParams] = useSearchParams()
-  const query = useMemo(() => parseOperationsQuery(params, user?.role ?? ''), [params, user?.role])
-  const normalized = useMemo(() => operationsSearch(params, query), [params, query])
   useLayoutEffect(() => {
     if (normalized.toString() !== params.toString()) setParams(normalized, { replace: true })
   }, [normalized, params, setParams])
-  if (!user) return null
 
   const update = (next: OperationsQuery) => setParams(operationsSearch(params, next), { replace: true })
   const accessIdentity = operationsAccessIdentity(user, selectedPark)
@@ -108,6 +115,13 @@ export function InsightsPage({ apiClient = api, mode }: InsightsPageProps) {
       <label>Период<select aria-label="Период" value={query.days} onChange={(event) => update({ ...query, days: Number(event.target.value) })}><option value="1">1 день</option><option value="7">7 дней</option><option value="30">30 дней</option></select></label>
       <label>Статус задач<select aria-label="Статус задач" value={query.status} onChange={(event) => update({ ...query, status: event.target.value })}>{allowedStatuses(user.role).map((status) => <option value={status} key={status}>{STATUS_LABELS[status]}</option>)}</select></label>
     </div>
-    {loading ? <LoadingState label="Загружаем область парка" variant="page" /> : <InsightsBoundary key={accessIdentity} apiClient={apiClient} mode={mode} user={user} query={query} />}
+    {authorizationFailure ? <ErrorState title={authorizationFailure.title} description={authorizationFailure.description} requestId={authorizationFailure.requestId} />
+      : loading ? <LoadingState label="Загружаем область парка" variant="page" />
+        : <InsightsBoundary key={accessIdentity} apiClient={apiClient} mode={mode} user={user} query={query} authorizationBlocked={authorizationBlocked} onAuthorizationFailure={observeAuthorizationFailure} />}
   </PageLayout>
+}
+
+export function InsightsPage({ apiClient = api, mode }: InsightsPageProps) {
+  const { user } = useAuth()
+  return user ? <InsightsSessionPage key={user.id} apiClient={apiClient} mode={mode} user={user} /> : null
 }

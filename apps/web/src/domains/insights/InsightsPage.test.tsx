@@ -1,10 +1,45 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, expect, it, vi } from 'vitest'
-import { ApiError } from '../../api'
+import { api, ApiError } from '../../api'
+import { AuthProvider } from '../../auth'
+import { ParkScopeProvider } from '../../app/park/ParkScopeProvider'
 import { resourceStore } from '../../lib/resource'
+import { InsightsPage } from './InsightsPage'
 import { deferred, makeUser, otherPark, park, snapshot, tree } from './operations.test-support'
 
 afterEach(() => { resourceStore.clearAll(); vi.restoreAllMocks() })
+
+it.each([401, 403])('refreshes auth once without retrying Operations when a same-principal %s survives the real park lifecycle', async (status) => {
+  const user = makeUser({ role: 'admin' })
+  const refreshedUser = { ...user, permissions: [...(user.permissions ?? [])], parks: [...user.parks] }
+  const me = vi.spyOn(api, 'me').mockResolvedValueOnce(user).mockResolvedValue(refreshedUser)
+  const parks = vi.spyOn(api, 'parks').mockResolvedValue([park, otherPark])
+  const hanging = deferred<ReturnType<typeof snapshot>>()
+  const client = { operationsOverview: vi.fn().mockRejectedValueOnce(new ApiError(status)).mockImplementation(() => hanging.promise) }
+  const view = render(<MemoryRouter initialEntries={['/overview?park=7']}><AuthProvider><ParkScopeProvider><InsightsPage apiClient={client} mode="overview" /></ParkScopeProvider></AuthProvider></MemoryRouter>)
+
+  await waitFor(() => expect(me).toHaveBeenCalledTimes(2))
+  await waitFor(() => expect(parks).toHaveBeenCalledTimes(2))
+  expect(client.operationsOverview).toHaveBeenCalledTimes(1)
+  expect(screen.getByRole('heading', { name: status === 403 ? 'Нет доступа' : 'Сессия истекла' })).toBeVisible()
+  view.unmount()
+  await act(async () => hanging.resolve(snapshot()))
+})
+
+it('starts a fresh authorization lifecycle for a different principal', async () => {
+  const first = makeUser()
+  const second = { ...first, id: 99, username: 'other-operator' }
+  const refreshUser = vi.fn(async () => first)
+  const client = { operationsOverview: vi.fn().mockRejectedValueOnce(new ApiError(403)).mockResolvedValue(snapshot({ tasks: [] })) }
+  const view = render(tree({ user: first, refreshUser, client }))
+  await screen.findByRole('heading', { name: 'Нет доступа' })
+
+  view.rerender(tree({ user: second, refreshUser, client }))
+  expect(await screen.findByText('Нет задач в выбранных статусах')).toBeVisible()
+  expect(client.operationsOverview).toHaveBeenCalledTimes(2)
+  expect(refreshUser).toHaveBeenCalledTimes(1)
+})
 
 it.each(['driver', 'mechanic', 'operator', 'admin', 'royal'])('%s loads tasks for the selected park from the shared endpoint', async role => {
   const buckets = role === 'driver' ? ['new', 'moving'] : role === 'mechanic' ? ['queued', 'diagnostics'] : ['new', 'moving', 'queued', 'diagnostics']
@@ -43,6 +78,16 @@ it('shares period/status in the URL without changing full snapshot counts', asyn
   expect(client.operationsOverview).toHaveBeenLastCalledWith(7, 30, 'moving')
   expect(screen.getByLabelText('URL')).toHaveTextContent('park=7&days=30&status=moving')
   expect(within(screen.getByLabelText('Текущие показатели')).getByText('4')).toBeVisible()
+})
+
+it.each(['operator', 'admin', 'royal'])('%s sends a changed status with the selected park', async (role) => {
+  const client = { operationsOverview: vi.fn(async (_park: number, _days: number, status: string) => snapshot({ park_id: 8, selected_status: status })) }
+  render(tree({ client, selectedPark: otherPark, user: makeUser({ role }), url: '/overview?park=8' }))
+  await screen.findByText('Проверить колесо')
+
+  fireEvent.change(screen.getByLabelText('Статус задач'), { target: { value: 'waiting_team' } })
+  await waitFor(() => expect(client.operationsOverview).toHaveBeenLastCalledWith(8, 7, 'waiting_team'))
+  expect(screen.getByLabelText('URL')).toHaveTextContent('park=8&status=waiting_team')
 })
 
 it('normalizes invalid period and forbidden role status without broadening scope', async () => {

@@ -5,6 +5,7 @@ import { FormField } from '../../design-system/forms/FormField'
 import { ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { Panel } from '../../design-system/layout/PageLayout'
 import { classifyApiError } from '../../shared/api/classifyApiError'
+import { operationsAccessIdentity } from './operations'
 
 type SlaPolicyApiClient = Pick<typeof api, 'operationsSlaPolicy' | 'updateOperationsSlaPolicy'>
 
@@ -23,7 +24,7 @@ function mayManagePolicy(user: User): boolean {
 
 export function SlaPolicyEditor({ parkId, user, apiClient = api, onSaved }: SlaPolicyEditorProps) {
   const allowed = mayManagePolicy(user)
-  const owner = `${user.id}:${parkId}:${allowed}`
+  const owner = `${operationsAccessIdentity(user)}:${parkId}:${allowed}`
   const generation = useRef(0)
   const [value, setValue] = useState('')
   const [loading, setLoading] = useState(allowed)

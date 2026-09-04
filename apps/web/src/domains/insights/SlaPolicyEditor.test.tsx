@@ -1,7 +1,16 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { expect, it, vi } from 'vitest'
+import type { User } from '../../api'
 import { SlaPolicyEditor } from './SlaPolicyEditor'
 import { deferred, makeUser } from './operations.test-support'
+
+const sameIdIdentityChanges: [string, (user: User) => User][] = [
+  ['principal name', (user) => ({ ...user, username: 'replacement' })],
+  ['role', (user) => ({ ...user, role: 'royal' })],
+  ['effective permissions', (user) => ({ ...user, permissions: [...(user.permissions ?? []), 'nav.dashboard'] })],
+  ['Tracker identity', (user) => ({ ...user, tracker_login: 'replacement.tracker' })],
+  ['park assignments', (user) => ({ ...user, parks: user.parks.slice(0, 1) })],
+]
 
 it('requires parks.manage even for royal and does not read or save without it', () => {
   const client = { operationsSlaPolicy: vi.fn(), updateOperationsSlaPolicy: vi.fn() }
@@ -42,6 +51,20 @@ it('does not deliver old park save success to the new owner', async () => {
   await screen.findByLabelText('Норматив, часов')
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить норматив' }))
   view.rerender(<SlaPolicyEditor parkId={8} user={user} apiClient={client} onSaved={changed} />)
+  await act(async () => pending.resolve({ park_id: 7, target_hours: 24 }))
+  expect(changed).not.toHaveBeenCalled()
+  expect(screen.queryByText('Норматив сохранён')).not.toBeInTheDocument()
+})
+
+it.each(sameIdIdentityChanges)('does not deliver an old save after same-ID %s changes', async (_label, changeIdentity) => {
+  const pending = deferred<{ park_id: number; target_hours: number | null }>()
+  const client = { operationsSlaPolicy: vi.fn(async () => ({ park_id: 7, target_hours: 24 })), updateOperationsSlaPolicy: vi.fn(() => pending.promise) }
+  const user = makeUser({ permissions: ['parks.manage'], tracker_login: 'operator.tracker' })
+  const changed = vi.fn()
+  const view = render(<SlaPolicyEditor parkId={7} user={user} apiClient={client} onSaved={changed} />)
+  await screen.findByLabelText('Норматив, часов')
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить норматив' }))
+  view.rerender(<SlaPolicyEditor parkId={7} user={changeIdentity(user)} apiClient={client} onSaved={changed} />)
   await act(async () => pending.resolve({ park_id: 7, target_hours: 24 }))
   expect(changed).not.toHaveBeenCalled()
   expect(screen.queryByText('Норматив сохранён')).not.toBeInTheDocument()

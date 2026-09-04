@@ -3,7 +3,7 @@ import type { OperationsOverview } from '../../api'
 import { Panel } from '../../design-system/layout/PageLayout'
 import { SLA_BASIS, STATUS_LABELS, moscowDate } from './operations'
 
-function nullableCount(value: number | null): string {
+function nullableCount(value: number | null | undefined): string {
   return value == null ? 'Нет данных' : String(value)
 }
 
@@ -12,13 +12,13 @@ export function OperationsMetrics({ data }: { data: OperationsOverview }) {
   return <section aria-label="Текущие показатели" className="rp-insights-metrics">
     {options.map((option) => <div className="rp-insights-metric" key={option.key}>
       <span>{option.label || STATUS_LABELS[option.key] || option.key}</span>
-      <strong>{data.counts[option.key] ?? 0}</strong>
+      <strong>{nullableCount(data.counts[option.key])}</strong>
     </div>)}
   </section>
 }
 
 export function OperationsTasks({ data }: { data: OperationsOverview }) {
-  return <Panel title="Текущие задачи" description={`Нагрузка — ${data.counts.all ?? data.tasks_total} открытых задач в доступной области, а не физические роботы в парке.`}>
+  return <Panel title="Текущие задачи" description={`Нагрузка — ${nullableCount(data.counts.all)} открытых задач в доступной области, а не физические роботы в парке.`}>
     {data.tasks.length ? <ul className="rp-insights-tasks">
       {data.tasks.map((task) => <li key={task.key}>
         <Link aria-label={`Открыть задачу ${task.key}`} to={`/work/${encodeURIComponent(task.key)}?park=${data.park_id}`}>
