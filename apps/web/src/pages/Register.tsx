@@ -2,10 +2,11 @@ import { type FormEvent, useState } from 'react'
 import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { ApiError, api } from '../api'
 import { Alert } from '../components/PageShell'
-import { AuthBrand } from '../components/ui/AuthBrand'
+import { AuthLayout } from '../components/auth/AuthLayout'
 import { PasswordField } from '../components/ui/PasswordField'
 import { RolePicker, type RegisterRole } from '../components/ui/RolePicker'
 import { Spinner } from '../components/ui/Feedback'
+import { Button } from '../design-system/actions/Button'
 import { useAuth } from '../auth-context'
 import { ru } from '../i18n/ru'
 import { passwordChecks } from '../lib/passwordChecks'
@@ -24,9 +25,7 @@ export function Register() {
 
   if (loading) {
     return (
-      <main className="page page-auth">
-        <Spinner label={ru.loading} />
-      </main>
+      <AuthLayout><div className="rp-auth__card"><Spinner label={ru.loading} /></div></AuthLayout>
     )
   }
   if (user) return <Navigate to={pathForUser(user)} replace />
@@ -56,16 +55,17 @@ export function Register() {
   }
 
   return (
-    <main className="page page-auth">
-      <form className="login-card login-card-wide animate-in" onSubmit={handleSubmit}>
-        <AuthBrand
-          subtitle="После регистрации доступ ждёт одобрения владельца платформы."
-          title="Регистрация"
-        />
+    <AuthLayout>
+      <form className="rp-auth__card rp-auth__card--wide animate-in" onSubmit={handleSubmit}>
+        <header className="rp-auth__card-head">
+          <span className="rp-auth__card-kicker">Новый сотрудник</span>
+          <h1>Создание аккаунта</h1>
+          <p className="rp-auth__card-intro">Выберите рабочую роль и задайте данные для входа.</p>
+        </header>
+        <div className="rp-auth__notice">Доступ активирует владелец</div>
         <RolePicker onChange={setRoleSlug} value={roleSlug} />
         <PasswordField
           autoComplete="off"
-          autoFocus
           hint="Общий пароль выдаёт владелец платформы."
           label="Общий пароль"
           onChange={setSharedPassword}
@@ -98,13 +98,13 @@ export function Register() {
           </ul>
         )}
         {error && <Alert tone="error">{error}</Alert>}
-        <button className="btn" disabled={submitting || !checks.ok} type="submit">
-          {submitting ? <Spinner label="Регистрация…" /> : 'Зарегистрироваться'}
-        </button>
+        <Button busy={submitting} disabled={!checks.ok} type="submit">
+          {submitting ? 'Регистрация…' : 'Зарегистрироваться'}
+        </Button>
         <p className="form-link">
           Уже есть аккаунт? <Link to="/login">Войти</Link>
         </p>
       </form>
-    </main>
+    </AuthLayout>
   )
 }

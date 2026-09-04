@@ -1,8 +1,9 @@
 import { type FormEvent, useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { Alert } from '../components/PageShell'
-import { AuthBrand } from '../components/ui/AuthBrand'
+import { AuthLayout } from '../components/auth/AuthLayout'
 import { PasswordField } from '../components/ui/PasswordField'
+import { Button } from '../design-system/actions/Button'
 import { Spinner } from '../components/ui/Feedback'
 import { mapLoginError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
@@ -31,9 +32,7 @@ export function Login() {
 
   if (loading) {
     return (
-      <main className="page page-auth">
-        <Spinner label={ru.loading} />
-      </main>
+      <AuthLayout><div className="rp-auth__card"><Spinner label={ru.loading} /></div></AuthLayout>
     )
   }
 
@@ -62,9 +61,13 @@ export function Login() {
   }
 
   return (
-    <main className="page page-auth">
-      <form className="login-card animate-in" onSubmit={handleSubmit}>
-        <AuthBrand subtitle={ru.tagline} title={ru.brand} />
+    <AuthLayout>
+      <form className="rp-auth__card animate-in" onSubmit={handleSubmit}>
+        <header className="rp-auth__card-head">
+          <span className="rp-auth__card-kicker">Рабочий кабинет</span>
+          <h1>Вход в Робопарк</h1>
+          <p className="rp-auth__card-intro">Введите данные аккаунта, чтобы продолжить смену.</p>
+        </header>
         {location.state?.registrationSuccess && (
           <Alert tone="success">Аккаунт создан. Войдите, чтобы продолжить.</Alert>
         )}
@@ -95,13 +98,11 @@ export function Login() {
           {ru.auth.rememberMe}
         </label>
         {error && <Alert tone="error">{error}</Alert>}
-        <button className="btn" disabled={submitting} type="submit">
-          {submitting ? <Spinner label="Вход…" /> : 'Войти'}
-        </button>
+        <Button busy={submitting} type="submit">{submitting ? 'Вход…' : 'Войти'}</Button>
         <p className="form-link">
           Нужен доступ? <Link to="/register">Регистрация</Link>
         </p>
       </form>
-    </main>
+    </AuthLayout>
   )
 }
