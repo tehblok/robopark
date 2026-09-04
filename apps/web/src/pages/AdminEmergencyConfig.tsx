@@ -157,7 +157,7 @@ export function AdminEmergencyConfig() {
       <PageShell
         backTo="/admin"
         subtitle="Разделы и поля, доступ по ролям, порядок и выгрузка конфигурации."
-        title="Конфиг Emergency"
+        title="Настройки проверки робота"
       >
         <SkeletonList rows={4} />
       </PageShell>
@@ -173,7 +173,7 @@ export function AdminEmergencyConfig() {
       )}
       backTo="/admin"
       subtitle="Разделы и поля, доступ по ролям, порядок и выгрузка конфигурации."
-      title="Конфиг Emergency"
+      title="Настройки проверки робота"
     >
       {displayError && <Alert tone="error">{displayError}</Alert>}
       {message && <Alert tone="success">{message}</Alert>}
@@ -209,9 +209,9 @@ export function AdminEmergencyConfig() {
 
       {sections.length === 0 ? (
         <EmptyBlock
-          hint="Разделы задают, какие поля Emergency видят роли."
+          hint="Разделы задают, какие диагностические поля видят роли."
           icon="⚑"
-          title="Разделы Emergency ещё не настроены"
+          title="Разделы проверки робота ещё не настроены"
         />
       ) : (
         sections.map((section, index) => {

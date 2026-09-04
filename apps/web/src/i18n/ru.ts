@@ -385,7 +385,7 @@ export const ru = {
     snapshotStart: 'Создать снимок',
     snapshotDownload: 'Скачать архив',
     restoreTitle: 'Восстановление',
-    restoreHint: 'Стирает текущие данные. На новом хосте нужен тот же SECRET_KEY, иначе токены Tracker/Emergency придётся ввести заново.',
+    restoreHint: 'Стирает текущие данные. На новом хосте нужен тот же SECRET_KEY, иначе токен Tracker и cookie диагностики робота придётся ввести заново.',
     restoreConfirmLabel: 'Фраза подтверждения',
     restoreSubmit: 'Восстановить',
     updateTitle: 'Обновление системы',

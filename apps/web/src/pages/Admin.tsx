@@ -340,7 +340,7 @@ export function Admin() {
                 </span>
               </div>
               <div className="stat">
-                <span className="stat-label">Emergency cookie</span>
+                <span className="stat-label">Cookie диагностики робота</span>
                 <span className="stat-value">
                   {worksBadge(settings.emergency_cookie_valid === true)}
                 </span>
@@ -359,7 +359,7 @@ export function Admin() {
               />
             </label>
             <label className="field">
-              <span className="field-label">Emergency cookie</span>
+              <span className="field-label">Cookie диагностики робота</span>
               <input
                 onChange={(event) => setEmergencyCookie(event.target.value)}
                 placeholder="Оставьте пустым, чтобы не менять"
@@ -440,10 +440,10 @@ export function Admin() {
               Рабочий стол Tracker
             </Link>
             <Link className="btn btn-secondary" to="/emergency">
-              Emergency
+              Проверка робота
             </Link>
             <Link className="btn btn-secondary" to="/admin/emergency/config">
-              Конфиг Emergency
+              Настройки проверки робота
             </Link>
           </div>
         </Panel>

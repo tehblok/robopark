@@ -85,7 +85,7 @@ it('configuration errors preserve request id and restrict settings by capability
   expect(screen.getByText(/Обратитесь к администратору/)).toBeInTheDocument()
   expect(screen.queryByRole('link', { name: 'Открыть настройки' })).not.toBeInTheDocument()
   view.rerender(tree(apiClient, 'map', { user: { ...user, role: 'custom', permissions: ['nav.admin.emergency'] } }))
-  expect(await screen.findByRole('link', { name: 'Открыть настройки' })).toHaveAttribute('href', '/admin/robot-check')
+  expect(await screen.findByRole('link', { name: 'Открыть настройки' })).toHaveAttribute('href', '/admin/emergency/config')
   expect(document.body).not.toHaveTextContent('emergency_cookie_invalid')
 })
 it('a section denial wins immediately over a hung snapshot and ignores its later success', async () => {

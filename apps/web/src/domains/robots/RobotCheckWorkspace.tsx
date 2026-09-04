@@ -23,7 +23,7 @@ export type RobotCheckWorkspaceProps = {
 }
 export function CheckError({ failure, user, onRetry }: { failure: DomainError; user: AccessUser; onRetry?: () => void }) {
   return <><ErrorState {...failure} onRetry={failure.retryable ? onRetry : undefined} />
-    {failure.kind === 'configuration' && canAccessRoute(user, 'admin-robot-check') ? <Link to="/admin/robot-check">Открыть настройки</Link> : null}</>
+    {failure.kind === 'configuration' && canAccessRoute(user, 'admin-robot-check') ? <Link to="/admin/emergency/config">Открыть настройки</Link> : null}</>
 }
 function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient = api, onAuthorizationFailure, renderSummary }: RobotCheckWorkspaceProps) {
   const online = useOnlineStatus()

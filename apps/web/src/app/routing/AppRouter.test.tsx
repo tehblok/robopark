@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { api } from '../../api'
+import { api, ApiError } from '../../api'
 import { installMatchMedia, renderApp, testUser } from '../../test/renderApp'
 
 const north = { id: 7, name: 'Северный', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
@@ -258,6 +258,32 @@ describe('AppRouter', () => {
     await actor.click(screen.getByRole('button', { name: /в другом парке/i }))
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/reports/19?park=7'))
     expect(within(await screen.findByRole('article')).getByText('Южный')).toBeVisible()
+  })
+
+  it('opens the canonical robot-check settings route from configuration recovery', async () => {
+    const actor = userEvent.setup()
+    vi.mocked(api.emergencyResolve).mockResolvedValue({
+      vin: 'YASADR00000000447',
+      sections: [],
+    })
+    vi.spyOn(api, 'emergencySnapshot').mockRejectedValue(
+      new ApiError(403, 'emergency_cookie_invalid', 'config-id'),
+    )
+    vi.spyOn(api, 'adminEmergencySections').mockResolvedValue([])
+
+    renderApp('/robots/YASADR00000000447/check?tab=map', testUser({
+      role: 'field_lead',
+      permissions: ['nav.emergency', 'nav.admin.emergency'],
+      parks: [north],
+    }))
+
+    const settings = await screen.findByRole('link', { name: 'Открыть настройки' })
+    expect(settings).toHaveAttribute('href', '/admin/emergency/config')
+    await actor.click(settings)
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/admin/emergency/config'))
+    expect(await screen.findByRole('heading', { name: 'Настройки проверки робота' })).toBeVisible()
+    expect(document.body).not.toHaveTextContent(/Аварийный режим/i)
+    expect(screen.queryByText(/^(?:Emergency|Конфиг Emergency|Разделы Emergency)/i)).not.toBeInTheDocument()
   })
 
   it('renders only permitted role-aware navigation', async () => {
