@@ -81,6 +81,20 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
 
   async function attachFile() {
     if (createdReportId == null || attachment == null) return
+    const photo = attachmentKind === 'device_photo' || attachmentKind === 'ui_snapshot'
+    const imageTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'])
+    const validType = photo ? imageTypes.has(attachment.type) : (
+      attachment.type === 'text/plain' || attachment.name.toLowerCase().endsWith('.log')
+    )
+    const maxBytes = attachmentKind === 'client_log' ? 64 * 1024 : 15 * 1024 * 1024
+    if (!validType) {
+      setAttachmentError(photo ? 'Для снимка или фото нужен JPEG, PNG, WebP, HEIC или HEIF.' : 'Для лога нужен текстовый .log файл.')
+      return
+    }
+    if (attachment.size > maxBytes) {
+      setAttachmentError(`Файл превышает лимит ${attachmentKind === 'client_log' ? '64 КиБ' : '15 МиБ'}.`)
+      return
+    }
     setAttaching(true)
     setAttachmentError('')
     setAttachmentSuccess('')
@@ -123,13 +137,13 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
 
       {createdReportId != null && (
         <div className="form-grid" aria-label="Вложения к репорту">
-          <p className="panel-hint">Прикрепите файл к уже созданному репорту. Повтор не создаст новый репорт.</p>
+          <p className="panel-hint">По одному файлу каждого типа: снимок/фото JPEG, PNG, WebP, HEIC, HEIF до 15 МиБ или лог .log до 64 КиБ. Повтор не создаст новый репорт.</p>
           {attachmentError && <Alert tone="error">{attachmentError}</Alert>}
           {attachmentSuccess && <Alert tone="success">{attachmentSuccess}</Alert>}
           <label className="field">
             <span className="field-label">Файл</span>
             <input
-              accept="image/jpeg,image/png,text/plain"
+              accept="image/jpeg,image/png,image/webp,image/heic,image/heif,text/plain,.log"
               onChange={(event) => setAttachment(event.target.files?.[0] ?? null)}
               type="file"
             />

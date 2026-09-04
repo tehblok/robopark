@@ -85,7 +85,7 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
       roles.length > 0
         ? roles.filter((role) => role.is_active).map((role) => ({ slug: role.slug, name: role.name }))
         : FALLBACK_ROLES
-    return source.filter((role) => isRoyal || role.slug !== 'royal')
+    return source.filter((role) => isRoyal || !['royal', 'admin'].includes(role.slug))
   }, [roles, isRoyal])
 
   const load = async () => {

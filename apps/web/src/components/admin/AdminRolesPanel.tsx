@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { api, type AdminRole, type PermissionCatalogItem } from '../../api'
+import { useAuth } from '../../auth-context'
 import { Alert, Panel } from '../PageShell'
 import { Spinner } from '../ui/Feedback'
 import { mapApiError } from '../../i18n/errors'
 
 export function AdminRolesPanel() {
+  const { user } = useAuth()
   const [roles, setRoles] = useState<AdminRole[]>([])
   const [catalog, setCatalog] = useState<PermissionCatalogItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -37,8 +39,12 @@ export function AdminRolesPanel() {
     void load()
   }, [])
 
-  const navPerms = catalog.filter((item) => item.category === 'nav')
-  const actionPerms = catalog.filter((item) => item.category === 'action')
+  const privileged = new Set(['nav.admin', 'users.manage', 'roles.manage', 'parks.manage'])
+  const availableCatalog = user?.role === 'royal'
+    ? catalog
+    : catalog.filter((item) => !privileged.has(item.key))
+  const navPerms = availableCatalog.filter((item) => item.category === 'nav')
+  const actionPerms = availableCatalog.filter((item) => item.category === 'action')
 
   const startEdit = (role: AdminRole) => {
     setEditingId(role.id)

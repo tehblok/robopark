@@ -30,32 +30,38 @@ export function Reports() {
   const inboxEnabled = hasInbox(user)
   const createEnabled = canCreateReports(user)
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [selectedScope, setSelectedScope] = useState('')
+  const [selectedActionable, setSelectedActionable] = useState(false)
   const [activePane, setActivePane] = useState<'mine' | 'inbox'>('mine')
+  const [statusFilter, setStatusFilter] = useState('all')
 
   const selectedPark = parks.find((park) => park.id === parkId)
+  const selectedIsCurrent = selectedId != null && selectedScope === reportScope
 
   const mineRes = useCachedResource<Report[]>(
     createEnabled ? `reports:${reportScope}:mine` : '',
     () => api.reportsMine(),
-    { enabled: createEnabled && !parksLoading },
+    { enabled: createEnabled && !parksLoading, persist: false },
   )
   const inboxKey = inboxEnabled && parkId != null ? `reports:${reportScope}:inbox` : ''
   const inboxRes = useCachedResource<Report[]>(
     inboxKey,
     () => api.reportsInbox(parkId as number),
-    { enabled: inboxEnabled && parkId != null && !parksLoading },
+    { enabled: inboxEnabled && parkId != null && !parksLoading, persist: false },
   )
   const detailRes = useCachedResource<Report>(
-    selectedId != null ? `reports:${reportScope}:detail:${selectedId}` : '',
+    selectedIsCurrent ? `reports:${reportScope}:detail:${selectedId}` : '',
     () => api.report(selectedId as number),
-    { enabled: selectedId != null },
+    { enabled: selectedIsCurrent, persist: false },
   )
 
   const mine = mineRes.data ?? []
   const inbox = inboxRes.data ?? []
+  const visibleMine = statusFilter === 'all' ? mine : mine.filter((report) => report.status === statusFilter)
+  const visibleInbox = statusFilter === 'all' ? inbox : inbox.filter((report) => report.status === statusFilter)
   const selectedReport = detailRes.data ?? null
 
-  const listRes = createEnabled ? mineRes : inboxRes
+  const listRes = activePane === 'mine' ? mineRes : inboxRes
   const listError = listRes.error ? mapApiError(listRes.error, ru.errors.load) : ''
   const listLoading = listRes.isRevalidating
   const showListSkeleton = listRes.isLoading && !listRes.data && !listError
@@ -63,12 +69,16 @@ export function Reports() {
   const detailError = detailRes.error ? mapApiError(detailRes.error, ru.errors.load) : ''
   const detailLoading = detailRes.isLoading && !selectedReport && !detailError
 
-  function handleSelect(report: Report) {
+  function handleSelect(report: Report, canAct: boolean) {
     setSelectedId(report.id)
+    setSelectedScope(reportScope)
+    setSelectedActionable(canAct)
   }
 
   function handleCloseDetail() {
     setSelectedId(null)
+    setSelectedScope('')
+    setSelectedActionable(false)
   }
 
   async function refreshLists() {
@@ -126,7 +136,7 @@ export function Reports() {
           <button
             aria-selected={activePane === 'mine'}
             className={`btn btn-filter${activePane === 'mine' ? ' is-active' : ''}`}
-            onClick={() => setActivePane('mine')}
+            onClick={() => { handleCloseDetail(); setActivePane('mine') }}
             role="tab"
             type="button"
           >
@@ -135,7 +145,7 @@ export function Reports() {
           <button
             aria-selected={activePane === 'inbox'}
             className={`btn btn-filter${activePane === 'inbox' ? ' is-active' : ''}`}
-            onClick={() => setActivePane('inbox')}
+            onClick={() => { handleCloseDetail(); setActivePane('inbox') }}
             role="tab"
             type="button"
           >
@@ -144,15 +154,27 @@ export function Reports() {
         </div>
       )}
 
+      <label className="field">
+        <span className="field-label">Статус</span>
+        <select aria-label="Статус репортов" onChange={(event) => setStatusFilter(event.target.value)} value={statusFilter}>
+          <option value="all">Все</option>
+          <option value="open">Открытые</option>
+          <option value="returned">Возвращённые</option>
+          <option value="done">Готовые</option>
+        </select>
+      </label>
+
       {listError && <Alert tone="error">{listError}</Alert>}
 
-      {createEnabled && (
+      {createEnabled && activePane === 'mine' && (
         <>
           <Panel hint="Статусы ваших репортов и комментарии при возврате." title="Мои репорты">
             <ReportList
               emptyMessage="Вы ещё не создавали репортов."
               loading={showListSkeleton}
-              reports={mine}
+              onSelect={(report) => handleSelect(report, false)}
+              reports={visibleMine}
+              selectedId={selectedId}
               showReturnComment
             />
           </Panel>
@@ -173,10 +195,27 @@ export function Reports() {
               />
             </Panel>
           )}
+
+          {selectedIsCurrent && (
+            <Panel title="Репорт">
+              {detailError && <Alert tone="error">{detailError}</Alert>}
+              {detailLoading && <SkeletonList rows={2} />}
+              {!detailLoading && selectedReport && (
+                <ReportDetail
+                  canAct={false}
+                  onClose={handleCloseDetail}
+                  onUpdated={() => void handleDetailUpdated()}
+                  parkName={selectedPark?.name}
+                  report={selectedReport}
+                  showEscalate={false}
+                />
+              )}
+            </Panel>
+          )}
         </>
       )}
 
-      {inboxEnabled && (
+      {inboxEnabled && activePane === 'inbox' && (
         <>
           {parkId == null && !parksLoading && (
             <EmptyBlock
@@ -186,26 +225,26 @@ export function Reports() {
             />
           )}
 
-          {parkId != null && selectedId == null && (
+          {parkId != null && !selectedIsCurrent && (
             <Panel hint={inboxHint} title={inboxTitle}>
               <ReportList
                 emptyMessage="Нет открытых репортов для выбранного парка."
                 loading={showListSkeleton}
-                onSelect={handleSelect}
-                reports={inbox}
+                onSelect={(report) => handleSelect(report, true)}
+                reports={visibleInbox}
                 selectedId={selectedId}
                 showReturnComment={false}
               />
             </Panel>
           )}
 
-          {parkId != null && selectedId != null && (
+          {parkId != null && selectedIsCurrent && (
             <Panel title="Репорт">
               {detailError && <Alert tone="error">{detailError}</Alert>}
               {detailLoading && <SkeletonList rows={2} />}
               {!detailLoading && selectedReport && (
                 <ReportDetail
-                  canAct
+                  canAct={selectedActionable}
                   onClose={handleCloseDetail}
                   onUpdated={() => void handleDetailUpdated()}
                   parkName={selectedPark?.name}

@@ -110,7 +110,7 @@ export function AppShell() {
   const desktopCurrent = currentNavigationItem(desktopItems, location.pathname)
   const mobileCurrent = currentNavigationItem(mobileItems, location.pathname)
   const moreCurrent = secondaryMobileItems.some((item) => item.id === mobileCurrent?.id)
-  const badgeParkId = user?.role === 'operator' ? parkId ?? undefined : undefined
+  const badgeParkId = parkId ?? undefined
   const badgeKey = user
     ? `reports:badge:${user.id}:${[...(user.permissions ?? [])].sort().join(',')}:${badgeParkId ?? 'all'}`
     : ''

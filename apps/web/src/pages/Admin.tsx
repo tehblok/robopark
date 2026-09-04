@@ -18,14 +18,16 @@ import { useAuth } from '../auth-context'
 import { mapApiError } from '../i18n/errors'
 import { roleLabel, ru } from '../i18n/ru'
 import { useCachedResource } from '../lib/resource'
+import { useParkScope } from '../app/park/parkScope'
+import { SlaPolicyEditor } from '../domains/insights/SlaPolicyEditor'
 
 type TabId = 'integrations' | 'parks' | 'ops'
 
 type AdminBootstrap = {
   parks: Park[]
   parkRequests: ParkRequest[]
-  settings: IntegrationSettings
-  trackerPolicy: TrackerPolicySettings
+  settings: IntegrationSettings | null
+  trackerPolicy: TrackerPolicySettings | null
   screenshotGuard: ScreenshotGuardSettings
   screenshotGuardLive?: boolean
   pendingUserCount: number
@@ -50,16 +52,23 @@ async function loadScreenshotGuardSettings(): Promise<{
   }
 }
 
-async function loadAdminBootstrap(): Promise<AdminBootstrap> {
-  const [parks, parkRequests, settings, trackerPolicy, screenshotGuardResult, pendingUsers] =
-    await Promise.all([
-      api.parks(),
-      api.adminParkRequests(),
-      api.integrationSettings(),
-      api.trackerPolicy(),
-      loadScreenshotGuardSettings(),
-      api.adminUsers({ access_status: 'pending' }).catch(() => []),
-    ])
+async function loadAdminBootstrap(canIntegrations: boolean): Promise<AdminBootstrap> {
+  const parks = await api.parks()
+  if (!canIntegrations) {
+    return {
+      parks,
+      parkRequests: [],
+      settings: null,
+      trackerPolicy: null,
+      screenshotGuard: DEFAULT_SCREENSHOT_GUARD,
+      screenshotGuardLive: false,
+      pendingUserCount: 0,
+    }
+  }
+  const [parkRequests, settings, trackerPolicy, screenshotGuardResult, pendingUsers] = await Promise.all([
+    api.adminParkRequests(), api.integrationSettings(), api.trackerPolicy(),
+    loadScreenshotGuardSettings(), api.adminUsers({ access_status: 'pending' }).catch(() => []),
+  ])
   return {
     parks,
     parkRequests,
@@ -81,15 +90,17 @@ function worksBadge(ok: boolean) {
 
 export function Admin() {
   const { user } = useAuth()
+  const { parkId } = useParkScope()
   const [searchParams, setSearchParams] = useSearchParams()
   const perms = user?.permissions ?? []
   const canParks = perms.includes('parks.manage')
+  const canIntegrations = perms.includes('nav.admin')
   const requestedTab = searchParams.get('tab')
   const initialTab: TabId = requestedTab === 'parks' || requestedTab === 'ops'
     ? requestedTab
-    : 'integrations'
+    : canParks && !canIntegrations ? 'parks' : 'integrations'
   const [tab, setTab] = useState<TabId>(initialTab)
-  const bootRes = useCachedResource<AdminBootstrap>('admin:bootstrap', loadAdminBootstrap, {
+  const bootRes = useCachedResource<AdminBootstrap>(`admin:bootstrap:${canIntegrations ? 'full' : 'parks'}`, () => loadAdminBootstrap(canIntegrations), {
     persist: false,
   })
   const boot = bootRes.data
@@ -241,7 +252,7 @@ export function Admin() {
 
       <Tabs
         items={[
-          { id: 'integrations', label: 'Интеграции' },
+          ...(canIntegrations ? [{ id: 'integrations', label: 'Интеграции' }] : []),
           ...(canParks ? [{ id: 'parks', label: 'Парки', count: parkRequests.length }] : []),
           ...(user?.role === 'royal' ? [{ id: 'ops', label: ru.ops.tab }] : []),
         ]}
@@ -433,6 +444,7 @@ export function Admin() {
 
       {canParks && (
       <TabPanel active={tab === 'parks'}>
+        {user && parkId != null && <SlaPolicyEditor parkId={parkId} user={user} />}
         {parkRequests.length > 0 && (
         <Panel
           hint="Операторы запрашивают дополнительные парки из своего кабинета."

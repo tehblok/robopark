@@ -181,6 +181,9 @@ describe('AppRouter', () => {
     expect(await screen.findByRole('heading', { name: 'Репорты' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Создать репорт' })).toBeVisible()
     expect(screen.getByRole('tab', { name: 'Входящие' })).toBeVisible()
+    await waitFor(() => expect(api.reportsMine).toHaveBeenCalled())
+    expect(Object.keys(localStorage).filter((key) => key.startsWith('robopark:res:reports:')))
+      .toEqual([])
   })
 
   it('renders only permitted role-aware navigation', async () => {

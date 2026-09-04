@@ -387,7 +387,7 @@ export type Report = {
   id: number
   kind: string
   status: string
-  park_id: number
+  park_id: number | null
   author_user_id: number
   target_role: string
   tracker_key: string | null
