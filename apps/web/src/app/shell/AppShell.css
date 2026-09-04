@@ -68,14 +68,6 @@
   position: relative;
 }
 
-.rp-shell__park-brand-base {
-  color: var(--rp-text);
-  font-size: 0.93rem;
-  font-weight: 780;
-  letter-spacing: -0.035em;
-  white-space: nowrap;
-}
-
 .rp-shell__park-brand-name {
   background: var(--rp-action);
   border-radius: 8px;
@@ -93,8 +85,6 @@
 
 .rp-shell__park-brand.is-interactive {
   border-color: var(--rp-border);
-  cursor: pointer;
-  padding-right: 28px;
   transition: background var(--rp-motion-fast), border-color var(--rp-motion-fast);
 }
 
@@ -103,16 +93,20 @@
   border-color: var(--rp-action-hover);
 }
 
-.rp-shell__park-brand:has(select:focus-visible) {
+.rp-shell__park-brand:has(.rp-shell__park-switch:focus-visible) {
   outline: 2px solid var(--rp-focus);
   outline-offset: 2px;
 }
 
-.rp-shell__park-brand select {
+.rp-shell__park-switch {
+  align-items: center;
+  background: transparent;
+  border: 0;
   cursor: pointer;
-  inset: 0;
-  opacity: 0;
-  position: absolute;
+  display: flex;
+  gap: 7px;
+  min-height: var(--rp-control-min-size);
+  padding: 0;
   width: 100%;
 }
 
@@ -120,11 +114,45 @@
   border-bottom: 1.5px solid var(--rp-text-muted);
   border-right: 1.5px solid var(--rp-text-muted);
   height: 7px;
-  position: absolute;
-  right: 11px;
-  top: 16px;
   transform: rotate(45deg);
   width: 7px;
+}
+
+.rp-shell__park-selector {
+  background: var(--rp-surface-elevated);
+  border: 1px solid var(--rp-border);
+  border-radius: var(--rp-radius-control);
+  box-shadow: var(--rp-shadow-panel);
+  display: grid;
+  gap: var(--rp-space-1);
+  left: 0;
+  min-width: 100%;
+  padding: var(--rp-space-1);
+  position: absolute;
+  top: calc(100% + var(--rp-space-1));
+  z-index: 50;
+}
+
+.rp-shell__park-selector button {
+  background: transparent;
+  border: 0;
+  border-radius: calc(var(--rp-radius-control) - 2px);
+  color: var(--rp-text);
+  cursor: pointer;
+  font: inherit;
+  min-height: var(--rp-control-min-size);
+  padding: var(--rp-space-2) var(--rp-space-3);
+  text-align: left;
+}
+
+.rp-shell__park-selector button:hover,
+.rp-shell__park-selector button[aria-selected='true'] {
+  background: var(--rp-state-selected);
+}
+
+.rp-shell__park-selector button:focus-visible {
+  outline: 2px solid var(--rp-focus);
+  outline-offset: -2px;
 }
 
 .rp-shell__desktop-nav,
@@ -278,7 +306,6 @@
     grid-template-columns: calc(var(--rp-control-min-size) + var(--rp-space-6)) minmax(0, 1fr);
   }
 
-  .is-rail-collapsed .rp-shell__park-brand-base,
   .is-rail-collapsed .rp-shell__nav-group h2,
   .is-rail-collapsed .rp-shell__nav-label,
   .is-rail-collapsed .rp-shell__badge {
@@ -295,16 +322,16 @@
     padding-inline: 2px;
   }
 
-  .is-rail-collapsed .rp-shell__park-brand.is-interactive {
-    padding-right: 2px;
-  }
-
   .is-rail-collapsed .rp-shell__park-brand-name {
     max-width: 42px;
   }
 
   .is-rail-collapsed .rp-shell__park-brand-chevron {
     display: none;
+  }
+
+  .is-rail-collapsed .rp-shell__park-switch {
+    justify-content: center;
   }
 }
 

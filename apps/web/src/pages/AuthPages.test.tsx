@@ -38,9 +38,10 @@ describe('authentication pages', () => {
     const user = userEvent.setup()
     renderAuthPage(<Login />)
 
-    expect(screen.getByRole('heading', { name: 'Вход в РобоПарк' })).toBeVisible()
-    expect(screen.getByText('РобоПарк')).toBeVisible()
-    expect(screen.getByRole('region', { name: 'Управление парком роботов' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Вход' })).toBeVisible()
+    expect(screen.getByText('Управление парком')).toBeVisible()
+    expect(screen.queryByText('РобоПарк')).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Управление парком' })).toBeVisible()
     expect(screen.getByRole('img', { name: 'Робот-доставщик' })).toBeVisible()
     expect(screen.getByRole('textbox', { name: 'Логин' })).toHaveAttribute('autocomplete', 'username')
     expect(screen.getByLabelText('Пароль')).toHaveAttribute('autocomplete', 'current-password')
@@ -57,7 +58,7 @@ describe('authentication pages', () => {
 
     expect(screen.getByRole('heading', { name: 'Создание аккаунта' })).toBeVisible()
     expect(screen.queryByRole('heading', { name: 'Вся смена — в одном понятном контуре' })).not.toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Управление парком роботов' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Управление парком' })).toBeVisible()
     expect(screen.getByText('Доступ активирует владелец')).toBeVisible()
     expect(screen.getByText('Проверка робота и задачи перемещения')).toBeVisible()
     expect(screen.getByLabelText('Общий пароль')).not.toHaveFocus()

@@ -43,7 +43,7 @@ function ReportsBadge({ count }: { count: number }) {
 
 const PARK_SWITCH_ROLES = new Set<User['role']>(['operator', 'admin', 'royal'])
 
-function ParkWordmark({
+function ParkIdentity({
   user,
   parkId,
   selectedPark,
@@ -60,6 +60,7 @@ function ParkWordmark({
   locked: boolean
   onChange: (id: number) => void
 }) {
+  const [selectorOpen, setSelectorOpen] = useState(false)
   const parkName = selectedPark?.name ?? (loading ? ru.loading : 'Без парка')
   const canSwitch = PARK_SWITCH_ROLES.has(user.role)
     && !locked
@@ -69,22 +70,40 @@ function ParkWordmark({
 
   return (
     <div className={`rp-shell__park-brand${canSwitch ? ' is-interactive' : ''}`}>
-      <span className="rp-shell__park-brand-base">РобоПарк</span>
-      <strong className="rp-shell__park-brand-name">{parkName}</strong>
       {canSwitch ? (
         <>
-          <span aria-hidden="true" className="rp-shell__park-brand-chevron" />
-          <select
+          <button
+            aria-controls="rp-shell-park-selector"
+            aria-expanded={selectorOpen}
+            aria-haspopup="listbox"
             aria-label="Сменить парк"
-            onChange={(event) => onChange(Number(event.target.value))}
-            value={parkId}
+            className="rp-shell__park-switch"
+            onClick={() => setSelectorOpen((open) => !open)}
+            type="button"
           >
+            <strong className="rp-shell__park-brand-name">{parkName}</strong>
+            <span aria-hidden="true" className="rp-shell__park-brand-chevron" />
+          </button>
+          {selectorOpen ? (
+            <div aria-label="Сменить парк" className="rp-shell__park-selector" id="rp-shell-park-selector" role="listbox">
             {parks.map((park) => (
-              <option key={park.id} value={park.id}>{park.name}</option>
+                <button
+                  aria-selected={park.id === parkId}
+                  key={park.id}
+                  onClick={() => {
+                    onChange(park.id)
+                    setSelectorOpen(false)
+                  }}
+                  role="option"
+                  type="button"
+                >
+                  {park.name}
+                </button>
             ))}
-          </select>
+            </div>
+          ) : null}
         </>
-      ) : null}
+      ) : <strong className="rp-shell__park-brand-name">{parkName}</strong>}
     </div>
   )
 }
@@ -259,7 +278,7 @@ export function AppShell() {
 
       <aside className="sidebar rp-shell__sidebar">
         {!phoneViewport ? (
-          <ParkWordmark
+          <ParkIdentity
             loading={loading}
             locked={locked}
             onChange={setParkId}
@@ -303,7 +322,7 @@ export function AppShell() {
       <div className="app-main rp-shell__main-column">
         <header className="rp-shell__topbar">
           {phoneViewport ? (
-            <ParkWordmark
+            <ParkIdentity
               loading={loading}
               locked={locked}
               onChange={setParkId}

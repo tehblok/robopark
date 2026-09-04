@@ -341,10 +341,11 @@ describe('AppShell', () => {
       parks: [north, south],
     }))
 
-    const park = await screen.findByRole('combobox', { name: 'Сменить парк' })
-    await actor.selectOptions(park, '9')
+    const park = await screen.findByRole('button', { name: 'Сменить парк' })
+    await actor.click(park)
+    await actor.click(screen.getByRole('option', { name: 'Южный' }))
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('?park=9'))
-    expect(park).toHaveFocus()
+    expect(screen.queryByRole('listbox', { name: 'Сменить парк' })).not.toBeInTheDocument()
   })
 
   it('keeps the operator report badge park-aware and refreshes it on demand and entry', async () => {
@@ -361,7 +362,8 @@ describe('AppShell', () => {
     act(() => window.dispatchEvent(new Event(REPORTS_BADGE_REFRESH)))
     await waitFor(() => expect(badge.mock.calls.length).toBeGreaterThan(beforeEvent))
 
-    await actor.selectOptions(screen.getByRole('combobox', { name: 'Сменить парк' }), '9')
+    await actor.click(screen.getByRole('button', { name: 'Сменить парк' }))
+    await actor.click(screen.getByRole('option', { name: 'Южный' }))
     await waitFor(() => expect(badge).toHaveBeenCalledWith(9))
 
     const beforeReports = badge.mock.calls.length
@@ -372,30 +374,32 @@ describe('AppShell', () => {
     await waitFor(() => expect(badge.mock.calls.length).toBeGreaterThan(beforeReports))
   })
 
-  it.each(['operator', 'admin', 'royal'] as const)('switches parks from the %s wordmark', async (role) => {
+  it.each(['operator', 'admin', 'royal'] as const)('switches parks from the %s park identity', async (role) => {
     const actor = userEvent.setup()
     const { setParkId } = renderShellWithParkScope(role)
 
-    expect(screen.getByText('РобоПарк')).toBeVisible()
-    expect(screen.getByText('Северный', { selector: 'strong' })).toBeVisible()
-    const switcher = screen.getByRole('combobox', { name: 'Сменить парк' })
-    await actor.selectOptions(switcher, '9')
+    expect(screen.queryByText('РобоПарк')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Сменить парк' })).toHaveTextContent('Северный')
+    await actor.click(screen.getByRole('button', { name: 'Сменить парк' }))
+    const options = screen.getByRole('listbox', { name: 'Сменить парк' })
+    expect(within(options).getByRole('option', { name: 'Северный' })).toHaveAttribute('aria-selected', 'true')
+    await actor.click(within(options).getByRole('option', { name: 'Южный' }))
 
     expect(setParkId).toHaveBeenCalledWith(9)
   })
 
-  it.each(['mechanic', 'driver'] as const)('shows a non-interactive park wordmark for %s', (role) => {
+  it.each(['mechanic', 'driver'] as const)('shows a static park identity for %s', (role) => {
     renderShellWithParkScope(role)
 
-    expect(screen.queryByRole('combobox', { name: 'Сменить парк' })).not.toBeInTheDocument()
-    expect(screen.getByText('РобоПарк')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Сменить парк' })).not.toBeInTheDocument()
+    expect(screen.queryByText('РобоПарк')).not.toBeInTheDocument()
     expect(screen.getByText('Северный', { selector: 'strong' })).toBeVisible()
   })
 
-  it.each(['operator', 'admin', 'royal'] as const)('keeps the %s wordmark static with one park', (role) => {
+  it.each(['operator', 'admin', 'royal'] as const)('keeps the %s park identity static with one park', (role) => {
     renderShellWithParkScope(role, vi.fn(), [north])
 
-    expect(screen.queryByRole('combobox', { name: 'Сменить парк' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Сменить парк' })).not.toBeInTheDocument()
     expect(screen.getByText('Северный', { selector: 'strong' })).toBeVisible()
   })
 

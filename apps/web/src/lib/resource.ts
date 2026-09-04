@@ -1,5 +1,5 @@
 /**
- * Stale-while-revalidate hook + shared store for РобоПарк screens.
+ * Stale-while-revalidate hook + shared store for park-management screens.
  *
  * The idea:
  *   1. When a screen mounts, show whatever is already cached — a paint from
