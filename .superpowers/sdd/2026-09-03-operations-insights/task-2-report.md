@@ -64,3 +64,30 @@ The unrelated working-tree change in `docs/superpowers/plans/2026-09-03-access-r
 - Browser: Operations overview plus robot compatibility specs on Chromium — 21 passed, including operator/admin phone scenarios and axe checks.
 
 The plan's combined cross-task web/API/build/navigation/contrast acceptance remains a controller-level integration run after all plan tasks finish.
+
+## Review round 1 fixes (2026-09-04)
+
+Fix commit: `4ecf947` (`fix: harden operations insight ownership`).
+
+### Findings addressed
+
+- Moved the 401/403 blocked state and once-only auth-refresh guard from the park-owned request boundary into a principal-session owner above park loading. A same-principal `refreshUser()` object replacement and the resulting real `ParkScopeProvider` reload now retain the denial, make no second Operations request, and do not refresh auth again. The owner is keyed by principal id, resets after that principal leaves the tree, and has an explicit different-principal regression.
+- Changed the SLA mutation owner from `user.id + parkId + allowed` to the shared Operations access identity plus park id. Same-ID changes to principal name, role, sorted effective permissions, Tracker login, or park assignments now advance the generation; access/password status are included by the same shared identity, while the exact permission gate remains `parks.manage`.
+- Removed both invented count fallbacks. Missing status counts and a missing `counts.all` total render `Нет данных`; `tasks_total` remains only the size/truncation contract for the selected task result and is no longer presented as total open load.
+- Added explicit operator, admin, and royal tests proving that changing status sends `waiting_team` together with selected park `8` and writes both into the shareable URL.
+
+### RED evidence
+
+- `vitest run src/domains/insights/InsightsPage.test.tsx -t "real park lifecycle" --reporter=verbose` — 1 failed / 23 skipped. After `AuthProvider` replaced the same principal and `ParkScopeProvider` reloaded, the denial heading disappeared and a new Operations loading boundary was rendered.
+- `vitest run src/domains/insights/SlaPolicyEditor.test.tsx -t "same-ID" --reporter=verbose` — 5 failed / 4 skipped. Every same-ID identity change incorrectly delivered the old save and called `onSaved` once.
+- `vitest run src/domains/insights/OperationsPanels.test.tsx --reporter=verbose` — 2 failed. Missing status count rendered `0`; missing total count rendered `Нагрузка — 1` from `tasks_total`.
+
+### GREEN and verification evidence
+
+- Covering focused command: `vitest run src/domains/insights/InsightsPage.test.tsx src/domains/insights/SlaPolicyEditor.test.tsx src/domains/insights/OperationsPanels.test.tsx --reporter=dot` — 3 files, 40 tests passed.
+- Full web unit command: `vitest run --reporter=dot` — 73 files, 1154 tests passed.
+- TypeScript command: `node node_modules/typescript/bin/tsc -b --pretty false` — exit 0, no output.
+- Lint command: `oxlint src e2e` — exit 0; the same six pre-existing warnings remain in files outside Task 2.
+- `git diff --cached --check` — exit 0 before commit.
+
+No API/backend production file was changed. The unrelated Management plan document remained unstaged and untouched by this fix.
