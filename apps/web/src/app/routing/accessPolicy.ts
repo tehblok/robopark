@@ -63,7 +63,11 @@ export function canAccessRoute(user: AccessUser, routeId: AppRouteId): boolean {
   if (routeId === 'operator-parks' && user.role !== 'operator') {
     return false
   }
-  if (route.permission && !(user.permissions ?? []).includes(route.permission)) {
+  const permissions = user.permissions ?? []
+  if (route.permission && !permissions.includes(route.permission)) {
+    return false
+  }
+  if (route.anyPermissions && !route.anyPermissions.some((permission) => permissions.includes(permission))) {
     return false
   }
 

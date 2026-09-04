@@ -161,6 +161,8 @@ describe('AppShell', () => {
 
     expect(within(dialog).getByRole('link', { name: 'Репорты' }))
       .toHaveAttribute('href', '/reports')
+    expect(within(dialog).getByRole('link', { name: 'Сменить пароль' }))
+      .toHaveAttribute('href', '/change-password')
 
     act(() => media.setWidth(899))
     expect(screen.getByText('На телефоне используется комфортная плотность')).toBeVisible()

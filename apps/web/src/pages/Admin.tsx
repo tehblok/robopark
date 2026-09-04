@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   api,
   type IntegrationSettings,
@@ -14,14 +14,12 @@ import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
 import { TabPanel, Tabs, Toggle } from '../components/ui/Tabs'
 import { PasswordField } from '../components/ui/PasswordField'
 import { AdminOpsPanel } from '../components/admin/AdminOpsPanel'
-import { AdminRolesPanel } from '../components/admin/AdminRolesPanel'
-import { AdminUsersPanel } from '../components/admin/AdminUsersPanel'
 import { useAuth } from '../auth-context'
 import { mapApiError } from '../i18n/errors'
 import { roleLabel, ru } from '../i18n/ru'
 import { useCachedResource } from '../lib/resource'
 
-type TabId = 'integrations' | 'parks' | 'users' | 'roles' | 'ops'
+type TabId = 'integrations' | 'parks' | 'ops'
 
 type AdminBootstrap = {
   parks: Park[]
@@ -83,11 +81,14 @@ function worksBadge(ok: boolean) {
 
 export function Admin() {
   const { user } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
   const perms = user?.permissions ?? []
   const canParks = perms.includes('parks.manage')
-  const canUsers = perms.includes('users.manage')
-  const canRoles = perms.includes('roles.manage')
-  const [tab, setTab] = useState<TabId>('integrations')
+  const requestedTab = searchParams.get('tab')
+  const initialTab: TabId = requestedTab === 'parks' || requestedTab === 'ops'
+    ? requestedTab
+    : 'integrations'
+  const [tab, setTab] = useState<TabId>(initialTab)
   const bootRes = useCachedResource<AdminBootstrap>('admin:bootstrap', loadAdminBootstrap, {
     persist: false,
   })
@@ -116,10 +117,13 @@ export function Admin() {
 
   useEffect(() => {
     if (tab === 'parks' && !canParks) setTab('integrations')
-    if (tab === 'users' && !canUsers) setTab('integrations')
-    if (tab === 'roles' && !canRoles) setTab('integrations')
     if (tab === 'ops' && user?.role !== 'royal') setTab('integrations')
-  }, [tab, canParks, canUsers, canRoles, user?.role])
+  }, [tab, canParks, user?.role])
+
+  useEffect(() => {
+    if (requestedTab === tab) return
+    setSearchParams(tab === 'integrations' ? {} : { tab }, { replace: true })
+  }, [requestedTab, setSearchParams, tab])
 
   useEffect(() => {
     if (!boot) return
@@ -239,10 +243,6 @@ export function Admin() {
         items={[
           { id: 'integrations', label: 'Интеграции' },
           ...(canParks ? [{ id: 'parks', label: 'Парки', count: parkRequests.length }] : []),
-          ...(canUsers
-            ? [{ id: 'users', label: 'Пользователи', count: boot?.pendingUserCount }]
-            : []),
-          ...(canRoles ? [{ id: 'roles', label: 'Роли' }] : []),
           ...(user?.role === 'royal' ? [{ id: 'ops', label: ru.ops.tab }] : []),
         ]}
         onChange={(id) => setTab(id as TabId)}
@@ -647,18 +647,6 @@ export function Admin() {
             </Panel>
           ))
         )}
-      </TabPanel>
-      )}
-
-      {canUsers && (
-      <TabPanel active={tab === 'users'}>
-        <AdminUsersPanel parks={parks} />
-      </TabPanel>
-      )}
-
-      {canRoles && (
-      <TabPanel active={tab === 'roles'}>
-        <AdminRolesPanel />
       </TabPanel>
       )}
 

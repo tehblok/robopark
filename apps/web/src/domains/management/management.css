@@ -1,0 +1,9 @@
+.management-grid {
+  display: grid;
+  gap: var(--space-4, 16px);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.management-grid .btn {
+  min-height: 44px;
+}

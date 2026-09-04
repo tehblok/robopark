@@ -17,35 +17,36 @@ function hasInbox(user: { permissions?: string[] } | null | undefined): boolean 
 }
 
 function canCreateReports(user: { role: string; permissions?: string[] } | null | undefined): boolean {
-  if (!user) return false
-  if (user.role === 'mechanic') return true
-  const perms = user.permissions ?? []
-  return perms.includes('reports.create') && !perms.includes('reports.resolve')
+  return Boolean(user?.permissions?.includes('reports.create'))
 }
 
 export function Reports() {
   const { user } = useAuth()
   const { parkId, parks, parksLoading } = useParkContext()
   const role = user?.role ?? ''
+  const reportScope = user
+    ? `${user.id}:${[...(user.permissions ?? [])].sort().join(',')}:${parkId ?? 'all'}`
+    : ''
   const inboxEnabled = hasInbox(user)
   const createEnabled = canCreateReports(user)
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [activePane, setActivePane] = useState<'mine' | 'inbox'>('mine')
 
   const selectedPark = parks.find((park) => park.id === parkId)
 
   const mineRes = useCachedResource<Report[]>(
-    createEnabled ? 'reports:mine' : '',
+    createEnabled ? `reports:${reportScope}:mine` : '',
     () => api.reportsMine(),
     { enabled: createEnabled && !parksLoading },
   )
-  const inboxKey = inboxEnabled && parkId != null ? `reports:inbox:${parkId}` : ''
+  const inboxKey = inboxEnabled && parkId != null ? `reports:${reportScope}:inbox` : ''
   const inboxRes = useCachedResource<Report[]>(
     inboxKey,
     () => api.reportsInbox(parkId as number),
     { enabled: inboxEnabled && parkId != null && !parksLoading },
   )
   const detailRes = useCachedResource<Report>(
-    selectedId != null ? `reports:detail:${selectedId}` : '',
+    selectedId != null ? `reports:${reportScope}:detail:${selectedId}` : '',
     () => api.report(selectedId as number),
     { enabled: selectedId != null },
   )
@@ -84,7 +85,7 @@ export function Reports() {
     if (selectedId != null) {
       try {
         await detailRes.refresh()
-        const fresh = resourceStore.get<Report>(`reports:detail:${selectedId}`)
+        const fresh = resourceStore.get<Report>(`reports:${reportScope}:detail:${selectedId}`)
         if (fresh && fresh.status !== 'open') {
           handleCloseDetail()
         }
@@ -119,6 +120,29 @@ export function Reports() {
           {listLoading ? <Spinner label="Обновление" /> : 'Обновить'}
         </button>
       </div>
+
+      {createEnabled && inboxEnabled && (
+        <div aria-label="Режим репортов" className="actions" role="tablist">
+          <button
+            aria-selected={activePane === 'mine'}
+            className={`btn btn-filter${activePane === 'mine' ? ' is-active' : ''}`}
+            onClick={() => setActivePane('mine')}
+            role="tab"
+            type="button"
+          >
+            Мои репорты
+          </button>
+          <button
+            aria-selected={activePane === 'inbox'}
+            className={`btn btn-filter${activePane === 'inbox' ? ' is-active' : ''}`}
+            onClick={() => setActivePane('inbox')}
+            role="tab"
+            type="button"
+          >
+            {inboxTitle}
+          </button>
+        </div>
+      )}
 
       {listError && <Alert tone="error">{listError}</Alert>}
 

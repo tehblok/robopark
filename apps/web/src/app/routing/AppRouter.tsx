@@ -7,6 +7,9 @@ import { Spinner } from '../../components/ui/Feedback'
 import { ru } from '../../i18n/ru'
 import { useAuth } from '../../auth-context'
 import { Admin } from '../../pages/Admin'
+import { ManagementPage } from '../../domains/management/ManagementPage'
+import { UserManagementPage } from '../../domains/management/UserManagementPage'
+import { RoleManagementPage } from '../../domains/management/RoleManagementPage'
 import { AdminEmergencyConfig } from '../../pages/AdminEmergencyConfig'
 import { AdminTrackerWorkspace } from '../../pages/AdminTrackerWorkspace'
 import { Analytics } from '../../pages/Analytics'
@@ -57,7 +60,10 @@ export const ROUTE_ELEMENTS: Record<AppRouteId, ReactElement> = {
   'legacy-robot-check': <LegacyEmergencyRedirect />,
   'analytics': <Analytics />,
   'reports': <Reports />,
-  'admin': <Admin />,
+  'admin': <ManagementPage />,
+  'admin-settings': <Admin />,
+  'admin-users': <UserManagementPage />,
+  'admin-roles': <RoleManagementPage />,
   'admin-tracker': <AdminTrackerWorkspace />,
   'admin-robot-check': <AdminEmergencyConfig />,
   'not-found': <RouteFallback />,

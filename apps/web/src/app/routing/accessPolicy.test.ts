@@ -74,6 +74,17 @@ const accessCases = protectedRoutes.flatMap((route) =>
 )
 
 describe('canAccessRoute', () => {
+  it('uses a granted management capability to expose the management hub without nav.admin', () => {
+    const manager = user({
+      role: 'field_lead',
+      permissions: ['users.manage'],
+      parks: [north],
+    })
+
+    expect(canAccessRoute(manager, 'admin')).toBe(true)
+    expect(navigationForUser(manager, 'desktop').map((item) => item.id)).toContain('admin')
+  })
+
   it('shares canonical and legacy permission gates without granting drivers Work', () => {
     const driver = user({ role: 'driver', permissions: ['nav.dashboard', 'nav.robot_search', 'nav.emergency'] })
     for (const id of ['overview', 'robots', 'robot-detail', 'robot-check', 'legacy-robot-check'] as const) {

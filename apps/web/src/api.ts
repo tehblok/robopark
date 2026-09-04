@@ -373,6 +373,16 @@ export type DashboardHistory = {
 
 export type ReportKindManual = 'ticket_question' | 'mechanic_problem'
 
+export type ReportAttachmentKind = 'ui_snapshot' | 'device_photo' | 'client_log'
+
+export type ReportAttachment = {
+  id: number
+  kind: ReportAttachmentKind | string
+  filename: string
+  content_type: string
+  size_bytes: number
+}
+
 export type Report = {
   id: number
   kind: string
@@ -389,6 +399,7 @@ export type Report = {
   created_at: string
   updated_at: string
   resolved_at: string | null
+  attachments?: ReportAttachment[]
 }
 
 export type ReportBadge = {
@@ -913,6 +924,14 @@ export const api = {
         : `/reports/inbox?park_id=${parkId}`,
     ),
   report: (id: number) => request<Report>(`/reports/${id}`),
+  reportAttach: (id: number, kind: ReportAttachmentKind, file: File) => {
+    const form = new FormData()
+    form.append('kind', kind)
+    form.append('file', file, file.name)
+    return requestForm<ReportAttachment>(`/reports/${id}/attachments`, form)
+  },
+  reportAttachmentUrl: (reportId: number, attachmentId: number) =>
+    `/api/reports/${reportId}/attachments/${attachmentId}`,
   createReport: (payload: ReportCreatePayload) =>
     request<Report>('/reports', {
       method: 'POST',

@@ -155,6 +155,34 @@ describe('AppRouter', () => {
     })
   })
 
+  it('allows an approved user to voluntarily open the change-password form', async () => {
+    renderApp('/change-password', testUser({
+      permissions: ['nav.dashboard'],
+      parks: [north],
+    }))
+
+    expect(await screen.findByRole('heading', { name: 'Смена пароля' })).toBeVisible()
+    expect(screen.getByText('Вы меняете пароль по собственной инициативе.')).toBeVisible()
+    expect(screen.getByRole('link', { name: /вернуться в кабинет/i })).toHaveAttribute(
+      'href',
+      '/overview',
+    )
+  })
+
+  it('shows author and inbox workflows when both report capabilities are granted', async () => {
+    vi.spyOn(api, 'reportsMine').mockResolvedValue([])
+    vi.spyOn(api, 'reportsInbox').mockResolvedValue([])
+
+    renderApp('/reports', testUser({
+      permissions: ['nav.reports', 'reports.create', 'reports.resolve'],
+      parks: [north],
+    }))
+
+    expect(await screen.findByRole('heading', { name: 'Репорты' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Создать репорт' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Входящие' })).toBeVisible()
+  })
+
   it('renders only permitted role-aware navigation', async () => {
     renderApp('/emergency', testUser({
       role: 'driver',

@@ -13,7 +13,7 @@ export type AppRouteId =
   | 'access-pending' | 'access-rejected' | 'mechanic-no-park'
   | 'overview' | 'operator-parks' | 'work' | 'robots' | 'robot-check'
   | 'work-issue' | 'robot-detail' | 'legacy-robot-check'
-  | 'analytics' | 'reports' | 'admin' | 'admin-tracker'
+  | 'analytics' | 'reports' | 'admin' | 'admin-settings' | 'admin-users' | 'admin-roles' | 'admin-tracker'
   | 'admin-robot-check' | 'not-found'
 export type NavGroup = 'operations' | 'collaboration' | 'insights' | 'administration'
 export type NavSurface = 'desktop' | 'mobile'
@@ -30,6 +30,7 @@ export type RouteManifestItem = {
   label: string
   icon: IconName
   permission?: string
+  anyPermissions?: readonly string[]
   prerequisites?: readonly AccessPrerequisite[]
   surface: 'public' | 'standalone' | 'shell'
   nav?: RouteNav
@@ -190,7 +191,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
     path: '/admin',
     label: ru.nav.admin,
     icon: 'settings',
-    permission: 'nav.admin',
+    anyPermissions: ['nav.admin', 'users.manage', 'roles.manage', 'parks.manage'],
     prerequisites: SHELL_PREREQUISITES,
     surface: 'shell',
     nav: {
@@ -198,6 +199,33 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
       desktopOrder: 80,
       mobilePriority: { royal: 2, admin: 1 },
     },
+  },
+  {
+    id: 'admin-settings',
+    path: '/admin/settings',
+    label: 'Настройки управления',
+    icon: 'settings',
+    anyPermissions: ['nav.admin', 'parks.manage'],
+    prerequisites: SHELL_PREREQUISITES,
+    surface: 'shell',
+  },
+  {
+    id: 'admin-users',
+    path: '/admin/users',
+    label: 'Пользователи',
+    icon: 'users',
+    permission: 'users.manage',
+    prerequisites: SHELL_PREREQUISITES,
+    surface: 'shell',
+  },
+  {
+    id: 'admin-roles',
+    path: '/admin/roles',
+    label: 'Роли',
+    icon: 'settings',
+    permission: 'roles.manage',
+    prerequisites: SHELL_PREREQUISITES,
+    surface: 'shell',
   },
   {
     id: 'admin-tracker',

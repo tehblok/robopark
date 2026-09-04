@@ -111,7 +111,9 @@ export function AppShell() {
   const mobileCurrent = currentNavigationItem(mobileItems, location.pathname)
   const moreCurrent = secondaryMobileItems.some((item) => item.id === mobileCurrent?.id)
   const badgeParkId = user?.role === 'operator' ? parkId ?? undefined : undefined
-  const badgeKey = user ? `reports:badge:${user.role}:${badgeParkId ?? 'all'}` : ''
+  const badgeKey = user
+    ? `reports:badge:${user.id}:${[...(user.permissions ?? [])].sort().join(',')}:${badgeParkId ?? 'all'}`
+    : ''
   const badgeResource = useCachedResource(
     badgeKey,
     () => api.reportsBadge(badgeParkId),
@@ -320,6 +322,13 @@ export function AppShell() {
             ))}
           </nav>
         ) : null}
+
+        <nav aria-label="Профиль" className="rp-shell__more-nav">
+          <Link className="rp-shell__more-link" onClick={() => setMoreOpen(false)} to="/change-password">
+            <Icon name="settings" size={20} />
+            <span className="rp-shell__nav-label">Сменить пароль</span>
+          </Link>
+        </nav>
 
         <fieldset className="rp-shell__preference-group" role="radiogroup">
           <legend>{ru.appShell.themeLabel}</legend>

@@ -106,6 +106,32 @@ describe('API transport metadata', () => {
     )
   })
 
+  it('uploads a report attachment to an existing report instead of creating another report', async () => {
+    let submitted: FormData | undefined
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      submitted = init?.body as FormData | undefined
+      return new Response(JSON.stringify({
+        id: 11,
+        kind: 'device_photo',
+        filename: 'robot.jpg',
+        content_type: 'image/jpeg',
+        size_bytes: 3,
+      }), { status: 201, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.reportAttach(42, 'device_photo', new File(['jpg'], 'robot.jpg', {
+      type: 'image/jpeg',
+    }))
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/reports/42/attachments',
+      expect.objectContaining({ credentials: 'include', method: 'POST' }),
+    )
+    expect(submitted).toBeInstanceOf(FormData)
+    expect(submitted?.get('kind')).toBe('device_photo')
+  })
+
   it.each(timeoutCases)(
     'cancels a stalled %s request at the %dms transport deadline',
     async (_label, timeoutMs, call) => {

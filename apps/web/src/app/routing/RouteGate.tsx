@@ -23,6 +23,11 @@ export function RouteGate({
 
   const landingPath = landingPathForUser(user)
   if (route.surface === 'standalone') {
+    if (routeId === 'change-password') {
+      return user.must_change_password || user.access_status === 'approved'
+        ? children
+        : <Navigate replace to={landingPath} />
+    }
     return landingPath === route.path ? children : <Navigate replace to={landingPath} />
   }
 

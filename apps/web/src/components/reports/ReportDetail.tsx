@@ -116,6 +116,21 @@ export function ReportDetail({
         </div>
       )}
 
+      {(report.attachments?.length ?? 0) > 0 && (
+        <div className="report-detail-body">
+          <strong>Вложения</strong>
+          <ul>
+            {report.attachments?.map((attachment) => (
+              <li key={attachment.id}>
+                <a href={api.reportAttachmentUrl(report.id, attachment.id)}>
+                  {attachment.filename}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {report.return_comment && (
         <Alert tone="warning">
           Комментарий при возврате: {report.return_comment}

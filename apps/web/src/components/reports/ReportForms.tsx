@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from 'react'
-import { api, type ReportKindManual } from '../../api'
+import { api, type ReportAttachmentKind, type ReportKindManual } from '../../api'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
 import { Alert } from '../PageShell'
@@ -25,6 +25,12 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [createdReportId, setCreatedReportId] = useState<number | null>(null)
+  const [attachment, setAttachment] = useState<File | null>(null)
+  const [attachmentKind, setAttachmentKind] = useState<ReportAttachmentKind>('device_photo')
+  const [attachmentError, setAttachmentError] = useState('')
+  const [attachmentSuccess, setAttachmentSuccess] = useState('')
+  const [attaching, setAttaching] = useState(false)
 
   function resetFields() {
     setTrackerKey('')
@@ -54,7 +60,7 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
 
     setSubmitting(true)
     try {
-      await api.createReport({
+      const created = await api.createReport({
         kind,
         park_id: parkId,
         title: trimmedTitle,
@@ -62,6 +68,7 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
         tracker_key: trimmedKey || null,
         tracker_url: trackerUrlFromKey(trimmedKey),
       })
+      setCreatedReportId(created.id)
       setSuccess('Репорт отправлен оператору.')
       resetFields()
       onCreated()
@@ -69,6 +76,22 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
       setError(mapApiError(submitError, ru.errors.generic))
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  async function attachFile() {
+    if (createdReportId == null || attachment == null) return
+    setAttaching(true)
+    setAttachmentError('')
+    setAttachmentSuccess('')
+    try {
+      await api.reportAttach(createdReportId, attachmentKind, attachment)
+      setAttachment(null)
+      setAttachmentSuccess('Файл прикреплён к созданному репорту.')
+    } catch (caught) {
+      setAttachmentError(mapApiError(caught, ru.errors.generic))
+    } finally {
+      setAttaching(false)
     }
   }
 
@@ -97,6 +120,35 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
 
       {error && <Alert tone="error">{error}</Alert>}
       {success && <Alert tone="success">{success}</Alert>}
+
+      {createdReportId != null && (
+        <div className="form-grid" aria-label="Вложения к репорту">
+          <p className="panel-hint">Прикрепите файл к уже созданному репорту. Повтор не создаст новый репорт.</p>
+          {attachmentError && <Alert tone="error">{attachmentError}</Alert>}
+          {attachmentSuccess && <Alert tone="success">{attachmentSuccess}</Alert>}
+          <label className="field">
+            <span className="field-label">Файл</span>
+            <input
+              accept="image/jpeg,image/png,text/plain"
+              onChange={(event) => setAttachment(event.target.files?.[0] ?? null)}
+              type="file"
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">Тип вложения</span>
+            <select onChange={(event) => setAttachmentKind(event.target.value as ReportAttachmentKind)} value={attachmentKind}>
+              <option value="device_photo">Фото устройства</option>
+              <option value="ui_snapshot">Снимок интерфейса</option>
+              <option value="client_log">Лог клиента</option>
+            </select>
+          </label>
+          <div className="form-actions">
+            <button className="btn btn-secondary" disabled={attaching || attachment == null} onClick={() => void attachFile()} type="button">
+              {attaching ? <Spinner label="Загрузка файла" /> : 'Прикрепить файл'}
+            </button>
+          </div>
+        </div>
+      )}
 
       <form className="form-grid" onSubmit={(event) => void handleSubmit(event)}>
         <p className="panel-hint">
