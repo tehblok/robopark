@@ -1,10 +1,11 @@
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from conftest import VALID_PASSWORD, login_as, role_id_for
-from robopark_api.models import AuthSession, Permission, Role, User, UserPark
+from robopark_api.models import AuthSession, Park, Permission, Role, User, UserPark
 from robopark_api.security import hash_password
-from robopark_api.services import rbac
+from robopark_api.services import emergency_scope, operations, rbac, tracker_policy
 
 
 @pytest.fixture
@@ -47,7 +48,7 @@ def test_user_manager_cannot_create_new_privileged_account(
     login_as(client, user_manager.username, "secret")
     payload = {"username": "blocked-create", "password": VALID_PASSWORD, "role_slug": slug}
     if explicit:
-        payload["permissions"] = ["roles.manage"]
+        payload["permissions"] = ["nav.dashboard", "nav.emergency", "tracker.read"]
     response = client.post("/admin/users", json=payload)
     assert response.status_code == 403
     assert response.json()["detail"] == "privileged_grant_forbidden"
@@ -79,7 +80,7 @@ def test_user_manager_cannot_escalate_role_or_partially_mutate_target(
         "is_active": False,
     }
     if explicit:
-        payload["permissions"] = ["roles.manage"]
+        payload["permissions"] = ["nav.dashboard", "nav.emergency", "tracker.read"]
     response = client.patch(f"/admin/users/{target_id}", json=payload)
     assert response.status_code == 403
     # The dependency shares this session: rejection must precede mutation,
@@ -166,16 +167,67 @@ def test_user_manager_can_assign_nonprivileged_effective_permissions(
     assert updated.status_code == 200
     assert updated.json()["role"] == "operator"
     assert "reports.resolve" in updated.json()["permissions"]
-    # Assigning a role with all its privileged grants explicitly denied is safe.
-    restricted = client.patch(
+
+
+def test_rejected_admin_identity_preserves_operations_tracker_and_vin_park_scope(
+    client, db_session, user_manager, seed_mechanic, monkeypatch
+):
+    foreign = Park(
+        name="Foreign",
+        tag="Foreign",
+        is_active=True,
+        tracker_queue="FOREIGN",
+        feature_blockers=True,
+    )
+    db_session.add(foreign)
+    db_session.commit()
+    original_role_id = seed_mechanic.role_id
+
+    login_as(client, user_manager.username, "secret")
+    response = client.patch(
         f"/admin/users/{seed_mechanic.id}",
         json={
             "role_slug": "admin",
-            "permissions": ["nav.dashboard"],
+            "permissions": ["nav.dashboard", "nav.emergency", "tracker.read"],
         },
     )
-    assert restricted.status_code == 200
-    assert restricted.json()["permissions"] == ["nav.dashboard"]
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "privileged_grant_forbidden"
+    db_session.commit()
+    db_session.refresh(seed_mechanic)
+    assert seed_mechanic.role_id == original_role_id
+
+    with pytest.raises(HTTPException) as operations_denied:
+        operations.require_operations_park(db_session, seed_mechanic, foreign.id)
+    assert operations_denied.value.status_code == 403
+
+    foreign_issue = {
+        "key": "FOREIGN-1",
+        "queue": "FOREIGN",
+        "summary": "robot 447",
+        "status": "Open",
+        "status_key": "open",
+        "tags": ["Foreign"],
+    }
+    with pytest.raises(HTTPException) as tracker_denied:
+        tracker_policy.enforce_issue_scope(db_session, seed_mechanic, foreign_issue)
+    assert tracker_denied.value.status_code == 403
+
+    monkeypatch.setattr(
+        emergency_scope.settings_svc,
+        "get_tracker_token",
+        lambda _db: "fixture-token",
+    )
+    monkeypatch.setattr(
+        emergency_scope.tracker_cache,
+        "search_robot_tickets",
+        lambda **_kwargs: [foreign_issue],
+    )
+    assert (
+        emergency_scope.vin_allowed_for_user(db_session, seed_mechanic, "YASADR00000000447")
+        is False
+    )
 
 
 @pytest.mark.parametrize("capability", ["users.manage", "roles.manage"])

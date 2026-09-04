@@ -94,6 +94,18 @@ def privileged_grant_blocked(actor: User, existing: set[str], desired: set[str])
     return bool((desired - existing) & PRIVILEGED_PERMISSIONS)
 
 
+def privileged_role_assignment_blocked(actor: User, role: Role) -> bool:
+    """Role identity/defaults are authority even when user overrides deny grants."""
+    if is_royal(actor):
+        return False
+    if role.slug in {RoleSlug.ADMIN, RoleSlug.ROYAL}:
+        return True
+    permissions = getattr(role, "permissions", None)
+    if permissions is None:
+        return True
+    return bool({permission.key for permission in permissions} & PRIVILEGED_PERMISSIONS)
+
+
 @dataclass(frozen=True)
 class PermissionDef:
     key: str

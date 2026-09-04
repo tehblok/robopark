@@ -122,6 +122,14 @@ def _assert_privileged_grant_allowed(actor: User, existing: set[str], desired: s
         )
 
 
+def _assert_role_assignment_allowed(actor: User, role: Role) -> None:
+    if rbac.privileged_role_assignment_blocked(actor, role):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="privileged_grant_forbidden",
+        )
+
+
 @router.get("", response_model=list[UserAdminOut])
 def list_users(
     role: str | None = Query(default=None),
@@ -159,6 +167,7 @@ def create_user(
     role = rbac.get_role_by_slug(db, payload.role_slug)
     if role is None or not role.is_active:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_role")
+    _assert_role_assignment_allowed(actor, role)
     desired = rbac.proposed_user_permissions(role, payload.permissions)
     _assert_privileged_grant_allowed(actor, set(), desired)
     _check_password(payload.password, settings, payload.username)
@@ -205,6 +214,7 @@ def update_user(
         role = rbac.get_role_by_slug(db, slug)
         if role is None or not role.is_active:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_role")
+        _assert_role_assignment_allowed(actor, role)
         if (
             user.role == rbac.RoleSlug.ROYAL
             and slug != rbac.RoleSlug.ROYAL
