@@ -97,3 +97,16 @@ Red tests were observed before their corresponding implementation for:
 
 - Focused `ReportForms` tests: 4 passed.
 - TypeScript build, targeted lint, and `git diff --check` passed.
+
+## Fix round 4/5
+
+### RED / GREEN evidence
+
+- RED: a `binary/octet-stream` image with no recognized filename extension was filtered before `reportAttach`; the focused regression observed zero upload calls while the other four `ReportForms` cases passed.
+- GREEN: the generic-image MIME path and file-input declaration now include the server-supported `binary/octet-stream` value. The regression reaches `reportAttach(42, 'device_photo', file)` on the already-created report and asserts exactly one `createReport` call.
+- Explicit incompatible MIME rejection remains in place, as do the existing 15 MiB image and 64 KiB log limits; generic image bytes remain subject to server-side signature validation.
+
+### Verification
+
+- Focused `ReportForms` tests: 5 passed.
+- TypeScript project build, targeted lint, and `git diff --check` passed.

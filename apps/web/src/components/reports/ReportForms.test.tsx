@@ -57,6 +57,7 @@ describe('ReportForms', () => {
   it.each([
     ['image/jpg', 'robot.jpg', 'image/jpg'],
     ['generic MIME without a recognized extension', 'camera-upload', 'application/octet-stream'],
+    ['binary generic MIME without a recognized extension', 'camera-upload', 'binary/octet-stream'],
   ])('uploads a server-supported %s image without creating a second report', async (_label, filename, type) => {
     const actor = userEvent.setup()
     const create = vi.spyOn(api, 'createReport').mockResolvedValue(created)

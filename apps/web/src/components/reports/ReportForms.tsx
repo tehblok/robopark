@@ -84,7 +84,9 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
     const photo = attachmentKind === 'device_photo' || attachmentKind === 'ui_snapshot'
     const imageTypes = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif'])
     const filename = attachment.name.toLowerCase()
-    const fallbackMime = attachment.type === '' || attachment.type === 'application/octet-stream'
+    const fallbackMime = attachment.type === ''
+      || attachment.type === 'application/octet-stream'
+      || attachment.type === 'binary/octet-stream'
     const validType = photo
       ? imageTypes.has(attachment.type) || fallbackMime
       : attachment.type === 'text/plain' || (fallbackMime && filename.endsWith('.log'))
@@ -145,7 +147,7 @@ export function ReportForms({ parkId, onCreated }: ReportFormsProps) {
           <label className="field">
             <span className="field-label">Файл</span>
             <input
-              accept="image/jpeg,image/jpg,image/png,image/webp,image/heic,image/heif,application/octet-stream,.jpg,.jpeg,.png,.webp,.heic,.heif,text/plain,.log"
+              accept="image/jpeg,image/jpg,image/png,image/webp,image/heic,image/heif,application/octet-stream,binary/octet-stream,.jpg,.jpeg,.png,.webp,.heic,.heif,text/plain,.log"
               onChange={(event) => setAttachment(event.target.files?.[0] ?? null)}
               type="file"
             />
