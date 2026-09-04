@@ -3,6 +3,7 @@ import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   coalesceLoader,
+  inFlight,
   resetCoalescingForTests,
   resourceStore,
   useCachedResource,
@@ -148,6 +149,21 @@ describe('in-flight invalidation', () => {
 
     expect(resourceStore.get(key)).toBeUndefined()
     expect(window.localStorage.getItem(`robopark:res:${key}`)).toBeNull()
+  })
+
+  it('does not commit a late result after the owner unmounts', async () => {
+    const key = 'slow'
+    const request = deferred<TestPayload>()
+    const loader = vi.fn(() => request.promise)
+    const view = render(createElement(ResourceProbe, { cacheKey: key, loader }))
+
+    await waitFor(() => expect(loader).toHaveBeenCalledTimes(1))
+    view.unmount()
+
+    await resolveAndFlush(request, { value: 'late' })
+
+    expect(resourceStore.get(key)).toBeUndefined()
+    expect(inFlight.isActive).toBe(false)
   })
 
   it('starts a fresh same-key load after invalidation and discards the old result', async () => {

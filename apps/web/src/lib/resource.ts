@@ -306,6 +306,16 @@ export function useCachedResource<T>(
   const loaderRef = useRef(loader)
   loaderRef.current = loader
   const requestIdRef = useRef(0)
+  const ownerGenerationRef = useRef(Symbol('cached-resource-owner'))
+
+  useEffect(() => {
+    const ownerGeneration = ownerGenerationRef.current
+    return () => {
+      if (ownerGenerationRef.current === ownerGeneration) {
+        ownerGenerationRef.current = Symbol('cached-resource-owner')
+      }
+    }
+  }, [key])
 
   useEffect(() => {
     if (!enabled) return
@@ -320,12 +330,14 @@ export function useCachedResource<T>(
     if (!enabled) return
     const requestId = ++requestIdRef.current
     const loadGeneration = captureLoadGeneration(key)
+    const ownerGeneration = ownerGenerationRef.current
     setIsRevalidating(true)
     if (trackProgress) inFlight.begin()
     try {
       const fresh = await coalesceLoader(key, () => loaderRef.current())
       if (
         requestId !== requestIdRef.current ||
+        ownerGeneration !== ownerGenerationRef.current ||
         !isLoadGenerationCurrent(key, loadGeneration)
       ) return
       resourceStore.set(key, fresh, persist)
@@ -333,11 +345,15 @@ export function useCachedResource<T>(
     } catch (loadError) {
       if (
         requestId !== requestIdRef.current ||
+        ownerGeneration !== ownerGenerationRef.current ||
         !isLoadGenerationCurrent(key, loadGeneration)
       ) return
       setError(loadError)
     } finally {
-      if (requestId === requestIdRef.current) {
+      if (
+        requestId === requestIdRef.current &&
+        ownerGeneration === ownerGenerationRef.current
+      ) {
         setIsRevalidating(false)
       }
       if (trackProgress) inFlight.end()

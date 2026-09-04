@@ -1,6 +1,17 @@
 import { expect, test } from '@playwright/test'
 import { installOperational, issue, settlePage } from './fixtures'
 
+test('robots navigation remains available while overview is pending', async ({ page }) => {
+  await installOperational(page)
+  await page.route('**/api/operations/overview**', () => new Promise<void>(() => {}))
+  await page.goto('/overview')
+
+  await page.getByRole('link', { name: 'Роботы', exact: true }).click()
+
+  await expect(page).toHaveURL(/\/robots(?:\?.*)?$/, { timeout: 1_000 })
+  await expect(page.getByRole('heading', { name: 'Роботы', exact: true })).toBeVisible({ timeout: 1_000 })
+})
+
 for (const width of [390, 1440]) {
   test(`shell stays pinned and last work controls remain reachable at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 720 })
