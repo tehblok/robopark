@@ -45,8 +45,9 @@ def test_arrived_and_done_today_queries():
     arrived = tracker_metrics.build_arrived_today_query("SDCFLEETOPS", "Next")
     done = tracker_metrics.build_done_today_query("SDCFLEETOPS", "Next")
     assert "Created: today()" in arrived
-    assert "Resolution: empty(), fixed" in arrived
-    assert "Updated: today()" in done
+    assert "Resolution:" not in arrived
+    assert "Resolved: today()" in done
+    assert "Updated:" not in done
     assert "Resolution: fixed" in done
     assert "Type: repair, service, calibration" in arrived
 

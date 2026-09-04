@@ -11,8 +11,9 @@ import { useAuth } from '../auth-context'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
 import { useCachedResource } from '../lib/resource'
-import { navItemsForPermissions } from '../nav-permissions'
 import { useParkContext } from '../park-context'
+import { navigationForUser } from '../app/routing/accessPolicy'
+import { Icon } from '../design-system/icons/Icon'
 
 type DaySeriesPoint = {
   key: string
@@ -212,9 +213,11 @@ export function Dashboard() {
     permissions.includes('tracker.write') ||
     permissions.includes('nav.admin.tracker')
   const canWrite = permissions.includes('tracker.write')
-  const quickLinks = navItemsForPermissions(permissions).filter((item) =>
-    ['tasks', 'emergency', 'reports', 'analytics', 'robot_search'].includes(item.id),
-  )
+  const quickLinks = user
+    ? navigationForUser(user, 'desktop').filter((item) =>
+        ['work', 'robot-check', 'reports', 'analytics', 'robots'].includes(item.id),
+      )
+    : []
 
   const summaryRes = useCachedResource(
     parkId == null ? '' : `dashboard:summary:${parkId}`,
@@ -280,7 +283,7 @@ export function Dashboard() {
         <div className="chip-row">
           {quickLinks.map((item) => (
             <Link className="chip chip-link" key={item.id} to={item.path}>
-              <span aria-hidden="true">{item.icon}</span>
+              <Icon name={item.icon} size={18} />
               {item.label}
             </Link>
           ))}

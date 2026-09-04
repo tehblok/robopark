@@ -123,6 +123,15 @@ def client(db_engine, db_session, test_settings, monkeypatch):
     monkeypatch.setattr(main, "SessionLocal", sessionmaker(bind=db_engine, future=True))
     monkeypatch.setattr(main, "get_settings", lambda: test_settings)
 
+    # Lifespan workers own separate SessionLocal bindings. Route tests do not
+    # exercise workers, and must never let them reach the default database.
+    async def idle_worker(stop_event, **kwargs):
+        await stop_event.wait()
+
+    monkeypatch.setattr(main, "run_keepalive_loop", idle_worker)
+    monkeypatch.setattr(main, "run_blocker_history_loop", idle_worker)
+    monkeypatch.setattr(main, "run_session_cleanup_loop", idle_worker)
+
     app = main.create_app()
 
     def override_get_db():

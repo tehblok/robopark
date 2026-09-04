@@ -9,6 +9,7 @@ from robopark_api.models import Park, User
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import rbac
 from robopark_api.services.rbac import RoleSlug
+from robopark_api.services.tracker_filters import status_bucket
 
 ALLOWED_ACTIONS = {"comment", "assign", "unassign", "transition", "close", "attach"}
 
@@ -16,7 +17,9 @@ ALLOWED_ACTIONS = {"comment", "assign", "unassign", "transition", "close", "atta
 def allowed_queues_for_user(db: Session, user: User) -> list[str]:
     if rbac.is_admin_or_royal(user):
         return []
-    if rbac.role_slug(user) in {RoleSlug.OPERATOR, RoleSlug.MECHANIC}:
+    if rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_READ) or rbac.has_permission(
+        db, user, rbac.PERMISSION_TRACKER_WRITE
+    ):
         parks = get_user_parks(db, user)
         seen: set[str] = set()
         queues: list[str] = []
@@ -38,7 +41,9 @@ def all_park_tags(db: Session) -> set[str]:
 def allowed_park_tags_for_user(db: Session, user: User) -> set[str]:
     if rbac.is_admin_or_royal(user):
         return set()
-    if rbac.role_slug(user) in {RoleSlug.OPERATOR, RoleSlug.MECHANIC}:
+    if rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_READ) or rbac.has_permission(
+        db, user, rbac.PERMISSION_TRACKER_WRITE
+    ):
         return {str(park.tag).strip() for park in get_user_parks(db, user) if park.tag}
     return set()
 
@@ -74,6 +79,13 @@ def issue_tags(issue: dict) -> set[str]:
     return {str(tag).strip() for tag in raw if str(tag).strip()}
 
 
+def is_issue_status_visible(user: User, issue: dict) -> bool:
+    """Driver authorization uses exact workflow status, never relocation hints."""
+    return rbac.role_slug(user) != RoleSlug.DRIVER or status_bucket(
+        str(issue.get("status_key") or ""), str(issue.get("status") or "")
+    ) in {"new", "moving"}
+
+
 def is_issue_in_scope(db: Session, user: User, issue: dict) -> bool:
     """Non-raising scope check, used to filter list responses."""
     try:
@@ -103,7 +115,7 @@ def _check_issue_scope(db: Session, user: User, issue: dict) -> None:
     if rbac.is_admin_or_royal(user):
         return
 
-    if rbac.role_slug(user) not in {RoleSlug.OPERATOR, RoleSlug.MECHANIC}:
+    if not is_issue_status_visible(user, issue):
         _deny()
 
     # 1. Queue must be present and inside the user's allowed set.
@@ -134,9 +146,11 @@ def ensure_action_allowed(db: Session, user: User, issue: dict, action: str) -> 
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
     enforce_issue_scope(db, user, issue)
     if action == "attach":
-        # Photos are allowed even when tracker write (comment/assign/close) is
-        # disabled for the role — intentional so mechanics can still upload
-        # evidence under a read-heavy policy.
+        if not rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_ATTACH):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="tracker_attach_disabled",
+            )
         return
     if not can_write_tracker(db, user):
         raise HTTPException(

@@ -6,6 +6,7 @@ import { Spinner } from '../ui/Feedback'
 import { PasswordField } from '../ui/PasswordField'
 import { mapApiError } from '../../i18n/errors'
 import { accessStatusLabel, roleLabel } from '../../i18n/ru'
+import { actorPermissionCatalog, assignableRoles } from './privilegedPermissions'
 
 type UserDraft = {
   role_slug: string
@@ -81,11 +82,11 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
   const activeParks = parks.filter((park) => park.is_active)
   const pendingCount = users.filter((row) => row.access_status === 'pending').length
   const roleOptions = useMemo<RoleOption[]>(() => {
-    const source: RoleOption[] =
-      roles.length > 0
-        ? roles.filter((role) => role.is_active).map((role) => ({ slug: role.slug, name: role.name }))
-        : FALLBACK_ROLES
-    return source.filter((role) => isRoyal || role.slug !== 'royal')
+    if (roles.length > 0) {
+      return assignableRoles(roles, isRoyal ? 'royal' : undefined)
+        .map((role) => ({ slug: role.slug, name: role.name }))
+    }
+    return isRoyal ? FALLBACK_ROLES : []
   }, [roles, isRoyal])
 
   const load = async () => {
@@ -132,7 +133,11 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
   }, [users, filterRole, filterStatus, search])
 
   const selectedUser = users.find((row) => row.id === selectedId) ?? null
-  const selectedLocked = Boolean(selectedUser && selectedUser.role === 'royal' && !isRoyal)
+  const selectedLocked = Boolean(
+    selectedUser
+    && !isRoyal
+    && !roleOptions.some((role) => role.slug === selectedUser.role),
+  )
 
   useEffect(() => {
     if (!selectedUser) {
@@ -149,10 +154,11 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
     setError('')
   }
 
-  const navPerms = catalog.filter(
+  const availableCatalog = actorPermissionCatalog(catalog, actor?.role)
+  const navPerms = availableCatalog.filter(
     (item) => item.category === 'nav' && item.key !== 'users.approve',
   )
-  const actionPerms = catalog.filter(
+  const actionPerms = availableCatalog.filter(
     (item) => item.category === 'action' && item.key !== 'users.approve',
   )
   const roleDefaultPerms = (slug: string): string[] =>
@@ -264,6 +270,7 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
   }
 
   const createUser = async () => {
+    if (!roleOptions.some((role) => role.slug === createForm.role_slug)) return
     setBusy(true)
     setError('')
     setSuccess('')
@@ -406,7 +413,7 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
           hint={
             selectedUser
               ? selectedLocked
-                ? 'Аккаунт royal может менять только владелец.'
+                ? 'Аккаунт с привилегированной ролью может менять только владелец.'
                 : 'Смена пароля или блокировка сбрасывает активные сессии.'
               : 'Выберите пользователя слева или создайте нового ниже.'
           }
@@ -426,9 +433,6 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
                       {role.name}
                     </option>
                   ))}
-                  {selectedUser.role === 'royal' && !roleOptions.some((role) => role.slug === 'royal') && (
-                    <option value="royal">{roleLabel('royal')}</option>
-                  )}
                 </select>
               </label>
 
@@ -681,7 +685,7 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
         <div className="form-actions">
           <button
             className="btn"
-            disabled={busy || !createForm.username.trim() || !createForm.password}
+            disabled={busy || !createForm.username.trim() || !createForm.password || !roleOptions.some((role) => role.slug === createForm.role_slug)}
             onClick={() => void createUser()}
             type="button"
           >

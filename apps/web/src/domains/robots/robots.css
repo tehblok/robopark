@@ -1,0 +1,228 @@
+.rp-robots-page {
+  min-width: 0;
+}
+
+.rp-robots-search-panel {
+  max-width: 48rem;
+}
+
+.rp-robot-resolver__form,
+.rp-robot-resolver__controls,
+.rp-robots-recent-card > a,
+.rp-robot-scanner__actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.rp-robot-resolver__form {
+  flex-direction: column;
+}
+
+.rp-robot-resolver__controls {
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+
+.rp-robot-resolver__controls input {
+  flex: 1 1 16rem;
+  min-width: 0;
+  font-size: 16px;
+}
+
+.rp-robots-scheme {
+  align-items: center;
+  color: var(--rp-text-muted);
+  display: flex;
+  gap: 1rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rp-robots-recent-list {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rp-robots-recent-card {
+  background: var(--rp-surface-raised);
+  border: 1px solid var(--rp-border);
+  border-radius: var(--rp-radius-control);
+  min-width: 0;
+}
+
+.rp-robots-recent-card > a {
+  color: inherit;
+  flex-direction: column;
+  min-height: 44px;
+  overflow-wrap: anywhere;
+  padding: 0.75rem;
+  text-decoration: none;
+}
+
+.rp-robot-resolver :where(button, input, a):focus-visible,
+.rp-robots-recent-card > a:focus-visible {
+  outline: 2px solid var(--rp-focus);
+  outline-offset: 2px;
+}
+
+.rp-robot-scanner video {
+  background: var(--rp-surface-sunken);
+  max-width: 100%;
+  width: 100%;
+}
+
+.rp-robot-scanner__actions {
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+@media (min-width: 600px) and (max-width: 1199px) {
+  .rp-robots-recent-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 900px) {
+  .rp-robot-scan-action {
+    display: none;
+  }
+}
+
+@media (min-width: 1200px) {
+  .rp-robots-recent-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.rp-robot-detail {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.rp-robot-detail > *,
+.rp-robot-identity {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The unified workspace already supplies its two-column layout. */
+.rp-check-workspace[data-unified='true'] .rp-robot-detail {
+  grid-template-columns: minmax(0, 1fr);
+}
+.rp-check-workspace[data-unified='true'] .rp-robot-detail__events {
+  grid-column: auto;
+  grid-row: auto;
+}
+
+.rp-robot-detail__identity,
+.rp-robot-identity__status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.rp-robot-identity {
+  background: var(--rp-surface);
+  border: 1px solid var(--rp-border);
+  box-shadow: var(--rp-shadow-panel);
+  width: 100%;
+}
+
+.rp-robot-identity__illustration {
+  background: var(--rp-surface-sunken);
+  border-radius: var(--rp-radius-control);
+  margin: 0;
+  padding: 1rem;
+  text-align: center;
+}
+
+.rp-robot-identity__illustration img {
+  display: block;
+  height: 15rem;
+  max-width: 100%;
+  object-fit: contain;
+  width: 100%;
+}
+
+.rp-robot-identity__illustration figcaption {
+  color: var(--rp-text-muted);
+  margin-top: 0.5rem;
+}
+
+.rp-robot-identity__vin {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.rp-robot-detail__identity .rp-error-state {
+  background: var(--rp-warning-surface);
+}
+
+.rp-robot-detail__work .rp-error-state {
+  background: var(--rp-critical-surface);
+}
+
+.rp-robot-detail__tasks {
+  display: grid;
+  gap: 1rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rp-robot-detail__tasks li {
+  border-bottom: 1px solid var(--rp-border);
+  padding-bottom: 0.75rem;
+}
+
+.rp-robot-detail__tasks a {
+  align-items: center;
+  color: var(--rp-info);
+  display: inline-flex;
+  min-height: 44px;
+}
+
+.rp-robot-detail__primary {
+  background: var(--rp-surface);
+  padding: 0.5rem;
+  position: sticky;
+  grid-row: 4;
+  bottom: calc(var(--rp-mobile-nav-height, 4rem) + env(safe-area-inset-bottom, 0px));
+  z-index: 2;
+}
+
+.rp-robot-detail__primary a {
+  text-align: center;
+  text-decoration: none;
+  white-space: normal;
+  width: 100%;
+}
+
+@media (min-width: 900px) {
+  .rp-robot-detail {
+    grid-template-columns: minmax(18rem, 0.8fr) minmax(0, 1.2fr);
+  }
+  .rp-robot-detail__events {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .rp-robot-detail__primary {
+    grid-column: 1;
+    grid-row: 2;
+    position: static;
+    align-self: start;
+  }
+}
+
+@media (min-width: 1200px) {
+  .rp-robot-detail {
+    grid-template-columns: minmax(22rem, 0.8fr) minmax(0, 1.2fr);
+  }
+}

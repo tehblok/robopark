@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   api,
   type IntegrationSettings,
@@ -14,20 +14,20 @@ import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
 import { TabPanel, Tabs, Toggle } from '../components/ui/Tabs'
 import { PasswordField } from '../components/ui/PasswordField'
 import { AdminOpsPanel } from '../components/admin/AdminOpsPanel'
-import { AdminRolesPanel } from '../components/admin/AdminRolesPanel'
-import { AdminUsersPanel } from '../components/admin/AdminUsersPanel'
 import { useAuth } from '../auth-context'
 import { mapApiError } from '../i18n/errors'
 import { roleLabel, ru } from '../i18n/ru'
 import { useCachedResource } from '../lib/resource'
+import { useParkScope } from '../app/park/parkScope'
+import { SlaPolicyEditor } from '../domains/insights/SlaPolicyEditor'
 
-type TabId = 'integrations' | 'parks' | 'users' | 'roles' | 'ops'
+type TabId = 'integrations' | 'parks' | 'ops'
 
 type AdminBootstrap = {
   parks: Park[]
   parkRequests: ParkRequest[]
-  settings: IntegrationSettings
-  trackerPolicy: TrackerPolicySettings
+  settings: IntegrationSettings | null
+  trackerPolicy: TrackerPolicySettings | null
   screenshotGuard: ScreenshotGuardSettings
   screenshotGuardLive?: boolean
   pendingUserCount: number
@@ -52,16 +52,23 @@ async function loadScreenshotGuardSettings(): Promise<{
   }
 }
 
-async function loadAdminBootstrap(): Promise<AdminBootstrap> {
-  const [parks, parkRequests, settings, trackerPolicy, screenshotGuardResult, pendingUsers] =
-    await Promise.all([
-      api.parks(),
-      api.adminParkRequests(),
-      api.integrationSettings(),
-      api.trackerPolicy(),
-      loadScreenshotGuardSettings(),
-      api.adminUsers({ access_status: 'pending' }).catch(() => []),
-    ])
+async function loadAdminBootstrap(canIntegrations: boolean): Promise<AdminBootstrap> {
+  const parks = await api.parks()
+  if (!canIntegrations) {
+    return {
+      parks,
+      parkRequests: [],
+      settings: null,
+      trackerPolicy: null,
+      screenshotGuard: DEFAULT_SCREENSHOT_GUARD,
+      screenshotGuardLive: false,
+      pendingUserCount: 0,
+    }
+  }
+  const [parkRequests, settings, trackerPolicy, screenshotGuardResult, pendingUsers] = await Promise.all([
+    api.adminParkRequests(), api.integrationSettings(), api.trackerPolicy(),
+    loadScreenshotGuardSettings(), api.adminUsers({ access_status: 'pending' }).catch(() => []),
+  ])
   return {
     parks,
     parkRequests,
@@ -83,12 +90,25 @@ function worksBadge(ok: boolean) {
 
 export function Admin() {
   const { user } = useAuth()
+  const { parkId } = useParkScope()
+  const [searchParams, setSearchParams] = useSearchParams()
   const perms = user?.permissions ?? []
   const canParks = perms.includes('parks.manage')
-  const canUsers = perms.includes('users.manage')
-  const canRoles = perms.includes('roles.manage')
-  const [tab, setTab] = useState<TabId>('integrations')
-  const bootRes = useCachedResource<AdminBootstrap>('admin:bootstrap', loadAdminBootstrap, {
+  const canIntegrations = perms.includes('nav.admin')
+  const canOps = user?.role === 'royal'
+  const requestedTab = searchParams.get('tab')
+  const firstPermittedTab: TabId = canIntegrations ? 'integrations' : canParks ? 'parks' : 'ops'
+  const isPermittedTab = (candidate: string | null): candidate is TabId => (
+    (candidate === 'integrations' && canIntegrations)
+    || (candidate === 'parks' && canParks)
+    || (candidate === 'ops' && canOps)
+  )
+  const initialTab: TabId = isPermittedTab(requestedTab) ? requestedTab : firstPermittedTab
+  const [tab, setTab] = useState<TabId>(initialTab)
+  const tabPermitted = (tab === 'integrations' && canIntegrations)
+    || (tab === 'parks' && canParks)
+    || (tab === 'ops' && canOps)
+  const bootRes = useCachedResource<AdminBootstrap>(`admin:bootstrap:${canIntegrations ? 'full' : 'parks'}`, () => loadAdminBootstrap(canIntegrations), {
     persist: false,
   })
   const boot = bootRes.data
@@ -115,11 +135,13 @@ export function Admin() {
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    if (tab === 'parks' && !canParks) setTab('integrations')
-    if (tab === 'users' && !canUsers) setTab('integrations')
-    if (tab === 'roles' && !canRoles) setTab('integrations')
-    if (tab === 'ops' && user?.role !== 'royal') setTab('integrations')
-  }, [tab, canParks, canUsers, canRoles, user?.role])
+    if (!tabPermitted) setTab(firstPermittedTab)
+  }, [tabPermitted, firstPermittedTab])
+
+  useEffect(() => {
+    if (requestedTab === tab) return
+    setSearchParams(tab === 'integrations' ? {} : { tab }, { replace: true })
+  }, [requestedTab, setSearchParams, tab])
 
   useEffect(() => {
     if (!boot) return
@@ -237,12 +259,8 @@ export function Admin() {
 
       <Tabs
         items={[
-          { id: 'integrations', label: 'Интеграции' },
+          ...(canIntegrations ? [{ id: 'integrations', label: 'Интеграции' }] : []),
           ...(canParks ? [{ id: 'parks', label: 'Парки', count: parkRequests.length }] : []),
-          ...(canUsers
-            ? [{ id: 'users', label: 'Пользователи', count: boot?.pendingUserCount }]
-            : []),
-          ...(canRoles ? [{ id: 'roles', label: 'Роли' }] : []),
           ...(user?.role === 'royal' ? [{ id: 'ops', label: ru.ops.tab }] : []),
         ]}
         onChange={(id) => setTab(id as TabId)}
@@ -250,7 +268,7 @@ export function Admin() {
       />
 
       {/* --- Integrations ------------------------------------------------- */}
-      <TabPanel active={tab === 'integrations'}>
+      {canIntegrations && <TabPanel active={tab === 'integrations'}>
         {user?.role === 'royal' && (
           <Panel
             hint="Если пароль не задан, регистрация на /register закрыта."
@@ -322,7 +340,7 @@ export function Admin() {
                 </span>
               </div>
               <div className="stat">
-                <span className="stat-label">Emergency cookie</span>
+                <span className="stat-label">Cookie диагностики робота</span>
                 <span className="stat-value">
                   {worksBadge(settings.emergency_cookie_valid === true)}
                 </span>
@@ -341,7 +359,7 @@ export function Admin() {
               />
             </label>
             <label className="field">
-              <span className="field-label">Emergency cookie</span>
+              <span className="field-label">Cookie диагностики робота</span>
               <input
                 onChange={(event) => setEmergencyCookie(event.target.value)}
                 placeholder="Оставьте пустым, чтобы не менять"
@@ -422,17 +440,18 @@ export function Admin() {
               Рабочий стол Tracker
             </Link>
             <Link className="btn btn-secondary" to="/emergency">
-              Emergency
+              Проверка робота
             </Link>
             <Link className="btn btn-secondary" to="/admin/emergency/config">
-              Конфиг Emergency
+              Настройки проверки робота
             </Link>
           </div>
         </Panel>
-      </TabPanel>
+      </TabPanel>}
 
       {canParks && (
       <TabPanel active={tab === 'parks'}>
+        {user && parkId != null && <SlaPolicyEditor parkId={parkId} user={user} />}
         {parkRequests.length > 0 && (
         <Panel
           hint="Операторы запрашивают дополнительные парки из своего кабинета."
@@ -647,18 +666,6 @@ export function Admin() {
             </Panel>
           ))
         )}
-      </TabPanel>
-      )}
-
-      {canUsers && (
-      <TabPanel active={tab === 'users'}>
-        <AdminUsersPanel parks={parks} />
-      </TabPanel>
-      )}
-
-      {canRoles && (
-      <TabPanel active={tab === 'roles'}>
-        <AdminRolesPanel />
       </TabPanel>
       )}
 

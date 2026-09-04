@@ -121,10 +121,11 @@ def add_attachment(
     content: bytes,
     content_type: str | None,
 ) -> ReportAttachment:
-    from robopark_api.services.reports import _load_report
+    from robopark_api.services.reports import _load_report, _require_view
 
     limit = max_bytes_for_kind(kind)
     report = _load_report(db, report_id)
+    _require_view(db, user, report)
     if report.author_user_id != user.id or report.status != "open":
         raise PermissionError("forbidden")
     if not content:

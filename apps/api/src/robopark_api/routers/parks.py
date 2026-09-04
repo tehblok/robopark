@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
-from robopark_api.deps import require_admin, require_user
+from robopark_api.deps import require_user
 from robopark_api.models import Park, User
 from robopark_api.schemas import ParkCreate, ParkOut, ParkUpdate
 from robopark_api.services import rbac
@@ -11,7 +11,6 @@ from robopark_api.services import rbac
 router = APIRouter(
     prefix="/parks",
     tags=["parks"],
-    dependencies=[Depends(require_admin)],
 )
 
 
@@ -22,8 +21,23 @@ def _tag_exists(db: Session, tag: str, *, exclude_id: int | None = None) -> bool
     return db.scalar(query) is not None
 
 
+def _require_parks_reader(
+    user: User = Depends(require_user), db: Session = Depends(get_db)
+) -> User:
+    rbac.assert_approved(user)
+    if not rbac.permissions_for_user(db, user) & {
+        rbac.PERMISSION_NAV_ADMIN,
+        rbac.PERMISSION_USERS_MANAGE,
+        rbac.PERMISSION_PARKS_MANAGE,
+    }:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    return user
+
+
 @router.get("", response_model=list[ParkOut])
-def list_parks(db: Session = Depends(get_db)) -> list[Park]:
+def list_parks(
+    db: Session = Depends(get_db), _actor: User = Depends(_require_parks_reader)
+) -> list[Park]:
     return list(db.scalars(select(Park).order_by(Park.id)).all())
 
 

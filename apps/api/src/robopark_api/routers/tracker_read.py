@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -14,6 +15,7 @@ from robopark_api.schemas import (
     RobotTicketsOut,
     TrackerAttachmentOut,
     TrackerCommentOut,
+    TrackerIssueCapabilitiesOut,
     TrackerIssueDetailOut,
     TrackerIssueOut,
     TrackerIssuesOut,
@@ -30,6 +32,7 @@ from robopark_api.services.tracker_policy import (
     allowed_park_tags_for_user,
     allowed_queues_for_user,
     can_view_untagged,
+    can_write_tracker,
     enforce_issue_scope,
     is_issue_in_scope,
 )
@@ -79,8 +82,9 @@ def _issue_out(issue: dict) -> TrackerIssueOut:
     )
 
 
-def _detail_out(issue: dict) -> TrackerIssueDetailOut:
+def _detail_out(issue: dict, *, db: Session, user: User) -> TrackerIssueDetailOut:
     attachments = [TrackerAttachmentOut(**item) for item in (issue.get("attachments") or [])]
+    writable = can_write_tracker(db, user)
     return TrackerIssueDetailOut(
         **_issue_out(issue).model_dump(),
         resolution=str(issue.get("resolution") or ""),
@@ -88,6 +92,14 @@ def _detail_out(issue: dict) -> TrackerIssueDetailOut:
         reporter=_person_out(issue.get("reporter")),
         components=[str(item) for item in (issue.get("components") or [])],
         attachments=attachments,
+        capabilities=TrackerIssueCapabilitiesOut(
+            comment=writable,
+            assign=writable,
+            unassign=writable,
+            transition=writable,
+            close=writable,
+            attach=rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_ATTACH),
+        ),
     )
 
 
@@ -120,13 +132,39 @@ def _build_query(
     ]
     # Explicit Status replaces the default open-issues clause (avoid conflicting QL).
     if status_filter:
-        parts.append(f"Status: {tracker_client.ql_token(status_filter)}")
+        bucket = tracker_filters.status_bucket(status_filter)
+        if user.role == RoleSlug.DRIVER and bucket not in {"new", "moving"}:
+            raise HTTPException(status_code=403, detail="tracker_status_forbidden")
+        aliases = tracker_filters.STATUS_BUCKETS.get(status_filter)
+        if aliases:
+            parts.append(
+                "("
+                + " OR ".join(f"Status: {tracker_client.ql_token(alias)}" for alias in aliases)
+                + ")"
+            )
+        else:
+            parts.append(f"Status: {tracker_client.ql_token(status_filter)}")
     else:
         parts.append(tracker_client.open_issues_clause())
+    if user.role == RoleSlug.DRIVER:
+        aliases = (
+            *tracker_filters.STATUS_BUCKETS["new"],
+            *tracker_filters.STATUS_BUCKETS["moving"],
+        )
+        parts.append(
+            "("
+            + " OR ".join(f"Status: {tracker_client.ql_token(alias)}" for alias in aliases)
+            + ")"
+        )
 
     queues = allowed_queues_for_user(db, user)
     selected_queue = (queue or "").strip() or None
     if user.role not in {RoleSlug.ADMIN, RoleSlug.ROYAL}:
+        if not queues:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="tracker_scope_empty",
+            )
         if selected_queue and selected_queue not in queues:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -181,11 +219,8 @@ def _build_query(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="tracker_queue_required_for_untagged",
             )
-        # Replace the generic Priority/open/type parts with the dedicated untagged builder.
-        return tracker_client.build_untagged_blockers_query(
-            selected_queue,
-            _untagged_park_tags(db, user),
-        )
+        # Retain explicit status/robot/assignee filters while excluding park tags.
+        parts.extend(tracker_client.exclude_tag(tag) for tag in _untagged_park_tags(db, user))
 
     return tracker_client.join_query(*parts)
 
@@ -199,6 +234,7 @@ def list_issues(
     assignee: str | None = Query(default=None, max_length=128),
     untagged: bool = Query(default=False),
     age_hours: int | None = Query(default=None, ge=1),
+    sort_order: Literal["oldest", "newest"] = Query(default="oldest", alias="sort"),
     limit: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     offset: int = Query(default=0, ge=0),
     user: User = Depends(require_user),
@@ -224,7 +260,9 @@ def list_issues(
         untagged=untagged,
     )
     try:
-        items = tracker_cache.search_issues(token=token, query=query_text)
+        items = tracker_cache.search_issues(
+            token=token, query=query_text, filter_open=not bool(status_filter)
+        )
     except tracker_client.TrackerError as exc:
         logger.exception("tracker search failed query=%r", query_text)
         raise HTTPException(
@@ -232,8 +270,15 @@ def list_issues(
             detail="tracker_upstream_error",
         ) from exc
 
+    # Give the existing age/date ordering a stable final key independent of
+    # whichever order the upstream service happened to return equal records.
+    keyed_items = sorted(items, key=lambda issue: str(issue.get("key") or ""))
+    ordered = tracker_filters.sort_issues_oldest_first(keyed_items)
+    if sort_order == "newest":
+        ordered.reverse()
+
     scoped: list[TrackerIssueOut] = []
-    for issue in items:
+    for issue in ordered:
         # Out-of-scope issues are filtered out, not fatal: a single foreign issue
         # in the upstream response must not fail the whole listing.
         if not is_issue_in_scope(db, user, issue):
@@ -290,7 +335,7 @@ def get_issue(
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     enforce_issue_scope(db, user, issue)
-    return _detail_out(issue)
+    return _detail_out(issue, db=db, user=user)
 
 
 @router.get("/issues/{key}/comments", response_model=list[TrackerCommentOut])
@@ -427,7 +472,9 @@ def robot_tickets(
             detail="tracker_upstream_error",
         ) from exc
 
-    sorted_items = tracker_filters.sort_issues_oldest_first(merged)
+    sorted_items = tracker_filters.sort_issues_oldest_first(
+        [item for item in merged if is_issue_in_scope(db, user, item)]
+    )
     return RobotTicketsOut(
         query=query,
         items=[_blocker_out(item) for item in sorted_items],

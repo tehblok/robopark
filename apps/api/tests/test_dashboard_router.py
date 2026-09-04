@@ -77,6 +77,8 @@ def test_dashboard_summary_operator_ok(client, db_session, seed_royal):
     assert body["done"] == 6
     assert body["queued"] == 4
     assert body["in_transit"] == 2
+    generated_at = datetime.fromisoformat(body["generated_at"])
+    assert generated_at.tzinfo is not None
     assert len(body["moving"]) == 1
     assert body["moving"][0]["key"] == "ROBOPARK-2"
 

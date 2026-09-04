@@ -1,0 +1,112 @@
+.rp-dialog-backdrop {
+  align-items: center;
+  background: var(--rp-overlay);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: var(--rp-space-4);
+  position: fixed;
+  z-index: 1000;
+}
+
+.rp-dialog {
+  background: var(--rp-surface-elevated);
+  border: 1px solid var(--rp-border);
+  border-radius: var(--rp-radius-panel);
+  box-shadow: var(--rp-shadow-panel);
+  color: var(--rp-text);
+  display: grid;
+  gap: var(--rp-space-4);
+  max-height: calc(100dvh - var(--rp-space-8));
+  max-width: 36rem;
+  overflow: auto;
+  padding: var(--rp-density-panel-padding);
+  position: relative;
+  width: 100%;
+}
+
+.rp-dialog__header {
+  display: grid;
+  gap: var(--rp-space-2);
+  padding-right: calc(var(--rp-control-min-size) + var(--rp-space-2));
+}
+
+.rp-dialog__title {
+  font-size: var(--rp-font-size-title);
+  line-height: var(--rp-line-height-compact);
+  margin: 0;
+}
+
+.rp-dialog__description {
+  color: var(--rp-text-muted);
+  margin: 0;
+}
+
+.rp-dialog__body {
+  display: grid;
+  gap: var(--rp-density-gap);
+}
+
+.rp-dialog__footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rp-space-2);
+  justify-content: flex-end;
+}
+
+.rp-dialog__close {
+  position: absolute;
+  right: var(--rp-density-panel-padding);
+  top: var(--rp-density-panel-padding);
+}
+
+.rp-bottom-sheet {
+  display: contents;
+}
+
+.rp-confirm-dialog__phrase {
+  display: grid;
+  gap: var(--rp-space-2);
+}
+
+.rp-confirm-dialog__phrase label {
+  color: var(--rp-text);
+  font-size: var(--rp-font-size-body);
+  font-weight: var(--rp-font-weight-medium);
+}
+
+.rp-confirm-dialog__phrase input {
+  background: var(--rp-surface);
+  border: 1px solid var(--rp-border);
+  border-radius: var(--rp-radius-control);
+  color: var(--rp-text);
+  min-height: var(--rp-control-min-size);
+  padding: var(--rp-space-2) var(--rp-space-3);
+}
+
+.rp-confirm-dialog__phrase input:disabled {
+  background: var(--rp-state-disabled);
+  color: var(--rp-text-disabled);
+}
+
+.rp-confirm-dialog__error {
+  background: var(--rp-critical-surface);
+  border-left: var(--rp-space-1) solid var(--rp-critical);
+  color: var(--rp-critical);
+  margin: 0;
+  padding: var(--rp-space-3);
+}
+
+@media (max-width: 599px) {
+  .rp-dialog-backdrop:has(.rp-bottom-sheet) {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .rp-dialog:has(.rp-bottom-sheet) {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    max-height: calc(100dvh - var(--rp-space-6));
+    max-width: none;
+  }
+}

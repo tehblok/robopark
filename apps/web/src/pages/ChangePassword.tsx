@@ -32,10 +32,6 @@ export function ChangePassword() {
     return <Navigate to="/login" replace />
   }
 
-  if (!user.must_change_password) {
-    return <Navigate to={pathForUser(user)} replace />
-  }
-
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     setError('')
@@ -63,9 +59,13 @@ export function ChangePassword() {
 
   return (
     <PageShell
+      backLabel="Вернуться в кабинет"
+      backTo={user.must_change_password ? undefined : pathForUser(user)}
       onLogout={logout}
       standalone
-      subtitle="Администратор запросил смену пароля перед продолжением работы."
+      subtitle={user.must_change_password
+        ? 'Администратор запросил смену пароля перед продолжением работы.'
+        : 'Вы меняете пароль по собственной инициативе.'}
       title="Смена пароля"
     >
       {error && <Alert tone="error">{error}</Alert>}

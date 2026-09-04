@@ -139,6 +139,41 @@ export type MechanicTasks = {
   items: Blocker[]
 }
 
+export type OperationsFlow = {
+  definition_version: 2
+  window_start: string
+  window_end: string
+  expected_buckets: number
+  observed_buckets: number
+  complete: boolean
+  legacy_buckets: number
+  points: { bucket_start: string; arrived_count: number; departed_count: number }[]
+}
+export type OperationsSlaPolicy = { park_id: number; target_hours: number | null }
+export type OperationsOverview = {
+  park_id: number
+  generated_at: string
+  timezone: 'Europe/Moscow'
+  status_options: { key: string; label: string }[]
+  selected_status: string
+  counts: Record<string, number>
+  tasks: Blocker[]
+  tasks_total: number
+  tasks_truncated: boolean
+  flow: OperationsFlow
+  sla: {
+    target_hours: number | null
+    evaluated_count: number
+    unknown_count: number
+    at_risk_count: number | null
+    overdue_count: number | null
+    overdue: (Blocker & { age_hours: number; overdue_hours: number })[]
+    overdue_truncated: boolean
+  }
+  workload: { login: string | null; display: string; open_count: number; overdue_count: number | null; oldest_hours: number | null }[] | null
+  operators: { user_id: number; username: string; tracker_login: string | null; open_count: number | null; overdue_count: number | null; oldest_hours: number | null }[] | null
+}
+
 export type OperatorBlockers = {
   park_id: number
   park_tag: string
@@ -174,6 +209,7 @@ export type EmergencySectionDetail = {
 export type EmergencySnapshot = {
   vin: string
   short_number: string
+  observed_at: string
   online: boolean | null
   speed: number | null
   charge_percent: number | null
@@ -267,12 +303,22 @@ export type AuditEntry = {
   created_at: string
 }
 
+export type TrackerIssueCapabilities = {
+  comment: boolean
+  assign: boolean
+  unassign: boolean
+  transition: boolean
+  close: boolean
+  attach: boolean
+}
+
 export type TrackerIssueDetail = TrackerIssue & {
   resolution?: string | null
   description?: string | null
   reporter?: TrackerPerson | null
   components?: string[]
   attachments?: TrackerAttachment[]
+  capabilities: TrackerIssueCapabilities
 }
 
 export type TrackerAttachment = {
@@ -306,6 +352,7 @@ export type DashboardMovingItem = {
 
 export type DashboardSummary = {
   park_id: number
+  generated_at: string
   arrived: number
   done: number
   queued: number
@@ -326,11 +373,21 @@ export type DashboardHistory = {
 
 export type ReportKindManual = 'ticket_question' | 'mechanic_problem'
 
+export type ReportAttachmentKind = 'ui_snapshot' | 'device_photo' | 'client_log'
+
+export type ReportAttachment = {
+  id: number
+  kind: ReportAttachmentKind | string
+  filename: string
+  content_type: string
+  size_bytes: number
+}
+
 export type Report = {
   id: number
   kind: string
   status: string
-  park_id: number
+  park_id: number | null
   author_user_id: number
   target_role: string
   tracker_key: string | null
@@ -342,6 +399,7 @@ export type Report = {
   created_at: string
   updated_at: string
   resolved_at: string | null
+  attachments?: ReportAttachment[]
 }
 
 export type ReportBadge = {
@@ -381,13 +439,64 @@ export type OpsMaintenance = {
 export class ApiError extends Error {
   status: number
   detail: string | null
+  requestId?: string
 
-  constructor(status: number, detail: string | null = null) {
+  constructor(status: number, detail: string | null = null, requestId?: string) {
     super(detail ?? String(status))
     this.name = 'ApiError'
     this.status = status
     this.detail = detail
+    this.requestId = requestId
   }
+}
+
+export class ApiTimeoutError extends Error {
+  readonly timeoutMs: number
+
+  constructor(timeoutMs: number) {
+    super(`Request timed out after ${timeoutMs}ms`)
+    this.name = 'ApiTimeoutError'
+    this.timeoutMs = timeoutMs
+  }
+}
+
+const JSON_TIMEOUT_MS = 30_000
+const BLOB_TIMEOUT_MS = 60_000
+const FORM_TIMEOUT_MS = 90_000
+
+async function fetchWithTimeout<T>(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+  consume: (response: Response) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController()
+  const sourceSignal = init.signal
+  let timedOut = false
+  const forwardAbort = () => controller.abort(sourceSignal?.reason)
+  if (sourceSignal?.aborted) forwardAbort()
+  else sourceSignal?.addEventListener('abort', forwardAbort, { once: true })
+  const timer = globalThis.setTimeout(() => {
+    if (controller.signal.aborted) return
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+
+  try {
+    const response = await fetch(input, { ...init, signal: controller.signal })
+    return await consume(response)
+  } catch (error) {
+    if (timedOut) throw new ApiTimeoutError(timeoutMs)
+    if (sourceSignal?.aborted) throw sourceSignal.reason
+    throw error
+  } finally {
+    globalThis.clearTimeout(timer)
+    sourceSignal?.removeEventListener('abort', forwardAbort)
+  }
+}
+
+function responseRequestId(response: Response): string | undefined {
+  return response.headers.get('X-Request-ID')?.trim() || undefined
 }
 
 async function readErrorDetail(response: Response): Promise<string | null> {
@@ -402,49 +511,65 @@ async function readErrorDetail(response: Response): Promise<string | null> {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
+  return fetchWithTimeout(
+    `/api${path}`,
+    {
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+      ...init,
     },
-    ...init,
-  })
+    JSON_TIMEOUT_MS,
+    async (response) => {
+      if (!response.ok) {
+        const detail = await readErrorDetail(response)
+        throw new ApiError(response.status, detail, responseRequestId(response))
+      }
 
-  if (!response.ok) {
-    const detail = await readErrorDetail(response)
-    throw new ApiError(response.status, detail)
-  }
+      if (response.status === 204) {
+        return undefined as T
+      }
 
-  if (response.status === 204) {
-    return undefined as T
-  }
-
-  return response.json() as Promise<T>
+      return response.json() as Promise<T>
+    },
+  )
 }
 
 async function requestBlob(path: string): Promise<Blob> {
-  const response = await fetch(`/api${path}`, { credentials: 'include' })
-  if (!response.ok) {
-    const detail = await readErrorDetail(response)
-    throw new ApiError(response.status, detail)
-  }
-  return response.blob()
+  return fetchWithTimeout(
+    `/api${path}`,
+    { credentials: 'include' },
+    BLOB_TIMEOUT_MS,
+    async (response) => {
+      if (!response.ok) {
+        const detail = await readErrorDetail(response)
+        throw new ApiError(response.status, detail, responseRequestId(response))
+      }
+      return response.blob()
+    },
+  )
 }
 
 async function requestForm<T>(path: string, formData: FormData): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    credentials: 'include',
-    method: 'POST',
-    body: formData,
-  })
+  return fetchWithTimeout(
+    `/api${path}`,
+    {
+      credentials: 'include',
+      method: 'POST',
+      body: formData,
+    },
+    FORM_TIMEOUT_MS,
+    async (response) => {
+      if (!response.ok) {
+        const detail = await readErrorDetail(response)
+        throw new ApiError(response.status, detail, responseRequestId(response))
+      }
 
-  if (!response.ok) {
-    const detail = await readErrorDetail(response)
-    throw new ApiError(response.status, detail)
-  }
-
-  return response.json() as Promise<T>
+      return response.json() as Promise<T>
+    },
+  )
 }
 
 export const api = {
@@ -693,11 +818,13 @@ export const api = {
     assignee?: string
     untagged?: boolean
     age_hours?: number
+    sort?: 'oldest' | 'newest'
     limit?: number
     offset?: number
   }) => {
-    const q = new URLSearchParams()
+    const q = new URLSearchParams({ sort: params.sort ?? 'oldest' })
     Object.entries(params).forEach(([key, value]) => {
+      if (key === 'sort') return
       if (value !== undefined && value !== null && value !== '') {
         q.set(key, String(value))
       }
@@ -723,7 +850,11 @@ export const api = {
     return request<Paged<AuditEntry>>(`/admin/audit?${q.toString()}`)
   },
   auditActions: () => request<string[]>('/admin/audit/actions'),
-  trackerIssue: (key: string) => request<TrackerIssueDetail>(`/tracker/issues/${encodeURIComponent(key)}`),
+  trackerIssue: (key: string, signal?: AbortSignal) =>
+    request<TrackerIssueDetail>(
+      `/tracker/issues/${encodeURIComponent(key)}`,
+      signal ? { signal } : undefined,
+    ),
   trackerComments: (key: string) =>
     request<TrackerComment[]>(`/tracker/issues/${encodeURIComponent(key)}/comments`),
   trackerTransitions: (key: string) =>
@@ -775,6 +906,12 @@ export const api = {
     ),
   dashboardSummary: (parkId: number) =>
     request<DashboardSummary>(`/dashboard/summary?park_id=${parkId}`),
+  operationsOverview: (parkId: number, days = 7, status = 'all') =>
+    request<OperationsOverview>(`/operations/overview?${new URLSearchParams({ park_id: String(parkId), days: String(days), status })}`),
+  operationsSlaPolicy: (parkId: number) =>
+    request<OperationsSlaPolicy>(`/operations/sla-policy?park_id=${parkId}`),
+  updateOperationsSlaPolicy: (parkId: number, body: { target_hours: number | null }) =>
+    request<OperationsSlaPolicy>(`/operations/sla-policy?park_id=${parkId}`, { method: 'PUT', body: JSON.stringify(body) }),
   dashboardHistory: (parkId: number, days = 7) =>
     request<DashboardHistory>(
       `/dashboard/history?park_id=${parkId}&days=${days}`,
@@ -787,6 +924,14 @@ export const api = {
         : `/reports/inbox?park_id=${parkId}`,
     ),
   report: (id: number) => request<Report>(`/reports/${id}`),
+  reportAttach: (id: number, kind: ReportAttachmentKind, file: File) => {
+    const form = new FormData()
+    form.append('kind', kind)
+    form.append('file', file, file.name)
+    return requestForm<ReportAttachment>(`/reports/${id}/attachments`, form)
+  },
+  reportAttachmentUrl: (reportId: number, attachmentId: number) =>
+    `/api/reports/${reportId}/attachments/${attachmentId}`,
   createReport: (payload: ReportCreatePayload) =>
     request<Report>('/reports', {
       method: 'POST',

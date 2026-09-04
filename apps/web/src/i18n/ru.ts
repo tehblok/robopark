@@ -3,10 +3,10 @@ export const ru = {
   tagline: 'Платформа управления парком роботов',
 
   nav: {
-    dashboard: 'Дашборд',
-    tasks: 'Задачи',
-    robot_search: 'Поиск по роботу',
-    emergency: 'Проверка по роботу',
+    dashboard: 'Обзор',
+    tasks: 'Работа',
+    robot_search: 'Роботы',
+    emergency: 'Проверка робота',
     map: 'Карта',
     analytics: 'Аналитика',
     reports: 'Репорты',
@@ -44,6 +44,29 @@ export const ru = {
   theme: {
     light: 'Светлая тема',
     dark: 'Тёмная тема',
+  },
+
+  appShell: {
+    mainNavigation: 'Основная навигация',
+    secondaryNavigation: 'Дополнительная навигация',
+    work: 'Работа',
+    skipToContent: 'К содержанию',
+    collapseNavigation: 'Свернуть навигацию',
+    expandNavigation: 'Развернуть навигацию',
+    themeLabel: 'Тема оформления',
+    themeSystem: 'Системная',
+    themeLight: 'Светлая',
+    themeDark: 'Тёмная',
+    densityLabel: 'Плотность интерфейса',
+    densityComfortable: 'Комфортная',
+    densityCompact: 'Компактная',
+    phoneDensity: 'На телефоне используется комфортная плотность',
+    groups: {
+      operations: 'Операции',
+      collaboration: 'Взаимодействие',
+      insights: 'Аналитика',
+      administration: 'Управление',
+    },
   },
 
   roles: {
@@ -111,10 +134,10 @@ export const ru = {
     tasks409: 'Задачи отключены для вашего парка (очередь или feature_blockers).',
     tasks: 'Не удалось загрузить задачи. Проверьте настройки Tracker и парка.',
     robotSearch: 'Поиск не удался. Проверьте токен Tracker.',
-    emergency503: 'Emergency cookie не задан — обратитесь к администратору.',
-    emergency401: 'Cookie Emergency просрочен или недействителен.',
+    emergency503: 'Интеграция проверки робота требует внимания.',
+    emergency401: 'Интеграция проверки робота требует внимания.',
     sessionExpired: 'Сессия истекла. Войдите снова.',
-    emergency: 'Не удалось получить данные Emergency.',
+    emergency: 'Не удалось получить данные проверки робота',
     emergencySection: 'Не удалось загрузить раздел.',
     notFound: 'Действие недоступно — перезапустите API или обновите страницу.',
     details: {
@@ -128,7 +151,7 @@ export const ru = {
         'Для неразмеченных укажите очередь (например SDCFLEETOPS).',
       tracker_write_disabled: 'Запись в Startrek отключена политикой.',
       tracker_upstream_error: 'Ошибка интеграции со Startrek.',
-      emergency_upstream_error: 'Ошибка интеграции Emergency.',
+      emergency_upstream_error: 'Ошибка интеграции проверки робота.',
       invalid_robot_number: 'Некорректный номер или VIN робота.',
       password_too_short: 'Пароль слишком короткий.',
       password_too_common: 'Пароль слишком простой — выберите другой.',
@@ -146,8 +169,10 @@ export const ru = {
       tracker_attachment_empty: 'Файл пустой.',
       tracker_attachment_too_large: 'Файл слишком большой (максимум 15 МБ).',
       tracker_attachment_invalid_type: 'Можно прикреплять только изображения (JPEG, PNG, WebP, HEIC).',
-      emergency_cookie_not_configured: 'Cookie Emergency не задан в настройках администратора.',
-      emergency_cookie_invalid: 'Cookie Emergency просрочен или недействителен.',
+      emergency_cookie_not_configured:
+        'Интеграция проверки робота требует внимания.',
+      emergency_cookie_invalid:
+        'Интеграция проверки робота требует внимания.',
       too_many_attempts: 'Слишком много попыток. Подождите минуту.',
       emergency_vin_out_of_scope: 'Нет доступа к диагностике этого робота.',
       tasks_disabled_for_park: 'Задачи отключены: проверьте очередь Startrek и флаг blockers у парка.',
@@ -255,9 +280,9 @@ export const ru = {
     robotCheck: {
       title: 'Проверка робота',
       open: 'Проверить робота',
-      checking: 'Проверяем критические ошибки Emergency…',
-      noCritical: 'Критических ошибок Emergency нет.',
-      found: 'Критические ошибки Emergency',
+      checking: 'Проверяем критические состояния…',
+      noCritical: 'Критических состояний не обнаружено',
+      found: 'Критические состояния',
       wheelsFault: 'Неисправность колёс',
     },
 
@@ -273,10 +298,10 @@ export const ru = {
 
   emergency: {
     title: 'Проверка робота',
-    subtitle: 'Живой статус, карта и данные Emergency.',
-    driverSubtitle: 'Только Emergency: без проверки блокеров Tracker.',
+    subtitle: 'Живой статус, карта и данные проверки робота.',
+    driverSubtitle: 'Проверка робота без проверки блокеров Tracker.',
     searchTitle: 'Робот',
-    searchHint: 'Номер или VIN. Данные Emergency обновляются каждые 2.5 с.',
+    searchHint: 'Номер или VIN. Данные проверки робота обновляются каждые 2.5 с.',
     driverSearchHint: 'Короткий номер или VIN. Блокеры Tracker не проверяются.',
     robotNumber: 'Номер робота',
     robotPlaceholder: '447',
@@ -333,7 +358,7 @@ export const ru = {
       ticket_close_review: 'Проверка закрытия',
       mechanic_problem: 'Проблема',
       escalation_to_admin: 'Эскалация админу',
-      emergency_cookie_stale: 'Emergency cookie',
+      emergency_cookie_stale: 'Подключение проверки робота',
     } as Record<string, string>,
     statuses: {
       open: 'Открыт',
@@ -360,7 +385,7 @@ export const ru = {
     snapshotStart: 'Создать снимок',
     snapshotDownload: 'Скачать архив',
     restoreTitle: 'Восстановление',
-    restoreHint: 'Стирает текущие данные. На новом хосте нужен тот же SECRET_KEY, иначе токены Tracker/Emergency придётся ввести заново.',
+    restoreHint: 'Стирает текущие данные. На новом хосте нужен тот же SECRET_KEY, иначе токен Tracker и cookie диагностики робота придётся ввести заново.',
     restoreConfirmLabel: 'Фраза подтверждения',
     restoreSubmit: 'Восстановить',
     updateTitle: 'Обновление системы',

@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { EmergencySnapshot } from '../../api'
 import { ru } from '../../i18n/ru'
-import { criticalFindings, emergencyPathForRobot } from './robotHealth'
+import { criticalFindings, robotCheckPathForRobot } from './robotHealth'
 
 function snapshot(overrides: Partial<EmergencySnapshot> = {}): EmergencySnapshot {
   return {
     vin: 'YASADR00000001555',
     short_number: '1555',
+    observed_at: '2026-09-02T09:00:00Z',
     online: true,
     speed: 0,
     charge_percent: 80,
@@ -29,9 +30,10 @@ function snapshot(overrides: Partial<EmergencySnapshot> = {}): EmergencySnapshot
 }
 
 describe('robotHealth', () => {
-  it('builds an Emergency deep-link from the robot number', () => {
-    expect(emergencyPathForRobot('a1555')).toBe('/emergency?q=a1555')
-    expect(emergencyPathForRobot(' 447 ')).toBe('/emergency?q=447')
+  it('builds an encoded canonical check link from the robot number', () => {
+    expect(robotCheckPathForRobot('a1555')).toBe('/robots/a1555/check')
+    expect(robotCheckPathForRobot(' 447 ')).toBe('/robots/447/check')
+    expect(robotCheckPathForRobot(' A/42 ?# ')).toBe('/robots/A%2F42%20%3F%23/check')
   })
 
   it('treats offline, error banner and wheel faults as critical', () => {

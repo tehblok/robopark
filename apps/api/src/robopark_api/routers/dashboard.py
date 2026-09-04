@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import status as http_status
 from sqlalchemy.orm import Session
@@ -55,6 +57,7 @@ def dashboard_summary(
     if not queue:
         return DashboardSummaryOut(
             park_id=park.id,
+            generated_at=datetime.now(UTC),
             arrived=0,
             done=0,
             queued=0,
@@ -93,6 +96,7 @@ def dashboard_summary(
 
     return DashboardSummaryOut(
         park_id=park.id,
+        generated_at=datetime.now(UTC),
         arrived=int(metrics.get("arrived") or 0),
         done=int(metrics.get("done") or 0),
         queued=int(metrics.get("queued") or 0),

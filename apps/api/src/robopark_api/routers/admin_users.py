@@ -114,12 +114,16 @@ def _revoke_sessions(db: Session, user_id: int) -> None:
     db.execute(delete(AuthSession).where(AuthSession.user_id == user_id))
 
 
-def _assert_privileged_grant_allowed(
-    db: Session, actor: User, user: User, desired: list[str] | set[str]
-) -> None:
-    role_keys = rbac.role_permission_keys(db, user)
-    existing = role_keys | (rbac.permissions_for_user(db, user) & rbac.PRIVILEGED_PERMISSIONS)
-    if rbac.privileged_grant_blocked(actor, existing, set(desired)):
+def _assert_privileged_grant_allowed(actor: User, existing: set[str], desired: set[str]) -> None:
+    if rbac.privileged_grant_blocked(actor, existing, desired):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="privileged_grant_forbidden",
+        )
+
+
+def _assert_role_assignment_allowed(actor: User, role: Role) -> None:
+    if rbac.privileged_role_assignment_blocked(actor, role):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="privileged_grant_forbidden",
@@ -163,11 +167,14 @@ def create_user(
     role = rbac.get_role_by_slug(db, payload.role_slug)
     if role is None or not role.is_active:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_role")
+    _assert_role_assignment_allowed(actor, role)
+    desired = rbac.proposed_user_permissions(role, payload.permissions)
+    _assert_privileged_grant_allowed(actor, set(), desired)
     _check_password(payload.password, settings, payload.username)
     user = User(
         username=payload.username,
         password_hash=hash_password(payload.password),
-        role_id=role.id,
+        role_ref=role,
         access_status=AccessStatus.approved.value,
         tracker_login=(payload.tracker_login or "").strip() or None,
         is_active=True,
@@ -176,10 +183,7 @@ def create_user(
     db.flush()
     _set_parks(db, user, payload.park_ids)
     if payload.permissions is not None:
-        user = _load_user(db, user.id)
-        assert user is not None
-        _assert_privileged_grant_allowed(db, actor, user, payload.permissions)
-        rbac.set_user_effective_permissions(db, user, payload.permissions)
+        rbac.set_user_effective_permissions(db, user, sorted(desired))
     db.commit()
     user = _load_user(db, user.id)
     assert user is not None
@@ -202,12 +206,15 @@ def update_user(
     if user.role == rbac.RoleSlug.ROYAL and not rbac.is_royal(actor):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     changes = payload.model_dump(exclude_unset=True)
+    existing = rbac.permissions_for_user(db, user)
+    role = user.role_ref
     if slug := changes.get("role_slug"):
         if slug == rbac.RoleSlug.ROYAL and not rbac.is_royal(actor):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
         role = rbac.get_role_by_slug(db, slug)
         if role is None or not role.is_active:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_role")
+        _assert_role_assignment_allowed(actor, role)
         if (
             user.role == rbac.RoleSlug.ROYAL
             and slug != rbac.RoleSlug.ROYAL
@@ -217,21 +224,32 @@ def update_user(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="cannot_disable_last_royal",
             )
-        user.role_id = role.id
+    desired: set[str] | None = None
+    if "permissions" in changes:
+        desired = rbac.proposed_user_permissions(role, changes["permissions"] or [])
+    elif changes.get("role_slug"):
+        desired = rbac.proposed_user_permissions(role)
+    if desired is not None:
+        _assert_privileged_grant_allowed(actor, existing, desired)
+    if (access := changes.get("access_status")) is not None:
+        if not rbac.is_royal(actor):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="royal_only")
+        if access not in {item.value for item in AccessStatus}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
+        if access != AccessStatus.approved.value and rbac.is_last_active_royal(db, user):
+            raise HTTPException(status_code=400, detail="cannot_disable_last_royal")
+    if changes.get("is_active") is False and rbac.is_last_active_royal(db, user):
+        raise HTTPException(status_code=400, detail="cannot_disable_last_royal")
     if password := changes.get("password"):
         _check_password(password, settings, user.username)
+
+    # All authorization uses the old effective permissions/role. Synchronize
+    # the relationship as well as the FK before deriving new role overrides.
+    user.role_ref = role
+    if password := changes.get("password"):
         user.password_hash = hash_password(password)
         _revoke_sessions(db, user.id)
     if (is_active := changes.get("is_active")) is not None:
-        if (
-            user.role == rbac.RoleSlug.ROYAL
-            and is_active is False
-            and rbac.is_last_active_royal(db, user)
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="cannot_disable_last_royal",
-            )
         user.is_active = is_active
         if not is_active:
             _revoke_sessions(db, user.id)
@@ -241,31 +259,12 @@ def update_user(
     if (must_change := changes.get("must_change_password")) is not None:
         user.must_change_password = bool(must_change)
     if (access := changes.get("access_status")) is not None:
-        if not rbac.is_royal(actor):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="royal_only",
-            )
-        if access not in {
-            AccessStatus.pending.value,
-            AccessStatus.approved.value,
-            AccessStatus.rejected.value,
-        }:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
         user.access_status = access
     if payload.park_ids is not None:
         _set_parks(db, user, payload.park_ids)
     db.flush()
-    user = _load_user(db, user.id)
-    assert user is not None
-    if "permissions" in changes:
-        desired = list(changes["permissions"] or [])
-        _assert_privileged_grant_allowed(db, actor, user, desired)
-        rbac.set_user_effective_permissions(db, user, desired)
-    elif "role_slug" in changes:
-        desired = sorted(rbac.role_permission_keys(db, user))
-        _assert_privileged_grant_allowed(db, actor, user, desired)
-        rbac.set_user_effective_permissions(db, user, desired)
+    if desired is not None:
+        rbac.set_user_effective_permissions(db, user, sorted(desired))
     db.commit()
     user = _load_user(db, user.id)
     assert user is not None
@@ -314,6 +313,8 @@ def reject_user(
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if rbac.is_last_active_royal(db, user):
+        raise HTTPException(status_code=400, detail="cannot_disable_last_royal")
     user.access_status = AccessStatus.rejected.value
     db.commit()
 

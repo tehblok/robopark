@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -228,3 +229,5 @@ def test_snapshot_returns_hud_when_allowed(
     body = response.json()
     assert body["vin"] == "YASADR00000000447"
     assert body["short_number"] == "447"
+    observed_at = datetime.fromisoformat(body["observed_at"])
+    assert observed_at.tzinfo is not None

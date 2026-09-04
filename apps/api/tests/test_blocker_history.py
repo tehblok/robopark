@@ -2,8 +2,9 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 
-from robopark_api.models import Park
+from robopark_api.models import Park, ParkBlockerHistory
 from robopark_api.services import blocker_history as history_svc
 from robopark_api.services import blocker_history_job, tracker_metrics
 from robopark_api.services import platform_settings as settings_svc
@@ -191,6 +192,7 @@ def test_build_arrived_in_window_query_uses_park_filters():
     assert "Type: bug" in query
     assert 'Created: >= "2026-08-24 10:00:00"' in query
     assert 'Created: < "2026-08-24 12:00:00"' in query
+    assert "Resolution:" not in query
 
 
 def test_build_departed_in_window_query_omits_empty_type():
@@ -203,8 +205,9 @@ def test_build_departed_in_window_query_omits_empty_type():
         end,
     )
     assert "Type:" not in query
-    assert 'Updated: >= "2026-08-24 10:00:00"' in query
-    assert 'Updated: < "2026-08-24 12:00:00"' in query
+    assert 'Resolved: >= "2026-08-24 10:00:00"' in query
+    assert 'Resolved: < "2026-08-24 12:00:00"' in query
+    assert "Updated:" not in query
 
 
 def test_scan_park_bucket_upserts_counts(db_session, seed_park_with_tracker, monkeypatch):
@@ -235,6 +238,44 @@ def test_scan_park_bucket_upserts_counts(db_session, seed_park_with_tracker, mon
     assert len(rows) == 1
     assert rows[0]["arrived_count"] == 3
     assert rows[0]["departed_count"] == 1
+    row = db_session.scalar(
+        select(ParkBlockerHistory).where(ParkBlockerHistory.park_id == seed_park_with_tracker.id)
+    )
+    assert row.definition_version == 2
+
+
+def test_recomputation_replaces_legacy_version_only_after_both_counts_succeed(
+    db_session, seed_park_with_tracker, monkeypatch
+):
+    start = FIXED_NOW.replace(hour=10, minute=0)
+    row = ParkBlockerHistory(
+        park_id=seed_park_with_tracker.id,
+        bucket_start=start,
+        arrived_count=99,
+        departed_count=98,
+        definition_version=1,
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    def partial_failure(*, token, query):
+        if "Resolved:" in query:
+            raise TrackerError("second count failed")
+        return 2
+
+    monkeypatch.setattr(history_svc, "count_issues", partial_failure)
+    with pytest.raises(TrackerError):
+        scan_park_bucket(
+            db_session, seed_park_with_tracker, start, start + timedelta(hours=2), token="test"
+        )
+    db_session.refresh(row)
+    assert (row.definition_version, row.arrived_count, row.departed_count) == (1, 99, 98)
+    monkeypatch.setattr(history_svc, "count_issues", lambda **kwargs: 3)
+    scan_park_bucket(
+        db_session, seed_park_with_tracker, start, start + timedelta(hours=2), token="test"
+    )
+    db_session.refresh(row)
+    assert (row.definition_version, row.arrived_count, row.departed_count) == (2, 3, 3)
 
 
 def test_scan_all_parks_once_skips_inactive_and_unconfigured(

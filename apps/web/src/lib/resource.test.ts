@@ -1,5 +1,45 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { coalesceLoader, resetCoalescingForTests, resourceStore } from './resource'
+import { createElement } from 'react'
+import { act, render, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  coalesceLoader,
+  resetCoalescingForTests,
+  resourceStore,
+  useCachedResource,
+} from './resource'
+
+type TestPayload = { value: string }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
+function ResourceProbe({
+  cacheKey,
+  loader,
+}: {
+  cacheKey: string
+  loader: () => Promise<TestPayload>
+}) {
+  useCachedResource(cacheKey, loader)
+  return null
+}
+
+async function resolveAndFlush(
+  request: ReturnType<typeof deferred<TestPayload>>,
+  value: TestPayload,
+) {
+  await act(async () => {
+    request.resolve(value)
+    await request.promise
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
 
 describe('resourceStore', () => {
   afterEach(() => {
@@ -85,5 +125,79 @@ describe('coalesceLoader', () => {
 
   it('does not talk to Startrek or Emergency from the browser', () => {
     expect(coalesceLoader.toString()).not.toMatch(/st-api\.yandex|tracker\.yandex|emergency\./i)
+  })
+})
+
+describe('in-flight invalidation', () => {
+  afterEach(() => {
+    resourceStore.clearAll()
+    resetCoalescingForTests()
+  })
+
+  it('does not publish a late hook result after prefix invalidation and unmount', async () => {
+    const key = 'work:3:comments:ROBOPARK-42'
+    const request = deferred<TestPayload>()
+    const loader = vi.fn(() => request.promise)
+    const view = render(createElement(ResourceProbe, { cacheKey: key, loader }))
+
+    await waitFor(() => expect(loader).toHaveBeenCalledTimes(1))
+    resourceStore.invalidate('work:3:', { prefix: true })
+    view.unmount()
+
+    await resolveAndFlush(request, { value: 'late secret' })
+
+    expect(resourceStore.get(key)).toBeUndefined()
+    expect(window.localStorage.getItem(`robopark:res:${key}`)).toBeNull()
+  })
+
+  it('starts a fresh same-key load after invalidation and discards the old result', async () => {
+    const key = 'work:3:issue:ROBOPARK-42'
+    const oldRequest = deferred<TestPayload>()
+    const newRequest = deferred<TestPayload>()
+    const oldLoader = vi.fn(() => oldRequest.promise)
+    const newLoader = vi.fn(() => newRequest.promise)
+    const oldView = render(
+      createElement(ResourceProbe, { cacheKey: key, loader: oldLoader }),
+    )
+
+    await waitFor(() => expect(oldLoader).toHaveBeenCalledTimes(1))
+    resourceStore.invalidate('work:3:', { prefix: true })
+    oldView.unmount()
+
+    const newView = render(
+      createElement(ResourceProbe, { cacheKey: key, loader: newLoader }),
+    )
+
+    try {
+      expect(newLoader).toHaveBeenCalledTimes(1)
+
+      await resolveAndFlush(oldRequest, { value: 'stale' })
+      expect(resourceStore.get(key)).toBeUndefined()
+
+      await resolveAndFlush(newRequest, { value: 'fresh' })
+      await waitFor(() => {
+        expect(resourceStore.get(key)).toEqual({ value: 'fresh' })
+      })
+    } finally {
+      oldRequest.resolve({ value: 'stale' })
+      newRequest.resolve({ value: 'fresh' })
+      newView.unmount()
+    }
+  })
+
+  it('does not publish a late hook result after clearAll', async () => {
+    const key = 'work:3:list:7'
+    const request = deferred<TestPayload>()
+    const loader = vi.fn(() => request.promise)
+    const view = render(createElement(ResourceProbe, { cacheKey: key, loader }))
+
+    await waitFor(() => expect(loader).toHaveBeenCalledTimes(1))
+    resourceStore.clearAll()
+    view.unmount()
+
+    await resolveAndFlush(request, { value: 'late secret' })
+
+    expect(resourceStore.get(key)).toBeUndefined()
+    expect(window.localStorage.getItem(`robopark:res:${key}`)).toBeNull()
   })
 })

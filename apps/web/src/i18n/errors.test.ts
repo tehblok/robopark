@@ -4,9 +4,17 @@ import { mapApiError, mapLoginError } from './errors'
 import { ru } from './ru'
 
 describe('mapApiError', () => {
-  it('uses Emergency copy only for emergency_cookie_invalid', () => {
-    const emergency = new ApiError(401, 'emergency_cookie_invalid')
-    expect(mapApiError(emergency, 'fb')).toBe(ru.errors.details.emergency_cookie_invalid)
+  it('never presents the technical Emergency product name in robot-check failures', () => {
+    for (const detail of ['emergency_upstream_error', 'emergency_cookie_not_configured', 'emergency_cookie_invalid', 'unmapped']) {
+      expect(mapApiError(new ApiError(503, detail), ru.errors.emergency)).not.toMatch(/\bEmergency\b/i)
+    }
+    expect(ru.errors.emergency503).not.toMatch(/\bEmergency\b/i)
+  })
+  it('uses product-safe robot-check copy for integration configuration errors', () => {
+    const expected = 'Интеграция проверки робота требует внимания.'
+    expect(mapApiError(new ApiError(403, 'emergency_cookie_invalid'), 'fb')).toBe(expected)
+    expect(mapApiError(new ApiError(503, 'emergency_cookie_not_configured'), 'fb')).toBe(expected)
+
     const session = new ApiError(401, 'session_expired')
     expect(mapApiError(session, 'fb')).toBe(ru.errors.sessionExpired)
     const bare = new ApiError(401, '')

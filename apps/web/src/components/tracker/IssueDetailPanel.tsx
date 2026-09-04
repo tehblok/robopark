@@ -1,4 +1,5 @@
 import type { TrackerAttachment, TrackerComment, TrackerIssueDetail } from '../../api'
+import { Link } from 'react-router-dom'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { ru } from '../../i18n/ru'
 import {
@@ -135,6 +136,7 @@ export function IssueDetailPanel({
     (comment) => (comment.attachments?.length ?? 0) > 0 || commentsAsHistory,
   )
   const issueUrl = safeHttpUrl(issue.url)
+  const robotReference = issue.robot?.trim()
 
   return (
     <article className="issue-detail">
@@ -177,7 +179,17 @@ export function IssueDetailPanel({
         <Field label={ru.tracker.fields.queue}>
           {issue.queue || ru.tracker.fields.empty}
         </Field>
-        {issue.robot && <Field label={ru.tracker.fields.robot}>{issue.robot}</Field>}
+        {robotReference && (
+          <Field label={ru.tracker.fields.robot}>
+            <Link
+              aria-label={`${ru.tracker.robotCheck.open} ${robotReference}`}
+              className="rp-work-robot-link"
+              to={`/robots/${encodeURIComponent(robotReference)}/check`}
+            >
+              {robotReference}
+            </Link>
+          </Field>
+        )}
         <Field label={ru.tracker.fields.created}>
           {formatDateTime(issue.created_at)}
           {age && (

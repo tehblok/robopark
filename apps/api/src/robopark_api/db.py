@@ -1,4 +1,4 @@
-from collections.abc import Generator
+from collections.abc import AsyncGenerator
 from contextvars import ContextVar, Token
 from typing import Any
 
@@ -110,7 +110,7 @@ def get_engine() -> Engine:
     return engine
 
 
-def get_db() -> Generator[Session, None, None]:
+async def get_db() -> AsyncGenerator[Session, None]:
     wrapper = RequestSession()
     token = bind_request_session(wrapper)
     try:

@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap');
-
 :root,
 [data-theme='light'] {
   color: #1a1a1a;
@@ -725,7 +723,7 @@ textarea {
 }
 
 .btn-secondary {
-  color: var(--brand-strong);
+  color: var(--rp-text);
   background: var(--surface-muted);
   border: 1px solid var(--border);
 }

@@ -154,12 +154,14 @@ def upsert_bucket(
             arrived_count=arrived_count,
             departed_count=departed_count,
             scanned_at=scanned,
+            definition_version=2,
         )
         db.add(row)
     else:
         row.arrived_count = arrived_count
         row.departed_count = departed_count
         row.scanned_at = scanned
+        row.definition_version = 2
     db.commit()
     db.refresh(row)
     return row

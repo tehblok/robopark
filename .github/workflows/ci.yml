@@ -32,3 +32,7 @@ jobs:
 
       - name: Verify repository
         run: ./scripts/verify.sh
+
+      - name: Verify responsive browser journeys in the pinned Linux image
+        working-directory: apps/web
+        run: npm run test:e2e:linux

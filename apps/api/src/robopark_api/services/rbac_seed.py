@@ -17,11 +17,17 @@ SYSTEM_ROLE_META: dict[str, tuple[str, str]] = {
     RoleSlug.ADMIN: ("Администратор", "Управление парками и пользователями"),
     RoleSlug.OPERATOR: ("Оператор", "Операционный мониторинг парков"),
     RoleSlug.MECHANIC: ("Механик", "Работа с задачами на площадке"),
-    RoleSlug.DRIVER: ("Водитель", "Только Emergency без проверки блокеров"),
+    RoleSlug.DRIVER: (
+        "Водитель",
+        "Обзор, чтение задач, поиск робота и создание обращений",
+    ),
 }
 
 
 def ensure_rbac_catalog(db: Session) -> None:
+    # 0013 creates roles before the app's first startup. An empty permission
+    # catalog identifies that bootstrap, not a role whose owner revoked grants.
+    initial_catalog = db.scalar(select(Permission.id).limit(1)) is None
     perm_by_key: dict[str, Permission] = {}
     for item in PERMISSION_CATALOG:
         row = db.scalar(select(Permission).where(Permission.key == item.key))
@@ -42,6 +48,7 @@ def ensure_rbac_catalog(db: Session) -> None:
 
     for slug, (name, description) in SYSTEM_ROLE_META.items():
         role = db.scalar(select(Role).where(Role.slug == slug))
+        is_new_role = role is None
         if role is None:
             role = Role(
                 slug=slug,
@@ -52,11 +59,8 @@ def ensure_rbac_catalog(db: Session) -> None:
             )
             db.add(role)
             db.flush()
-        else:
-            role.name = name
-            role.description = description
-            role.is_system = True
-            role.is_active = True
+        if not is_new_role and not initial_catalog:
+            continue
 
         existing_keys = set(
             db.scalars(

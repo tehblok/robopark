@@ -6,7 +6,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, joinedload
 
 from robopark_api.db import get_db
-from robopark_api.deps import require_admin, require_royal, require_user
+from robopark_api.deps import require_royal, require_user
 from robopark_api.models import Permission, Role, RolePermission, User
 from robopark_api.services import audit, rbac
 from robopark_api.services.rbac import PERMISSION_CATALOG
@@ -83,9 +83,21 @@ def _set_role_permissions(db: Session, role: Role, keys: list[str]) -> None:
             db.add(RolePermission(role_id=role.id, permission_id=perm.id))
 
 
+def _require_catalog_reader(
+    user: User = Depends(require_user), db: Session = Depends(get_db)
+) -> User:
+    rbac.assert_approved(user)
+    if not rbac.permissions_for_user(db, user) & {
+        rbac.PERMISSION_USERS_MANAGE,
+        rbac.PERMISSION_ROLES_MANAGE,
+    }:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    return user
+
+
 @router.get("/permissions/catalog", response_model=list[PermissionOut])
 def list_permission_catalog(
-    _user: User = Depends(require_admin),
+    _user: User = Depends(_require_catalog_reader),
 ) -> list[PermissionOut]:
     return [
         PermissionOut(
@@ -98,7 +110,7 @@ def list_permission_catalog(
 @router.get("", response_model=list[RoleOut])
 def list_roles(
     db: Session = Depends(get_db),
-    _user: User = Depends(require_admin),
+    _user: User = Depends(_require_catalog_reader),
 ) -> list[RoleOut]:
     counts = dict(db.execute(select(User.role_id, func.count()).group_by(User.role_id)).all())
     roles = (

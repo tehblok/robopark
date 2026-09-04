@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react'
 import { api, type AdminRole, type PermissionCatalogItem } from '../../api'
+import { useAuth } from '../../auth-context'
 import { Alert, Panel } from '../PageShell'
 import { Spinner } from '../ui/Feedback'
 import { mapApiError } from '../../i18n/errors'
+import { actorPermissionCatalog } from './privilegedPermissions'
 
 export function AdminRolesPanel() {
+  const { user } = useAuth()
   const [roles, setRoles] = useState<AdminRole[]>([])
   const [catalog, setCatalog] = useState<PermissionCatalogItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -37,8 +40,9 @@ export function AdminRolesPanel() {
     void load()
   }, [])
 
-  const navPerms = catalog.filter((item) => item.category === 'nav')
-  const actionPerms = catalog.filter((item) => item.category === 'action')
+  const availableCatalog = actorPermissionCatalog(catalog, user?.role)
+  const navPerms = availableCatalog.filter((item) => item.category === 'nav')
+  const actionPerms = availableCatalog.filter((item) => item.category === 'action')
 
   const startEdit = (role: AdminRole) => {
     setEditingId(role.id)
@@ -188,9 +192,7 @@ export function AdminRolesPanel() {
 
         <h4 className="admin-perm-group-title">Действия</h4>
         <div className="admin-perm-grid">
-          {actionPerms
-            .filter((perm) => perm.key !== 'users.approve')
-            .map((perm) => (
+          {actionPerms.map((perm) => (
             <label className="admin-perm-check" key={perm.key}>
               <input
                 checked={draft.permissions.has(perm.key)}
