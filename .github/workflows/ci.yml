@@ -35,4 +35,12 @@ jobs:
 
       - name: Verify responsive browser journeys in the pinned Linux image
         working-directory: apps/web
-        run: npm run test:e2e:linux
+        run: npm run test:e2e:linux -- update
+
+      - name: Export Linux visual baselines
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-linux-snapshots
+          path: |
+            apps/web/e2e/app-shell.spec.ts-snapshots
+            apps/web/e2e/operational/responsive-visual.spec.ts-snapshots
