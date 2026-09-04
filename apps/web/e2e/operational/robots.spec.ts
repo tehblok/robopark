@@ -19,7 +19,8 @@ for (const reference of ['447', 'YASADR00000000447', 'https://robopark.example.i
     await expect(page.getByText(snapshot.vin, { exact: true })).toBeVisible()
     expect(resolved[0]).toBe(reference.startsWith('https:') ? '447' : reference)
     await settlePage(page)
-    expect(trackerRequests).toEqual([])
+    expect(trackerRequests.length).toBeGreaterThan(0)
+    expect(new Set(trackerRequests)).toEqual(new Set([`/api/tracker/robots/${snapshot.vin}/tickets`]))
   })
 }
 
@@ -31,6 +32,7 @@ test('short route canonicalizes and identity loads only the selected original ph
   await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7`)
   const photo = page.getByRole('img', { name: 'Иллюстрация модели робота', exact: true })
   await expect(photo).toBeVisible()
+  await expect(photo).toHaveAttribute('loading', 'lazy')
   await expect.poll(() => photo.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(1962)
   await settlePage(page)
   expect(photos).toEqual(['isometric.png'])
@@ -88,15 +90,15 @@ for (const route of [`/robots/${snapshot.vin}/check?tab=wheels&park=7`, '/emerge
     await expect(page.getByRole('button', { name: 'Слежение включено', exact: true })).toBeVisible()
     await expect(page.locator('.leaflet-container')).toBeVisible()
     const before = snapshots
-    await page.getByRole('button', { name: 'Повторить проверку', exact: true }).click()
+    await page.getByRole('button', { name: 'Обновить данные робота', exact: true }).click()
     await expect.poll(() => snapshots).toBeGreaterThan(before)
   })
 }
 
-test('driver canonical check loads sections and refreshes without Tracker requests', async ({ page }) => {
+test('driver canonical check loads sections, refreshes, and requests scoped Tracker work', async ({ page }) => {
   const trackerRequests: string[] = []
   page.on('request', request => {
-    if (new URL(request.url()).pathname.startsWith('/api/tracker/')) trackerRequests.push(request.url())
+    if (new URL(request.url()).pathname.startsWith('/api/tracker/')) trackerRequests.push(new URL(request.url()).pathname)
   })
   await installOperational(page, { role: 'driver' })
   await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=wheels`)
@@ -108,13 +110,14 @@ test('driver canonical check loads sections and refreshes without Tracker reques
   await settlePage(page)
   await Promise.all([
     page.waitForResponse(response => new URL(response.url()).pathname === `/api/emergency/${snapshot.vin}/snapshot` && response.status() === 200),
-    page.getByRole('button', { name: 'Повторить проверку', exact: true }).click(),
+    page.getByRole('button', { name: 'Обновить данные робота', exact: true }).click(),
   ])
   await page.getByRole('tab', { name: 'Схема', exact: true }).click()
   await expect(page.getByRole('tab', { name: 'Схема', exact: true })).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByRole('button', { name: 'Переднее левое колесо: неисправность', exact: true })).toBeVisible()
   await settlePage(page)
-  expect(trackerRequests).toEqual([])
+  expect(trackerRequests.length).toBeGreaterThan(0)
+  expect(new Set(trackerRequests)).toEqual(new Set([`/api/tracker/robots/${snapshot.vin}/tickets`]))
 })
 
 test('robot offline and browser offline remain different actionable states', async ({ page, context }) => {
@@ -125,7 +128,7 @@ test('robot offline and browser offline remain different actionable states', asy
   await context.setOffline(true)
   await expect(page.getByText('Нет сети на этом устройстве', { exact: true })).toBeVisible()
   await expect(page.getByText('Робот не в сети', { exact: true })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Повторить проверку', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Обновить данные робота', exact: true })).toBeEnabled()
   await context.setOffline(false)
   await expect(page.getByText('Робот не в сети', { exact: true })).toBeVisible()
 })
@@ -195,7 +198,7 @@ test('all six original views load only on selection with correct visible wheel m
     await photo.scrollIntoViewIfNeeded()
     await expect(photo).toHaveCount(1)
     await expect.poll(() => photo.evaluate((element: HTMLImageElement) => [element.naturalWidth, element.naturalHeight])).toEqual([view.width, view.height])
-    expect(images).toEqual(views.slice(0, index + 1).map(item => item.file))
+    expect(images).toEqual(Array.from(new Set(['isometric.png', ...views.slice(0, index + 1).map(item => item.file)])))
     const markers = page.locator('.rp-check-wheel')
     await expect(markers).toHaveCount(view.wheels.length)
     for (const [wheelIndex, label] of view.wheels.entries()) {

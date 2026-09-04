@@ -1,5 +1,5 @@
 import type { Page, Request as PlaywrightRequest } from '@playwright/test'
-import type { Park, User } from '../../src/api'
+import type { OperationsOverview, Park, User } from '../../src/api'
 
 export type MockResponse = {
   status?: number
@@ -54,6 +54,30 @@ function fulfill(response: MockResponse) {
 }
 
 export async function installMockApi(page: Page, options: MockApiOptions = {}): Promise<void> {
+  const defaultOperations: OperationsOverview = {
+    park_id: options.parks?.[0]?.id ?? 7,
+    generated_at: '2026-09-02T09:00:00Z',
+    timezone: 'Europe/Moscow',
+    status_options: [{ key: 'all', label: 'Все доступные' }],
+    selected_status: 'all',
+    counts: { all: 0 },
+    tasks: [],
+    tasks_total: 0,
+    tasks_truncated: false,
+    flow: {
+      definition_version: 2,
+      window_start: '2026-09-01T09:00:00Z',
+      window_end: '2026-09-02T09:00:00Z',
+      expected_buckets: 12,
+      observed_buckets: 0,
+      complete: false,
+      legacy_buckets: 0,
+      points: [],
+    },
+    sla: { target_hours: null, evaluated_count: 0, unknown_count: 0, at_risk_count: null, overdue_count: null, overdue: [], overdue_truncated: false },
+    workload: null,
+    operators: null,
+  }
   const defaults: Record<string, MockResponse> = {
     '/api/auth/me': options.user
       ? { json: options.user }
@@ -65,6 +89,7 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}): 
       json: { park_id: 7, arrived: 0, done: 0, queued: 0, in_transit: 0, moving: [] },
     },
     '/api/dashboard/history': { json: { park_id: 7, points: [] } },
+    '/api/operations/overview': { json: defaultOperations },
   }
 
   await page.route('/api/**', async (route) => {

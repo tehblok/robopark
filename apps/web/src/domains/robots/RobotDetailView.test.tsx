@@ -79,7 +79,6 @@ describe('robot detail presentation', () => {
   it('labels generic model illustration independently of identity and falls back on load failure', () => {
     view()
     const illustration = screen.getByRole('img', { name: 'Иллюстрация модели робота' })
-    expect(illustration).toHaveAttribute('loading', 'lazy')
     expect(illustration).toHaveAttribute('decoding', 'async')
     expect(screen.getByText('Иллюстрация модели')).toBeInTheDocument()
     expect(screen.getByText(VIN)).toBeInTheDocument()
@@ -291,7 +290,7 @@ describe('RobotPage ownership and lifecycle', () => {
     await screen.findByRole('link', { name: 'Открыть ROBOPARK-42' })
     const denied = deferred<EmergencySnapshot>()
     vi.mocked(apiClient.emergencySnapshot).mockReturnValueOnce(denied.promise)
-    fireEvent.click(screen.getByRole('button', { name: 'Обновить данные робота' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Обновить данные/ }))
     await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2))
     vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
     await act(async () => { window.dispatchEvent(new Event('offline')); denied.reject(new ApiError(403, 'denied')) })

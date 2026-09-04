@@ -1,71 +1,16 @@
 import { render, screen } from '@testing-library/react'
-import { StrictMode } from 'react'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
-import type { User } from '../api'
-import { AuthContext, type AuthContextValue } from '../auth-context'
-import { ParkContext, type ParkContextValue } from '../park-context'
+import { expect, it, vi } from 'vitest'
+import { AuthContext } from '../auth-context'
+import { ParkScopeContext } from '../app/park/parkScope'
+import { makeUser, park, snapshot } from '../domains/insights/operations.test-support'
 import { Analytics } from './Analytics'
 
-const parkContext: ParkContextValue = {
-  parkId: null,
-  setParkId: vi.fn(),
-  parks: [],
-  parksLoading: false,
-  parkLocked: false,
-}
-
-function renderForRole(role: string) {
-  const user: User = {
-    id: 1,
-    username: 'person',
-    role,
-    access_status: 'approved',
-    permissions: role === 'admin' ? ['nav.dashboard'] : [],
-    parks: [],
-  }
-  const auth: AuthContextValue = {
-    user,
-    loading: false,
-    login: vi.fn(),
-    refreshUser: vi.fn(),
-    logout: vi.fn(),
-  }
-  return (
-    <StrictMode>
-      <MemoryRouter>
-        <AuthContext.Provider value={auth}>
-          <ParkContext.Provider value={parkContext}>
-            <Analytics />
-          </ParkContext.Provider>
-        </AuthContext.Provider>
-      </MemoryRouter>
-    </StrictMode>
-  )
-}
-
-describe('Analytics', () => {
-  it('can switch from operator to admin without changing hook order', () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-
-    try {
-      const view = render(renderForRole('operator'))
-      expect(screen.getByText('Сейчас по Tracker')).toBeInTheDocument()
-
-      view.rerender(renderForRole('admin'))
-
-      expect(
-        screen.getByText('Расширенная аналитика скоро появится'),
-      ).toBeInTheDocument()
-
-      view.rerender(renderForRole('operator'))
-
-      expect(screen.getByText('Сейчас по Tracker')).toBeInTheDocument()
-      expect(errorSpy.mock.calls.flat().join(' ')).not.toMatch(
-        /change in the order of Hooks|Expected static flag/,
-      )
-    } finally {
-      errorSpy.mockRestore()
-    }
-  })
+it('uses the shared operations view for operator analytics', async () => {
+  const user = makeUser({ role: 'operator' })
+  const apiClient = { operationsOverview: vi.fn(async () => snapshot()) }
+  render(<MemoryRouter initialEntries={['/analytics?park=7']}><AuthContext.Provider value={{ user, loading: false, login: async () => user, refreshUser: async () => user, logout: async () => {} }}><ParkScopeContext.Provider value={{ parkId: 7, selectedPark: park, parks: [park], loading: false, locked: false, setParkId: vi.fn(), refreshParks: async () => {} }}><Analytics apiClient={apiClient} /></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>)
+  expect(await screen.findByRole('heading', { name: 'Аналитика' })).toBeVisible()
+  expect(screen.getByRole('heading', { name: 'Поток задач: пришло / ушло' })).toBeVisible()
+  expect(screen.queryByText('Сейчас по Tracker')).not.toBeInTheDocument()
 })

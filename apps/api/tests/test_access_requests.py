@@ -129,5 +129,17 @@ def test_driver_registration_gets_overview_robot_and_check_permissions(
     login_as(client, "driver1", VALID_PASSWORD)
     permissions = set(client.get("/auth/me").json()["permissions"])
 
-    assert {"nav.dashboard", "nav.robot_search", "nav.emergency"} <= permissions
-    assert "tracker.read" not in permissions
+    assert {
+        "nav.dashboard",
+        "nav.tasks",
+        "nav.robot_search",
+        "nav.emergency",
+        "nav.reports",
+        "tracker.read",
+        "reports.create",
+    } <= permissions
+    assert {
+        "tracker.write",
+        "tracker.attach",
+        "reports.resolve",
+    }.isdisjoint(permissions)

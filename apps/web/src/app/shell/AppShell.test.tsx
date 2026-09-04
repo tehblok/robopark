@@ -19,7 +19,7 @@ import { AppShell } from './AppShell'
 import { REPORTS_BADGE_REFRESH } from '../../reports-badge'
 
 const shellCss = readFileSync('src/app/shell/AppShell.css', 'utf8')
-const overviewCss = readFileSync('src/domains/shift/overview.css', 'utf8')
+const overviewCss = readFileSync('src/domains/insights/insights.css', 'utf8')
 
 const north = { id: 7, name: 'Северный', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
 const operator = testUser({
@@ -30,6 +30,7 @@ const operator = testUser({
     'nav.emergency',
     'nav.reports',
     'nav.analytics',
+    'tracker.read',
   ],
   parks: [north],
 })
@@ -101,6 +102,7 @@ describe('AppShell', () => {
     vi.spyOn(api, 'dashboardSummary').mockResolvedValue({ park_id: 7, generated_at: '2026-09-02T09:00:00Z', arrived: 0, done: 0, queued: 0, in_transit: 0, moving: [] })
     vi.spyOn(api, 'operatorBlockers').mockResolvedValue({ park_id: 7, park_tag: 'north', status: 'all', counts: {}, items: [] })
     vi.spyOn(api, 'trackerIssues').mockResolvedValue({ items: [], total: 0, limit: 30, offset: 0, has_more: false })
+    vi.spyOn(api, 'operationsOverview').mockResolvedValue({ park_id: 7, generated_at: '2026-09-02T09:00:00Z', timezone: 'Europe/Moscow', selected_status: 'all', status_options: [{ key: 'all', label: 'Все доступные' }, { key: 'new', label: 'Новые' }], counts: { all: 1, new: 1 }, tasks: [{ key: 'ROBOPARK-1', summary: 'Проверить робота', status: 'Новый', bucket: 'new', robot: '447', created_at: null, hours_created: null, url: '' }], tasks_total: 1, tasks_truncated: false, flow: { definition_version: 2, window_start: '2026-09-01T09:00:00Z', window_end: '2026-09-02T09:00:00Z', expected_buckets: 12, observed_buckets: 0, complete: false, legacy_buckets: 0, points: [] }, sla: { target_hours: null, evaluated_count: 0, unknown_count: 1, at_risk_count: null, overdue_count: null, overdue: [], overdue_truncated: false }, workload: null, operators: null })
   })
 
   it.each([
@@ -441,11 +443,11 @@ describe('AppShell', () => {
     renderApp('/overview', operator)
 
     const skipLink = screen.getByRole('link', { name: 'К содержанию' })
-    const quickLink = await within(screen.getByRole('main')).findByRole('link', { name: 'Открыть работу' })
+    const quickLink = await within(screen.getByRole('main')).findByRole('link', { name: 'Открыть задачу ROBOPARK-1' })
     expect(declaredCssValue(skipLink, 'min-height')).toBe('var(--rp-control-min-size)')
     expect(getComputedStyle(skipLink).display).toBe('inline-flex')
     expect(declaredCssValue(quickLink, 'min-height')).toBe('var(--rp-control-min-size)')
-    expect(getComputedStyle(quickLink).display).toBe('flex')
+    expect(getComputedStyle(quickLink).display).toBe('grid')
     style.remove()
   })
 

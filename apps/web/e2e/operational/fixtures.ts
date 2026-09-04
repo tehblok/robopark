@@ -1,7 +1,7 @@
 import { expect, type Page } from '@playwright/test'
 import type {
   Blocker, DashboardSummary, EmergencySectionDetail, EmergencySnapshot, MechanicTasks,
-  OperatorBlockers, Paged, Park, TrackerActionResult, TrackerComment,
+  OperationsOverview, OperatorBlockers, Paged, Park, TrackerActionResult, TrackerComment,
   TrackerIssueDetail, TrackerTransition, User,
 } from '../../src/api'
 import { installMockApi, type MockRoute } from '../support/mockApi'
@@ -12,13 +12,27 @@ export const parkSouth: Park = { ...parkNorth, id: 8, name: 'Южный парк
 export const roles = ['mechanic', 'operator', 'driver', 'admin', 'royal'] as const
 export type OperationalRole = typeof roles[number]
 
+const allPermissions = [
+  'nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.map',
+  'nav.analytics', 'nav.reports', 'nav.learning', 'nav.help', 'nav.admin',
+  'nav.admin.tracker', 'nav.admin.emergency', 'tracker.read', 'tracker.write',
+  'tracker.attach', 'reports.create', 'reports.resolve', 'roles.manage',
+  'users.manage', 'users.approve', 'parks.manage',
+]
+
+const rolePermissions: Record<OperationalRole, string[]> = {
+  driver: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.reports', 'tracker.read', 'reports.create'],
+  mechanic: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.reports', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create'],
+  operator: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.analytics', 'nav.reports', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create', 'reports.resolve'],
+  admin: allPermissions.filter((permission) => permission !== 'users.approve'),
+  royal: allPermissions,
+}
+
 export function userForRole(role: OperationalRole): User {
   return {
     id: 100 + roles.indexOf(role), username: `${role}-e2e`, role, access_status: 'approved',
     tracker_login: role === 'driver' ? null : `${role}.test`, must_change_password: false, screenshot_guard: false,
-    permissions: ['nav.dashboard', 'nav.robot_search', 'nav.emergency',
-      ...(role === 'driver' ? [] : ['nav.tasks', 'tracker.read', 'nav.reports']),
-      ...(role === 'admin' || role === 'royal' ? ['nav.admin', 'nav.admin.tracker', 'nav.admin.emergency', 'nav.analytics'] : [])],
+    permissions: rolePermissions[role],
     parks: [parkNorth, parkSouth],
   }
 }
@@ -43,6 +57,35 @@ export function summaryForPark(parkId: number): DashboardSummary {
 }
 
 export type OperationalOptions = { issue?: TrackerIssueDetail; snapshot?: EmergencySnapshot; listCount?: number }
+
+function operationsOverview(user: User, request: Request): OperationsOverview {
+  const parkId = Number(new URL(request.url).searchParams.get('park_id'))
+  const status = new URL(request.url).searchParams.get('status') ?? 'all'
+  const allowed = user.role === 'driver' ? ['new', 'moving']
+    : user.role === 'mechanic' ? ['queued', 'diagnostics']
+      : ['new', 'moving', 'queued', 'diagnostics', 'waiting_team', 'waiting_parts', 'other']
+  const bucket = allowed[0]
+  const task: Blocker = {
+    key: issue.key, summary: issue.summary, status: bucket === 'queued' ? 'Очередь' : 'Новый',
+    status_key: bucket, robot: issue.robot ?? null, created_at: FIXED_TIME,
+    hours_created: '0', url: issue.url, bucket,
+  }
+  const tasks = status === 'all' || status === bucket ? [task] : []
+  const leadership = ['operator', 'admin', 'royal'].includes(user.role)
+  return {
+    park_id: parkId, generated_at: FIXED_TIME, timezone: 'Europe/Moscow',
+    status_options: [{ key: 'all', label: 'Все доступные' }, ...allowed.map((key) => ({ key, label: key }))],
+    selected_status: status, counts: { all: 1, ...Object.fromEntries(allowed.map((key) => [key, key === bucket ? 1 : 0])) },
+    tasks, tasks_total: tasks.length, tasks_truncated: false,
+    flow: { definition_version: 2, window_start: '2026-09-01T09:00:00Z', window_end: FIXED_TIME, expected_buckets: 12, observed_buckets: 2, complete: false, legacy_buckets: 0, points: [
+      { bucket_start: '2026-09-02T05:00:00Z', arrived_count: 1, departed_count: 0 },
+      { bucket_start: '2026-09-02T07:00:00Z', arrived_count: 0, departed_count: 1 },
+    ] },
+    sla: { target_hours: null, evaluated_count: 0, unknown_count: 1, at_risk_count: null, overdue_count: null, overdue: [], overdue_truncated: false },
+    workload: leadership ? [{ login: user.tracker_login ?? null, display: user.username, open_count: 1, overdue_count: null, oldest_hours: 0 }] : null,
+    operators: user.role === 'admin' || user.role === 'royal' ? [{ user_id: user.id, username: user.username, tracker_login: user.tracker_login ?? null, open_count: 1, overdue_count: null, oldest_hours: 0 }] : null,
+  }
+}
 export function operationalRoutes(options: OperationalOptions = {}): MockRoute[] {
   let currentIssue = structuredClone(options.issue ?? issue)
   const currentSnapshot = structuredClone(options.snapshot ?? snapshot)
@@ -98,7 +141,8 @@ export async function installOperational(page: Page, options: OperationalOptions
   await page.clock.setFixedTime(new Date('2026-09-02T09:05:00Z'))
   await page.route(/^https?:\/\/(?!localhost(?=[:/])|127\.0\.0\.1(?=[:/]))/, route => route.abort())
   const user = options.user ?? userForRole(options.role ?? 'mechanic')
-  await installMockApi(page, { user, parks: options.parks ?? user.parks, routes: [...(options.routes ?? []), ...operationalRoutes(options)] })
+  const operationsRoute: MockRoute = { method: 'GET', path: '/api/operations/overview', handler: (request) => ({ json: operationsOverview(user, request) }) }
+  await installMockApi(page, { user, parks: options.parks ?? user.parks, routes: [...(options.routes ?? []), operationsRoute, ...operationalRoutes(options)] })
 }
 
 export async function settlePage(page: Page) {

@@ -7,7 +7,11 @@ export const operatorUser: User = {
   username: 'operator-e2e',
   role: 'operator',
   access_status: 'approved',
-  permissions: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.reports'],
+  permissions: [
+    'nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency',
+    'nav.analytics', 'nav.reports', 'tracker.read', 'tracker.write',
+    'tracker.attach', 'reports.create', 'reports.resolve',
+  ],
   parks: [northPark],
 }
 
@@ -16,6 +20,10 @@ export const mechanicUser: User = {
   username: 'mechanic-e2e',
   role: 'mechanic',
   access_status: 'approved',
-  permissions: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.reports'],
+  permissions: [
+    'nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency',
+    'nav.reports', 'tracker.read', 'tracker.write', 'tracker.attach',
+    'reports.create',
+  ],
   parks: [northPark],
 }

@@ -3,6 +3,13 @@ import { describe, expect, it, vi } from 'vitest'
 import { WorkFilters } from './WorkFilters'
 
 describe('WorkFilters', () => {
+  it.each(['new', 'moving', 'queued', 'diagnostics', 'waiting_team', 'waiting_parts'])('submits canonical workflow status %s', (status) => {
+    const onApply = vi.fn()
+    render(<WorkFilters allowUntagged={false} loading={false} onApply={onApply} value={{ filters: { queue: 'RP' }, sort: 'oldest', page: 2 }} />)
+    fireEvent.change(screen.getByLabelText('Статус'), { target: { value: status } })
+    fireEvent.click(screen.getByRole('button', { name: 'Применить фильтры' }))
+    expect(onApply).toHaveBeenCalledWith({ filters: { queue: 'RP', status }, sort: 'oldest', page: 1 })
+  })
   it('applies all form values and resets pagination', () => {
     const onApply = vi.fn()
     render(

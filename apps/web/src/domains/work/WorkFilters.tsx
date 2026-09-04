@@ -5,6 +5,12 @@ import type { WorkUrlState } from './workUrl'
 
 const STATUS_CHOICES = [
   ['', 'Все незавершённые'],
+  ['new', 'Новые'],
+  ['moving', 'Перемещение'],
+  ['queued', 'Очередь'],
+  ['diagnostics', 'Диагностика'],
+  ['waiting_team', 'Ожидает команду'],
+  ['waiting_parts', 'Ожидает запчасти'],
   ['open', 'Открытые'],
   ['inProgress', 'В работе'],
   ['ready', 'Готовые'],

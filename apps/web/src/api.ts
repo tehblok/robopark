@@ -139,6 +139,41 @@ export type MechanicTasks = {
   items: Blocker[]
 }
 
+export type OperationsFlow = {
+  definition_version: 2
+  window_start: string
+  window_end: string
+  expected_buckets: number
+  observed_buckets: number
+  complete: boolean
+  legacy_buckets: number
+  points: { bucket_start: string; arrived_count: number; departed_count: number }[]
+}
+export type OperationsSlaPolicy = { park_id: number; target_hours: number | null }
+export type OperationsOverview = {
+  park_id: number
+  generated_at: string
+  timezone: 'Europe/Moscow'
+  status_options: { key: string; label: string }[]
+  selected_status: string
+  counts: Record<string, number>
+  tasks: Blocker[]
+  tasks_total: number
+  tasks_truncated: boolean
+  flow: OperationsFlow
+  sla: {
+    target_hours: number | null
+    evaluated_count: number
+    unknown_count: number
+    at_risk_count: number | null
+    overdue_count: number | null
+    overdue: (Blocker & { age_hours: number; overdue_hours: number })[]
+    overdue_truncated: boolean
+  }
+  workload: { login: string | null; display: string; open_count: number; overdue_count: number | null; oldest_hours: number | null }[] | null
+  operators: { user_id: number; username: string; tracker_login: string | null; open_count: number | null; overdue_count: number | null; oldest_hours: number | null }[] | null
+}
+
 export type OperatorBlockers = {
   park_id: number
   park_tag: string
@@ -860,6 +895,12 @@ export const api = {
     ),
   dashboardSummary: (parkId: number) =>
     request<DashboardSummary>(`/dashboard/summary?park_id=${parkId}`),
+  operationsOverview: (parkId: number, days = 7, status = 'all') =>
+    request<OperationsOverview>(`/operations/overview?${new URLSearchParams({ park_id: String(parkId), days: String(days), status })}`),
+  operationsSlaPolicy: (parkId: number) =>
+    request<OperationsSlaPolicy>(`/operations/sla-policy?park_id=${parkId}`),
+  updateOperationsSlaPolicy: (parkId: number, body: { target_hours: number | null }) =>
+    request<OperationsSlaPolicy>(`/operations/sla-policy?park_id=${parkId}`, { method: 'PUT', body: JSON.stringify(body) }),
   dashboardHistory: (parkId: number, days = 7) =>
     request<DashboardHistory>(
       `/dashboard/history?park_id=${parkId}&days=${days}`,
