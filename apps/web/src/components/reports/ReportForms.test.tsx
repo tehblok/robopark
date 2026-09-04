@@ -53,4 +53,26 @@ describe('ReportForms', () => {
 
     await waitFor(() => expect(attach).toHaveBeenCalledWith(42, 'device_photo', expect.any(File)))
   })
+
+  it.each([
+    ['image/jpg', 'robot.jpg', 'image/jpg'],
+    ['generic MIME without a recognized extension', 'camera-upload', 'application/octet-stream'],
+  ])('uploads a server-supported %s image without creating a second report', async (_label, filename, type) => {
+    const actor = userEvent.setup()
+    const create = vi.spyOn(api, 'createReport').mockResolvedValue(created)
+    const attach = vi.spyOn(api, 'reportAttach').mockResolvedValue({
+      id: 11, kind: 'device_photo', filename, content_type: 'image/jpeg', size_bytes: 3,
+    })
+    render(<ReportForms onCreated={vi.fn()} parkId={7} />)
+
+    await actor.click(screen.getByRole('button', { name: 'Проблема' }))
+    await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Проблема')
+    await actor.click(screen.getByRole('button', { name: 'Создать' }))
+    await screen.findByText('Репорт отправлен оператору.')
+    await actor.upload(screen.getByLabelText('Файл'), new File(['jpeg bytes'], filename, { type }))
+    await actor.click(screen.getByRole('button', { name: 'Прикрепить файл' }))
+
+    await waitFor(() => expect(attach).toHaveBeenCalledWith(42, 'device_photo', expect.any(File)))
+    expect(create).toHaveBeenCalledTimes(1)
+  })
 })

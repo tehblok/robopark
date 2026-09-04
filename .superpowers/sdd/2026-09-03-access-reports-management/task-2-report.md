@@ -85,3 +85,15 @@ Red tests were observed before their corresponding implementation for:
 ### Superseded note
 
 - The round-1 legacy-settings and SLA limitations above are superseded: parks settings now normalizes safely and mounts `SlaPolicyEditor` with the shared selected-park scope.
+
+## Fix round 3/5
+
+### RED / GREEN evidence
+
+- RED: `image/jpg` and `application/octet-stream` photo bytes with no recognized filename extension were rejected before `reportAttach`; the regression tests observed zero upload calls.
+- GREEN: both forms reach `reportAttach` for the already-created report and assert exactly one `createReport` call. Explicit incompatible MIME remains outside the accepted image set; the 15 MiB photo limit is unchanged and generic bytes remain server-validated by signature.
+
+### Verification
+
+- Focused `ReportForms` tests: 4 passed.
+- TypeScript build, targeted lint, and `git diff --check` passed.
