@@ -30,6 +30,10 @@ jobs:
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
+      - name: Install web dependencies for Linux snapshots
+        working-directory: apps/web
+        run: npm ci
+
       - name: Verify responsive browser journeys in the pinned Linux image
         working-directory: apps/web
         run: npm run test:e2e:linux -- update
