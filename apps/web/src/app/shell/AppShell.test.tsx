@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { api } from '../../api'
+import { api, type User } from '../../api'
 import { AuthContext } from '../../auth-context'
 import { ThemeProvider } from '../../design-system/theme/ThemeProvider'
 import { ParkProvider } from '../../ParkProvider'
@@ -63,6 +63,41 @@ function renderShellPath(path: string, currentUser = operator) {
       </ThemeProvider>
     </MemoryRouter>,
   )
+}
+
+function renderShellWithParkScope(
+  role: User['role'],
+  setParkId = vi.fn(),
+  availableParks?: (typeof north)[],
+) {
+  const south = { id: 9, name: 'Южный', tag: 'south', is_active: true }
+  const parks = availableParks ?? [north, south]
+  const currentUser = testUser({ role, parks })
+  return {
+    setParkId,
+    ...render(
+      <MemoryRouter initialEntries={['/overview?park=7']}>
+        <ThemeProvider>
+          <AuthContext.Provider value={{ user: currentUser, loading: false,
+            login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn() }}>
+            <ParkScopeContext.Provider value={{
+              parkId: 7,
+              selectedPark: north,
+              parks,
+              loading: false,
+              locked: false,
+              setParkId,
+              refreshParks: vi.fn(),
+            }}>
+              <Routes><Route element={<AppShell />}>
+                <Route path="*" element={<h1>Рабочий экран</h1>} />
+              </Route></Routes>
+            </ParkScopeContext.Provider>
+          </AuthContext.Provider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    ),
+  }
 }
 
 function BadgeCommitProbe({ parkId, snapshots }: { parkId: number; snapshots: string[] }) {
@@ -306,7 +341,7 @@ describe('AppShell', () => {
       parks: [north, south],
     }))
 
-    const park = await screen.findByRole('combobox', { name: 'Парк' })
+    const park = await screen.findByRole('combobox', { name: 'Сменить парк' })
     await actor.selectOptions(park, '9')
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('?park=9'))
     expect(park).toHaveFocus()
@@ -326,7 +361,7 @@ describe('AppShell', () => {
     act(() => window.dispatchEvent(new Event(REPORTS_BADGE_REFRESH)))
     await waitFor(() => expect(badge.mock.calls.length).toBeGreaterThan(beforeEvent))
 
-    await actor.selectOptions(screen.getByRole('combobox', { name: 'Парк' }), '9')
+    await actor.selectOptions(screen.getByRole('combobox', { name: 'Сменить парк' }), '9')
     await waitFor(() => expect(badge).toHaveBeenCalledWith(9))
 
     const beforeReports = badge.mock.calls.length
@@ -335,6 +370,33 @@ describe('AppShell', () => {
     })[0]
     await actor.click(within(desktopNavigation).getByRole('link', { name: 'Репорты' }))
     await waitFor(() => expect(badge.mock.calls.length).toBeGreaterThan(beforeReports))
+  })
+
+  it.each(['operator', 'admin', 'royal'] as const)('switches parks from the %s wordmark', async (role) => {
+    const actor = userEvent.setup()
+    const { setParkId } = renderShellWithParkScope(role)
+
+    expect(screen.getByText('РобоПарк')).toBeVisible()
+    expect(screen.getByText('Северный', { selector: 'strong' })).toBeVisible()
+    const switcher = screen.getByRole('combobox', { name: 'Сменить парк' })
+    await actor.selectOptions(switcher, '9')
+
+    expect(setParkId).toHaveBeenCalledWith(9)
+  })
+
+  it.each(['mechanic', 'driver'] as const)('shows a non-interactive park wordmark for %s', (role) => {
+    renderShellWithParkScope(role)
+
+    expect(screen.queryByRole('combobox', { name: 'Сменить парк' })).not.toBeInTheDocument()
+    expect(screen.getByText('РобоПарк')).toBeVisible()
+    expect(screen.getByText('Северный', { selector: 'strong' })).toBeVisible()
+  })
+
+  it.each(['operator', 'admin', 'royal'] as const)('keeps the %s wordmark static with one park', (role) => {
+    renderShellWithParkScope(role, vi.fn(), [north])
+
+    expect(screen.queryByRole('combobox', { name: 'Сменить парк' })).not.toBeInTheDocument()
+    expect(screen.getByText('Северный', { selector: 'strong' })).toBeVisible()
   })
 
   it('never commits a report badge count under a different operator park key', async () => {

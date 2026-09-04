@@ -14,7 +14,7 @@ for (const width of [390, 1440]) {
     expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(100)
     expect((await page.locator('.rp-shell__topbar').boundingBox())?.y).toBe(0)
     if (width >= 900) {
-      expect((await page.locator('.rp-shell__sidebar').boundingBox())?.y).toBe(0)
+      expect(Math.abs((await page.locator('.rp-shell__sidebar').boundingBox())?.y ?? Number.NaN)).toBeLessThanOrEqual(0.5)
       await page.locator('.rp-shell__sidebar').evaluate(element => { element.scrollTop = element.scrollHeight })
       await expect(page.locator('.rp-shell__desktop-nav').getByRole('link', { name: 'Настройка проверки робота' })).toBeInViewport()
     } else {

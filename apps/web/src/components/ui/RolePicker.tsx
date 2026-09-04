@@ -7,7 +7,7 @@ export type RegisterRole = (typeof REGISTER_ROLES)[number]
 const ROLE_HINT: Record<RegisterRole, string> = {
   operator: 'Мониторинг парка, блокеры и репорты',
   mechanic: 'Задачи на площадке и обращения',
-  driver: 'Только проверка робота в Emergency',
+  driver: 'Проверка робота и задачи перемещения',
 }
 
 export function RolePicker({
