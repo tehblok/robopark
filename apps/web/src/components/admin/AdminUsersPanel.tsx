@@ -6,6 +6,7 @@ import { Spinner } from '../ui/Feedback'
 import { PasswordField } from '../ui/PasswordField'
 import { mapApiError } from '../../i18n/errors'
 import { accessStatusLabel, roleLabel } from '../../i18n/ru'
+import { actorPermissionCatalog } from './privilegedPermissions'
 
 type UserDraft = {
   role_slug: string
@@ -149,10 +150,11 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
     setError('')
   }
 
-  const navPerms = catalog.filter(
+  const availableCatalog = actorPermissionCatalog(catalog, actor?.role)
+  const navPerms = availableCatalog.filter(
     (item) => item.category === 'nav' && item.key !== 'users.approve',
   )
-  const actionPerms = catalog.filter(
+  const actionPerms = availableCatalog.filter(
     (item) => item.category === 'action' && item.key !== 'users.approve',
   )
   const roleDefaultPerms = (slug: string): string[] =>

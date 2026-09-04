@@ -95,11 +95,19 @@ export function Admin() {
   const perms = user?.permissions ?? []
   const canParks = perms.includes('parks.manage')
   const canIntegrations = perms.includes('nav.admin')
+  const canOps = user?.role === 'royal'
   const requestedTab = searchParams.get('tab')
-  const initialTab: TabId = requestedTab === 'parks' || requestedTab === 'ops'
-    ? requestedTab
-    : canParks && !canIntegrations ? 'parks' : 'integrations'
+  const firstPermittedTab: TabId = canIntegrations ? 'integrations' : canParks ? 'parks' : 'ops'
+  const isPermittedTab = (candidate: string | null): candidate is TabId => (
+    (candidate === 'integrations' && canIntegrations)
+    || (candidate === 'parks' && canParks)
+    || (candidate === 'ops' && canOps)
+  )
+  const initialTab: TabId = isPermittedTab(requestedTab) ? requestedTab : firstPermittedTab
   const [tab, setTab] = useState<TabId>(initialTab)
+  const tabPermitted = (tab === 'integrations' && canIntegrations)
+    || (tab === 'parks' && canParks)
+    || (tab === 'ops' && canOps)
   const bootRes = useCachedResource<AdminBootstrap>(`admin:bootstrap:${canIntegrations ? 'full' : 'parks'}`, () => loadAdminBootstrap(canIntegrations), {
     persist: false,
   })
@@ -127,9 +135,8 @@ export function Admin() {
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    if (tab === 'parks' && !canParks) setTab('integrations')
-    if (tab === 'ops' && user?.role !== 'royal') setTab('integrations')
-  }, [tab, canParks, user?.role])
+    if (!tabPermitted) setTab(firstPermittedTab)
+  }, [tabPermitted, firstPermittedTab])
 
   useEffect(() => {
     if (requestedTab === tab) return
@@ -261,7 +268,7 @@ export function Admin() {
       />
 
       {/* --- Integrations ------------------------------------------------- */}
-      <TabPanel active={tab === 'integrations'}>
+      {canIntegrations && <TabPanel active={tab === 'integrations'}>
         {user?.role === 'royal' && (
           <Panel
             hint="Если пароль не задан, регистрация на /register закрыта."
@@ -440,7 +447,7 @@ export function Admin() {
             </Link>
           </div>
         </Panel>
-      </TabPanel>
+      </TabPanel>}
 
       {canParks && (
       <TabPanel active={tab === 'parks'}>

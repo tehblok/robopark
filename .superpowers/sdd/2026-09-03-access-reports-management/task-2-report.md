@@ -59,3 +59,29 @@ Red tests were observed before their corresponding implementation for:
 - Full web suite: 76 files, 1162 tests passed.
 - TypeScript build and navigation check passed.
 - Lint produced the same six pre-existing warnings outside Task 2 files; no errors.
+
+## Fix round 2/5
+
+### RED / GREEN evidence
+
+- RED: `/admin/settings?tab=ops` as a `parks.manage` user normalized to `/admin/settings`, selecting the hidden integrations fallback. GREEN: it normalizes to `?tab=parks`, never calls `integrationSettings`, and does not render the secrets panel.
+- RED: a resolver-only account initialized `mine`, producing no Reports pane and exposing the archive status selector. GREEN: it derives `inbox` synchronously from capabilities and Inbox is constrained to open reports with no status selector.
+- RED: a mobile `application/octet-stream` HEIC upload never reached the attachment endpoint. GREEN: a blank/generic MIME supported filename is accepted, while explicit incompatible MIME remains rejected and the existing per-kind limits remain enforced.
+
+### Changes
+
+- Settings now accepts only allowed URL tabs, uses its first permitted tab as fallback, and conditionally mounts integrations only for the exact `nav.admin` capability. Parks-only remains API-isolated.
+- A single owner-aware privileged permission catalog is used by both user and role editors. It excludes `nav.admin`, tracker/emergency admin navigation, parks/users/roles management and `users.approve` for non-owners; royal retains the full catalog.
+- Reports derives the visible pane from live capabilities, scopes selection to the live principal/access/park stamp, constrains Inbox to `open`, and resolves detail park labels from each report's `park_id` (including platform/unknown fallbacks), never the shell's selected park.
+- The attachment input advertises supported extensions, and accepts blank/octet-stream mobile image/log uploads only when the filename extension is allowed.
+
+### Verification
+
+- Focused settings/reports/permissions tests: 32 passed.
+- Full web suite: 77 files, 1167 tests passed.
+- TypeScript project build and `scripts/check-nav.mjs` passed (`25 route ids`).
+- Targeted lint passed with no warnings after correcting the hook dependency.
+
+### Superseded note
+
+- The round-1 legacy-settings and SLA limitations above are superseded: parks settings now normalizes safely and mounts `SlaPolicyEditor` with the shared selected-park scope.

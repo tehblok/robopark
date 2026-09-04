@@ -4,6 +4,7 @@ import { useAuth } from '../../auth-context'
 import { Alert, Panel } from '../PageShell'
 import { Spinner } from '../ui/Feedback'
 import { mapApiError } from '../../i18n/errors'
+import { actorPermissionCatalog } from './privilegedPermissions'
 
 export function AdminRolesPanel() {
   const { user } = useAuth()
@@ -39,10 +40,7 @@ export function AdminRolesPanel() {
     void load()
   }, [])
 
-  const privileged = new Set(['nav.admin', 'users.manage', 'roles.manage', 'parks.manage'])
-  const availableCatalog = user?.role === 'royal'
-    ? catalog
-    : catalog.filter((item) => !privileged.has(item.key))
+  const availableCatalog = actorPermissionCatalog(catalog, user?.role)
   const navPerms = availableCatalog.filter((item) => item.category === 'nav')
   const actionPerms = availableCatalog.filter((item) => item.category === 'action')
 
@@ -194,9 +192,7 @@ export function AdminRolesPanel() {
 
         <h4 className="admin-perm-group-title">Действия</h4>
         <div className="admin-perm-grid">
-          {actionPerms
-            .filter((perm) => perm.key !== 'users.approve')
-            .map((perm) => (
+          {actionPerms.map((perm) => (
             <label className="admin-perm-check" key={perm.key}>
               <input
                 checked={draft.permissions.has(perm.key)}

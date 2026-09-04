@@ -35,4 +35,22 @@ describe('ReportForms', () => {
     expect(create).toHaveBeenCalledTimes(1)
     expect(attach).toHaveBeenLastCalledWith(42, 'device_photo', expect.any(File))
   })
+
+  it('accepts mobile image filenames when their MIME type is omitted or generic', async () => {
+    const actor = userEvent.setup()
+    vi.spyOn(api, 'createReport').mockResolvedValue(created)
+    const attach = vi.spyOn(api, 'reportAttach').mockResolvedValue({
+      id: 11, kind: 'device_photo', filename: 'robot.heic', content_type: 'image/heic', size_bytes: 3,
+    })
+    render(<ReportForms onCreated={vi.fn()} parkId={7} />)
+
+    await actor.click(screen.getByRole('button', { name: 'Проблема' }))
+    await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Проблема')
+    await actor.click(screen.getByRole('button', { name: 'Создать' }))
+    await screen.findByText('Репорт отправлен оператору.')
+    await actor.upload(screen.getByLabelText('Файл'), new File(['heic'], 'robot.HEIC', { type: '' }))
+    await actor.click(screen.getByRole('button', { name: 'Прикрепить файл' }))
+
+    await waitFor(() => expect(attach).toHaveBeenCalledWith(42, 'device_photo', expect.any(File)))
+  })
 })

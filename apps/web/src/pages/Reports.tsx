@@ -36,6 +36,13 @@ export function Reports() {
   const [statusFilter, setStatusFilter] = useState('all')
 
   const selectedPark = parks.find((park) => park.id === parkId)
+  const visiblePane = activePane === 'mine' && createEnabled
+    ? 'mine'
+    : inboxEnabled
+      ? 'inbox'
+      : createEnabled
+        ? 'mine'
+        : null
   const selectedIsCurrent = selectedId != null && selectedScope === reportScope
 
   const mineRes = useCachedResource<Report[]>(
@@ -58,10 +65,10 @@ export function Reports() {
   const mine = mineRes.data ?? []
   const inbox = inboxRes.data ?? []
   const visibleMine = statusFilter === 'all' ? mine : mine.filter((report) => report.status === statusFilter)
-  const visibleInbox = statusFilter === 'all' ? inbox : inbox.filter((report) => report.status === statusFilter)
+  const visibleInbox = inbox.filter((report) => report.status === 'open')
   const selectedReport = detailRes.data ?? null
 
-  const listRes = activePane === 'mine' ? mineRes : inboxRes
+  const listRes = visiblePane === 'mine' ? mineRes : inboxRes
   const listError = listRes.error ? mapApiError(listRes.error, ru.errors.load) : ''
   const listLoading = listRes.isRevalidating
   const showListSkeleton = listRes.isLoading && !listRes.data && !listError
@@ -79,6 +86,11 @@ export function Reports() {
     setSelectedId(null)
     setSelectedScope('')
     setSelectedActionable(false)
+  }
+
+  function parkNameForReport(report: Report): string {
+    if (report.park_id == null) return 'Платформа'
+    return parks.find((park) => park.id === report.park_id)?.name ?? `Парк #${report.park_id}`
   }
 
   async function refreshLists() {
@@ -134,8 +146,8 @@ export function Reports() {
       {createEnabled && inboxEnabled && (
         <div aria-label="Режим репортов" className="actions" role="tablist">
           <button
-            aria-selected={activePane === 'mine'}
-            className={`btn btn-filter${activePane === 'mine' ? ' is-active' : ''}`}
+            aria-selected={visiblePane === 'mine'}
+            className={`btn btn-filter${visiblePane === 'mine' ? ' is-active' : ''}`}
             onClick={() => { handleCloseDetail(); setActivePane('mine') }}
             role="tab"
             type="button"
@@ -143,8 +155,8 @@ export function Reports() {
             Мои репорты
           </button>
           <button
-            aria-selected={activePane === 'inbox'}
-            className={`btn btn-filter${activePane === 'inbox' ? ' is-active' : ''}`}
+            aria-selected={visiblePane === 'inbox'}
+            className={`btn btn-filter${visiblePane === 'inbox' ? ' is-active' : ''}`}
             onClick={() => { handleCloseDetail(); setActivePane('inbox') }}
             role="tab"
             type="button"
@@ -154,7 +166,7 @@ export function Reports() {
         </div>
       )}
 
-      <label className="field">
+      {visiblePane === 'mine' && <label className="field">
         <span className="field-label">Статус</span>
         <select aria-label="Статус репортов" onChange={(event) => setStatusFilter(event.target.value)} value={statusFilter}>
           <option value="all">Все</option>
@@ -162,11 +174,11 @@ export function Reports() {
           <option value="returned">Возвращённые</option>
           <option value="done">Готовые</option>
         </select>
-      </label>
+      </label>}
 
       {listError && <Alert tone="error">{listError}</Alert>}
 
-      {createEnabled && activePane === 'mine' && (
+      {createEnabled && visiblePane === 'mine' && (
         <>
           <Panel hint="Статусы ваших репортов и комментарии при возврате." title="Мои репорты">
             <ReportList
@@ -205,7 +217,7 @@ export function Reports() {
                   canAct={false}
                   onClose={handleCloseDetail}
                   onUpdated={() => void handleDetailUpdated()}
-                  parkName={selectedPark?.name}
+                  parkName={parkNameForReport(selectedReport)}
                   report={selectedReport}
                   showEscalate={false}
                 />
@@ -215,7 +227,7 @@ export function Reports() {
         </>
       )}
 
-      {inboxEnabled && activePane === 'inbox' && (
+      {inboxEnabled && visiblePane === 'inbox' && (
         <>
           {parkId == null && !parksLoading && (
             <EmptyBlock
@@ -247,7 +259,7 @@ export function Reports() {
                   canAct={selectedActionable}
                   onClose={handleCloseDetail}
                   onUpdated={() => void handleDetailUpdated()}
-                  parkName={selectedPark?.name}
+                  parkName={parkNameForReport(selectedReport)}
                   report={selectedReport}
                   showEscalate={role === 'operator'}
                 />

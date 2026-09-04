@@ -186,6 +186,37 @@ describe('AppRouter', () => {
       .toEqual([])
   })
 
+  it('opens the only permitted reports pane and keeps inbox open-only', async () => {
+    vi.spyOn(api, 'reportsInbox').mockResolvedValue([])
+    renderApp('/reports', testUser({
+      permissions: ['nav.reports', 'reports.resolve'],
+      parks: [north],
+    }))
+
+    expect(await screen.findByRole('heading', { name: 'Входящие' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Создать репорт' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Статус репортов' })).not.toBeInTheDocument()
+  })
+
+  it('labels an author report with its own park rather than the current shell park', async () => {
+    const south = { id: 8, name: 'Южный', tag: 'south', tracker_queue: 'SOUTH', is_active: true }
+    const report = {
+      id: 19, kind: 'mechanic_problem' as const, status: 'open' as const, park_id: 8,
+      author_user_id: 1, target_role: 'operator', tracker_key: null, tracker_url: null,
+      title: 'В другом парке', body: '', parent_report_id: null, return_comment: null,
+      created_at: '2026-09-04T08:00:00Z', updated_at: '2026-09-04T08:00:00Z', resolved_at: null,
+    }
+    vi.spyOn(api, 'reportsMine').mockResolvedValue([report])
+    vi.spyOn(api, 'report').mockResolvedValue(report)
+    renderApp('/reports?park=7', testUser({
+      permissions: ['nav.reports', 'reports.create'], parks: [north, south],
+    }))
+
+    await screen.findByRole('button', { name: /в другом парке/i })
+    await screen.getByRole('button', { name: /в другом парке/i }).click()
+    expect(await screen.findByText('Южный')).toBeVisible()
+  })
+
   it('renders only permitted role-aware navigation', async () => {
     renderApp('/emergency', testUser({
       role: 'driver',

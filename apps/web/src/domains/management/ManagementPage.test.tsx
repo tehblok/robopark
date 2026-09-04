@@ -39,4 +39,17 @@ describe('Management routes', () => {
       .map((link) => link.getAttribute('href'))).toContain('/admin/users')
     expect(screen.queryByText('Роли и доступы')).not.toBeInTheDocument()
   })
+
+  it('normalizes a forbidden settings tab to parks without loading integration controls', async () => {
+    const integration = vi.spyOn(api, 'integrationSettings').mockRejectedValue(new Error('forbidden'))
+    vi.spyOn(api, 'parks').mockResolvedValue([north])
+    renderApp('/admin/settings?tab=ops', testUser({
+      role: 'field_lead', permissions: ['parks.manage'], parks: [north],
+    }))
+
+    expect(await screen.findByRole('heading', { name: 'Администрирование' })).toBeVisible()
+    expect(screen.getByTestId('location')).toHaveTextContent('/admin/settings?tab=parks')
+    expect(integration).not.toHaveBeenCalled()
+    expect(screen.queryByRole('heading', { name: 'Секреты' })).not.toBeInTheDocument()
+  })
 })
