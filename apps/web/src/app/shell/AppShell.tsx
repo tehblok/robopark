@@ -61,6 +61,7 @@ function ParkIdentity({
   onChange: (id: number) => void
 }) {
   const [selectorOpen, setSelectorOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
   const parkName = selectedPark?.name ?? (loading ? ru.loading : 'Без парка')
   const canSwitch = PARK_SWITCH_ROLES.has(user.role)
     && !locked
@@ -79,6 +80,7 @@ function ParkIdentity({
             aria-label="Сменить парк"
             className="rp-shell__park-switch"
             onClick={() => setSelectorOpen((open) => !open)}
+            ref={triggerRef}
             type="button"
           >
             <strong className="rp-shell__park-brand-name">{parkName}</strong>
@@ -93,6 +95,7 @@ function ParkIdentity({
                   onClick={() => {
                     onChange(park.id)
                     setSelectorOpen(false)
+                    triggerRef.current?.focus()
                   }}
                   role="option"
                   type="button"

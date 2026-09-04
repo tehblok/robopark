@@ -348,6 +348,27 @@ describe('AppShell', () => {
     expect(screen.queryByRole('listbox', { name: 'Сменить парк' })).not.toBeInTheDocument()
   })
 
+  it('retains park-switch trigger focus after keyboard selection', async () => {
+    const actor = userEvent.setup()
+    const south = { id: 9, name: 'Южный', tag: 'south', is_active: true }
+    renderApp('/overview?park=7', testUser({
+      permissions: ['nav.dashboard'],
+      parks: [north, south],
+    }))
+
+    const trigger = await screen.findByRole('button', { name: 'Сменить парк' })
+    trigger.focus()
+    await actor.keyboard('{Enter}')
+    await actor.tab()
+    await actor.tab()
+    expect(screen.getByRole('option', { name: 'Южный' })).toHaveFocus()
+
+    await actor.keyboard('{Enter}')
+
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('?park=9'))
+    expect(trigger).toHaveFocus()
+  })
+
   it('keeps the operator report badge park-aware and refreshes it on demand and entry', async () => {
     const actor = userEvent.setup()
     const south = { id: 9, name: 'Южный', tag: 'south', is_active: true }
