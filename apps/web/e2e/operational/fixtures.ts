@@ -56,7 +56,12 @@ export function summaryForPark(parkId: number): DashboardSummary {
   return { park_id: parkId, generated_at: FIXED_TIME, arrived: 12, done: 8, queued: parkId === 8 ? 9 : 3, in_transit: 2, moving: [{ key: issue.key, summary: issue.summary }] }
 }
 
-export type OperationalOptions = { issue?: TrackerIssueDetail; snapshot?: EmergencySnapshot; listCount?: number }
+export type OperationalOptions = {
+  issue?: TrackerIssueDetail
+  snapshot?: EmergencySnapshot
+  listCount?: number
+  user?: User
+}
 
 function operationsOverview(user: User, request: Request): OperationsOverview {
   const parkId = Number(new URL(request.url).searchParams.get('park_id'))
@@ -90,8 +95,10 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
   let currentIssue = structuredClone(options.issue ?? issue)
   const currentSnapshot = structuredClone(options.snapshot ?? snapshot)
   const comments: TrackerComment[] = []
+  const user = options.user ?? userForRole('mechanic')
   const blocker = (): Blocker => ({ key: currentIssue.key, summary: currentIssue.summary, status: currentIssue.status, status_key: currentIssue.status_key, robot: currentIssue.robot ?? null, created_at: FIXED_TIME, hours_created: '0', url: currentIssue.url, bucket: 'open', priority: 'normal', assignee: currentIssue.assignee })
   const routes: MockRoute[] = [
+    { method: 'GET', path: '/api/operations/overview', handler: request => ({ json: operationsOverview(user, request) }) },
     { method: 'GET', path: '/api/dashboard/summary', handler: request => ({ json: summaryForPark(Number(new URL(request.url).searchParams.get('park_id'))) }) },
     { method: 'GET', path: '/api/tracker/issues', handler: request => {
       const params = new URL(request.url).searchParams
@@ -141,8 +148,8 @@ export async function installOperational(page: Page, options: OperationalOptions
   await page.clock.setFixedTime(new Date('2026-09-02T09:05:00Z'))
   await page.route(/^https?:\/\/(?!localhost(?=[:/])|127\.0\.0\.1(?=[:/]))/, route => route.abort())
   const user = options.user ?? userForRole(options.role ?? 'mechanic')
-  const operationsRoute: MockRoute = { method: 'GET', path: '/api/operations/overview', handler: (request) => ({ json: operationsOverview(user, request) }) }
-  await installMockApi(page, { user, parks: options.parks ?? user.parks, routes: [...(options.routes ?? []), operationsRoute, ...operationalRoutes(options)] })
+  const routes = operationalRoutes({ issue: options.issue, snapshot: options.snapshot, listCount: options.listCount, user })
+  await installMockApi(page, { user, parks: options.parks ?? user.parks, routes: [...(options.routes ?? []), ...routes] })
 }
 
 export async function settlePage(page: Page) {

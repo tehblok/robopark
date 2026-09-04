@@ -12,6 +12,7 @@
 }
 
 .rp-work-domain {
+  container: rp-work-domain / inline-size;
   display: grid;
   gap: var(--rp-space-4);
 }
@@ -277,6 +278,21 @@
 
   .rp-work-filters {
     grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+@container rp-work-domain (max-width: 34rem) {
+  .rp-workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rp-workbench[data-has-detail='true'] .rp-work-list-pane,
+  .rp-workbench[data-has-detail='false'] .rp-work-detail-pane {
+    display: none;
+  }
+
+  .rp-work-detail-back {
+    display: inline-flex;
   }
 }
 

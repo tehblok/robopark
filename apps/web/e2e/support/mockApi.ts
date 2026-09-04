@@ -92,7 +92,7 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}): 
     '/api/operations/overview': { json: defaultOperations },
   }
 
-  await page.route('/api/**', async (route) => {
+  await page.route(/^https?:\/\/[^/]+\/api(?:\/|$)/, async (route) => {
     const playwrightRequest = route.request()
     const pathname = new URL(playwrightRequest.url()).pathname
     const custom = options.routes?.find((candidate) => (

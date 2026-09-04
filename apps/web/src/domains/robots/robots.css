@@ -184,6 +184,7 @@
 
 .rp-robot-detail__tasks a {
   align-items: center;
+  color: var(--rp-info);
   display: inline-flex;
   min-height: 44px;
 }

@@ -5,14 +5,29 @@ import { installOperational, settlePage, snapshot } from './fixtures'
 const widths = [320, 390, 768, 1024, 1440] as const
 const themes = ['light', 'dark'] as const
 const states = [
-  { name: 'overview', path: '/overview?park=7', ready: '.rp-overview-primary' },
+  { name: 'overview', path: '/overview?park=7', ready: '.rp-insights' },
   { name: 'work', path: '/work/ROBOPARK-42?park=7&status=open&sort=newest&page=2', ready: '.issue-actions' },
   { name: 'robots', path: '/robots?park=7', ready: '.rp-robots-search-panel' },
   { name: 'robot-check', path: `/robots/${snapshot.vin}/check?park=7&tab=scheme`, ready: '.rp-check-photo-frame img' },
 ] as const
 
 async function assertResponsiveContracts(page: Page, width: number) {
-  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0)
+  const overflow = await page.evaluate(() => ({
+    amount: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    offenders: Array.from(document.querySelectorAll('body *'))
+      .filter((element) => element.getBoundingClientRect().right + window.scrollX > document.documentElement.clientWidth + 1)
+      .map((element) => `${element.tagName.toLowerCase()}.${element.className}: ${Math.round(element.getBoundingClientRect().right + window.scrollX)}`)
+      .slice(0, 12),
+    layout: ['.rp-app-shell', '.rp-shell__sidebar', '.rp-shell__main-column', '.rp-shell__content', '.rp-page-layout', '.rp-workbench', '.rp-work-list-pane', '.rp-work-detail-pane']
+      .map((selector) => {
+        const element = document.querySelector(selector)
+        if (!element) return `${selector}: missing`
+        const box = element.getBoundingClientRect()
+        const style = getComputedStyle(element)
+        return `${selector}: x=${Math.round(box.x + window.scrollX)} w=${Math.round(box.width)} scroll=${element.scrollWidth}/${element.clientWidth} cols=${style.gridTemplateColumns}`
+      }),
+  }))
+  expect(overflow.amount, `horizontal overflow: ${overflow.offenders.join(', ')}; layout: ${overflow.layout.join('; ')}`).toBeLessThanOrEqual(0)
   const violations = await page.evaluate(width => {
     const failures: string[] = []
     const visible = (element: Element) => {
@@ -114,8 +129,8 @@ for (const width of widths) for (const theme of themes) for (const state of stat
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
     await settlePage(page)
     if (state.name === 'overview' && width >= 900) {
-      await expect(page.getByTestId('overview-state')).toBeInViewport()
-      await expect(page.getByTestId('overview-queue')).toBeInViewport()
+      await expect(page.locator('.rp-insights-metrics')).toBeInViewport()
+      await expect(page.getByRole('heading', { name: 'Текущие задачи' })).toBeInViewport()
     }
     if (state.name === 'work') {
       await assertWorkMode(page, width)
@@ -132,17 +147,21 @@ for (const width of widths) for (const theme of themes) for (const state of stat
   })
 }
 
-test('1440px 200% root text reflow preserves scope risk primary action and detail', async ({ page }) => {
+test('1440px 200% root text reflow preserves Operations metrics, tasks, SLA and detail', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await installOperational(page)
   await page.goto('/overview?park=7')
   await page.evaluate(() => { document.documentElement.style.fontSize = '200%' })
-  for (const id of ['overview-scope', 'overview-risk', 'overview-action']) {
-    await page.getByTestId(id).scrollIntoViewIfNeeded()
-    await expect(page.getByTestId(id)).toBeInViewport()
+  for (const target of [
+    page.locator('.rp-insights-metrics'),
+    page.getByRole('heading', { name: 'Текущие задачи' }),
+    page.getByRole('heading', { name: 'Просрочки SLA' }),
+  ]) {
+    await target.scrollIntoViewIfNeeded()
+    await expect(target).toBeInViewport()
   }
   await assertResponsiveContracts(page, 1440)
-  await page.getByTestId('overview-action').getByRole('link').click()
+  await page.getByRole('link', { name: 'Открыть задачу ROBOPARK-42' }).click()
   await expect(page.getByRole('heading', { name: 'Задача ROBOPARK-42', exact: true })).toBeVisible()
   await page.locator('.issue-actions').scrollIntoViewIfNeeded()
   await expect(page.getByRole('button', { name: 'Закрыть тикет', exact: true })).toBeVisible()
