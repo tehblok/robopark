@@ -38,8 +38,8 @@ describe('authentication pages', () => {
     const user = userEvent.setup()
     renderAuthPage(<Login />)
 
-    expect(screen.getByRole('heading', { name: 'Вход в Робопарк' })).toBeVisible()
-    expect(screen.getByRole('img', { name: 'Робопарк Сервис' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Вход в РобоПарк' })).toBeVisible()
+    expect(screen.getByText('РобоПарк')).toBeVisible()
     expect(screen.getByRole('region', { name: 'Управление парком роботов' })).toBeVisible()
     expect(screen.getByRole('img', { name: 'Робот-доставщик' })).toBeVisible()
     expect(screen.getByRole('textbox', { name: 'Логин' })).toHaveAttribute('autocomplete', 'username')

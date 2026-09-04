@@ -48,18 +48,83 @@
   top: 0;
 }
 
-.rp-shell__brand,
 .rp-shell__user,
-.rp-shell__topbar-actions,
-.rp-shell__park-context label {
+.rp-shell__topbar-actions {
   align-items: center;
   display: flex;
   gap: var(--rp-space-2);
 }
 
-.rp-shell__brand {
-  font-weight: var(--rp-font-weight-bold);
+.rp-shell__park-brand {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  display: flex;
+  flex: 0 1 auto;
+  gap: 7px;
   min-height: var(--rp-control-min-size);
+  min-width: 0;
+  padding: 6px 9px;
+  position: relative;
+}
+
+.rp-shell__park-brand-base {
+  color: var(--rp-text);
+  font-size: 0.93rem;
+  font-weight: 780;
+  letter-spacing: -0.035em;
+  white-space: nowrap;
+}
+
+.rp-shell__park-brand-name {
+  background: var(--rp-action);
+  border-radius: 8px;
+  color: var(--rp-action-on);
+  display: block;
+  font-size: 0.875rem;
+  font-weight: var(--rp-font-weight-bold);
+  line-height: 1.25;
+  max-width: 8.5rem;
+  overflow: hidden;
+  padding: 5px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rp-shell__park-brand.is-interactive {
+  border-color: var(--rp-border);
+  cursor: pointer;
+  padding-right: 28px;
+  transition: background var(--rp-motion-fast), border-color var(--rp-motion-fast);
+}
+
+.rp-shell__park-brand.is-interactive:hover {
+  background: var(--rp-state-hover);
+  border-color: var(--rp-action-hover);
+}
+
+.rp-shell__park-brand:has(select:focus-visible) {
+  outline: 2px solid var(--rp-focus);
+  outline-offset: 2px;
+}
+
+.rp-shell__park-brand select {
+  cursor: pointer;
+  inset: 0;
+  opacity: 0;
+  position: absolute;
+  width: 100%;
+}
+
+.rp-shell__park-brand-chevron {
+  border-bottom: 1.5px solid var(--rp-text-muted);
+  border-right: 1.5px solid var(--rp-text-muted);
+  height: 7px;
+  position: absolute;
+  right: 11px;
+  top: 16px;
+  transform: rotate(45deg);
+  width: 7px;
 }
 
 .rp-shell__desktop-nav,
@@ -135,30 +200,16 @@
   border-bottom: 1px solid var(--rp-border);
   display: flex;
   gap: var(--rp-density-gap);
-  justify-content: space-between;
+  justify-content: flex-end;
   padding: var(--rp-space-3) var(--rp-density-panel-padding);
   position: sticky;
   top: 0;
   z-index: 40;
 }
 
-.rp-shell__park-context {
-  min-width: 0;
-}
-
-.rp-shell__park-context label > span,
 .rp-shell__user > span {
   color: var(--rp-text-muted);
   font-size: var(--rp-font-size-body);
-}
-
-.rp-shell__park-context select {
-  background: var(--rp-surface);
-  border: 1px solid var(--rp-border);
-  border-radius: var(--rp-radius-control);
-  color: var(--rp-text);
-  min-height: var(--rp-control-min-size);
-  padding: var(--rp-space-2) var(--rp-space-3);
 }
 
 .rp-shell__user {
@@ -227,7 +278,7 @@
     grid-template-columns: calc(var(--rp-control-min-size) + var(--rp-space-6)) minmax(0, 1fr);
   }
 
-  .is-rail-collapsed .rp-shell__brand-label,
+  .is-rail-collapsed .rp-shell__park-brand-base,
   .is-rail-collapsed .rp-shell__nav-group h2,
   .is-rail-collapsed .rp-shell__nav-label,
   .is-rail-collapsed .rp-shell__badge {
@@ -237,6 +288,23 @@
   .is-rail-collapsed .rp-shell__desktop-link {
     justify-content: center;
     padding-inline: var(--rp-space-2);
+  }
+
+  .is-rail-collapsed .rp-shell__park-brand {
+    justify-content: center;
+    padding-inline: 2px;
+  }
+
+  .is-rail-collapsed .rp-shell__park-brand.is-interactive {
+    padding-right: 2px;
+  }
+
+  .is-rail-collapsed .rp-shell__park-brand-name {
+    max-width: 42px;
+  }
+
+  .is-rail-collapsed .rp-shell__park-brand-chevron {
+    display: none;
   }
 }
 
@@ -261,16 +329,33 @@
   }
 
   .rp-shell__topbar {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    min-width: 0;
   }
 
-  .rp-shell__park-context {
-    flex: 1 1 12rem;
+  .rp-shell__park-brand {
+    flex: 1 1 auto;
+    margin-right: auto;
+    max-width: 18rem;
   }
 
-  .rp-shell__park-context label,
-  .rp-shell__park-context select {
-    width: 100%;
+  .rp-shell__park-brand-name,
+  .rp-shell__topbar-actions,
+  .rp-shell__user {
+    min-width: 0;
+  }
+
+  .rp-shell__topbar-actions {
+    flex: 0 1 auto;
+    max-width: 45%;
+  }
+
+  .rp-shell__user > strong,
+  .rp-shell__user > span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .rp-shell__content {

@@ -10,7 +10,7 @@ describe('passwordChecks', () => {
   })
 
   it('accepts 12+ chars with three classes', () => {
-    const result = passwordChecks('RoboparkPass1')
+    const result = passwordChecks('DeliveryPass1')
     expect(result.length).toBe(true)
     expect(result.classes).toBe(3)
     expect(result.ok).toBe(true)

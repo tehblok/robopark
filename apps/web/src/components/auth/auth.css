@@ -511,10 +511,6 @@
 }
 
 @media (max-width: 470px) {
-  .rp-auth__brand > span:last-child {
-    display: none;
-  }
-
   .rp-auth__themes button {
     padding-inline: 8px;
     font-size: 0.7rem;

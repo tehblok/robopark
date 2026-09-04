@@ -34,15 +34,7 @@ export function AuthLayout({ children }: PropsWithChildren) {
   return (
     <main className="rp-auth">
       <header className="rp-auth__topbar">
-        <div className="rp-auth__brand" aria-label="Робопарк Сервис" role="img">
-          <span aria-hidden="true" className="brand-mark-grid brand-mark-grid-lg">
-            <span />
-            <span />
-            <span />
-            <span />
-          </span>
-          <span>Робопарк</span>
-        </div>
+        <div className="rp-auth__brand">РобоПарк</div>
         <AuthThemePicker />
       </header>
 

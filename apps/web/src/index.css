@@ -440,31 +440,6 @@ textarea {
   font-size: 1.35rem;
 }
 
-.auth-brand {
-  display: flex;
-  align-items: center;
-  gap: 0.85rem;
-  margin-bottom: 0.25rem;
-}
-
-.auth-tagline {
-  margin: 0.2rem 0 0;
-  color: var(--text-muted);
-  font-size: 0.92rem;
-  font-weight: 500;
-  line-height: 1.4;
-}
-
-.brand-mark-grid-lg {
-  grid-template-columns: repeat(2, 0.55rem);
-  gap: 0.16rem;
-}
-
-.brand-mark-grid-lg span {
-  width: 0.55rem;
-  height: 0.55rem;
-}
-
 .password-field {
   position: relative;
   display: block;
@@ -2285,34 +2260,6 @@ textarea {
   padding: 1.25rem 0.85rem;
   border-right: 1px solid var(--border);
   background: var(--surface);
-}
-
-.sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0 0.65rem;
-  font-size: 0.95rem;
-  font-weight: 700;
-  line-height: 1.3;
-}
-
-.sidebar-brand-text {
-  color: var(--text);
-}
-
-.brand-mark-grid {
-  display: inline-grid;
-  grid-template-columns: repeat(2, 0.45rem);
-  gap: 0.12rem;
-  flex-shrink: 0;
-}
-
-.brand-mark-grid span {
-  width: 0.45rem;
-  height: 0.45rem;
-  border-radius: 0.1rem;
-  background: var(--brand);
 }
 
 .sidebar-nav {

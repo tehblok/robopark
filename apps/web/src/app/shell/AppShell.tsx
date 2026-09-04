@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { Link, Outlet, useLocation, useNavigationType } from 'react-router-dom'
-import { api } from '../../api'
+import { api, type Park, type User } from '../../api'
 import { useAuth } from '../../auth-context'
 import { Button, IconButton } from '../../design-system/actions/Button'
 import { Icon } from '../../design-system/icons/Icon'
@@ -39,6 +39,54 @@ function useMediaQuery(query: string) {
 
 function ReportsBadge({ count }: { count: number }) {
   return count > 0 ? <span className="rp-shell__badge">{count}</span> : null
+}
+
+const PARK_SWITCH_ROLES = new Set<User['role']>(['operator', 'admin', 'royal'])
+
+function ParkWordmark({
+  user,
+  parkId,
+  selectedPark,
+  parks,
+  loading,
+  locked,
+  onChange,
+}: {
+  user: User
+  parkId: number | null
+  selectedPark: Park | null
+  parks: Park[]
+  loading: boolean
+  locked: boolean
+  onChange: (id: number) => void
+}) {
+  const parkName = selectedPark?.name ?? (loading ? ru.loading : 'Без парка')
+  const canSwitch = PARK_SWITCH_ROLES.has(user.role)
+    && !locked
+    && !loading
+    && parkId != null
+    && parks.length > 1
+
+  return (
+    <div className={`rp-shell__park-brand${canSwitch ? ' is-interactive' : ''}`}>
+      <span className="rp-shell__park-brand-base">РобоПарк</span>
+      <strong className="rp-shell__park-brand-name">{parkName}</strong>
+      {canSwitch ? (
+        <>
+          <span aria-hidden="true" className="rp-shell__park-brand-chevron" />
+          <select
+            aria-label="Сменить парк"
+            onChange={(event) => onChange(Number(event.target.value))}
+            value={parkId}
+          >
+            {parks.map((park) => (
+              <option key={park.id} value={park.id}>{park.name}</option>
+            ))}
+          </select>
+        </>
+      ) : null}
+    </div>
+  )
 }
 
 function currentNavigationItem(items: readonly NavigationItem[], pathname: string) {
@@ -210,10 +258,17 @@ export function AppShell() {
       </a>
 
       <aside className="sidebar rp-shell__sidebar">
-        <div className="rp-shell__brand">
-          <Icon name="robot" size={24} />
-          <span className="rp-shell__brand-label">{ru.nav.brand}</span>
-        </div>
+        {!phoneViewport ? (
+          <ParkWordmark
+            loading={loading}
+            locked={locked}
+            onChange={setParkId}
+            parkId={parkId}
+            parks={parks}
+            selectedPark={selectedPark}
+            user={user}
+          />
+        ) : null}
         {splitTablet ? (
           <IconButton
             className="rp-shell__rail-toggle"
@@ -247,28 +302,17 @@ export function AppShell() {
 
       <div className="app-main rp-shell__main-column">
         <header className="rp-shell__topbar">
-          <div className="rp-shell__park-context">
-            {parks.length > 0 || loading ? (
-              <label>
-                <span>{ru.nav.park}</span>
-                {locked ? (
-                  <strong>{selectedPark?.name ?? (loading ? ru.loading : '—')}</strong>
-                ) : (
-                  <select
-                    aria-label={ru.nav.park}
-                    disabled={loading || parks.length === 0}
-                    onChange={(event) => setParkId(Number(event.target.value))}
-                    value={parkId ?? ''}
-                  >
-                    {parks.length === 0 ? <option value="">{ru.loading}</option> : null}
-                    {parks.map((park) => (
-                      <option key={park.id} value={park.id}>{park.name}</option>
-                    ))}
-                  </select>
-                )}
-              </label>
-            ) : null}
-          </div>
+          {phoneViewport ? (
+            <ParkWordmark
+              loading={loading}
+              locked={locked}
+              onChange={setParkId}
+              parkId={parkId}
+              parks={parks}
+              selectedPark={selectedPark}
+              user={user}
+            />
+          ) : null}
           <div className="rp-shell__topbar-actions">
             <span className="rp-shell__user">
               <strong>{user.username}</strong>
