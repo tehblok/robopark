@@ -30,9 +30,6 @@ jobs:
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
-      - name: Verify repository
-        run: ./scripts/verify.sh
-
       - name: Verify responsive browser journeys in the pinned Linux image
         working-directory: apps/web
         run: npm run test:e2e:linux -- update
@@ -44,3 +41,6 @@ jobs:
           path: |
             apps/web/e2e/app-shell.spec.ts-snapshots
             apps/web/e2e/operational/responsive-visual.spec.ts-snapshots
+
+      - name: Verify repository
+        run: ./scripts/verify.sh
