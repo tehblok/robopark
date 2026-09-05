@@ -1,4 +1,4 @@
-import type { DashboardSummary, Park } from '../../api'
+import type { Blocker, DashboardSummary, OperationsOverview, Park } from '../../api'
 import { isSystemUserRole, type UserRole } from '../../app/routing/routeManifest'
 import type { Freshness } from '../../design-system/feedback/AsyncState'
 import type { IconName } from '../../design-system/icons/Icon'
@@ -19,7 +19,7 @@ export type OverviewQueueItem = {
   robot?: string | null
   href: string
 }
-export type OverviewViewModel = {
+export type LegacyOverviewViewModel = {
   scope: string
   updatedAt: string | null
   freshness: Freshness | null
@@ -78,7 +78,7 @@ function oldestTimestamp(timestamps: string[]): string | null {
 
 type CurrentCounts = Pick<DashboardSummary, 'arrived' | 'done' | 'queued' | 'in_transit'>
 
-function currentMetrics(counts: CurrentCounts): OverviewViewModel['metrics'] {
+function currentMetrics(counts: CurrentCounts): LegacyOverviewViewModel['metrics'] {
   return [
     { label: 'Пришли', value: counts.arrived },
     { label: 'Завершены', value: counts.done },
@@ -111,10 +111,10 @@ function issueActionLabel(role: string, key: string): string {
   return `Открыть ${key}`
 }
 
-export function buildOverviewModel(
+function buildLegacyOverviewModel(
   { role, payload, canOpenAdministration }: OverviewModelInput,
   now: Date,
-): OverviewViewModel {
+): LegacyOverviewViewModel {
   if (role === 'driver' || payload.kind === 'driver') {
     return {
       scope: 'Область работы: проверка конкретного робота',
@@ -218,4 +218,154 @@ export function buildOverviewModel(
     queue: issues.map((item) => queueItem(item, park)),
     metrics: currentMetrics(summary),
   }
+}
+
+export type OverviewStatusCard = {
+  key: string
+  label: string
+  taskCount: number | null
+  selected: boolean
+}
+export type OverviewAlert = {
+  tone: StatusTone
+  title: string
+  description: string
+  taskCount?: number | null
+}
+export type OverviewAttentionItem = {
+  key: string
+  summary: string
+  status: string
+  robot: string | null
+  ageHours: number | null
+  overdueHours: number | null
+  kind: 'overdue' | 'attention'
+  href: string
+}
+export type OperationalOverviewModel = {
+  alerts: OverviewAlert[]
+  statusCards: OverviewStatusCard[]
+  flow: {
+    arrivedTaskCount: number
+    leftTaskCount: number
+    backlogTaskCount: number | null
+    observedBuckets: number
+    expectedBuckets: number
+    complete: boolean
+  }
+  attentionQueue: OverviewAttentionItem[]
+  attentionTruncated: boolean
+  workload: OperationsOverview['workload']
+  operatorAccounts: OperationsOverview['operators'] | null
+}
+
+const ROLE_STATUS_KEYS: Record<string, readonly string[]> = {
+  driver: ['new', 'moving'],
+  mechanic: ['queued', 'diagnostics'],
+}
+
+function isAccountDiagnosticsRole(role: string): boolean {
+  return role === 'admin' || role === 'royal'
+}
+
+function numberOrNull(value: string | null | undefined): number | null {
+  if (value == null || value.trim() === '') return null
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+function visibleStatusKeys(data: OperationsOverview, role: string): readonly string[] {
+  return ROLE_STATUS_KEYS[role] ?? data.status_options
+    .filter((option) => option.key !== 'all')
+    .map((option) => option.key)
+}
+
+function attentionItem(
+  task: Blocker,
+  parkId: number,
+  kind: OverviewAttentionItem['kind'],
+  overdueHours: number | null = null,
+): OverviewAttentionItem {
+  return {
+    key: task.key,
+    summary: task.summary,
+    status: task.status,
+    robot: task.robot,
+    ageHours: numberOrNull(task.hours_created),
+    overdueHours,
+    kind,
+    href: `/work/${encodeURIComponent(task.key)}?park=${parkId}`,
+  }
+}
+
+function operationalAlerts(data: OperationsOverview): OverviewAlert[] {
+  const alerts: OverviewAlert[] = []
+  if (data.sla.overdue_count != null && data.sla.overdue_count > 0) {
+    alerts.push({
+      tone: 'critical',
+      title: `Просрочено SLA: ${data.sla.overdue_count} задач`,
+      description: 'Просроченные задачи вынесены в начало очереди внимания.',
+      taskCount: data.sla.overdue_count,
+    })
+  }
+  if (data.sla.target_hours == null) {
+    alerts.push({
+      tone: 'warning',
+      title: 'Норматив SLA не задан',
+      description: 'Просрочку и риск нельзя оценить, пока для парка не задан норматив.',
+    })
+  }
+  if (!data.flow.complete) {
+    alerts.push({
+      tone: 'info',
+      title: 'Неполное покрытие потока',
+      description: `Наблюдается ${data.flow.observed_buckets} из ${data.flow.expected_buckets} интервалов; пропуски не считаются нулём.`,
+    })
+  }
+  return alerts
+}
+
+function buildOperationalOverviewModel(data: OperationsOverview, role: string): OperationalOverviewModel {
+  const overdue = data.sla.overdue.map((task) => attentionItem(task, data.park_id, 'overdue', task.overdue_hours))
+  const overdueKeys = new Set(overdue.map((task) => task.key))
+  const attention = data.tasks
+    .filter((task) => !overdueKeys.has(task.key))
+    .map((task) => attentionItem(task, data.park_id, 'attention'))
+    .sort((left, right) => (right.ageHours ?? Number.NEGATIVE_INFINITY) - (left.ageHours ?? Number.NEGATIVE_INFINITY))
+
+  return {
+    alerts: operationalAlerts(data),
+    statusCards: visibleStatusKeys(data, role).map((key) => {
+      const option = data.status_options.find((item) => item.key === key)
+      return {
+        key,
+        label: option?.label || key,
+        taskCount: typeof data.counts[key] === 'number' ? data.counts[key] : null,
+        selected: data.selected_status === key,
+      }
+    }),
+    flow: {
+      arrivedTaskCount: data.flow.points.reduce((sum, point) => sum + point.arrived_count, 0),
+      leftTaskCount: data.flow.points.reduce((sum, point) => sum + point.departed_count, 0),
+      backlogTaskCount: typeof data.counts.all === 'number' ? data.counts.all : null,
+      observedBuckets: data.flow.observed_buckets,
+      expectedBuckets: data.flow.expected_buckets,
+      complete: data.flow.complete,
+    },
+    attentionQueue: [...overdue, ...attention],
+    attentionTruncated: data.tasks_truncated || data.sla.overdue_truncated,
+    workload: data.workload,
+    operatorAccounts: isAccountDiagnosticsRole(role) ? data.operators : null,
+  }
+}
+
+export function buildOverviewModel(data: OperationsOverview, role: string): OperationalOverviewModel
+export function buildOverviewModel(input: OverviewModelInput, now: Date): LegacyOverviewViewModel
+export function buildOverviewModel(
+  dataOrInput: OperationsOverview | OverviewModelInput,
+  roleOrNow: string | Date,
+): OperationalOverviewModel | LegacyOverviewViewModel {
+  return typeof roleOrNow === 'string'
+    ? buildOperationalOverviewModel(dataOrInput as OperationsOverview, roleOrNow)
+    : buildLegacyOverviewModel(dataOrInput as OverviewModelInput, roleOrNow)
 }

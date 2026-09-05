@@ -19,7 +19,7 @@ import { AppShell } from './AppShell'
 import { REPORTS_BADGE_REFRESH } from '../../reports-badge'
 
 const shellCss = readFileSync('src/app/shell/AppShell.css', 'utf8')
-const overviewCss = readFileSync('src/domains/insights/insights.css', 'utf8')
+const overviewCss = readFileSync('src/domains/shift/overview.css', 'utf8')
 
 const north = { id: 7, name: 'Северный', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
 const operator = testUser({

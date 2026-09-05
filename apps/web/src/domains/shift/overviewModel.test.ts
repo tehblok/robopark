@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { DashboardSummary, Park, TrackerIssue } from '../../api'
+import type { DashboardSummary, OperationsOverview, Park, TrackerIssue } from '../../api'
 import type { OverviewPayload } from './overviewData'
 import { buildOverviewModel } from './overviewModel'
 
@@ -305,5 +305,78 @@ describe('buildOverviewModel', () => {
     expect(model.primaryAction).toBeNull()
     expect(model.queue).toEqual([])
     expect(model.metrics).toEqual([])
+  })
+})
+
+const operationsSnapshot: OperationsOverview = {
+  park_id: 7,
+  generated_at: '2026-09-02T09:00:00Z',
+  timezone: 'Europe/Moscow',
+  selected_status: 'all',
+  status_options: [
+    { key: 'all', label: 'Все доступные' },
+    { key: 'new', label: 'Новые' },
+    { key: 'moving', label: 'Перемещение' },
+    { key: 'queued', label: 'Очередь' },
+    { key: 'diagnostics', label: 'Диагностика' },
+    { key: 'waiting_team', label: 'Ожидает команду' },
+  ],
+  counts: { all: 5, new: 2, moving: 1, queued: 1, diagnostics: 1, waiting_team: 0 },
+  tasks: [
+    { key: 'RP-OLD', summary: 'Старая задача', status: 'Новая', bucket: 'new', robot: '447', created_at: '2026-09-01T09:00:00Z', hours_created: '24', url: '' },
+    { key: 'RP-RECENT', summary: 'Свежая задача', status: 'Очередь', bucket: 'queued', robot: null, created_at: '2026-09-02T08:00:00Z', hours_created: '1', url: '' },
+  ],
+  tasks_total: 2,
+  tasks_truncated: false,
+  flow: {
+    definition_version: 2,
+    window_start: '2026-09-02T03:00:00Z',
+    window_end: '2026-09-02T09:00:00Z',
+    expected_buckets: 3,
+    observed_buckets: 2,
+    complete: false,
+    legacy_buckets: 0,
+    points: [
+      { bucket_start: '2026-09-02T03:00:00Z', arrived_count: 1, departed_count: 0 },
+      { bucket_start: '2026-09-02T07:00:00Z', arrived_count: 0, departed_count: 1 },
+    ],
+  },
+  sla: {
+    target_hours: 8,
+    evaluated_count: 2,
+    unknown_count: 0,
+    at_risk_count: 1,
+    overdue_count: 1,
+    overdue: [{ key: 'RP-OVERDUE', summary: 'Просроченная задача', status: 'Новая', bucket: 'new', robot: '448', created_at: '2026-09-01T00:00:00Z', hours_created: '33', url: '', age_hours: 33, overdue_hours: 25 }],
+    overdue_truncated: false,
+  },
+  workload: [{ login: 'operator', display: 'Оператор смены', open_count: 2, overdue_count: 1, oldest_hours: 33 }],
+  operators: [{ user_id: 5, username: 'operator', tracker_login: 'operator', open_count: 2, overdue_count: 1, oldest_hours: 33 }],
+}
+
+describe('role-aware operational overview', () => {
+  it('shows drivers only new and moving status monitoring', () => {
+    const model = buildOverviewModel(operationsSnapshot, 'driver')
+
+    expect(model.statusCards.map((card) => card.key)).toEqual(['new', 'moving'])
+  })
+
+  it('shows mechanics only queued and diagnostics status monitoring', () => {
+    const model = buildOverviewModel(operationsSnapshot, 'mechanic')
+
+    expect(model.statusCards.map((card) => card.key)).toEqual(['queued', 'diagnostics'])
+  })
+
+  it.each(['operator', 'admin', 'royal'])('lets privileged %s select all permitted task statuses', (role) => {
+    const model = buildOverviewModel(operationsSnapshot, role)
+
+    expect(model.statusCards.map((card) => card.key)).toEqual(['new', 'moving', 'queued', 'diagnostics', 'waiting_team'])
+  })
+
+  it('puts SLA overdue tasks before merely old attention items', () => {
+    const model = buildOverviewModel(operationsSnapshot, 'operator')
+
+    expect(model.attentionQueue.map((item) => item.key)).toEqual(['RP-OVERDUE', 'RP-OLD', 'RP-RECENT'])
+    expect(model.alerts[0]).toMatchObject({ tone: 'critical', taskCount: 1 })
   })
 })
