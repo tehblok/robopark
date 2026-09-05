@@ -8,7 +8,6 @@ import logging
 import random
 import threading
 import time
-from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -55,7 +54,8 @@ def keepalive_once(
 
 
 def _keepalive_once_with_db(db: Session, stop_event: threading.Event | None) -> None:
-    cookie = settings_svc.get_emergency_cookie(db)
+    probe = settings_svc.get_emergency_cookie_probe(db)
+    cookie, identity = probe
     if not cookie:
         return
 
@@ -70,20 +70,19 @@ def _keepalive_once_with_db(db: Session, stop_event: threading.Event | None) -> 
             return
 
         try:
-            emergency_cache.get_robot_payload(db=db, vin=vin)
+            emergency_cache.get_robot_payload(db=db, vin=vin, probe=probe)
         except emergency_client.EmergencyAuthError:
-            settings_svc.set_emergency_cookie_valid(db, False)
             return
         except emergency_client.EmergencyError:
             logger.warning("Emergency keep-alive failed for VIN %s", vin)
         else:
-            settings_svc.set_emergency_cookie_valid(db, True)
-            settings_svc.set_setting(
+            if settings_svc.record_emergency_cookie_probe(
                 db,
-                settings_svc.EMERGENCY_KEEPALIVE_LAST_OK_KEY,
-                datetime.now(UTC).isoformat(),
-            )
-            reports.resolve_open_emergency_cookie_reports(db)
+                identity=identity,
+                valid=True,
+                keepalive_last_ok=True,
+            ):
+                reports.resolve_open_emergency_cookie_reports(db, expected_identity=identity)
 
         if index + 1 < len(vins) and not _interruptible_sleep(INTER_VIN_GAP_SECONDS, stop_event):
             return

@@ -2,7 +2,9 @@ import threading
 import time
 
 import pytest
+from sqlalchemy.orm import Session
 
+from robopark_api.models import Report
 from robopark_api.services import emergency_cache, emergency_client, reports
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.live_merge import LiveMergeStore
@@ -329,21 +331,20 @@ def test_clear_cache_discards_stale_flight_auth_error_side_effects(tmp_path, mon
 
 
 def test_other_worker_stale_success_cannot_be_accepted_after_cookie_activation(
-    db_session, tmp_path, monkeypatch
+    db_engine, seed_royal, tmp_path, monkeypatch
 ):
     store = LiveMergeStore(tmp_path)
-    settings_svc.activate_emergency_cookie(
-        db_session,
-        cookie="old-cookie",
-        status="valid",
-        checked_robot="447",
-    )
-    old_identity = settings_svc.get_emergency_cookie_identity(db_session)
+    with Session(db_engine) as setup:
+        settings_svc.activate_emergency_cookie(
+            setup,
+            cookie="old-cookie",
+            status="valid",
+            checked_robot="447",
+        )
+        old_identity = settings_svc.get_emergency_cookie_identity(setup)
     fetch_started = threading.Event()
     release_fetch = threading.Event()
     old_results = []
-    report_calls = []
-    generation_before = emergency_cache._generation
 
     def fake_fetch(*, cookie, vin):
         if cookie == "old-cookie":
@@ -354,65 +355,71 @@ def test_other_worker_stale_success_cannot_be_accepted_after_cookie_activation(
 
     monkeypatch.setattr(emergency_cache, "get_live_merge_store", lambda: store)
     monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
-    monkeypatch.setattr(
-        reports,
-        "resolve_open_emergency_cookie_reports",
-        lambda db, **kwargs: report_calls.append(db),
-    )
 
-    old_worker = threading.Thread(
-        target=lambda: old_results.append(emergency_cache.get_robot_payload(db=db_session, vin=VIN))
-    )
+    def old_worker_load():
+        with Session(db_engine) as old_worker_session:
+            old_results.append(emergency_cache.get_robot_payload(db=old_worker_session, vin=VIN))
+
+    old_worker = threading.Thread(target=old_worker_load)
     old_worker.start()
     assert fetch_started.wait(timeout=2)
 
-    settings_svc.activate_emergency_cookie(
-        db_session,
-        cookie="new-cookie",
-        status="valid",
-        checked_robot="447",
-    )
-    new_identity = settings_svc.get_emergency_cookie_identity(db_session)
-    assert emergency_cache._generation == generation_before
+    with Session(db_engine) as replacement:
+        new_identity = settings_svc.activate_emergency_cookie(
+            replacement,
+            cookie="new-cookie",
+            status="valid",
+            checked_robot="447",
+        )
+        assert (
+            reports.ensure_open_emergency_cookie_report(
+                replacement,
+                author=None,
+                expected_identity=new_identity,
+            )
+            is not None
+        )
     release_fetch.set()
     old_worker.join(timeout=2)
 
     assert not old_worker.is_alive()
     assert old_results == [{"source": "old", "vin": VIN}]
-    assert settings_svc.get_emergency_cookie_valid(db_session) is True
-    assert settings_svc.get_keepalive_ring(db_session) == []
-    assert report_calls == []
-    assert store.try_fresh(
-        emergency_cache._MERGE_NS,
-        emergency_cache._shared_key(new_identity, VIN),
-        emergency_cache.PAYLOAD_CACHE_TTL_SECONDS,
-    ) == (False, None)
-    assert store.try_fresh(
-        emergency_cache._MERGE_NS,
-        emergency_cache._shared_key(old_identity, VIN),
-        emergency_cache.PAYLOAD_CACHE_TTL_SECONDS,
-    )[0]
+    with Session(db_engine) as check:
+        assert settings_svc.get_emergency_cookie_valid(check) is True
+        assert settings_svc.get_keepalive_ring(check) == []
+        assert check.query(Report).one().status == "open"
+        assert store.try_fresh(
+            emergency_cache._MERGE_NS,
+            emergency_cache._shared_key(new_identity, VIN),
+            emergency_cache.PAYLOAD_CACHE_TTL_SECONDS,
+        ) == (False, None)
+        assert store.try_fresh(
+            emergency_cache._MERGE_NS,
+            emergency_cache._shared_key(old_identity, VIN),
+            emergency_cache.PAYLOAD_CACHE_TTL_SECONDS,
+        )[0]
 
-    assert emergency_cache.get_robot_payload(db=db_session, vin=VIN) == {
-        "source": "new",
-        "vin": VIN,
-    }
+    with Session(db_engine) as new_worker_session:
+        assert emergency_cache.get_robot_payload(db=new_worker_session, vin=VIN) == {
+            "source": "new",
+            "vin": VIN,
+        }
 
 
 def test_other_worker_stale_auth_error_cannot_invalidate_new_cookie(
-    db_session, tmp_path, monkeypatch
+    db_engine, seed_royal, tmp_path, monkeypatch
 ):
     store = LiveMergeStore(tmp_path)
-    settings_svc.activate_emergency_cookie(
-        db_session,
-        cookie="old-cookie",
-        status="valid",
-        checked_robot="447",
-    )
+    with Session(db_engine) as setup:
+        settings_svc.activate_emergency_cookie(
+            setup,
+            cookie="old-cookie",
+            status="valid",
+            checked_robot="447",
+        )
     fetch_started = threading.Event()
     release_fetch = threading.Event()
     errors = []
-    report_calls = []
 
     def fake_fetch(*, cookie, vin):
         if cookie == "old-cookie":
@@ -423,36 +430,34 @@ def test_other_worker_stale_auth_error_cannot_invalidate_new_cookie(
 
     monkeypatch.setattr(emergency_cache, "get_live_merge_store", lambda: store)
     monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
-    monkeypatch.setattr(
-        reports,
-        "ensure_open_emergency_cookie_report",
-        lambda db, author, **kwargs: report_calls.append(db),
-    )
 
     def old_worker_load():
-        try:
-            emergency_cache.get_robot_payload(db=db_session, vin=VIN)
-        except BaseException as exc:
-            errors.append(exc)
+        with Session(db_engine) as old_worker_session:
+            try:
+                emergency_cache.get_robot_payload(db=old_worker_session, vin=VIN)
+            except BaseException as exc:
+                errors.append(exc)
 
     old_worker = threading.Thread(target=old_worker_load)
     old_worker.start()
     assert fetch_started.wait(timeout=2)
-    settings_svc.activate_emergency_cookie(
-        db_session,
-        cookie="new-cookie",
-        status="valid",
-        checked_robot="447",
-    )
+    with Session(db_engine) as replacement:
+        settings_svc.activate_emergency_cookie(
+            replacement,
+            cookie="new-cookie",
+            status="valid",
+            checked_robot="447",
+        )
     release_fetch.set()
     old_worker.join(timeout=2)
 
     assert not old_worker.is_alive()
     assert len(errors) == 1
     assert isinstance(errors[0], emergency_client.EmergencyAuthError)
-    assert settings_svc.get_emergency_cookie_valid(db_session) is True
-    assert settings_svc.get_keepalive_ring(db_session) == []
-    assert report_calls == []
+    with Session(db_engine) as check:
+        assert settings_svc.get_emergency_cookie_valid(check) is True
+        assert settings_svc.get_keepalive_ring(check) == []
+        assert check.query(Report).count() == 0
 
 
 def test_keepalive_ring_moves_vin_to_end_and_keeps_latest_twenty(db_session):

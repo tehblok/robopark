@@ -87,8 +87,14 @@ def _flight_is_current(flight: _Flight) -> bool:
         return flight.generation == _generation
 
 
-def get_robot_payload(*, db: Session, vin: str) -> dict[str, Any]:
-    cookie, identity = settings_svc.get_emergency_cookie_probe(db)
+def get_robot_payload(
+    *,
+    db: Session,
+    vin: str,
+    probe: tuple[str | None, str | None] | None = None,
+) -> dict[str, Any]:
+    """Fetch using one cookie/identity capture when a caller already has it."""
+    cookie, identity = probe or settings_svc.get_emergency_cookie_probe(db)
     now = time.monotonic()
     merge = get_live_merge_store()
     with _lock:

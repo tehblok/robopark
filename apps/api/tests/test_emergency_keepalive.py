@@ -7,7 +7,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from robopark_api import main
-from robopark_api.services import emergency_client, emergency_keepalive
+from robopark_api.models import Report
+from robopark_api.services import emergency_client, emergency_keepalive, reports
 from robopark_api.services import platform_settings as settings_svc
 
 
@@ -105,6 +106,61 @@ def test_unauthorized_fetch_marks_cookie_invalid(db_session, monkeypatch):
     emergency_keepalive.keepalive_once(db_session)
 
     assert settings_svc.get_emergency_cookie_valid(db_session) is False
+
+
+def test_stale_keepalive_success_does_not_update_new_cookie_or_resolve_report(
+    db_engine, seed_royal, monkeypatch
+):
+    vin = "YASADR00000000449"
+    with sessionmaker(bind=db_engine, future=True)() as setup:
+        settings_svc.activate_emergency_cookie(
+            setup,
+            cookie="old-cookie",
+            status="valid",
+            checked_robot="449",
+        )
+        settings_svc.touch_keepalive_ring(setup, vin)
+
+    fetch_started = threading.Event()
+    release_fetch = threading.Event()
+
+    def slow_fetch(*, cookie, vin):
+        assert cookie == "old-cookie"
+        fetch_started.set()
+        assert release_fetch.wait(timeout=2)
+        return {"vin": vin}
+
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", slow_fetch)
+
+    def old_worker():
+        with sessionmaker(bind=db_engine, future=True)() as old_session:
+            emergency_keepalive.keepalive_once(old_session)
+
+    worker = threading.Thread(target=old_worker)
+    worker.start()
+    assert fetch_started.wait(timeout=2)
+    with sessionmaker(bind=db_engine, future=True)() as replacement:
+        new_identity = settings_svc.activate_emergency_cookie(
+            replacement,
+            cookie="new-cookie",
+            status="valid",
+            checked_robot="449",
+        )
+        assert (
+            reports.ensure_open_emergency_cookie_report(
+                replacement,
+                author=None,
+                expected_identity=new_identity,
+            )
+            is not None
+        )
+    release_fetch.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    with sessionmaker(bind=db_engine, future=True)() as check:
+        assert settings_svc.get_setting(check, settings_svc.EMERGENCY_KEEPALIVE_LAST_OK_KEY) is None
+        assert check.query(Report).one().status == "open"
 
 
 def test_loop_accepts_injectable_interval(monkeypatch):

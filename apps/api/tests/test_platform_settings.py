@@ -2,6 +2,7 @@ import json
 from unittest.mock import MagicMock, Mock
 
 import pytest
+from sqlalchemy.orm import Session
 
 from conftest import login_as
 from robopark_api.routers import admin_settings
@@ -312,15 +313,46 @@ def test_emergency_cookie_activation_discards_prior_probe_ring(db_session):
     assert settings_svc.record_emergency_cookie_probe(
         db_session,
         identity=old_identity,
-        valid=True,
+        valid=False,
         vin="YASADR00000002378",
+        status="invalid",
+        checked_robot="2378",
     )
 
     settings_svc.activate_emergency_cookie(
         db_session,
         cookie="second",
         status="valid",
-        checked_robot="2378",
+        checked_robot="447",
     )
 
     assert settings_svc.get_keepalive_ring(db_session) == []
+    assert settings_svc.get_emergency_cookie_valid(db_session) is True
+    assert settings_svc.get_emergency_cookie_status(db_session) == "valid"
+    assert settings_svc.get_emergency_cookie_checked_robot(db_session) == "447"
+
+
+def test_emergency_cookie_probe_refreshes_both_rows_after_other_session_activation(db_engine):
+    """A retained ORM cookie row must not be paired with a fresh identity row."""
+    with Session(db_engine) as initial:
+        settings_svc.activate_emergency_cookie(
+            initial,
+            cookie="old-cookie",
+            status="valid",
+            checked_robot="2378",
+        )
+
+    with Session(db_engine) as stale_reader:
+        assert settings_svc.get_emergency_cookie(stale_reader) == "old-cookie"
+        with Session(db_engine) as replacement:
+            new_identity = settings_svc.activate_emergency_cookie(
+                replacement,
+                cookie="new-cookie",
+                status="valid",
+                checked_robot="2378",
+            )
+
+        assert settings_svc.get_emergency_cookie_probe(stale_reader) == (
+            "new-cookie",
+            new_identity,
+        )

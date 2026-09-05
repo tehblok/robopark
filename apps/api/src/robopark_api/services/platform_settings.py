@@ -114,6 +114,14 @@ def migrate_plaintext_secrets(db: Session) -> int:
     clear. Without a key we silently no-op — the app still boots to let an
     operator upgrade in place. Returns the count of rows that were rewritten.
     """
+    # A plaintext Emergency cookie remains a supported migration path when a
+    # deployment has not configured SECRET_KEY yet. Its non-secret activation
+    # identity is still needed to guard cache-flight side effects.
+    if (
+        get_setting(db, EMERGENCY_COOKIE_KEY) is not None
+        and get_setting(db, EMERGENCY_COOKIE_IDENTITY_KEY) is None
+    ):
+        set_setting(db, EMERGENCY_COOKIE_IDENTITY_KEY, uuid.uuid4().hex)
     if not _secret_key():
         return 0
     rewritten = 0
@@ -129,11 +137,6 @@ def migrate_plaintext_secrets(db: Session) -> int:
             "Re-encrypted %d legacy plaintext secret(s) at boot; cycle SECRET_KEY only after backup.",
             rewritten,
         )
-    if (
-        get_setting(db, EMERGENCY_COOKIE_KEY) is not None
-        and get_setting(db, EMERGENCY_COOKIE_IDENTITY_KEY) is None
-    ):
-        set_setting(db, EMERGENCY_COOKIE_IDENTITY_KEY, uuid.uuid4().hex)
     return rewritten
 
 
@@ -152,19 +155,21 @@ def get_emergency_cookie_identity(db: Session) -> str | None:
 
 def get_emergency_cookie_probe(db: Session) -> tuple[str | None, str | None]:
     """Read the active cookie and its persistent identity from one DB snapshot."""
-    rows = {
-        row.key: row
-        for row in db.scalars(
-            select(PlatformSetting).where(
+    # Fetch scalar columns, not ORM instances: a long-lived request Session
+    # may otherwise pair a stale identity-map cookie object with a freshly
+    # queried identity after another worker activates a replacement.
+    rows = dict(
+        db.execute(
+            select(PlatformSetting.key, PlatformSetting.value).where(
                 PlatformSetting.key.in_((EMERGENCY_COOKIE_KEY, EMERGENCY_COOKIE_IDENTITY_KEY))
             )
-        )
-    }
-    cookie_row = rows.get(EMERGENCY_COOKIE_KEY)
-    if cookie_row is None:
+        ).all()
+    )
+    stored_cookie = rows.get(EMERGENCY_COOKIE_KEY)
+    if stored_cookie is None:
         return None, None
     try:
-        cookie = decrypt_secret(cookie_row.value, _secret_key())
+        cookie = decrypt_secret(stored_cookie, _secret_key())
     except SecretDecryptionError:
         logger.error(
             "Cannot decrypt setting %r — SECRET_KEY is missing or was rotated. "
@@ -172,8 +177,7 @@ def get_emergency_cookie_probe(db: Session) -> tuple[str | None, str | None]:
             EMERGENCY_COOKIE_KEY,
         )
         return None, None
-    identity_row = rows.get(EMERGENCY_COOKIE_IDENTITY_KEY)
-    return cookie, identity_row.value if identity_row is not None else None
+    return cookie, rows.get(EMERGENCY_COOKIE_IDENTITY_KEY)
 
 
 def _claim_emergency_cookie_identity(db: Session, identity: str) -> bool:
@@ -258,6 +262,7 @@ def record_emergency_cookie_probe(
     vin: str | None = None,
     status: str | None = None,
     checked_robot: str | None = None,
+    keepalive_last_ok: bool = False,
 ) -> bool:
     """Write probe side effects only if the probed cookie remains active."""
     if identity is None:
@@ -295,6 +300,13 @@ def record_emergency_cookie_probe(
                         checked_robot,
                         now=now,
                     )
+            if keepalive_last_ok:
+                _upsert_setting(
+                    db,
+                    EMERGENCY_KEEPALIVE_LAST_OK_KEY,
+                    now.isoformat(),
+                    now=now,
+                )
             db.commit()
     except BaseException:
         db.rollback()
