@@ -101,6 +101,36 @@ function emergencyCookieStatus(settings: IntegrationSettings) {
   }
 }
 
+function mergeTrackerSettings(
+  current: IntegrationSettings | null,
+  updated: IntegrationSettings,
+): IntegrationSettings {
+  if (!current) return updated
+  return {
+    ...current,
+    tracker_token_masked: updated.tracker_token_masked,
+    tracker_token_updated_at: updated.tracker_token_updated_at,
+    tracker_token_encrypted: updated.tracker_token_encrypted,
+  }
+}
+
+function mergeEmergencySettings(
+  current: IntegrationSettings | null,
+  updated: IntegrationSettings,
+): IntegrationSettings {
+  if (!current) return updated
+  return {
+    ...current,
+    emergency_cookie_masked: updated.emergency_cookie_masked,
+    emergency_cookie_updated_at: updated.emergency_cookie_updated_at,
+    emergency_cookie_encrypted: updated.emergency_cookie_encrypted,
+    emergency_cookie_valid: updated.emergency_cookie_valid,
+    emergency_cookie_status: updated.emergency_cookie_status,
+    emergency_cookie_checked_at: updated.emergency_cookie_checked_at,
+    emergency_cookie_checked_robot: updated.emergency_cookie_checked_robot,
+  }
+}
+
 export function Admin() {
   const { user } = useAuth()
   const { parkId } = useParkScope()
@@ -212,7 +242,8 @@ export function Admin() {
     setSuccess('')
     setTrackerBusy(true)
     try {
-      setSettings(await api.setTrackerToken(token))
+      const updated = await api.setTrackerToken(token)
+      setSettings((current) => mergeTrackerSettings(current, updated))
       setTrackerToken('')
       setSuccess('Токен Tracker сохранён')
     } catch (caught) {
@@ -228,7 +259,8 @@ export function Admin() {
     setSuccess('')
     setEmergencyBusy(true)
     try {
-      setSettings(await action())
+      const updated = await action()
+      setSettings((current) => mergeEmergencySettings(current, updated))
       setSuccess(message)
     } catch (caught) {
       setError(mapApiError(caught, ru.errors.emergency503))

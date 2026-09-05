@@ -5,13 +5,6 @@ import { api, ApiError, type IntegrationSettings } from '../api'
 import { resourceStore } from '../lib/resource'
 import { installMatchMedia, renderApp, testUser } from '../test/renderApp'
 
-type EmergencyValidation = Pick<IntegrationSettings,
-  'emergency_cookie_masked' | 'emergency_cookie_updated_at' | 'emergency_cookie_valid'> & {
-  emergency_cookie_checked_at: string | null
-  emergency_cookie_checked_robot: string | null
-  emergency_cookie_status: 'unchecked' | 'valid' | 'invalid' | 'unavailable'
-}
-
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>((done) => {
@@ -20,18 +13,21 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-function settings(validation: Partial<EmergencyValidation> = {}): IntegrationSettings {
+function settings(validation: Partial<IntegrationSettings> = {}): IntegrationSettings {
   return {
     tracker_token_masked: null,
     tracker_token_updated_at: null,
     emergency_cookie_masked: null,
     emergency_cookie_updated_at: null,
     emergency_cookie_valid: null,
+    emergency_cookie_status: 'unchecked',
+    emergency_cookie_checked_at: null,
+    emergency_cookie_checked_robot: null,
     ...validation,
-  } as IntegrationSettings
+  }
 }
 
-function setup(validation: Partial<EmergencyValidation> = {}) {
+function setup(validation: Partial<IntegrationSettings> = {}) {
   vi.spyOn(api, 'parks').mockResolvedValue([])
   vi.spyOn(api, 'adminParkRequests').mockResolvedValue([])
   vi.spyOn(api, 'integrationSettings').mockResolvedValue(settings(validation))
@@ -133,5 +129,60 @@ describe('Admin Emergency cookie validation', () => {
     await waitFor(() => expect(api.setTrackerToken).toHaveBeenCalledWith('tracker-token'))
     expect(screen.getByRole('button', { name: 'Сохранить и проверить' })).toBeEnabled()
     pending.resolve(settings())
+  })
+
+  it('keeps fresh cookie metadata when a delayed Tracker response arrives last', async () => {
+    const user = userEvent.setup()
+    const tracker = deferred<IntegrationSettings>()
+    const emergency = deferred<IntegrationSettings>()
+    vi.spyOn(api, 'setTrackerToken').mockReturnValue(tracker.promise)
+    vi.spyOn(api, 'checkEmergencyCookie').mockReturnValue(emergency.promise)
+    setup()
+
+    await user.type(await screen.findByLabelText('Tracker OAuth-токен'), 'tracker-token')
+    await user.click(screen.getByRole('button', { name: 'Сохранить токен' }))
+    await user.click(screen.getByRole('button', { name: 'Проверить текущую' }))
+    await waitFor(() => expect(api.checkEmergencyCookie).toHaveBeenCalledWith(undefined))
+
+    emergency.resolve(settings({
+      emergency_cookie_status: 'valid',
+      emergency_cookie_valid: true,
+      emergency_cookie_checked_at: '2026-09-06T10:00:00Z',
+      emergency_cookie_checked_robot: '447',
+    }))
+    expect(await screen.findByText('Действительна')).toBeVisible()
+
+    tracker.resolve(settings({ tracker_token_masked: 'tracker-masked' }))
+
+    await waitFor(() => expect(screen.getByText('работает')).toBeVisible())
+    expect(screen.getByText('Действительна')).toBeVisible()
+    expect(screen.getByText(/робот 447/i)).toBeVisible()
+  })
+
+  it('keeps fresh Tracker metadata when a delayed cookie response arrives last', async () => {
+    const user = userEvent.setup()
+    const tracker = deferred<IntegrationSettings>()
+    const emergency = deferred<IntegrationSettings>()
+    vi.spyOn(api, 'setTrackerToken').mockReturnValue(tracker.promise)
+    vi.spyOn(api, 'checkEmergencyCookie').mockReturnValue(emergency.promise)
+    setup()
+
+    await user.type(await screen.findByLabelText('Tracker OAuth-токен'), 'tracker-token')
+    await user.click(screen.getByRole('button', { name: 'Сохранить токен' }))
+    await user.click(screen.getByRole('button', { name: 'Проверить текущую' }))
+    await waitFor(() => expect(api.checkEmergencyCookie).toHaveBeenCalledWith(undefined))
+
+    tracker.resolve(settings({ tracker_token_masked: 'tracker-masked' }))
+    expect(await screen.findByText('работает')).toBeVisible()
+
+    emergency.resolve(settings({
+      emergency_cookie_status: 'valid',
+      emergency_cookie_valid: true,
+      emergency_cookie_checked_at: '2026-09-06T10:00:00Z',
+      emergency_cookie_checked_robot: '447',
+    }))
+
+    expect(await screen.findByText('Действительна')).toBeVisible()
+    expect(screen.getByText('работает')).toBeVisible()
   })
 })
