@@ -13,8 +13,8 @@ describe('MasterDetail', () => {
     )
 
     expect(container.querySelector('.rp-master-detail')).toHaveAttribute('data-detail-open', 'false')
-    expect(container.querySelector('.rp-master-detail__list')).toHaveTextContent('Список заявок')
-    expect(container.querySelector('.rp-master-detail__detail')).toHaveTextContent('Детали заявки')
+    expect(screen.getByRole('region', { name: 'Список' })).toHaveTextContent('Список заявок')
+    expect(screen.getByRole('region', { name: 'Детали' })).toHaveTextContent('Детали заявки')
   })
 
   it('offers a focusable mobile back button that invokes onBack', () => {
@@ -25,6 +25,8 @@ describe('MasterDetail', () => {
     )
 
     const backButton = screen.getByRole('button', { name: 'Назад к списку' })
+    expect(screen.getByRole('region', { name: 'Список' })).toHaveTextContent('Список заявок')
+    expect(screen.getByRole('region', { name: 'Детали' })).toHaveTextContent('Детали заявки')
     backButton.focus()
     expect(backButton).toHaveFocus()
     fireEvent.click(backButton)

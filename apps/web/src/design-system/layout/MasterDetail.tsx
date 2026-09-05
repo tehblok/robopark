@@ -17,8 +17,8 @@ export function MasterDetail({
 }: MasterDetailProps): ReactElement {
   return (
     <div className="rp-master-detail" data-detail-open={detailOpen}>
-      <section className="rp-master-detail__list">{list}</section>
-      <section className="rp-master-detail__detail">
+      <section aria-label="Список" className="rp-master-detail__list">{list}</section>
+      <section aria-label="Детали" className="rp-master-detail__detail">
         <div className="rp-master-detail__detail-actions">
           <Button className="rp-master-detail__back" onClick={onBack} type="button" variant="ghost">
             Назад к списку
