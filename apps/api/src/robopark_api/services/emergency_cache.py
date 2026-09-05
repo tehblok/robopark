@@ -38,13 +38,18 @@ def invalidate_vin(vin: str) -> None:
         merge.invalidate(_MERGE_NS, vin)
 
 
-def clear_cache_for_tests() -> None:
+def clear_cache() -> None:
     with _lock:
         _cache.clear()
-        _flights.clear()
     merge = get_live_merge_store()
     if merge is not None:
         merge.clear_namespace(_MERGE_NS)
+
+
+def clear_cache_for_tests() -> None:
+    with _lock:
+        _flights.clear()
+    clear_cache()
 
 
 def _finish_flight(

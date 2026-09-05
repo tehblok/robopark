@@ -1,4 +1,8 @@
+from unittest.mock import Mock
+
 from conftest import login_as
+from robopark_api.services import emergency_cache, emergency_client
+from robopark_api.services import platform_settings as settings_svc
 
 
 def test_get_integrations_empty(client, seed_royal):
@@ -23,13 +27,169 @@ def test_set_tracker_token_masked(client, seed_royal):
     assert "oken" not in body["tracker_token_masked"]
 
 
-def test_set_emergency_cookie(client, seed_royal):
+def test_invalid_candidate_does_not_replace_working_cookie(
+    client, db_session, seed_royal, monkeypatch
+):
     login_as(client, "royal", "secret")
-    put = client.put(
-        "/admin/settings/emergency-cookie",
-        json={"cookie": "Session_id=abc123"},
+    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "working")
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        Mock(side_effect=emergency_client.EmergencyAuthError()),
     )
-    assert put.status_code == 200
-    body = put.json()
-    assert body["emergency_cookie_valid"] is True
-    assert "Session_id" not in body["emergency_cookie_masked"]
+
+    response = client.put(
+        "/admin/settings/emergency-cookie",
+        json={"cookie": "bad", "robot_number": "A2378"},
+    )
+
+    assert response.status_code == 401
+    assert settings_svc.get_emergency_cookie(db_session) == "working"
+    assert "bad" not in response.text
+    assert client.get("/admin/settings/integrations").json()["emergency_cookie_status"] == "invalid"
+
+
+def test_unavailable_candidate_does_not_replace_working_cookie(
+    client, db_session, seed_royal, monkeypatch
+):
+    login_as(client, "royal", "secret")
+    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "working")
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        Mock(side_effect=emergency_client.EmergencyError()),
+    )
+
+    response = client.put(
+        "/admin/settings/emergency-cookie",
+        json={"cookie": "candidate-cookie", "robot_number": "A2378"},
+    )
+
+    assert response.status_code == 503
+    assert settings_svc.get_emergency_cookie(db_session) == "working"
+    assert "candidate-cookie" not in response.text
+    assert (
+        client.get("/admin/settings/integrations").json()["emergency_cookie_status"]
+        == "unavailable"
+    )
+
+
+def test_valid_candidate_is_saved_after_probe(client, db_session, seed_royal, monkeypatch):
+    login_as(client, "royal", "secret")
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        Mock(return_value={"vin": "YASADR00000002378"}),
+    )
+
+    response = client.put(
+        "/admin/settings/emergency-cookie",
+        json={"cookie": "candidate", "robot_number": "A2378"},
+    )
+
+    assert response.status_code == 200
+    assert settings_svc.get_emergency_cookie(db_session) == "candidate"
+    assert response.json()["emergency_cookie_status"] == "valid"
+    assert response.json()["emergency_cookie_checked_robot"] == "2378"
+    assert response.json()["emergency_cookie_checked_at"] is not None
+
+
+def test_valid_candidate_clears_cached_emergency_payload(
+    client, db_session, seed_royal, monkeypatch
+):
+    login_as(client, "royal", "secret")
+    vin = "YASADR00000002378"
+    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "working")
+    calls: list[str] = []
+
+    def fetch_robot_payload(*, cookie: str, vin: str):
+        calls.append(cookie)
+        return {"vin": vin}
+
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", fetch_robot_payload)
+    emergency_cache.get_robot_payload(db=db_session, vin=vin)
+
+    response = client.put(
+        "/admin/settings/emergency-cookie",
+        json={"cookie": "candidate", "robot_number": "A2378"},
+    )
+    emergency_cache.get_robot_payload(db=db_session, vin=vin)
+
+    assert response.status_code == 200
+    assert calls == ["working", "candidate", "candidate"]
+
+
+def test_recheck_prefers_explicit_robot_over_keepalive_robot(
+    client, db_session, seed_royal, monkeypatch
+):
+    login_as(client, "royal", "secret")
+    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "working")
+    settings_svc.touch_keepalive_ring(db_session, "YASADR00000000099")
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        lambda **kwargs: calls.append(kwargs) or {"vin": kwargs["vin"]},
+    )
+    emergency_cache.get_robot_payload(db=db_session, vin="YASADR00000000099")
+
+    response = client.post(
+        "/admin/settings/emergency-cookie/check",
+        json={"robot_number": "A2378"},
+    )
+
+    assert response.status_code == 200
+    assert calls[-1] == {"cookie": "working", "vin": "YASADR00000002378"}
+    assert response.json()["emergency_cookie_status"] == "valid"
+    assert response.json()["emergency_cookie_checked_robot"] == "2378"
+
+
+def test_recheck_uses_last_keepalive_robot_when_explicit_robot_is_absent(
+    client, db_session, seed_royal, monkeypatch
+):
+    login_as(client, "royal", "secret")
+    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "working")
+    settings_svc.touch_keepalive_ring(db_session, "YASADR00000002378")
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        Mock(return_value={"vin": "YASADR00000002378"}),
+    )
+
+    response = client.post("/admin/settings/emergency-cookie/check", json={})
+
+    assert response.status_code == 200
+    assert response.json()["emergency_cookie_checked_robot"] == "2378"
+
+
+def test_recheck_requires_explicit_or_keepalive_robot(client, seed_royal):
+    login_as(client, "royal", "secret")
+
+    response = client.post("/admin/settings/emergency-cookie/check", json={})
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "emergency_probe_required"
+
+
+def test_recheck_auth_failure_marks_saved_cookie_invalid(
+    client, db_session, seed_royal, monkeypatch
+):
+    login_as(client, "royal", "secret")
+    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "working")
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        Mock(side_effect=emergency_client.EmergencyAuthError()),
+    )
+
+    response = client.post(
+        "/admin/settings/emergency-cookie/check",
+        json={"robot_number": "A2378"},
+    )
+
+    assert response.status_code == 401
+    assert settings_svc.get_emergency_cookie(db_session) == "working"
+    body = client.get("/admin/settings/integrations").json()
+    assert body["emergency_cookie_valid"] is False
+    assert body["emergency_cookie_status"] == "invalid"
+    assert body["emergency_cookie_checked_robot"] == "2378"

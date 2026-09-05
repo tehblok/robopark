@@ -25,15 +25,17 @@ def allow_vin_scope(monkeypatch):
 
 def test_emergency_resolve(client, db_session, seed_mechanic, seed_royal):
     emergency_config.seed_emergency_config(db_session, emergency_config.DEFAULT_JSON_PATH)
-    login_as(client, "royal", "secret")
-    client.put("/admin/settings/emergency-cookie", json={"cookie": "Session_id=test"})
-    login_as(client, "mech1", "secret")
-
     payload = json.loads((FIXTURES / "emergency_robot.json").read_text(encoding="utf-8"))
+    login_as(client, "royal", "secret")
     with patch(
         "robopark_api.services.emergency_client.fetch_robot_payload",
         return_value=payload,
     ):
+        client.put(
+            "/admin/settings/emergency-cookie",
+            json={"cookie": "Session_id=test", "robot_number": "447"},
+        )
+        login_as(client, "mech1", "secret")
         response = client.post("/mechanic/emergency/resolve", json={"robot_number": "447"})
 
     assert response.status_code == 200
@@ -44,15 +46,17 @@ def test_emergency_resolve(client, db_session, seed_mechanic, seed_royal):
 
 def test_emergency_invalid_cookie(client, seed_mechanic, seed_royal):
     login_as(client, "royal", "secret")
-    client.put("/admin/settings/emergency-cookie", json={"cookie": "bad"})
-    login_as(client, "mech1", "secret")
-
     from robopark_api.services.emergency_client import EmergencyAuthError
 
     with patch(
         "robopark_api.services.emergency_client.fetch_robot_payload",
-        side_effect=EmergencyAuthError("invalid"),
+        side_effect=[{"vin": "YASADR00000000447"}, EmergencyAuthError("invalid")],
     ):
+        client.put(
+            "/admin/settings/emergency-cookie",
+            json={"cookie": "bad", "robot_number": "447"},
+        )
+        login_as(client, "mech1", "secret")
         response = client.post("/mechanic/emergency/resolve", json={"robot_number": "447"})
 
     assert response.status_code == 403

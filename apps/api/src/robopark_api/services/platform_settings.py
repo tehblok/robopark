@@ -27,6 +27,9 @@ TRACKER_ORG_ID_KEY = "tracker_org_id"
 TRACKER_ORG_MODE_KEY = "tracker_org_mode"
 EMERGENCY_COOKIE_KEY = "emergency_cookie"
 EMERGENCY_COOKIE_VALID_KEY = "emergency_cookie_valid"
+EMERGENCY_COOKIE_STATUS_KEY = "emergency_cookie_status"
+EMERGENCY_COOKIE_CHECKED_AT_KEY = "emergency_cookie_checked_at"
+EMERGENCY_COOKIE_CHECKED_ROBOT_KEY = "emergency_cookie_checked_robot"
 EMERGENCY_KEEPALIVE_RING_KEY = "emergency_keepalive_ring"
 EMERGENCY_KEEPALIVE_SEED_VIN_KEY = "emergency_keepalive_seed_vin"
 EMERGENCY_KEEPALIVE_LAST_OK_KEY = "emergency_keepalive_last_ok_at"
@@ -137,6 +140,27 @@ def set_emergency_cookie_valid(db: Session, valid: bool) -> None:
     set_setting(db, EMERGENCY_COOKIE_VALID_KEY, "true" if valid else "false")
 
 
+def get_emergency_cookie_status(db: Session) -> str:
+    row = get_setting(db, EMERGENCY_COOKIE_STATUS_KEY)
+    return row.value if row is not None else "unchecked"
+
+
+def get_emergency_cookie_checked_at(db: Session) -> str | None:
+    row = get_setting(db, EMERGENCY_COOKIE_CHECKED_AT_KEY)
+    return row.value if row is not None else None
+
+
+def get_emergency_cookie_checked_robot(db: Session) -> str | None:
+    row = get_setting(db, EMERGENCY_COOKIE_CHECKED_ROBOT_KEY)
+    return row.value if row is not None else None
+
+
+def set_emergency_cookie_check(db: Session, *, status: str, robot: str) -> None:
+    set_setting(db, EMERGENCY_COOKIE_STATUS_KEY, status)
+    set_setting(db, EMERGENCY_COOKIE_CHECKED_AT_KEY, datetime.now(UTC).isoformat())
+    set_setting(db, EMERGENCY_COOKIE_CHECKED_ROBOT_KEY, robot)
+
+
 def get_keepalive_ring(db: Session) -> list[str]:
     row = get_setting(db, EMERGENCY_KEEPALIVE_RING_KEY)
     if row is None:
@@ -186,6 +210,9 @@ def integration_status(db: Session) -> dict:
         "emergency_cookie_updated_at": emergency.updated_at if emergency else None,
         "emergency_cookie_encrypted": is_encrypted(emergency.value) if emergency else False,
         "emergency_cookie_valid": valid,
+        "emergency_cookie_status": get_emergency_cookie_status(db),
+        "emergency_cookie_checked_at": get_emergency_cookie_checked_at(db),
+        "emergency_cookie_checked_robot": get_emergency_cookie_checked_robot(db),
     }
 
 

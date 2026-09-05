@@ -414,6 +414,31 @@ class ScreenshotGuardSettingsIn(BaseModel):
     driver: bool | None = None
 
 
+EmergencyCookieStatus = Literal["unchecked", "valid", "invalid", "unavailable"]
+
+
+class EmergencyCookieUpdate(BaseModel):
+    cookie: str = Field(min_length=1)
+    robot_number: str = Field(min_length=1, max_length=64)
+
+
+class EmergencyCookieCheck(BaseModel):
+    robot_number: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class IntegrationSettingsOut(BaseModel):
+    tracker_token_masked: str | None
+    tracker_token_updated_at: str | None
+    tracker_token_encrypted: bool = False
+    emergency_cookie_masked: str | None
+    emergency_cookie_updated_at: str | None
+    emergency_cookie_encrypted: bool = False
+    emergency_cookie_valid: bool | None
+    emergency_cookie_status: EmergencyCookieStatus = "unchecked"
+    emergency_cookie_checked_at: str | None = None
+    emergency_cookie_checked_robot: str | None = None
+
+
 class DashboardMovingItemOut(BaseModel):
     key: str
     summary: str

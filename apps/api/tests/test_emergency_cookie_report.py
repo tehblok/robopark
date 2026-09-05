@@ -99,12 +99,17 @@ def test_cache_hit_does_not_resolve_cookie_report(db_session, monkeypatch):
     assert calls["resolve"] == 1
 
 
-def test_put_emergency_cookie_resolves_open_report(client, db_session, seed_royal):
+def test_put_emergency_cookie_resolves_open_report(client, db_session, seed_royal, monkeypatch):
     reports_svc.ensure_open_emergency_cookie_report(db_session, author=seed_royal)
     login_as(client, "royal", "secret")
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        lambda **kwargs: {"vin": kwargs["vin"]},
+    )
     put = client.put(
         "/admin/settings/emergency-cookie",
-        json={"cookie": "Session_id=fresh"},
+        json={"cookie": "Session_id=fresh", "robot_number": "447"},
     )
     assert put.status_code == 200
     row = db_session.query(Report).one()
