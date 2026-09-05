@@ -21,9 +21,10 @@ export function OverviewAlerts({ alerts }: Pick<OperationalOverviewModel, 'alert
   </section>
 }
 
-export function OverviewStatusMonitoring({ statusCards, statusHref }: Pick<OperationalOverviewModel, 'statusCards'> & { statusHref: (status: string) => string }) {
+export function OverviewStatusMonitoring({ statusCards, statusHref, allHref }: Pick<OperationalOverviewModel, 'statusCards'> & { statusHref: (status: string) => string; allHref: string | null }) {
   return <Panel title="Статусы задач" description="Выберите статус, чтобы сузить очередь внимания до разрешённых вашей роли задач.">
     <div className="rp-overview-statuses" data-testid="overview-statuses">
+      {allHref ? <Link aria-label="Все разрешённые задачи" className="rp-overview-status rp-overview-status--all" to={allHref}>Все разрешённые задачи</Link> : null}
       {statusCards.map((card) => <Link aria-current={card.selected ? 'page' : undefined} aria-label={`${card.label}: ${taskCount(card.taskCount)}`} className="rp-overview-status" key={card.key} to={statusHref(card.key)}>
         <MetricCard label={card.label} tone={card.selected ? 'info' : 'neutral'} value={taskCount(card.taskCount)} />
       </Link>)}
@@ -34,8 +35,8 @@ export function OverviewStatusMonitoring({ statusCards, statusHref }: Pick<Opera
 export function OverviewFlow({ flow }: Pick<OperationalOverviewModel, 'flow'>) {
   return <Panel title="Поток задач: пришло / ушло" description="Компактный операционный срез: созданные и решённые задачи в наблюдаемых интервалах, не физические перемещения роботов.">
     <div aria-label="Сводка потока задач" className="rp-overview-flow">
-      <MetricCard label="Пришло задач" value={`${flow.arrivedTaskCount} задач`} />
-      <MetricCard label="Ушло задач" tone="success" value={`${flow.leftTaskCount} задач`} />
+      <MetricCard label="Пришло задач" value={taskCount(flow.arrivedTaskCount)} />
+      <MetricCard label="Ушло задач" tone="success" value={taskCount(flow.leftTaskCount)} />
       <MetricCard label="В работе задач" tone="info" value={taskCount(flow.backlogTaskCount)} />
     </div>
     <p className="rp-overview-note">Покрытие: {flow.observedBuckets} из {flow.expectedBuckets} интервалов.{flow.complete ? '' : ' Пробелы не считаются нулями.'}</p>

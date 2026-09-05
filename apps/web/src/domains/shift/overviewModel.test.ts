@@ -379,4 +379,33 @@ describe('role-aware operational overview', () => {
     expect(model.attentionQueue.map((item) => item.key)).toEqual(['RP-OVERDUE', 'RP-OLD', 'RP-RECENT'])
     expect(model.alerts[0]).toMatchObject({ tone: 'critical', taskCount: 1 })
   })
+
+  it('does not leak an overdue task from another selected status into attention', () => {
+    const model = buildOverviewModel({
+      ...operationsSnapshot,
+      selected_status: 'moving',
+      tasks: [{ ...operationsSnapshot.tasks[0], key: 'RP-MOVING', bucket: 'moving' }],
+      sla: {
+        ...operationsSnapshot.sla,
+        overdue_count: 2,
+        overdue: [
+          { ...operationsSnapshot.sla.overdue[0], key: 'RP-OVERDUE-QUEUED', bucket: 'queued' },
+          { ...operationsSnapshot.sla.overdue[0], key: 'RP-OVERDUE-MOVING', bucket: 'moving' },
+        ],
+      },
+    }, 'operator')
+
+    expect(model.attentionQueue.map((item) => item.key)).toEqual(['RP-OVERDUE-MOVING', 'RP-MOVING'])
+    expect(model.alerts[0]).toMatchObject({ taskCount: 1 })
+  })
+
+  it('keeps arrived and left unknown when no flow interval was observed', () => {
+    const model = buildOverviewModel({
+      ...operationsSnapshot,
+      flow: { ...operationsSnapshot.flow, observed_buckets: 0, complete: false, points: [] },
+    }, 'operator')
+
+    expect(model.flow.arrivedTaskCount).toBeNull()
+    expect(model.flow.leftTaskCount).toBeNull()
+  })
 })

@@ -246,8 +246,8 @@ export type OperationalOverviewModel = {
   alerts: OverviewAlert[]
   statusCards: OverviewStatusCard[]
   flow: {
-    arrivedTaskCount: number
-    leftTaskCount: number
+    arrivedTaskCount: number | null
+    leftTaskCount: number | null
     backlogTaskCount: number | null
     observedBuckets: number
     expectedBuckets: number
@@ -298,14 +298,14 @@ function attentionItem(
   }
 }
 
-function operationalAlerts(data: OperationsOverview): OverviewAlert[] {
+function operationalAlerts(data: OperationsOverview, overdueTaskCount: number): OverviewAlert[] {
   const alerts: OverviewAlert[] = []
-  if (data.sla.overdue_count != null && data.sla.overdue_count > 0) {
+  if (overdueTaskCount > 0) {
     alerts.push({
       tone: 'critical',
-      title: `Просрочено SLA: ${data.sla.overdue_count} задач`,
+      title: `Просрочено SLA: ${overdueTaskCount} задач`,
       description: 'Просроченные задачи вынесены в начало очереди внимания.',
-      taskCount: data.sla.overdue_count,
+      taskCount: overdueTaskCount,
     })
   }
   if (data.sla.target_hours == null) {
@@ -325,16 +325,32 @@ function operationalAlerts(data: OperationsOverview): OverviewAlert[] {
   return alerts
 }
 
+function selectedStatusKeys(data: OperationsOverview, role: string): Set<string> {
+  const permitted = visibleStatusKeys(data, role)
+  return data.selected_status !== 'all' && permitted.includes(data.selected_status)
+    ? new Set([data.selected_status])
+    : new Set(permitted)
+}
+
+function flowTaskTotal(data: OperationsOverview, kind: 'arrived_count' | 'departed_count'): number | null {
+  if (data.flow.observed_buckets === 0 || data.flow.points.length === 0) return null
+  return data.flow.points.reduce((sum, point) => sum + point[kind], 0)
+}
+
 function buildOperationalOverviewModel(data: OperationsOverview, role: string): OperationalOverviewModel {
-  const overdue = data.sla.overdue.map((task) => attentionItem(task, data.park_id, 'overdue', task.overdue_hours))
+  const selectedStatuses = selectedStatusKeys(data, role)
+  const isSelected = (task: Blocker) => selectedStatuses.has(task.bucket)
+  const overdue = data.sla.overdue
+    .filter(isSelected)
+    .map((task) => attentionItem(task, data.park_id, 'overdue', task.overdue_hours))
   const overdueKeys = new Set(overdue.map((task) => task.key))
   const attention = data.tasks
-    .filter((task) => !overdueKeys.has(task.key))
+    .filter((task) => isSelected(task) && !overdueKeys.has(task.key))
     .map((task) => attentionItem(task, data.park_id, 'attention'))
     .sort((left, right) => (right.ageHours ?? Number.NEGATIVE_INFINITY) - (left.ageHours ?? Number.NEGATIVE_INFINITY))
 
   return {
-    alerts: operationalAlerts(data),
+    alerts: operationalAlerts(data, overdue.length),
     statusCards: visibleStatusKeys(data, role).map((key) => {
       const option = data.status_options.find((item) => item.key === key)
       return {
@@ -345,8 +361,8 @@ function buildOperationalOverviewModel(data: OperationsOverview, role: string): 
       }
     }),
     flow: {
-      arrivedTaskCount: data.flow.points.reduce((sum, point) => sum + point.arrived_count, 0),
-      leftTaskCount: data.flow.points.reduce((sum, point) => sum + point.departed_count, 0),
+      arrivedTaskCount: flowTaskTotal(data, 'arrived_count'),
+      leftTaskCount: flowTaskTotal(data, 'departed_count'),
       backlogTaskCount: typeof data.counts.all === 'number' ? data.counts.all : null,
       observedBuckets: data.flow.observed_buckets,
       expectedBuckets: data.flow.expected_buckets,

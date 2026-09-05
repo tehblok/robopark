@@ -53,6 +53,39 @@
   background: var(--rp-state-hover);
 }
 
+.rp-overview-status--all {
+  align-items: center;
+  background: var(--rp-surface-subtle);
+  border: 1px solid var(--rp-border);
+  display: flex;
+  font-weight: var(--rp-font-weight-bold);
+  justify-content: center;
+  min-height: var(--rp-control-min-size);
+  padding: var(--rp-space-3);
+  text-align: center;
+}
+
+.rp-overview-status--all:hover {
+  background: var(--rp-state-hover);
+}
+
+.rp-overview-warning {
+  align-items: center;
+  background: var(--rp-surface-subtle);
+  border: 1px solid var(--rp-warning);
+  border-radius: var(--rp-radius-panel);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rp-space-3);
+  justify-content: space-between;
+  padding: var(--rp-density-panel-padding);
+}
+
+.rp-overview-warning p {
+  color: var(--rp-text-muted);
+  margin: var(--rp-space-1) 0 0;
+}
+
 .rp-overview-note {
   margin-top: var(--rp-space-3);
 }

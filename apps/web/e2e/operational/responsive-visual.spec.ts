@@ -5,7 +5,7 @@ import { installOperational, settlePage, snapshot } from './fixtures'
 const widths = [320, 390, 768, 1024, 1440] as const
 const themes = ['light', 'dark'] as const
 const states = [
-  { name: 'overview', path: '/overview?park=7', ready: '.rp-insights' },
+  { name: 'overview', path: '/overview?park=7', ready: '.rp-overview' },
   { name: 'work', path: '/work/ROBOPARK-42?park=7&status=open&sort=newest&page=2', ready: '.issue-actions' },
   { name: 'robots', path: '/robots?park=7', ready: '.rp-robots-search-panel' },
   { name: 'robot-check', path: `/robots/${snapshot.vin}/check?park=7&tab=scheme`, ready: '.rp-check-photo-frame img' },
@@ -129,8 +129,9 @@ for (const width of widths) for (const theme of themes) for (const state of stat
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
     await settlePage(page)
     if (state.name === 'overview' && width >= 900) {
-      await expect(page.locator('.rp-insights-metrics')).toBeInViewport()
-      await expect(page.getByRole('heading', { name: 'Текущие задачи' })).toBeInViewport()
+      await expect(page.locator('.rp-overview-flow')).toBeInViewport()
+      await expect(page.getByRole('heading', { name: 'Статусы задач' })).toBeInViewport()
+      await expect(page.getByRole('heading', { name: 'Очередь внимания' })).toBeInViewport()
     }
     if (state.name === 'work') {
       await assertWorkMode(page, width)
@@ -147,15 +148,15 @@ for (const width of widths) for (const theme of themes) for (const state of stat
   })
 }
 
-test('1440px 200% root text reflow preserves Operations metrics, tasks, SLA and detail', async ({ page }) => {
+test('1440px 200% root text reflow preserves Overview triage and detail', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await installOperational(page)
   await page.goto('/overview?park=7')
   await page.evaluate(() => { document.documentElement.style.fontSize = '200%' })
   for (const target of [
-    page.locator('.rp-insights-metrics'),
-    page.getByRole('heading', { name: 'Текущие задачи' }),
-    page.getByRole('heading', { name: 'Просрочки SLA' }),
+    page.locator('.rp-overview-flow'),
+    page.getByRole('heading', { name: 'Статусы задач' }),
+    page.getByRole('heading', { name: 'Очередь внимания' }),
   ]) {
     await target.scrollIntoViewIfNeeded()
     await expect(target).toBeInViewport()
