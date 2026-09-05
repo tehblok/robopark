@@ -31,10 +31,11 @@ def test_emergency_resolve(client, db_session, seed_mechanic, seed_royal):
         "robopark_api.services.emergency_client.fetch_robot_payload",
         return_value=payload,
     ):
-        client.put(
+        setup = client.put(
             "/admin/settings/emergency-cookie",
             json={"cookie": "Session_id=test", "robot_number": "447"},
         )
+        assert setup.status_code == 200
         login_as(client, "mech1", "secret")
         response = client.post("/mechanic/emergency/resolve", json={"robot_number": "447"})
 
@@ -52,10 +53,11 @@ def test_emergency_invalid_cookie(client, seed_mechanic, seed_royal):
         "robopark_api.services.emergency_client.fetch_robot_payload",
         side_effect=[{"vin": "YASADR00000000447"}, EmergencyAuthError("invalid")],
     ):
-        client.put(
+        setup = client.put(
             "/admin/settings/emergency-cookie",
             json={"cookie": "bad", "robot_number": "447"},
         )
+        assert setup.status_code == 200
         login_as(client, "mech1", "secret")
         response = client.post("/mechanic/emergency/resolve", json={"robot_number": "447"})
 

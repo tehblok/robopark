@@ -1,6 +1,11 @@
-from unittest.mock import Mock
+import json
+from unittest.mock import MagicMock, Mock
+
+import pytest
 
 from conftest import login_as
+from robopark_api.routers import admin_settings
+from robopark_api.schemas import EmergencyCookieUpdate
 from robopark_api.services import emergency_cache, emergency_client
 from robopark_api.services import platform_settings as settings_svc
 
@@ -72,6 +77,24 @@ def test_unavailable_candidate_does_not_replace_working_cookie(
         client.get("/admin/settings/integrations").json()["emergency_cookie_status"]
         == "unavailable"
     )
+
+
+def test_malformed_emergency_response_returns_503_for_candidate(client, seed_royal, monkeypatch):
+    login_as(client, "royal", "secret")
+    upstream_response = MagicMock(status_code=200, headers={"content-type": "application/json"})
+    upstream_response.json.side_effect = json.JSONDecodeError("invalid JSON", "not-json", 0)
+    http_client = MagicMock()
+    http_client.__enter__.return_value = http_client
+    http_client.get.return_value = upstream_response
+    monkeypatch.setattr(emergency_client.httpx, "Client", lambda **_kwargs: http_client)
+
+    response = client.put(
+        "/admin/settings/emergency-cookie",
+        json={"cookie": "candidate", "robot_number": "A2378"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "emergency_upstream_unavailable"
 
 
 def test_valid_candidate_is_saved_after_probe(client, db_session, seed_royal, monkeypatch):
@@ -193,3 +216,67 @@ def test_recheck_auth_failure_marks_saved_cookie_invalid(
     assert body["emergency_cookie_valid"] is False
     assert body["emergency_cookie_status"] == "invalid"
     assert body["emergency_cookie_checked_robot"] == "2378"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"cookie": "candidate-secret"},
+        {"cookie": {"legacy": "candidate-secret"}, "robot_number": "447"},
+        {"cookie": "candidate-secret", "robot_number": []},
+    ],
+)
+def test_emergency_cookie_validation_errors_do_not_leak_candidate_secret(
+    client, seed_royal, payload
+):
+    login_as(client, "royal", "secret")
+
+    response = client.put("/admin/settings/emergency-cookie", json=payload)
+
+    assert response.status_code == 422
+    assert "candidate-secret" not in response.text
+
+
+def test_emergency_cookie_invalid_json_does_not_leak_candidate_secret(client, seed_royal):
+    login_as(client, "royal", "secret")
+
+    response = client.put(
+        "/admin/settings/emergency-cookie",
+        content=b'{"cookie":"candidate-secret"',
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    assert "candidate-secret" not in response.text
+
+
+def test_failed_emergency_cookie_activation_rolls_back_all_settings(
+    db_session, seed_royal, monkeypatch
+):
+    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "working")
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        Mock(return_value={"vin": "YASADR00000002378"}),
+    )
+    clear_cache = Mock()
+    monkeypatch.setattr(emergency_cache, "clear_cache", clear_cache)
+
+    def fail_commit():
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(db_session, "commit", fail_commit)
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        admin_settings.put_emergency_cookie(
+            EmergencyCookieUpdate(cookie="candidate", robot_number="A2378"),
+            db_session,
+            seed_royal,
+        )
+
+    assert clear_cache.call_count == 0
+    assert settings_svc.get_emergency_cookie(db_session) == "working"
+    assert settings_svc.get_emergency_cookie_valid(db_session) is None
+    assert settings_svc.get_emergency_cookie_status(db_session) == "unchecked"
+    assert settings_svc.get_emergency_cookie_checked_at(db_session) is None
+    assert settings_svc.get_emergency_cookie_checked_robot(db_session) is None

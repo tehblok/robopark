@@ -5,6 +5,7 @@ import pytest
 
 from robopark_api.services import emergency_cache, emergency_client, reports
 from robopark_api.services import platform_settings as settings_svc
+from robopark_api.services.live_merge import LiveMergeStore
 
 VIN = "YASADR00000000447"
 
@@ -233,6 +234,100 @@ def test_cache_hit_does_not_touch_keepalive_ring(db_session, monkeypatch):
     emergency_cache.get_robot_payload(db=db_session, vin=VIN)
 
     assert touches == 1
+
+
+def test_clear_cache_discards_stale_flight_result_and_side_effects(tmp_path, monkeypatch):
+    store = LiveMergeStore(tmp_path)
+    fetch_started = threading.Event()
+    release_fetch = threading.Event()
+    results = []
+    valid_calls = []
+    ring_calls = []
+    resolved_calls = []
+
+    def fake_fetch(**_kwargs):
+        fetch_started.set()
+        assert release_fetch.wait(timeout=2)
+        return {"generation": "old"}
+
+    monkeypatch.setattr(emergency_cache, "get_live_merge_store", lambda: store)
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
+    monkeypatch.setattr(settings_svc, "get_emergency_cookie", lambda db: "old-cookie")
+    monkeypatch.setattr(
+        settings_svc, "set_emergency_cookie_valid", lambda db, valid: valid_calls.append(valid)
+    )
+    monkeypatch.setattr(
+        settings_svc, "touch_keepalive_ring", lambda db, vin: ring_calls.append(vin)
+    )
+    monkeypatch.setattr(
+        reports, "resolve_open_emergency_cookie_reports", lambda db: resolved_calls.append(db)
+    )
+
+    thread = threading.Thread(
+        target=lambda: results.append(emergency_cache.get_robot_payload(db=object(), vin=VIN))
+    )
+    thread.start()
+    assert fetch_started.wait(timeout=2)
+    emergency_cache.clear_cache()
+    release_fetch.set()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert results == [{"generation": "old"}]
+    assert valid_calls == []
+    assert ring_calls == []
+    assert resolved_calls == []
+    assert VIN not in emergency_cache._cache
+    assert store.try_fresh(
+        emergency_cache._MERGE_NS, VIN, emergency_cache.PAYLOAD_CACHE_TTL_SECONDS
+    ) == (
+        False,
+        None,
+    )
+
+
+def test_clear_cache_discards_stale_flight_auth_error_side_effects(tmp_path, monkeypatch):
+    store = LiveMergeStore(tmp_path)
+    fetch_started = threading.Event()
+    release_fetch = threading.Event()
+    errors = []
+    valid_calls = []
+    reports_opened = []
+
+    def fake_fetch(**_kwargs):
+        fetch_started.set()
+        assert release_fetch.wait(timeout=2)
+        raise emergency_client.EmergencyAuthError("expired")
+
+    monkeypatch.setattr(emergency_cache, "get_live_merge_store", lambda: store)
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
+    monkeypatch.setattr(settings_svc, "get_emergency_cookie", lambda db: "old-cookie")
+    monkeypatch.setattr(
+        settings_svc, "set_emergency_cookie_valid", lambda db, valid: valid_calls.append(valid)
+    )
+    monkeypatch.setattr(
+        reports, "ensure_open_emergency_cookie_report", lambda db, author: reports_opened.append(db)
+    )
+
+    def load():
+        try:
+            emergency_cache.get_robot_payload(db=object(), vin=VIN)
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=load)
+    thread.start()
+    assert fetch_started.wait(timeout=2)
+    emergency_cache.clear_cache()
+    release_fetch.set()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], emergency_client.EmergencyAuthError)
+    assert valid_calls == []
+    assert reports_opened == []
+    assert not store.error_path(emergency_cache._MERGE_NS, VIN).exists()
 
 
 def test_keepalive_ring_moves_vin_to_end_and_keeps_latest_twenty(db_session):

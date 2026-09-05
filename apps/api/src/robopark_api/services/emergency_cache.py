@@ -20,6 +20,7 @@ _MERGE_NS = "emergency.robot"
 
 @dataclass
 class _Flight:
+    generation: int
     done: threading.Event = field(default_factory=threading.Event)
     result: dict[str, Any] | None = None
     error: BaseException | None = None
@@ -28,6 +29,7 @@ class _Flight:
 _lock = threading.Lock()
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _flights: dict[str, _Flight] = {}
+_generation = 0
 
 
 def invalidate_vin(vin: str) -> None:
@@ -39,8 +41,11 @@ def invalidate_vin(vin: str) -> None:
 
 
 def clear_cache() -> None:
+    global _generation
     with _lock:
+        _generation += 1
         _cache.clear()
+        _flights.clear()
     merge = get_live_merge_store()
     if merge is not None:
         merge.clear_namespace(_MERGE_NS)
@@ -62,16 +67,23 @@ def _finish_flight(
     with _lock:
         flight.result = result
         flight.error = error
-        if result is not None:
+        if result is not None and flight.generation == _generation:
             _cache[vin] = (time.monotonic(), result)
-        _flights.pop(vin, None)
+        if _flights.get(vin) is flight:
+            _flights.pop(vin, None)
         flight.done.set()
+
+
+def _flight_is_current(flight: _Flight) -> bool:
+    with _lock:
+        return flight.generation == _generation
 
 
 def get_robot_payload(*, db: Session, vin: str) -> dict[str, Any]:
     now = time.monotonic()
     merge = get_live_merge_store()
     with _lock:
+        generation = _generation
         cached = _cache.get(vin)
         if cached is not None and now - cached[0] < PAYLOAD_CACHE_TTL_SECONDS:
             payload = cached[1]
@@ -83,7 +95,7 @@ def get_robot_payload(*, db: Session, vin: str) -> dict[str, Any]:
             flight = _flights.get(vin)
             is_leader = flight is None
             if is_leader:
-                flight = _Flight()
+                flight = _Flight(generation=generation)
                 _flights[vin] = flight
             payload = None
 
@@ -94,9 +106,11 @@ def get_robot_payload(*, db: Session, vin: str) -> dict[str, Any]:
         found, blob = merge.try_fresh(_MERGE_NS, vin, PAYLOAD_CACHE_TTL_SECONDS)
         if found:
             with _lock:
-                _cache[vin] = (time.monotonic(), blob)
+                if flight is not None and flight.generation == _generation:
+                    _cache[vin] = (time.monotonic(), blob)
                 if flight is not None and is_leader:
-                    _flights.pop(vin, None)
+                    if _flights.get(vin) is flight:
+                        _flights.pop(vin, None)
                     flight.result = blob
                     flight.done.set()
             return blob
@@ -121,16 +135,24 @@ def get_robot_payload(*, db: Session, vin: str) -> dict[str, Any]:
                 return emergency_client.fetch_robot_payload(cookie=cookie, vin=vin)
 
             if merge is not None:
-                payload = merge.merge_load(_MERGE_NS, vin, PAYLOAD_CACHE_TTL_SECONDS, load)
+                payload = merge.merge_load(
+                    _MERGE_NS,
+                    vin,
+                    PAYLOAD_CACHE_TTL_SECONDS,
+                    load,
+                    is_current=lambda: _flight_is_current(flight),
+                )
             else:
                 payload = load()
-            settings_svc.set_emergency_cookie_valid(db, True)
-            settings_svc.touch_keepalive_ring(db, vin)
-            reports.resolve_open_emergency_cookie_reports(db)
+            if _flight_is_current(flight):
+                settings_svc.set_emergency_cookie_valid(db, True)
+                settings_svc.touch_keepalive_ring(db, vin)
+                reports.resolve_open_emergency_cookie_reports(db)
         except emergency_client.EmergencyAuthError:
-            invalidate_vin(vin)
-            settings_svc.set_emergency_cookie_valid(db, False)
-            reports.ensure_open_emergency_cookie_report(db, author=None)
+            if _flight_is_current(flight):
+                invalidate_vin(vin)
+                settings_svc.set_emergency_cookie_valid(db, False)
+                reports.ensure_open_emergency_cookie_report(db, author=None)
             raise
     except BaseException as exc:
         error = exc

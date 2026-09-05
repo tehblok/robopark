@@ -63,17 +63,21 @@ def get_setting(db: Session, key: str) -> PlatformSetting | None:
     return db.get(PlatformSetting, key)
 
 
-def set_setting(db: Session, key: str, value: str) -> PlatformSetting:
-    """Persist a setting, encrypting it when the key holds a secret."""
+def _upsert_setting(db: Session, key: str, value: str, *, now: datetime) -> PlatformSetting:
     stored = encrypt_secret(value, _secret_key()) if key in SECRET_KEYS else value
     row = db.get(PlatformSetting, key)
-    now = datetime.now(UTC)
     if row is None:
         row = PlatformSetting(key=key, value=stored, updated_at=now)
         db.add(row)
     else:
         row.value = stored
         row.updated_at = now
+    return row
+
+
+def set_setting(db: Session, key: str, value: str) -> PlatformSetting:
+    """Persist a setting, encrypting it when the key holds a secret."""
+    row = _upsert_setting(db, key, value, now=datetime.now(UTC))
     db.commit()
     db.refresh(row)
     return row
@@ -159,6 +163,27 @@ def set_emergency_cookie_check(db: Session, *, status: str, robot: str) -> None:
     set_setting(db, EMERGENCY_COOKIE_STATUS_KEY, status)
     set_setting(db, EMERGENCY_COOKIE_CHECKED_AT_KEY, datetime.now(UTC).isoformat())
     set_setting(db, EMERGENCY_COOKIE_CHECKED_ROBOT_KEY, robot)
+
+
+def activate_emergency_cookie(
+    db: Session,
+    *,
+    cookie: str,
+    status: str,
+    checked_robot: str,
+) -> None:
+    """Atomically activate a probed cookie and its public status metadata."""
+    now = datetime.now(UTC)
+    try:
+        _upsert_setting(db, EMERGENCY_COOKIE_KEY, cookie, now=now)
+        _upsert_setting(db, EMERGENCY_COOKIE_VALID_KEY, "true", now=now)
+        _upsert_setting(db, EMERGENCY_COOKIE_STATUS_KEY, status, now=now)
+        _upsert_setting(db, EMERGENCY_COOKIE_CHECKED_AT_KEY, now.isoformat(), now=now)
+        _upsert_setting(db, EMERGENCY_COOKIE_CHECKED_ROBOT_KEY, checked_robot, now=now)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
 
 
 def get_keepalive_ring(db: Session) -> list[str]:

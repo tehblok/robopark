@@ -1,8 +1,12 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
@@ -111,6 +115,19 @@ def create_app() -> FastAPI:
     )
     app.state.ops_dir = resolved_ops_dir(settings)
     app.state.session_cookie_name = settings.session_cookie_name
+
+    @app.exception_handler(RequestValidationError)
+    async def hide_emergency_cookie_validation_input(request: Request, exc: RequestValidationError):
+        """Do not echo candidate cookie values in Pydantic validation output."""
+        if request.url.path != "/admin/settings/emergency-cookie":
+            return await request_validation_exception_handler(request, exc)
+        errors = []
+        for error in exc.errors():
+            sanitized = dict(error)
+            sanitized.pop("input", None)
+            errors.append(sanitized)
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     # Explicit method/header allowlists paired with ``allow_credentials=True``:
     # a wildcard here would let the browser send credentialed requests with

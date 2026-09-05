@@ -124,9 +124,12 @@ def put_emergency_cookie(
         ) from exc
 
     try:
-        settings_svc.set_setting(db, settings_svc.EMERGENCY_COOKIE_KEY, payload.cookie)
-        settings_svc.set_emergency_cookie_valid(db, True)
-        settings_svc.set_emergency_cookie_check(db, status="valid", robot=checked_robot)
+        settings_svc.activate_emergency_cookie(
+            db,
+            cookie=payload.cookie,
+            status="valid",
+            checked_robot=checked_robot,
+        )
     except MissingSecretKeyError as exc:
         raise _require_secret_key(exc) from exc
     from robopark_api.services import reports as reports_svc
