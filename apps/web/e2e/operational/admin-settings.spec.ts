@@ -1,6 +1,62 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 import type { IntegrationSettings } from '../../src/api'
-import { installOperational } from './fixtures'
+import { installOperational, parkNorth, settlePage } from './fixtures'
+
+test.use({ trace: 'off' })
+
+test('long park list supports typeahead within the phone viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 })
+  const parks = [parkNorth, ...Array.from({ length: 20 }, (_, index) => ({
+    ...parkNorth, id: 20 + index, name: `Парк ${index + 1}`,
+  })), { ...parkNorth, id: 99, name: 'Next производственный парк с длинным названием' }]
+  await installOperational(page, { role: 'admin', parks })
+  await page.goto('/robots?park=7')
+  const trigger = page.getByRole('button', { name: 'Сменить парк' })
+  await trigger.press('ArrowDown')
+  const list = page.getByRole('listbox', { name: 'Сменить парк' })
+  const box = await list.boundingBox()
+  expect(box).not.toBeNull()
+  expect(box!.x).toBeGreaterThanOrEqual(0)
+  expect(box!.x + box!.width).toBeLessThanOrEqual(320)
+  expect(box!.y + box!.height).toBeLessThanOrEqual(720)
+  // Playwright's US keyboard emits key events for Latin characters; Cyrillic
+  // prefix matching is covered by the user-event regression.
+  await page.keyboard.type('Ne')
+  const option = page.getByRole('option', { name: parks.at(-1)!.name })
+  await expect(option).toBeFocused()
+  await expect(option).toBeInViewport()
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/park=99/)
+  await expect(trigger).toBeFocused()
+})
+
+async function expectAdminFits(page: Page) {
+  await settlePage(page)
+  // Measure rendered content, not scrollWidth (which includes reserved gutters).
+  const overflow = await page.getByRole('main').evaluate((main) => {
+    const bounds = main.getBoundingClientRect()
+    return Array.from(main.querySelectorAll('.panel, .field, input, button, .btn, .toggle, .stat'))
+      .filter((element) => element.getClientRects().length)
+      .flatMap((element) => {
+        const rect = element.getBoundingClientRect()
+        const panel = element.closest('.panel')?.getBoundingClientRect() ?? bounds
+        const left = Math.max(0, bounds.left, panel.left)
+        const right = Math.min(innerWidth, bounds.right, panel.right)
+        return rect.left < left - 1 || rect.right > right + 1
+          ? [{ element: element.tagName, className: element.className, left: rect.left, right: rect.right, available: { left, right } }]
+          : []
+      })
+  })
+  expect(overflow).toEqual([])
+  for (const control of await page.getByRole('main').locator('input:not([type="checkbox"]), button, .btn, .toggle').all()) {
+    await control.scrollIntoViewIfNeeded()
+    await expect(control).toBeVisible()
+    const rect = await control.boundingBox()
+    expect(rect).not.toBeNull()
+    expect(rect!.y).toBeGreaterThanOrEqual(-1)
+    expect(rect!.y + rect!.height).toBeLessThanOrEqual(page.viewportSize()!.height + 1)
+  }
+}
 
 function integration(status: IntegrationSettings['emergency_cookie_status']): IntegrationSettings {
   return {
@@ -16,9 +72,11 @@ function integration(status: IntegrationSettings['emergency_cookie_status']): In
   }
 }
 
-for (const width of [390, 1440]) {
-  test(`admin validates a replacement robot-check cookie at ${width}px`, async ({ page }) => {
+for (const theme of ['light', 'dark'] as const) {
+ for (const width of [320, 390, 768, 1024, 1440]) {
+  test(`admin validates a replacement robot-check cookie at ${width}px ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 720 })
+    await page.addInitScript((preference) => localStorage.setItem('robopark-theme', preference), theme)
     let submitted: { cookie: string; robot_number: string } | undefined
     await installOperational(page, {
       role: 'admin',
@@ -42,6 +100,8 @@ for (const width of [390, 1440]) {
 
     await page.goto('/admin/settings')
     await expect(page.getByText('Недействительна')).toBeVisible()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+    await expectAdminFits(page)
     const save = page.getByRole('button', { name: 'Сохранить и проверить' })
     await expect(save).toBeDisabled()
     await page.getByLabel('Cookie диагностики робота').fill('candidate-cookie')
@@ -52,15 +112,7 @@ for (const width of [390, 1440]) {
     await expect.poll(() => submitted).toEqual({ cookie: 'candidate-cookie', robot_number: '447' })
     await expect(page.getByText('Действительна')).toBeVisible()
     await expect(page.getByLabel('Cookie диагностики робота')).toHaveValue('')
-    const secretPanel = page.getByRole('heading', { name: 'Секреты' })
-      .locator('xpath=ancestor::section')
-    const contentRight = await page.locator('.rp-shell__content').evaluate(
-      (element) => element.getBoundingClientRect().right,
-    )
-    const controlsFit = await secretPanel.locator('input, button').evaluateAll(
-      (controls, right) => controls.every((control) => control.getBoundingClientRect().right <= right + 1),
-      contentRight,
-    )
-    expect(controlsFit).toBe(true)
+    await expectAdminFits(page)
   })
+ }
 }

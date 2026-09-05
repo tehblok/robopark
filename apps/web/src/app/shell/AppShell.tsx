@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { Link, Outlet, useLocation, useNavigationType } from 'react-router-dom'
 import { api, type Park, type User } from '../../api'
 import { useAuth } from '../../auth-context'
@@ -61,7 +61,12 @@ function ParkIdentity({
   onChange: (id: number) => void
 }) {
   const [selectorOpen, setSelectorOpen] = useState(false)
+  const [focusedIndex, setFocusedIndex] = useState(0)
+  const selectorId = useId()
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const brandRef = useRef<HTMLDivElement>(null)
+  const typed = useRef({ text: '', at: 0 })
   const parkName = selectedPark?.name ?? (loading ? ru.loading : 'Без парка')
   const canSwitch = PARK_SWITCH_ROLES.has(user.role)
     && !locked
@@ -69,17 +74,83 @@ function ParkIdentity({
     && parkId != null
     && parks.length > 1
 
+  useLayoutEffect(() => {
+    if (selectorOpen) listRef.current?.querySelectorAll('button')[focusedIndex]?.focus()
+  }, [selectorOpen, focusedIndex])
+
+  useEffect(() => {
+    if (!selectorOpen) return
+    const dismissOutside = (event: PointerEvent) => {
+      if (!brandRef.current?.contains(event.target as Node)) setSelectorOpen(false)
+    }
+    document.addEventListener('pointerdown', dismissOutside)
+    return () => document.removeEventListener('pointerdown', dismissOutside)
+  }, [selectorOpen])
+
+  const openSelector = () => {
+    typed.current = { text: '', at: 0 }
+    setFocusedIndex(Math.max(0, parks.findIndex((park) => park.id === parkId)))
+    setSelectorOpen(true)
+  }
+
+  const closeSelector = () => {
+    setSelectorOpen(false)
+    triggerRef.current?.focus()
+  }
+
+  const navigateOptions = (event: KeyboardEvent<HTMLDivElement>) => {
+    const { key } = event
+    if (key === 'Escape') {
+      event.preventDefault()
+      closeSelector()
+    } else if (key === 'Tab') {
+      // Let the browser continue its normal tab order from the trigger.
+      closeSelector()
+    } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(key)) {
+      event.preventDefault()
+      typed.current = { text: '', at: 0 }
+      setFocusedIndex(key === 'Home' ? 0 : key === 'End' ? parks.length - 1
+        : Math.max(0, Math.min(parks.length - 1, focusedIndex + (key === 'ArrowDown' ? 1 : -1))))
+    } else if (key.length === 1 && key !== ' ' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault()
+      const now = Date.now()
+      const text = (now - typed.current.at < 1000 ? typed.current.text : '') + key.toLocaleLowerCase('ru-RU')
+      typed.current = { text, at: now }
+      const prefix = [...text].every((letter) => letter === text[0]) ? text[0] : text
+      const start = prefix.length === 1 ? focusedIndex + 1 : focusedIndex
+      for (let offset = 0; offset < parks.length; offset += 1) {
+        const index = (start + offset) % parks.length
+        if (parks[index].name.toLocaleLowerCase('ru-RU').startsWith(prefix)) {
+          setFocusedIndex(index)
+          break
+        }
+      }
+    }
+  }
+
   return (
-    <div className={`rp-shell__park-brand${canSwitch ? ' is-interactive' : ''}`}>
+    <div
+      className={`rp-shell__park-brand${canSwitch ? ' is-interactive' : ''}`}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setSelectorOpen(false)
+      }}
+      ref={brandRef}
+    >
       {canSwitch ? (
         <>
           <button
-            aria-controls="rp-shell-park-selector"
+            aria-controls={selectorOpen ? selectorId : undefined}
             aria-expanded={selectorOpen}
             aria-haspopup="listbox"
             aria-label="Сменить парк"
             className="rp-shell__park-switch"
-            onClick={() => setSelectorOpen((open) => !open)}
+            onClick={() => selectorOpen ? closeSelector() : openSelector()}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault()
+                openSelector()
+              }
+            }}
             ref={triggerRef}
             type="button"
           >
@@ -87,17 +158,26 @@ function ParkIdentity({
             <span aria-hidden="true" className="rp-shell__park-brand-chevron" />
           </button>
           {selectorOpen ? (
-            <div aria-label="Сменить парк" className="rp-shell__park-selector" id="rp-shell-park-selector" role="listbox">
-            {parks.map((park) => (
+            <div
+              aria-label="Сменить парк"
+              aria-description={parks.length > 7 ? 'Начните вводить название для поиска парка.' : undefined}
+              className="rp-shell__park-selector"
+              id={selectorId}
+              onKeyDown={navigateOptions}
+              ref={listRef}
+              role="listbox"
+            >
+            {parks.map((park, index) => (
                 <button
                   aria-selected={park.id === parkId}
                   key={park.id}
                   onClick={() => {
                     onChange(park.id)
-                    setSelectorOpen(false)
-                    triggerRef.current?.focus()
+                    closeSelector()
                   }}
+                  onFocus={() => setFocusedIndex(index)}
                   role="option"
+                  tabIndex={focusedIndex === index ? 0 : -1}
                   type="button"
                 >
                   {park.name}

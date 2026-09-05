@@ -1,7 +1,8 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   api,
+  ApiError,
   type IntegrationSettings,
   type Park,
   type ParkRequest,
@@ -17,7 +18,7 @@ import { AdminOpsPanel } from '../components/admin/AdminOpsPanel'
 import { useAuth } from '../auth-context'
 import { mapApiError } from '../i18n/errors'
 import { roleLabel, ru } from '../i18n/ru'
-import { useCachedResource } from '../lib/resource'
+import { resourceStore, useCachedResource } from '../lib/resource'
 import { useParkScope } from '../app/park/parkScope'
 import { SlaPolicyEditor } from '../domains/insights/SlaPolicyEditor'
 
@@ -134,6 +135,16 @@ function mergeEmergencySettings(
 export function Admin() {
   const { user } = useAuth()
   const { parkId } = useParkScope()
+  const context = JSON.stringify([
+    user?.id, user?.username, user?.role, user?.tracker_login,
+    user?.permissions, user?.parks, parkId,
+  ])
+  return <AdminWorkspace key={context} bootstrapKey={`admin:bootstrap:${context}`} />
+}
+
+function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
+  const { user } = useAuth()
+  const { parkId } = useParkScope()
   const [searchParams, setSearchParams] = useSearchParams()
   const perms = user?.permissions ?? []
   const canParks = perms.includes('parks.manage')
@@ -151,14 +162,19 @@ export function Admin() {
   const tabPermitted = (tab === 'integrations' && canIntegrations)
     || (tab === 'parks' && canParks)
     || (tab === 'ops' && canOps)
-  const bootRes = useCachedResource<AdminBootstrap>(`admin:bootstrap:${canIntegrations ? 'full' : 'parks'}`, () => loadAdminBootstrap(canIntegrations), {
+  const bootRes = useCachedResource<AdminBootstrap>(bootstrapKey, () => loadAdminBootstrap(canIntegrations), {
     persist: false,
   })
   const boot = bootRes.data
+  const settings = boot?.settings ?? null
+  const active = useRef(true)
+  useEffect(() => {
+    active.current = true
+    return () => { active.current = false }
+  }, [])
 
   const [parks, setParks] = useState<Park[]>(boot?.parks ?? [])
   const [parkRequests, setParkRequests] = useState<ParkRequest[]>(boot?.parkRequests ?? [])
-  const [settings, setSettings] = useState<IntegrationSettings | null>(boot?.settings ?? null)
   const [trackerPolicy, setTrackerPolicy] = useState<TrackerPolicySettings | null>(
     boot?.trackerPolicy ?? null,
   )
@@ -185,19 +201,28 @@ export function Admin() {
   }, [tabPermitted, firstPermittedTab])
 
   useEffect(() => {
-    if (requestedTab === tab) return
-    setSearchParams(tab === 'integrations' ? {} : { tab }, { replace: true })
-  }, [requestedTab, setSearchParams, tab])
+    const next = new URLSearchParams(searchParams)
+    if (tab === 'integrations') next.delete('tab')
+    else next.set('tab', tab)
+    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams, tab])
 
+  // Integration-only cache updates preserve the other forms' unsaved edits.
   useEffect(() => {
-    if (!boot) return
-    setParks(boot.parks)
-    setParkRequests(boot.parkRequests)
-    setSettings(boot.settings)
-    setTrackerPolicy(boot.trackerPolicy)
-    setScreenshotGuard(boot.screenshotGuard)
-    setScreenshotGuardLive(boot.screenshotGuardLive ?? true)
-  }, [boot])
+    if (boot?.parks) setParks(boot.parks)
+  }, [boot?.parks])
+  useEffect(() => {
+    if (boot?.parkRequests) setParkRequests(boot.parkRequests)
+  }, [boot?.parkRequests])
+  useEffect(() => {
+    setTrackerPolicy(boot?.trackerPolicy ?? null)
+  }, [boot?.trackerPolicy])
+  useEffect(() => {
+    if (boot?.screenshotGuard) setScreenshotGuard(boot.screenshotGuard)
+  }, [boot?.screenshotGuard])
+  useEffect(() => {
+    setScreenshotGuardLive(boot?.screenshotGuardLive ?? true)
+  }, [boot?.screenshotGuardLive])
 
   useEffect(() => {
     if (user?.role !== 'royal') {
@@ -216,7 +241,9 @@ export function Admin() {
     setBusy(true)
     try {
       await action()
+      if (!active.current) return
       await bootRes.refresh()
+      if (!active.current) return
       setSuccess(message)
     } catch {
       setError(ru.errors.generic)
@@ -234,6 +261,21 @@ export function Admin() {
     }, 'Парк создан')
   }
 
+  const applyIntegrationSettings = (
+    updated: IntegrationSettings,
+    merge: typeof mergeTrackerSettings,
+  ) => {
+    if (!active.current) return
+    const current = resourceStore.get<AdminBootstrap>(bootstrapKey)
+    if (!current) return
+    // A mutation is authoritative for its integration. Retire older bootstrap
+    // loads before publishing to the same cache used by this page and remounts.
+    resourceStore.invalidate(bootstrapKey)
+    resourceStore.set(bootstrapKey, {
+      ...current, settings: merge(current.settings, updated),
+    }, false)
+  }
+
   const saveTrackerToken = async (event: FormEvent) => {
     event.preventDefault()
     const token = trackerToken.trim()
@@ -243,7 +285,8 @@ export function Admin() {
     setTrackerBusy(true)
     try {
       const updated = await api.setTrackerToken(token)
-      setSettings((current) => mergeTrackerSettings(current, updated))
+      if (!active.current) return
+      applyIntegrationSettings(updated, mergeTrackerSettings)
       setTrackerToken('')
       setSuccess('Токен Tracker сохранён')
     } catch (caught) {
@@ -260,9 +303,19 @@ export function Admin() {
     setEmergencyBusy(true)
     try {
       const updated = await action()
-      setSettings((current) => mergeEmergencySettings(current, updated))
+      if (!active.current) return
+      applyIntegrationSettings(updated, mergeEmergencySettings)
       setSuccess(message)
     } catch (caught) {
+      if (!active.current) return
+      if (caught instanceof ApiError && (caught.status === 401 || caught.status === 503)) {
+        try {
+          applyIntegrationSettings(await api.integrationSettings(), mergeEmergencySettings)
+        } catch {
+          // Keep the original actionable error if the protected state refresh fails.
+        }
+      }
+      if (!active.current) return
       setError(mapApiError(caught, ru.errors.emergency503))
     } finally {
       setEmergencyBusy(false)

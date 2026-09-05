@@ -223,12 +223,6 @@ def get_emergency_cookie_checked_robot(db: Session) -> str | None:
     return row.value if row is not None else None
 
 
-def set_emergency_cookie_check(db: Session, *, status: str, robot: str) -> None:
-    set_setting(db, EMERGENCY_COOKIE_STATUS_KEY, status)
-    set_setting(db, EMERGENCY_COOKIE_CHECKED_AT_KEY, datetime.now(UTC).isoformat())
-    set_setting(db, EMERGENCY_COOKIE_CHECKED_ROBOT_KEY, robot)
-
-
 def activate_emergency_cookie(
     db: Session,
     *,

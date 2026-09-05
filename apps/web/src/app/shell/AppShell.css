@@ -126,7 +126,10 @@
   display: grid;
   gap: var(--rp-space-1);
   left: 0;
+  max-height: min(20rem, 50dvh);
+  max-width: calc(100vw - 2rem);
   min-width: 100%;
+  overflow-y: auto;
   padding: var(--rp-space-1);
   position: absolute;
   top: calc(100% + var(--rp-space-1));

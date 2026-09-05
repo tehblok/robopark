@@ -1,7 +1,7 @@
-import { screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { api, ApiError, type IntegrationSettings } from '../api'
+import { api, ApiError, type IntegrationSettings, type Park } from '../api'
 import { resourceStore } from '../lib/resource'
 import { installMatchMedia, renderApp, testUser } from '../test/renderApp'
 
@@ -27,8 +27,8 @@ function settings(validation: Partial<IntegrationSettings> = {}): IntegrationSet
   }
 }
 
-function setup(validation: Partial<IntegrationSettings> = {}) {
-  vi.spyOn(api, 'parks').mockResolvedValue([])
+function setup(validation: Partial<IntegrationSettings> = {}, parks: Park[] = [], permissions = ['nav.admin']) {
+  vi.spyOn(api, 'parks').mockResolvedValue(parks)
   vi.spyOn(api, 'adminParkRequests').mockResolvedValue([])
   vi.spyOn(api, 'integrationSettings').mockResolvedValue(settings(validation))
   vi.spyOn(api, 'trackerPolicy').mockResolvedValue({
@@ -41,7 +41,7 @@ function setup(validation: Partial<IntegrationSettings> = {}) {
     operator: false, mechanic: false, admin: false, royal: false, driver: false,
   })
   vi.spyOn(api, 'adminUsers').mockResolvedValue([])
-  renderApp('/admin/settings', testUser({ role: 'admin', permissions: ['nav.admin'] }))
+  return renderApp('/admin/settings', testUser({ role: 'admin', permissions, parks }))
 }
 
 describe('Admin Emergency cookie validation', () => {
@@ -72,6 +72,151 @@ describe('Admin Emergency cookie validation', () => {
 
     expect(await screen.findByText(/Проверка сейчас недоступна/)).toBeVisible()
     expect(screen.getByRole('button', { name: 'Проверить текущую' })).toBeEnabled()
+  })
+
+  it.each([
+    [401, 'emergency_cookie_invalid', 'invalid', 'Недействительна'],
+    [503, 'emergency_upstream_unavailable', 'unavailable', 'Недоступна'],
+  ] as const)('applies authoritative metadata after a %s saved-cookie recheck', async (code, detail, status, label) => {
+    const actor = userEvent.setup()
+    vi.spyOn(api, 'checkEmergencyCookie').mockRejectedValue(new ApiError(code, detail))
+    setup({ emergency_cookie_status: 'valid', emergency_cookie_valid: true })
+    await screen.findByText('Действительна')
+    vi.mocked(api.integrationSettings).mockResolvedValue(settings({
+      emergency_cookie_status: status,
+      emergency_cookie_valid: code === 401 ? false : true,
+      emergency_cookie_checked_robot: '448',
+    }))
+    await actor.type(screen.getByLabelText('Cookie диагностики робота'), 'candidate-fixture')
+    await actor.click(screen.getByRole('button', { name: 'Проверить текущую' }))
+
+    expect(await screen.findByText(label)).toBeVisible()
+    expect(screen.queryByText('Действительна')).not.toBeInTheDocument()
+    expect(screen.getByText(/робот 448/)).toBeVisible()
+    if (code === 503) expect(screen.getByText(/Проверка сейчас недоступна/)).toBeVisible()
+    expect(screen.getByLabelText('Cookie диагностики робота')).toHaveValue('candidate-fixture')
+  })
+
+  it('keeps a completed mutation in the UI and cache after a late bootstrap', async () => {
+    const actor = userEvent.setup()
+    const first = setup()
+    await screen.findByText('Не проверена')
+    first.unmount()
+    const late = deferred<IntegrationSettings>()
+    vi.mocked(api.integrationSettings).mockReturnValue(late.promise)
+    vi.spyOn(api, 'checkEmergencyCookie').mockResolvedValue(settings({
+      emergency_cookie_status: 'valid', emergency_cookie_valid: true,
+    }))
+    const second = renderApp('/admin/settings', testUser({ role: 'admin', permissions: ['nav.admin'] }))
+    await waitFor(() => expect(api.integrationSettings).toHaveBeenCalledTimes(2))
+    await actor.click(screen.getByRole('button', { name: 'Проверить текущую' }))
+    await screen.findByText('Действительна')
+    await act(async () => late.resolve(settings()))
+    expect(screen.getByText('Действительна')).toBeVisible()
+
+    second.unmount()
+    vi.mocked(api.integrationSettings).mockReturnValue(new Promise(() => {}))
+    renderApp('/admin/settings', testUser({ role: 'admin', permissions: ['nav.admin'] }))
+    expect(await screen.findByText('Действительна')).toBeVisible()
+  })
+
+  it('does not reuse settings or a pending mutation in a new user context', async () => {
+    const actor = userEvent.setup()
+    const mutation = deferred<IntegrationSettings>()
+    vi.spyOn(api, 'checkEmergencyCookie').mockReturnValue(mutation.promise)
+    const view = setup({ emergency_cookie_status: 'valid', emergency_cookie_valid: true })
+    await screen.findByText('Действительна')
+    await actor.click(screen.getByRole('button', { name: 'Проверить текущую' }))
+    const next = deferred<IntegrationSettings>()
+    vi.mocked(api.integrationSettings).mockReturnValue(next.promise)
+    view.rerenderAuth(testUser({ id: 2, role: 'admin', permissions: ['nav.admin'] }))
+    expect(screen.queryByText('Действительна')).not.toBeInTheDocument()
+    await act(async () => mutation.resolve(settings({ emergency_cookie_status: 'invalid' })))
+    expect(screen.queryByText('Недействительна')).not.toBeInTheDocument()
+    await act(async () => next.resolve(settings()))
+    expect(await screen.findByText('Не проверена')).toBeVisible()
+  })
+
+  it('does not start an old-context bootstrap when a policy mutation completes after switching user', async () => {
+    const actor = userEvent.setup()
+    const pending = deferred<Awaited<ReturnType<typeof api.updateTrackerPolicy>>>()
+    vi.spyOn(api, 'updateTrackerPolicy').mockReturnValue(pending.promise)
+    const view = setup()
+    await actor.click(await screen.findByRole('checkbox', { name: 'Оператор видит неразмеченные тикеты' }))
+    view.rerenderAuth(testUser({ id: 2, role: 'admin', permissions: ['nav.admin'] }))
+    await screen.findByText('Не проверена')
+    const calls = vi.mocked(api.integrationSettings).mock.calls.length
+    await act(async () => pending.resolve({
+      operator_show_untagged: true, operator_show_raw: false,
+      operator_show_firmware_profile: false, mechanic_can_write: false,
+    }))
+    expect(api.integrationSettings).toHaveBeenCalledTimes(calls)
+  })
+
+  it('lets Tracker save while Emergency remains pending', async () => {
+    const actor = userEvent.setup()
+    const pending = deferred<IntegrationSettings>()
+    vi.spyOn(api, 'checkEmergencyCookie').mockReturnValue(pending.promise)
+    vi.spyOn(api, 'setTrackerToken').mockResolvedValue(settings({ tracker_token_masked: 'configured' }))
+    setup()
+    await actor.click(await screen.findByRole('button', { name: 'Проверить текущую' }))
+    await actor.type(screen.getByLabelText('Tracker OAuth-токен'), 'tracker-fixture')
+    expect(screen.getByRole('button', { name: 'Сохранить токен' })).toBeEnabled()
+    await actor.click(screen.getByRole('button', { name: 'Сохранить токен' }))
+    expect(await screen.findByText('Токен Tracker сохранён')).toBeVisible()
+    expect(screen.getByLabelText('Tracker OAuth-токен')).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'Проверить текущую' })).toBeDisabled()
+    await act(async () => pending.resolve(settings({ emergency_cookie_status: 'valid' })))
+  })
+
+  it('loads a fresh bootstrap after changing park without reusing settings or input', async () => {
+    const actor = userEvent.setup()
+    const first = setup({ emergency_cookie_status: 'valid', emergency_cookie_valid: true })
+    await screen.findByText('Действительна')
+    first.unmount()
+    const parks = [
+      { id: 7, name: 'Северный', tag: 'north', is_active: true },
+      { id: 9, name: 'Южный', tag: 'south', is_active: true },
+    ]
+    vi.mocked(api.parks).mockResolvedValue(parks)
+    renderApp('/admin/settings?park=7', testUser({ role: 'admin', permissions: ['nav.admin'], parks }))
+    await screen.findByRole('button', { name: 'Сменить парк' })
+    await screen.findByLabelText('Cookie диагностики робота')
+    await screen.findByText('Действительна')
+    await actor.type(screen.getByLabelText('Cookie диагностики робота'), 'candidate-fixture')
+    const next = deferred<IntegrationSettings>()
+    vi.mocked(api.integrationSettings).mockReturnValue(next.promise)
+    await actor.click(screen.getByRole('button', { name: 'Сменить парк' }))
+    await actor.click(screen.getByRole('option', { name: 'Южный' }))
+    expect(screen.getByTestId('location')).toHaveTextContent('park=9')
+    expect(screen.queryByText('Действительна')).not.toBeInTheDocument()
+    await act(async () => next.resolve(settings({ emergency_cookie_status: 'invalid' })))
+    expect(await screen.findByText('Недействительна')).toBeVisible()
+    expect(screen.getByLabelText('Cookie диагностики робота')).toHaveValue('')
+  })
+
+  it('asks for a robot when no saved probe is available', async () => {
+    const actor = userEvent.setup()
+    vi.spyOn(api, 'checkEmergencyCookie').mockRejectedValue(new ApiError(422, 'emergency_probe_required'))
+    setup()
+    await actor.click(await screen.findByRole('button', { name: 'Проверить текущую' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Укажите номер робота/)
+    expect(screen.getByLabelText('Робот для проверки')).toBeEnabled()
+  })
+
+  it('preserves park edits when an integration updates the bootstrap cache', async () => {
+    const actor = userEvent.setup()
+    const pending = deferred<IntegrationSettings>()
+    vi.spyOn(api, 'checkEmergencyCookie').mockReturnValue(pending.promise)
+    setup({}, [{ id: 7, name: 'Северный', tag: 'north', is_active: true }], ['nav.admin', 'parks.manage'])
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('park=7'))
+    await actor.click(await screen.findByRole('button', { name: 'Проверить текущую' }))
+    await actor.click(screen.getByRole('tab', { name: 'Парки' }))
+    const name = screen.getAllByLabelText('Название').at(-1)!
+    await actor.clear(name)
+    await actor.type(name, 'Новое название')
+    await act(async () => pending.resolve(settings({ emergency_cookie_status: 'valid' })))
+    expect(name).toHaveValue('Новое название')
   })
 
   it('requires both a cookie and robot before saving and checking', async () => {

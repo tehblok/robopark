@@ -111,20 +111,18 @@ def put_emergency_cookie(
     try:
         emergency_client.fetch_robot_payload(cookie=payload.cookie, vin=vin)
     except emergency_client.EmergencyAuthError as exc:
-        settings_svc.set_emergency_cookie_check(db, status="invalid", robot=checked_robot)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="emergency_cookie_invalid",
         ) from exc
     except emergency_client.EmergencyError as exc:
-        settings_svc.set_emergency_cookie_check(db, status="unavailable", robot=checked_robot)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="emergency_upstream_unavailable",
         ) from exc
 
     try:
-        settings_svc.activate_emergency_cookie(
+        identity = settings_svc.activate_emergency_cookie(
             db,
             cookie=payload.cookie,
             status="valid",
@@ -135,7 +133,7 @@ def put_emergency_cookie(
     from robopark_api.services import reports as reports_svc
 
     emergency_cache.clear_cache()
-    reports_svc.resolve_open_emergency_cookie_reports(db)
+    reports_svc.resolve_open_emergency_cookie_reports(db, expected_identity=identity)
     audit.record(
         db,
         action=audit.ACTION_EMERGENCY_COOKIE_SET,
@@ -181,7 +179,6 @@ def check_emergency_cookie(
     checked_robot = emergency_vin.short_robot_number(vin)
     cookie, identity = settings_svc.get_emergency_cookie_probe(db)
     if not cookie:
-        settings_svc.set_emergency_cookie_check(db, status="unavailable", robot=checked_robot)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="emergency_cookie_not_configured",

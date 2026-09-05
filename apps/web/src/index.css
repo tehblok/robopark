@@ -2904,7 +2904,7 @@ textarea {
 
   .action-row input,
   .action-row select,
-  .panel input,
+  .panel input:not([type='checkbox']):not([type='radio']),
   .panel select,
   .panel textarea,
   .panel .btn {

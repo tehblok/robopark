@@ -359,14 +359,50 @@ describe('AppShell', () => {
     const trigger = await screen.findByRole('button', { name: 'Сменить парк' })
     trigger.focus()
     await actor.keyboard('{Enter}')
-    await actor.tab()
-    await actor.tab()
+    await actor.keyboard('{ArrowDown}')
     expect(screen.getByRole('option', { name: 'Южный' })).toHaveFocus()
 
     await actor.keyboard('{Enter}')
 
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('?park=9'))
     expect(trigger).toHaveFocus()
+  })
+
+  it.each(['ArrowDown', 'ArrowUp'])('opens the park listbox with %s and supports roving keyboard focus', async (key) => {
+    const actor = userEvent.setup()
+    const { setParkId } = renderShellWithParkScope('admin')
+    const trigger = screen.getByRole('button', { name: 'Сменить парк' })
+    trigger.focus()
+    await actor.keyboard(`{${key}}`)
+    expect(screen.getByRole('option', { name: 'Северный' })).toHaveFocus()
+    await actor.keyboard('{End}')
+    expect(screen.getByRole('option', { name: 'Южный' })).toHaveFocus()
+    await actor.keyboard('{ArrowUp}')
+    expect(screen.getByRole('option', { name: 'Северный' })).toHaveFocus()
+    await actor.keyboard('{ArrowDown}{Home}')
+    expect(screen.getByRole('option', { name: 'Северный' })).toHaveFocus()
+    expect(setParkId).not.toHaveBeenCalled()
+    await actor.keyboard('{Escape}')
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(trigger).toHaveFocus()
+    await actor.keyboard('{ArrowDown}{End} ')
+    expect(setParkId).toHaveBeenCalledWith(9)
+    expect(trigger).toHaveFocus()
+  })
+
+  it('finds a park by typed prefix in a long list and closes when Tab leaves', async () => {
+    const actor = userEvent.setup()
+    const parks = Array.from({ length: 12 }, (_, index) => ({
+      ...north, id: 20 + index, name: `Парк ${index + 1}`,
+    }))
+    renderShellWithParkScope('admin', vi.fn(), [north, ...parks, { ...north, id: 99, name: 'Южный' }])
+    const trigger = screen.getByRole('button', { name: 'Сменить парк' })
+    await actor.click(trigger)
+    await actor.keyboard('юж')
+    expect(screen.getByRole('option', { name: 'Южный' })).toHaveFocus()
+    await actor.keyboard('{Tab}')
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(trigger).not.toHaveFocus()
   })
 
   it('keeps the operator report badge park-aware and refreshes it on demand and entry', async () => {

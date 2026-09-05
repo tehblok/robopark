@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api'
 import { installMatchMedia, renderApp, testUser } from '../../test/renderApp'
@@ -81,7 +81,8 @@ describe('Management routes', () => {
       role: 'admin', permissions: ['nav.admin'], parks: [north],
     }))
 
-    expect(await screen.findByText('Cookie диагностики робота')).toBeVisible()
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('park=7'))
+    expect(await screen.findByLabelText('Cookie диагностики робота')).toBeVisible()
     expect(screen.getByRole('link', { name: 'Проверка робота' })).toHaveAttribute('href', '/emergency')
     expect(screen.getByRole('link', { name: 'Настройки проверки робота' })).toHaveAttribute('href', '/admin/emergency/config')
     expect(document.body).not.toHaveTextContent(/Аварийный режим/i)

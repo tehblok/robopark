@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from robopark_api.db import release_request_session
-from robopark_api.services import emergency_client, reports
+from robopark_api.services import emergency_client, emergency_vin, reports
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.live_merge import get_live_merge_store
 
@@ -170,6 +170,8 @@ def get_robot_payload(
                 identity=identity,
                 valid=True,
                 vin=vin,
+                status="valid",
+                checked_robot=emergency_vin.short_robot_number(vin),
             ):
                 reports.resolve_open_emergency_cookie_reports(db, expected_identity=identity)
         except emergency_client.EmergencyAuthError:
@@ -177,12 +179,24 @@ def get_robot_payload(
                 db,
                 identity=identity,
                 valid=False,
+                status="invalid",
+                checked_robot=emergency_vin.short_robot_number(vin),
             ):
                 invalidate_vin(vin, identity=identity)
                 reports.ensure_open_emergency_cookie_report(
                     db,
                     author=None,
                     expected_identity=identity,
+                )
+            raise
+        except emergency_client.EmergencyError:
+            if _flight_is_current(flight):
+                settings_svc.record_emergency_cookie_probe(
+                    db,
+                    identity=identity,
+                    valid=None,
+                    status="unavailable",
+                    checked_robot=emergency_vin.short_robot_number(vin),
                 )
             raise
     except BaseException as exc:

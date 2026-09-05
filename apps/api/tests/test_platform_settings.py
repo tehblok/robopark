@@ -1,13 +1,15 @@
 import json
+import threading
 from unittest.mock import MagicMock, Mock
 
 import pytest
 from sqlalchemy.orm import Session
 
 from conftest import login_as
+from robopark_api.models import Report, User
 from robopark_api.routers import admin_settings
 from robopark_api.schemas import EmergencyCookieUpdate
-from robopark_api.services import emergency_cache, emergency_client
+from robopark_api.services import emergency_cache, emergency_client, reports
 from robopark_api.services import platform_settings as settings_svc
 
 
@@ -37,7 +39,10 @@ def test_invalid_candidate_does_not_replace_working_cookie(
     client, db_session, seed_royal, monkeypatch
 ):
     login_as(client, "royal", "secret")
-    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "working")
+    settings_svc.activate_emergency_cookie(
+        db_session, cookie="working", status="valid", checked_robot="447"
+    )
+    before = client.get("/admin/settings/integrations").json()
     monkeypatch.setattr(
         emergency_client,
         "fetch_robot_payload",
@@ -52,14 +57,17 @@ def test_invalid_candidate_does_not_replace_working_cookie(
     assert response.status_code == 401
     assert settings_svc.get_emergency_cookie(db_session) == "working"
     assert "bad" not in response.text
-    assert client.get("/admin/settings/integrations").json()["emergency_cookie_status"] == "invalid"
+    assert client.get("/admin/settings/integrations").json() == before
 
 
 def test_unavailable_candidate_does_not_replace_working_cookie(
     client, db_session, seed_royal, monkeypatch
 ):
     login_as(client, "royal", "secret")
-    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "working")
+    settings_svc.activate_emergency_cookie(
+        db_session, cookie="working", status="valid", checked_robot="447"
+    )
+    before = client.get("/admin/settings/integrations").json()
     monkeypatch.setattr(
         emergency_client,
         "fetch_robot_payload",
@@ -74,10 +82,59 @@ def test_unavailable_candidate_does_not_replace_working_cookie(
     assert response.status_code == 503
     assert settings_svc.get_emergency_cookie(db_session) == "working"
     assert "candidate-cookie" not in response.text
-    assert (
-        client.get("/admin/settings/integrations").json()["emergency_cookie_status"]
-        == "unavailable"
+    assert client.get("/admin/settings/integrations").json() == before
+
+
+def test_old_candidate_put_cannot_resolve_new_activation_report(db_engine, seed_royal, monkeypatch):
+    activated = threading.Event()
+    resume = threading.Event()
+    errors = []
+    actor_id = seed_royal.id
+
+    def pause_after_activation():
+        activated.set()
+        assert resume.wait(timeout=5)
+
+    monkeypatch.setattr(emergency_cache, "clear_cache", pause_after_activation)
+    monkeypatch.setattr(
+        emergency_client, "fetch_robot_payload", lambda **kwargs: {"vin": kwargs["vin"]}
     )
+
+    def old_put():
+        try:
+            with Session(db_engine) as db:
+                admin_settings.put_emergency_cookie(
+                    EmergencyCookieUpdate(cookie="first", robot_number="447"),
+                    db,
+                    db.get(User, actor_id),
+                )
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=old_put)
+    worker.start()
+    assert activated.wait(timeout=5)
+    try:
+        with Session(db_engine) as newer:
+            identity = settings_svc.activate_emergency_cookie(
+                newer, cookie="second", status="valid", checked_robot="448"
+            )
+            settings_svc.record_emergency_cookie_probe(
+                newer, identity=identity, valid=False, status="invalid", checked_robot="448"
+            )
+            reports.ensure_open_emergency_cookie_report(
+                newer, author=None, expected_identity=identity
+            )
+    finally:
+        resume.set()
+        worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert not errors
+    with Session(db_engine) as check:
+        assert check.query(Report).one().status == "open"
+        assert settings_svc.get_emergency_cookie_identity(check) == identity
+        assert settings_svc.get_emergency_cookie_status(check) == "invalid"
 
 
 def test_malformed_emergency_response_returns_503_for_candidate(client, seed_royal, monkeypatch):
@@ -193,6 +250,27 @@ def test_recheck_requires_explicit_or_keepalive_robot(client, seed_royal):
 
     assert response.status_code == 422
     assert response.json()["detail"] == "emergency_probe_required"
+
+
+def test_missing_cookie_recheck_cannot_mark_a_concurrent_activation_unavailable(
+    client, db_session, seed_royal, monkeypatch
+):
+    login_as(client, "royal", "secret")
+    capture = settings_svc.get_emergency_cookie_probe
+
+    def capture_before_activation(db):
+        old_probe = capture(db)
+        settings_svc.activate_emergency_cookie(
+            db, cookie="new-cookie", status="valid", checked_robot="448"
+        )
+        return old_probe
+
+    monkeypatch.setattr(settings_svc, "get_emergency_cookie_probe", capture_before_activation)
+    response = client.post("/admin/settings/emergency-cookie/check", json={"robot_number": "447"})
+
+    assert response.status_code == 503
+    assert settings_svc.get_emergency_cookie_status(db_session) == "valid"
+    assert settings_svc.get_emergency_cookie_checked_robot(db_session) == "448"
 
 
 def test_recheck_auth_failure_marks_saved_cookie_invalid(

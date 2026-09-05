@@ -12,7 +12,7 @@ import time
 from sqlalchemy.orm import Session
 
 from robopark_api.db import SessionLocal
-from robopark_api.services import emergency_cache, emergency_client, reports
+from robopark_api.services import emergency_cache, emergency_client
 from robopark_api.services import platform_settings as settings_svc
 
 MIN_INTERVAL_SECONDS = 90.0
@@ -76,13 +76,14 @@ def _keepalive_once_with_db(db: Session, stop_event: threading.Event | None) -> 
         except emergency_client.EmergencyError:
             logger.warning("Emergency keep-alive failed for VIN %s", vin)
         else:
-            if settings_svc.record_emergency_cookie_probe(
+            # The cache records actual probe results. A cache hit must not
+            # revalidate the cookie or resolve a newer failed-check report.
+            settings_svc.record_emergency_cookie_probe(
                 db,
                 identity=identity,
-                valid=True,
+                valid=None,
                 keepalive_last_ok=True,
-            ):
-                reports.resolve_open_emergency_cookie_reports(db, expected_identity=identity)
+            )
 
         if index + 1 < len(vins) and not _interruptible_sleep(INTER_VIN_GAP_SECONDS, stop_event):
             return

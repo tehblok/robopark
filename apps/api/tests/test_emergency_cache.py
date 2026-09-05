@@ -1,5 +1,6 @@
 import threading
 import time
+from unittest.mock import Mock
 
 import pytest
 from sqlalchemy.orm import Session
@@ -21,6 +22,33 @@ def empty_payload_cache():
 
 def _set_cookie(db_session) -> None:
     settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "cookie")
+
+
+@pytest.mark.parametrize("outcome", ["valid", "invalid", "unavailable"])
+def test_background_probe_keeps_public_metadata_consistent(db_session, monkeypatch, outcome):
+    settings_svc.activate_emergency_cookie(
+        db_session, cookie="cookie", status="valid", checked_robot="448"
+    )
+    before = settings_svc.get_emergency_cookie_checked_at(db_session)
+    failure = {
+        "invalid": emergency_client.EmergencyAuthError(),
+        "unavailable": emergency_client.EmergencyError(),
+    }.get(outcome)
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        Mock(side_effect=failure, return_value={"vin": VIN}),
+    )
+    if failure is not None:
+        with pytest.raises(type(failure)):
+            emergency_cache.get_robot_payload(db=db_session, vin=VIN)
+    else:
+        emergency_cache.get_robot_payload(db=db_session, vin=VIN)
+
+    assert settings_svc.get_emergency_cookie_status(db_session) == outcome
+    assert settings_svc.get_emergency_cookie_valid(db_session) is (outcome != "invalid")
+    assert settings_svc.get_emergency_cookie_checked_robot(db_session) == "447"
+    assert settings_svc.get_emergency_cookie_checked_at(db_session) != before
 
 
 def test_cache_reuses_payload_within_ttl(db_session, monkeypatch):
@@ -242,8 +270,7 @@ def test_clear_cache_discards_stale_flight_result_and_side_effects(tmp_path, mon
     fetch_started = threading.Event()
     release_fetch = threading.Event()
     results = []
-    valid_calls = []
-    ring_calls = []
+    record_probe = Mock(return_value=True)
     resolved_calls = []
 
     def fake_fetch(**_kwargs):
@@ -253,6 +280,7 @@ def test_clear_cache_discards_stale_flight_result_and_side_effects(tmp_path, mon
 
     monkeypatch.setattr(emergency_cache, "get_live_merge_store", lambda: store)
     monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
+    monkeypatch.setattr(settings_svc, "record_emergency_cookie_probe", record_probe)
     monkeypatch.setattr(
         settings_svc, "get_emergency_cookie_probe", lambda db: ("old-cookie", "old")
     )
@@ -273,12 +301,11 @@ def test_clear_cache_discards_stale_flight_result_and_side_effects(tmp_path, mon
 
     assert not thread.is_alive()
     assert results == [{"generation": "old"}]
-    assert valid_calls == []
-    assert ring_calls == []
+    record_probe.assert_not_called()
     assert resolved_calls == []
     assert VIN not in emergency_cache._cache
     assert store.try_fresh(
-        emergency_cache._MERGE_NS, VIN, emergency_cache.PAYLOAD_CACHE_TTL_SECONDS
+        emergency_cache._MERGE_NS, f"old:{VIN}", emergency_cache.PAYLOAD_CACHE_TTL_SECONDS
     ) == (
         False,
         None,
@@ -290,7 +317,7 @@ def test_clear_cache_discards_stale_flight_auth_error_side_effects(tmp_path, mon
     fetch_started = threading.Event()
     release_fetch = threading.Event()
     errors = []
-    valid_calls = []
+    record_probe = Mock(return_value=True)
     reports_opened = []
 
     def fake_fetch(**_kwargs):
@@ -300,6 +327,7 @@ def test_clear_cache_discards_stale_flight_auth_error_side_effects(tmp_path, mon
 
     monkeypatch.setattr(emergency_cache, "get_live_merge_store", lambda: store)
     monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
+    monkeypatch.setattr(settings_svc, "record_emergency_cookie_probe", record_probe)
     monkeypatch.setattr(
         settings_svc, "get_emergency_cookie_probe", lambda db: ("old-cookie", "old")
     )
@@ -325,9 +353,9 @@ def test_clear_cache_discards_stale_flight_auth_error_side_effects(tmp_path, mon
     assert not thread.is_alive()
     assert len(errors) == 1
     assert isinstance(errors[0], emergency_client.EmergencyAuthError)
-    assert valid_calls == []
+    record_probe.assert_not_called()
     assert reports_opened == []
-    assert not store.error_path(emergency_cache._MERGE_NS, VIN).exists()
+    assert not store.error_path(emergency_cache._MERGE_NS, f"old:{VIN}").exists()
 
 
 def test_other_worker_stale_success_cannot_be_accepted_after_cookie_activation(
