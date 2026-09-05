@@ -51,19 +51,28 @@ it('shows unknown flow counts instead of treating no observed intervals as zero'
   expect(within(screen.getByLabelText('Сводка потока задач')).getAllByText('Нет данных')).toHaveLength(2)
 })
 
-it('normalizes a driver stale status URL before requesting overview data', async () => {
+it.each([
+  ['driver', 'moving', ['Новые: 4 задач', 'Перемещение: 2 задач']],
+  ['mechanic', 'diagnostics', ['Очередь: 1 задач', 'Диагностика: 1 задач']],
+] as const)('keeps %s status monitoring-only and normalizes direct allowed status URLs', async (role, status, labels) => {
   const client = { operationsOverview: vi.fn(async () => snapshot()) }
-  render(tree({ user: makeUser({ role: 'driver' }), client, url: '/overview?park=7&status=queued' }))
+  render(tree({ user: makeUser({ role }), client, url: `/overview?park=7&status=${status}` }))
 
-  await screen.findByRole('link', { name: 'Открыть задачу RP-1' })
+  await screen.findByRole('heading', { name: 'Статусы задач' })
   expect(client.operationsOverview).toHaveBeenCalledWith(7, 7, 'all')
   expect(screen.getByLabelText('URL')).toHaveTextContent('?park=7')
+  const monitoring = screen.getByTestId('overview-statuses')
+  expect(within(monitoring).queryAllByRole('link')).toHaveLength(0)
+  for (const label of labels) expect(screen.queryByRole('link', { name: label })).not.toBeInTheDocument()
+  expect(screen.queryByRole('link', { name: 'Все разрешённые задачи' })).not.toBeInTheDocument()
 })
 
-it('lets privileged roles clear a selected status back to all permitted tasks', async () => {
+it('keeps privileged status selection and clears a selected status back to all permitted tasks', async () => {
   const client = { operationsOverview: vi.fn(async (_park: number, _days: number, status: string) => snapshot({ selected_status: status })) }
-  render(tree({ client, url: '/overview?park=7&status=moving' }))
+  render(tree({ client }))
 
+  fireEvent.click(await screen.findByRole('link', { name: 'Перемещение: 2 задач' }))
+  await waitFor(() => expect(client.operationsOverview).toHaveBeenLastCalledWith(7, 7, 'moving'))
   fireEvent.click(await screen.findByRole('link', { name: 'Все разрешённые задачи' }))
   await waitFor(() => expect(client.operationsOverview).toHaveBeenLastCalledWith(7, 7, 'all'))
   expect(await screen.findByRole('link', { name: 'Открыть задачу RP-1' })).toBeVisible()

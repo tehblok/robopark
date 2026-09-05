@@ -21,13 +21,17 @@ export function OverviewAlerts({ alerts }: Pick<OperationalOverviewModel, 'alert
   </section>
 }
 
-export function OverviewStatusMonitoring({ statusCards, statusHref, allHref }: Pick<OperationalOverviewModel, 'statusCards'> & { statusHref: (status: string) => string; allHref: string | null }) {
-  return <Panel title="Статусы задач" description="Выберите статус, чтобы сузить очередь внимания до разрешённых вашей роли задач.">
+export function OverviewStatusMonitoring({ statusCards, statusHref, allHref, selectable }: Pick<OperationalOverviewModel, 'statusCards'> & { statusHref: (status: string) => string; allHref: string | null; selectable: boolean }) {
+  return <Panel title="Статусы задач" description={selectable ? 'Выберите статус, чтобы сузить очередь внимания до разрешённых вашей роли задач.' : 'Текущий состав разрешённых вашей роли задач.'}>
     <div className="rp-overview-statuses" data-testid="overview-statuses">
       {allHref ? <Link aria-label="Все разрешённые задачи" className="rp-overview-status rp-overview-status--all" to={allHref}>Все разрешённые задачи</Link> : null}
-      {statusCards.map((card) => <Link aria-current={card.selected ? 'page' : undefined} aria-label={`${card.label}: ${taskCount(card.taskCount)}`} className="rp-overview-status" key={card.key} to={statusHref(card.key)}>
-        <MetricCard label={card.label} tone={card.selected ? 'info' : 'neutral'} value={taskCount(card.taskCount)} />
-      </Link>)}
+      {statusCards.map((card) => selectable
+        ? <Link aria-current={card.selected ? 'page' : undefined} aria-label={`${card.label}: ${taskCount(card.taskCount)}`} className="rp-overview-status" key={card.key} to={statusHref(card.key)}>
+          <MetricCard label={card.label} tone={card.selected ? 'info' : 'neutral'} value={taskCount(card.taskCount)} />
+        </Link>
+        : <div className="rp-overview-status" key={card.key}>
+          <MetricCard label={card.label} tone="neutral" value={taskCount(card.taskCount)} />
+        </div>) }
     </div>
   </Panel>
 }

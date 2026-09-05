@@ -49,7 +49,7 @@
   outline-offset: 2px;
 }
 
-.rp-overview-status:hover .rp-metric-card {
+a.rp-overview-status:hover .rp-metric-card {
   background: var(--rp-state-hover);
 }
 

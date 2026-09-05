@@ -22,17 +22,21 @@ import './overview.css'
 
 const retainable = new Set<DomainError['kind']>(['offline', 'timeout', 'server'])
 
+function canSelectOverviewStatus(role: string): boolean {
+  return role === 'operator' || role === 'admin' || role === 'royal'
+}
+
 function OverviewWarning({ failure, busy, onRetry }: { failure: DomainError; busy: boolean; onRetry: () => void }) {
   return <div className="rp-overview-warning" role="alert"><div><strong>{failure.title}</strong><p>{failure.description}</p></div>
     {failure.retryable ? <Button busy={busy} leadingIcon="refresh" onClick={onRetry} variant="secondary">Повторить</Button> : null}</div>
 }
 
-function OverviewContent({ data, role, statusHref, allHref }: { data: OperationsOverview; role: string; statusHref: (status: string) => string; allHref: string | null }) {
+function OverviewContent({ data, role, selectable, statusHref, allHref }: { data: OperationsOverview; role: string; selectable: boolean; statusHref: (status: string) => string; allHref: string | null }) {
   const model = buildOverviewModel(data, role)
 
   return <div className="rp-overview">
     <OverviewAlerts alerts={model.alerts} />
-    <OverviewStatusMonitoring allHref={allHref} statusCards={model.statusCards} statusHref={statusHref} />
+    <OverviewStatusMonitoring allHref={allHref} selectable={selectable} statusCards={model.statusCards} statusHref={statusHref} />
     <OverviewFlow flow={model.flow} />
     <OverviewAttentionQueue attentionQueue={model.attentionQueue} attentionTruncated={model.attentionTruncated} />
     <OverviewWorkload workload={model.workload} />
@@ -40,11 +44,12 @@ function OverviewContent({ data, role, statusHref, allHref }: { data: Operations
   </div>
 }
 
-function OverviewResource({ resourceKey, load, parkId, role, statusHref, allHref, onAuthorizationFailure }: {
+function OverviewResource({ resourceKey, load, parkId, role, selectable, statusHref, allHref, onAuthorizationFailure }: {
   resourceKey: string
   load: () => Promise<OperationsOverview>
   parkId: number
   role: string
+  selectable: boolean
   statusHref: (status: string) => string
   allHref: string | null
   onAuthorizationFailure: (error: unknown) => void
@@ -61,15 +66,16 @@ function OverviewResource({ resourceKey, load, parkId, role, statusHref, allHref
 
   return <>
     {failure ? <OverviewWarning busy={resource.isRevalidating} failure={failure} onRetry={() => void resource.refresh()} /> : null}
-    <OverviewContent allHref={allHref} data={data} role={role} statusHref={statusHref} />
+    <OverviewContent allHref={allHref} data={data} role={role} selectable={selectable} statusHref={statusHref} />
     <Button busy={resource.isRevalidating} leadingIcon="refresh" onClick={() => void resource.refresh()} variant="secondary">Обновить данные</Button>
   </>
 }
 
-function OverviewBoundary({ apiClient, user, query, statusHref, allHref, authorizationBlocked, onAuthorizationFailure }: {
+function OverviewBoundary({ apiClient, user, query, selectable, statusHref, allHref, authorizationBlocked, onAuthorizationFailure }: {
   apiClient: OperationsApiClient
   user: User
   query: OperationsQuery
+  selectable: boolean
   statusHref: (status: string) => string
   allHref: string | null
   authorizationBlocked: () => boolean
@@ -88,7 +94,7 @@ function OverviewBoundary({ apiClient, user, query, statusHref, allHref, authori
 
   if (!canReadOperations(user, 'overview')) return <ErrorState description="Для этого раздела нужны доступ к Tracker и разрешение на обзор смены." title="Нет доступа" />
   if (!selectedPark) return <EmptyState description="Выберите доступный парк, чтобы увидеть текущие задачи." icon="parks" title="Парк не выбран" />
-  return <OverviewResource allHref={allHref} key={resourceKey} load={load} onAuthorizationFailure={onAuthorizationFailure} parkId={selectedPark.id} resourceKey={resourceKey} role={user.role} statusHref={statusHref} />
+  return <OverviewResource allHref={allHref} key={resourceKey} load={load} onAuthorizationFailure={onAuthorizationFailure} parkId={selectedPark.id} resourceKey={resourceKey} role={user.role} selectable={selectable} statusHref={statusHref} />
 }
 
 function OverviewSessionPage({ apiClient, user }: { apiClient: OperationsApiClient; user: User }) {
@@ -96,7 +102,8 @@ function OverviewSessionPage({ apiClient, user }: { apiClient: OperationsApiClie
   const { loading } = useParkScope()
   const [params, setParams] = useSearchParams()
   const parsed = useMemo(() => parseOperationsQuery(params, user.role), [params, user.role])
-  const query = useMemo<OperationsQuery>(() => ({ days: 7, status: parsed.status }), [parsed.status])
+  const selectable = canSelectOverviewStatus(user.role)
+  const query = useMemo<OperationsQuery>(() => ({ days: 7, status: selectable ? parsed.status : 'all' }), [parsed.status, selectable])
   const normalized = useMemo(() => operationsSearch(params, query), [params, query])
   const cachePrefix = `overview:${user.id}:`
   const blocked = useRef(false)
@@ -124,12 +131,12 @@ function OverviewSessionPage({ apiClient, user }: { apiClient: OperationsApiClie
     const next = operationsSearch(params, { days: 7, status: nextStatus })
     return next.toString() ? `?${next.toString()}` : ''
   }, [params])
-  const allHref = ['operator', 'admin', 'royal'].includes(user.role) && query.status !== 'all' ? statusHref('all') : null
+  const allHref = selectable && query.status !== 'all' ? statusHref('all') : null
 
   return <PageLayout description="Что происходит сейчас и где требуется вмешательство в выбранном парке." title="Смена / Обзор">
     {authorizationFailure ? <ErrorState description={authorizationFailure.description} requestId={authorizationFailure.requestId} title={authorizationFailure.title} />
       : loading ? <LoadingState label="Загружаем область парка" variant="page" />
-        : <OverviewBoundary allHref={allHref} apiClient={apiClient} authorizationBlocked={authorizationBlocked} onAuthorizationFailure={observeAuthorizationFailure} query={query} statusHref={statusHref} user={user} />}
+        : <OverviewBoundary allHref={allHref} apiClient={apiClient} authorizationBlocked={authorizationBlocked} onAuthorizationFailure={observeAuthorizationFailure} query={query} selectable={selectable} statusHref={statusHref} user={user} />}
   </PageLayout>
 }
 
