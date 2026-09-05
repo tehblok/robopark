@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import uuid
+from contextlib import nullcontext
 from datetime import UTC, datetime
 
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
@@ -30,6 +33,7 @@ EMERGENCY_COOKIE_VALID_KEY = "emergency_cookie_valid"
 EMERGENCY_COOKIE_STATUS_KEY = "emergency_cookie_status"
 EMERGENCY_COOKIE_CHECKED_AT_KEY = "emergency_cookie_checked_at"
 EMERGENCY_COOKIE_CHECKED_ROBOT_KEY = "emergency_cookie_checked_robot"
+EMERGENCY_COOKIE_IDENTITY_KEY = "emergency_cookie_identity"
 EMERGENCY_KEEPALIVE_RING_KEY = "emergency_keepalive_ring"
 EMERGENCY_KEEPALIVE_SEED_VIN_KEY = "emergency_keepalive_seed_vin"
 EMERGENCY_KEEPALIVE_LAST_OK_KEY = "emergency_keepalive_last_ok_at"
@@ -77,7 +81,10 @@ def _upsert_setting(db: Session, key: str, value: str, *, now: datetime) -> Plat
 
 def set_setting(db: Session, key: str, value: str) -> PlatformSetting:
     """Persist a setting, encrypting it when the key holds a secret."""
-    row = _upsert_setting(db, key, value, now=datetime.now(UTC))
+    now = datetime.now(UTC)
+    row = _upsert_setting(db, key, value, now=now)
+    if key == EMERGENCY_COOKIE_KEY:
+        _upsert_setting(db, EMERGENCY_COOKIE_IDENTITY_KEY, uuid.uuid4().hex, now=now)
     db.commit()
     db.refresh(row)
     return row
@@ -122,6 +129,11 @@ def migrate_plaintext_secrets(db: Session) -> int:
             "Re-encrypted %d legacy plaintext secret(s) at boot; cycle SECRET_KEY only after backup.",
             rewritten,
         )
+    if (
+        get_setting(db, EMERGENCY_COOKIE_KEY) is not None
+        and get_setting(db, EMERGENCY_COOKIE_IDENTITY_KEY) is None
+    ):
+        set_setting(db, EMERGENCY_COOKIE_IDENTITY_KEY, uuid.uuid4().hex)
     return rewritten
 
 
@@ -131,6 +143,54 @@ def get_tracker_token(db: Session) -> str | None:
 
 def get_emergency_cookie(db: Session) -> str | None:
     return get_secret_setting(db, EMERGENCY_COOKIE_KEY)
+
+
+def get_emergency_cookie_identity(db: Session) -> str | None:
+    row = get_setting(db, EMERGENCY_COOKIE_IDENTITY_KEY)
+    return row.value if row is not None else None
+
+
+def get_emergency_cookie_probe(db: Session) -> tuple[str | None, str | None]:
+    """Read the active cookie and its persistent identity from one DB snapshot."""
+    rows = {
+        row.key: row
+        for row in db.scalars(
+            select(PlatformSetting).where(
+                PlatformSetting.key.in_((EMERGENCY_COOKIE_KEY, EMERGENCY_COOKIE_IDENTITY_KEY))
+            )
+        )
+    }
+    cookie_row = rows.get(EMERGENCY_COOKIE_KEY)
+    if cookie_row is None:
+        return None, None
+    try:
+        cookie = decrypt_secret(cookie_row.value, _secret_key())
+    except SecretDecryptionError:
+        logger.error(
+            "Cannot decrypt setting %r — SECRET_KEY is missing or was rotated. "
+            "Re-enter the value in /admin.",
+            EMERGENCY_COOKIE_KEY,
+        )
+        return None, None
+    identity_row = rows.get(EMERGENCY_COOKIE_IDENTITY_KEY)
+    return cookie, identity_row.value if identity_row is not None else None
+
+
+def _claim_emergency_cookie_identity(db: Session, identity: str) -> bool:
+    result = db.execute(
+        update(PlatformSetting)
+        .where(
+            PlatformSetting.key == EMERGENCY_COOKIE_IDENTITY_KEY,
+            PlatformSetting.value == identity,
+        )
+        .values(value=PlatformSetting.value)
+    )
+    return result.rowcount == 1
+
+
+def claim_emergency_cookie_identity(db: Session, identity: str) -> bool:
+    """Acquire a write transaction only while ``identity`` is still active."""
+    return _claim_emergency_cookie_identity(db, identity)
 
 
 def get_emergency_cookie_valid(db: Session) -> bool | None:
@@ -171,19 +231,75 @@ def activate_emergency_cookie(
     cookie: str,
     status: str,
     checked_robot: str,
-) -> None:
+) -> str:
     """Atomically activate a probed cookie and its public status metadata."""
     now = datetime.now(UTC)
+    identity = uuid.uuid4().hex
     try:
         _upsert_setting(db, EMERGENCY_COOKIE_KEY, cookie, now=now)
+        _upsert_setting(db, EMERGENCY_COOKIE_IDENTITY_KEY, identity, now=now)
         _upsert_setting(db, EMERGENCY_COOKIE_VALID_KEY, "true", now=now)
         _upsert_setting(db, EMERGENCY_COOKIE_STATUS_KEY, status, now=now)
         _upsert_setting(db, EMERGENCY_COOKIE_CHECKED_AT_KEY, now.isoformat(), now=now)
         _upsert_setting(db, EMERGENCY_COOKIE_CHECKED_ROBOT_KEY, checked_robot, now=now)
+        _upsert_setting(db, EMERGENCY_KEEPALIVE_RING_KEY, "[]", now=now)
         db.commit()
     except BaseException:
         db.rollback()
         raise
+    return identity
+
+
+def record_emergency_cookie_probe(
+    db: Session,
+    *,
+    identity: str | None,
+    valid: bool | None,
+    vin: str | None = None,
+    status: str | None = None,
+    checked_robot: str | None = None,
+) -> bool:
+    """Write probe side effects only if the probed cookie remains active."""
+    if identity is None:
+        return False
+    ring_lock = _keepalive_ring_lock if vin is not None else nullcontext()
+    try:
+        with ring_lock:
+            if not _claim_emergency_cookie_identity(db, identity):
+                db.rollback()
+                return False
+            now = datetime.now(UTC)
+            if valid is not None:
+                _upsert_setting(
+                    db,
+                    EMERGENCY_COOKIE_VALID_KEY,
+                    "true" if valid else "false",
+                    now=now,
+                )
+            if vin is not None:
+                ring = [saved_vin for saved_vin in get_keepalive_ring(db) if saved_vin != vin]
+                ring.append(vin)
+                _upsert_setting(
+                    db,
+                    EMERGENCY_KEEPALIVE_RING_KEY,
+                    json.dumps(ring[-EMERGENCY_KEEPALIVE_RING_MAX_SIZE:]),
+                    now=now,
+                )
+            if status is not None:
+                _upsert_setting(db, EMERGENCY_COOKIE_STATUS_KEY, status, now=now)
+                _upsert_setting(db, EMERGENCY_COOKIE_CHECKED_AT_KEY, now.isoformat(), now=now)
+                if checked_robot is not None:
+                    _upsert_setting(
+                        db,
+                        EMERGENCY_COOKIE_CHECKED_ROBOT_KEY,
+                        checked_robot,
+                        now=now,
+                    )
+            db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    return True
 
 
 def get_keepalive_ring(db: Session) -> list[str]:

@@ -79,9 +79,9 @@ def test_cache_hit_does_not_resolve_cookie_report(db_session, monkeypatch):
     calls = {"resolve": 0}
     real_resolve = reports_svc.resolve_open_emergency_cookie_reports
 
-    def counting_resolve(db):
+    def counting_resolve(db, **kwargs):
         calls["resolve"] += 1
-        return real_resolve(db)
+        return real_resolve(db, **kwargs)
 
     monkeypatch.setattr(
         emergency_cache.reports,
@@ -166,9 +166,7 @@ def test_ensure_recovers_unique_violation_from_concurrent_inserts(
         assert len(rows) == 1
 
 
-def test_get_robot_payload_raises_auth_error_when_ensure_hits_unique_index(
-    db_engine, seed_royal, monkeypatch
-):
+def test_get_robot_payload_serializes_auth_report_creation(db_engine, seed_royal, monkeypatch):
     emergency_cache.clear_cache_for_tests()
     with Session(db_engine) as session:
         settings_svc.set_setting(session, settings_svc.EMERGENCY_COOKIE_KEY, "cookie")
@@ -178,7 +176,6 @@ def test_get_robot_payload_raises_auth_error_when_ensure_hits_unique_index(
         raise emergency_client.EmergencyAuthError("expired")
 
     monkeypatch.setattr(emergency_client, "fetch_robot_payload", boom)
-    _gate_cookie_report_inserts(monkeypatch)
     errors = []
 
     def worker(vin):

@@ -179,7 +179,7 @@ def check_emergency_cookie(
 
     vin = _normalize_probe_robot(probe_robot)
     checked_robot = emergency_vin.short_robot_number(vin)
-    cookie = settings_svc.get_emergency_cookie(db)
+    cookie, identity = settings_svc.get_emergency_cookie_probe(db)
     if not cookie:
         settings_svc.set_emergency_cookie_check(db, status="unavailable", robot=checked_robot)
         raise HTTPException(
@@ -190,27 +190,47 @@ def check_emergency_cookie(
     try:
         emergency_client.fetch_robot_payload(cookie=cookie, vin=vin)
     except emergency_client.EmergencyAuthError as exc:
-        settings_svc.set_emergency_cookie_valid(db, False)
-        settings_svc.set_emergency_cookie_check(db, status="invalid", robot=checked_robot)
         from robopark_api.services import reports as reports_svc
 
-        reports_svc.ensure_open_emergency_cookie_report(db, author=admin)
+        if settings_svc.record_emergency_cookie_probe(
+            db,
+            identity=identity,
+            valid=False,
+            status="invalid",
+            checked_robot=checked_robot,
+        ):
+            reports_svc.ensure_open_emergency_cookie_report(
+                db,
+                author=admin,
+                expected_identity=identity,
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="emergency_cookie_invalid",
         ) from exc
     except emergency_client.EmergencyError as exc:
-        settings_svc.set_emergency_cookie_check(db, status="unavailable", robot=checked_robot)
+        settings_svc.record_emergency_cookie_probe(
+            db,
+            identity=identity,
+            valid=None,
+            status="unavailable",
+            checked_robot=checked_robot,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="emergency_upstream_unavailable",
         ) from exc
 
-    settings_svc.set_emergency_cookie_valid(db, True)
-    settings_svc.set_emergency_cookie_check(db, status="valid", robot=checked_robot)
     from robopark_api.services import reports as reports_svc
 
-    reports_svc.resolve_open_emergency_cookie_reports(db)
+    if settings_svc.record_emergency_cookie_probe(
+        db,
+        identity=identity,
+        valid=True,
+        status="valid",
+        checked_robot=checked_robot,
+    ):
+        reports_svc.resolve_open_emergency_cookie_reports(db, expected_identity=identity)
     return _to_out(db)
 
 

@@ -280,3 +280,47 @@ def test_failed_emergency_cookie_activation_rolls_back_all_settings(
     assert settings_svc.get_emergency_cookie_status(db_session) == "unchecked"
     assert settings_svc.get_emergency_cookie_checked_at(db_session) is None
     assert settings_svc.get_emergency_cookie_checked_robot(db_session) is None
+
+
+def test_emergency_cookie_activation_replaces_persistent_identity(db_session):
+    settings_svc.activate_emergency_cookie(
+        db_session,
+        cookie="first",
+        status="valid",
+        checked_robot="2378",
+    )
+    first_identity = settings_svc.get_emergency_cookie_identity(db_session)
+
+    settings_svc.activate_emergency_cookie(
+        db_session,
+        cookie="second",
+        status="valid",
+        checked_robot="2378",
+    )
+
+    assert first_identity is not None
+    assert settings_svc.get_emergency_cookie_identity(db_session) not in {None, first_identity}
+
+
+def test_emergency_cookie_activation_discards_prior_probe_ring(db_session):
+    old_identity = settings_svc.activate_emergency_cookie(
+        db_session,
+        cookie="first",
+        status="valid",
+        checked_robot="2378",
+    )
+    assert settings_svc.record_emergency_cookie_probe(
+        db_session,
+        identity=old_identity,
+        valid=True,
+        vin="YASADR00000002378",
+    )
+
+    settings_svc.activate_emergency_cookie(
+        db_session,
+        cookie="second",
+        status="valid",
+        checked_robot="2378",
+    )
+
+    assert settings_svc.get_keepalive_ring(db_session) == []
