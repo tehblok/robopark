@@ -84,6 +84,9 @@ export type IntegrationSettings = {
   emergency_cookie_updated_at: string | null
   emergency_cookie_encrypted?: boolean
   emergency_cookie_valid: boolean | null
+  emergency_cookie_status: 'unchecked' | 'valid' | 'invalid' | 'unavailable'
+  emergency_cookie_checked_at: string | null
+  emergency_cookie_checked_robot: string | null
 }
 
 export type TrackerPolicySettings = {
@@ -619,10 +622,15 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ token }),
     }),
-  setEmergencyCookie: (cookie: string) =>
+  setEmergencyCookie: (cookie: string, robotNumber: string) =>
     request<IntegrationSettings>('/admin/settings/emergency-cookie', {
       method: 'PUT',
-      body: JSON.stringify({ cookie }),
+      body: JSON.stringify({ cookie, robot_number: robotNumber }),
+    }),
+  checkEmergencyCookie: (robotNumber?: string) =>
+    request<IntegrationSettings>('/admin/settings/emergency-cookie/check', {
+      method: 'POST',
+      body: JSON.stringify(robotNumber ? { robot_number: robotNumber } : {}),
     }),
   trackerPolicy: () => request<TrackerPolicySettings>('/admin/settings/tracker-policy'),
   updateTrackerPolicy: (payload: Partial<TrackerPolicySettings>) =>

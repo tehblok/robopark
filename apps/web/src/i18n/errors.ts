@@ -9,6 +9,7 @@ export function mapApiError(error: unknown, fallback = ''): string {
     if (error.detail === 'maintenance' || (error.status === 503 && error.detail === 'maintenance')) {
       return ru.maintenance.title
     }
+    if (error.detail === 'emergency_upstream_unavailable') return ru.errors.emergency503
     if (error.status === 503) return ru.errors.tasks503
     if (error.status === 401) {
       return ru.errors.sessionExpired

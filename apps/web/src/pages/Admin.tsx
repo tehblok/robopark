@@ -88,6 +88,19 @@ function worksBadge(ok: boolean) {
   )
 }
 
+function emergencyCookieStatus(settings: IntegrationSettings) {
+  switch (settings.emergency_cookie_status) {
+    case 'valid':
+      return <span className="badge badge-ok">Действительна</span>
+    case 'invalid':
+      return <span className="badge badge-warn">Недействительна</span>
+    case 'unavailable':
+      return <span className="badge badge-warn">Недоступна</span>
+    default:
+      return <span className="badge badge-muted">Не проверена</span>
+  }
+}
+
 export function Admin() {
   const { user } = useAuth()
   const { parkId } = useParkScope()
@@ -127,12 +140,15 @@ export function Admin() {
   const [tag, setTag] = useState('')
   const [trackerToken, setTrackerToken] = useState('')
   const [emergencyCookie, setEmergencyCookie] = useState('')
+  const [emergencyRobot, setEmergencyRobot] = useState('')
   const [registrationPassword, setRegistrationPassword] = useState('')
   const [registrationSettings, setRegistrationSettings] =
     useState<RegistrationPasswordSettings | null>(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [busy, setBusy] = useState(false)
+  const [trackerBusy, setTrackerBusy] = useState(false)
+  const [emergencyBusy, setEmergencyBusy] = useState(false)
 
   useEffect(() => {
     if (!tabPermitted) setTab(firstPermittedTab)
@@ -188,18 +204,57 @@ export function Admin() {
     }, 'Парк создан')
   }
 
-  const saveIntegration = async (event: FormEvent) => {
+  const saveTrackerToken = async (event: FormEvent) => {
     event.preventDefault()
-    await run(async () => {
-      if (trackerToken.trim()) {
-        await api.setTrackerToken(trackerToken.trim())
-        setTrackerToken('')
-      }
-      if (emergencyCookie.trim()) {
-        await api.setEmergencyCookie(emergencyCookie.trim())
-        setEmergencyCookie('')
-      }
-    }, 'Секреты обновлены')
+    const token = trackerToken.trim()
+    if (!token || trackerBusy) return
+    setError('')
+    setSuccess('')
+    setTrackerBusy(true)
+    try {
+      setSettings(await api.setTrackerToken(token))
+      setTrackerToken('')
+      setSuccess('Токен Tracker сохранён')
+    } catch (caught) {
+      setError(mapApiError(caught, ru.errors.generic))
+    } finally {
+      setTrackerBusy(false)
+    }
+  }
+
+  const runEmergencyCheck = async (action: () => Promise<IntegrationSettings>, message: string) => {
+    if (emergencyBusy) return
+    setError('')
+    setSuccess('')
+    setEmergencyBusy(true)
+    try {
+      setSettings(await action())
+      setSuccess(message)
+    } catch (caught) {
+      setError(mapApiError(caught, ru.errors.emergency503))
+    } finally {
+      setEmergencyBusy(false)
+    }
+  }
+
+  const saveEmergencyCookie = async (event: FormEvent) => {
+    event.preventDefault()
+    const cookie = emergencyCookie.trim()
+    const robot = emergencyRobot.trim()
+    if (!cookie || !robot) return
+    await runEmergencyCheck(async () => {
+      const updated = await api.setEmergencyCookie(cookie, robot)
+      setEmergencyCookie('')
+      return updated
+    }, 'Cookie сохранена и проверена')
+  }
+
+  const checkEmergencyCookie = async () => {
+    const robot = emergencyRobot.trim()
+    await runEmergencyCheck(
+      () => api.checkEmergencyCookie(robot || undefined),
+      'Текущая cookie проверена',
+    )
   }
 
   const saveRegistrationPassword = async (event: FormEvent) => {
@@ -250,7 +305,7 @@ export function Admin() {
 
   return (
     <PageShell
-      actions={busy ? <Spinner label="Сохранение" /> : undefined}
+      actions={busy || trackerBusy || emergencyBusy ? <Spinner label="Сохранение" /> : undefined}
       subtitle="Парки, роли, пользователи, интеграции и снимок системы."
       title="Администрирование"
     >
@@ -342,38 +397,79 @@ export function Admin() {
               <div className="stat">
                 <span className="stat-label">Cookie диагностики робота</span>
                 <span className="stat-value">
-                  {worksBadge(settings.emergency_cookie_valid === true)}
+                  {emergencyCookieStatus(settings)}
                 </span>
               </div>
             </div>
           )}
 
-          <form className="form-grid" onSubmit={saveIntegration}>
+          {settings?.emergency_cookie_checked_robot && (
+            <p className="panel-hint">
+              Проверено: робот {settings.emergency_cookie_checked_robot}
+              {settings.emergency_cookie_checked_at ? ` · ${new Date(settings.emergency_cookie_checked_at).toLocaleString('ru-RU')}` : ''}
+            </p>
+          )}
+          {settings?.emergency_cookie_status === 'unavailable' && (
+            <Alert tone="warning">Проверка сейчас недоступна. Повторите попытку.</Alert>
+          )}
+
+          <form className="form-grid" onSubmit={saveTrackerToken}>
             <label className="field">
               <span className="field-label">Tracker OAuth-токен</span>
               <input
+                disabled={trackerBusy}
                 onChange={(event) => setTrackerToken(event.target.value)}
                 placeholder="Оставьте пустым, чтобы не менять"
                 type="password"
                 value={trackerToken}
               />
             </label>
+            <div className="form-actions">
+              <button
+                className="btn"
+                disabled={trackerBusy || !trackerToken.trim()}
+                type="submit"
+              >
+                {trackerBusy ? 'Сохранение…' : 'Сохранить токен'}
+              </button>
+            </div>
+          </form>
+
+          <form className="form-grid" onSubmit={saveEmergencyCookie}>
             <label className="field">
               <span className="field-label">Cookie диагностики робота</span>
               <input
+                disabled={emergencyBusy}
                 onChange={(event) => setEmergencyCookie(event.target.value)}
-                placeholder="Оставьте пустым, чтобы не менять"
+                placeholder="Вставьте новую cookie для проверки"
                 type="password"
                 value={emergencyCookie}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">Робот для проверки</span>
+              <input
+                disabled={emergencyBusy}
+                onChange={(event) => setEmergencyRobot(event.target.value)}
+                placeholder="Например, 447 или VIN"
+                value={emergencyRobot}
               />
             </label>
             <div className="form-actions">
               <button
                 className="btn"
-                disabled={busy || (!trackerToken.trim() && !emergencyCookie.trim())}
+                disabled={emergencyBusy || !emergencyCookie.trim() || !emergencyRobot.trim()}
                 type="submit"
               >
-                Сохранить секреты
+                {emergencyBusy ? 'Проверяем…' : 'Сохранить и проверить'}
+              </button>
+              <button
+                className="btn btn-secondary"
+                disabled={emergencyBusy}
+                onClick={() => void checkEmergencyCookie()}
+                type="button"
+              >
+                Проверить текущую
               </button>
             </div>
           </form>

@@ -62,6 +62,9 @@ describe('Management routes', () => {
       emergency_cookie_masked: null,
       emergency_cookie_updated_at: null,
       emergency_cookie_valid: false,
+      emergency_cookie_status: 'unchecked',
+      emergency_cookie_checked_at: null,
+      emergency_cookie_checked_robot: null,
     })
     vi.spyOn(api, 'trackerPolicy').mockResolvedValue({
       operator_show_untagged: false,
