@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
 class LoginRequest(BaseModel):
@@ -185,6 +185,28 @@ class EmergencySectionOut(BaseModel):
     fields: list[EmergencyFieldOut]
 
 
+DiagnosticMatchKind = Literal["exact", "regex"]
+DiagnosticSeverity = Literal["info", "warning", "critical"]
+DiagnosticView = Literal["top", "front", "rear", "left", "right", "isometric"]
+DiagnosticIndicator = Literal["point", "outline", "zone"]
+
+
+class DiagnosticEvent(BaseModel):
+    id: str
+    rule_id: int | None = None
+    source_path: str
+    raw_value: JsonValue
+    title: str
+    description: str
+    severity: DiagnosticSeverity
+    sort_order: int = 0
+    part: str | None = None
+    view: DiagnosticView | None = None
+    x: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    y: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    indicator: DiagnosticIndicator | None = None
+
+
 class EmergencySnapshotOut(BaseModel):
     vin: str
     short_number: str
@@ -202,6 +224,7 @@ class EmergencySnapshotOut(BaseModel):
     lte_ok: bool | None = None
     connection: Literal["lte", "wire"] | None = None
     error_banner: str | None = None
+    diagnostic_events: list[DiagnosticEvent] = Field(default_factory=list)
     lat: float | None = None
     lon: float | None = None
     heading_deg: float | None = None
@@ -229,12 +252,6 @@ def _reject_explicit_nulls(data: Any, fields: tuple[str, ...]) -> Any:
             if key in data and data[key] is None:
                 raise ValueError(f"{key} must not be null")
     return data
-
-
-DiagnosticMatchKind = Literal["exact", "regex"]
-DiagnosticSeverity = Literal["info", "warning", "critical"]
-DiagnosticView = Literal["top", "front", "rear", "left", "right", "isometric"]
-DiagnosticIndicator = Literal["point", "outline", "zone"]
 
 
 class DiagnosticRuleCreate(BaseModel):

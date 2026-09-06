@@ -133,7 +133,7 @@ def emergency_snapshot_for_user(vin: str, user: User, db: Session) -> EmergencyS
 
     _enforce_vin_scope(db, user, vin)
     payload = _get_robot_payload(db, vin)
-    snap = parse_emergency_snapshot(payload, vin=vin)
+    snap = parse_emergency_snapshot(payload, vin=vin, db=db)
     return EmergencySnapshotOut(**snap, observed_at=datetime.now(UTC))
 
 
