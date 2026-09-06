@@ -1,13 +1,40 @@
-import { screen } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api'
 import { installMatchMedia, renderApp, testUser } from '../../test/renderApp'
+import { resourceStore } from '../../lib/resource'
 
 const north = { id: 7, name: 'Северный', tag: 'north', is_active: true }
 
 describe('Management routes', () => {
   beforeEach(() => installMatchMedia())
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => { resourceStore.clearAll(); vi.restoreAllMocks() })
+
+  it('keeps the management parent active and exposes stable subsection navigation on a nested page', async () => {
+    vi.spyOn(api, 'adminRoles').mockResolvedValue([])
+    vi.spyOn(api, 'adminRolePermissionCatalog').mockResolvedValue([])
+    renderApp('/admin/roles?park=7', testUser({
+      role: 'royal', permissions: ['nav.admin', 'roles.manage', 'users.manage', 'parks.manage'], parks: [north],
+    }))
+    const navigation = screen.getAllByRole('navigation', { name: 'Основная навигация' })[0]
+    expect(within(navigation).getByRole('link', { name: 'Администрирование' })).toHaveAttribute('aria-current', 'page')
+    const sections = await screen.findByRole('navigation', { name: 'Разделы управления' })
+    expect(within(sections).getByRole('link', { name: 'Роли и доступы' })).toHaveAttribute('aria-current', 'page')
+    expect(within(sections).getByRole('link', { name: 'Пользователи' })).toHaveAttribute('href', '/admin/users?park=7')
+  })
+
+  it.each([
+    ['/admin/users?tab=parks', 'Пользователи'],
+    ['/admin/roles?tab=parks', 'Роли и доступы'],
+  ])('ignores a foreign settings tab when highlighting %s', async (url, label) => {
+    vi.spyOn(api, 'parks').mockResolvedValue([north])
+    vi.spyOn(api, 'adminUsers').mockResolvedValue([])
+    vi.spyOn(api, 'adminRoles').mockResolvedValue([])
+    vi.spyOn(api, 'adminRolePermissionCatalog').mockResolvedValue([])
+    renderApp(url, testUser({ role: 'royal', permissions: ['users.manage', 'roles.manage'], parks: [north] }))
+    const sections = await screen.findByRole('navigation', { name: 'Разделы управления' })
+    expect(within(sections).getByRole('link', { name: label })).toHaveAttribute('aria-current', 'page')
+  })
 
   it('lets a granular users manager open accounts even when integrations are unavailable', async () => {
     const integration = vi.spyOn(api, 'integrationSettings').mockRejectedValue(new Error('offline'))
@@ -62,6 +89,9 @@ describe('Management routes', () => {
       emergency_cookie_masked: null,
       emergency_cookie_updated_at: null,
       emergency_cookie_valid: false,
+      emergency_cookie_status: 'unchecked',
+      emergency_cookie_checked_at: null,
+      emergency_cookie_checked_robot: null,
     })
     vi.spyOn(api, 'trackerPolicy').mockResolvedValue({
       operator_show_untagged: false,
@@ -78,11 +108,31 @@ describe('Management routes', () => {
       role: 'admin', permissions: ['nav.admin'], parks: [north],
     }))
 
-    expect(await screen.findByText('Cookie диагностики робота')).toBeVisible()
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('park=7'))
+    expect(await screen.findByLabelText('Cookie диагностики робота')).toBeVisible()
     expect(screen.getByRole('link', { name: 'Проверка робота' })).toHaveAttribute('href', '/emergency')
     expect(screen.getByRole('link', { name: 'Настройки проверки робота' })).toHaveAttribute('href', '/admin/emergency/config')
     expect(document.body).not.toHaveTextContent(/Аварийный режим/i)
     expect(screen.queryByText(/^(?:Emergency|Конфиг Emergency|Разделы Emergency)/i)).not.toBeInTheDocument()
+  })
+
+  it('switches settings subsections using URL links without reverting to the old tab', async () => {
+    vi.spyOn(api, 'parks').mockResolvedValue([north])
+    vi.spyOn(api, 'adminParkRequests').mockResolvedValue([])
+    vi.spyOn(api, 'integrationSettings').mockResolvedValue({ tracker_token_masked: null, tracker_token_updated_at: null, emergency_cookie_masked: null, emergency_cookie_updated_at: null, emergency_cookie_valid: null, emergency_cookie_status: 'unchecked', emergency_cookie_checked_at: null, emergency_cookie_checked_robot: null })
+    vi.spyOn(api, 'trackerPolicy').mockResolvedValue({ operator_show_untagged: false, operator_show_raw: false, operator_show_firmware_profile: false, mechanic_can_write: false })
+    vi.spyOn(api, 'screenshotGuardSettings').mockResolvedValue({ operator: false, mechanic: false, driver: false, admin: false, royal: false })
+    vi.spyOn(api, 'adminUsers').mockResolvedValue([])
+    await act(async () => {
+      renderApp('/admin/settings?park=7', testUser({ role: 'admin', permissions: ['nav.admin', 'parks.manage'], parks: [north] }))
+    })
+    await screen.findByText('Не проверена')
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Разделы управления' })).getByRole('link', { name: 'Парки' }))
+    expect(await screen.findByRole('heading', { name: 'Новый парк' })).toBeVisible()
+    expect(screen.getByTestId('location')).toHaveTextContent('/admin/settings?park=7&tab=parks')
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Разделы управления' })).getByRole('link', { name: 'Настройки' }))
+    expect(await screen.findByLabelText('Cookie диагностики робота')).toBeVisible()
+    expect(screen.getByTestId('location')).toHaveTextContent('/admin/settings?park=7')
   })
 
   it('uses Russian robot-check wording in the empty configuration editor', async () => {

@@ -1,4 +1,9 @@
 import { defineConfig, devices } from '@playwright/test'
+import { fileURLToPath } from 'node:url'
+
+const port = Number(process.env.PLAYWRIGHT_PORT ?? 4173)
+const baseURL = `http://127.0.0.1:${port}`
+const webRoot = fileURLToPath(new URL('.', import.meta.url))
 
 export default defineConfig({
   testDir: './e2e',
@@ -11,12 +16,14 @@ export default defineConfig({
   },
   snapshotPathTemplate: '{testDir}/{testFilePath}-snapshots/{arg}{ext}',
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL,
     trace: 'on-first-retry',
   },
   webServer: {
-    command: 'npm run dev -- --host 127.0.0.1 --port 4173',
-    url: 'http://127.0.0.1:4173',
+    command: `"${process.execPath}" node_modules/vite/bin/vite.js --host 127.0.0.1 --port ${port} --strictPort`,
+    cwd: webRoot,
+    url: baseURL,
+    reuseExistingServer: false,
   },
   projects: [
     {

@@ -51,7 +51,7 @@ def clear_settings_cache():
 
 
 @pytest.fixture(autouse=True)
-def clear_response_caches():
+def clear_response_caches(disable_live_merge_by_default):
     """Every test starts with cold Tracker/Emergency caches — otherwise the
     monkeypatched upstream calls in the previous test would leak through the
     module-level TTL cache and mask real behaviour."""

@@ -1,3 +1,4 @@
+import { beforeEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -134,7 +135,8 @@ it.each([401, 403])('revalidation %s clears protected data and refreshes auth on
   const client = { operationsOverview: vi.fn().mockResolvedValueOnce(snapshot()).mockRejectedValue(new ApiError(status, null, 'denied')) }
   const view = render(tree({ user, refreshUser, client }))
   await screen.findByText('Проверить колесо')
-  fireEvent.click(screen.getByRole('button', { name: 'Обновить данные' }))
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_001)
+  fireEvent.focus(window)
   expect(await screen.findByRole('heading', { name: status === 403 ? 'Нет доступа' : 'Сессия истекла' })).toBeVisible()
   expect(screen.queryByText('Проверить колесо')).not.toBeInTheDocument()
   expect(refreshUser).toHaveBeenCalledTimes(1)
@@ -179,9 +181,13 @@ it('retains only same-owner data after offline revalidation and retries', async 
   const client = { operationsOverview: vi.fn().mockResolvedValueOnce(snapshot()).mockRejectedValueOnce(new TypeError('offline')).mockResolvedValue(snapshot({ tasks: [] })) }
   render(tree({ client }))
   await screen.findByText('Проверить колесо')
-  fireEvent.click(screen.getByRole('button', { name: 'Обновить данные' }))
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_001)
+  fireEvent.focus(window)
   await screen.findByText('Нет сети')
   expect(screen.getByText('Проверить колесо')).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'Повторить' }))
   await screen.findByText('Нет задач в выбранных статусах')
 })
+
+// Keep lifecycle assertions deterministic; pollingCapacity tests exercise jitter.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

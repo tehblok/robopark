@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Paged, TrackerIssue } from '../../api'
-import { loadWorkPage, WORK_PAGE_SIZE, type WorkApiClient } from './workData'
+import { loadWorkPage, oldestFirst, WORK_PAGE_SIZE, type WorkApiClient } from './workData'
 
 function emptyPage(offset: number): Paged<TrackerIssue> {
   return {
@@ -13,6 +13,53 @@ function emptyPage(offset: number): Paged<TrackerIssue> {
 }
 
 describe('loadWorkPage', () => {
+  it('returns a new oldest-first queue when Tracker timestamps arrive out of order', () => {
+    const items: TrackerIssue[] = [
+      { key: 'ROBOPARK-3', summary: 'newest', status: 'Open', created_at: '2026-09-03T09:00:00Z', url: '' },
+      { key: 'ROBOPARK-1', summary: 'oldest', status: 'Open', created_at: '2026-09-01T09:00:00Z', url: '' },
+      { key: 'ROBOPARK-2', summary: 'middle', status: 'Open', created_at: '2026-09-02T09:00:00Z', url: '' },
+    ]
+
+    expect(oldestFirst(items).map((item) => item.key)).toEqual([
+      'ROBOPARK-1',
+      'ROBOPARK-2',
+      'ROBOPARK-3',
+    ])
+    expect(items.map((item) => item.key)).toEqual([
+      'ROBOPARK-3',
+      'ROBOPARK-1',
+      'ROBOPARK-2',
+    ])
+  })
+
+  it('globally orders dated and age-derived records while leaving unknown ages stable', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-10T12:00:00Z'))
+    const items: TrackerIssue[] = [
+      { key: 'UNKNOWN-A', summary: '', status: 'Open', created_at: null, hours_created: '', url: '' },
+      { key: 'DATED', summary: '', status: 'Open', created_at: '2026-01-06T09:00:00Z', hours_created: '1', url: '' },
+      { key: 'AGE-100', summary: '', status: 'Open', created_at: 'not-a-date', hours_created: '100', url: '' },
+      { key: 'UNKNOWN-B', summary: '', status: 'Open', created_at: null, hours_created: 'NaN', url: '' },
+      { key: 'UNKNOWN-C', summary: '', status: 'Open', created_at: '', hours_created: 'Infinity', url: '' },
+    ]
+
+    expect(oldestFirst(items).map((item) => item.key)).toEqual([
+      'AGE-100',
+      'DATED',
+      'UNKNOWN-A',
+      'UNKNOWN-B',
+      'UNKNOWN-C',
+    ])
+    expect(items.map((item) => item.key)).toEqual([
+      'UNKNOWN-A',
+      'DATED',
+      'AGE-100',
+      'UNKNOWN-B',
+      'UNKNOWN-C',
+    ])
+    vi.useRealTimers()
+  })
+
   it('maps filters and pagination while forcing oldest even for legacy caller state', async () => {
     const result = emptyPage(WORK_PAGE_SIZE * 2)
     const trackerIssues = vi.fn(async () => result)
@@ -34,7 +81,7 @@ describe('loadWorkPage', () => {
         },
         'Alpha',
       ),
-    ).resolves.toBe(result)
+    ).resolves.toEqual(result)
 
     expect(trackerIssues).toHaveBeenCalledWith({
       queue: 'ROBOPARK',
@@ -44,6 +91,7 @@ describe('loadWorkPage', () => {
       assignee: 'ivan',
       untagged: undefined,
       age_hours: 24,
+      open_only: true,
       sort: 'oldest',
       limit: 50,
       offset: 100,
@@ -75,6 +123,7 @@ describe('loadWorkPage', () => {
         assignee: undefined,
         untagged: true,
         age_hours: undefined,
+        open_only: true,
         sort: 'oldest',
         limit: 50,
         offset: 0,

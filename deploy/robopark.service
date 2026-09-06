@@ -1,0 +1,18 @@
+[Unit]
+Description=Robopark application (local Docker Compose)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+WorkingDirectory=/opt/robopark
+ExecStart=/usr/bin/python3 /opt/robopark/deploy/host.py start --no-build
+ExecStop=/usr/bin/python3 /opt/robopark/deploy/host.py stop
+TimeoutStartSec=300
+TimeoutStopSec=90
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

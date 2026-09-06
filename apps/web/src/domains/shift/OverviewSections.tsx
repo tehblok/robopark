@@ -1,108 +1,91 @@
 import { Link } from 'react-router-dom'
-import { EmptyState, StaleBadge } from '../../design-system/feedback/AsyncState'
-import { Icon } from '../../design-system/icons/Icon'
+import { MetricCard } from '../../design-system/data/MetricCard'
+import { EntityRow } from '../../design-system/data/EntityRow'
+import { EmptyState } from '../../design-system/feedback/AsyncState'
 import { Panel } from '../../design-system/layout/PageLayout'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
-import type { OverviewViewModel } from './overviewModel'
+import type { OperationalOverviewModel } from './overviewModel'
 
-export function OverviewScope({
-  scope,
-  updatedAt,
-  freshness,
-}: Pick<OverviewViewModel, 'scope' | 'updatedAt' | 'freshness'>) {
-  return (
-    <div className="rp-overview-scope" data-testid="overview-scope">
-      <p>{scope}</p>
-      {freshness && updatedAt ? (
-        <StaleBadge state={freshness} updatedAt={updatedAt} />
-      ) : null}
-    </div>
-  )
+function taskCount(value: number | null): string {
+  return value == null ? 'Нет данных' : `${value} задач`
 }
 
-export function OverviewState({ state }: Pick<OverviewViewModel, 'state'>) {
-  return (
-    <div className="rp-overview-state" data-testid="overview-state">
-      <Panel title={state.title}>
-        <StatusBadge tone={state.tone}>Состояние смены</StatusBadge>
-        <p className="rp-overview-description">{state.description}</p>
-      </Panel>
-    </div>
-  )
+export function OverviewAlerts({ alerts }: Pick<OperationalOverviewModel, 'alerts'>) {
+  if (!alerts.length) return null
+
+  return <section aria-label="Оповещения смены" className="rp-overview-alerts" data-testid="overview-alerts">
+    {alerts.map((alert) => <div className="rp-overview-alert" data-tone={alert.tone} key={alert.title} role={alert.tone === 'critical' ? 'alert' : undefined}>
+      <StatusBadge tone={alert.tone}>{alert.title}</StatusBadge>
+      <p>{alert.description}</p>
+    </div>)}
+  </section>
 }
 
-export function OverviewRiskCard({ risk }: Pick<OverviewViewModel, 'risk'>) {
-  if (!risk) return null
-
-  return (
-    <div className="rp-overview-risk" data-testid="overview-risk" data-tone={risk.tone}>
-      <Panel title={risk.title}>
-        <StatusBadge tone={risk.tone}>Приоритет внимания</StatusBadge>
-        <p className="rp-overview-description">{risk.description}</p>
-      </Panel>
+export function OverviewStatusMonitoring({ statusCards, statusHref, allHref, selectable }: Pick<OperationalOverviewModel, 'statusCards'> & { statusHref: (status: string) => string; allHref: string | null; selectable: boolean }) {
+  return <Panel title="Статусы задач" description={selectable ? 'Выберите статус, чтобы сузить очередь внимания до разрешённых вашей роли задач.' : 'Текущий состав разрешённых вашей роли задач.'}>
+    <div className="rp-overview-statuses" data-testid="overview-statuses">
+      {allHref ? <Link aria-label="Все разрешённые задачи" className="rp-overview-status rp-overview-status--all" to={allHref}>Все разрешённые задачи</Link> : null}
+      {statusCards.map((card) => selectable
+        ? <Link aria-current={card.selected ? 'page' : undefined} aria-label={`${card.label}: ${taskCount(card.taskCount)}`} className="rp-overview-status" key={card.key} to={statusHref(card.key)}>
+          <MetricCard label={card.label} tone={card.selected ? 'info' : 'neutral'} value={taskCount(card.taskCount)} />
+        </Link>
+        : <div className="rp-overview-status" key={card.key}>
+          <MetricCard label={card.label} tone="neutral" value={taskCount(card.taskCount)} />
+        </div>) }
     </div>
-  )
+  </Panel>
 }
 
-export function OverviewPrimaryAction({
-  primaryAction,
-}: Pick<OverviewViewModel, 'primaryAction'>) {
-  if (!primaryAction) return null
-
-  return (
-    <div className="rp-overview-primary" data-testid="overview-action">
-      <Link className="rp-overview-primary__link" to={primaryAction.href}>
-        <Icon name={primaryAction.icon} size={20} />
-        <span>{primaryAction.label}</span>
-        <Icon name="forward" size={18} />
-      </Link>
+export function OverviewFlow({ flow }: Pick<OperationalOverviewModel, 'flow'>) {
+  return <Panel title="Поток задач: пришло / ушло" description="Компактный операционный срез: созданные и решённые задачи в наблюдаемых интервалах, не физические перемещения роботов.">
+    <div aria-label="Сводка потока задач" className="rp-overview-flow">
+      <MetricCard label="Пришло задач" value={taskCount(flow.arrivedTaskCount)} />
+      <MetricCard label="Ушло задач" tone="success" value={taskCount(flow.leftTaskCount)} />
+      <MetricCard label="В работе задач" tone="info" value={taskCount(flow.backlogTaskCount)} />
     </div>
-  )
+    <p className="rp-overview-note">Покрытие: {flow.observedBuckets} из {flow.expectedBuckets} интервалов.{flow.complete ? '' : ' Пробелы не считаются нулями.'}</p>
+  </Panel>
 }
 
-export function OverviewQueue({ queue }: Pick<OverviewViewModel, 'queue'>) {
-  return (
-    <div className="rp-overview-queue" data-testid="overview-queue">
-      <Panel title="Ближайшая работа">
-        {queue.length ? (
-          <ul className="rp-overview-queue__list">
-            {queue.map((item) => (
-              <li key={item.href}>
-                <Link
-                  aria-label={`Открыть задачу ${item.key}: ${item.summary}`}
-                  className="rp-overview-queue__link"
-                  to={item.href}
-                >
-                  <span className="rp-overview-queue__key">{item.key}</span>
-                  <span>{item.summary}</span>
-                  {item.robot ? <span className="rp-overview-queue__robot">Робот {item.robot}</span> : null}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <EmptyState
-            description="В текущей выборке нет доступных задач."
-            icon="work"
-            title="Нет задач в обзоре"
-          />
-        )}
-      </Panel>
-    </div>
-  )
+export function OverviewAttentionQueue({ attentionQueue, attentionTruncated }: Pick<OperationalOverviewModel, 'attentionQueue' | 'attentionTruncated'>) {
+  return <Panel title="Очередь внимания" description="Сначала просрочки SLA, затем задачи по возрасту. Это задачи Tracker, а не количество роботов.">
+    {attentionQueue.length ? <div className="rp-overview-entities" data-testid="overview-attention-queue">
+      {attentionQueue.map((item) => <EntityRow
+        actions={<Link aria-label={`Открыть задачу ${item.key}`} to={item.href}>Открыть</Link>}
+        key={item.key}
+        meta={<>{item.robot ? `Робот ${item.robot} · ` : ''}{item.kind === 'overdue' ? `Просрочено на ${item.overdueHours ?? 'неизвестно'} ч` : item.ageHours == null ? 'Возраст неизвестен' : `Возраст ${item.ageHours} ч`}</>}
+        status={<StatusBadge tone={item.kind === 'overdue' ? 'critical' : 'neutral'}>{item.kind === 'overdue' ? 'Просрочено SLA' : item.status}</StatusBadge>}
+        title={<><strong>{item.key}</strong><span> · </span><span>{item.summary}</span></>}
+      />)}
+    </div> : <EmptyState description="В текущей выборке нет доступных задач." icon="work" title="Нет задач в очереди внимания" />}
+    {attentionTruncated ? <p className="rp-overview-note">Список задач ограничен данными текущего ответа.</p> : null}
+  </Panel>
 }
 
-export function OverviewMetrics({ metrics }: Pick<OverviewViewModel, 'metrics'>) {
-  if (!metrics.length) return null
+export function OverviewWorkload({ workload }: Pick<OperationalOverviewModel, 'workload'>) {
+  if (!workload) return null
 
-  return (
-    <dl aria-label="Текущие показатели" className="rp-overview-metrics" data-testid="overview-metrics">
-      {metrics.map((metric) => (
-        <div className="rp-overview-metric" key={metric.label}>
-          <dt>{metric.label}</dt>
-          <dd>{metric.value}</dd>
-        </div>
-      ))}
-    </dl>
-  )
+  return <Panel title="Нагрузка по ответственным" description="Снимок открытых задач по людям, а не оценка работы сотрудников.">
+    <div className="rp-overview-entities">
+      {workload.map((person) => <EntityRow
+        key={person.login ?? person.display}
+        meta={`Открыто: ${taskCount(person.open_count)} · Просрочено: ${taskCount(person.overdue_count)} · Самая старая: ${person.oldest_hours == null ? 'нет данных' : `${person.oldest_hours} ч`}`}
+        title={person.display}
+      />)}
+    </div>
+  </Panel>
+}
+
+export function OverviewOperatorAccounts({ operatorAccounts }: Pick<OperationalOverviewModel, 'operatorAccounts'>) {
+  if (!operatorAccounts) return null
+
+  return <Panel title="Учётные записи операторов" description="Диагностика сопоставления людей с текущими задачами Tracker.">
+    <div className="rp-overview-entities">
+      {operatorAccounts.map((operator) => <EntityRow
+        key={operator.user_id}
+        meta={`Tracker: ${operator.tracker_login ?? 'Не сопоставлен'} · Открыто: ${taskCount(operator.open_count)} · Просрочено: ${taskCount(operator.overdue_count)}`}
+        title={operator.username}
+      />)}
+    </div>
+  </Panel>
 }

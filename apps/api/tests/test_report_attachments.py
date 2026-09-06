@@ -128,6 +128,20 @@ def _seed_attachment_metadata(database_url: str, *, storage_key: str) -> None:
         db.commit()
 
 
+def _assert_generic_storage_validation_failure(
+    error: pytest.ExceptionInfo[att_svc.AttachmentStorageError],
+    *,
+    sensitive_values: tuple[str, ...],
+) -> None:
+    assert str(error.value) == "report attachment storage validation failed"
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__ is True
+    context_message = str(error.value.__context__ or "")
+    for sensitive_value in sensitive_values:
+        assert sensitive_value not in str(error.value)
+        assert sensitive_value not in context_message
+
+
 def test_verify_command_runs_in_clean_process_with_migrated_database(
     sqlite_database_url, tmp_path, monkeypatch
 ):
@@ -517,6 +531,16 @@ def test_atomic_write_never_replaces_existing_destination(tmp_path):
     assert destination.read_bytes() == b"stale"
 
 
+def test_resolve_storage_key_allows_nonexistent_upload_destination(test_settings, monkeypatch):
+    monkeypatch.setattr(att_svc, "get_settings", lambda: test_settings)
+    root = Path(test_settings.report_attachments_dir)
+
+    resolved = att_svc._resolve_storage_key("42/new-upload")
+
+    assert resolved == root.resolve() / "42/new-upload"
+    assert not resolved.exists()
+
+
 def test_outside_root_symlink_is_not_downloadable(
     db_session, seed_mechanic, seed_park_with_tracker, test_settings, monkeypatch
 ):
@@ -566,9 +590,7 @@ def test_symlink_loop_is_normalized_at_direct_and_validation_boundaries(
 
     with pytest.raises(att_svc.AttachmentStorageError) as error:
         att_svc.validate_attachment_storage(db_session)
-    assert str(error.value) == "report attachment storage validation failed"
-    assert error.value.__cause__ is None
-    assert error.value.__suppress_context__ is True
+    _assert_generic_storage_validation_failure(error, sensitive_values=("private-loop",))
 
 
 def test_verify_command_symlink_loop_failure_is_generic_in_clean_process(
@@ -595,30 +617,44 @@ def test_verify_command_symlink_loop_failure_is_generic_in_clean_process(
     assert result.stderr == "report attachment storage validation failed\n"
 
 
-def test_validate_attachment_storage_reports_only_generic_failure(
-    db_session, seed_mechanic, seed_park_with_tracker, test_settings, monkeypatch
+@pytest.mark.parametrize(
+    "persisted_content",
+    [None, b"wrong-size"],
+    ids=["missing-file", "size-mismatch"],
+)
+def test_validate_attachment_storage_reports_only_generic_failure_for_invalid_file(
+    db_session,
+    seed_mechanic,
+    seed_park_with_tracker,
+    test_settings,
+    monkeypatch,
+    persisted_content,
 ):
     monkeypatch.setattr(att_svc, "get_settings", lambda: test_settings)
     report = _open_report(db_session, seed_mechanic, seed_park_with_tracker.id)
+    storage_key = "private-storage-key.txt"
     attachment = ReportAttachment(
         report_id=report.id,
         kind=att_svc.KIND_CLIENT_LOG,
         filename="private-filename.txt",
         content_type="text/plain",
         size_bytes=17,
-        storage_key="private-storage-key.txt",
+        storage_key=storage_key,
     )
     db_session.add(attachment)
     db_session.commit()
+    if persisted_content is not None:
+        path = Path(test_settings.report_attachments_dir) / storage_key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(persisted_content)
 
     with pytest.raises(att_svc.AttachmentStorageError) as error:
         att_svc.validate_attachment_storage(db_session)
 
-    message = str(error.value)
-    assert message == "report attachment storage validation failed"
-    assert attachment.filename not in message
-    assert attachment.storage_key not in message
-    assert "1" not in message
+    _assert_generic_storage_validation_failure(
+        error,
+        sensitive_values=(attachment.filename, attachment.storage_key, str(attachment.id)),
+    )
 
 
 def test_validate_attachment_storage_suppresses_sensitive_oserror_cause(
@@ -646,9 +682,10 @@ def test_validate_attachment_storage_suppresses_sensitive_oserror_cause(
     with pytest.raises(att_svc.AttachmentStorageError) as error:
         att_svc.validate_attachment_storage(db_session)
 
-    assert str(error.value) == "report attachment storage validation failed"
-    assert error.value.__cause__ is None
-    assert error.value.__suppress_context__ is True
+    _assert_generic_storage_validation_failure(
+        error,
+        sensitive_values=("private-filename.txt", "private-storage-key.txt"),
+    )
 
 
 def test_upload_stops_after_kind_limit_plus_one(

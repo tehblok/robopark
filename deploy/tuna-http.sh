@@ -8,7 +8,7 @@ TUNA_BIN="${TUNA_BIN:-tuna}"
 
 i=0
 if command -v curl >/dev/null 2>&1; then
-  while ! curl -fsS "http://${BIND}/api/health" >/dev/null 2>&1; do
+  while ! curl --connect-timeout 2 --max-time 4 -fsS "http://${BIND}/api/health/ready" >/dev/null 2>&1; do
     i=$((i + 1))
     if [ "$i" -ge 60 ]; then
       echo "robopark-tuna: ${BIND}/api/health not ready" >&2
@@ -17,7 +17,8 @@ if command -v curl >/dev/null 2>&1; then
     sleep 2
   done
 else
-  echo "robopark-tuna: curl not found, starting without health wait" >&2
+  echo "robopark-tuna: curl is required for readiness checks" >&2
+  exit 1
 fi
 
 set -- http "$BIND" --https-redirect

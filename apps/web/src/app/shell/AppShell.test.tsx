@@ -19,7 +19,7 @@ import { AppShell } from './AppShell'
 import { REPORTS_BADGE_REFRESH } from '../../reports-badge'
 
 const shellCss = readFileSync('src/app/shell/AppShell.css', 'utf8')
-const overviewCss = readFileSync('src/domains/insights/insights.css', 'utf8')
+const overviewCss = readFileSync('src/domains/shift/overview.css', 'utf8')
 
 const north = { id: 7, name: 'Северный', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
 const operator = testUser({
@@ -69,6 +69,7 @@ function renderShellWithParkScope(
   role: User['role'],
   setParkId = vi.fn(),
   availableParks?: (typeof north)[],
+  allowAllParks = false,
 ) {
   const south = { id: 9, name: 'Южный', tag: 'south', is_active: true }
   const parks = availableParks ?? [north, south]
@@ -81,8 +82,9 @@ function renderShellWithParkScope(
           <AuthContext.Provider value={{ user: currentUser, loading: false,
             login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn() }}>
             <ParkScopeContext.Provider value={{
-              parkId: 7,
-              selectedPark: north,
+              allowAllParks,
+              parkId: allowAllParks ? null : 7,
+              selectedPark: allowAllParks ? null : north,
               parks,
               loading: false,
               locked: false,
@@ -99,6 +101,8 @@ function renderShellWithParkScope(
     ),
   }
 }
+
+
 
 function BadgeCommitProbe({ parkId, snapshots }: { parkId: number; snapshots: string[] }) {
   useLayoutEffect(() => {
@@ -126,6 +130,17 @@ function declaredCssValue(element: Element, property: string): string {
 }
 
 describe('AppShell', () => {
+  it.each(['admin', 'royal', 'operator'])('offers all and a specific park for %s even with one accessible park', async role => {
+    const { setParkId } = renderShellWithParkScope(role, vi.fn(), [north], true)
+    fireEvent.click(screen.getByRole('button', { name: 'Сменить парк' }))
+    expect(screen.getByRole('option', { name: 'Все доступные парки' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(screen.getByRole('option', { name: north.name }))
+    expect(setParkId).toHaveBeenCalledWith(north.id)
+    fireEvent.click(screen.getByRole('button', { name: 'Сменить парк' }))
+    fireEvent.click(screen.getByRole('option', { name: 'Все доступные парки' }))
+    expect(setParkId).toHaveBeenCalledWith(null)
+  })
+
   let media: MatchMediaController
 
   beforeEach(() => {
@@ -341,10 +356,68 @@ describe('AppShell', () => {
       parks: [north, south],
     }))
 
-    const park = await screen.findByRole('combobox', { name: 'Сменить парк' })
-    await actor.selectOptions(park, '9')
+    const park = await screen.findByRole('button', { name: 'Сменить парк' })
+    await actor.click(park)
+    await actor.click(screen.getByRole('option', { name: 'Южный' }))
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('?park=9'))
-    expect(park).toHaveFocus()
+    expect(screen.queryByRole('listbox', { name: 'Сменить парк' })).not.toBeInTheDocument()
+  })
+
+  it('retains park-switch trigger focus after keyboard selection', async () => {
+    const actor = userEvent.setup()
+    const south = { id: 9, name: 'Южный', tag: 'south', is_active: true }
+    renderApp('/overview?park=7', testUser({
+      permissions: ['nav.dashboard'],
+      parks: [north, south],
+    }))
+
+    const trigger = await screen.findByRole('button', { name: 'Сменить парк' })
+    trigger.focus()
+    await actor.keyboard('{Enter}')
+    await actor.keyboard('{ArrowDown}')
+    expect(screen.getByRole('option', { name: 'Южный' })).toHaveFocus()
+
+    await actor.keyboard('{Enter}')
+
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('?park=9'))
+    expect(trigger).toHaveFocus()
+  })
+
+  it.each(['ArrowDown', 'ArrowUp'])('opens the park listbox with %s and supports roving keyboard focus', async (key) => {
+    const actor = userEvent.setup()
+    const { setParkId } = renderShellWithParkScope('admin')
+    const trigger = screen.getByRole('button', { name: 'Сменить парк' })
+    trigger.focus()
+    await actor.keyboard(`{${key}}`)
+    expect(screen.getByRole('option', { name: 'Северный' })).toHaveFocus()
+    await actor.keyboard('{End}')
+    expect(screen.getByRole('option', { name: 'Южный' })).toHaveFocus()
+    await actor.keyboard('{ArrowUp}')
+    expect(screen.getByRole('option', { name: 'Северный' })).toHaveFocus()
+    await actor.keyboard('{ArrowDown}{Home}')
+    expect(screen.getByRole('option', { name: 'Северный' })).toHaveFocus()
+    expect(setParkId).not.toHaveBeenCalled()
+    await actor.keyboard('{Escape}')
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(trigger).toHaveFocus()
+    await actor.keyboard('{ArrowDown}{End} ')
+    expect(setParkId).toHaveBeenCalledWith(9)
+    expect(trigger).toHaveFocus()
+  })
+
+  it('finds a park by typed prefix in a long list and closes when Tab leaves', async () => {
+    const actor = userEvent.setup()
+    const parks = Array.from({ length: 12 }, (_, index) => ({
+      ...north, id: 20 + index, name: `Парк ${index + 1}`,
+    }))
+    renderShellWithParkScope('admin', vi.fn(), [north, ...parks, { ...north, id: 99, name: 'Южный' }])
+    const trigger = screen.getByRole('button', { name: 'Сменить парк' })
+    await actor.click(trigger)
+    await actor.keyboard('юж')
+    expect(screen.getByRole('option', { name: 'Южный' })).toHaveFocus()
+    await actor.keyboard('{Tab}')
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(trigger).not.toHaveFocus()
   })
 
   it('keeps the operator report badge park-aware and refreshes it on demand and entry', async () => {
@@ -361,7 +434,8 @@ describe('AppShell', () => {
     act(() => window.dispatchEvent(new Event(REPORTS_BADGE_REFRESH)))
     await waitFor(() => expect(badge.mock.calls.length).toBeGreaterThan(beforeEvent))
 
-    await actor.selectOptions(screen.getByRole('combobox', { name: 'Сменить парк' }), '9')
+    await actor.click(screen.getByRole('button', { name: 'Сменить парк' }))
+    await actor.click(screen.getByRole('option', { name: 'Южный' }))
     await waitFor(() => expect(badge).toHaveBeenCalledWith(9))
 
     const beforeReports = badge.mock.calls.length
@@ -372,30 +446,32 @@ describe('AppShell', () => {
     await waitFor(() => expect(badge.mock.calls.length).toBeGreaterThan(beforeReports))
   })
 
-  it.each(['operator', 'admin', 'royal'] as const)('switches parks from the %s wordmark', async (role) => {
+  it.each(['operator', 'admin', 'royal'] as const)('switches parks from the %s park identity', async (role) => {
     const actor = userEvent.setup()
     const { setParkId } = renderShellWithParkScope(role)
 
-    expect(screen.getByText('РобоПарк')).toBeVisible()
-    expect(screen.getByText('Северный', { selector: 'strong' })).toBeVisible()
-    const switcher = screen.getByRole('combobox', { name: 'Сменить парк' })
-    await actor.selectOptions(switcher, '9')
+    expect(screen.queryByText('РобоПарк')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Сменить парк' })).toHaveTextContent('Северный')
+    await actor.click(screen.getByRole('button', { name: 'Сменить парк' }))
+    const options = screen.getByRole('listbox', { name: 'Сменить парк' })
+    expect(within(options).getByRole('option', { name: 'Северный' })).toHaveAttribute('aria-selected', 'true')
+    await actor.click(within(options).getByRole('option', { name: 'Южный' }))
 
     expect(setParkId).toHaveBeenCalledWith(9)
   })
 
-  it.each(['mechanic', 'driver'] as const)('shows a non-interactive park wordmark for %s', (role) => {
+  it.each(['mechanic', 'driver'] as const)('shows a static park identity for %s', (role) => {
     renderShellWithParkScope(role)
 
-    expect(screen.queryByRole('combobox', { name: 'Сменить парк' })).not.toBeInTheDocument()
-    expect(screen.getByText('РобоПарк')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Сменить парк' })).not.toBeInTheDocument()
+    expect(screen.queryByText('РобоПарк')).not.toBeInTheDocument()
     expect(screen.getByText('Северный', { selector: 'strong' })).toBeVisible()
   })
 
-  it.each(['operator', 'admin', 'royal'] as const)('keeps the %s wordmark static with one park', (role) => {
+  it.each(['operator', 'admin', 'royal'] as const)('keeps the %s park identity static with one park', (role) => {
     renderShellWithParkScope(role, vi.fn(), [north])
 
-    expect(screen.queryByRole('combobox', { name: 'Сменить парк' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Сменить парк' })).not.toBeInTheDocument()
     expect(screen.getByText('Северный', { selector: 'strong' })).toBeVisible()
   })
 
@@ -516,7 +592,7 @@ describe('AppShell', () => {
     ['/admin/tracker/settings', 'Startrek'],
     ['/admin/emergency/config', 'Настройка проверки робота'],
     ['/admin/emergency/config/sections', 'Настройка проверки робота'],
-  ])('marks only the exact nested destination active at %s', (path, destinationName) => {
+  ])('keeps the administration parent and nested destination active at %s', (path, destinationName) => {
     const adminUser = testUser({
       permissions: ['nav.admin', 'nav.admin.tracker', 'nav.admin.emergency'],
       parks: [north],
@@ -549,11 +625,38 @@ describe('AppShell', () => {
     })[0]
     const parent = within(navigation).getByRole('link', { name: 'Администрирование' })
     const destination = within(navigation).getByRole('link', { name: destinationName })
-    expect(parent).not.toHaveClass('is-active')
-    expect(parent).not.toHaveAttribute('aria-current')
+    expect(parent).toHaveClass('is-active')
+    expect(parent).toHaveAttribute('aria-current', 'true')
     expect(destination).toHaveClass('is-active')
     expect(destination).toHaveAttribute('aria-current', 'page')
     expect(navigation.querySelectorAll('[aria-current="page"]')).toHaveLength(1)
+  })
+
+  it.each(['royal', 'admin', 'operator', 'mechanic', 'driver'] as const)('keeps %s bottom navigation captions from collapsing in compact mode', role => {
+    act(() => media.setWidth(320))
+    localStorage.setItem('robopark-density', 'compact')
+    const style = document.createElement('style')
+    style.textContent = shellCss
+    document.head.append(style)
+    // JSDOM does not evaluate media queries; apply the active CSS rules using
+    // the same viewport controller as the shell.
+    const active = document.createElement('style')
+    active.textContent = Array.from(style.sheet!.cssRules).flatMap(rule =>
+      'conditionText' in rule && 'cssRules' in rule && matchMedia(rule.conditionText as string).matches
+        ? Array.from((rule as CSSMediaRule).cssRules).map(child => child.cssText) : [],
+    ).join('\n')
+    document.head.append(active)
+    try {
+      renderShellPath('/robots', { ...operator, role })
+      const captions = document.querySelectorAll('.rp-shell__bottom-nav .rp-shell__nav-label')
+      expect(captions.length).toBeGreaterThan(1)
+      for (const caption of captions) {
+        expect(caption.textContent?.trim()).not.toBe('')
+        expect(getComputedStyle(caption).flexShrink).toBe('0')
+        expect(getComputedStyle(caption).flexBasis).toBe('auto')
+        expect(getComputedStyle(caption).display).not.toBe('none')
+      }
+    } finally { active.remove(); style.remove() }
   })
 
   it('gives the skip link and Overview primary action the shared minimum control size', async () => {

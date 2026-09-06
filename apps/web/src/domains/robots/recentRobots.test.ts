@@ -35,6 +35,33 @@ describe('recent robots v2', () => {
     expect(localStorage.getItem('robopark.recentRobots')).toBe('["legacy-447"]')
   })
 
+  it('expires robots at 48 hours and persists pruning without changing another user', () => {
+    const entries = [
+      { query: '447', vin: 'YASADR00000000447', openedAt: 1 },
+      { query: '448', vin: 'YASADR00000000448', openedAt: 2 },
+      { query: '449', vin: 'YASADR00000000449', openedAt: 0 },
+    ]
+    localStorage.setItem('robopark.recentRobots.v2.7', JSON.stringify(entries))
+    localStorage.setItem('robopark.recentRobots.v2.8', JSON.stringify(entries))
+
+    expect(loadRecentRobots(7, 172_800_001)).toEqual([
+      { query: '448', vin: 'YASADR00000000448', openedAt: 2 },
+    ])
+    expect(JSON.parse(localStorage.getItem('robopark.recentRobots.v2.7')!)).toEqual([
+      { query: '448', vin: 'YASADR00000000448', openedAt: 2 },
+    ])
+    expect(localStorage.getItem('robopark.recentRobots.v2.8')).toBe(JSON.stringify(entries))
+  })
+
+  it('removes robots older than 48 hours when remembering a newly opened robot', () => {
+    rememberRobot(7, { query: '447', vin: 'YASADR00000000447' }, 1)
+    rememberRobot(7, { query: '448', vin: 'YASADR00000000448' }, 172_800_002)
+
+    expect(JSON.parse(localStorage.getItem('robopark.recentRobots.v2.7')!)).toEqual([
+      { query: '448', vin: 'YASADR00000000448', openedAt: 172_800_002 },
+    ])
+  })
+
   it('discards malformed fields and impossible timestamps before presenting them', () => {
     localStorage.setItem('robopark.recentRobots.v2.7', JSON.stringify([
       { query: '447', vin: 'YASADR00000000447', openedAt: Number.NaN },

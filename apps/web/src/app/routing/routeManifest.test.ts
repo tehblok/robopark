@@ -49,7 +49,7 @@ const allPermissions = [
 describe('ROUTE_MANIFEST', () => {
   it('keeps every canonical route and compatibility alias in one explicit record', () => {
     expect(ROUTE_MANIFEST).toEqual([
-      { id: 'home', path: '/', label: 'РобоПарк', icon: 'overview', surface: 'public' },
+      { id: 'home', path: '/', label: 'Управление парком', icon: 'overview', surface: 'public' },
       { id: 'login', path: '/login', label: 'Вход', icon: 'forward', surface: 'public' },
       { id: 'register', path: '/register', label: 'Регистрация', icon: 'users', surface: 'public' },
       { id: 'change-password', path: '/change-password', label: 'Смена пароля', icon: 'settings', surface: 'standalone' },
@@ -137,7 +137,7 @@ describe('ROUTE_MANIFEST', () => {
       },
       {
         id: 'robot-detail', path: '/robots/:vin', label: 'Робот', icon: 'robot',
-        permission: 'nav.robot_search', prerequisites: ['password-changed', 'approved', 'mechanic-has-park'], surface: 'shell',
+        anyPermissions: ['nav.robot_search', 'nav.emergency'], prerequisites: ['password-changed', 'approved', 'mechanic-has-park'], surface: 'shell',
       },
       {
         id: 'robot-check', path: '/robots/:vin/check', label: 'Проверка робота', icon: 'robot-check',

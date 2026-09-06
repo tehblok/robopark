@@ -1,8 +1,11 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { type FormEvent, useContext, useEffect, useState } from 'react'
 import { api, ApiError, type OpsJob } from '../../api'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
 import { Alert, Panel } from '../PageShell'
+import { AuthContext } from '../../auth-context'
+import { resourceStore, useCachedResource } from '../../lib/resource'
+import { adminResourceKey } from './adminResources'
 
 function isActive(job: OpsJob | null) {
   return job?.state === 'queued' || job?.state === 'running'
@@ -30,40 +33,16 @@ export function AdminOpsPanel() {
   const [updateFile, setUpdateFile] = useState<File | null>(null)
   const [updateConfirm, setUpdateConfirm] = useState('')
 
-  useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      try {
-        const next = await api.opsJob()
-        if (!cancelled) setJob(next)
-      } catch (caught) {
-        if (caught instanceof ApiError && caught.status === 404) {
-          if (!cancelled) setJob(null)
-          return
-        }
-        if (!cancelled) setError(mapApiError(caught, ru.errors.load))
-      }
+  const auth = useContext(AuthContext)
+  const jobResource = useCachedResource(adminResourceKey('ops-job', auth?.user ?? null), async () => {
+    try { return await api.opsJob() }
+    catch (failure) {
+      if (failure instanceof ApiError && failure.status === 404) return null
+      throw failure
     }
-    void load()
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  const jobId = job?.id
-  const jobState = job?.state
-  useEffect(() => {
-    if (jobState !== 'queued' && jobState !== 'running') return
-    const id = window.setInterval(() => {
-      void api
-        .opsJob()
-        .then(setJob)
-        .catch((caught) => {
-          if (caught instanceof ApiError && caught.status === 404) setJob(null)
-        })
-    }, 1000)
-    return () => window.clearInterval(id)
-  }, [jobId, jobState])
+  }, { persist: false, refreshIntervalMs: isActive(job) ? 1000 : 30_000, staleTimeMs: isActive(job) ? 1000 : 30_000, trackProgress: false })
+  useEffect(() => { if (jobResource.data !== undefined) setJob(jobResource.data) }, [jobResource.data])
+  const loadError = jobResource.error ? mapApiError(jobResource.error, ru.errors.load) : ''
 
   const run = async (action: () => Promise<OpsJob>) => {
     setError('')
@@ -71,6 +50,8 @@ export function AdminOpsPanel() {
     try {
       const next = await action()
       setJob(next)
+      resourceStore.invalidate(adminResourceKey('ops-job', auth?.user ?? null))
+      void jobResource.refresh()
     } catch (caught) {
       setError(mapApiError(caught, ru.errors.generic))
     } finally {
@@ -107,7 +88,7 @@ export function AdminOpsPanel() {
 
   return (
     <div className="ops-stack">
-      {error && <Alert tone="error">{error}</Alert>}
+      {(error || loadError) && <Alert tone="error">{error || loadError}</Alert>}
       {job && !isIdle(job) && (
         <Panel hint={isActive(job) ? job.phase : undefined} title="Текущая операция">
           <div className="stat-grid">

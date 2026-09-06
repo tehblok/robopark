@@ -9,17 +9,17 @@ function Probe({ task, online = true, enabled = true }: { task: () => Promise<vo
 beforeEach(() => { vi.useFakeTimers(); Object.defineProperty(document, 'hidden', { configurable: true, value: false }) })
 afterEach(() => { vi.useRealTimers(); Object.defineProperty(document, 'hidden', { configurable: true, value: false }) })
 const flush = () => act(async () => undefined)
-it('backs off, pauses hidden, resumes immediately and resets after success', async () => {
+it('backs off, pauses hidden, resumes with jitter and resets after success', async () => {
   const task = vi.fn().mockRejectedValueOnce(Error()).mockRejectedValueOnce(Error()).mockResolvedValue(undefined)
   render(<Probe task={task} />); await flush()
   expect(task).toHaveBeenCalledTimes(1)
-  await act(async () => vi.advanceTimersByTimeAsync(2500)); expect(task).toHaveBeenCalledTimes(2)
-  await act(async () => vi.advanceTimersByTimeAsync(4999)); expect(task).toHaveBeenCalledTimes(2)
+  await act(async () => vi.advanceTimersByTimeAsync(10_000)); expect(task).toHaveBeenCalledTimes(2)
+  await act(async () => vi.advanceTimersByTimeAsync(19_999)); expect(task).toHaveBeenCalledTimes(2)
   Object.defineProperty(document, 'hidden', { value: true }); fireEvent(document, new Event('visibilitychange'))
   await act(async () => vi.advanceTimersByTimeAsync(30000)); expect(task).toHaveBeenCalledTimes(2)
   Object.defineProperty(document, 'hidden', { value: false }); fireEvent(document, new Event('visibilitychange')); await flush()
   expect(task).toHaveBeenCalledTimes(3)
-  await act(async () => vi.advanceTimersByTimeAsync(2500)); expect(task).toHaveBeenCalledTimes(4)
+  await act(async () => vi.advanceTimersByTimeAsync(10_000)); expect(task).toHaveBeenCalledTimes(4)
 })
 it('allows manual offline/hidden work, coalesces, but refuses disabled work', async () => {
   let done!: () => void
@@ -39,12 +39,24 @@ it('new task identity does not coalesce with or inherit old completion', async (
   const view = render(<Probe task={old} />); await flush()
   view.rerender(<Probe task={next} />); await flush(); expect(next).toHaveBeenCalledTimes(1)
   await act(async () => done())
-  await act(async () => vi.advanceTimersByTimeAsync(2500)); expect(next).toHaveBeenCalledTimes(2)
+  await act(async () => vi.advanceTimersByTimeAsync(10_000)); expect(next).toHaveBeenCalledTimes(2)
 })
 it('StrictMode cleanup rejects old ownership and unmount clears scheduling', async () => {
   const task = vi.fn(async () => undefined)
   const view = render(<StrictMode><Probe task={task} /></StrictMode>); await flush()
   const initial = task.mock.calls.length
-  await act(async () => vi.advanceTimersByTimeAsync(2500)); expect(task).toHaveBeenCalledTimes(initial + 1)
+  await act(async () => vi.advanceTimersByTimeAsync(10_000)); expect(task).toHaveBeenCalledTimes(initial + 1)
   view.unmount(); await act(async () => vi.advanceTimersByTimeAsync(30000)); expect(task).toHaveBeenCalledTimes(initial + 1)
 })
+
+it('rechecks visibility before starting a queued automatic request', async () => {
+  const task = vi.fn(async () => undefined)
+  render(<Probe task={task} />)
+  Object.defineProperty(document, 'hidden', { value: true })
+  fireEvent(document, new Event('visibilitychange'))
+  await flush()
+  expect(task).not.toHaveBeenCalled()
+})
+
+// Existing lifecycle assertions use the minimum jitter; capacity tests cover dispersion.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

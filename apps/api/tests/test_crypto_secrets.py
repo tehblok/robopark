@@ -140,6 +140,27 @@ def test_migrate_plaintext_secrets_is_noop_without_key(db_session, monkeypatch):
     assert raw.value == "legacy-token"
 
 
+def test_plaintext_emergency_cookie_without_key_gets_probe_identity(db_session, monkeypatch):
+    """A supported plaintext install keeps guarded probe side effects available."""
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    reset_settings_cache()
+    db_session.add(
+        PlatformSetting(key=settings_svc.EMERGENCY_COOKIE_KEY, value="legacy-emergency-cookie")
+    )
+    db_session.commit()
+
+    assert settings_svc.migrate_plaintext_secrets(db_session) == 0
+    cookie, identity = settings_svc.get_emergency_cookie_probe(db_session)
+
+    assert cookie == "legacy-emergency-cookie"
+    assert identity is not None
+    assert settings_svc.record_emergency_cookie_probe(
+        db_session,
+        identity=identity,
+        valid=True,
+    )
+
+
 def test_migrate_plaintext_secrets_skips_already_encrypted(db_session, with_secret_key):
     settings_svc.set_setting(db_session, settings_svc.TRACKER_TOKEN_KEY, "fresh-token")
     assert settings_svc.migrate_plaintext_secrets(db_session) == 0

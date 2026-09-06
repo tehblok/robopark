@@ -79,9 +79,9 @@ def test_cache_hit_does_not_resolve_cookie_report(db_session, monkeypatch):
     calls = {"resolve": 0}
     real_resolve = reports_svc.resolve_open_emergency_cookie_reports
 
-    def counting_resolve(db):
+    def counting_resolve(db, **kwargs):
         calls["resolve"] += 1
-        return real_resolve(db)
+        return real_resolve(db, **kwargs)
 
     monkeypatch.setattr(
         emergency_cache.reports,
@@ -99,12 +99,17 @@ def test_cache_hit_does_not_resolve_cookie_report(db_session, monkeypatch):
     assert calls["resolve"] == 1
 
 
-def test_put_emergency_cookie_resolves_open_report(client, db_session, seed_royal):
+def test_put_emergency_cookie_resolves_open_report(client, db_session, seed_royal, monkeypatch):
     reports_svc.ensure_open_emergency_cookie_report(db_session, author=seed_royal)
     login_as(client, "royal", "secret")
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        lambda **kwargs: {"vin": kwargs["vin"]},
+    )
     put = client.put(
         "/admin/settings/emergency-cookie",
-        json={"cookie": "Session_id=fresh"},
+        json={"cookie": "Session_id=fresh", "robot_number": "447"},
     )
     assert put.status_code == 200
     row = db_session.query(Report).one()
@@ -161,9 +166,7 @@ def test_ensure_recovers_unique_violation_from_concurrent_inserts(
         assert len(rows) == 1
 
 
-def test_get_robot_payload_raises_auth_error_when_ensure_hits_unique_index(
-    db_engine, seed_royal, monkeypatch
-):
+def test_get_robot_payload_serializes_auth_report_creation(db_engine, seed_royal, monkeypatch):
     emergency_cache.clear_cache_for_tests()
     with Session(db_engine) as session:
         settings_svc.set_setting(session, settings_svc.EMERGENCY_COOKIE_KEY, "cookie")
@@ -173,7 +176,6 @@ def test_get_robot_payload_raises_auth_error_when_ensure_hits_unique_index(
         raise emergency_client.EmergencyAuthError("expired")
 
     monkeypatch.setattr(emergency_client, "fetch_robot_payload", boom)
-    _gate_cookie_report_inserts(monkeypatch)
     errors = []
 
     def worker(vin):

@@ -5,7 +5,8 @@ import { mapApiError } from '../../i18n/errors'
 import { ru, reportKindLabel, reportStatusLabel } from '../../i18n/ru'
 import { Alert } from '../PageShell'
 import { Spinner } from '../ui/Feedback'
-import { formatReportDate, statusBadgeClass, trackerHref } from './report-utils'
+import { StatusBadge } from '../../design-system/status/StatusBadge'
+import { formatReportDate, trackerHref } from './report-utils'
 
 type ReportDetailProps = {
   apiClient?: ReportsApiClient
@@ -112,10 +113,10 @@ export function ReportDetail({
       <header className="report-detail-head">
         <div className="report-detail-title-row">
           <h3 className="report-detail-title">{report.title}</h3>
-          <span className={statusBadgeClass(report.status)}>
+          <StatusBadge tone={report.status === 'done' ? 'success' : report.status === 'returned' ? 'warning' : 'info'}>
             {reportStatusLabel(report.status)}
-          </span>
-          <span className="badge badge-muted">{reportKindLabel(report.kind)}</span>
+          </StatusBadge>
+          <StatusBadge tone="neutral">{reportKindLabel(report.kind)}</StatusBadge>
         </div>
       </header>
 

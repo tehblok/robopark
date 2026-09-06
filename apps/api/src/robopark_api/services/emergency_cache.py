@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from robopark_api.db import release_request_session
-from robopark_api.services import emergency_client, reports
+from robopark_api.services import emergency_client, emergency_vin, reports
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.live_merge import get_live_merge_store
 
@@ -20,31 +20,65 @@ _MERGE_NS = "emergency.robot"
 
 @dataclass
 class _Flight:
+    generation: int
+    identity: str | None
     done: threading.Event = field(default_factory=threading.Event)
     result: dict[str, Any] | None = None
     error: BaseException | None = None
 
 
 _lock = threading.Lock()
-_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-_flights: dict[str, _Flight] = {}
+_cache: dict[str, tuple[float, str | None, dict[str, Any]]] = {}
+_flights: dict[tuple[str | None, str], _Flight] = {}
+_generation = 0
 
 
-def invalidate_vin(vin: str) -> None:
+def _shared_key(identity: str | None, vin: str) -> str:
+    return f"{identity or 'legacy'}:{vin}"
+
+
+def peek_robot_payloads(*, vins: list[str], identity: str | None) -> dict[str, dict[str, Any]]:
+    """Read fresh, identity-bound payloads only; never load, wait or refresh.
+
+    Registry misses remain unknown. In-process entries deliberately retain the
+    same 2.5 second lifetime as the detail endpoint; no second telemetry store.
+    """
+    now = time.monotonic()
     with _lock:
-        _cache.pop(vin, None)
+        return {
+            vin: cached[2]
+            for vin in vins
+            if (cached := _cache.get(vin)) is not None
+            and cached[1] == identity
+            and now - cached[0] < PAYLOAD_CACHE_TTL_SECONDS
+        }
+
+
+def invalidate_vin(vin: str, *, identity: str | None = None) -> None:
+    with _lock:
+        cached = _cache.get(vin)
+        if cached is not None and (identity is None or cached[1] == identity):
+            _cache.pop(vin, None)
     merge = get_live_merge_store()
     if merge is not None:
-        merge.invalidate(_MERGE_NS, vin)
+        merge.invalidate(_MERGE_NS, _shared_key(identity, vin))
 
 
-def clear_cache_for_tests() -> None:
+def clear_cache() -> None:
+    global _generation
     with _lock:
+        _generation += 1
         _cache.clear()
         _flights.clear()
     merge = get_live_merge_store()
     if merge is not None:
         merge.clear_namespace(_MERGE_NS)
+
+
+def clear_cache_for_tests() -> None:
+    with _lock:
+        _flights.clear()
+    clear_cache()
 
 
 def _finish_flight(
@@ -57,41 +91,65 @@ def _finish_flight(
     with _lock:
         flight.result = result
         flight.error = error
-        if result is not None:
-            _cache[vin] = (time.monotonic(), result)
-        _flights.pop(vin, None)
+        if result is not None and flight.generation == _generation:
+            _cache[vin] = (time.monotonic(), flight.identity, result)
+        flight_key = (flight.identity, vin)
+        if _flights.get(flight_key) is flight:
+            _flights.pop(flight_key, None)
         flight.done.set()
 
 
-def get_robot_payload(*, db: Session, vin: str) -> dict[str, Any]:
+def _flight_is_current(flight: _Flight) -> bool:
+    with _lock:
+        return flight.generation == _generation
+
+
+def get_robot_payload(
+    *,
+    db: Session,
+    vin: str,
+    probe: tuple[str | None, str | None] | None = None,
+) -> dict[str, Any]:
+    """Fetch using one cookie/identity capture when a caller already has it."""
+    cookie, identity = probe or settings_svc.get_emergency_cookie_probe(db)
     now = time.monotonic()
     merge = get_live_merge_store()
     with _lock:
+        generation = _generation
         cached = _cache.get(vin)
-        if cached is not None and now - cached[0] < PAYLOAD_CACHE_TTL_SECONDS:
-            payload = cached[1]
+        if (
+            cached is not None
+            and cached[1] == identity
+            and now - cached[0] < PAYLOAD_CACHE_TTL_SECONDS
+        ):
+            payload = cached[2]
             flight = None
             is_leader = False
         else:
             if cached is not None:
                 _cache.pop(vin, None)
-            flight = _flights.get(vin)
+            flight_key = (identity, vin)
+            flight = _flights.get(flight_key)
             is_leader = flight is None
             if is_leader:
-                flight = _Flight()
-                _flights[vin] = flight
+                flight = _Flight(generation=generation, identity=identity)
+                _flights[flight_key] = flight
             payload = None
 
     if payload is not None:
         return payload
 
     if merge is not None:
-        found, blob = merge.try_fresh(_MERGE_NS, vin, PAYLOAD_CACHE_TTL_SECONDS)
+        shared_key = _shared_key(identity, vin)
+        found, blob = merge.try_fresh(_MERGE_NS, shared_key, PAYLOAD_CACHE_TTL_SECONDS)
         if found:
             with _lock:
-                _cache[vin] = (time.monotonic(), blob)
+                if flight is not None and flight.generation == _generation:
+                    _cache[vin] = (time.monotonic(), identity, blob)
                 if flight is not None and is_leader:
-                    _flights.pop(vin, None)
+                    flight_key = (identity, vin)
+                    if _flights.get(flight_key) is flight:
+                        _flights.pop(flight_key, None)
                     flight.result = blob
                     flight.done.set()
             return blob
@@ -111,21 +169,52 @@ def get_robot_payload(*, db: Session, vin: str) -> dict[str, Any]:
         try:
 
             def load() -> dict[str, Any]:
-                cookie = settings_svc.get_emergency_cookie(db) or ""
                 release_request_session()
-                return emergency_client.fetch_robot_payload(cookie=cookie, vin=vin)
+                return emergency_client.fetch_robot_payload(cookie=cookie or "", vin=vin)
 
             if merge is not None:
-                payload = merge.merge_load(_MERGE_NS, vin, PAYLOAD_CACHE_TTL_SECONDS, load)
+                payload = merge.merge_load(
+                    _MERGE_NS,
+                    _shared_key(identity, vin),
+                    PAYLOAD_CACHE_TTL_SECONDS,
+                    load,
+                    is_current=lambda: _flight_is_current(flight),
+                )
             else:
                 payload = load()
-            settings_svc.set_emergency_cookie_valid(db, True)
-            settings_svc.touch_keepalive_ring(db, vin)
-            reports.resolve_open_emergency_cookie_reports(db)
+            if _flight_is_current(flight) and settings_svc.record_emergency_cookie_probe(
+                db,
+                identity=identity,
+                valid=True,
+                vin=vin,
+                status="valid",
+                checked_robot=emergency_vin.short_robot_number(vin),
+            ):
+                reports.resolve_open_emergency_cookie_reports(db, expected_identity=identity)
         except emergency_client.EmergencyAuthError:
-            invalidate_vin(vin)
-            settings_svc.set_emergency_cookie_valid(db, False)
-            reports.ensure_open_emergency_cookie_report(db, author=None)
+            if _flight_is_current(flight) and settings_svc.record_emergency_cookie_probe(
+                db,
+                identity=identity,
+                valid=False,
+                status="invalid",
+                checked_robot=emergency_vin.short_robot_number(vin),
+            ):
+                invalidate_vin(vin, identity=identity)
+                reports.ensure_open_emergency_cookie_report(
+                    db,
+                    author=None,
+                    expected_identity=identity,
+                )
+            raise
+        except emergency_client.EmergencyError:
+            if _flight_is_current(flight):
+                settings_svc.record_emergency_cookie_probe(
+                    db,
+                    identity=identity,
+                    valid=None,
+                    status="unavailable",
+                    checked_robot=emergency_vin.short_robot_number(vin),
+                )
             raise
     except BaseException as exc:
         error = exc

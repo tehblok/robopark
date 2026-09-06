@@ -1,31 +1,36 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import { api, type EmergencySection, type EmergencySectionDetail, type EmergencySnapshot } from '../../api'
+import { api, type DiagnosticEvent, type DiagnosticView, type EmergencySection, type EmergencySectionDetail, type EmergencySnapshot } from '../../api'
 import { canAccessRoute, type AccessUser } from '../../app/routing/accessPolicy'
 import { InspectionMap } from '../../components/emergency/InspectionMap'
 import { Button } from '../../design-system/actions/Button'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
+import { MasterDetail } from '../../design-system/layout/MasterDetail'
 import type { DomainError } from '../../shared/api/classifyApiError'
 import { useOnlineStatus } from '../../shared/browser/useOnlineStatus'
 import { RobotCheckSummary } from './RobotCheckSummary'
 import { RobotCheckTabs } from './RobotCheckTabs'
 import { RobotDiagnosticDiagram } from './RobotDiagnosticDiagram'
+import { DiagnosticEventDetails } from './DiagnosticEventDetails'
+import { chooseAutomaticView, isLocalizedEvent, leadingDiagnosticEvent } from './diagnosticPresentation'
 import { checkAccessIdentity, checkTabs, classifyCheckError } from './robotCheckUrl'
+import { ROBOT_POLL_MS } from './polling'
 import { useVisibilityPolling } from './useVisibilityPolling'
 import './robot-check.css'
 
 export type RobotCheckApiClient = Pick<typeof api, 'emergencySnapshot' | 'emergencySection'>
 export type RobotCheckWorkspaceProps = {
-  vin: string; user: AccessUser; sections: EmergencySection[]; activeTab: string
+  vin: string; user: AccessUser & { id?: number }; sections: EmergencySection[]; activeTab: string
   onTabChange: (tab: string) => void; apiClient?: RobotCheckApiClient
   onAuthorizationFailure?: (failure: DomainError) => void
   renderSummary?: (snapshot: EmergencySnapshot, failure: DomainError | null, refresh: () => void) => ReactNode
+  renderTasks?: (snapshot: EmergencySnapshot | null, failure: DomainError | null, refresh: () => void) => ReactNode
 }
 export function CheckError({ failure, user, onRetry }: { failure: DomainError; user: AccessUser; onRetry?: () => void }) {
   return <><ErrorState {...failure} onRetry={failure.retryable ? onRetry : undefined} />
     {failure.kind === 'configuration' && canAccessRoute(user, 'admin-robot-check') ? <Link to="/admin/emergency/config">Открыть настройки</Link> : null}</>
 }
-function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient = api, onAuthorizationFailure, renderSummary }: RobotCheckWorkspaceProps) {
+function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient = api, onAuthorizationFailure, renderSummary, renderTasks }: RobotCheckWorkspaceProps) {
   const online = useOnlineStatus()
   const [snapshot, setSnapshot] = useState<EmergencySnapshot | null>(null)
   const [snapshotError, setSnapshotError] = useState<DomainError | null>(null)
@@ -33,6 +38,23 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
   const [errors, setErrors] = useState<Record<string, DomainError | null>>({})
   const [denied, setDenied] = useState<DomainError | null>(null)
   const [follow, setFollow] = useState(true)
+  const [diagnosticSelection, setDiagnosticSelection] = useState<{ view: DiagnosticView; eventId: string | null }>({ view: 'top', eventId: null })
+  // Owned by the same VIN/access/park lifetime as the snapshot, never by a tab.
+  const automaticApplied = useRef(false)
+  // This cache belongs to one VIN/access lifetime and never persists to disk.
+  const cache = useRef(new Map<string, { data?: unknown; updatedAt: number; pending?: Promise<unknown> }>())
+  const cachedRequest = useCallback(<T,>(key: string, load: () => Promise<T>, force: boolean): Promise<T> => {
+    const stored = cache.current.get(key)
+    if (stored?.pending) return stored.pending as Promise<T>
+    if (!force && stored?.data !== undefined && Date.now() - stored.updatedAt < ROBOT_POLL_MS) return Promise.resolve(stored.data as T)
+    const entry = stored ?? { updatedAt: 0 }
+    cache.current.set(key, entry)
+    const pending = Promise.resolve().then(load).then(data => {
+      entry.data = data; entry.updatedAt = Date.now(); return data
+    }).finally(() => { if (entry.pending === pending) entry.pending = undefined })
+    entry.pending = pending
+    return pending
+  }, [])
   const denial = useRef(false)
   const generation = useRef(0)
   const notify = useRef(onAuthorizationFailure)
@@ -43,7 +65,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
     generation.current += 1
     return () => { generation.current += 1 }
   }, [vin, tab.id, tab.kind, apiClient])
-  const task = useCallback(async () => {
+  const task = useCallback(async (force = false) => {
     const requestedGeneration = generation.current
     const current = () => requestedGeneration === generation.current && !denial.current
     const observeFailure = (error: unknown, section?: string) => {
@@ -51,47 +73,75 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
       const failure = classifyCheckError(error)
       if (failure.kind === 'unauthorized' || failure.kind === 'forbidden') {
         denial.current = true
-        setSnapshot(null); setDetails({}); setErrors({}); setSnapshotError(null); setDenied(failure)
+        cache.current.clear(); setSnapshot(null); setDetails({}); setErrors({}); setSnapshotError(null); setDenied(failure)
         notify.current?.(failure)
       } else if (section) setErrors(previous => ({ ...previous, [section]: failure }))
-      else setSnapshotError(failure)
+      else {
+        if (!['offline', 'timeout', 'server'].includes(failure.kind)) setSnapshot(null)
+        setSnapshotError(failure)
+      }
     }
     if (!current()) return
     // Observe both independently: denial cannot wait for a hung sibling.
-    const snapshotRequest = Promise.resolve().then(() => apiClient.emergencySnapshot(vin)).then(value => {
-      if (current()) { setSnapshot(value); setSnapshotError(null) }
+    const snapshotRequest = cachedRequest('snapshot', () => apiClient.emergencySnapshot(vin), force).then(value => {
+      if (current()) {
+        setSnapshot(value); setSnapshotError(null)
+        if (!automaticApplied.current && value.diagnostic_events?.length) {
+          automaticApplied.current = true
+          setDiagnosticSelection({ view: chooseAutomaticView(value.diagnostic_events), eventId: leadingDiagnosticEvent(value.diagnostic_events)?.id ?? null })
+        }
+      }
     }, error => { observeFailure(error); throw error })
     const requests = [snapshotRequest]
-    if (tab.kind === 'section') requests.push(Promise.resolve().then(() => apiClient.emergencySection(vin, tab.id)).then(value => {
+    if (tab.kind === 'section') requests.push(cachedRequest(`section:${tab.id}`, () => apiClient.emergencySection(vin, tab.id), force).then(value => {
       if (current()) { setDetails(previous => ({ ...previous, [tab.id]: value })); setErrors(previous => ({ ...previous, [tab.id]: null })) }
     }, error => { observeFailure(error, tab.id); throw error }))
     const results = await Promise.allSettled(requests)
     const rejected = results.find(result => result.status === 'rejected')
     if (rejected?.status === 'rejected') throw rejected.reason
-  }, [vin, tab.id, tab.kind, apiClient])
+  }, [vin, tab.id, tab.kind, apiClient, cachedRequest])
   const { pending, refreshNow } = useVisibilityPolling({ enabled: !denied, online, task })
   const refresh = () => { void refreshNow() }
   if (denied) return <CheckError failure={denied} user={user} />
+  const events = snapshot?.diagnostic_events ?? []
+  const showEvent = (event: DiagnosticEvent) => {
+    if (!isLocalizedEvent(event)) return
+    automaticApplied.current = true
+    setDiagnosticSelection({ view: event.view, eventId: event.id })
+  }
+  const showLeadingError = () => {
+    automaticApplied.current = true
+    setDiagnosticSelection({ view: chooseAutomaticView(events), eventId: leadingDiagnosticEvent(events)?.id ?? null })
+  }
   const section = details[tab.id]
   const sectionError = errors[tab.id]
-  const retainSnapshot = !snapshotError || ['offline', 'timeout', 'server'].includes(snapshotError.kind)
-  if (renderSummary && snapshotError && (!snapshot || !retainSnapshot)) return <>
-    <CheckError failure={snapshotError} user={user} onRetry={refresh} />
-    {snapshotError.kind === 'not-found' ? <Link to="/robots">К поиску роботов</Link> : null}
-  </>
-  return <div className="rp-check-workspace" data-unified={Boolean(renderSummary)}>
-    <div className="rp-check-first-level">
+  const identity = <div className="rp-check-first-level">
       {snapshot ? renderSummary ? renderSummary(snapshot, snapshotError, refresh) : <RobotCheckSummary snapshot={snapshot} online={online} failed={Boolean(snapshotError)} pending={pending} onRefresh={refresh} />
         : <section className="rp-check-summary" aria-busy={pending}>
           {!online ? <p role="status">Нет сети на этом устройстве</p> : null}
           {!snapshotError && online ? <LoadingState label="Загружаем данные робота" /> : null}
-          <Button leadingIcon="refresh" onClick={refresh}>{!online ? 'Повторить проверку' : 'Обновить данные'}</Button>
+          {!online ? <Button onClick={refresh}>Повторить проверку</Button> : null}
         </section>}
-      {snapshotError && !renderSummary ? <div className="rp-check-warning"><CheckError failure={snapshotError} user={user} />{snapshot ? <p>Показаны последние полученные данные.</p> : null}</div> : null}
+      {snapshotError && (!renderSummary || !snapshot) ? <div className="rp-check-warning"><CheckError failure={snapshotError} user={user} onRetry={refresh} />{snapshot ? <p>Показаны последние полученные данные.</p> : null}
+        {snapshotError.kind === 'not-found' ? <Link to="/robots">К поиску роботов</Link> : null}</div> : null}
     </div>
-    <div className="rp-check-detail">
+  const detail = <div className="rp-check-detail">
       <RobotCheckTabs tabs={tabs} activeId={tab.id} onChange={onTabChange} />
       <section className="rp-check-panel" role="tabpanel" tabIndex={0} id={`robot-check-panel-${tab.id}`} aria-labelledby={`robot-check-tab-${tab.id}`}>
+        {tab.kind === 'state' ? <dl className="rp-check-telemetry"><div><dt>Режим</dt><dd>{snapshot?.mode ?? 'Нет данных'}</dd></div><div><dt>Связь робота</dt><dd>{snapshot?.online == null ? 'Нет данных' : snapshot.online ? 'На связи' : 'Не в сети'}</dd></div><div><dt>Заряд</dt><dd>{snapshot?.charge_percent == null ? 'Нет данных' : `${snapshot.charge_percent} %`}</dd></div></dl> : null}
+        {tab.kind === 'errors' ? <>
+          {snapshot?.error_banner ? <p role="status">{snapshot.error_banner}</p> : !events.length ? <p>Сообщения об ошибках не получены.</p> : null}
+          {events.length ? <>
+            <Button variant="secondary" disabled={!leadingDiagnosticEvent(events)} onClick={() => { showLeadingError(); onTabChange('scheme') }}>Показать ошибку</Button>
+            <ul className="rp-check-events" aria-label="Диагностические события">{events.map(event => <li key={event.id}>
+              <DiagnosticEventDetails event={event} />
+              {isLocalizedEvent(event) ? <Button variant="secondary" onClick={() => { showEvent(event); onTabChange('scheme') }}>Посмотреть на схеме</Button> : null}
+            </li>)}</ul>
+          </> : null}
+          {snapshot?.wheels_fault.length ? <><p>Есть сообщения о неисправности колёс.</p><Button variant="secondary" onClick={() => onTabChange('scheme')}>Посмотреть на схеме</Button></> : <p>Данные о неисправностях колёс не сообщены.</p>}
+        </> : null}
+        {tab.kind === 'tasks' ? renderTasks?.(snapshot, snapshotError, refresh) ?? <EmptyState title="Связанные задачи недоступны" /> : null}
+        {tab.kind === 'history' ? <EmptyState title="История событий пока недоступна" description="Источник истории событий пока не подключён." icon="info" /> : null}
         {tab.kind === 'map' ? snapshot?.lat != null && snapshot.lon != null ? <>
           <Button variant="secondary" aria-pressed={follow} onClick={() => setFollow(!follow)}>{follow ? 'Слежение включено' : 'Следовать за роботом'}</Button>
           <InspectionMap lat={snapshot.lat} lon={snapshot.lon} follow={follow} onUserPan={() => setFollow(false)} />
@@ -99,7 +149,11 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
         {tab.kind === 'telemetry' ? <dl className="rp-check-telemetry">
           {([['Скорость', snapshot?.speed, 'м/с'], ['Заряд', snapshot?.charge_percent, '%'], ['Батарея 1', snapshot?.battery1_percent, '%'], ['Батарея 2', snapshot?.battery2_percent, '%'], ['Диск', snapshot?.disk_percent, '%'], ['Режим', snapshot?.mode], ['ICP', snapshot?.icp_label], ['LTE', snapshot?.lte_label], ['Соединение', snapshot?.connection === 'wire' ? 'Проводное' : snapshot?.connection === 'lte' ? 'Мобильное' : null]] as const).map(([label, value, unit]) => <div key={label}><dt>{label}</dt><dd>{value == null ? 'Нет данных' : `${value}${unit ? ` ${unit}` : ''}`}</dd></div>)}
         </dl> : null}
-        {tab.kind === 'scheme' ? snapshot ? <RobotDiagnosticDiagram faults={snapshot.wheels_fault} onSelectWheels={tabs.some(item => item.id === 'wheels' && item.kind === 'section') ? () => onTabChange('wheels') : undefined} /> : <EmptyState title="Данные диагностики не получены" /> : null}
+        {tab.kind === 'scheme' ? snapshot ? <RobotDiagnosticDiagram faults={snapshot.wheels_fault} events={events} view={diagnosticSelection.view} selectedEventId={diagnosticSelection.eventId}
+          onViewChange={view => { automaticApplied.current = true; setDiagnosticSelection(current => ({ ...current, view })) }}
+          onSelectEvent={event => { automaticApplied.current = true; setDiagnosticSelection(current => ({ ...current, eventId: event.id })) }}
+          onShowError={showLeadingError} onRevealEvent={showEvent} onOpenErrors={() => onTabChange('errors')}
+          onSelectWheels={tabs.some(item => item.id === 'wheels' && item.kind === 'section') ? () => onTabChange('wheels') : undefined} /> : <EmptyState title="Данные диагностики не получены" /> : null}
         {tab.kind === 'section' ? <>
           {sectionError ? <CheckError failure={sectionError} user={user} onRetry={refresh} /> : null}
           {section ? section.fields.length ? section.fields.map((field, index) => <div className="rp-check-field" key={`${field.label}-${index}`}><h3>{field.label}</h3><pre className="rp-check-field-lines">{field.lines.length ? field.lines.join('\n') : 'Нет данных'}</pre></div>) : <EmptyState title="В разделе пока нет данных" />
@@ -107,8 +161,10 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
         </> : null}
       </section>
     </div>
+  return <div className="rp-check-workspace" data-unified={Boolean(renderSummary)}>
+    {renderSummary ? <MasterDetail list={identity} detail={detail} detailOpen onBack={() => onTabChange('state')} /> : <>{identity}{detail}</>}
   </div>
 }
 export function RobotCheckWorkspace(props: RobotCheckWorkspaceProps) {
-  return <WorkspaceOwner key={`${props.vin}:${checkAccessIdentity(props.user)}`} {...props} />
+  return <WorkspaceOwner key={`${props.user.id}:${props.vin}:${checkAccessIdentity(props.user)}`} {...props} />
 }

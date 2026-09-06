@@ -1,21 +1,30 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
 from robopark_api.dev_seed import ensure_dev_seed
 from robopark_api.middleware.maintenance import MaintenanceGateMiddleware
+from robopark_api.middleware.observations import ObservationMiddleware
 from robopark_api.routers import (
     admin_audit,
+    admin_diagnostic_rules,
+    admin_diagnostic_unknowns,
     admin_emergency,
+    admin_health,
     admin_ops,
     admin_park_requests,
     admin_roles,
     admin_settings,
     admin_users,
+    analytics,
     auth,
     dashboard,
     emergency,
@@ -30,7 +39,9 @@ from robopark_api.routers import (
     operator_robots,
     parks,
     reports,
+    robot_registry,
     tracker_actions,
+    tracker_collaboration,
     tracker_read,
 )
 from robopark_api.seed import ensure_seed_user
@@ -111,17 +122,50 @@ def create_app() -> FastAPI:
     )
     app.state.ops_dir = resolved_ops_dir(settings)
     app.state.session_cookie_name = settings.session_cookie_name
+
+    @app.exception_handler(RequestValidationError)
+    async def hide_sensitive_validation_input(request: Request, exc: RequestValidationError):
+        """Sanitize sensitive route families without changing other validation contracts."""
+        if any(
+            request.url.path == prefix or request.url.path.startswith(prefix + "/")
+            for prefix in (
+                admin_diagnostic_rules.router.prefix,
+                admin_diagnostic_unknowns.router.prefix,
+            )
+        ):
+            return JSONResponse(
+                status_code=422,
+                content={"detail": admin_diagnostic_rules.validation_error_details(exc.errors())},
+            )
+        if request.url.path != "/admin/settings/emergency-cookie":
+            return await request_validation_exception_handler(request, exc)
+        errors = []
+        for error in exc.errors():
+            sanitized = dict(error)
+            sanitized.pop("input", None)
+            errors.append(sanitized)
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     # Explicit method/header allowlists paired with ``allow_credentials=True``:
     # a wildcard here would let the browser send credentialed requests with
     # arbitrary custom headers to every configured origin.
     app.add_middleware(MaintenanceGateMiddleware)
+    app.add_middleware(ObservationMiddleware, root=resolved_ops_dir(settings) / "observations")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Accept"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "Accept",
+            "If-Match",
+            "Idempotency-Key",
+            "X-Tracker-State",
+        ],
+        expose_headers=["ETag"],
     )
     app.include_router(auth.router)
     app.include_router(health.router)
@@ -129,9 +173,12 @@ def create_app() -> FastAPI:
     app.include_router(admin_roles.router)
     app.include_router(admin_users.router)
     app.include_router(admin_audit.router)
+    app.include_router(admin_diagnostic_rules.router)
+    app.include_router(admin_diagnostic_unknowns.router)
     app.include_router(admin_emergency.router)
     app.include_router(admin_settings.router)
     app.include_router(admin_ops.router)
+    app.include_router(admin_health.router)
     app.include_router(operator_parks.router)
     app.include_router(operator_blockers.router)
     app.include_router(operator_report.router)
@@ -143,8 +190,11 @@ def create_app() -> FastAPI:
     app.include_router(mechanic_emergency.router)
     app.include_router(tracker_read.router)
     app.include_router(tracker_actions.router)
+    app.include_router(tracker_collaboration.router)
     app.include_router(dashboard.router)
+    app.include_router(robot_registry.router)
     app.include_router(operations.router)
+    app.include_router(analytics.router)
     app.include_router(reports.router)
     return app
 

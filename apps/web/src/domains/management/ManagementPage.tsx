@@ -1,60 +1,38 @@
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../../auth-context'
 import { PageShell, Panel } from '../../components/PageShell'
+import { EntityRow } from '../../design-system/data/EntityRow'
+import { MetricCard } from '../../design-system/data/MetricCard'
+import { StatusBadge } from '../../design-system/status/StatusBadge'
+import { ManagementNavigation } from './ManagementNavigation'
+import { managementHref, managementSections } from './managementSections'
 import './management.css'
-
-type ManagementLink = {
-  permission: string
-  to: string
-  title: string
-  description: string
-}
-
-const links: ManagementLink[] = [
-  {
-    permission: 'users.manage',
-    to: '/admin/users',
-    title: 'Пользователи',
-    description: 'Аккаунты, парки, статус доступа и принудительная смена пароля.',
-  },
-  {
-    permission: 'roles.manage',
-    to: '/admin/roles',
-    title: 'Роли и доступы',
-    description: 'Набор разрешений системных и пользовательских ролей.',
-  },
-  {
-    permission: 'parks.manage',
-    to: '/admin/settings?tab=parks',
-    title: 'Парки',
-    description: 'Настройки парков и политики SLA выбранного парка.',
-  },
-  {
-    permission: 'nav.admin',
-    to: '/admin/settings',
-    title: 'Настройки',
-    description: 'Интеграции, очередь и служебные операции.',
-  },
-]
 
 export function ManagementPage() {
   const { user } = useAuth()
+  const [params] = useSearchParams()
   const permissions = new Set(user?.permissions ?? [])
-  const visibleLinks = links.filter((item) => permissions.has(item.permission))
+  const visibleLinks = managementSections.filter((item) => permissions.has(item.permission))
 
   return (
-    <PageShell
-      subtitle="Выберите раздел управления, доступный вашему аккаунту."
+    <div className="rp-management"><PageShell
+      subtitle="Доступ команды и настройки рабочего пространства."
       title="Управление"
     >
+      <ManagementNavigation />
+      <div className="rp-management-metrics">
+        <MetricCard label="Доступные разделы" value={visibleLinks.length} />
+        <MetricCard label="Назначенные парки" value={user?.parks.length ?? 0} />
+      </div>
+      <Panel title="Разделы управления" hint="Выберите направление работы.">
       <div className="management-grid">
         {visibleLinks.map((item) => (
-          <Panel key={item.to} title={item.title}>
-            <p className="panel-hint">{item.description}</p>
-            <Link className="btn" to={item.to}>Открыть</Link>
-          </Panel>
+          <EntityRow key={item.title} title={item.title} meta={item.description}
+            status={<StatusBadge tone="success">Доступен</StatusBadge>}
+            actions={<Link className="btn btn-secondary" to={managementHref(item.path, params, item.tab)}>Открыть</Link>} />
         ))}
       </div>
-    </PageShell>
+      </Panel>
+    </PageShell></div>
   )
 }

@@ -6,6 +6,7 @@ import { Panel } from '../../design-system/layout/PageLayout'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import type { RobotDetailViewModel } from './robotDetailModel'
 import { ROBOT_PHOTOS } from './robotPhotos'
+import { RobotQrButton } from './RobotQrButton'
 
 export function RobotIdentityCard({ model, canOpenCheck, parkId, children }: {
   model: RobotDetailViewModel
@@ -27,6 +28,7 @@ export function RobotIdentityCard({ model, canOpenCheck, parkId, children }: {
             <figcaption>Иллюстрация модели</figcaption>
           </figure>
           <p className="rp-robot-identity__vin">{model.vin}</p>
+          <RobotQrButton vin={model.vin} />
           <div className="rp-robot-identity__status">
             <StatusBadge tone={model.connection.tone}>{model.connection.label}</StatusBadge>
             <StaleBadge state={model.freshness} updatedAt={model.observedAt} />

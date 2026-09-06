@@ -135,6 +135,17 @@ describe('RobotResolver', () => {
     expect(screen.queryByRole('button', { name: 'Сканировать' })).not.toBeInTheDocument()
   })
 
+  it('generates a VIN label locally without resolving or changing the search', async () => {
+    const emergencyResolve = vi.fn()
+    render(robotsPageTree({ apiClient: { emergencyResolve } }))
+    fireEvent.click(screen.getByRole('button', { name: 'QR и печать' }))
+    fireEvent.change(screen.getByLabelText('Номер или VIN для QR'), { target: { value: '1441' } })
+    expect(await screen.findByRole('img', { name: 'QR: YASADR00000001441' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Печатать' })).toBeEnabled()
+    expect(emergencyResolve).not.toHaveBeenCalled()
+    expect(screen.getByTestId('location')).toHaveTextContent('/robots?park=7')
+  })
+
   it('replaces q while retaining numeric park and pushes the canonical resolved VIN', async () => {
     const emergencyResolve = vi.fn(async () => ({ vin: 'YASADR00000000447', sections: [] as [] }))
     render(robotsPageTree({ apiClient: { emergencyResolve } }))

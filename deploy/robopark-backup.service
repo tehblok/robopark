@@ -1,0 +1,13 @@
+[Unit]
+Description=Verified Robopark snapshot with 14-copy retention
+Requires=robopark.service
+After=robopark.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/robopark
+ExecStart=/usr/bin/python3 /opt/robopark/deploy/host.py backup
+UMask=0077
+TimeoutStartSec=900
+Nice=10
+IOSchedulingClass=idle

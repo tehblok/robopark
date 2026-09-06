@@ -1,4 +1,5 @@
 import { useIsRevalidating } from '../lib/resource'
+import './GlobalProgress.css'
 
 /**
  * Thin top-of-page bar that lights up while any cached resource is
@@ -10,6 +11,7 @@ export function GlobalProgress() {
   return (
     <div
       aria-hidden={!active}
+      aria-label="Обновление данных"
       className="global-progress"
       data-active={active ? 'true' : 'false'}
       role="progressbar"

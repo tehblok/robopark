@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Blocker, EmergencySnapshot } from '../../api'
-import { Button } from '../../design-system/actions/Button'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { Panel } from '../../design-system/layout/PageLayout'
 import type { DomainError } from '../../shared/api/classifyApiError'
@@ -10,6 +9,7 @@ import { buildRobotDetailModel } from './robotDetailModel'
 import './robots.css'
 
 export type RobotDetailViewProps = {
+  display?: 'all' | 'identity' | 'tasks'
   snapshot: EmergencySnapshot | null
   reference?: string
   relatedWork: Blocker[] | null
@@ -25,7 +25,7 @@ export type RobotDetailViewProps = {
   onRetryWork: () => void
 }
 
-export function RobotDetailView({ snapshot, reference, relatedWork, relatedWorkError, relatedWorkLoading = false, snapshotError, workScopeLabel, parkId, browserOnline, canOpenCheck, canOpenWork, onRetrySnapshot, onRetryWork }: RobotDetailViewProps) {
+export function RobotDetailView({ display = 'all', snapshot, reference, relatedWork, relatedWorkError, relatedWorkLoading = false, snapshotError, workScopeLabel, parkId, browserOnline, canOpenCheck, canOpenWork, onRetrySnapshot, onRetryWork }: RobotDetailViewProps) {
   const [now, setNow] = useState(() => new Date())
   useEffect(() => {
     const clock = globalThis.setInterval(() => setNow(new Date()), 30_000)
@@ -36,14 +36,13 @@ export function RobotDetailView({ snapshot, reference, relatedWork, relatedWorkE
   const search = parkId == null ? '' : `?park=${parkId}`
   return (
     <div className="rp-robot-detail">
-      {model ? <RobotIdentityCard model={model} canOpenCheck={canOpenCheck} parkId={parkId}>
+      {display !== 'tasks' && (model ? <RobotIdentityCard model={model} canOpenCheck={canOpenCheck} parkId={parkId}>
         {snapshotError ? <ErrorState {...snapshotError} onRetry={snapshotError.retryable ? onRetrySnapshot : undefined} /> : null}
-        <Button variant="secondary" leadingIcon="refresh" onClick={onRetrySnapshot}>Обновить данные робота</Button>
       </RobotIdentityCard> : <Panel className="rp-robot-detail__identity" title={`Робот ${reference}`}>
         <p>Идентификатор из адреса: {reference}. Сведения о роботе не подтверждены диагностикой.</p>
         <p>Диагностика недоступна: нет разрешения на проверку робота.</p>
-      </Panel>}
-      <Panel className="rp-robot-detail__work" title="Связанные задачи">
+      </Panel>)}
+      {display !== 'identity' && <Panel className="rp-robot-detail__work" title="Связанные задачи">
         <p>Область связанных задач: {workScopeLabel}</p>
         {parkId != null ? <p>Выбранный парк: {parkId}; он применяется к переходам в Работу</p> : null}
         {relatedWorkError ? <ErrorState {...relatedWorkError} onRetry={relatedWorkError.retryable ? onRetryWork : undefined} />
@@ -57,8 +56,8 @@ export function RobotDetailView({ snapshot, reference, relatedWork, relatedWorkE
                   </li>)}
                 </ul>
               ) : <p>Связанных задач нет в доступной области.</p>}
-      </Panel>
-      <div className="rp-robot-detail__events"><EmptyState title="История событий пока недоступна" description="Источник истории событий пока не подключён." icon="info" /></div>
+      </Panel>}
+      {display === 'all' && <div className="rp-robot-detail__events"><EmptyState title="История событий пока недоступна" description="Источник истории событий пока не подключён." icon="info" /></div>}
     </div>
   )
 }

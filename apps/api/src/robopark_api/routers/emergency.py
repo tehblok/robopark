@@ -15,6 +15,7 @@ from robopark_api.schemas import (
     EmergencySnapshotOut,
 )
 from robopark_api.services import (
+    diagnostic_unknowns,
     emergency_cache,
     emergency_client,
     emergency_scope,
@@ -28,8 +29,8 @@ from robopark_api.services.emergency_snapshot import parse_emergency_snapshot
 router = APIRouter(prefix="/emergency", tags=["emergency"])
 
 
-def _require_emergency_cookie(db: Session) -> None:
-    if not settings_svc.get_emergency_cookie(db):
+def _require_emergency_cookie(probe: tuple[str | None, str | None]) -> None:
+    if not probe[0]:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="emergency_cookie_not_configured",
@@ -37,9 +38,10 @@ def _require_emergency_cookie(db: Session) -> None:
 
 
 def _get_robot_payload(db: Session, vin: str) -> dict:
-    _require_emergency_cookie(db)
+    probe = settings_svc.get_emergency_cookie_probe(db)
+    _require_emergency_cookie(probe)
     try:
-        return emergency_cache.get_robot_payload(db=db, vin=vin)
+        return emergency_cache.get_robot_payload(db=db, vin=vin, probe=probe)
     except emergency_client.EmergencyAuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -83,7 +85,6 @@ def resolve_robot_for_user(
             detail="invalid_robot_number",
         ) from exc
 
-    _require_emergency_cookie(db)
     _enforce_vin_scope(db, user, vin)
 
     _get_robot_payload(db, vin)
@@ -133,7 +134,8 @@ def emergency_snapshot_for_user(vin: str, user: User, db: Session) -> EmergencyS
 
     _enforce_vin_scope(db, user, vin)
     payload = _get_robot_payload(db, vin)
-    snap = parse_emergency_snapshot(payload, vin=vin)
+    snap = parse_emergency_snapshot(payload, vin=vin, db=db)
+    diagnostic_unknowns.capture_unknowns(db, snap["diagnostic_events"], vin, payload=payload)
     return EmergencySnapshotOut(**snap, observed_at=datetime.now(UTC))
 
 

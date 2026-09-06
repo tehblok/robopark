@@ -1,7 +1,8 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   api,
+  ApiError,
   type IntegrationSettings,
   type Park,
   type ParkRequest,
@@ -14,41 +15,37 @@ import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
 import { TabPanel, Tabs, Toggle } from '../components/ui/Tabs'
 import { PasswordField } from '../components/ui/PasswordField'
 import { AdminOpsPanel } from '../components/admin/AdminOpsPanel'
+import { HostHealthPanel } from '../components/admin/HostHealthPanel'
 import { useAuth } from '../auth-context'
 import { mapApiError } from '../i18n/errors'
 import { roleLabel, ru } from '../i18n/ru'
-import { useCachedResource } from '../lib/resource'
+import { resourceStore, useCachedResource } from '../lib/resource'
 import { useParkScope } from '../app/park/parkScope'
 import { SlaPolicyEditor } from '../domains/insights/SlaPolicyEditor'
+import { ManagementNavigation } from '../domains/management/ManagementNavigation'
+import { MetricCard } from '../design-system/data/MetricCard'
+import { StatusBadge } from '../design-system/status/StatusBadge'
 
-type TabId = 'integrations' | 'parks' | 'ops'
+type TabId = 'integrations' | 'parks' | 'ops' | 'health'
 
 type AdminBootstrap = {
   parks: Park[]
   parkRequests: ParkRequest[]
   settings: IntegrationSettings | null
   trackerPolicy: TrackerPolicySettings | null
-  screenshotGuard: ScreenshotGuardSettings
+  screenshotGuard: ScreenshotGuardSettings | null
   screenshotGuardLive?: boolean
   pendingUserCount: number
 }
 
-const DEFAULT_SCREENSHOT_GUARD: ScreenshotGuardSettings = {
-  operator: false,
-  mechanic: false,
-  admin: false,
-  royal: false,
-  driver: false,
-}
-
 async function loadScreenshotGuardSettings(): Promise<{
-  settings: ScreenshotGuardSettings
+  settings: ScreenshotGuardSettings | null
   live: boolean
 }> {
   try {
     return { settings: await api.screenshotGuardSettings(), live: true }
   } catch {
-    return { settings: DEFAULT_SCREENSHOT_GUARD, live: false }
+    return { settings: null, live: false }
   }
 }
 
@@ -60,7 +57,7 @@ async function loadAdminBootstrap(canIntegrations: boolean): Promise<AdminBootst
       parkRequests: [],
       settings: null,
       trackerPolicy: null,
-      screenshotGuard: DEFAULT_SCREENSHOT_GUARD,
+      screenshotGuard: null,
       screenshotGuardLive: false,
       pendingUserCount: 0,
     }
@@ -82,13 +79,66 @@ async function loadAdminBootstrap(canIntegrations: boolean): Promise<AdminBootst
 
 function worksBadge(ok: boolean) {
   return ok ? (
-    <span className="badge badge-ok">работает</span>
+    <StatusBadge tone="success">работает</StatusBadge>
   ) : (
-    <span className="badge badge-warn">нет</span>
+    <StatusBadge tone="warning">нет</StatusBadge>
   )
 }
 
+function emergencyCookieStatus(settings: IntegrationSettings) {
+  switch (settings.emergency_cookie_status) {
+    case 'valid':
+      return <StatusBadge tone="success">Действительна</StatusBadge>
+    case 'invalid':
+      return <StatusBadge tone="critical">Недействительна</StatusBadge>
+    case 'unavailable':
+      return <StatusBadge tone="warning">Недоступна</StatusBadge>
+    default:
+      return <StatusBadge tone="neutral">Не проверена</StatusBadge>
+  }
+}
+
+function mergeTrackerSettings(
+  current: IntegrationSettings | null,
+  updated: IntegrationSettings,
+): IntegrationSettings {
+  if (!current) return updated
+  return {
+    ...current,
+    tracker_token_masked: updated.tracker_token_masked,
+    tracker_token_updated_at: updated.tracker_token_updated_at,
+    tracker_token_encrypted: updated.tracker_token_encrypted,
+  }
+}
+
+function mergeEmergencySettings(
+  current: IntegrationSettings | null,
+  updated: IntegrationSettings,
+): IntegrationSettings {
+  if (!current) return updated
+  return {
+    ...current,
+    emergency_cookie_masked: updated.emergency_cookie_masked,
+    emergency_cookie_updated_at: updated.emergency_cookie_updated_at,
+    emergency_cookie_encrypted: updated.emergency_cookie_encrypted,
+    emergency_cookie_valid: updated.emergency_cookie_valid,
+    emergency_cookie_status: updated.emergency_cookie_status,
+    emergency_cookie_checked_at: updated.emergency_cookie_checked_at,
+    emergency_cookie_checked_robot: updated.emergency_cookie_checked_robot,
+  }
+}
+
 export function Admin() {
+  const { user } = useAuth()
+  const { parkId } = useParkScope()
+  const context = JSON.stringify([
+    user?.id, user?.username, user?.role, user?.tracker_login,
+    user?.permissions, user?.parks, parkId,
+  ])
+  return <div className="rp-management"><AdminWorkspace key={context} bootstrapKey={`admin:bootstrap:${context}`} /></div>
+}
+
+function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
   const { user } = useAuth()
   const { parkId } = useParkScope()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -100,58 +150,76 @@ export function Admin() {
   const firstPermittedTab: TabId = canIntegrations ? 'integrations' : canParks ? 'parks' : 'ops'
   const isPermittedTab = (candidate: string | null): candidate is TabId => (
     (candidate === 'integrations' && canIntegrations)
+    || (candidate === 'health' && canIntegrations)
     || (candidate === 'parks' && canParks)
     || (candidate === 'ops' && canOps)
   )
-  const initialTab: TabId = isPermittedTab(requestedTab) ? requestedTab : firstPermittedTab
-  const [tab, setTab] = useState<TabId>(initialTab)
-  const tabPermitted = (tab === 'integrations' && canIntegrations)
-    || (tab === 'parks' && canParks)
-    || (tab === 'ops' && canOps)
-  const bootRes = useCachedResource<AdminBootstrap>(`admin:bootstrap:${canIntegrations ? 'full' : 'parks'}`, () => loadAdminBootstrap(canIntegrations), {
+  const tab: TabId = isPermittedTab(requestedTab) ? requestedTab : firstPermittedTab
+  const setTab = (nextTab: TabId) => {
+    const next = new URLSearchParams(searchParams)
+    if (nextTab === 'integrations') next.delete('tab')
+    else next.set('tab', nextTab)
+    setSearchParams(next, { replace: true })
+  }
+  const bootRes = useCachedResource<Partial<AdminBootstrap>>(bootstrapKey, () => loadAdminBootstrap(canIntegrations), {
     persist: false,
+    // Background snapshots must not replace unsaved settings drafts.
+    refreshIntervalMs: 0,
   })
   const boot = bootRes.data
+  const settings = boot?.settings ?? null
+  const active = useRef(true)
+  useEffect(() => {
+    active.current = true
+    return () => { active.current = false }
+  }, [])
 
   const [parks, setParks] = useState<Park[]>(boot?.parks ?? [])
   const [parkRequests, setParkRequests] = useState<ParkRequest[]>(boot?.parkRequests ?? [])
-  const [settings, setSettings] = useState<IntegrationSettings | null>(boot?.settings ?? null)
   const [trackerPolicy, setTrackerPolicy] = useState<TrackerPolicySettings | null>(
     boot?.trackerPolicy ?? null,
   )
-  const [screenshotGuard, setScreenshotGuard] = useState<ScreenshotGuardSettings>(
-    boot?.screenshotGuard ?? DEFAULT_SCREENSHOT_GUARD,
+  const [screenshotGuard, setScreenshotGuard] = useState<ScreenshotGuardSettings | null>(
+    boot?.screenshotGuard ?? null,
   )
-  const [screenshotGuardLive, setScreenshotGuardLive] = useState(true)
+  const [screenshotGuardLive, setScreenshotGuardLive] = useState(boot?.screenshotGuardLive === true)
   const [name, setName] = useState('')
   const [tag, setTag] = useState('')
   const [trackerToken, setTrackerToken] = useState('')
   const [emergencyCookie, setEmergencyCookie] = useState('')
+  const [emergencyRobot, setEmergencyRobot] = useState('')
   const [registrationPassword, setRegistrationPassword] = useState('')
   const [registrationSettings, setRegistrationSettings] =
     useState<RegistrationPasswordSettings | null>(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [busy, setBusy] = useState(false)
+  const [trackerBusy, setTrackerBusy] = useState(false)
+  const [emergencyBusy, setEmergencyBusy] = useState(false)
 
   useEffect(() => {
-    if (!tabPermitted) setTab(firstPermittedTab)
-  }, [tabPermitted, firstPermittedTab])
+    const next = new URLSearchParams(searchParams)
+    if (tab === 'integrations') next.delete('tab')
+    else next.set('tab', tab)
+    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams, tab])
 
+  // Integration-only cache updates preserve the other forms' unsaved edits.
   useEffect(() => {
-    if (requestedTab === tab) return
-    setSearchParams(tab === 'integrations' ? {} : { tab }, { replace: true })
-  }, [requestedTab, setSearchParams, tab])
-
+    if (boot?.parks) setParks(boot.parks)
+  }, [boot?.parks])
   useEffect(() => {
-    if (!boot) return
-    setParks(boot.parks)
-    setParkRequests(boot.parkRequests)
-    setSettings(boot.settings)
-    setTrackerPolicy(boot.trackerPolicy)
-    setScreenshotGuard(boot.screenshotGuard)
-    setScreenshotGuardLive(boot.screenshotGuardLive ?? true)
-  }, [boot])
+    if (boot?.parkRequests) setParkRequests(boot.parkRequests)
+  }, [boot?.parkRequests])
+  useEffect(() => {
+    setTrackerPolicy(boot?.trackerPolicy ?? null)
+  }, [boot?.trackerPolicy])
+  useEffect(() => {
+    setScreenshotGuard(boot?.screenshotGuard ?? null)
+  }, [boot?.screenshotGuard])
+  useEffect(() => {
+    setScreenshotGuardLive(boot?.screenshotGuardLive === true)
+  }, [boot?.screenshotGuardLive])
 
   useEffect(() => {
     if (user?.role !== 'royal') {
@@ -170,7 +238,9 @@ export function Admin() {
     setBusy(true)
     try {
       await action()
+      if (!active.current) return
       await bootRes.refresh()
+      if (!active.current) return
       setSuccess(message)
     } catch {
       setError(ru.errors.generic)
@@ -188,18 +258,84 @@ export function Admin() {
     }, 'Парк создан')
   }
 
-  const saveIntegration = async (event: FormEvent) => {
+  const applyIntegrationSettings = (
+    updated: IntegrationSettings,
+    merge: typeof mergeTrackerSettings,
+  ) => {
+    if (!active.current) return
+    const current = resourceStore.get<Partial<AdminBootstrap>>(bootstrapKey)
+    // A mutation is authoritative for its integration. Retire older bootstrap
+    // loads before publishing to the same cache used by this page and remounts.
+    resourceStore.invalidate(bootstrapKey)
+    resourceStore.set(bootstrapKey, {
+      ...current, settings: merge(current?.settings ?? null, updated),
+    }, false)
+  }
+
+  const saveTrackerToken = async (event: FormEvent) => {
     event.preventDefault()
-    await run(async () => {
-      if (trackerToken.trim()) {
-        await api.setTrackerToken(trackerToken.trim())
-        setTrackerToken('')
+    const token = trackerToken.trim()
+    if (!token || trackerBusy) return
+    setError('')
+    setSuccess('')
+    setTrackerBusy(true)
+    try {
+      const updated = await api.setTrackerToken(token)
+      if (!active.current) return
+      applyIntegrationSettings(updated, mergeTrackerSettings)
+      setTrackerToken('')
+      setSuccess('Токен Tracker сохранён')
+    } catch (caught) {
+      setError(mapApiError(caught, ru.errors.generic))
+    } finally {
+      setTrackerBusy(false)
+    }
+  }
+
+  const runEmergencyCheck = async (action: () => Promise<IntegrationSettings>, message: string) => {
+    if (emergencyBusy) return
+    setError('')
+    setSuccess('')
+    setEmergencyBusy(true)
+    try {
+      const updated = await action()
+      if (!active.current) return
+      applyIntegrationSettings(updated, mergeEmergencySettings)
+      setSuccess(message)
+    } catch (caught) {
+      if (!active.current) return
+      if (caught instanceof ApiError && (caught.status === 401 || caught.status === 503)) {
+        try {
+          applyIntegrationSettings(await api.integrationSettings(), mergeEmergencySettings)
+        } catch {
+          // Keep the original actionable error if the protected state refresh fails.
+        }
       }
-      if (emergencyCookie.trim()) {
-        await api.setEmergencyCookie(emergencyCookie.trim())
-        setEmergencyCookie('')
-      }
-    }, 'Секреты обновлены')
+      if (!active.current) return
+      setError(mapApiError(caught, ru.errors.emergency503))
+    } finally {
+      setEmergencyBusy(false)
+    }
+  }
+
+  const saveEmergencyCookie = async (event: FormEvent) => {
+    event.preventDefault()
+    const cookie = emergencyCookie.trim()
+    const robot = emergencyRobot.trim()
+    if (!cookie || !robot) return
+    await runEmergencyCheck(async () => {
+      const updated = await api.setEmergencyCookie(cookie, robot)
+      setEmergencyCookie('')
+      return updated
+    }, 'Cookie сохранена и проверена')
+  }
+
+  const checkEmergencyCookie = async () => {
+    const robot = emergencyRobot.trim()
+    await runEmergencyCheck(
+      () => api.checkEmergencyCookie(robot || undefined),
+      'Текущая cookie проверена',
+    )
   }
 
   const saveRegistrationPassword = async (event: FormEvent) => {
@@ -250,16 +386,18 @@ export function Admin() {
 
   return (
     <PageShell
-      actions={busy ? <Spinner label="Сохранение" /> : undefined}
+      actions={busy || trackerBusy || emergencyBusy ? <Spinner label="Сохранение" /> : undefined}
       subtitle="Парки, роли, пользователи, интеграции и снимок системы."
       title="Администрирование"
     >
+      <ManagementNavigation />
       {displayError && <Alert tone="error">{displayError}</Alert>}
       {success && <Alert tone="success">{success}</Alert>}
 
       <Tabs
         items={[
           ...(canIntegrations ? [{ id: 'integrations', label: 'Интеграции' }] : []),
+          ...(canIntegrations ? [{ id: 'health', label: 'Состояние сервера' }] : []),
           ...(canParks ? [{ id: 'parks', label: 'Парки', count: parkRequests.length }] : []),
           ...(user?.role === 'royal' ? [{ id: 'ops', label: ru.ops.tab }] : []),
         ]}
@@ -268,6 +406,7 @@ export function Admin() {
       />
 
       {/* --- Integrations ------------------------------------------------- */}
+      {canIntegrations && tab === 'health' && <TabPanel active><HostHealthPanel /></TabPanel>}
       {canIntegrations && <TabPanel active={tab === 'integrations'}>
         {user?.role === 'royal' && (
           <Panel
@@ -332,48 +471,79 @@ export function Admin() {
           title="Секреты"
         >
           {settings && (
-            <div className="stat-grid">
-              <div className="stat">
-                <span className="stat-label">Tracker OAuth</span>
-                <span className="stat-value">
-                  {worksBadge(Boolean(settings.tracker_token_masked))}
-                </span>
-              </div>
-              <div className="stat">
-                <span className="stat-label">Cookie диагностики робота</span>
-                <span className="stat-value">
-                  {worksBadge(settings.emergency_cookie_valid === true)}
-                </span>
-              </div>
+            <div className="rp-management-metrics">
+              <MetricCard label="Tracker OAuth" value={worksBadge(Boolean(settings.tracker_token_masked))} />
+              <MetricCard label="Проверка cookie" value={emergencyCookieStatus(settings)} />
             </div>
           )}
 
-          <form className="form-grid" onSubmit={saveIntegration}>
+          {settings?.emergency_cookie_checked_robot && (
+            <p className="panel-hint">
+              Проверено: робот {settings.emergency_cookie_checked_robot}
+              {settings.emergency_cookie_checked_at ? ` · ${new Date(settings.emergency_cookie_checked_at).toLocaleString('ru-RU')}` : ''}
+            </p>
+          )}
+          {settings?.emergency_cookie_status === 'unavailable' && (
+            <Alert tone="warning">Проверка сейчас недоступна. Повторите попытку.</Alert>
+          )}
+
+          <form className="form-grid" onSubmit={saveTrackerToken}>
             <label className="field">
               <span className="field-label">Tracker OAuth-токен</span>
               <input
+                disabled={trackerBusy}
                 onChange={(event) => setTrackerToken(event.target.value)}
                 placeholder="Оставьте пустым, чтобы не менять"
                 type="password"
                 value={trackerToken}
               />
             </label>
+            <div className="form-actions">
+              <button
+                className="btn"
+                disabled={trackerBusy || !trackerToken.trim()}
+                type="submit"
+              >
+                {trackerBusy ? 'Сохранение…' : 'Сохранить токен'}
+              </button>
+            </div>
+          </form>
+
+          <form className="form-grid" onSubmit={saveEmergencyCookie}>
             <label className="field">
               <span className="field-label">Cookie диагностики робота</span>
               <input
+                disabled={emergencyBusy}
                 onChange={(event) => setEmergencyCookie(event.target.value)}
-                placeholder="Оставьте пустым, чтобы не менять"
+                placeholder="Вставьте новую cookie для проверки"
                 type="password"
                 value={emergencyCookie}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">Робот для проверки</span>
+              <input
+                disabled={emergencyBusy}
+                onChange={(event) => setEmergencyRobot(event.target.value)}
+                placeholder="Например, 447 или VIN"
+                value={emergencyRobot}
               />
             </label>
             <div className="form-actions">
               <button
                 className="btn"
-                disabled={busy || (!trackerToken.trim() && !emergencyCookie.trim())}
+                disabled={emergencyBusy || !emergencyCookie.trim() || !emergencyRobot.trim()}
                 type="submit"
               >
-                Сохранить секреты
+                {emergencyBusy ? 'Проверяем…' : 'Сохранить и проверить'}
+              </button>
+              <button
+                className="btn btn-secondary"
+                disabled={emergencyBusy}
+                onClick={() => void checkEmergencyCookie()}
+                type="button"
+              >
+                Проверить текущую
               </button>
             </div>
           </form>
@@ -409,12 +579,12 @@ export function Admin() {
         )}
 
         <Panel hint={ru.screenshotGuard.adminHint} title="Защита от скриншотов">
-          {!screenshotGuardLive && (
-            <Alert tone="warning">
-              API не отвечает на /admin/settings/screenshot-guard — перезапустите backend
-              (uvicorn). Переключатели не сохранятся, пока сервер не обновлён.
-            </Alert>
-          )}
+          {!screenshotGuard || !screenshotGuardLive ? <>
+            <p role="status">{bootRes.isRevalidating
+              ? 'Загрузка состояния защиты…'
+              : 'Состояние защиты не загружено. Изменения недоступны, пока сервер не вернёт текущие настройки.'}</p>
+            <button className="btn btn-secondary" disabled={bootRes.isRevalidating} onClick={() => void bootRes.refresh()} type="button">Повторить загрузку настроек</button>
+          </> :
           <div className="toggle-list">
             {(['operator', 'mechanic', 'driver', 'admin', 'royal'] as const).map((role) => (
               <Toggle
@@ -422,16 +592,17 @@ export function Admin() {
                 checked={Boolean(screenshotGuard[role])}
                 disabled={busy || !screenshotGuardLive}
                 label={ru.screenshotGuard.adminToggle(roleLabel(role))}
-                onChange={(next) =>
-                  run(async () => {
+                onChange={(next) => {
+                  if (!screenshotGuard || !screenshotGuardLive) return
+                  return run(async () => {
                     const updated = await api.updateScreenshotGuardSettings({ [role]: next })
                     setScreenshotGuard(updated)
                     setScreenshotGuardLive(true)
                   }, 'Защита обновлена')
-                }
+                }}
               />
             ))}
-          </div>
+          </div>}
         </Panel>
 
         <Panel title="Быстрые переходы">

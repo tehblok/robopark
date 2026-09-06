@@ -7,14 +7,14 @@ import { describe, expect, it } from 'vitest'
 import { Icon } from './Icon'
 
 describe('Icon', () => {
-  it('renders the original checked robot glyph as decorative content', () => {
+  it('renders the checked wheeled platform glyph as decorative content', () => {
     render(<Icon name="robot-check" data-testid="icon" />)
 
     expect(screen.getByTestId('icon')).toHaveAttribute('aria-hidden', 'true')
     expect(screen.getByTestId('icon')).toHaveAttribute('data-rp-glyph', 'robot-check')
   })
 
-  it('renders the original robot glyph with the inherited text color', () => {
+  it('renders the wheeled platform glyph with the inherited text color', () => {
     render(<Icon name="robot" data-testid="robot-icon" />)
 
     expect(screen.getByTestId('robot-icon')).toHaveAttribute('data-rp-glyph', 'robot')

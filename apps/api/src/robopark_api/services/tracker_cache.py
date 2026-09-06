@@ -12,10 +12,23 @@ the OAuth token because Robopark uses a single platform token.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from robopark_api.services import tracker_client
+from robopark_api.services.live_merge import LiveMergeTimeout, LiveMergeUpstreamError
 from robopark_api.services.response_cache import ResponseCache
+
+
+class _TrackerCache[T](ResponseCache[T]):
+    """Keep shared cache failures within the Tracker facade's error contract."""
+
+    def get_or_load(self, key: str, loader: Callable[[], T]) -> T:
+        try:
+            return super().get_or_load(key, loader)
+        except (LiveMergeTimeout, LiveMergeUpstreamError) as exc:
+            raise tracker_client.TrackerError("Tracker shared request failed") from exc
+
 
 _TTL_ISSUES = 20.0
 _TTL_ISSUE = 30.0
@@ -25,24 +38,24 @@ _TTL_BLOCKERS = 20.0
 _TTL_ROBOT_TICKETS = 30.0
 _TTL_COUNTS = 20.0
 
-_issues_cache: ResponseCache[list[dict[str, Any]]] = ResponseCache(
+_issues_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
     _TTL_ISSUES, name="tracker.issues"
 )
-_issue_cache: ResponseCache[dict[str, Any] | None] = ResponseCache(_TTL_ISSUE, name="tracker.issue")
-_comments_cache: ResponseCache[list[dict[str, Any]]] = ResponseCache(
+_issue_cache: ResponseCache[dict[str, Any] | None] = _TrackerCache(_TTL_ISSUE, name="tracker.issue")
+_comments_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
     _TTL_COMMENTS, name="tracker.comments"
 )
-_transitions_cache: ResponseCache[list[dict[str, Any]]] = ResponseCache(
+_transitions_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
     _TTL_TRANSITIONS, name="tracker.transitions"
 )
-_blockers_cache: ResponseCache[list[dict[str, Any]]] = ResponseCache(
+_blockers_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
     _TTL_BLOCKERS, name="tracker.blockers"
 )
-_robot_tickets_cache: ResponseCache[list[dict[str, Any]]] = ResponseCache(
+_robot_tickets_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
     _TTL_ROBOT_TICKETS, name="tracker.robot_tickets"
 )
-_count_cache: ResponseCache[int] = ResponseCache(_TTL_COUNTS, name="tracker.counts")
-_metrics_cache: ResponseCache[dict[str, int]] = ResponseCache(_TTL_COUNTS, name="tracker.metrics")
+_count_cache: ResponseCache[int] = _TrackerCache(_TTL_COUNTS, name="tracker.counts")
+_metrics_cache: ResponseCache[dict[str, int]] = _TrackerCache(_TTL_COUNTS, name="tracker.metrics")
 
 _ALL_CACHES: tuple[ResponseCache[Any], ...] = (
     _issues_cache,

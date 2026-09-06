@@ -1,5 +1,6 @@
 .rp-work-domain,
 .rp-workbench,
+.rp-workbench .rp-master-detail,
 .rp-work-list-pane,
 .rp-work-detail-pane,
 .rp-work-list-scroll,
@@ -17,9 +18,8 @@
   gap: var(--rp-space-4);
 }
 
-.rp-workbench {
-  display: grid;
-  gap: var(--rp-space-4);
+.rp-workbench .rp-master-detail {
+  align-items: start;
 }
 
 .rp-work-filters {
@@ -29,32 +29,32 @@
   border-radius: var(--rp-radius-panel);
   display: grid;
   gap: var(--rp-space-3);
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 22rem) minmax(0, 1fr);
   padding: var(--rp-density-panel-padding);
 }
 
-.rp-work-filters__checkbox {
-  align-items: center;
-  color: var(--rp-text);
-  display: inline-flex;
-  font-size: var(--rp-font-size-body);
-  gap: var(--rp-space-2);
-  min-height: var(--rp-control-min-size);
-}
-
-.rp-work-filters__checkbox input {
-  height: 20px;
-  margin: 0;
-  width: 20px;
-}
-
-.rp-work-filters__actions {
+.rp-work-filters__context {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: var(--rp-space-2);
+  gap: var(--rp-space-3);
   grid-column: 1 / -1;
-  justify-content: flex-end;
+  overflow-wrap: anywhere;
+}
+
+.rp-work-issue-meta {
+  display: grid;
+  gap: var(--rp-space-2);
+}
+
+.rp-work-issue-age {
+  background: var(--rp-info-surface);
+  border: 1px solid var(--rp-info);
+  border-radius: var(--rp-radius-control);
+  color: var(--rp-info);
+  font-variant-numeric: tabular-nums;
+  justify-self: start;
+  padding: var(--rp-space-1) var(--rp-space-2);
 }
 
 .rp-work-filters__ordering {
@@ -63,12 +63,49 @@
   padding-block: var(--rp-space-3);
 }
 
-.rp-work-related-tasks {
-  margin-block: var(--rp-space-3);
+.rp-work-list-pane,
+.rp-work-detail-pane,
+.rp-work-related-panel,
+.rp-work-related-tasks,
+.rp-work-entities {
+  display: grid;
+  gap: var(--rp-space-3);
 }
 
-.rp-work-related-tasks p {
+.rp-work-entities {
+  container: rp-work-entities / inline-size;
+}
+
+@container rp-work-entities (max-width: 30rem) {
+  .rp-work-entities .rp-entity-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .rp-work-entities .rp-entity-row__content {
+    grid-column: 1 / -1;
+  }
+
+  .rp-work-entities .rp-entity-row__status {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .rp-work-entities .rp-entity-row__actions {
+    grid-column: 2;
+    grid-row: 2;
+  }
+}
+
+.rp-work-list-pane > h2,
+.rp-work-detail-pane > h2,
+.rp-work-related-tasks > h3 {
+  margin: 0;
+}
+
+.rp-work-list-count,
+.rp-work-related-tasks > p {
   color: var(--rp-text-muted);
+  margin: 0;
 }
 
 .rp-work-list-pane,
@@ -114,11 +151,6 @@
 .rp-work-warning__copy span,
 .rp-work-warning__copy small {
   color: var(--rp-text-muted);
-}
-
-.rp-work-detail-back {
-  display: none;
-  margin-bottom: var(--rp-space-3);
 }
 
 .rp-workbench :where(.issue-summary, .issue-detail-summary, .issue-description, a) {
@@ -199,24 +231,6 @@
     grid-template-columns: 1fr;
   }
 
-  .rp-work-filters__actions > * {
-    flex: 1;
-  }
-
-  .rp-workbench[data-has-detail='true'] .rp-work-list-pane,
-  .rp-workbench[data-has-detail='false'] .rp-work-detail-pane {
-    display: none;
-  }
-
-  .rp-work-detail-back {
-    display: inline-flex;
-    min-height: 44px;
-  }
-
-  .rp-workbench .issue-row {
-    min-height: 44px;
-  }
-
   .rp-work-list-scroll {
     max-height: none;
     overflow-y: visible;
@@ -241,58 +255,15 @@
 }
 
 @media (min-width: 600px) and (max-width: 899px) {
-  .rp-work-filters {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .rp-workbench[data-has-detail='true'] .rp-work-list-pane,
-  .rp-workbench[data-has-detail='false'] .rp-work-detail-pane {
-    display: none;
-  }
-
-  .rp-work-detail-back {
-    display: inline-flex;
-    min-height: 44px;
-  }
-
   .rp-work-list-scroll {
     max-height: none;
     overflow-y: visible;
   }
 }
 
-@media (min-width: 900px) and (max-width: 1199px) {
-  .rp-workbench {
-    grid-template-columns: minmax(20rem, 42%) minmax(0, 1fr);
-  }
-
-  .rp-work-filters {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@media (min-width: 1200px) {
-  .rp-workbench {
-    grid-template-columns: minmax(22rem, 38%) minmax(0, 1fr);
-  }
-
-  .rp-work-filters {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-  }
-}
-
 @container rp-work-domain (max-width: 34rem) {
-  .rp-workbench {
+  .rp-workbench .rp-master-detail {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .rp-workbench[data-has-detail='true'] .rp-work-list-pane,
-  .rp-workbench[data-has-detail='false'] .rp-work-detail-pane {
-    display: none;
-  }
-
-  .rp-work-detail-back {
-    display: inline-flex;
   }
 }
 
@@ -300,4 +271,45 @@
   .rp-workbench .issue-row {
     transition: none;
   }
+}
+
+.rp-work-detail-pane > .rp-tabs,
+.rp-work-detail-pane .rp-tab-panel {
+  min-width: 0;
+}
+
+.rp-work-detail-pane .rp-tab-panel:not([hidden]) {
+  display: grid;
+  gap: var(--rp-space-3);
+}
+
+.rp-work-origin {
+  display: flex;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+
+.rp-work-origin a {
+  align-items: center;
+  display: inline-flex;
+  min-height: var(--rp-control-min-size);
+}
+
+.rp-workbench button.rp-work-robot-link {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
+/* The embedded check fills the task pane instead of using the full-page split. */
+.rp-work-detail-pane .rp-check-workspace {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--rp-space-4);
+  width: 100%;
+}
+
+.rp-work-detail-pane .rp-check-diagram-content[data-events='true'] {
+  grid-template-columns: minmax(0, 1fr);
 }

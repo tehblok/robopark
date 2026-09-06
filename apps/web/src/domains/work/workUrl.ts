@@ -9,13 +9,18 @@ export type WorkFilters = {
   ageHours?: number
 }
 
+export type WorkDetailTab = 'task' | 'open' | 'closed' | 'check'
+
 export type WorkUrlState = {
+  detailTab?: WorkDetailTab
+  checkTab?: string
+  rootIssue?: string
   filters: WorkFilters
   sort: WorkSort
   page: number
 }
 
-export type WorkDefaults = Pick<WorkFilters, 'queue'>
+export type WorkDefaults = Pick<WorkFilters, 'queue' | 'status'>
 
 const WORK_PAGE_SIZE_FOR_OFFSET = 50
 const MAX_WORK_PAGE =
@@ -48,14 +53,24 @@ export function parseWorkUrl(
   params: URLSearchParams,
   defaults: WorkDefaults,
 ): WorkUrlState {
-  const queue = text(params, 'queue') ?? defaults.queue
-  const status = text(params, 'status')
+  const queue = defaults.queue
+  const rawStatus = text(params, 'status')
+  const completedStatus = ['closed', 'resolved'].includes(rawStatus?.toLowerCase() ?? '')
+  const status = completedStatus || rawStatus === 'all'
+    ? undefined
+    : rawStatus ?? defaults.status ?? 'queued'
   const robot = text(params, 'robot')
   const assignee = text(params, 'assignee')
   const untagged = params.get('untagged') === '1'
   const ageHours = positiveInteger(params.get('age'))
 
+  const view = text(params, 'view')
+  const root = text(params, 'blocker')
+  const checkTab = text(params, 'check_tab')
   return {
+    ...(['open', 'closed', 'check'].includes(view ?? '') ? { detailTab: view as WorkDetailTab } : {}),
+    ...(root && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(root) ? { rootIssue: root } : {}),
+    ...(checkTab && /^[a-zA-Z0-9_-]{1,80}$/.test(checkTab) ? { checkTab } : {}),
     filters: {
       ...(queue ? { queue } : {}),
       ...(status ? { status } : {}),
@@ -65,7 +80,7 @@ export function parseWorkUrl(
       ...(ageHours ? { ageHours } : {}),
     },
     sort: 'oldest',
-    page: pageNumber(params.get('page')) ?? 1,
+    page: completedStatus ? 1 : pageNumber(params.get('page')) ?? 1,
   }
 }
 
@@ -77,7 +92,7 @@ export function buildWorkSearch(state: WorkUrlState, parkId: number | null): str
     params.set('park', String(parkId))
   }
   if (filters.queue) params.set('queue', filters.queue)
-  if (filters.status) params.set('status', filters.status)
+  params.set('status', filters.status || 'all')
   if (filters.robot) params.set('robot', filters.robot)
   if (filters.assignee) params.set('assignee', filters.assignee)
   if (filters.untagged) params.set('untagged', '1')
@@ -89,6 +104,9 @@ export function buildWorkSearch(state: WorkUrlState, parkId: number | null): str
   }
   if (serializablePage(state.page)) params.set('page', String(state.page))
 
+  if (state.rootIssue) params.set('blocker', state.rootIssue)
+  if (state.detailTab && state.detailTab !== 'task') params.set('view', state.detailTab)
+  if (state.checkTab) params.set('check_tab', state.checkTab)
   const query = params.toString()
   return query ? `?${query}` : ''
 }

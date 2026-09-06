@@ -46,7 +46,7 @@ function LocationProbe() {
   return <><output aria-label="Адрес">{location.pathname}{location.search}</output><button onClick={() => navigate('/robots/448?park=7')}>Другой робот</button></>
 }
 function tree(apiClient: RobotDetailApiClient, currentUser: User | null = user(), reference = VIN, refreshUser = vi.fn(async () => user()), onRender: () => void = () => undefined) {
-  return <MemoryRouter initialEntries={[`/robots/${reference}?park=7&source=search`]}>
+  return <MemoryRouter initialEntries={[`/robots/${reference}?park=7&source=search&tab=tasks`]}>
     <AuthContext.Provider value={{ user: currentUser, loading: false, login: async () => user(), refreshUser, logout: async () => undefined }}>
       <ParkScopeProvider><Profiler id="detail" onRender={onRender}><Routes>
         <Route path="/robots/:vin" element={<RobotPage apiClient={apiClient} />} />
@@ -219,15 +219,17 @@ describe('RobotPage ownership and lifecycle', () => {
     expect(screen.getByLabelText('Адрес')).toHaveTextContent('/robots/YASADR00000000448')
     expect(apiClient.emergencySnapshot).not.toHaveBeenCalledWith(VIN)
   })
-  it('drops a pending snapshot on unmount without cache publication or new recent writes', async () => {
+  it('drops independent pending snapshot and related work on unmount without cache publication or new recent writes', async () => {
     const pending = deferred<EmergencySnapshot>()
+    const pendingWork = deferred<{ query: string; items: Blocker[] }>()
     const set = vi.spyOn(resourceStore, 'set')
-    const apiClient = client({ emergencySnapshot: vi.fn(() => pending.promise) })
+    const apiClient = client({ emergencySnapshot: vi.fn(() => pending.promise), operatorRobotTickets: vi.fn(() => pendingWork.promise) })
     const rendered = render(tree(apiClient))
     await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(apiClient.operatorRobotTickets).toHaveBeenCalledTimes(1))
     const rememberedAtResolution = loadRecentRobots(3)
     rendered.unmount()
-    await act(async () => pending.resolve(snapshot()))
+    await act(async () => { pending.resolve(snapshot()); pendingWork.resolve({ query: VIN, items: [work] }) })
     expect(set).not.toHaveBeenCalled()
     expect(loadRecentRobots(3)).toEqual(rememberedAtResolution)
   })
@@ -257,18 +259,20 @@ describe('RobotPage ownership and lifecycle', () => {
     // the old snapshot must neither reorder recents nor overwrite the new robot.
     expect(loadRecentRobots(3).map((item) => item.vin)).toEqual(['YASADR00000000448', VIN])
   })
-  it('drops late related work when effective queue scope changes and starts its new owner', async () => {
+  it.each([200, 401, 403])('drops late related work %s when effective queue scope changes while snapshots stay pending', async status => {
     const old = deferred<{ query: string; items: Blocker[] }>()
-    const apiClient = client({ operatorRobotTickets: vi.fn().mockReturnValueOnce(old.promise).mockResolvedValue({ query: VIN, items: [{ ...work, key: 'NEW-1' }] }) })
+    const apiClient = client({ emergencySnapshot: vi.fn(() => new Promise<EmergencySnapshot>(() => {})), operatorRobotTickets: vi.fn().mockReturnValueOnce(old.promise).mockResolvedValue({ query: VIN, items: [{ ...work, key: 'NEW-1' }] }) })
     const set = vi.spyOn(resourceStore, 'set')
     const rendered = render(tree(apiClient))
     await waitFor(() => expect(apiClient.operatorRobotTickets).toHaveBeenCalledTimes(1))
     rendered.rerender(tree(apiClient, user({ parks: [{ ...park, tracker_queue: 'NEW' }] })))
     await screen.findByRole('link', { name: 'Открыть NEW-1' })
     set.mockClear()
-    await act(async () => old.resolve({ query: VIN, items: [work] }))
+    await act(async () => { if (status === 200) old.resolve({ query: VIN, items: [work] }); else old.reject(new ApiError(status, 'old_scope')) })
     expect(set).not.toHaveBeenCalled()
     expect(screen.queryByText('ROBOPARK-42')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Открыть NEW-1' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
   it('does not show cached identity from a prior principal in any committed frame', async () => {
     const pending = deferred<EmergencySnapshot>()
@@ -290,7 +294,8 @@ describe('RobotPage ownership and lifecycle', () => {
     await screen.findByRole('link', { name: 'Открыть ROBOPARK-42' })
     const denied = deferred<EmergencySnapshot>()
     vi.mocked(apiClient.emergencySnapshot).mockReturnValueOnce(denied.promise)
-    fireEvent.click(screen.getByRole('button', { name: /^Обновить данные/ }))
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.advanceTimersByTime(10_000)
+    fireEvent(document, new Event('visibilitychange'))
     await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2))
     vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
     await act(async () => { window.dispatchEvent(new Event('offline')); denied.reject(new ApiError(403, 'denied')) })
@@ -333,3 +338,6 @@ describe('RobotPage ownership and lifecycle', () => {
     expect(Object.keys(localStorage).filter((key) => key.startsWith('robopark:res:'))).toEqual([])
   })
 })
+
+// Existing lifecycle assertions use the minimum jitter; capacity tests cover dispersion.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

@@ -1,34 +1,31 @@
+/* Compatibility names used by older screens share the current design tokens. */
 :root,
-[data-theme='light'] {
-  color: #1a1a1a;
-  background: #f5f5f5;
-  font-family: Manrope, system-ui, sans-serif;
+[data-theme='light'],
+[data-theme='dark'] {
+  color: var(--rp-text);
+  background: var(--rp-canvas);
+  font-family: var(--rp-font-sans);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --bg: #f5f5f5;
-  --surface: #ffffff;
-  --surface-muted: #eeeeee;
-  --border: #e0e0e0;
-  --text: #1a1a1a;
-  --text-muted: #6b6b6b;
-  --brand: #f15a24;
-  --brand-strong: #d94a1a;
-  --accent: #f15a24;
-  --success: #22c55e;
-  --warning: #b45309;
-  --info: #2563eb;
-  --danger: #dc2626;
-  --shadow: 0 8px 24px rgb(0 0 0 / 6%);
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 6%);
-  --shadow-md: 0 4px 12px rgb(0 0 0 / 8%);
-  --shadow-lg: 0 16px 40px rgb(0 0 0 / 12%);
-  --skeleton: linear-gradient(
-    90deg,
-    var(--surface-muted) 25%,
-    color-mix(in srgb, var(--surface-muted) 60%, var(--surface)) 37%,
-    var(--surface-muted) 63%
-  );
-  --radius: 1rem;
+  --bg: var(--rp-canvas);
+  --surface: var(--rp-surface);
+  --surface-muted: var(--rp-surface-sunken);
+  --border: var(--rp-border);
+  --text: var(--rp-text);
+  --text-muted: var(--rp-text-muted);
+  --brand: var(--rp-action);
+  --brand-strong: var(--rp-action-hover);
+  --accent: var(--rp-action);
+  --success: var(--rp-success);
+  --warning: var(--rp-warning);
+  --info: var(--rp-info);
+  --danger: var(--rp-critical);
+  --shadow: var(--rp-shadow-panel);
+  --shadow-sm: var(--rp-shadow-panel);
+  --shadow-md: var(--rp-shadow-panel);
+  --shadow-lg: var(--rp-shadow-panel);
+  --skeleton: linear-gradient(90deg, var(--surface-muted) 25%, var(--surface) 37%, var(--surface-muted) 63%);
+  --radius: var(--rp-radius-panel);
   --radius-pill: 999px;
   --sidebar-width: 15rem;
   --bottom-nav-height: 3.75rem;
@@ -48,28 +45,6 @@
   --dur-fast: 120ms;
   --dur-base: 200ms;
   --dur-slow: 320ms;
-}
-
-[data-theme='dark'] {
-  color: #f5f5f5;
-  background: #121212;
-  --bg: #121212;
-  --surface: #1e1e1e;
-  --surface-muted: #2a2a2a;
-  --border: #333333;
-  --text: #f5f5f5;
-  --text-muted: #a3a3a3;
-  --brand: #f15a24;
-  --brand-strong: #ff6a35;
-  --accent: #f15a24;
-  --success: #4ade80;
-  --warning: #fbbf24;
-  --info: #60a5fa;
-  --danger: #f87171;
-  --shadow: 0 8px 24px rgb(0 0 0 / 40%);
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 30%);
-  --shadow-md: 0 4px 12px rgb(0 0 0 / 40%);
-  --shadow-lg: 0 16px 40px rgb(0 0 0 / 55%);
 }
 
 * {
@@ -128,50 +103,6 @@
   }
 }
 
-@keyframes global-progress-slide {
-  0% {
-    transform: translateX(-40%);
-  }
-
-  100% {
-    transform: translateX(140%);
-  }
-}
-
-.global-progress {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  overflow: hidden;
-  z-index: 9999;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 200ms var(--ease-out, ease-out);
-}
-
-.global-progress[data-active='true'] {
-  opacity: 1;
-}
-
-.global-progress::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  width: 40%;
-  background: linear-gradient(90deg, transparent, var(--brand), transparent);
-  animation: global-progress-slide 1200ms linear infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .global-progress::after {
-    animation: none;
-    width: 100%;
-    background: var(--brand);
-  }
-}
-
 .animate-in {
   animation: fade-slide-up var(--dur-base) var(--ease-out) both;
 }
@@ -190,7 +121,7 @@
 
 /* Visible focus for keyboard users only. */
 :focus-visible {
-  outline: 2px solid var(--brand);
+  outline: 2px solid var(--rp-focus);
   outline-offset: 2px;
   border-radius: 0.375rem;
 }
@@ -204,7 +135,7 @@ body {
 }
 
 a {
-  color: var(--brand);
+  color: var(--rp-info);
   text-decoration: none;
 }
 
@@ -296,7 +227,7 @@ textarea {
 }
 
 .page-back:hover {
-  color: var(--brand);
+  color: var(--rp-info);
   text-decoration: none;
 }
 
@@ -378,16 +309,11 @@ textarea {
 .panel {
   display: grid;
   gap: var(--space-4);
-  padding: 1.25rem 1.5rem;
+  padding: var(--rp-density-panel-padding);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
-  transition: box-shadow var(--dur-base) var(--ease-out);
-}
-
-.panel:hover {
-  box-shadow: var(--shadow-md);
 }
 
 .panel-head {
@@ -400,7 +326,8 @@ textarea {
 
 .panel-head h2 {
   margin: 0;
-  font-size: 1.125rem;
+  font-size: var(--rp-font-size-title);
+  line-height: var(--rp-line-height-compact);
 }
 
 .panel-actions {
@@ -457,7 +384,7 @@ textarea {
   transform: translateY(-50%);
   border: 0;
   background: transparent;
-  color: var(--brand);
+  color: var(--rp-info);
   font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
@@ -550,14 +477,14 @@ textarea {
 .chip:hover,
 .chip-link:hover {
   border-color: var(--brand);
-  color: var(--brand);
+  color: var(--rp-info);
   text-decoration: none;
 }
 
 .chip.is-selected {
   border-color: var(--brand);
   background: color-mix(in srgb, var(--brand) 12%, var(--surface));
-  color: var(--brand);
+  color: var(--rp-info);
 }
 
 .status-pill {
@@ -658,15 +585,23 @@ textarea {
 }
 
 .btn {
-  border: 0;
-  border-radius: var(--radius-pill);
-  padding: 0.72rem 1.15rem;
-  font-weight: 600;
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  gap: var(--rp-space-2);
+  min-height: var(--rp-control-min-size);
+  min-width: var(--rp-control-min-size);
+  border: 1px solid transparent;
+  border-radius: var(--rp-radius-control);
+  padding: var(--rp-space-2) var(--rp-space-4);
+  font-size: var(--rp-font-size-body);
+  font-weight: var(--rp-font-weight-medium);
+  line-height: var(--rp-line-height-compact);
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
   box-shadow: none;
-  transition: transform 120ms ease, opacity 120ms ease, background 120ms ease;
+  transition: background-color var(--rp-motion-fast), border-color var(--rp-motion-fast);
 }
 
 .btn-sm {
@@ -674,55 +609,52 @@ textarea {
   font-size: 0.85rem;
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .btn:hover:not(:disabled) {
-    transform: translateY(-1px);
-  }
-}
-
 .btn:disabled {
   cursor: not-allowed;
-  opacity: 0.55;
+  background: var(--rp-state-disabled);
+  color: var(--rp-text-disabled);
+  border-color: transparent;
   transform: none;
 }
 
 .btn-primary,
-.btn:not(.btn-secondary):not(.btn-ghost):not(.btn-filter):not(.btn-danger) {
-  color: white;
-  background: var(--brand);
+.btn:not(:where(.btn-secondary, .btn-ghost, .btn-filter, .btn-danger)) {
+  color: var(--rp-action-on);
+  background: var(--rp-action);
 }
 
 .btn-primary:hover:not(:disabled),
-.btn:not(.btn-secondary):not(.btn-ghost):not(.btn-filter):not(.btn-danger):hover:not(:disabled) {
+.btn:not(:where(.btn-secondary, .btn-ghost, .btn-filter, .btn-danger)):hover:not(:disabled) {
   background: var(--brand-strong);
 }
 
 .btn-secondary {
   color: var(--rp-text);
-  background: var(--surface-muted);
+  background: var(--rp-surface);
   border: 1px solid var(--border);
 }
 
-.btn-secondary:hover {
-  background: var(--border);
+.btn-secondary:hover:not(:disabled),
+.btn-ghost:hover:not(:disabled) {
+  background: var(--rp-state-hover);
 }
 
 .btn-ghost {
   color: var(--text);
   background: transparent;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
 }
 
 .btn-filter {
-  color: var(--brand-strong);
-  background: var(--surface-muted);
+  color: var(--rp-text-muted);
+  background: var(--rp-surface);
   border: 1px solid var(--border);
 }
 
 .btn-filter.is-active {
-  color: white;
-  background: var(--brand);
-  border-color: transparent;
+  color: var(--rp-text);
+  background: var(--rp-state-selected);
+  border-color: var(--rp-action);
 }
 
 .action-row,
@@ -739,8 +671,8 @@ select,
 textarea {
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  padding: 0.72rem 1rem;
+  border-radius: var(--rp-radius-control);
+  padding: var(--rp-space-2) var(--rp-space-3);
   background: var(--surface);
   color: var(--text);
 }
@@ -930,15 +862,16 @@ textarea {
   display: inline-flex;
   align-items: center;
   padding: 0.2rem 0.55rem;
-  border-radius: 999px;
-  font-size: 0.78rem;
-  font-weight: 700;
+  border: 1px solid currentColor;
+  border-radius: var(--rp-radius-control);
+  font-size: var(--rp-font-size-body);
+  font-weight: var(--rp-font-weight-medium);
   text-transform: lowercase;
 }
 
 .badge-ok {
-  color: color-mix(in srgb, var(--success) 75%, var(--text));
-  background: color-mix(in srgb, var(--success) 14%, var(--surface));
+  color: var(--rp-success);
+  background: var(--rp-success-surface);
 }
 
 .badge-muted {
@@ -947,13 +880,13 @@ textarea {
 }
 
 .badge-warn {
-  color: color-mix(in srgb, var(--warning) 80%, var(--text));
-  background: color-mix(in srgb, var(--warning) 14%, var(--surface));
+  color: var(--rp-warning);
+  background: var(--rp-warning-surface);
 }
 
 .badge-danger {
-  color: color-mix(in srgb, var(--danger) 80%, var(--text));
-  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  color: var(--rp-critical);
+  background: var(--rp-critical-surface);
 }
 
 .alert {
@@ -1227,7 +1160,7 @@ textarea {
 .issue-key {
   font-weight: 700;
   font-size: 0.8125rem;
-  color: var(--brand);
+  color: var(--rp-info);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1282,7 +1215,7 @@ textarea {
 
 .issue-status.tone-open {
   background: color-mix(in srgb, var(--brand) 14%, transparent);
-  color: var(--brand);
+  color: var(--rp-info);
 }
 
 .issue-status.tone-progress {
@@ -1334,7 +1267,7 @@ textarea {
   height: 1.5rem;
   border-radius: 50%;
   background: var(--brand);
-  color: #fff;
+  color: var(--rp-action-on);
   font-size: 0.625rem;
   font-weight: 700;
   flex-shrink: 0;
@@ -1485,7 +1418,7 @@ textarea {
 }
 
 .issue-attachment a {
-  color: var(--brand);
+  color: var(--rp-info);
   font-size: 0.875rem;
   text-decoration: none;
 }
@@ -1552,18 +1485,6 @@ textarea {
   margin: 0 0 0.75rem;
 }
 
-.admin-users-layout {
-  display: grid;
-  gap: 1rem;
-}
-
-@media (min-width: 960px) {
-  .admin-users-layout {
-    grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.4fr);
-    align-items: start;
-  }
-}
-
 .admin-user-filters {
   margin-bottom: 0.75rem;
 }
@@ -1616,6 +1537,90 @@ textarea {
   flex-wrap: wrap;
   gap: 0.5rem 1rem;
   margin: 0.5rem 0;
+}
+
+:is(.rp-management, .rp-reports) .password-field-toggle {
+  color: var(--rp-text);
+  font-size: var(--rp-font-size-body);
+  min-block-size: var(--rp-control-min-size);
+}
+
+:is(.rp-management, .rp-reports) input {
+  accent-color: var(--rp-info);
+}
+
+.rp-reports .report-detail a {
+  color: var(--rp-info);
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--rp-control-min-size);
+  min-inline-size: var(--rp-control-min-size);
+}
+
+.rp-reports .rp-master-detail {
+  align-items: start;
+}
+
+.rp-reports :is(.rp-master-detail__list, .rp-master-detail__detail) {
+  min-inline-size: 0;
+  align-content: start;
+}
+
+.rp-reports .rp-master-detail .panel {
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  margin: 0;
+}
+
+.rp-reports .rp-master-detail__list {
+  display: grid;
+  gap: var(--rp-density-gap);
+}
+
+.rp-report-select {
+  display: block;
+  inline-size: 100%;
+  border: 0;
+  padding: 0;
+  text-align: start;
+  color: inherit;
+  background: none;
+  cursor: pointer;
+}
+
+.rp-reports .report-list {
+  gap: var(--rp-space-2);
+}
+
+.rp-report-select .rp-entity-row {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--rp-space-2);
+}
+
+.rp-report-select:is(:hover, .is-selected) .rp-entity-row {
+  border-color: var(--rp-action);
+  background: var(--rp-state-selected);
+}
+
+.rp-reports :is(.report-detail, .report-detail-fields) {
+  gap: var(--rp-density-gap);
+}
+
+.rp-reports :is(.report-detail-title, .report-detail-body, .report-detail-fields, .report-row-return, .issue-field dt, .issue-field dd) {
+  font-size: var(--rp-font-size-body);
+  line-height: var(--rp-line-height-body);
+  overflow-wrap: anywhere;
+}
+
+.rp-reports :is(.btn, select, input:not([type='file'])) {
+  min-block-size: var(--rp-control-min-size);
+}
+
+@media (max-width: 899px) {
+  .rp-reports .rp-master-detail[data-detail-open='true'] .rp-master-detail__list {
+    display: none;
+  }
 }
 
 .issue-comments {
@@ -1844,7 +1849,7 @@ textarea {
 
 .btn-danger {
   background: var(--danger);
-  color: #fff;
+  color: var(--rp-critical-on);
   border: 1px solid var(--danger);
 }
 
@@ -1861,9 +1866,8 @@ textarea {
 .tabs {
   display: flex;
   gap: var(--space-1);
-  padding: 0.25rem;
-  background: var(--surface-muted);
-  border-radius: var(--radius-pill);
+  padding: 0;
+  border-bottom: 1px solid var(--rp-divider);
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -1878,7 +1882,8 @@ textarea {
   gap: var(--space-2);
   padding: 0.5rem 1rem;
   border: 0;
-  border-radius: var(--radius-pill);
+  border-bottom: var(--rp-space-1) solid transparent;
+  border-radius: var(--rp-radius-control) var(--rp-radius-control) 0 0;
   background: transparent;
   color: var(--text-muted);
   font-weight: 600;
@@ -1894,9 +1899,9 @@ textarea {
 }
 
 .tab.is-active {
-  background: var(--surface);
-  color: var(--brand);
-  box-shadow: var(--shadow-sm);
+  background: var(--rp-state-selected);
+  color: var(--rp-text);
+  border-bottom-color: var(--rp-action);
 }
 
 .tab-count {
@@ -1964,7 +1969,7 @@ textarea {
 }
 
 .toggle input:focus-visible + .toggle-track {
-  outline: 2px solid var(--brand);
+  outline: 2px solid var(--rp-focus);
   outline-offset: 2px;
 }
 
@@ -1997,7 +2002,7 @@ textarea {
   padding: 0.55rem 0.7rem;
   border: 1px solid var(--border);
   border-radius: 0.625rem;
-  background: var(--bg);
+  background: var(--rp-surface);
   color: var(--text);
   transition: border-color var(--dur-fast) var(--ease-out);
 }
@@ -2289,7 +2294,7 @@ textarea {
 
 .nav-item.active {
   background: color-mix(in srgb, var(--brand) 12%, transparent);
-  color: var(--brand);
+  color: var(--rp-info);
 }
 
 /* Left rail marks the active section without shifting the layout. */
@@ -2338,7 +2343,7 @@ textarea {
   padding: 0.15rem 0.45rem;
   border-radius: var(--radius-pill);
   background: var(--brand);
-  color: white;
+  color: var(--rp-action-on);
   font-size: 0.72rem;
   font-weight: 700;
   line-height: 1.2;
@@ -2835,7 +2840,7 @@ textarea {
   }
 
   .mobile-nav-item.active {
-    color: var(--brand);
+    color: var(--rp-info);
     background: color-mix(in srgb, var(--brand) 12%, transparent);
   }
 
@@ -2904,10 +2909,9 @@ textarea {
 
   .action-row input,
   .action-row select,
-  .panel input,
+  .panel input:not([type='checkbox']):not([type='radio']),
   .panel select,
-  .panel textarea,
-  .panel .btn {
+  .panel textarea {
     width: 100%;
     min-width: 0;
     min-height: 2.75rem;

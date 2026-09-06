@@ -32,7 +32,10 @@ def fetch_robot_payload(*, cookie: str, vin: str) -> dict[str, Any]:
     if response.status_code >= 400:
         raise EmergencyError(f"emergency upstream status {response.status_code}")
 
-    payload = response.json()
+    try:
+        payload = response.json()
+    except (ValueError, TypeError) as exc:
+        raise EmergencyError("invalid emergency response") from exc
     if not isinstance(payload, dict):
         raise EmergencyError("unexpected emergency response")
     return payload

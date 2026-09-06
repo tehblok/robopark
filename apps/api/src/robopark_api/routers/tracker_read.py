@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -35,6 +36,7 @@ from robopark_api.services.tracker_policy import (
     can_write_tracker,
     enforce_issue_scope,
     is_issue_in_scope,
+    load_issue_scope,
 )
 
 MAX_PAGE_SIZE = 200
@@ -82,6 +84,16 @@ def _issue_out(issue: dict) -> TrackerIssueOut:
     )
 
 
+def _normalized_robot_number(raw: object) -> str | None:
+    text = str(raw or "").strip().upper()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    text = text[6:] if text.startswith("YASADR") else text.removeprefix("A")
+    if not text or not text.isdecimal():
+        return None
+    return text.lstrip("0") or "0"
+
+
 def _detail_out(issue: dict, *, db: Session, user: User) -> TrackerIssueDetailOut:
     attachments = [TrackerAttachmentOut(**item) for item in (issue.get("attachments") or [])]
     writable = can_write_tracker(db, user)
@@ -126,10 +138,9 @@ def _build_query(
     robot: str | None,
     assignee: str | None,
     untagged: bool,
+    related_repairs: bool = False,
 ) -> str:
-    parts: list[str] = [
-        "Priority: blocker",
-    ]
+    parts: list[str] = [] if related_repairs else ["Priority: blocker"]
     # Explicit Status replaces the default open-issues clause (avoid conflicting QL).
     if status_filter:
         bucket = tracker_filters.status_bucket(status_filter)
@@ -187,8 +198,10 @@ def _build_query(
         selected_queue = tracker_client.DEFAULT_QUEUE
         parts.append(f"Queue: {tracker_client.ql_token(selected_queue)}")
 
-    # Type filter only when a single concrete queue is selected (SDCFLEETOPS default types).
-    if selected_queue:
+    # Related repairs override fleet defaults, which can include non-repair types.
+    if related_repairs:
+        parts.append("Type: repair")
+    elif selected_queue:
         type_part = tracker_client.type_clause(selected_queue)
         if type_part:
             parts.append(type_part)
@@ -230,7 +243,13 @@ def list_issues(
     queue: str | None = Query(default=None),
     park: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
+    open_only: bool = Query(default=False),
     robot: str | None = Query(default=None),
+    robot_exact: str | None = Query(
+        default=None, max_length=tracker_client.MAX_ROBOT_REFERENCE_LENGTH
+    ),
+    related_repairs: bool = Query(default=False),
+    exclude_key: str | None = Query(default=None, max_length=128),
     assignee: str | None = Query(default=None, max_length=128),
     untagged: bool = Query(default=False),
     age_hours: int | None = Query(default=None, ge=1),
@@ -241,6 +260,12 @@ def list_issues(
     db: Session = Depends(get_db),
 ) -> TrackerIssuesOut:
     _ensure_tracker_user(user, db)
+    exact_robot = _normalized_robot_number(robot_exact)
+    if related_repairs and exact_robot is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="tracker_robot_exact_required",
+        )
 
     token = settings_svc.get_tracker_token(db)
     if not token:
@@ -258,10 +283,32 @@ def list_issues(
         robot=robot,
         assignee=assignee,
         untagged=untagged,
+        related_repairs=related_repairs,
     )
+    if open_only and status_filter:
+        query_text = tracker_client.join_query(query_text, tracker_client.open_issues_clause())
+    if robot_exact is not None:
+        if exact_robot is None:
+            return TrackerIssuesOut(items=[], total=0, limit=limit, offset=offset, has_more=False)
+        query_text = tracker_client.join_query(
+            query_text, tracker_client.robot_summary_clause(exact_robot)
+        )
+    resolved_until = datetime.now(UTC)
+    resolved_since = (
+        resolved_until - timedelta(days=14)
+        if related_repairs and (status_filter or "").strip().lower() == "closed"
+        else None
+    )
+    if resolved_since is not None:
+        # Keep the search cache reusable between pages. The exact rolling
+        # boundary is applied below, including when a cached row ages out.
+        query_since = resolved_since.replace(minute=0, second=0, microsecond=0)
+        query_text = tracker_client.join_query(
+            query_text, f'Resolved: >= "{query_since:%Y-%m-%d %H:%M:%S}"'
+        )
     try:
         items = tracker_cache.search_issues(
-            token=token, query=query_text, filter_open=not bool(status_filter)
+            token=token, query=query_text, filter_open=open_only or not bool(status_filter)
         )
     except tracker_client.TrackerError as exc:
         logger.exception("tracker search failed query=%r", query_text)
@@ -277,11 +324,34 @@ def list_issues(
     if sort_order == "newest":
         ordered.reverse()
 
+    excluded_key = (exclude_key or "").strip()
     scoped: list[TrackerIssueOut] = []
+    seen_keys: set[str] = set()
+    # Raw upstream data is shared; authorization is loaded afresh for this
+    # response after the upstream wait and reused only across its rows.
+    scope = load_issue_scope(db, user)
     for issue in ordered:
         # Out-of-scope issues are filtered out, not fatal: a single foreign issue
         # in the upstream response must not fail the whole listing.
-        if not is_issue_in_scope(db, user, issue):
+        if not is_issue_in_scope(db, user, issue, scope=scope):
+            continue
+        if related_repairs and str(issue.get("type_key") or "").strip() != "repair":
+            continue
+        if resolved_since is not None:
+            try:
+                resolved = datetime.fromisoformat(str(issue.get("resolved") or ""))
+            except ValueError:
+                continue
+            if resolved.tzinfo is None:
+                resolved = resolved.replace(tzinfo=UTC)
+            if not resolved_since <= resolved <= resolved_until:
+                continue
+        if robot_exact is not None and (
+            exact_robot is None or _normalized_robot_number(issue.get("robot")) != exact_robot
+        ):
+            continue
+        key = str(issue.get("key") or "").strip()
+        if key == excluded_key or key in seen_keys:
             continue
         if age_hours and issue.get("hours_created"):
             try:
@@ -289,6 +359,7 @@ def list_issues(
                     continue
             except (TypeError, ValueError):
                 pass
+        seen_keys.add(key)
         scoped.append(_issue_out(issue))
 
     total = len(scoped)
@@ -472,8 +543,9 @@ def robot_tickets(
             detail="tracker_upstream_error",
         ) from exc
 
+    scope = load_issue_scope(db, user)
     sorted_items = tracker_filters.sort_issues_oldest_first(
-        [item for item in merged if is_issue_in_scope(db, user, item)]
+        [item for item in merged if is_issue_in_scope(db, user, item, scope=scope)]
     )
     return RobotTicketsOut(
         query=query,

@@ -2,7 +2,7 @@ import { StrictMode } from 'react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { ApiError, type EmergencySnapshot, type EmergencySectionDetail, type User } from '../../api'
+import { ApiError, type DiagnosticEvent, type EmergencySnapshot, type EmergencySectionDetail, type User } from '../../api'
 import { RobotCheckWorkspace, type RobotCheckApiClient } from './RobotCheckWorkspace'
 
 const VIN = 'YASADR00000000447'
@@ -11,6 +11,9 @@ const sections = [{ id: 'wheels', title: 'Колёса' }, { id: 'power', title:
 function snapshot(overrides: Partial<EmergencySnapshot> = {}): EmergencySnapshot {
   return { vin: VIN, short_number: '447', observed_at: '2026-09-02T09:05:00Z', online: true, speed: 0, charge_percent: 80, battery1_percent: 75, battery2_percent: 85, disk_percent: 20, mode: 'AUTO', icp_label: 'ICP', icp_ok: true, lte_label: 'LTE', lte_ok: true, connection: 'lte', error_banner: null, lat: null, lon: null, heading_deg: null, wheels_fault: [], ...overrides }
 }
+const lidar: DiagnosticEvent = { id: 'lidar', rule_id: 1, source_path: 'errors.0', source_segments: ['errors', 0], raw_value: 'LIDAR_OFFLINE', title: 'Передний лидар недоступен', description: 'Проверьте питание и соединение лидара.', severity: 'critical', sort_order: 0, part: 'Передний лидар', view: 'front', x: .25, y: .6, indicator: 'point' }
+const battery: DiagnosticEvent = { ...lidar, id: 'battery', rule_id: 2, raw_value: 'BATTERY_HOT', title: 'Перегрев батареи', description: 'Проверьте температуру батареи.', severity: 'warning', sort_order: 1, part: 'Батарея', view: 'rear', indicator: 'zone' }
+const unknown: DiagnosticEvent = { ...lidar, id: 'unknown', rule_id: null, raw_value: { code: '<script>unsafe()</script>', message: 'Неизвестный сигнал' }, title: 'Неизвестная ошибка', description: 'Для сигнала нет правила.', part: null, view: null, x: null, y: null, indicator: null }
 function client(overrides: Partial<RobotCheckApiClient> = {}): RobotCheckApiClient {
   return { emergencySnapshot: vi.fn(async () => snapshot()), emergencySection: vi.fn(async (_vin, id) => ({ id, title: id, fields: [{ label: 'Состояние колёс', lines: ['Секция получена'] }] })), ...overrides }
 }
@@ -23,7 +26,7 @@ function tree(apiClient: RobotCheckApiClient, activeTab = 'wheels', overrides: P
 }
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-09-02T09:05:00Z')); vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true); Object.defineProperty(document, 'hidden', { configurable: true, value: false }) })
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers() })
-it('shows decision data before the active dynamic section and manually refreshes', async () => {
+it('shows decision data before the active dynamic section and automatically refreshes', async () => {
   const apiClient = client(); render(tree(apiClient))
   expect(await screen.findByRole('heading', { name: 'Робот 447' })).toBeInTheDocument()
   expect(screen.getByText('Робот на связи')).toBeInTheDocument()
@@ -31,7 +34,7 @@ it('shows decision data before the active dynamic section and manually refreshes
   expect(apiClient.emergencySection).toHaveBeenCalledWith(VIN, 'wheels')
   expect(screen.getByRole('tabpanel')).toHaveAccessibleName('Колёса')
   expect(screen.getByText('Секция получена').tagName).toBe('PRE')
-  fireEvent.click(screen.getByRole('button', { name: 'Обновить данные' }))
+  vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange'))
   await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2))
 })
 it('does not automatically load cold offline but permits a manual check', async () => {
@@ -47,7 +50,7 @@ it('retains the last snapshot offline and after partial failures, with local ret
   const apiClient = client(); render(tree(apiClient)); await screen.findByText('Секция получена')
   expect(screen.getByText(/Данные актуальны/)).toBeInTheDocument()
   vi.mocked(apiClient.emergencySnapshot).mockRejectedValue(new ApiError(503, 'failure', 'snap-id'))
-  fireEvent.click(screen.getByRole('button', { name: 'Обновить данные' }))
+  vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange'))
   await screen.findByText(/snap-id/)
   expect(screen.getByText(/Данные устарели/)).toBeInTheDocument()
   expect(screen.getByText('Секция получена')).toBeInTheDocument()
@@ -68,13 +71,13 @@ it.each([401, 403])('clears protected data immediately on %s even when sibling h
   render(tree(apiClient, 'wheels', { onAuthorizationFailure })); await screen.findByText('Секция получена')
   vi.mocked(apiClient.emergencySnapshot).mockRejectedValue(new ApiError(status, status === 401 ? 'emergency_cookie_invalid' : 'forbidden'))
   vi.mocked(apiClient.emergencySection).mockReturnValue(section.promise)
-  fireEvent.click(screen.getByRole('button', { name: 'Обновить данные' }))
+  vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange'))
   await screen.findByRole('heading', { name: status === 401 ? 'Сессия истекла' : 'Нет доступа' })
   expect(screen.queryByText(VIN)).not.toBeInTheDocument()
   expect(onAuthorizationFailure).toHaveBeenCalledTimes(1)
   await act(async () => section.resolve({ id: 'wheels', title: 'Колёса', fields: [{ label: 'Late', lines: ['SECRET'] }] }))
   expect(screen.queryByText('SECRET')).not.toBeInTheDocument()
-  fireEvent(document, new Event('visibilitychange')); await act(async () => undefined)
+  vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange')); await act(async () => undefined)
   expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2)
 })
 it('configuration errors preserve request id and restrict settings by capability', async () => {
@@ -95,14 +98,15 @@ it('a section denial wins immediately over a hung snapshot and ignores its later
   await act(async () => oldSnapshot.resolve(snapshot()))
   expect(screen.queryByText(VIN)).not.toBeInTheDocument()
 })
-it('a tab switch starts its own request and rejects the inactive tab snapshot and section', async () => {
+it('a tab switch shares the snapshot request and rejects inactive section publication', async () => {
   const oldSnapshot = deferred<EmergencySnapshot>(); const oldSection = deferred<EmergencySectionDetail>()
   const apiClient = client({ emergencySnapshot: vi.fn().mockReturnValueOnce(oldSnapshot.promise).mockResolvedValue(snapshot({ short_number: 'CURRENT' })), emergencySection: vi.fn().mockReturnValueOnce(oldSection.promise).mockResolvedValue({ id: 'power', title: 'Питание', fields: [{ label: 'Питание', lines: ['CURRENT SECTION'] }] }) })
   const view = render(tree(apiClient)); await act(async () => undefined)
   view.rerender(tree(apiClient, 'power'))
   await screen.findByText('CURRENT SECTION')
-  await act(async () => { oldSnapshot.resolve(snapshot({ short_number: 'OLD' })); oldSection.resolve({ id: 'wheels', title: 'Old', fields: [{ label: 'old', lines: ['OLD SECTION'] }] }) })
-  expect(screen.getByRole('heading', { name: 'Робот CURRENT' })).toBeInTheDocument()
+  await act(async () => { oldSnapshot.resolve(snapshot({ short_number: 'SHARED' })); oldSection.resolve({ id: 'wheels', title: 'Old', fields: [{ label: 'old', lines: ['OLD SECTION'] }] }) })
+  expect(screen.getByRole('heading', { name: 'Робот SHARED' })).toBeInTheDocument()
+  expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(1)
   expect(screen.queryByText('OLD SECTION')).not.toBeInTheDocument()
 })
 it('does not publish old VIN or inactive tab completions, including StrictMode replay', async () => {
@@ -146,3 +150,132 @@ it('uses selected photo, precise known-wheel controls and truthful unknown fault
   expect(screen.getByText('Иллюстрация модели')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Переднее левое колесо: неисправность' })).toBeInTheDocument()
 })
+it('automatically opens the leading event, preserves manual view across polling and tabs, and explicitly resets', async () => {
+  const apiClient = client({ emergencySnapshot: vi.fn(async () => snapshot({ diagnostic_events: [battery, lidar] })) })
+  const view = render(tree(apiClient, 'scheme'))
+  expect(await screen.findByRole('button', { name: 'Спереди', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(lidar.description)
+  fireEvent.click(screen.getByRole('button', { name: 'Слева' }))
+  vi.mocked(apiClient.emergencySnapshot).mockResolvedValue(snapshot({ diagnostic_events: [{ ...battery, severity: 'critical', sort_order: -1 }, lidar] }))
+  vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange'))
+  await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2))
+  expect(screen.getByRole('button', { name: 'Слева', pressed: true })).toBeInTheDocument()
+  view.rerender(tree(apiClient, 'telemetry')); await act(async () => undefined)
+  view.rerender(tree(apiClient, 'scheme')); await act(async () => undefined)
+  expect(screen.getByRole('button', { name: 'Слева', pressed: true })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Показать ошибку' }))
+  expect(screen.getByRole('button', { name: 'Сзади', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(battery.description)
+})
+it('selects the first events arriving after an empty snapshot only once', async () => {
+  const apiClient = client(); render(tree(apiClient, 'scheme'))
+  await screen.findByRole('button', { name: 'Сверху', pressed: true })
+  vi.mocked(apiClient.emergencySnapshot).mockResolvedValue(snapshot({ diagnostic_events: [lidar] }))
+  vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange'))
+  await screen.findByRole('button', { name: 'Спереди', pressed: true })
+  vi.mocked(apiClient.emergencySnapshot).mockResolvedValue(snapshot({ diagnostic_events: [] }))
+  vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange')); await act(async () => undefined)
+  expect(screen.queryByRole('region', { name: 'Выбранная ошибка' })).not.toBeInTheDocument()
+  vi.mocked(apiClient.emergencySnapshot).mockResolvedValue(snapshot({ diagnostic_events: [battery] }))
+  vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange')); await act(async () => undefined)
+  expect(screen.getByRole('button', { name: 'Спереди', pressed: true })).toBeInTheDocument()
+})
+it('keeps a manual view chosen before events arrive', async () => {
+  const apiClient = client(); render(tree(apiClient, 'scheme'))
+  await screen.findByRole('button', { name: 'Сверху', pressed: true })
+  fireEvent.click(screen.getByRole('button', { name: 'Справа' }))
+  vi.mocked(apiClient.emergencySnapshot).mockResolvedValue(snapshot({ diagnostic_events: [lidar] }))
+  vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange')); await act(async () => undefined)
+  expect(screen.getByRole('button', { name: 'Справа', pressed: true })).toBeInTheDocument()
+})
+it('selects and links each server marker to its explanation by focus and activation alongside wheels', async () => {
+  const outlined = { ...battery, view: 'front' as const, indicator: 'outline' as const }
+  render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({ diagnostic_events: [lidar, outlined], wheels_fault: ['fl'] })) }), 'scheme'))
+  const marker = await screen.findByRole('button', { name: `Ошибка: ${outlined.title}` })
+  expect(marker).toHaveClass('rp-check-event-marker--outline', 'rp-check-event-marker--warning')
+  expect(screen.getByRole('button', { name: `Ошибка: ${lidar.title}` })).toHaveClass('rp-check-event-marker--point', 'rp-check-event-marker--critical')
+  act(() => marker.focus())
+  expect(marker).toHaveFocus(); expect(marker).toHaveAttribute('aria-pressed', 'true')
+  const detail = screen.getByRole('region', { name: 'Выбранная ошибка' })
+  expect(marker).toHaveAttribute('aria-controls', detail.id)
+  expect(marker).toHaveAccessibleDescription(expect.stringContaining(outlined.description))
+  expect(detail).toHaveTextContent(outlined.description)
+  expect(detail).toHaveTextContent('BATTERY_HOT'); expect(detail).toHaveTextContent('Батарея'); expect(detail).toHaveTextContent('Предупреждение')
+  fireEvent.click(screen.getByRole('button', { name: `Ошибка: ${lidar.title}` }))
+  expect(detail).toHaveTextContent(lidar.description)
+  fireEvent.click(screen.getByRole('button', { name: 'Переднее левое колесо: неисправность' }))
+  expect(screen.getByText('Выбрано: Переднее левое колесо')).toBeInTheDocument()
+})
+it('shows unknown raw errors safely in the errors list with no invented marker and opens localized events on the scheme', async () => {
+  const onTabChange = vi.fn()
+  const apiClient = client({ emergencySnapshot: vi.fn(async () => snapshot({ diagnostic_events: [unknown, battery, lidar] })) })
+  const view = render(tree(apiClient, 'errors', { onTabChange }))
+  const list = await screen.findByRole('list', { name: 'Диагностические события' })
+  expect(list).toHaveTextContent('Неизвестная ошибка'); expect(list).toHaveTextContent('Без локализации')
+  expect(list).toHaveTextContent('<script>unsafe()</script>'); expect(list.querySelector('script')).toBeNull()
+  expect(screen.queryByText('Сообщения об ошибках не получены.')).not.toBeInTheDocument()
+  const item = within(list).getByRole('heading', { name: battery.title }).closest('li')!
+  fireEvent.click(within(item).getByRole('button', { name: 'Посмотреть на схеме' }))
+  expect(onTabChange).toHaveBeenCalledWith('scheme')
+  view.rerender(tree(apiClient, 'scheme', { onTabChange })); await act(async () => undefined)
+  expect(screen.getByRole('button', { name: 'Сзади', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: `Ошибка: ${battery.title}` })).toHaveClass('rp-check-event-marker--zone')
+  expect(screen.queryByRole('button', { name: `Ошибка: ${unknown.title}` })).not.toBeInTheDocument()
+})
+it('hides invalid-coordinate events and photo markers on SVG fallback while retaining the explanation', async () => {
+  render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({ diagnostic_events: [lidar, { ...battery, x: 9, view: 'front' }], wheels_fault: ['fl'] })) }), 'scheme'))
+  await screen.findByRole('button', { name: `Ошибка: ${lidar.title}` })
+  expect(screen.queryByRole('button', { name: `Ошибка: ${battery.title}` })).not.toBeInTheDocument()
+  fireEvent.error(screen.getByRole('img'))
+  expect(screen.getByRole('img', { name: 'Схема модели робота' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: `Ошибка: ${lidar.title}` })).not.toBeInTheDocument()
+  expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(lidar.description)
+  expect(screen.getByRole('button', { name: 'Переднее левое колесо: неисправность' })).toBeInTheDocument()
+})
+it('resets selection for a new robot and ignores the old robot snapshot', async () => {
+  const late = deferred<EmergencySnapshot>()
+  const apiClient = client({ emergencySnapshot: vi.fn().mockResolvedValueOnce(snapshot({ diagnostic_events: [lidar] })).mockReturnValueOnce(late.promise).mockResolvedValue(snapshot({ vin: 'NEW-VIN', diagnostic_events: [battery] })) })
+  const view = render(tree(apiClient, 'scheme'))
+  await screen.findByRole('button', { name: 'Спереди', pressed: true })
+  fireEvent.click(screen.getByRole('button', { name: 'Слева' }))
+  vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange')); await act(async () => undefined)
+  view.rerender(tree(apiClient, 'scheme', { vin: 'NEW-VIN' }))
+  await screen.findByRole('button', { name: 'Сзади', pressed: true })
+  await act(async () => late.resolve(snapshot({ diagnostic_events: [lidar] })))
+  expect(screen.getByRole('button', { name: 'Сзади', pressed: true })).toBeInTheDocument()
+  expect(screen.queryByText(lidar.description)).not.toBeInTheDocument()
+})
+it.each([401, 403])('clears markers and explanations on snapshot denial %s', async status => {
+  const apiClient = client({ emergencySnapshot: vi.fn().mockResolvedValueOnce(snapshot({ diagnostic_events: [lidar] })).mockRejectedValue(new ApiError(status, 'denied')) })
+  render(tree(apiClient, 'scheme')); await screen.findByRole('button', { name: `Ошибка: ${lidar.title}` })
+  vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange'))
+  await screen.findByRole('heading', { name: status === 401 ? 'Сессия истекла' : 'Нет доступа' })
+  expect(screen.queryByText(lidar.description)).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: `Ошибка: ${lidar.title}` })).not.toBeInTheDocument()
+})
+
+it('reuses fresh snapshot and section data when switching tabs', async () => {
+  const apiClient = client()
+  const view = render(tree(apiClient))
+  await screen.findByText('Секция получена')
+  expect(screen.queryByRole('button', { name: /Обновить данные/ })).not.toBeInTheDocument()
+  view.rerender(tree(apiClient, 'power')); await act(async () => undefined)
+  view.rerender(tree(apiClient, 'wheels')); await act(async () => undefined)
+  expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(1)
+  expect(apiClient.emergencySection).toHaveBeenCalledTimes(2)
+  expect(screen.getByText('Секция получена')).toBeInTheDocument()
+})
+
+it('drops cached telemetry when a different principal has the same permissions', async () => {
+  const apiClient = client()
+  const view = render(tree(apiClient)); await screen.findByText('Секция получена')
+  const pending = deferred<EmergencySnapshot>()
+  vi.mocked(apiClient.emergencySnapshot).mockReturnValue(pending.promise)
+  view.rerender(tree(apiClient, 'wheels', { user: { ...user, id: 8 } }))
+  expect(screen.queryByRole('heading', { name: 'Робот 447' })).not.toBeInTheDocument()
+  await act(async () => undefined)
+  expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2)
+})
+
+// Existing lifecycle assertions use the minimum jitter; capacity tests cover dispersion.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

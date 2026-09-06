@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -79,17 +81,46 @@ def issue_tags(issue: dict) -> set[str]:
     return {str(tag).strip() for tag in raw if str(tag).strip()}
 
 
+def issue_authorization_status(issue: dict) -> str | None:
+    """Canonical workflow status for access decisions; no UI/relocation hints."""
+    return status_bucket(str(issue.get("status_key") or ""), str(issue.get("status") or ""))
+
+
 def is_issue_status_visible(user: User, issue: dict) -> bool:
     """Driver authorization uses exact workflow status, never relocation hints."""
-    return rbac.role_slug(user) != RoleSlug.DRIVER or status_bucket(
-        str(issue.get("status_key") or ""), str(issue.get("status") or "")
-    ) in {"new", "moving"}
+    return rbac.role_slug(user) != RoleSlug.DRIVER or issue_authorization_status(issue) in {
+        "new",
+        "moving",
+    }
 
 
-def is_issue_in_scope(db: Session, user: User, issue: dict) -> bool:
+@dataclass(frozen=True)
+class IssueScope:
+    """One response's policy inputs; never stored in a shared or session cache."""
+
+    queues: frozenset[str]
+    allowed_tags: frozenset[str]
+    park_tags: frozenset[str]
+    view_untagged: bool
+
+
+def load_issue_scope(db: Session, user: User) -> IssueScope:
+    if rbac.is_admin_or_royal(user):
+        return IssueScope(frozenset(), frozenset(), frozenset(), True)
+    return IssueScope(
+        queues=frozenset(allowed_queues_for_user(db, user)),
+        allowed_tags=frozenset(allowed_park_tags_for_user(db, user)),
+        park_tags=frozenset(all_park_tags(db)),
+        view_untagged=can_view_untagged(db, user),
+    )
+
+
+def is_issue_in_scope(
+    db: Session, user: User, issue: dict, *, scope: IssueScope | None = None
+) -> bool:
     """Non-raising scope check, used to filter list responses."""
     try:
-        _check_issue_scope(db, user, issue)
+        _check_issue_scope(db, user, issue, scope=scope)
     except IssueOutOfScope:
         return False
     return True
@@ -106,7 +137,9 @@ def enforce_issue_scope(db: Session, user: User, issue: dict) -> None:
         ) from None
 
 
-def _check_issue_scope(db: Session, user: User, issue: dict) -> None:
+def _check_issue_scope(
+    db: Session, user: User, issue: dict, *, scope: IssueScope | None = None
+) -> None:
     """Fail-closed scope check: an issue must provably belong to the user's parks.
 
     Anything unverifiable (missing queue, unknown tag, no park assigned) is denied
@@ -120,24 +153,26 @@ def _check_issue_scope(db: Session, user: User, issue: dict) -> None:
 
     # 1. Queue must be present and inside the user's allowed set.
     issue_queue = str(issue.get("queue") or "").strip()
-    queues = allowed_queues_for_user(db, user)
+    queues = scope.queues if scope is not None else allowed_queues_for_user(db, user)
     if not issue_queue or not queues or issue_queue not in queues:
         _deny()
 
     # 2. Park scope by tag.
-    allowed_tags = allowed_park_tags_for_user(db, user)
+    allowed_tags = scope.allowed_tags if scope is not None else allowed_park_tags_for_user(db, user)
     tags = issue_tags(issue)
 
     if tags & allowed_tags:
         return
 
     # Tags belonging to a different park are always out of scope.
-    if tags & (all_park_tags(db) - allowed_tags):
+    park_tags = scope.park_tags if scope is not None else all_park_tags(db)
+    if tags & (park_tags - allowed_tags):
         _deny()
 
     # No park tag at all (or only non-park tags like "donor"): this is an
     # «untagged» issue, reachable only when the policy allows it.
-    if not can_view_untagged(db, user):
+    view_untagged = scope.view_untagged if scope is not None else can_view_untagged(db, user)
+    if not view_untagged:
         _deny()
 
 

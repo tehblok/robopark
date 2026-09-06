@@ -7,7 +7,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from robopark_api import main
-from robopark_api.services import emergency_client, emergency_keepalive
+from robopark_api.models import Report
+from robopark_api.services import emergency_client, emergency_keepalive, reports
 from robopark_api.services import platform_settings as settings_svc
 
 
@@ -94,7 +95,9 @@ def test_missing_cookie_skips_ring(db_session, monkeypatch):
 
 def test_unauthorized_fetch_marks_cookie_invalid(db_session, monkeypatch):
     vin = "YASADR00000000449"
-    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "cookie")
+    settings_svc.activate_emergency_cookie(
+        db_session, cookie="cookie", status="valid", checked_robot="447"
+    )
     settings_svc.touch_keepalive_ring(db_session, vin)
 
     def unauthorized(**_kwargs):
@@ -105,6 +108,87 @@ def test_unauthorized_fetch_marks_cookie_invalid(db_session, monkeypatch):
     emergency_keepalive.keepalive_once(db_session)
 
     assert settings_svc.get_emergency_cookie_valid(db_session) is False
+    assert settings_svc.get_emergency_cookie_status(db_session) == "invalid"
+    assert settings_svc.get_emergency_cookie_checked_robot(db_session) == "449"
+
+
+def test_cached_keepalive_cannot_undo_newer_recheck_failure(db_session, seed_royal, monkeypatch):
+    vin = "YASADR00000000449"
+    identity = settings_svc.activate_emergency_cookie(
+        db_session, cookie="cookie", status="valid", checked_robot="449"
+    )
+    settings_svc.touch_keepalive_ring(db_session, vin)
+    monkeypatch.setattr(
+        emergency_client, "fetch_robot_payload", lambda **kwargs: {"vin": kwargs["vin"]}
+    )
+    emergency_keepalive.keepalive_once(db_session)
+    settings_svc.record_emergency_cookie_probe(
+        db_session, identity=identity, valid=False, status="invalid", checked_robot="449"
+    )
+    reports.ensure_open_emergency_cookie_report(db_session, author=None, expected_identity=identity)
+    checked_at = settings_svc.get_emergency_cookie_checked_at(db_session)
+
+    emergency_keepalive.keepalive_once(db_session)
+
+    assert settings_svc.get_emergency_cookie_valid(db_session) is False
+    assert settings_svc.get_emergency_cookie_status(db_session) == "invalid"
+    assert settings_svc.get_emergency_cookie_checked_at(db_session) == checked_at
+    assert db_session.query(Report).one().status == "open"
+
+
+def test_stale_keepalive_success_does_not_update_new_cookie_or_resolve_report(
+    db_engine, seed_royal, monkeypatch
+):
+    vin = "YASADR00000000449"
+    with sessionmaker(bind=db_engine, future=True)() as setup:
+        settings_svc.activate_emergency_cookie(
+            setup,
+            cookie="old-cookie",
+            status="valid",
+            checked_robot="449",
+        )
+        settings_svc.touch_keepalive_ring(setup, vin)
+
+    fetch_started = threading.Event()
+    release_fetch = threading.Event()
+
+    def slow_fetch(*, cookie, vin):
+        assert cookie == "old-cookie"
+        fetch_started.set()
+        assert release_fetch.wait(timeout=2)
+        return {"vin": vin}
+
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", slow_fetch)
+
+    def old_worker():
+        with sessionmaker(bind=db_engine, future=True)() as old_session:
+            emergency_keepalive.keepalive_once(old_session)
+
+    worker = threading.Thread(target=old_worker)
+    worker.start()
+    assert fetch_started.wait(timeout=2)
+    with sessionmaker(bind=db_engine, future=True)() as replacement:
+        new_identity = settings_svc.activate_emergency_cookie(
+            replacement,
+            cookie="new-cookie",
+            status="valid",
+            checked_robot="449",
+        )
+        assert (
+            reports.ensure_open_emergency_cookie_report(
+                replacement,
+                author=None,
+                expected_identity=new_identity,
+            )
+            is not None
+        )
+    release_fetch.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    with sessionmaker(bind=db_engine, future=True)() as check:
+        assert settings_svc.get_setting(check, settings_svc.EMERGENCY_KEEPALIVE_LAST_OK_KEY) is None
+        assert check.query(Report).one().status == "open"
 
 
 def test_loop_accepts_injectable_interval(monkeypatch):

@@ -131,11 +131,13 @@ function Probe() {
       <output data-testid="parks">{scope.parks.map((item) => item.id).join(',')}</output>
       <output data-testid="loading">{String(scope.loading)}</output>
       <output data-testid="locked">{String(scope.locked)}</output>
+      <output data-testid="allow-all">{String(scope.allowAllParks)}</output>
       <output data-testid="location">{location.search}</output>
       <output data-testid="navigation-type">{navigationType}</output>
       <button type="button" onClick={() => scope.setParkId(9)}>
         Выбрать парк 9
       </button>
+      <button type="button" onClick={() => scope.setParkId(null)}>Все доступные</button>
       <button type="button" onClick={() => void scope.refreshParks()}>
         Обновить парки
       </button>
@@ -197,14 +199,36 @@ describe('ParkScopeProvider', () => {
     expect(screen.getByTestId('navigation-type')).toHaveTextContent('REPLACE')
   })
 
-  it('uses a valid stored park when the URL has no park', async () => {
+  it('defaults overview to all available parks instead of the stored work park', async () => {
     sessionStorage.setItem(PARK_STORAGE_KEY, '9')
 
     renderScope('/overview?tab=alerts', scopeUser('operator', [park(7), park(9)]))
 
-    expect(await screen.findByTestId('park-id')).toHaveTextContent('9')
-    expect(screen.getByTestId('location')).toHaveTextContent('?tab=alerts&park=9')
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('?tab=alerts&park=all'))
+    expect(screen.getByTestId('park-id')).toHaveTextContent('none')
+    expect(screen.getByTestId('allow-all')).toHaveTextContent('true')
+    expect(sessionStorage.getItem(PARK_STORAGE_KEY)).toBe('9')
     expect(screen.getByTestId('navigation-type')).toHaveTextContent('REPLACE')
+  })
+
+  it.each(['admin', 'royal', 'operator'])('supports all/single on analytics for %s without expanding access', async role => {
+    vi.spyOn(api, 'parks').mockResolvedValue([park(7), park(9), { ...park(10), is_active: false }])
+    const principal = { ...scopeUser('operator', [park(9)]), role }
+    const { actor } = renderScope('/analytics?period=30', principal)
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('park=all'))
+    expect(screen.getByTestId('parks')).toHaveTextContent(role === 'operator' ? '9' : '7,9')
+    await actor.click(screen.getByRole('button', { name: 'Выбрать парк 9' }))
+    expect(screen.getByTestId('selected-park')).toHaveTextContent('Парк 9')
+    await actor.click(screen.getByRole('button', { name: 'Все доступные' }))
+    expect(screen.getByTestId('location')).toHaveTextContent('period=30&park=all')
+    expect(screen.getByTestId('park-id')).toHaveTextContent('none')
+  })
+
+  it.each(['/work?park=all', '/robots?park=all'])('restores the last individual work park outside insights at %s', async path => {
+    sessionStorage.setItem(PARK_STORAGE_KEY, '9')
+    renderScope(path, scopeUser('operator', [park(7), park(9)]))
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('park=9'))
+    expect(screen.getByTestId('allow-all')).toHaveTextContent('false')
   })
 
   it('clears an unavailable park when the actor has no permitted parks', async () => {
@@ -240,7 +264,7 @@ describe('ParkScopeProvider', () => {
       customUser(['nav.dashboard', 'parks.manage'], []),
     )
 
-    expect(await screen.findByTestId('loading')).toHaveTextContent('false')
+    await waitFor(() => expect(screen.getByTestId('loading')).toHaveTextContent('false'))
     expect(screen.getByTestId('parks')).toHaveTextContent('7,9')
     await waitFor(() => expect(screen.getByTestId('park-id')).toHaveTextContent('7'))
     expect(parksRequest).toHaveBeenCalledTimes(1)

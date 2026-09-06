@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { Link, Outlet, useLocation, useNavigationType } from 'react-router-dom'
 import { api, type Park, type User } from '../../api'
 import { useAuth } from '../../auth-context'
@@ -43,7 +43,7 @@ function ReportsBadge({ count }: { count: number }) {
 
 const PARK_SWITCH_ROLES = new Set<User['role']>(['operator', 'admin', 'royal'])
 
-function ParkWordmark({
+function ParkIdentity({
   user,
   parkId,
   selectedPark,
@@ -51,6 +51,7 @@ function ParkWordmark({
   loading,
   locked,
   onChange,
+  allowAllParks = false,
 }: {
   user: User
   parkId: number | null
@@ -58,33 +59,136 @@ function ParkWordmark({
   parks: Park[]
   loading: boolean
   locked: boolean
-  onChange: (id: number) => void
+  allowAllParks?: boolean
+  onChange: (id: number | null) => void
 }) {
-  const parkName = selectedPark?.name ?? (loading ? ru.loading : 'Без парка')
+  const [selectorOpen, setSelectorOpen] = useState(false)
+  const [focusedIndex, setFocusedIndex] = useState(0)
+  const selectorId = useId()
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const brandRef = useRef<HTMLDivElement>(null)
+  const typed = useRef({ text: '', at: 0 })
+  const parkOptions: { id: number | null; name: string }[] = allowAllParks && parks.length
+    ? [{ id: null, name: 'Все доступные парки' }, ...parks] : parks
+  const parkName = selectedPark?.name ?? (loading ? ru.loading : allowAllParks && parks.length ? 'Все доступные парки' : 'Без парка')
   const canSwitch = PARK_SWITCH_ROLES.has(user.role)
     && !locked
-    && !loading
-    && parkId != null
-    && parks.length > 1
+    && parkOptions.length > 1
+
+  useLayoutEffect(() => {
+    if (selectorOpen) listRef.current?.querySelectorAll('button')[focusedIndex]?.focus()
+  }, [selectorOpen, focusedIndex])
+
+  useEffect(() => {
+    if (!selectorOpen) return
+    const dismissOutside = (event: PointerEvent) => {
+      if (!brandRef.current?.contains(event.target as Node)) setSelectorOpen(false)
+    }
+    document.addEventListener('pointerdown', dismissOutside)
+    return () => document.removeEventListener('pointerdown', dismissOutside)
+  }, [selectorOpen])
+
+  const openSelector = () => {
+    typed.current = { text: '', at: 0 }
+    setFocusedIndex(Math.max(0, parkOptions.findIndex((park) => park.id === parkId)))
+    setSelectorOpen(true)
+  }
+
+  const closeSelector = () => {
+    setSelectorOpen(false)
+    triggerRef.current?.focus()
+  }
+
+  const navigateOptions = (event: KeyboardEvent<HTMLDivElement>) => {
+    const { key } = event
+    if (key === 'Escape') {
+      event.preventDefault()
+      closeSelector()
+    } else if (key === 'Tab') {
+      // Let the browser continue its normal tab order from the trigger.
+      closeSelector()
+    } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(key)) {
+      event.preventDefault()
+      typed.current = { text: '', at: 0 }
+      setFocusedIndex(key === 'Home' ? 0 : key === 'End' ? parkOptions.length - 1
+        : Math.max(0, Math.min(parkOptions.length - 1, focusedIndex + (key === 'ArrowDown' ? 1 : -1))))
+    } else if (key.length === 1 && key !== ' ' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault()
+      const now = Date.now()
+      const text = (now - typed.current.at < 1000 ? typed.current.text : '') + key.toLocaleLowerCase('ru-RU')
+      typed.current = { text, at: now }
+      const prefix = [...text].every((letter) => letter === text[0]) ? text[0] : text
+      const start = prefix.length === 1 ? focusedIndex + 1 : focusedIndex
+      for (let offset = 0; offset < parkOptions.length; offset += 1) {
+        const index = (start + offset) % parkOptions.length
+        if (parkOptions[index].name.toLocaleLowerCase('ru-RU').startsWith(prefix)) {
+          setFocusedIndex(index)
+          break
+        }
+      }
+    }
+  }
 
   return (
-    <div className={`rp-shell__park-brand${canSwitch ? ' is-interactive' : ''}`}>
-      <span className="rp-shell__park-brand-base">РобоПарк</span>
-      <strong className="rp-shell__park-brand-name">{parkName}</strong>
+    <div
+      className={`rp-shell__park-brand${canSwitch ? ' is-interactive' : ''}`}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setSelectorOpen(false)
+      }}
+      ref={brandRef}
+    >
       {canSwitch ? (
         <>
-          <span aria-hidden="true" className="rp-shell__park-brand-chevron" />
-          <select
+          <button
+            aria-controls={selectorOpen ? selectorId : undefined}
+            aria-expanded={selectorOpen}
+            aria-haspopup="listbox"
             aria-label="Сменить парк"
-            onChange={(event) => onChange(Number(event.target.value))}
-            value={parkId}
+            className="rp-shell__park-switch"
+            onClick={() => selectorOpen ? closeSelector() : openSelector()}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault()
+                openSelector()
+              }
+            }}
+            ref={triggerRef}
+            type="button"
           >
-            {parks.map((park) => (
-              <option key={park.id} value={park.id}>{park.name}</option>
+            <strong className="rp-shell__park-brand-name">{parkName}</strong>
+            <span aria-hidden="true" className="rp-shell__park-brand-chevron" />
+          </button>
+          {selectorOpen ? (
+            <div
+              aria-label="Сменить парк"
+              aria-description={parks.length > 7 ? 'Начните вводить название для поиска парка.' : undefined}
+              className="rp-shell__park-selector"
+              id={selectorId}
+              onKeyDown={navigateOptions}
+              ref={listRef}
+              role="listbox"
+            >
+            {parkOptions.map((park, index) => (
+                <button
+                  aria-selected={park.id === parkId}
+                  key={park.id ?? 'all'}
+                  onClick={() => {
+                    onChange(park.id)
+                    closeSelector()
+                  }}
+                  onFocus={() => setFocusedIndex(index)}
+                  role="option"
+                  tabIndex={focusedIndex === index ? 0 : -1}
+                  type="button"
+                >
+                  {park.name}
+                </button>
             ))}
-          </select>
+            </div>
+          ) : null}
         </>
-      ) : null}
+      ) : <strong className="rp-shell__park-brand-name">{parkName}</strong>}
     </div>
   )
 }
@@ -110,11 +214,13 @@ function NavigationLink({
   onClick?: () => void
 }) {
   const label = item.id === 'work' ? ru.appShell.work : item.label
+  const { pathname } = useLocation()
+  const parentActive = item.id === 'admin' && pathname.startsWith('/admin/') && !active
   return (
     <Link
       aria-label={label}
-      aria-current={active ? 'page' : undefined}
-      className={`${className}${active ? ' is-active' : ''}`}
+      aria-current={active ? 'page' : parentActive ? 'true' : undefined}
+      className={`${className}${active || parentActive ? ' is-active' : ''}`}
       data-route-id={item.id}
       onClick={onClick}
       to={item.path}
@@ -128,7 +234,7 @@ function NavigationLink({
 
 export function AppShell() {
   const { user, logout } = useAuth()
-  const { parkId, selectedPark, parks, loading, locked, setParkId } = useParkScope()
+  const { parkId, selectedPark, parks, loading, locked, setParkId, allowAllParks } = useParkScope()
   const {
     preference,
     resolvedTheme,
@@ -259,7 +365,8 @@ export function AppShell() {
 
       <aside className="sidebar rp-shell__sidebar">
         {!phoneViewport ? (
-          <ParkWordmark
+          <ParkIdentity
+            allowAllParks={allowAllParks}
             loading={loading}
             locked={locked}
             onChange={setParkId}
@@ -303,7 +410,8 @@ export function AppShell() {
       <div className="app-main rp-shell__main-column">
         <header className="rp-shell__topbar">
           {phoneViewport ? (
-            <ParkWordmark
+            <ParkIdentity
+              allowAllParks={allowAllParks}
               loading={loading}
               locked={locked}
               onChange={setParkId}

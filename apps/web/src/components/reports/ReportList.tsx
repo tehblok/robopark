@@ -1,10 +1,11 @@
 import type { Report } from '../../api'
 import { EmptyBlock, SkeletonList } from '../ui/Feedback'
+import { EntityRow } from '../../design-system/data/EntityRow'
+import { StatusBadge } from '../../design-system/status/StatusBadge'
 import {
   formatReportDate,
   reportKindText,
   reportStatusText,
-  statusBadgeClass,
 } from './report-utils'
 
 type ReportListProps = {
@@ -15,22 +16,6 @@ type ReportListProps = {
   onSelect?: (report: Report) => void
   selectedId?: number | null
   showReturnComment?: boolean
-}
-
-function kindTone(kind: string): string {
-  switch (kind) {
-    case 'ticket_close_review':
-      return 'tone-high'
-    case 'mechanic_problem':
-      return 'tone-blocker'
-    case 'escalation_to_admin':
-    case 'emergency_cookie_stale':
-      return 'tone-blocker'
-    case 'ticket_question':
-      return 'tone-normal'
-    default:
-      return 'tone-low'
-  }
 }
 
 export function ReportList({
@@ -62,30 +47,19 @@ export function ReportList({
         const interactive = onSelect != null
         const selected = selectedId === report.id
         const body = (
-          <>
-            <span className={`issue-priority-bar ${kindTone(report.kind)}`} aria-hidden="true" />
-            <div className="issue-row-body">
-              <div className="issue-row-top">
-                <strong className="report-row-title">{report.title}</strong>
-                <span className={statusBadgeClass(report.status)}>
-                  {reportStatusText(report.status)}
-                </span>
-              </div>
-              <div className="issue-row-meta">
-                <span>{reportKindText(report.kind)}</span>
-                {report.tracker_key && <span>{report.tracker_key}</span>}
-                <span>{formatReportDate(report.created_at)}</span>
-              </div>
+          <EntityRow title={report.title}
+            status={<StatusBadge tone={report.status === 'done' ? 'success' : report.status === 'returned' ? 'warning' : 'info'}>{reportStatusText(report.status)}</StatusBadge>}
+            meta={<>
+              <span>{[reportKindText(report.kind), report.tracker_key, formatReportDate(report.created_at)].filter(Boolean).join(' · ')}</span>
               {showReturnComment && report.return_comment && (
                 <p className="report-row-return">{report.return_comment}</p>
               )}
-            </div>
-          </>
+            </>} />
         )
 
         if (!interactive) {
           return (
-            <li className="issue-row report-row" key={report.id}>
+            <li key={report.id}>
               {body}
             </li>
           )
@@ -94,7 +68,9 @@ export function ReportList({
         return (
           <li key={report.id}>
             <button
-              className={`issue-row report-row${selected ? ' is-selected' : ''}`}
+              aria-label={`Открыть репорт ${report.title}`}
+              aria-pressed={selected}
+              className={`rp-report-select${selected ? ' is-selected' : ''}`}
               onClick={() => onSelect(report)}
               type="button"
             >

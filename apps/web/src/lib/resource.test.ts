@@ -1,8 +1,10 @@
+import { beforeEach } from 'vitest'
 import { createElement } from 'react'
-import { act, render, waitFor } from '@testing-library/react'
+import { act, cleanup, render, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   coalesceLoader,
+  inFlight,
   resetCoalescingForTests,
   resourceStore,
   useCachedResource,
@@ -150,6 +152,21 @@ describe('in-flight invalidation', () => {
     expect(window.localStorage.getItem(`robopark:res:${key}`)).toBeNull()
   })
 
+  it('does not commit a late result after the owner unmounts', async () => {
+    const key = 'slow'
+    const request = deferred<TestPayload>()
+    const loader = vi.fn(() => request.promise)
+    const view = render(createElement(ResourceProbe, { cacheKey: key, loader }))
+
+    await waitFor(() => expect(loader).toHaveBeenCalledTimes(1))
+    view.unmount()
+
+    await resolveAndFlush(request, { value: 'late' })
+
+    expect(resourceStore.get(key)).toBeUndefined()
+    expect(inFlight.isActive).toBe(false)
+  })
+
   it('starts a fresh same-key load after invalidation and discards the old result', async () => {
     const key = 'work:3:issue:ROBOPARK-42'
     const oldRequest = deferred<TestPayload>()
@@ -201,3 +218,157 @@ describe('in-flight invalidation', () => {
     expect(window.localStorage.getItem(`robopark:res:${key}`)).toBeNull()
   })
 })
+
+describe('automatic cached refresh', () => {
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    resourceStore.clearAll()
+  })
+
+  it('reuses a fresh cache and publishes a new value automatically when stale', async () => {
+    vi.useFakeTimers()
+    resourceStore.set('auto', { value: 'cached' }, false)
+    const pending = deferred<TestPayload>()
+    const loader = vi.fn(() => pending.promise)
+    const view = renderHook(() => useCachedResource('auto', loader))
+    expect(view.result.current.data?.value).toBe('cached')
+    expect(loader).not.toHaveBeenCalled()
+    await act(() => vi.advanceTimersByTimeAsync(30_000))
+    expect(inFlight.isActive).toBe(false)
+    expect(view.result.current.data?.value).toBe('cached')
+    await resolveAndFlush(pending, { value: 'fresh' })
+    expect(view.result.current.data?.value).toBe('fresh')
+    expect(loader).toHaveBeenCalledTimes(1)
+  })
+
+  it('pauses hidden or offline and refreshes on return without duplicate focus requests', async () => {
+    vi.useFakeTimers()
+    let visible = true
+    let online = true
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visible ? 'visible' : 'hidden')
+    vi.spyOn(navigator, 'onLine', 'get').mockImplementation(() => online)
+    const loader = vi.fn(async () => ({ value: String(loader.mock.calls.length) }))
+    const view = renderHook(() => useCachedResource('paused', loader))
+    await act(async () => {})
+    visible = false
+    await act(() => vi.advanceTimersByTimeAsync(60_000))
+    expect(loader).toHaveBeenCalledTimes(1)
+    visible = true
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')) })
+    expect(view.result.current.data?.value).toBe('2')
+    expect(loader).toHaveBeenCalledTimes(2)
+    online = false
+    await act(() => vi.advanceTimersByTimeAsync(60_000))
+    expect(loader).toHaveBeenCalledTimes(2)
+    online = true
+    await act(async () => window.dispatchEvent(new Event('online')))
+    expect(view.result.current.data?.value).toBe('3')
+  })
+
+  it('coalesces mounted consumers and never overlaps slow polling', async () => {
+    vi.useFakeTimers()
+    const pending = deferred<TestPayload>()
+    const loader = vi.fn(() => pending.promise)
+    const first = renderHook(() => useCachedResource('shared', loader))
+    const second = renderHook(() => useCachedResource('shared', loader))
+    await act(() => vi.advanceTimersByTimeAsync(90_000))
+    expect(loader).toHaveBeenCalledTimes(1)
+    await resolveAndFlush(pending, { value: 'shared result' })
+    expect(first.result.current.data?.value).toBe('shared result')
+    expect(second.result.current.data?.value).toBe('shared result')
+    first.unmount(); second.unmount()
+    await act(() => vi.advanceTimersByTimeAsync(90_000))
+    expect(loader).toHaveBeenCalledTimes(1)
+  })
+
+  it('backs off transient failures while preserving cached data', async () => {
+    vi.useFakeTimers()
+    resourceStore.set('retry', { value: 'last known' }, false)
+    const loader = vi.fn().mockRejectedValue(new Error('unavailable'))
+    const view = renderHook(() => useCachedResource<TestPayload>('retry', loader))
+    await act(() => vi.advanceTimersByTimeAsync(30_000))
+    expect(loader).toHaveBeenCalledTimes(1)
+    await act(() => vi.advanceTimersByTimeAsync(30_000))
+    expect(loader).toHaveBeenCalledTimes(2)
+    await act(() => vi.advanceTimersByTimeAsync(30_000))
+    expect(loader).toHaveBeenCalledTimes(2)
+    expect(view.result.current.data?.value).toBe('last known')
+    await act(() => vi.advanceTimersByTimeAsync(30_000))
+    expect(loader).toHaveBeenCalledTimes(3)
+  })
+
+  it.each([401, 403])('halts automatic refresh after access error %s', async status => {
+    vi.useFakeTimers()
+    const loader = vi.fn().mockRejectedValue({ status })
+    const first = renderHook(() => useCachedResource(`denied-${status}`, loader))
+    const second = renderHook(() => useCachedResource(`denied-${status}`, loader))
+    await act(async () => {})
+    await act(() => vi.advanceTimersByTimeAsync(300_000))
+    await act(async () => window.dispatchEvent(new Event('focus')))
+    expect(first.result.current.error).toEqual({ status })
+    expect(second.result.current.error).toEqual({ status })
+    expect(loader).toHaveBeenCalledTimes(1)
+  })
+
+  it('loads a deferred offline cold resource on reconnect even when polling is disabled', async () => {
+    vi.useFakeTimers()
+    let online = false
+    vi.spyOn(navigator, 'onLine', 'get').mockImplementation(() => online)
+    const loader = vi.fn(async () => ({ value: 'initial form data' }))
+    const view = renderHook(() => useCachedResource('cold-draft', loader, { refreshIntervalMs: 0 }))
+    expect(loader).not.toHaveBeenCalled()
+    online = true
+    await act(async () => window.dispatchEvent(new Event('online')))
+    expect(view.result.current.data?.value).toBe('initial form data')
+    await act(() => vi.advanceTimersByTimeAsync(300_000))
+    await act(async () => window.dispatchEvent(new Event('focus')))
+    expect(loader).toHaveBeenCalledTimes(1)
+  })
+
+  it('allows forced mutation refresh and opts editable resources out of automatic replacement', async () => {
+    vi.useFakeTimers()
+    const loader = vi.fn(async () => ({ value: 'updated' }))
+    resourceStore.set('draft', { value: 'original' }, false)
+    const view = renderHook(() => useCachedResource('draft', loader, { refreshIntervalMs: 0 }))
+    await act(() => vi.advanceTimersByTimeAsync(300_000))
+    await act(async () => window.dispatchEvent(new Event('focus')))
+    expect(loader).not.toHaveBeenCalled()
+    await act(() => view.result.current.refresh())
+    expect(view.result.current.data?.value).toBe('updated')
+  })
+})
+
+describe('successful synchronization timestamp', () => {
+  afterEach(() => { cleanup(); resourceStore.clearAll(); vi.restoreAllMocks() })
+
+  it('keeps the last successful time on failure and clears it when access is denied', async () => {
+    const loader = vi.fn().mockResolvedValue({ value: 'first' })
+    const { result } = renderHook(() => useCachedResource('sync:owner', loader, { persist: false }))
+    await waitFor(() => expect(result.current.data).toEqual({ value: 'first' }))
+    const success = result.current.updatedAt
+    expect(success).toEqual(expect.any(Number))
+    loader.mockRejectedValueOnce(new Error('offline'))
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.updatedAt).toBe(success)
+    loader.mockRejectedValueOnce({ status: 403 })
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.updatedAt).toBeNull()
+    expect(result.current.data).toBeUndefined()
+  })
+
+  it('restores cache time without inventing a new synchronization', () => {
+    const savedAt = Date.now() - 10_000
+    localStorage.setItem('robopark:res:sync:cached', JSON.stringify({ v: 1, updatedAt: savedAt, data: { value: 'cached' } }))
+    const loader = vi.fn()
+    const { result, rerender } = renderHook(({ cacheKey }) => useCachedResource(cacheKey, loader, { enabled: cacheKey !== 'disabled' }), { initialProps: { cacheKey: 'sync:cached' } })
+    expect(result.current.updatedAt).toBe(savedAt)
+    expect(loader).not.toHaveBeenCalled()
+    rerender({ cacheKey: 'disabled' })
+    expect(result.current.updatedAt).toBeNull()
+  })
+})
+
+// Existing lifecycle assertions use the minimum jitter; capacity tests cover dispersion.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

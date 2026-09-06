@@ -89,7 +89,7 @@ function WorkPageOwner({
     )
   }
 
-  const state = parseWorkUrl(params, { queue })
+  const state = parseWorkUrl(params, { queue, status: user.role === 'driver' ? 'new' : 'queued' })
   const writeState = (
     next: WorkUrlState,
     options: { replace?: boolean } = {},
@@ -107,15 +107,18 @@ function WorkPageOwner({
 
   return (
     <PageLayout
-      description={`Парк: ${selectedPark.name} · очередь ${queue}`}
+      description={`Парк: ${selectedPark.name} · открытые блокеры`}
       title="Работа"
     >
       <IssueWorkbench
         apiClient={apiClient}
         issueKey={issueKey}
         onAuthorizationFailure={observeAuthorizationFailure}
-        onCloseIssue={() => navigate(workListHref(state, parkId))}
-        onOpenIssue={(key) => navigate(workIssueHref(key, state, parkId))}
+        onCloseIssue={() => navigate(state.rootIssue
+          ? workIssueHref(state.rootIssue, { ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, parkId)
+          : workListHref({ ...state, detailTab: undefined, checkTab: undefined }, parkId))}
+        onOpenIssue={(key) => navigate(workIssueHref(key, { ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, parkId))}
+        onOpenRelatedIssue={(key) => navigate(workIssueHref(key, { ...state, rootIssue: key === (state.rootIssue ?? issueKey) ? undefined : state.rootIssue ?? issueKey, detailTab: undefined, checkTab: undefined }, parkId))}
         onStateChange={writeState}
         selectedPark={selectedPark}
         state={state}

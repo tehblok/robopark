@@ -106,6 +106,30 @@ describe('API transport metadata', () => {
     )
   })
 
+  it('keeps exact related-robot matching separate from the generic summary search', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ items: [], total: 0, limit: 10, offset: 0, has_more: false }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.trackerIssues({
+      queue: 'ROBOPARK',
+      park: 'Alpha',
+      robot_exact: '447',
+      exclude_key: 'ROBOPARK-42',
+      limit: 10,
+      offset: 0,
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/tracker/issues?sort=oldest&queue=ROBOPARK&park=Alpha&robot_exact=447&exclude_key=ROBOPARK-42&limit=10&offset=0',
+      expect.objectContaining({ credentials: 'include' }),
+    )
+  })
+
   it('uploads a report attachment to an existing report instead of creating another report', async () => {
     let submitted: FormData | undefined
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {

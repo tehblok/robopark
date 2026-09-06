@@ -29,13 +29,117 @@ def test_metadata_has_required_tables():
         "roles",
         "role_permissions",
         "user_permissions",
+        "analytics_snapshots",
+        "analytics_observations",
+        "diagnostic_rules",
+        "diagnostic_unknowns",
+        "diagnostic_unknown_sightings",
+        "tracker_presence",
+        "tracker_submissions",
+        "tracker_handoffs",
     }
 
 
-def test_alembic_head_is_driver_work_reports():
+def test_alembic_head_is_tracker_collaboration():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0017_driver_work_reports"]
+    assert script.get_heads() == ["0022_tracker_collaboration"]
+
+
+def test_diagnostic_rules_upgrade_from_previous_head(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    api_dir = Path(__file__).parents[1]
+    config = Config(api_dir / "alembic.ini")
+
+    command.upgrade(config, "0018_analytics_observations")
+    engine = create_engine(sqlite_database_url, future=True)
+    assert "diagnostic_rules" not in inspect(engine).get_table_names()
+
+    command.upgrade(config, "0019_diagnostic_rules")
+
+    inspector = inspect(engine)
+    assert {column["name"] for column in inspector.get_columns("diagnostic_rules")} == {
+        "id",
+        "source_path",
+        "match_kind",
+        "pattern",
+        "example",
+        "title",
+        "description",
+        "severity",
+        "part",
+        "preferred_view",
+        "x",
+        "y",
+        "indicator",
+        "is_enabled",
+        "sort_order",
+    }
+    assert all(not column["nullable"] for column in inspector.get_columns("diagnostic_rules"))
+    assert any(
+        constraint["name"] == "uq_diagnostic_rules_source_match_pattern"
+        and constraint["column_names"] == ["source_path", "match_kind", "pattern"]
+        for constraint in inspector.get_unique_constraints("diagnostic_rules")
+    )
+    assert any(
+        index["name"] == "ix_diagnostic_rules_sort_order_id"
+        and index["column_names"] == ["sort_order", "id"]
+        and not index["unique"]
+        for index in inspector.get_indexes("diagnostic_rules")
+    )
+    assert {
+        constraint["name"] for constraint in inspector.get_check_constraints("diagnostic_rules")
+    } == {
+        "ck_diagnostic_rules_indicator",
+        "ck_diagnostic_rules_match_kind",
+        "ck_diagnostic_rules_preferred_view",
+        "ck_diagnostic_rules_severity",
+        "ck_diagnostic_rules_x",
+        "ck_diagnostic_rules_y",
+    }
+
+    command.downgrade(config, "0018_analytics_observations")
+    assert "diagnostic_rules" not in inspect(engine).get_table_names()
+
+
+def test_analytics_upgrade_and_downgrade_preserve_existing_history(
+    sqlite_database_url, monkeypatch
+):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0017_driver_work_reports")
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO parks (id, name, tag, is_active) VALUES (1, 'Test', 'test', 1)")
+        )
+        connection.execute(
+            text(
+                "INSERT INTO park_blocker_history (park_id, bucket_start, arrived_count, departed_count, definition_version) VALUES (1, '2026-09-01 00:00:00', 4, 9, 2)"
+            )
+        )
+    command.upgrade(config, "0018_analytics_observations")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO analytics_snapshots (park_id, bucket_start, observed_at) VALUES (1, '2026-09-01 00:00:00', '2026-09-01 00:12:00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO analytics_observations (park_id, bucket_start, issue_key, status, status_bucket) VALUES (1, '2026-09-01 00:00:00', 'RP-1', 'new', 'new')"
+            )
+        )
+    command.downgrade(config, "0017_driver_work_reports")
+    assert "analytics_snapshots" not in inspect(engine).get_table_names()
+    with engine.connect() as connection:
+        assert tuple(
+            connection.execute(
+                text("SELECT arrived_count, departed_count FROM park_blocker_history")
+            ).one()
+        ) == (4, 9)
+    command.upgrade(config, "head")
+    assert "analytics_observations" in inspect(engine).get_table_names()
 
 
 def test_history_migration_preserves_legacy_definition(sqlite_database_url, monkeypatch):
@@ -237,3 +341,78 @@ def test_migrated_parks_have_tracker_columns_and_history_table(sqlite_database_u
         "uq_park_blocker_history_park_bucket" in unique_indexes
         or "uq_park_blocker_history_park_bucket" in unique_constraints
     )
+
+
+def test_unknown_upgrade_is_additive(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0019_diagnostic_rules")
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO parks (id, name, tag, is_active) VALUES (1, 'Test', 'test', 1)")
+        )
+    command.upgrade(config, "0020_diagnostic_unknowns")
+    assert {"diagnostic_unknowns", "diagnostic_unknown_sightings"} <= set(
+        inspect(engine).get_table_names()
+    )
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT name FROM parks WHERE id=1")).scalar_one() == "Test"
+    command.downgrade(config, "0019_diagnostic_rules")
+    assert "diagnostic_unknowns" not in inspect(engine).get_table_names()
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT name FROM parks WHERE id=1")).scalar_one() == "Test"
+
+
+def test_original_unit_upgrade_leaves_legacy_samples_unverified(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0020_diagnostic_unknowns")
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO diagnostic_unknowns (identity, source_path, source_segments_json, raw_json, first_seen_at, last_seen_at, observations, last_robot, state) VALUES ('legacy', 'errors', '[\"errors\"]', '\"TARGET\"', '2026-09-01', '2026-09-01', 1, 'robot', 'new')"
+            )
+        )
+    command.upgrade(config, "0021_diagnostic_unknown_original")
+    with engine.connect() as connection:
+        assert tuple(
+            connection.execute(
+                text("SELECT raw_json, original_json, state FROM diagnostic_unknowns")
+            ).one()
+        ) == ('"TARGET"', None, "new")
+    command.downgrade(config, "0020_diagnostic_unknowns")
+    with engine.connect() as connection:
+        assert (
+            connection.execute(text("SELECT raw_json FROM diagnostic_unknowns")).scalar_one()
+            == '"TARGET"'
+        )
+
+
+def test_tracker_collaboration_upgrade_preserves_existing_data(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0021_diagnostic_unknown_original")
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO parks (id, name, tag, is_active) VALUES (1, 'Existing', 'existing', 1)"
+            )
+        )
+    command.upgrade(config, "0022_tracker_collaboration")
+    assert {"tracker_presence", "tracker_submissions", "tracker_handoffs"} <= set(
+        inspect(engine).get_table_names()
+    )
+    with engine.connect() as connection:
+        assert (
+            connection.execute(text("SELECT name FROM parks WHERE id=1")).scalar_one() == "Existing"
+        )
+        assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
+    command.downgrade(config, "0021_diagnostic_unknown_original")
+    assert "tracker_submissions" not in inspect(engine).get_table_names()
+    with engine.connect() as connection:
+        assert (
+            connection.execute(text("SELECT name FROM parks WHERE id=1")).scalar_one() == "Existing"
+        )

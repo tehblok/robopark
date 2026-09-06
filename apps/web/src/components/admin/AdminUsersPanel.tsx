@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api, type AdminRole, type AdminUser, type Park, type PermissionCatalogItem } from '../../api'
 import { useAuth } from '../../auth-context'
 import { Alert, Panel } from '../PageShell'
@@ -7,6 +7,13 @@ import { PasswordField } from '../ui/PasswordField'
 import { mapApiError } from '../../i18n/errors'
 import { accessStatusLabel, roleLabel } from '../../i18n/ru'
 import { actorPermissionCatalog, assignableRoles } from './privilegedPermissions'
+import { MasterDetail } from '../../design-system/layout/MasterDetail'
+import { EntityRow } from '../../design-system/data/EntityRow'
+import { MetricCard } from '../../design-system/data/MetricCard'
+import { StatusBadge } from '../../design-system/status/StatusBadge'
+import { EffectivePermissions } from './EffectivePermissions'
+import { resourceStore, useCachedResource } from '../../lib/resource'
+import { adminAccessDeniedMessage, adminAccessFailure, adminResourceKey, adminResourceOptions } from './adminResources'
 
 type UserDraft = {
   role_slug: string
@@ -51,22 +58,40 @@ function draftFromUser(user: AdminUser): UserDraft {
     tracker_login: user.tracker_login ?? '',
     password: '',
     park_ids: user.parks.map((park) => park.id),
-    permissions: new Set(user.permissions ?? []),
+    permissions: new Set((user.permissions ?? []).filter(key => key !== 'users.approve')),
   }
 }
 
 export function AdminUsersPanel({ parks }: { parks: Park[] }) {
+  const { user } = useAuth()
+  return <AdminUsersScope key={adminResourceKey('workspace', user)} parks={parks} />
+}
+
+function AdminUsersScope({ parks }: { parks: Park[] }) {
+  const [denied, setDenied] = useState(false)
+  return denied ? <Alert tone="error">{adminAccessDeniedMessage}</Alert> : <AdminUsersWorkspace parks={parks} onDenied={setDenied} />
+}
+
+function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (denied: boolean) => void }) {
   const { user: actor } = useAuth()
   const isRoyal = actor?.role === 'royal'
+  const active = useRef(true)
+  useLayoutEffect(() => {
+    active.current = true
+    return () => { active.current = false }
+  }, [])
 
   const [users, setUsers] = useState<AdminUser[]>([])
   const [roles, setRoles] = useState<AdminRole[]>([])
   const [catalog, setCatalog] = useState<PermissionCatalogItem[]>([])
-  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [initialized, setInitialized] = useState(false)
   const [success, setSuccess] = useState('')
   const [busy, setBusy] = useState(false)
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const currentSelection = useRef(selectedId)
+  useLayoutEffect(() => { currentSelection.current = selectedId }, [selectedId])
+  const [detailOpen, setDetailOpen] = useState(false)
   const [draft, setDraft] = useState<UserDraft>(emptyDraft())
   const [filterRole, setFilterRole] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
@@ -89,38 +114,30 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
     return isRoyal ? FALLBACK_ROLES : []
   }, [roles, isRoyal])
 
-  const load = async () => {
-    setLoading(true)
-    setError('')
-    const failures: string[] = []
-    try {
-      const userRows = await api.adminUsers()
-      setUsers(userRows)
-      setSelectedId((current) => {
-        if (current && userRows.some((row) => row.id === current)) return current
-        const pending = userRows.find((row) => row.access_status === 'pending')
-        return pending?.id ?? userRows[0]?.id ?? null
-      })
-    } catch (loadError) {
-      failures.push(mapApiError(loadError) || 'Не удалось загрузить пользователей')
-    }
-    try {
-      const [roleRows, permCatalog] = await Promise.all([
-        api.adminRoles(),
-        api.adminRolePermissionCatalog(),
-      ])
-      setRoles(roleRows)
-      setCatalog(permCatalog)
-    } catch (rolesError) {
-      failures.push(mapApiError(rolesError) || 'Не удалось загрузить роли')
-    }
-    if (failures.length) setError(failures.join(' · '))
-    setLoading(false)
-  }
-
+  const usersResource = useCachedResource(adminResourceKey('users', actor), () => api.adminUsers(), adminResourceOptions)
+  const rolesResource = useCachedResource(adminResourceKey('roles', actor), () => api.adminRoles(), adminResourceOptions)
+  const catalogResource = useCachedResource(adminResourceKey('permissions', actor), () => api.adminRolePermissionCatalog(), adminResourceOptions)
+  const accessFailure = adminAccessFailure(usersResource.error, rolesResource.error, catalogResource.error)
   useEffect(() => {
-    void load()
-  }, [])
+    if (!accessFailure) return
+    for (const kind of ['users', 'roles', 'permissions']) resourceStore.invalidate(adminResourceKey(kind, actor))
+    onDenied(true)
+  }, [accessFailure, actor, onDenied])
+  const loading = [usersResource, rolesResource, catalogResource].some(resource => resource.data === undefined && !resource.error)
+  useLayoutEffect(() => { if (!loading) setInitialized(true) }, [loading])
+  const loadError = [usersResource.error, rolesResource.error, catalogResource.error]
+    .filter(Boolean).map(failure => mapApiError(failure)).join(' · ')
+
+  useLayoutEffect(() => {
+    if (!usersResource.data) return
+    setUsers(usersResource.data)
+    setSelectedId(current => {
+      if (current && usersResource.data!.some(row => row.id === current)) return current
+      return usersResource.data!.find(row => row.access_status === 'pending')?.id ?? usersResource.data![0]?.id ?? null
+    })
+  }, [usersResource.data])
+  useLayoutEffect(() => { if (rolesResource.data) setRoles(rolesResource.data) }, [rolesResource.data])
+  useLayoutEffect(() => { if (catalogResource.data) setCatalog(catalogResource.data) }, [catalogResource.data])
 
   const filteredUsers = useMemo(() => {
     const needle = search.trim().toLowerCase()
@@ -139,15 +156,19 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
     && !roleOptions.some((role) => role.slug === selectedUser.role),
   )
 
-  useEffect(() => {
+  const draftSelection = useRef<number | null>(null)
+  useLayoutEffect(() => {
+    if (draftSelection.current === selectedId) return
+    draftSelection.current = selectedId
     if (!selectedUser) {
       setDraft(emptyDraft())
       return
     }
     setDraft(draftFromUser(selectedUser))
-  }, [selectedUser])
+  }, [selectedId, selectedUser])
 
   const selectUser = (user: AdminUser) => {
+    setDetailOpen(true)
     setSelectedId(user.id)
     setDraft(draftFromUser(user))
     setSuccess('')
@@ -162,7 +183,8 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
     (item) => item.category === 'action' && item.key !== 'users.approve',
   )
   const roleDefaultPerms = (slug: string): string[] =>
-    roles.find((role) => role.slug === slug)?.permissions ?? []
+    (roles.find((role) => role.slug === slug)?.permissions ?? []).filter(key => key !== 'users.approve')
+  const effectivePermissions = draft.role_slug === 'royal' ? new Set(catalog.map(item => item.key)) : draft.permissions
 
   const toggleDraftPark = (parkId: number) => {
     setDraft((current) => {
@@ -201,6 +223,8 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
 
   const saveUser = async () => {
     if (!selectedUser || selectedLocked) return
+    const requestedId = selectedUser.id
+    const isCurrentSelection = () => active.current && currentSelection.current === requestedId
     setBusy(true)
     setError('')
     setSuccess('')
@@ -211,7 +235,7 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
         must_change_password: draft.must_change_password,
         tracker_login: draft.tracker_login.trim() || null,
         park_ids: draft.park_ids,
-        permissions: [...draft.permissions],
+        permissions: [...effectivePermissions],
       }
       if (isRoyal) {
         payload.access_status = draft.access_status
@@ -219,20 +243,29 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
       if (draft.password.trim()) {
         payload.password = draft.password
       }
-      const updated = await api.updateAdminUser(selectedUser.id, payload)
+      const updated = await api.updateAdminUser(requestedId, payload)
+      if (!active.current) return
       setUsers((rows) => rows.map((row) => (row.id === updated.id ? updated : row)))
+      resourceStore.invalidate(adminResourceKey('users', actor))
+      void usersResource.refresh()
+      if (!isCurrentSelection()) return
       setDraft({ ...draftFromUser(updated), password: '' })
       setSuccess('Изменения сохранены')
     } catch (saveError) {
+      if (!isCurrentSelection()) return
       setError(mapApiError(saveError) || 'Не удалось сохранить пользователя')
     } finally {
-      setBusy(false)
+      if (active.current) setBusy(false)
     }
   }
 
   const refreshSelected = async (userId: number) => {
+    resourceStore.invalidate(adminResourceKey('users', actor))
     const rows = await api.adminUsers()
+    if (!active.current) return
     setUsers(rows)
+    resourceStore.set(adminResourceKey('users', actor), rows, false)
+    if (currentSelection.current !== userId) return
     const refreshed = rows.find((row) => row.id === userId)
     if (refreshed) setDraft(draftFromUser(refreshed))
   }
@@ -290,7 +323,10 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
         trackerLogin: '',
       })
       setUsers((rows) => [...rows, created])
+      resourceStore.invalidate(adminResourceKey('users', actor))
+      void usersResource.refresh()
       setSelectedId(created.id)
+      setDetailOpen(true)
       setDraft(draftFromUser(created))
       setSuccess('Пользователь создан')
     } catch (createError) {
@@ -316,6 +352,8 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
       await api.deleteAdminUser(selectedUser.id)
       const remaining = users.filter((row) => row.id !== selectedUser.id)
       setUsers(remaining)
+      resourceStore.invalidate(adminResourceKey('users', actor))
+      void usersResource.refresh()
       setSelectedId(remaining[0]?.id ?? null)
       setSuccess('Аккаунт удалён')
     } catch (deleteError) {
@@ -325,14 +363,19 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
     }
   }
 
-  if (loading) return <Spinner label="Загрузка пользователей…" />
+  if (accessFailure) return <Alert tone="error">{adminAccessDeniedMessage}</Alert>
+  if (loading && !initialized) return <Spinner label="Загрузка пользователей…" />
 
   return (
     <div className="admin-users">
-      {error && <Alert tone="error">{error}</Alert>}
+      {(error || loadError) && <Alert tone="error">{error || loadError}</Alert>}
       {success && <Alert tone="success">{success}</Alert>}
 
-      <div className="admin-users-layout">
+      <div className="rp-management-metrics">
+        <MetricCard label="Аккаунты" value={users.length} />
+        <MetricCard label="Ожидают одобрения" value={pendingCount} tone={pendingCount ? 'warning' : 'neutral'} />
+      </div>
+      <MasterDetail detailOpen={detailOpen} onBack={() => setDetailOpen(false)} list={
         <Panel hint="Выберите аккаунт, чтобы сменить роль, парки, пароль и статус." title="Аккаунты">
           <div className="admin-user-filters form-grid">
             <label className="field">
@@ -383,22 +426,15 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
             {filteredUsers.map((row) => (
               <li key={row.id}>
                 <button
-                  className={`admin-user-row admin-user-select${selectedId === row.id ? ' is-selected' : ''}`}
+                  aria-label={`Открыть аккаунт ${row.username}`}
+                  aria-pressed={selectedId === row.id}
+                  className={`rp-management-select${selectedId === row.id ? ' is-selected' : ''}`}
                   onClick={() => selectUser(row)}
                   type="button"
                 >
-                  <span>
-                    <strong>{row.username}</strong>
-                    <span className="issue-muted"> · {roleLabel(row.role)}</span>
-                  </span>
-                  <span className="admin-user-meta">
-                    <span className={`status-pill status-pill--${row.access_status}`}>
-                      {accessStatusLabel(row.access_status)}
-                    </span>
-                    <span className="issue-muted">
-                      {!row.is_active ? 'выключен' : row.parks.map((park) => park.name).join(', ') || 'без парка'}
-                    </span>
-                  </span>
+                  <EntityRow title={row.username}
+                    meta={`${roleLabel(row.role)} · ${!row.is_active ? 'выключен' : row.parks.map(park => park.name).join(', ') || 'без парка'}`}
+                    status={<StatusBadge tone={row.access_status === 'approved' ? 'success' : row.access_status === 'pending' ? 'warning' : 'critical'}>{accessStatusLabel(row.access_status)}</StatusBadge>} />
                 </button>
               </li>
             ))}
@@ -407,8 +443,7 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
             )}
           </ul>
         </Panel>
-
-        <div className="admin-user-card">
+      } detail={
         <Panel
           hint={
             selectedUser
@@ -535,10 +570,11 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
               {draft.role_slug === 'royal' ? (
                 <p className="issue-muted">Владелец всегда имеет все доступы. Одобрение регистраций — только у этой роли.</p>
               ) : (
-                <div className="field">
+                <div className="field rp-permissions-editor">
                   <span className="field-label">Доступы этого человека</span>
                   <p className="field-hint">
                     Роль задаёт базовый набор. Снимите галочку, чтобы забрать доступ, или поставьте — чтобы выдать сверх роли.
+                    {' '}Одобрение регистраций доступно только владельцу.
                   </p>
                   <h4 className="admin-perm-group-title">Разделы меню</h4>
                   <div className="admin-perm-grid">
@@ -577,6 +613,8 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
                 </div>
               )}
 
+              <EffectivePermissions catalog={catalog} permissions={effectivePermissions} />
+
               <div className="form-actions">
                 {!selectedLocked && (
                   <button className="btn" disabled={busy} onClick={() => void saveUser()} type="button">
@@ -603,7 +641,11 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
                     </button>
                   </>
                 )}
+              </div>
                 {!selectedLocked && selectedUser.id !== actor?.id && (
+                  <section aria-label="Опасные действия" className="rp-danger-zone">
+                  <h3>Опасные действия</h3>
+                  <p>Удаление аккаунта нельзя отменить.</p>
                   <button
                     className="btn btn-danger"
                     disabled={busy}
@@ -612,15 +654,14 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
                   >
                     Удалить аккаунт
                   </button>
+                  </section>
                 )}
-              </div>
             </div>
           ) : (
             <p className="issue-muted">Выберите пользователя в списке слева.</p>
           )}
         </Panel>
-        </div>
-      </div>
+      } />
 
       <Panel title="Создать пользователя">
         <div className="form-grid">
