@@ -1,5 +1,7 @@
+import pytest
+
 from conftest import login_as, role_id_for
-from robopark_api.models import AccessStatus, User, UserPark
+from robopark_api.models import AccessStatus, Park, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings
 
@@ -176,6 +178,43 @@ def test_tracker_list_exact_robot_filters_before_deduplication_and_pagination(
     assert [item["key"] for item in closed.json()["items"]] == ["ROBOPARK-4"]
     assert captured[1]["filter_open"] is False
     assert "Status: closed" in captured[1]["query"]
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["447", "A447", "a447", "[A447]", "[a447]", "yasadr00000000447", "YASADR447", "00000000000447"],
+)
+def test_exact_robot_aliases_match_only_authorized_complete_identifiers(
+    client, db_session, seed_park_with_tracker, monkeypatch, query
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    db_session.add(Park(name="Foreign", tag="Foreign", tracker_queue="ROBOPARK"))
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    aliases = ["447", "0447", "A447", "a447", "[A447]", "[a447]", "[447]", "yasadr00000000447"]
+    unrelated = ["A1447", "other447", "A447B", "[A447] extra", "447/448", "[A447", "A447]"]
+    items = [
+        {**_scoped_issue(f"ROBOPARK-{index}", "2026-01-01T00:00:00Z"), "robot": raw}
+        for index, raw in enumerate([*aliases, *unrelated])
+    ]
+    items.append(
+        {
+            **_scoped_issue("ROBOPARK-99", "2026-01-01T00:00:00Z"),
+            "robot": "A447",
+            "tags": ["Foreign"],
+        }
+    )
+    monkeypatch.setattr(tracker_client, "search_issues", lambda **_kwargs: items)
+    login_as(client, "op2", "secret")
+    response = client.get(
+        "/tracker/issues", params={"queue": "ROBOPARK", "park": "Alpha", "robot_exact": query}
+    )
+    assert response.status_code == 200
+    assert [item["key"] for item in response.json()["items"]] == [
+        f"ROBOPARK-{index}" for index in range(8)
+    ]
 
 
 def test_mechanic_issue_capabilities_respect_write_policy_but_keep_attachment(

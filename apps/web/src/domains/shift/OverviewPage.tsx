@@ -99,29 +99,37 @@ function OverviewBoundary({ apiClient, user, query, selectable, statusHref, allH
 
 function OverviewSessionPage({ apiClient, user }: { apiClient: OperationsApiClient; user: User }) {
   const { refreshUser } = useAuth()
-  const { loading } = useParkScope()
+  const { loading, selectedPark } = useParkScope()
   const [params, setParams] = useSearchParams()
   const parsed = useMemo(() => parseOperationsQuery(params, user.role), [params, user.role])
   const selectable = canSelectOverviewStatus(user.role)
   const query = useMemo<OperationsQuery>(() => ({ days: 7, status: selectable ? parsed.status : 'all' }), [parsed.status, selectable])
   const normalized = useMemo(() => operationsSearch(params, query), [params, query])
   const cachePrefix = `overview:${user.id}:`
-  const blocked = useRef(false)
-  const refreshStarted = useRef(false)
-  const [authorizationFailure, setAuthorizationFailure] = useState<DomainError | null>(null)
+  const identity = `${operationsAccessIdentity(user, selectedPark)}:${query.days}:${query.status}`
+  const requestOwner = useMemo(() => ({ identity }), [identity])
+  const owner = useRef<typeof requestOwner | null>(requestOwner)
+  useLayoutEffect(() => { owner.current = requestOwner; return () => { owner.current = null } }, [requestOwner])
+  const blocked = useRef<{ unauthorized: boolean; forbidden: string | null }>({ unauthorized: false, forbidden: null })
+  const refreshStarted = useRef(new Set<string>())
+  const [authorizationFailure, setAuthorizationFailure] = useState<{ identity: string; failure: DomainError } | null>(null)
 
   const observeAuthorizationFailure = useCallback((error: unknown) => {
+    if (owner.current !== requestOwner) return
     const failure = classifyApiError(error, 'Не удалось загрузить обзор смены.')
     if (failure.kind !== 'unauthorized' && failure.kind !== 'forbidden') return
-    blocked.current = true
+    if (failure.kind === 'unauthorized') blocked.current.unauthorized = true
+    else blocked.current.forbidden = identity
     resourceStore.invalidate(cachePrefix, { prefix: true })
-    setAuthorizationFailure(failure)
-    if (!refreshStarted.current) {
-      refreshStarted.current = true
+    setAuthorizationFailure({ identity, failure })
+    const refreshKey = failure.kind === 'unauthorized' ? 'session' : identity
+    if (!refreshStarted.current.has(refreshKey)) {
+      refreshStarted.current.add(refreshKey)
       void refreshUser().catch(() => undefined)
     }
-  }, [cachePrefix, refreshUser])
-  const authorizationBlocked = useCallback(() => blocked.current, [])
+  }, [cachePrefix, identity, refreshUser, requestOwner])
+  const authorizationBlocked = useCallback(() => owner.current !== requestOwner || blocked.current.unauthorized || blocked.current.forbidden === identity, [identity, requestOwner])
+  const contextFailure = authorizationFailure?.failure.kind === 'unauthorized' || authorizationFailure?.identity === identity ? authorizationFailure.failure : null
 
   useLayoutEffect(() => {
     if (normalized.toString() !== params.toString()) setParams(normalized, { replace: true })
@@ -134,7 +142,7 @@ function OverviewSessionPage({ apiClient, user }: { apiClient: OperationsApiClie
   const allHref = selectable && query.status !== 'all' ? statusHref('all') : null
 
   return <PageLayout description="Что происходит сейчас и где требуется вмешательство в выбранном парке." title="Смена / Обзор">
-    {authorizationFailure ? <ErrorState description={authorizationFailure.description} requestId={authorizationFailure.requestId} title={authorizationFailure.title} />
+    {contextFailure ? <ErrorState description={contextFailure.description} requestId={contextFailure.requestId} title={contextFailure.title} />
       : loading ? <LoadingState label="Загружаем область парка" variant="page" />
         : <OverviewBoundary allHref={allHref} apiClient={apiClient} authorizationBlocked={authorizationBlocked} onAuthorizationFailure={observeAuthorizationFailure} query={query} selectable={selectable} statusHref={statusHref} user={user} />}
   </PageLayout>

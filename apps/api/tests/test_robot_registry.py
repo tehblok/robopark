@@ -72,6 +72,26 @@ def test_registry_search_vin_key_and_short_number(client, registry, query):
     assert [row["vin"] for row in response.json()["items"]] == [VIN]
 
 
+@pytest.mark.parametrize("query", ["447", "A447", "a447", "[A447]", "[a447]", VIN.lower()])
+def test_registry_aggregates_supported_robot_aliases_without_substring_matches(
+    client, registry, query
+):
+    aliases = ["447", "0447", "A447", "a447", "[A447]", "[a447]", "[447]", VIN.lower()]
+    unrelated = ["A1447", "other447", "A447B", "[A447] extra", "447/448", "[A447", "A447]"]
+    items = [issue(f"ROBOPARK-{index}", alias) for index, alias in enumerate(aliases)]
+    items.extend(issue(f"OTHER-{index}", raw) for index, raw in enumerate(unrelated))
+    items.append(issue("FOREIGN-1", "A447", tag="Foreign"))
+    with patch("robopark_api.services.tracker_cache.search_issues", return_value=items):
+        response = client.get("/robots", params={"park_id": registry.id, "query": query})
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    row = response.json()["items"][0]
+    assert row["vin"] == VIN
+    assert row["short_number"] == "447"
+    assert row["task_count"] == 8
+    assert row["task_keys"] == [f"ROBOPARK-{index}" for index in range(8)]
+
+
 def test_registry_cache_is_read_only_identity_bound_and_expires(client, db_session, registry):
     payload = {"isOnline": True, "batteriesStatus": {"chargePercents": 81}, "errors": ["motor"]}
     with (

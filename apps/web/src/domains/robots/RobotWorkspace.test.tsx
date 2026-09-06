@@ -56,6 +56,63 @@ it('exposes one identity, related tasks and diagnostics and keeps tabs in the ro
   expect(apiClient.emergencyResolve).toHaveBeenCalledTimes(1)
 })
 
+it.each(['pending', 'failed'] as const)('loads direct related tasks while the Emergency snapshot is %s and keeps tabs usable', async state => {
+  const apiClient = client()
+  let rejectSnapshot!: (error: unknown) => void
+  apiClient.emergencySnapshot.mockImplementation(() => new Promise((_resolve, reject) => { rejectSnapshot = reject }))
+  render(tree(apiClient, `/robots/${VIN}?park=8&tab=tasks`))
+  await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(1))
+  if (state === 'failed') await act(async () => rejectSnapshot(new ApiError(502, 'upstream_failed')))
+  expect(await screen.findByText('Связанных задач нет в доступной области.')).toBeVisible()
+  expect(screen.getByRole('tabpanel')).toHaveAccessibleName('Задачи')
+  expect(apiClient.operatorRobotTickets).toHaveBeenCalledWith(VIN)
+  fireEvent.click(screen.getByRole('tab', { name: 'Телеметрия' }))
+  expect(screen.getByRole('tabpanel')).toHaveAccessibleName('Телеметрия')
+  fireEvent.click(screen.getByRole('tab', { name: 'Задачи' }))
+  expect(await screen.findByText('Связанных задач нет в доступной области.')).toBeVisible()
+})
+
+it('can enter related tasks after a cold snapshot error on another tab', async () => {
+  const apiClient = client()
+  apiClient.emergencySnapshot.mockRejectedValue(new ApiError(502, 'upstream_failed'))
+  render(tree(apiClient, `/robots/${VIN}?park=8&tab=telemetry`))
+  await screen.findByRole('alert')
+  fireEvent.click(screen.getByRole('tab', { name: 'Задачи' }))
+  expect(await screen.findByText('Связанных задач нет в доступной области.')).toBeVisible()
+})
+
+it.each([401, 403])('does not load tasks before resolution and keeps resolver %s authoritative', async status => {
+  const apiClient = client()
+  let rejectResolve!: (error: unknown) => void
+  apiClient.emergencyResolve.mockImplementation(() => new Promise((_resolve, reject) => { rejectResolve = reject }))
+  render(tree(apiClient, `/robots/${VIN}?park=8&tab=tasks`))
+  await waitFor(() => expect(apiClient.emergencyResolve).toHaveBeenCalledTimes(1))
+  expect(apiClient.operatorRobotTickets).not.toHaveBeenCalled()
+  await act(async () => rejectResolve(new ApiError(status, 'forbidden')))
+  await screen.findByRole('alert')
+  expect(apiClient.operatorRobotTickets).not.toHaveBeenCalled()
+  expect(apiClient.emergencySnapshot).not.toHaveBeenCalled()
+})
+
+it.each([401, 403])('removes related tasks if the active snapshot returns %s after tasks loaded', async status => {
+  const apiClient = client()
+  let rejectSnapshot!: (error: unknown) => void
+  apiClient.emergencySnapshot.mockImplementation(() => new Promise((_resolve, reject) => { rejectSnapshot = reject }))
+  render(tree(apiClient, `/robots/${VIN}?park=8&tab=tasks`))
+  await screen.findByText('Связанных задач нет в доступной области.')
+  await act(async () => rejectSnapshot(new ApiError(status, 'forbidden')))
+  await screen.findByRole('alert')
+  expect(screen.queryByRole('heading', { name: 'Связанные задачи' })).not.toBeInTheDocument()
+})
+
+it('keeps related work disabled without tracker.read while snapshot is pending', async () => {
+  const apiClient = client()
+  apiClient.emergencySnapshot.mockImplementation(() => new Promise(() => {}))
+  render(tree(apiClient, `/robots/${VIN}?park=8&tab=tasks`, { ...user, permissions: ['nav.robot_search', 'nav.emergency'] }))
+  expect(await screen.findByText(/Связанные задачи недоступны: нет разрешения/)).toBeVisible()
+  expect(apiClient.operatorRobotTickets).not.toHaveBeenCalled()
+})
+
 it('canonicalizes a short reference without loading the snapshot or resolver twice', async () => {
   const apiClient = client(); render(tree(apiClient, '/robots/447?park=8&tab=scheme'))
   await screen.findByRole('heading', { name: 'Робот 447' })

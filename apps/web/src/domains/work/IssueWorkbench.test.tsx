@@ -263,7 +263,7 @@ describe('IssueWorkbench', () => {
     expect(screen.queryByRole('link', { name: /Незавершённые задачи робота/ })).not.toBeInTheDocument()
   })
 
-  it('loads normalized robot tasks only after the selected issue resolves, with open work before latest closed work', async () => {
+  it.each(['YASADR00000000447', 'yasadr00000000447', 'YASADR447', '00000000000447', '447', '0447', 'A447', 'a447', '[A447]', '[a447]', '[447]'])('loads normalized %s robot tasks only after the selected issue resolves, with open work before latest closed work', async robot => {
     const pendingDetail = deferred<TrackerIssueDetail>()
     const openTask: TrackerIssue = {
       ...issue,
@@ -291,7 +291,7 @@ describe('IssueWorkbench', () => {
     expect(screen.queryByText('Открытая задача робота')).not.toBeInTheDocument()
 
     await act(async () => {
-      pendingDetail.resolve({ ...issue, robot: 'YASADR00000000447' })
+      pendingDetail.resolve({ ...issue, robot })
     })
 
     await screen.findByRole('heading', { name: 'Открытые задачи робота 447' })
@@ -310,6 +310,14 @@ describe('IssueWorkbench', () => {
     }))
     expect(document.body.textContent!.indexOf('Открытая задача робота'))
       .toBeLessThan(document.body.textContent!.indexOf('Последняя закрытая задача робота'))
+  })
+
+  it.each(['other447', 'A447B', '[A447] extra', '447/448', '[A447', 'A447]'])('does not infer related robot tasks from ambiguous identifier %s', async robot => {
+    const client = apiClient({ trackerIssue: vi.fn(async () => ({ ...issue, robot })) })
+    renderWorkbench({ client })
+    await screen.findByRole('heading', { name: `Задача ${issue.key}` })
+    expect(screen.queryByRole('heading', { name: /Открытые задачи робота/ })).not.toBeInTheDocument()
+    expect(client.trackerIssues).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the selected issue and its capability-gated actions available when related robot work fails', async () => {

@@ -48,6 +48,48 @@ it('previews effective permissions after role changes and individual grants or r
   expect(preview).not.toHaveTextContent('Работа')
 })
 
+it('removes owner-only approval from non-royal role previews and the submitted account permissions', async () => {
+  const actor = userEvent.setup()
+  vi.mocked(api.adminRoles).mockResolvedValue([...roles, { ...roles[0], id: 3, slug: 'custom_approver', name: 'Согласующий', is_system: false, permissions: ['nav.tasks', 'users.approve'] }])
+  vi.mocked(api.adminRolePermissionCatalog).mockResolvedValue([
+    { key: 'nav.tasks', label: 'Работа', category: 'nav', sort_order: 1 },
+    { key: 'users.approve', label: 'Одобрять регистрации', category: 'action', sort_order: 2 },
+  ])
+  const update = vi.spyOn(api, 'updateAdminUser').mockResolvedValue({ ...account, role: 'custom_approver', permissions: ['nav.tasks'] })
+  openAccounts()
+  const detail = await screen.findByRole('region', { name: 'Детали' })
+  await actor.selectOptions(within(detail).getByRole('combobox', { name: 'Роль' }), 'custom_approver')
+  const preview = within(detail).getByRole('region', { name: 'Итоговые доступы' })
+  expect(preview).toHaveTextContent('Работа')
+  expect(preview).not.toHaveTextContent('Одобрять регистрации')
+  expect(within(detail).queryByRole('checkbox', { name: 'Одобрять регистрации' })).not.toBeInTheDocument()
+  expect(within(detail).getByText(/Одобрение регистраций.*только.*владельц/)).toBeVisible()
+  await actor.click(within(detail).getByRole('button', { name: 'Сохранить' }))
+  await waitFor(() => expect(update).toHaveBeenCalledWith(2, expect.objectContaining({ role_slug: 'custom_approver', permissions: ['nav.tasks'] })))
+})
+
+it('royal role previews all permissions immutably and restores non-royal semantics after demotion', async () => {
+  const actor = userEvent.setup()
+  vi.mocked(api.adminRoles).mockResolvedValue([...roles, { ...roles[0], id: 3, slug: 'royal', name: 'Владелец', permissions: [] }])
+  vi.mocked(api.adminRolePermissionCatalog).mockResolvedValue([
+    { key: 'nav.tasks', label: 'Работа', category: 'nav', sort_order: 1 },
+    { key: 'users.approve', label: 'Одобрять регистрации', category: 'action', sort_order: 2 },
+  ])
+  const update = vi.spyOn(api, 'updateAdminUser').mockResolvedValue({ ...account, role: 'royal', permissions: ['nav.tasks', 'users.approve'] })
+  openAccounts()
+  const detail = await screen.findByRole('region', { name: 'Детали' })
+  await actor.selectOptions(within(detail).getByRole('combobox', { name: 'Роль' }), 'royal')
+  const preview = within(detail).getByRole('region', { name: 'Итоговые доступы' })
+  expect(preview).toHaveTextContent('Работа')
+  expect(preview).toHaveTextContent('Одобрять регистрации')
+  expect(within(detail).queryByRole('checkbox', { name: /Работа|Одобрять регистрации/ })).not.toBeInTheDocument()
+  await actor.click(within(detail).getByRole('button', { name: 'Сохранить' }))
+  await waitFor(() => expect(update).toHaveBeenCalledWith(2, expect.objectContaining({ role_slug: 'royal', permissions: ['nav.tasks', 'users.approve'] })))
+  await screen.findByText('Изменения сохранены')
+  await actor.selectOptions(within(detail).getByRole('combobox', { name: 'Роль' }), 'driver')
+  expect(preview).not.toHaveTextContent('Одобрять регистрации')
+})
+
 it('saves owner password, role, park and section changes and isolates account deletion', async () => {
   const actor = userEvent.setup()
   const update = vi.spyOn(api, 'updateAdminUser').mockResolvedValue({ ...account, role: 'driver', parks: [south], permissions: ['nav.tasks', 'nav.reports'], must_change_password: true })

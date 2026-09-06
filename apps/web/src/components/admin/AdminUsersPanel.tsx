@@ -56,7 +56,7 @@ function draftFromUser(user: AdminUser): UserDraft {
     tracker_login: user.tracker_login ?? '',
     password: '',
     park_ids: user.parks.map((park) => park.id),
-    permissions: new Set(user.permissions ?? []),
+    permissions: new Set((user.permissions ?? []).filter(key => key !== 'users.approve')),
   }
 }
 
@@ -182,7 +182,8 @@ function AdminUsersWorkspace({ parks }: { parks: Park[] }) {
     (item) => item.category === 'action' && item.key !== 'users.approve',
   )
   const roleDefaultPerms = (slug: string): string[] =>
-    roles.find((role) => role.slug === slug)?.permissions ?? []
+    (roles.find((role) => role.slug === slug)?.permissions ?? []).filter(key => key !== 'users.approve')
+  const effectivePermissions = draft.role_slug === 'royal' ? new Set(catalog.map(item => item.key)) : draft.permissions
 
   const toggleDraftPark = (parkId: number) => {
     setDraft((current) => {
@@ -233,7 +234,7 @@ function AdminUsersWorkspace({ parks }: { parks: Park[] }) {
         must_change_password: draft.must_change_password,
         tracker_login: draft.tracker_login.trim() || null,
         park_ids: draft.park_ids,
-        permissions: [...draft.permissions],
+        permissions: [...effectivePermissions],
       }
       if (isRoyal) {
         payload.access_status = draft.access_status
@@ -561,6 +562,7 @@ function AdminUsersWorkspace({ parks }: { parks: Park[] }) {
                   <span className="field-label">Доступы этого человека</span>
                   <p className="field-hint">
                     Роль задаёт базовый набор. Снимите галочку, чтобы забрать доступ, или поставьте — чтобы выдать сверх роли.
+                    {' '}Одобрение регистраций доступно только владельцу.
                   </p>
                   <h4 className="admin-perm-group-title">Разделы меню</h4>
                   <div className="admin-perm-grid">
@@ -599,7 +601,7 @@ function AdminUsersWorkspace({ parks }: { parks: Park[] }) {
                 </div>
               )}
 
-              <EffectivePermissions catalog={catalog} permissions={draft.role_slug === 'royal' ? new Set(catalog.map(item => item.key)) : draft.permissions} />
+              <EffectivePermissions catalog={catalog} permissions={effectivePermissions} />
 
               <div className="form-actions">
                 {!selectedLocked && (

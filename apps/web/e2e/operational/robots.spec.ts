@@ -73,6 +73,23 @@ test('registry filters survive reload and fetch no Emergency until opening a rob
   await expect(page.getByRole('tabpanel')).toContainText('История событий пока недоступна')
 })
 
+for (const state of ['pending', 'failed'] as const) test(`direct robot tasks stay usable with a ${state} Emergency snapshot`, async ({ page }) => {
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  await installOperational(page, { routes: [{ method: 'GET', path: /^\/api\/emergency\/[^/]+\/snapshot$/, handler: async () => {
+    if (state === 'pending') await pending
+    return { status: 502, json: { detail: 'emergency_upstream_error' } }
+  } }] })
+  try {
+    await page.goto(`/robots/${snapshot.vin}?park=7&tab=tasks`)
+    await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
+    await page.getByRole('tab', { name: 'Телеметрия', exact: true }).click()
+    await expect(page.getByRole('tabpanel')).toHaveAccessibleName('Телеметрия')
+    await page.getByRole('tab', { name: 'Задачи', exact: true }).click()
+    await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
+  } finally { release() }
+})
+
 test('registry unavailable filter has a clear empty state and can recover', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 900 })
   await installOperational(page)

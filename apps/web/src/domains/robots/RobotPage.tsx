@@ -125,7 +125,7 @@ function RobotResourceOwner({ apiClient, resolverClient, checkClient, user, refe
   if (!resolved) return !online ? <><p role="status">Нет сети на этом устройстве</p><Button onClick={refresh}>Повторить проверку</Button></> : <LoadingState label="Находим робота" variant="page" />
   return <RobotCheckWorkspace vin={resolved.vin} sections={resolved.sections} activeTab={activeTab} user={user}
     apiClient={checkClient} onAuthorizationFailure={onAuthorizationFailure} renderSummary={detail}
-    renderTasks={(snapshot, failure, refresh) => snapshot ? detail(snapshot, failure, refresh, 'tasks') : <LoadingState label="Загружаем данные робота" />}
+    renderTasks={(snapshot, failure, refresh) => detail(snapshot, failure, refresh, 'tasks')}
     onTabChange={tab => navigate(`/robots/${encodeURIComponent(resolved.vin)}${suffix}${buildRobotCheckSearch(new URLSearchParams(location.search), tab)}`, { replace: true })} />
 }
 

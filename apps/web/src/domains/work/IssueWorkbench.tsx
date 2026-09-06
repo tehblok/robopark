@@ -95,9 +95,9 @@ function failureFor(error: unknown, fallback: string): DomainError | null {
 const RELATED_PAGE_SIZE = 10
 
 function normalizedRobotNumber(raw?: string | null): string | null {
-  const text = raw?.trim() ?? ''
-  if (!text) return null
-  const digits = text.toUpperCase().startsWith('YASADR') ? text.slice(6) : text
+  let text = raw?.trim().toUpperCase() ?? ''
+  if (text.startsWith('[') && text.endsWith(']')) text = text.slice(1, -1)
+  const digits = text.startsWith('YASADR') ? text.slice(6) : text.replace(/^A/, '')
   if (!/^\d+$/.test(digits)) return null
   return digits.replace(/^0+/, '') || '0'
 }

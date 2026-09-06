@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
-import { installOperational, roles, settlePage, userForRole } from './fixtures'
+import { installOperational, operationalRoutes, roles, settlePage, userForRole } from './fixtures'
 
 for (const viewport of ['desktop', 'phone'] as const) for (const role of roles) {
   if (viewport === 'phone' && role !== 'operator' && role !== 'admin') continue
@@ -41,4 +41,20 @@ test('royal selected park switches the task request instead of showing a fleet-o
   await page.goto('/overview?park=8')
   await expect(page.getByRole('link', { name: 'Открыть задачу ROBOPARK-42' })).toHaveAttribute('href', '/work/ROBOPARK-42?park=8')
   expect(requestedParks).toContain('8')
+})
+
+test('overview recovers from park A denial when the user selects accessible park B', async ({ page }) => {
+  const user = userForRole('royal')
+  const overview = operationalRoutes({ user }).find(route => route.path === '/api/operations/overview')!
+  await installOperational(page, { user, routes: [{ method: 'GET', path: '/api/operations/overview', handler: request =>
+    new URL(request.url).searchParams.get('park_id') === '7'
+      ? { status: 403, json: { detail: 'park_out_of_scope' } }
+      : overview.handler(request),
+  }] })
+  await page.goto('/overview?park=7')
+  await expect(page.getByRole('heading', { name: 'Нет доступа' })).toBeVisible()
+  await page.getByRole('button', { name: 'Сменить парк' }).click()
+  await page.getByRole('option', { name: /Южный/ }).click()
+  await expect(page.getByRole('link', { name: 'Открыть задачу ROBOPARK-42' })).toHaveAttribute('href', '/work/ROBOPARK-42?park=8')
+  await expect(page.getByRole('heading', { name: 'Нет доступа' })).toHaveCount(0)
 })

@@ -56,7 +56,10 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
         setSnapshot(null); setDetails({}); setErrors({}); setSnapshotError(null); setDenied(failure)
         notify.current?.(failure)
       } else if (section) setErrors(previous => ({ ...previous, [section]: failure }))
-      else setSnapshotError(failure)
+      else {
+        if (!['offline', 'timeout', 'server'].includes(failure.kind)) setSnapshot(null)
+        setSnapshotError(failure)
+      }
     }
     if (!current()) return
     // Observe both independently: denial cannot wait for a hung sibling.
@@ -76,11 +79,6 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
   if (denied) return <CheckError failure={denied} user={user} />
   const section = details[tab.id]
   const sectionError = errors[tab.id]
-  const retainSnapshot = !snapshotError || ['offline', 'timeout', 'server'].includes(snapshotError.kind)
-  if (renderSummary && snapshotError && (!snapshot || !retainSnapshot)) return <>
-    <CheckError failure={snapshotError} user={user} onRetry={refresh} />
-    {snapshotError.kind === 'not-found' ? <Link to="/robots">К поиску роботов</Link> : null}
-  </>
   const identity = <div className="rp-check-first-level">
       {snapshot ? renderSummary ? renderSummary(snapshot, snapshotError, refresh) : <RobotCheckSummary snapshot={snapshot} online={online} failed={Boolean(snapshotError)} pending={pending} onRefresh={refresh} />
         : <section className="rp-check-summary" aria-busy={pending}>
@@ -88,7 +86,8 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
           {!snapshotError && online ? <LoadingState label="Загружаем данные робота" /> : null}
           <Button leadingIcon="refresh" onClick={refresh}>{!online ? 'Повторить проверку' : 'Обновить данные'}</Button>
         </section>}
-      {snapshotError && !renderSummary ? <div className="rp-check-warning"><CheckError failure={snapshotError} user={user} />{snapshot ? <p>Показаны последние полученные данные.</p> : null}</div> : null}
+      {snapshotError && (!renderSummary || !snapshot) ? <div className="rp-check-warning"><CheckError failure={snapshotError} user={user} onRetry={renderSummary ? refresh : undefined} />{snapshot ? <p>Показаны последние полученные данные.</p> : null}
+        {snapshotError.kind === 'not-found' ? <Link to="/robots">К поиску роботов</Link> : null}</div> : null}
     </div>
   const detail = <div className="rp-check-detail">
       <RobotCheckTabs tabs={tabs} activeId={tab.id} onChange={onTabChange} />

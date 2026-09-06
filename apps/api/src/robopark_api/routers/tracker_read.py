@@ -84,8 +84,9 @@ def _issue_out(issue: dict) -> TrackerIssueOut:
 
 def _normalized_robot_number(raw: object) -> str | None:
     text = str(raw or "").strip().upper()
-    if text.startswith("YASADR"):
-        text = text[6:]
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    text = text[6:] if text.startswith("YASADR") else text.removeprefix("A")
     if not text or not text.isdecimal():
         return None
     return text.lstrip("0") or "0"

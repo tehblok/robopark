@@ -42,8 +42,11 @@ class RegistryAccess:
 
 def _vin(raw: object) -> str | None:
     text = str(raw or "").strip().upper()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
     if re.fullmatch(r"YASADR[0-9]{11}", text):
         return text
+    text = text.removeprefix("A")
     if re.fullmatch(r"[0-9]{1,11}", text):
         return f"YASADR{text.zfill(11)}"
     return None

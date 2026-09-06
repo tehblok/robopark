@@ -105,3 +105,41 @@ it.each([401, 403])('clears cached protected overview data and refreshes auth af
   expect(screen.queryByRole('link', { name: 'Открыть задачу RP-1' })).not.toBeInTheDocument()
   expect(refreshUser).toHaveBeenCalledTimes(1)
 })
+
+it.each(['park', 'access'] as const)('releases a 403 after the current %s identity changes', async change => {
+  const user = makeUser()
+  const otherPark = { ...park, id: 8, name: 'Юг', tag: 'Beta' }
+  const refreshUser = vi.fn(async () => user)
+  const client = { operationsOverview: vi.fn().mockRejectedValueOnce(new ApiError(403, null, 'park-a')).mockResolvedValue(snapshot({ park_id: change === 'park' ? 8 : 7 })) }
+  const view = render(tree({ user, client, refreshUser }))
+  await screen.findByRole('heading', { name: 'Нет доступа' })
+  view.rerender(tree({ user: change === 'access' ? { ...user, permissions: [...user.permissions!, 'reports.create'] } : user, selectedPark: change === 'park' ? otherPark : park, client, refreshUser }))
+  expect(await screen.findByRole('link', { name: 'Открыть задачу RP-1' })).toHaveAttribute('href', `/work/RP-1?park=${change === 'park' ? 8 : 7}`)
+  expect(screen.queryByRole('heading', { name: 'Нет доступа' })).not.toBeInTheDocument()
+})
+
+it.each([200, 403])('ignores late park A completion %s after park B has loaded', async status => {
+  const old = deferred<OperationsOverview>()
+  const user = makeUser()
+  const refreshUser = vi.fn(async () => user)
+  const client = { operationsOverview: vi.fn().mockReturnValueOnce(old.promise).mockResolvedValue(snapshot({ park_id: 8 })) }
+  const view = render(tree({ user, client, refreshUser }))
+  await waitFor(() => expect(client.operationsOverview).toHaveBeenCalledTimes(1))
+  view.rerender(tree({ user, selectedPark: { ...park, id: 8, name: 'Юг', tag: 'Beta' }, client, refreshUser }))
+  expect(await screen.findByRole('link', { name: 'Открыть задачу RP-1' })).toHaveAttribute('href', '/work/RP-1?park=8')
+  await act(async () => { if (status === 403) old.reject(new ApiError(403, null, 'old-park')); else old.resolve(snapshot({ tasks: [] })) })
+  expect(screen.getByRole('link', { name: 'Открыть задачу RP-1' })).toHaveAttribute('href', '/work/RP-1?park=8')
+  expect(refreshUser).not.toHaveBeenCalled()
+})
+
+it('keeps a 401 session denial after park changes without retrying protected requests', async () => {
+  const user = makeUser()
+  const refreshUser = vi.fn(async () => user)
+  const client = { operationsOverview: vi.fn().mockRejectedValue(new ApiError(401, null, 'session')) }
+  const view = render(tree({ user, client, refreshUser }))
+  await screen.findByRole('heading', { name: 'Сессия истекла' })
+  view.rerender(tree({ user, selectedPark: { ...park, id: 8 }, client, refreshUser }))
+  expect(screen.getByRole('heading', { name: 'Сессия истекла' })).toBeVisible()
+  expect(client.operationsOverview).toHaveBeenCalledTimes(1)
+  expect(refreshUser).toHaveBeenCalledTimes(1)
+})
