@@ -240,6 +240,7 @@ export type EmergencySnapshot = {
   lon: number | null
   heading_deg: number | null
   wheels_fault: string[]
+  diagnostic_events?: DiagnosticEvent[]
 }
 
 export type EmergencyViewerRole = 'mechanic' | 'operator' | 'admin' | 'royal' | 'driver'

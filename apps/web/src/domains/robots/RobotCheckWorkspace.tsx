@@ -1,6 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import { api, type EmergencySection, type EmergencySectionDetail, type EmergencySnapshot } from '../../api'
+import { api, type DiagnosticEvent, type DiagnosticView, type EmergencySection, type EmergencySectionDetail, type EmergencySnapshot } from '../../api'
 import { canAccessRoute, type AccessUser } from '../../app/routing/accessPolicy'
 import { InspectionMap } from '../../components/emergency/InspectionMap'
 import { Button } from '../../design-system/actions/Button'
@@ -11,6 +11,8 @@ import { useOnlineStatus } from '../../shared/browser/useOnlineStatus'
 import { RobotCheckSummary } from './RobotCheckSummary'
 import { RobotCheckTabs } from './RobotCheckTabs'
 import { RobotDiagnosticDiagram } from './RobotDiagnosticDiagram'
+import { DiagnosticEventDetails } from './DiagnosticEventDetails'
+import { chooseAutomaticView, isLocalizedEvent, leadingDiagnosticEvent } from './diagnosticPresentation'
 import { checkAccessIdentity, checkTabs, classifyCheckError } from './robotCheckUrl'
 import { useVisibilityPolling } from './useVisibilityPolling'
 import './robot-check.css'
@@ -35,6 +37,9 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
   const [errors, setErrors] = useState<Record<string, DomainError | null>>({})
   const [denied, setDenied] = useState<DomainError | null>(null)
   const [follow, setFollow] = useState(true)
+  const [diagnosticSelection, setDiagnosticSelection] = useState<{ view: DiagnosticView; eventId: string | null }>({ view: 'top', eventId: null })
+  // Owned by the same VIN/access/park lifetime as the snapshot, never by a tab.
+  const automaticApplied = useRef(false)
   const denial = useRef(false)
   const generation = useRef(0)
   const notify = useRef(onAuthorizationFailure)
@@ -64,7 +69,13 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
     if (!current()) return
     // Observe both independently: denial cannot wait for a hung sibling.
     const snapshotRequest = Promise.resolve().then(() => apiClient.emergencySnapshot(vin)).then(value => {
-      if (current()) { setSnapshot(value); setSnapshotError(null) }
+      if (current()) {
+        setSnapshot(value); setSnapshotError(null)
+        if (!automaticApplied.current && value.diagnostic_events?.length) {
+          automaticApplied.current = true
+          setDiagnosticSelection({ view: chooseAutomaticView(value.diagnostic_events), eventId: leadingDiagnosticEvent(value.diagnostic_events)?.id ?? null })
+        }
+      }
     }, error => { observeFailure(error); throw error })
     const requests = [snapshotRequest]
     if (tab.kind === 'section') requests.push(Promise.resolve().then(() => apiClient.emergencySection(vin, tab.id)).then(value => {
@@ -77,6 +88,16 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
   const { pending, refreshNow } = useVisibilityPolling({ enabled: !denied, online, task })
   const refresh = () => { void refreshNow() }
   if (denied) return <CheckError failure={denied} user={user} />
+  const events = snapshot?.diagnostic_events ?? []
+  const showEvent = (event: DiagnosticEvent) => {
+    if (!isLocalizedEvent(event)) return
+    automaticApplied.current = true
+    setDiagnosticSelection({ view: event.view, eventId: event.id })
+  }
+  const showLeadingError = () => {
+    automaticApplied.current = true
+    setDiagnosticSelection({ view: chooseAutomaticView(events), eventId: leadingDiagnosticEvent(events)?.id ?? null })
+  }
   const section = details[tab.id]
   const sectionError = errors[tab.id]
   const identity = <div className="rp-check-first-level">
@@ -94,7 +115,14 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
       <section className="rp-check-panel" role="tabpanel" tabIndex={0} id={`robot-check-panel-${tab.id}`} aria-labelledby={`robot-check-tab-${tab.id}`}>
         {tab.kind === 'state' ? <dl className="rp-check-telemetry"><div><dt>Режим</dt><dd>{snapshot?.mode ?? 'Нет данных'}</dd></div><div><dt>Связь робота</dt><dd>{snapshot?.online == null ? 'Нет данных' : snapshot.online ? 'На связи' : 'Не в сети'}</dd></div><div><dt>Заряд</dt><dd>{snapshot?.charge_percent == null ? 'Нет данных' : `${snapshot.charge_percent} %`}</dd></div></dl> : null}
         {tab.kind === 'errors' ? <>
-          {snapshot?.error_banner ? <p role="status">{snapshot.error_banner}</p> : <p>Сообщения об ошибках не получены.</p>}
+          {snapshot?.error_banner ? <p role="status">{snapshot.error_banner}</p> : !events.length ? <p>Сообщения об ошибках не получены.</p> : null}
+          {events.length ? <>
+            <Button variant="secondary" disabled={!leadingDiagnosticEvent(events)} onClick={() => { showLeadingError(); onTabChange('scheme') }}>Показать ошибку</Button>
+            <ul className="rp-check-events" aria-label="Диагностические события">{events.map(event => <li key={event.id}>
+              <DiagnosticEventDetails event={event} />
+              {isLocalizedEvent(event) ? <Button variant="secondary" onClick={() => { showEvent(event); onTabChange('scheme') }}>Посмотреть на схеме</Button> : null}
+            </li>)}</ul>
+          </> : null}
           {snapshot?.wheels_fault.length ? <><p>Есть сообщения о неисправности колёс.</p><Button variant="secondary" onClick={() => onTabChange('scheme')}>Посмотреть на схеме</Button></> : <p>Данные о неисправностях колёс не сообщены.</p>}
         </> : null}
         {tab.kind === 'tasks' ? renderTasks?.(snapshot, snapshotError, refresh) ?? <EmptyState title="Связанные задачи недоступны" /> : null}
@@ -106,7 +134,11 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
         {tab.kind === 'telemetry' ? <dl className="rp-check-telemetry">
           {([['Скорость', snapshot?.speed, 'м/с'], ['Заряд', snapshot?.charge_percent, '%'], ['Батарея 1', snapshot?.battery1_percent, '%'], ['Батарея 2', snapshot?.battery2_percent, '%'], ['Диск', snapshot?.disk_percent, '%'], ['Режим', snapshot?.mode], ['ICP', snapshot?.icp_label], ['LTE', snapshot?.lte_label], ['Соединение', snapshot?.connection === 'wire' ? 'Проводное' : snapshot?.connection === 'lte' ? 'Мобильное' : null]] as const).map(([label, value, unit]) => <div key={label}><dt>{label}</dt><dd>{value == null ? 'Нет данных' : `${value}${unit ? ` ${unit}` : ''}`}</dd></div>)}
         </dl> : null}
-        {tab.kind === 'scheme' ? snapshot ? <RobotDiagnosticDiagram faults={snapshot.wheels_fault} onSelectWheels={tabs.some(item => item.id === 'wheels' && item.kind === 'section') ? () => onTabChange('wheels') : undefined} /> : <EmptyState title="Данные диагностики не получены" /> : null}
+        {tab.kind === 'scheme' ? snapshot ? <RobotDiagnosticDiagram faults={snapshot.wheels_fault} events={events} view={diagnosticSelection.view} selectedEventId={diagnosticSelection.eventId}
+          onViewChange={view => { automaticApplied.current = true; setDiagnosticSelection(current => ({ ...current, view })) }}
+          onSelectEvent={event => { automaticApplied.current = true; setDiagnosticSelection(current => ({ ...current, eventId: event.id })) }}
+          onShowError={showLeadingError} onRevealEvent={showEvent} onOpenErrors={() => onTabChange('errors')}
+          onSelectWheels={tabs.some(item => item.id === 'wheels' && item.kind === 'section') ? () => onTabChange('wheels') : undefined} /> : <EmptyState title="Данные диагностики не получены" /> : null}
         {tab.kind === 'section' ? <>
           {sectionError ? <CheckError failure={sectionError} user={user} onRetry={refresh} /> : null}
           {section ? section.fields.length ? section.fields.map((field, index) => <div className="rp-check-field" key={`${field.label}-${index}`}><h3>{field.label}</h3><pre className="rp-check-field-lines">{field.lines.length ? field.lines.join('\n') : 'Нет данных'}</pre></div>) : <EmptyState title="В разделе пока нет данных" />

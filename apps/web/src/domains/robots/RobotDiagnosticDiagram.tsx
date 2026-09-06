@@ -1,26 +1,48 @@
-import { useState } from 'react'
+import { useId, useLayoutEffect, useRef, useState } from 'react'
+import type { DiagnosticEvent } from '../../api'
 import { Button } from '../../design-system/actions/Button'
 import { ROBOT_PHOTOS, type RobotPhotoId } from './robotPhotos'
 import { photoWheelHotspots, splitWheelFaults, WHEEL_LABELS, type PhotoWheelSlot } from './robotPhotoHotspots'
+import { DiagnosticEventDetails } from './DiagnosticEventDetails'
+import { DIAGNOSTIC_SEVERITIES, isLocalizedEvent, leadingDiagnosticEvent } from './diagnosticPresentation'
 
 const VIEWS: { id: RobotPhotoId; label: string }[] = [
   { id: 'top', label: 'Сверху' }, { id: 'front', label: 'Спереди' }, { id: 'rear', label: 'Сзади' },
   { id: 'left', label: 'Слева' }, { id: 'right', label: 'Справа' }, { id: 'isometric', label: 'Изометрия' },
 ]
 
-export function RobotDiagnosticDiagram({ faults, onSelectWheels }: { faults: string[]; onSelectWheels?: () => void }) {
-  const [view, setView] = useState<RobotPhotoId>('top')
+type Props = {
+  faults: string[]; events: DiagnosticEvent[]; view: RobotPhotoId; selectedEventId: string | null
+  onViewChange: (view: RobotPhotoId) => void; onSelectEvent: (event: DiagnosticEvent) => void
+  onShowError: () => void; onRevealEvent: (event: DiagnosticEvent) => void; onOpenErrors: () => void
+  onSelectWheels?: () => void
+}
+export function RobotDiagnosticDiagram({ faults, events, view, selectedEventId, onViewChange, onSelectEvent, onShowError, onRevealEvent, onOpenErrors, onSelectWheels }: Props) {
+  const detailId = useId()
+  const detailRef = useRef<HTMLElement>(null)
+  const [revealRevision, setRevealRevision] = useState(0)
+  useLayoutEffect(() => {
+    // Only an activation scrolls. Focus, initial load and polling keep their position.
+    if (revealRevision) detailRef.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [revealRevision])
   const [failedImages, setFailedImages] = useState<Partial<Record<RobotPhotoId, boolean>>>({})
   const [selected, setSelected] = useState<PhotoWheelSlot | null>(null)
   const photo = ROBOT_PHOTOS.find(item => item.id === view)!
   const failure = splitWheelFaults(faults)
   const failed = failedImages[view]
+  const selectedEvent = events.find(event => event.id === selectedEventId)
+  const markers = events.filter(isLocalizedEvent).filter(event => event.view === view)
   // Fallback has its own original SVG frame, never the photo coordinate system.
   const hotspots = failed ? photoWheelHotspots('top').map(h => ({ ...h, x: h.x < .5 ? .16 : .84, y: h.slot.startsWith('f') ? .28 : h.slot.startsWith('m') ? .5 : .72 })) : photoWheelHotspots(view)
   return <div className="rp-check-diagram">
     <div className="rp-check-views" role="group" aria-label="Ракурс модели">
-      {VIEWS.map(item => <button type="button" key={item.id} aria-pressed={view === item.id} onClick={() => setView(item.id)}>{item.label}</button>)}
+      {VIEWS.map(item => <button type="button" key={item.id} aria-pressed={view === item.id} onClick={() => onViewChange(item.id)}>{item.label}</button>)}
     </div>
+    {events.length ? <div className="rp-check-event-actions">
+      <Button variant="secondary" disabled={!leadingDiagnosticEvent(events)} onClick={() => { onShowError(); setRevealRevision(current => current + 1) }}>Показать ошибку</Button>
+      <Button variant="secondary" onClick={onOpenErrors}>Все ошибки ({events.length})</Button>
+    </div> : null}
+    <div className="rp-check-diagram-content" data-events={Boolean(events.length)}>
     <figure>
       <div className="rp-check-photo-frame">
         {failed ? <svg role="img" aria-label="Схема модели робота" viewBox="0 0 240 320">
@@ -36,10 +58,26 @@ export function RobotDiagnosticDiagram({ faults, onSelectWheels }: { faults: str
             aria-label={`${WHEEL_LABELS[h.slot]}: ${fault ? 'неисправность' : 'ошибка не сообщена'}`} aria-pressed={selected === h.slot}
             onClick={() => setSelected(h.slot)}><span aria-hidden="true">{fault ? '!' : '·'}</span></button>
         })}
+        {!failed ? markers.map(event => <button type="button" key={event.id}
+          className={`rp-check-event-marker rp-check-event-marker--${event.indicator} rp-check-event-marker--${event.severity}`}
+          style={{ left: `clamp(var(--rp-marker-inset), ${event.x * 100}%, calc(100% - var(--rp-marker-inset)))`, top: `clamp(var(--rp-marker-inset), ${event.y * 100}%, calc(100% - var(--rp-marker-inset)))` }}
+          aria-label={`Ошибка: ${event.title}`} aria-pressed={selectedEventId === event.id} aria-controls={detailId}
+          aria-describedby={`${detailId}-${event.id}`} onFocus={() => onSelectEvent(event)} onClick={() => { onSelectEvent(event); setRevealRevision(current => current + 1) }}>
+          <span aria-hidden="true">{event.severity === 'info' ? 'i' : '!'}</span>
+        </button>) : null}
       </div>
       <figcaption>Иллюстрация модели</figcaption>
     </figure>
-    {view === 'isometric' && !failed ? <Button variant="secondary" onClick={() => setView('top')}>Показать колёса сверху</Button> : null}
+    <div className="rp-check-diagnostic-details">
+      {markers.map(event => <span className="rp-check-event-description" key={event.id} id={`${detailId}-${event.id}`}>{event.description} {event.part}. {DIAGNOSTIC_SEVERITIES[event.severity]}</span>)}
+      {failed && events.length ? <p role="status">Фотография не загрузилась. Маркеры ошибок доступны только на фотографиях; расшифровки сохранены.</p> : null}
+      {selectedEvent ? <section ref={detailRef} id={detailId} className="rp-check-event-detail" aria-label="Выбранная ошибка" aria-live="polite">
+        <DiagnosticEventDetails event={selectedEvent} />
+        {isLocalizedEvent(selectedEvent) && selectedEvent.view !== view ? <Button variant="secondary" onClick={() => onRevealEvent(selectedEvent)}>Посмотреть на схеме</Button> : null}
+      </section> : events.length ? <p id={detailId}>Выберите маркер ошибки на фотографии.</p> : null}
+    </div>
+    </div>
+    {view === 'isometric' && !failed ? <Button variant="secondary" onClick={() => onViewChange('top')}>Показать колёса сверху</Button> : null}
     <div className="rp-check-wheel-details" aria-live="polite">
       {selected ? <p>Выбрано: {WHEEL_LABELS[selected]}</p> : <p>Выберите колесо на иллюстрации.</p>}
       {failure.known.length ? <ul>{failure.known.map(slot => <li key={slot}>Неисправность: {WHEEL_LABELS[slot]}</li>)}</ul> : null}
