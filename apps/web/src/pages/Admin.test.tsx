@@ -120,6 +120,22 @@ describe('Admin Emergency cookie validation', () => {
     expect(await screen.findByText('Действительна')).toBeVisible()
   })
 
+  it('publishes a successful integration mutation after a cold bootstrap failure without reloading', async () => {
+    const actor = userEvent.setup()
+    setup()
+    vi.mocked(api.integrationSettings).mockRejectedValue(new Error('bootstrap offline'))
+    vi.spyOn(api, 'checkEmergencyCookie').mockResolvedValue(settings({
+      emergency_cookie_status: 'valid', emergency_cookie_valid: true,
+      emergency_cookie_checked_robot: '447',
+    }))
+    await screen.findByRole('alert')
+    await actor.click(screen.getByRole('button', { name: 'Проверить текущую' }))
+    expect(await screen.findByText('Текущая cookie проверена')).toBeVisible()
+    expect(screen.getByText('Действительна')).toBeVisible()
+    expect(screen.getByText(/робот 447/)).toBeVisible()
+    expect(api.integrationSettings).toHaveBeenCalledTimes(1)
+  })
+
   it('does not reuse settings or a pending mutation in a new user context', async () => {
     const actor = userEvent.setup()
     const mutation = deferred<IntegrationSettings>()

@@ -1,0 +1,77 @@
+import { screen, within, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { api, type AdminRole, type AdminUser } from '../../api'
+import { resourceStore } from '../../lib/resource'
+import { installMatchMedia, renderApp, testUser } from '../../test/renderApp'
+
+const north = { id: 7, name: 'Северный', tag: 'north', is_active: true }
+const south = { ...north, id: 8, name: 'Южный', tag: 'south' }
+const roles: AdminRole[] = [
+  { id: 1, slug: 'mechanic', name: 'Механик', description: '', is_system: true, is_active: true, user_count: 1, permissions: ['nav.tasks', 'nav.reports', 'reports.create'] },
+  { id: 2, slug: 'driver', name: 'Водитель', description: '', is_system: true, is_active: true, user_count: 0, permissions: ['nav.tasks'] },
+]
+const account: AdminUser = {
+  id: 2, username: 'mechanic-two', role: 'mechanic', role_id: 1, access_status: 'approved', is_active: true,
+  must_change_password: false, parks: [north], permissions: roles[0].permissions, role_permissions: roles[0].permissions,
+}
+
+beforeEach(() => {
+  installMatchMedia()
+  vi.spyOn(api, 'parks').mockResolvedValue([north, south])
+  vi.spyOn(api, 'adminUsers').mockResolvedValue([account])
+  vi.spyOn(api, 'adminRoles').mockResolvedValue(roles)
+  vi.spyOn(api, 'adminRolePermissionCatalog').mockResolvedValue([
+    { key: 'nav.tasks', label: 'Работа', category: 'nav', sort_order: 1 },
+    { key: 'nav.reports', label: 'Репорты', category: 'nav', sort_order: 2 },
+    { key: 'reports.create', label: 'Создавать репорты', category: 'action', sort_order: 3 },
+  ])
+})
+afterEach(() => { resourceStore.clearAll(); vi.restoreAllMocks() })
+
+function openAccounts() {
+  return renderApp('/admin/users?park=7', testUser({ role: 'royal', permissions: ['users.manage'], parks: [north, south] }))
+}
+
+it('previews effective permissions after role changes and individual grants or revokes', async () => {
+  const actor = userEvent.setup()
+  openAccounts()
+  const detail = await screen.findByRole('region', { name: 'Детали' })
+  const preview = within(detail).getByRole('region', { name: 'Итоговые доступы' })
+  expect(preview).toHaveTextContent('Работа')
+  expect(preview).toHaveTextContent('Создавать репорты')
+  await actor.selectOptions(within(detail).getByRole('combobox', { name: 'Роль' }), 'driver')
+  expect(preview).not.toHaveTextContent('Создавать репорты')
+  await actor.click(within(detail).getByRole('checkbox', { name: 'Репорты' }))
+  expect(preview).toHaveTextContent('Репорты')
+  await actor.click(within(detail).getByRole('checkbox', { name: /Работа/ }))
+  expect(preview).not.toHaveTextContent('Работа')
+})
+
+it('saves owner password, role, park and section changes and isolates account deletion', async () => {
+  const actor = userEvent.setup()
+  const update = vi.spyOn(api, 'updateAdminUser').mockResolvedValue({ ...account, role: 'driver', parks: [south], permissions: ['nav.tasks', 'nav.reports'], must_change_password: true })
+  const remove = vi.spyOn(api, 'deleteAdminUser').mockResolvedValue(undefined)
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  openAccounts()
+  const detail = await screen.findByRole('region', { name: 'Детали' })
+  await actor.selectOptions(within(detail).getByRole('combobox', { name: 'Роль' }), 'driver')
+  await actor.type(within(detail).getByLabelText('Новый пароль'), 'NewPassword!2026')
+  await actor.click(within(detail).getByRole('checkbox', { name: 'Требовать смену пароля при входе' }))
+  await actor.click(within(detail).getByRole('checkbox', { name: 'Северный' }))
+  await actor.click(within(detail).getByRole('checkbox', { name: 'Южный' }))
+  await actor.click(within(detail).getByRole('checkbox', { name: 'Репорты' }))
+  await actor.click(within(detail).getByRole('button', { name: 'Сохранить' }))
+  await waitFor(() => expect(update).toHaveBeenCalledWith(2, {
+    role_slug: 'driver', is_active: true, must_change_password: true, tracker_login: null,
+    park_ids: [8], permissions: ['nav.tasks', 'nav.reports'], access_status: 'approved', password: 'NewPassword!2026',
+  }))
+  expect(await screen.findByText('Изменения сохранены')).toBeVisible()
+  expect(within(detail).getByLabelText('Новый пароль')).toHaveValue('')
+  const danger = within(detail).getByRole('region', { name: 'Опасные действия' })
+  expect(within(danger).queryByRole('button', { name: 'Сохранить' })).not.toBeInTheDocument()
+  await actor.click(within(danger).getByRole('button', { name: 'Удалить аккаунт' }))
+  await waitFor(() => expect(remove).toHaveBeenCalledWith(2))
+  expect(await screen.findByText('Аккаунт удалён')).toBeVisible()
+  expect(screen.queryByRole('button', { name: /mechanic-two/ })).not.toBeInTheDocument()
+})

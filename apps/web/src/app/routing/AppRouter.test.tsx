@@ -257,7 +257,7 @@ describe('AppRouter', () => {
     await screen.findByRole('button', { name: /в другом парке/i })
     await actor.click(screen.getByRole('button', { name: /в другом парке/i }))
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/reports/19?park=7'))
-    expect(within(await screen.findByRole('article')).getByText('Южный')).toBeVisible()
+    expect(within(await screen.findByRole('region', { name: 'Детали' })).getByText('Южный')).toBeVisible()
   })
 
   it('opens the canonical robot-check settings route from configuration recovery', async () => {

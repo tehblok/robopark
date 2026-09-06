@@ -1,9 +1,197 @@
 .management-grid {
   display: grid;
-  gap: var(--space-4, 16px);
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--rp-density-gap);
 }
 
-.management-grid .btn {
-  min-height: 44px;
+.rp-management :is(.page-body, .admin-users, .admin-roles),
+.rp-management .tab-panel {
+  display: grid;
+  gap: var(--rp-density-gap);
+  min-inline-size: 0;
+}
+
+.rp-management :is(.panel, .rp-master-detail__list, .rp-master-detail__detail) {
+  min-inline-size: 0;
+  align-content: start;
+}
+
+.rp-management .rp-master-detail :is(.panel, .panel-head) {
+  box-shadow: none;
+}
+
+.rp-management .rp-master-detail .panel {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.rp-management .rp-master-detail {
+  align-items: start;
+}
+
+.rp-management-metrics {
+  display: grid;
+  gap: var(--rp-density-gap);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.rp-management-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rp-space-2);
+  padding-block-end: var(--rp-space-3);
+  border-block-end: 1px solid var(--rp-border);
+}
+
+.rp-management-nav a {
+  align-items: center;
+  display: inline-flex;
+  min-block-size: var(--rp-control-min-size);
+  padding: var(--rp-space-2) var(--rp-space-3);
+  border: 1px solid transparent;
+  border-radius: var(--rp-radius-control);
+  color: var(--rp-text-muted);
+  font-size: var(--rp-font-size-body);
+  font-weight: var(--rp-font-weight-medium);
+  text-decoration: none;
+}
+
+.rp-management-nav a[aria-current],
+.rp-management-nav a:hover {
+  color: var(--rp-text);
+  background: var(--rp-state-selected);
+  border-color: var(--rp-border);
+}
+
+.rp-management .tab.is-active {
+  background: var(--rp-state-selected);
+  color: var(--rp-text);
+}
+
+.rp-management-select {
+  display: block;
+  inline-size: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.rp-management-select .rp-entity-row {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--rp-space-2);
+}
+
+.rp-management-select:is(:hover, .is-selected) .rp-entity-row {
+  border-color: var(--rp-action);
+  background: var(--rp-state-selected);
+}
+
+.rp-management .admin-user-list,
+.rp-management .admin-role-list {
+  gap: var(--rp-space-2);
+  max-block-size: none;
+}
+
+.rp-management .admin-user-filters {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.rp-management :is(.admin-perm-check, .toggle, .btn, input:not([type='checkbox']), select) {
+  min-block-size: var(--rp-control-min-size);
+}
+
+.rp-management :is(.admin-perm-check, .field-label, .field-hint, .panel-hint, .issue-muted, .toggle) {
+  font-size: var(--rp-font-size-body);
+  line-height: var(--rp-line-height-body);
+}
+
+.rp-management .admin-perm-check {
+  padding: var(--rp-space-2);
+  border: 1px solid var(--rp-border);
+  border-radius: var(--rp-radius-control);
+  margin: 0;
+}
+
+.rp-management .admin-perm-check input {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0;
+}
+
+.rp-management .form-grid .field.admin-perm-check {
+  display: flex;
+}
+
+.rp-management .admin-perm-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: var(--rp-space-2);
+}
+
+.rp-management :is(.rp-permissions-editor, .rp-permissions-preview, .rp-danger-zone) {
+  grid-column: 1 / -1;
+}
+
+.rp-permissions-preview,
+.rp-danger-zone {
+  padding: var(--rp-density-panel-padding);
+  border: 1px solid var(--rp-border);
+  border-radius: var(--rp-radius-panel);
+  margin-block: var(--rp-space-3);
+}
+
+.rp-permissions-preview {
+  background: var(--rp-surface-sunken);
+}
+
+.rp-permissions-preview ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rp-space-2);
+  padding: 0;
+  list-style: none;
+}
+
+.rp-permissions-preview li {
+  padding: var(--rp-space-1) var(--rp-space-2);
+  background: var(--rp-surface);
+  border: 1px solid var(--rp-border);
+  border-radius: var(--rp-radius-control);
+  overflow-wrap: anywhere;
+}
+
+.rp-danger-zone {
+  border-color: var(--rp-critical);
+  border-inline-start-width: var(--rp-space-1);
+}
+
+.rp-management :is(.rp-permissions-preview h3, .rp-danger-zone h3, .admin-perm-group-title) {
+  margin: 0 0 var(--rp-space-2);
+  font-size: var(--rp-font-size-body);
+  font-weight: var(--rp-font-weight-bold);
+  color: var(--rp-text);
+}
+
+.rp-management .form-grid .password-field input {
+  padding-inline-end: 6.5rem;
+}
+
+@media (max-width: 599px) {
+  .rp-management-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rp-management :is(input:not([type='checkbox']), select) {
+    font-size: var(--rp-font-size-control);
+  }
+
+  .rp-management .management-grid .rp-entity-row__actions {
+    grid-column: 1 / -1;
+    grid-row: auto;
+  }
 }

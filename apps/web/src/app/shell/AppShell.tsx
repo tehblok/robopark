@@ -212,11 +212,13 @@ function NavigationLink({
   onClick?: () => void
 }) {
   const label = item.id === 'work' ? ru.appShell.work : item.label
+  const { pathname } = useLocation()
+  const parentActive = item.id === 'admin' && pathname.startsWith('/admin/') && !active
   return (
     <Link
       aria-label={label}
-      aria-current={active ? 'page' : undefined}
-      className={`${className}${active ? ' is-active' : ''}`}
+      aria-current={active ? 'page' : parentActive ? 'true' : undefined}
+      className={`${className}${active || parentActive ? ' is-active' : ''}`}
       data-route-id={item.id}
       onClick={onClick}
       to={item.path}

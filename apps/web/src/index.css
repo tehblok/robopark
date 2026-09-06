@@ -1552,18 +1552,6 @@ textarea {
   margin: 0 0 0.75rem;
 }
 
-.admin-users-layout {
-  display: grid;
-  gap: 1rem;
-}
-
-@media (min-width: 960px) {
-  .admin-users-layout {
-    grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.4fr);
-    align-items: start;
-  }
-}
-
 .admin-user-filters {
   margin-bottom: 0.75rem;
 }
@@ -1616,6 +1604,130 @@ textarea {
   flex-wrap: wrap;
   gap: 0.5rem 1rem;
   margin: 0.5rem 0;
+}
+
+/* Legacy form controls on migrated surfaces consume the operational tokens. */
+:is(.rp-management, .rp-reports) {
+  --bg: var(--rp-canvas);
+  --surface: var(--rp-surface);
+  --surface-muted: var(--rp-surface-sunken);
+  --border: var(--rp-border);
+  --text: var(--rp-text);
+  --text-muted: var(--rp-text-muted);
+  --brand: var(--rp-action);
+  --brand-strong: var(--rp-action-hover);
+  --accent: var(--rp-action);
+  --danger: var(--rp-critical);
+  --warning: var(--rp-warning);
+  --success: var(--rp-success);
+  --info: var(--rp-info);
+  --radius: var(--rp-radius-panel);
+  color: var(--rp-text);
+  font-family: var(--rp-font-sans);
+  font-size: var(--rp-font-size-body);
+}
+
+:is(.rp-management, .rp-reports) .btn {
+  border-radius: var(--rp-radius-control);
+  font-size: var(--rp-font-size-body);
+  font-weight: var(--rp-font-weight-medium);
+}
+
+:is(.rp-management, .rp-reports) .field :is(input:not([type='checkbox']):not([type='file']), select, textarea) {
+  border-radius: var(--rp-radius-control);
+}
+
+:is(.rp-management, .rp-reports) .btn:not(.btn-secondary):not(.btn-ghost):not(.btn-filter):not(.btn-danger) {
+  background: var(--rp-action);
+  color: var(--rp-action-on);
+}
+
+:is(.rp-management, .rp-reports) .btn-danger {
+  color: var(--rp-critical-on);
+}
+
+:is(.rp-management, .rp-reports) .password-field-toggle {
+  color: var(--rp-text);
+  font-size: var(--rp-font-size-body);
+  min-block-size: var(--rp-control-min-size);
+}
+
+:is(.rp-management, .rp-reports) input {
+  accent-color: var(--rp-info);
+}
+
+.rp-reports .report-detail a {
+  color: var(--rp-info);
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--rp-control-min-size);
+  min-inline-size: var(--rp-control-min-size);
+}
+
+.rp-reports .rp-master-detail {
+  align-items: start;
+}
+
+.rp-reports :is(.rp-master-detail__list, .rp-master-detail__detail) {
+  min-inline-size: 0;
+  align-content: start;
+}
+
+.rp-reports .rp-master-detail .panel {
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  margin: 0;
+}
+
+.rp-reports .rp-master-detail__list {
+  display: grid;
+  gap: var(--rp-density-gap);
+}
+
+.rp-report-select {
+  display: block;
+  inline-size: 100%;
+  border: 0;
+  padding: 0;
+  text-align: start;
+  color: inherit;
+  background: none;
+  cursor: pointer;
+}
+
+.rp-reports .report-list {
+  gap: var(--rp-space-2);
+}
+
+.rp-report-select .rp-entity-row {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--rp-space-2);
+}
+
+.rp-report-select:is(:hover, .is-selected) .rp-entity-row {
+  border-color: var(--rp-action);
+  background: var(--rp-state-selected);
+}
+
+.rp-reports :is(.report-detail, .report-detail-fields) {
+  gap: var(--rp-density-gap);
+}
+
+.rp-reports :is(.report-detail-title, .report-detail-body, .report-detail-fields, .report-row-return, .issue-field dt, .issue-field dd) {
+  font-size: var(--rp-font-size-body);
+  line-height: var(--rp-line-height-body);
+  overflow-wrap: anywhere;
+}
+
+.rp-reports :is(.btn, select, input:not([type='file'])) {
+  min-block-size: var(--rp-control-min-size);
+}
+
+@media (max-width: 899px) {
+  .rp-reports .rp-master-detail[data-detail-open='true'] .rp-master-detail__list {
+    display: none;
+  }
 }
 
 .issue-comments {

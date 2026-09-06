@@ -7,6 +7,11 @@ import { PasswordField } from '../ui/PasswordField'
 import { mapApiError } from '../../i18n/errors'
 import { accessStatusLabel, roleLabel } from '../../i18n/ru'
 import { actorPermissionCatalog, assignableRoles } from './privilegedPermissions'
+import { MasterDetail } from '../../design-system/layout/MasterDetail'
+import { EntityRow } from '../../design-system/data/EntityRow'
+import { MetricCard } from '../../design-system/data/MetricCard'
+import { StatusBadge } from '../../design-system/status/StatusBadge'
+import { EffectivePermissions } from './EffectivePermissions'
 
 type UserDraft = {
   role_slug: string
@@ -67,6 +72,7 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
   const [success, setSuccess] = useState('')
   const [busy, setBusy] = useState(false)
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [detailOpen, setDetailOpen] = useState(false)
   const [draft, setDraft] = useState<UserDraft>(emptyDraft())
   const [filterRole, setFilterRole] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
@@ -148,6 +154,7 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
   }, [selectedUser])
 
   const selectUser = (user: AdminUser) => {
+    setDetailOpen(true)
     setSelectedId(user.id)
     setDraft(draftFromUser(user))
     setSuccess('')
@@ -291,6 +298,7 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
       })
       setUsers((rows) => [...rows, created])
       setSelectedId(created.id)
+      setDetailOpen(true)
       setDraft(draftFromUser(created))
       setSuccess('Пользователь создан')
     } catch (createError) {
@@ -332,7 +340,11 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
       {error && <Alert tone="error">{error}</Alert>}
       {success && <Alert tone="success">{success}</Alert>}
 
-      <div className="admin-users-layout">
+      <div className="rp-management-metrics">
+        <MetricCard label="Аккаунты" value={users.length} />
+        <MetricCard label="Ожидают одобрения" value={pendingCount} tone={pendingCount ? 'warning' : 'neutral'} />
+      </div>
+      <MasterDetail detailOpen={detailOpen} onBack={() => setDetailOpen(false)} list={
         <Panel hint="Выберите аккаунт, чтобы сменить роль, парки, пароль и статус." title="Аккаунты">
           <div className="admin-user-filters form-grid">
             <label className="field">
@@ -383,22 +395,15 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
             {filteredUsers.map((row) => (
               <li key={row.id}>
                 <button
-                  className={`admin-user-row admin-user-select${selectedId === row.id ? ' is-selected' : ''}`}
+                  aria-label={`Открыть аккаунт ${row.username}`}
+                  aria-pressed={selectedId === row.id}
+                  className={`rp-management-select${selectedId === row.id ? ' is-selected' : ''}`}
                   onClick={() => selectUser(row)}
                   type="button"
                 >
-                  <span>
-                    <strong>{row.username}</strong>
-                    <span className="issue-muted"> · {roleLabel(row.role)}</span>
-                  </span>
-                  <span className="admin-user-meta">
-                    <span className={`status-pill status-pill--${row.access_status}`}>
-                      {accessStatusLabel(row.access_status)}
-                    </span>
-                    <span className="issue-muted">
-                      {!row.is_active ? 'выключен' : row.parks.map((park) => park.name).join(', ') || 'без парка'}
-                    </span>
-                  </span>
+                  <EntityRow title={row.username}
+                    meta={`${roleLabel(row.role)} · ${!row.is_active ? 'выключен' : row.parks.map(park => park.name).join(', ') || 'без парка'}`}
+                    status={<StatusBadge tone={row.access_status === 'approved' ? 'success' : row.access_status === 'pending' ? 'warning' : 'critical'}>{accessStatusLabel(row.access_status)}</StatusBadge>} />
                 </button>
               </li>
             ))}
@@ -407,8 +412,7 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
             )}
           </ul>
         </Panel>
-
-        <div className="admin-user-card">
+      } detail={
         <Panel
           hint={
             selectedUser
@@ -535,7 +539,7 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
               {draft.role_slug === 'royal' ? (
                 <p className="issue-muted">Владелец всегда имеет все доступы. Одобрение регистраций — только у этой роли.</p>
               ) : (
-                <div className="field">
+                <div className="field rp-permissions-editor">
                   <span className="field-label">Доступы этого человека</span>
                   <p className="field-hint">
                     Роль задаёт базовый набор. Снимите галочку, чтобы забрать доступ, или поставьте — чтобы выдать сверх роли.
@@ -577,6 +581,8 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
                 </div>
               )}
 
+              <EffectivePermissions catalog={catalog} permissions={draft.role_slug === 'royal' ? new Set(catalog.map(item => item.key)) : draft.permissions} />
+
               <div className="form-actions">
                 {!selectedLocked && (
                   <button className="btn" disabled={busy} onClick={() => void saveUser()} type="button">
@@ -603,7 +609,11 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
                     </button>
                   </>
                 )}
+              </div>
                 {!selectedLocked && selectedUser.id !== actor?.id && (
+                  <section aria-label="Опасные действия" className="rp-danger-zone">
+                  <h3>Опасные действия</h3>
+                  <p>Удаление аккаунта нельзя отменить.</p>
                   <button
                     className="btn btn-danger"
                     disabled={busy}
@@ -612,15 +622,14 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
                   >
                     Удалить аккаунт
                   </button>
+                  </section>
                 )}
-              </div>
             </div>
           ) : (
             <p className="issue-muted">Выберите пользователя в списке слева.</p>
           )}
         </Panel>
-        </div>
-      </div>
+      } />
 
       <Panel title="Создать пользователя">
         <div className="form-grid">

@@ -577,7 +577,7 @@ describe('AppShell', () => {
     ['/admin/tracker/settings', 'Startrek'],
     ['/admin/emergency/config', 'Настройка проверки робота'],
     ['/admin/emergency/config/sections', 'Настройка проверки робота'],
-  ])('marks only the exact nested destination active at %s', (path, destinationName) => {
+  ])('keeps the administration parent and nested destination active at %s', (path, destinationName) => {
     const adminUser = testUser({
       permissions: ['nav.admin', 'nav.admin.tracker', 'nav.admin.emergency'],
       parks: [north],
@@ -610,8 +610,8 @@ describe('AppShell', () => {
     })[0]
     const parent = within(navigation).getByRole('link', { name: 'Администрирование' })
     const destination = within(navigation).getByRole('link', { name: destinationName })
-    expect(parent).not.toHaveClass('is-active')
-    expect(parent).not.toHaveAttribute('aria-current')
+    expect(parent).toHaveClass('is-active')
+    expect(parent).toHaveAttribute('aria-current', 'true')
     expect(destination).toHaveClass('is-active')
     expect(destination).toHaveAttribute('aria-current', 'page')
     expect(navigation.querySelectorAll('[aria-current="page"]')).toHaveLength(1)

@@ -21,6 +21,9 @@ import { roleLabel, ru } from '../i18n/ru'
 import { resourceStore, useCachedResource } from '../lib/resource'
 import { useParkScope } from '../app/park/parkScope'
 import { SlaPolicyEditor } from '../domains/insights/SlaPolicyEditor'
+import { ManagementNavigation } from '../domains/management/ManagementNavigation'
+import { MetricCard } from '../design-system/data/MetricCard'
+import { StatusBadge } from '../design-system/status/StatusBadge'
 
 type TabId = 'integrations' | 'parks' | 'ops'
 
@@ -83,22 +86,22 @@ async function loadAdminBootstrap(canIntegrations: boolean): Promise<AdminBootst
 
 function worksBadge(ok: boolean) {
   return ok ? (
-    <span className="badge badge-ok">работает</span>
+    <StatusBadge tone="success">работает</StatusBadge>
   ) : (
-    <span className="badge badge-warn">нет</span>
+    <StatusBadge tone="warning">нет</StatusBadge>
   )
 }
 
 function emergencyCookieStatus(settings: IntegrationSettings) {
   switch (settings.emergency_cookie_status) {
     case 'valid':
-      return <span className="badge badge-ok">Действительна</span>
+      return <StatusBadge tone="success">Действительна</StatusBadge>
     case 'invalid':
-      return <span className="badge badge-warn">Недействительна</span>
+      return <StatusBadge tone="critical">Недействительна</StatusBadge>
     case 'unavailable':
-      return <span className="badge badge-warn">Недоступна</span>
+      return <StatusBadge tone="warning">Недоступна</StatusBadge>
     default:
-      return <span className="badge badge-muted">Не проверена</span>
+      return <StatusBadge tone="neutral">Не проверена</StatusBadge>
   }
 }
 
@@ -139,7 +142,7 @@ export function Admin() {
     user?.id, user?.username, user?.role, user?.tracker_login,
     user?.permissions, user?.parks, parkId,
   ])
-  return <AdminWorkspace key={context} bootstrapKey={`admin:bootstrap:${context}`} />
+  return <div className="rp-management"><AdminWorkspace key={context} bootstrapKey={`admin:bootstrap:${context}`} /></div>
 }
 
 function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
@@ -157,12 +160,14 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
     || (candidate === 'parks' && canParks)
     || (candidate === 'ops' && canOps)
   )
-  const initialTab: TabId = isPermittedTab(requestedTab) ? requestedTab : firstPermittedTab
-  const [tab, setTab] = useState<TabId>(initialTab)
-  const tabPermitted = (tab === 'integrations' && canIntegrations)
-    || (tab === 'parks' && canParks)
-    || (tab === 'ops' && canOps)
-  const bootRes = useCachedResource<AdminBootstrap>(bootstrapKey, () => loadAdminBootstrap(canIntegrations), {
+  const tab: TabId = isPermittedTab(requestedTab) ? requestedTab : firstPermittedTab
+  const setTab = (nextTab: TabId) => {
+    const next = new URLSearchParams(searchParams)
+    if (nextTab === 'integrations') next.delete('tab')
+    else next.set('tab', nextTab)
+    setSearchParams(next, { replace: true })
+  }
+  const bootRes = useCachedResource<Partial<AdminBootstrap>>(bootstrapKey, () => loadAdminBootstrap(canIntegrations), {
     persist: false,
   })
   const boot = bootRes.data
@@ -195,10 +200,6 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
   const [busy, setBusy] = useState(false)
   const [trackerBusy, setTrackerBusy] = useState(false)
   const [emergencyBusy, setEmergencyBusy] = useState(false)
-
-  useEffect(() => {
-    if (!tabPermitted) setTab(firstPermittedTab)
-  }, [tabPermitted, firstPermittedTab])
 
   useEffect(() => {
     const next = new URLSearchParams(searchParams)
@@ -266,13 +267,12 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
     merge: typeof mergeTrackerSettings,
   ) => {
     if (!active.current) return
-    const current = resourceStore.get<AdminBootstrap>(bootstrapKey)
-    if (!current) return
+    const current = resourceStore.get<Partial<AdminBootstrap>>(bootstrapKey)
     // A mutation is authoritative for its integration. Retire older bootstrap
     // loads before publishing to the same cache used by this page and remounts.
     resourceStore.invalidate(bootstrapKey)
     resourceStore.set(bootstrapKey, {
-      ...current, settings: merge(current.settings, updated),
+      ...current, settings: merge(current?.settings ?? null, updated),
     }, false)
   }
 
@@ -394,6 +394,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
       subtitle="Парки, роли, пользователи, интеграции и снимок системы."
       title="Администрирование"
     >
+      <ManagementNavigation />
       {displayError && <Alert tone="error">{displayError}</Alert>}
       {success && <Alert tone="success">{success}</Alert>}
 
@@ -472,19 +473,9 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
           title="Секреты"
         >
           {settings && (
-            <div className="stat-grid">
-              <div className="stat">
-                <span className="stat-label">Tracker OAuth</span>
-                <span className="stat-value">
-                  {worksBadge(Boolean(settings.tracker_token_masked))}
-                </span>
-              </div>
-              <div className="stat">
-                <span className="stat-label">Cookie диагностики робота</span>
-                <span className="stat-value">
-                  {emergencyCookieStatus(settings)}
-                </span>
-              </div>
+            <div className="rp-management-metrics">
+              <MetricCard label="Tracker OAuth" value={worksBadge(Boolean(settings.tracker_token_masked))} />
+              <MetricCard label="Проверка cookie" value={emergencyCookieStatus(settings)} />
             </div>
           )}
 

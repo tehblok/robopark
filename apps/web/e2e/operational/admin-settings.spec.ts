@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import type { IntegrationSettings } from '../../src/api'
 import { installOperational, parkNorth, settlePage } from './fixtures'
+import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 
 test.use({ trace: 'off' })
 
@@ -53,6 +54,8 @@ async function expectAdminFits(page: Page) {
     await expect(control).toBeVisible()
     const rect = await control.boundingBox()
     expect(rect).not.toBeNull()
+    expect(rect!.width).toBeGreaterThanOrEqual(44)
+    expect(rect!.height).toBeGreaterThanOrEqual(44)
     expect(rect!.y).toBeGreaterThanOrEqual(-1)
     expect(rect!.y + rect!.height).toBeLessThanOrEqual(page.viewportSize()!.height + 1)
   }
@@ -74,7 +77,7 @@ function integration(status: IntegrationSettings['emergency_cookie_status']): In
 
 for (const theme of ['light', 'dark'] as const) {
  for (const width of [320, 390, 768, 1024, 1440]) {
-  test(`admin validates a replacement robot-check cookie at ${width}px ${theme}`, async ({ page }) => {
+  test(`admin validates a replacement robot-check cookie at ${width}px ${theme}`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 720 })
     await page.addInitScript((preference) => localStorage.setItem('robopark-theme', preference), theme)
     let submitted: { cookie: string; robot_number: string } | undefined
@@ -113,6 +116,9 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(page.getByText('Действительна')).toBeVisible()
     await expect(page.getByLabel('Cookie диагностики робота')).toHaveValue('')
     await expectAdminFits(page)
+    await assertNoSeriousA11yViolations(page)
+    await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); window.scrollTo(0, 0) })
+    await page.screenshot({ path: info.outputPath(`settings-${theme}-${width}.png`), fullPage: true, animations: 'disabled' })
   })
  }
 }
