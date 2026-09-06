@@ -49,6 +49,37 @@ test('a delayed preview cannot restore a match after disabling the rule', async 
   await expect(page.getByRole('button', { name: 'Проверить пример' })).toBeEnabled()
 })
 
+for (const selected of ['1', 'new']) test(`reselecting ${selected} preserves navigation and settles the pending preview`, async ({ page }) => {
+  let release!: () => void; let previews = 0
+  await installEditor(page, { preview: async () => { if (++previews === 1) await new Promise<void>(resolve => { release = resolve }) } })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const query = `?park=7&tab=indication&rule=${selected}&filter=unresolved&sort=title`
+  await page.goto(`/admin/emergency/config${query}`)
+  if (selected === 'new') for (const [label, value] of [['Название ошибки', 'Батарея'], ['Часть робота', 'Батарея'], ['Путь источника', 'errors'], ['Код или шаблон', 'BAT'], ['Расшифровка', 'Проверить батарею'], ['Пример входного значения', 'BAT']]) await page.getByLabel(label, { exact: true }).fill(value)
+  const history = await page.evaluate(() => ({ key: window.history.state.key, length: window.history.length }))
+  await page.getByRole('button', { name: 'Проверить пример' }).click()
+  await expect.poll(() => typeof release).toBe('function')
+  const sameSelection = page.getByRole('button', { name: selected === 'new' ? 'Новое правило' : `Открыть правило ${rule.title}` })
+  await sameSelection.click()
+  await expect(sameSelection).toBeFocused()
+  await sameSelection.press('Enter')
+  await expect(sameSelection).toBeFocused()
+  release()
+  await expect(page.getByRole('button', { name: 'Проверить пример' })).toBeEnabled()
+  await expect(page.getByText('Совпадение найдено', { exact: true })).toBeVisible()
+  expect(await page.evaluate(() => ({ key: window.history.state.key, length: window.history.length }))).toEqual(history)
+  expect(new URL(page.url()).search).toBe(query)
+  await page.getByRole('button', { name: 'Проверить пример' }).click()
+  await expect.poll(() => previews).toBe(2)
+  await expect(page.getByText('Совпадение найдено', { exact: true })).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 900 })
+  await expect(page.getByLabel('Название ошибки')).toHaveValue(selected === 'new' ? 'Батарея' : rule.title)
+  await page.getByRole('button', { name: 'Назад к списку' }).click()
+  await sameSelection.click()
+  await expect(page.getByLabel('Название ошибки')).toBeVisible()
+  expect(Object.fromEntries(new URL(page.url()).searchParams)).toEqual({ park: '7', tab: 'indication', rule: selected, filter: 'unresolved', sort: 'title' })
+})
+
 test('creation adopts its ID while retaining later edits and saves them with PATCH', async ({ page }) => {
   let release!: () => void; let posts = 0; const patches: string[] = []
   page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/admin/diagnostic-rules')) posts++; if (request.method() === 'PATCH') patches.push(request.url()) })

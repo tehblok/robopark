@@ -112,6 +112,7 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
   }, [reload, user])
 
   const select = (id: string | null) => {
+    if (params.get('rule') === id) return
     clearCreatedDraft()
     const next = new URLSearchParams(params)
     if (id) next.set('rule', id); else next.delete('rule')

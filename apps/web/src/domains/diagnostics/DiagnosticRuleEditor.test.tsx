@@ -16,7 +16,7 @@ type Handler = (path: string, init: RequestInit) => Promise<Response> | Response
 let handler: Handler
 const requests: { path: string; init: RequestInit }[] = []
 const json = (body: unknown, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...headers } })
-function Probe() { const location = useLocation(); const navigate = useNavigate(); return <><output aria-label="Адрес">{location.search}</output><button onClick={() => navigate('?park=8&tab=indication&rule=1')}>Другой парк</button></> }
+function Probe() { const location = useLocation(); const navigate = useNavigate(); return <><output aria-label="Адрес">{location.search}</output><output aria-label="Ключ навигации">{location.key}</output><button onClick={() => navigate('?park=8&tab=indication&rule=1')}>Другой парк</button></> }
 function tree(principal = user, entry = '/admin/emergency/config?park=7&tab=indication&rule=1') {
   return <MemoryRouter initialEntries={[entry]}><AuthContext.Provider value={{ user: principal, loading: false, login: async () => principal, refreshUser: async () => principal, logout: async () => undefined }}><AdminEmergencyConfig /><Probe /></AuthContext.Provider></MemoryRouter>
 }
@@ -120,6 +120,28 @@ it('invalidates a pending preview when its view or example changes', async () =>
   await act(async () => complete(json({ matched: true, events: [event] })))
   expect(screen.queryByText('Совпадение найдено')).not.toBeInTheDocument()
   expect(screen.getByLabelText('Ракурс')).toHaveValue('top')
+})
+
+it.each([['1', 200], ['1', 422], ['new', 200], ['new', 422]] as const)('keeps selection %s a navigation no-op and settles a delayed preview %s', async (selected, status) => {
+  let complete!: (response: Response) => void; let previews = 0
+  const normal = handler
+  handler = (path, init) => path.endsWith('/preview') && ++previews === 1 ? new Promise(resolve => { complete = resolve }) : normal(path, init)
+  const query = `?park=7&tab=indication&rule=${selected}&filter=unresolved&sort=title`
+  render(tree(user, `/admin/emergency/config${query}`))
+  await screen.findByLabelText('Название ошибки')
+  if (selected === 'new') fillNewRule()
+  const key = screen.getByLabelText('Ключ навигации').textContent
+  fireEvent.click(screen.getByRole('button', { name: 'Проверить пример' }))
+  fireEvent.click(screen.getByRole('button', { name: selected === 'new' ? 'Новое правило' : 'Открыть правило Лидар' }))
+  await act(async () => complete(status === 200 ? json({ matched: true, events: [event] }) : json({}, status)))
+  expect(screen.getByRole('button', { name: 'Проверить пример' })).toBeEnabled()
+  expect(screen.getByText(status === 200 ? 'Совпадение найдено' : /Проверьте поля правила и пример/)).toBeVisible()
+  expect(screen.getByLabelText('Ключ навигации')).toHaveTextContent(key!)
+  expect(screen.getByLabelText('Адрес').textContent).toBe(query)
+  expect(screen.getByLabelText('Название ошибки')).toHaveValue(selected === 'new' ? 'Батарея' : 'Лидар')
+  fireEvent.click(screen.getByRole('button', { name: 'Проверить пример' }))
+  await screen.findByText('Совпадение найдено')
+  expect(previews).toBe(2)
 })
 
 it.each(['park', 'auth'] as const)('retires pending lists when the %s owner changes', async owner => {
