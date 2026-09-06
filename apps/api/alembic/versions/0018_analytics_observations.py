@@ -26,6 +26,7 @@ def upgrade() -> None:
         sa.Column("issue_key", sa.String(128), nullable=False),
         sa.Column("status", sa.String(128), nullable=False),
         sa.Column("status_bucket", sa.String(32), nullable=False),
+        sa.Column("authorization_status", sa.String(32), nullable=True),
         sa.Column("age_hours", sa.Float(), nullable=True),
         sa.ForeignKeyConstraint(
             ["park_id", "bucket_start"],

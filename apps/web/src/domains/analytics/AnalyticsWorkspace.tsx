@@ -7,7 +7,7 @@ import { Button } from '../../design-system/actions/Button'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { PageLayout } from '../../design-system/layout/PageLayout'
 import { classifyApiError, type DomainError } from '../../shared/api/classifyApiError'
-import { ANALYTICS_LABELS, analyticsDate, analyticsParks, analyticsSearch, analyticsValue, parseAnalyticsQuery, trendSegments, type AnalyticsApiClient, type AnalyticsCoverage, type AnalyticsMetric, type AnalyticsQuery, type AnalyticsSeries, type HistoricalAnalytics } from './analyticsModel'
+import { ANALYTICS_LABELS, analyticsDate, analyticsParks, analyticsRequestIdentity, analyticsSearch, analyticsValue, parseAnalyticsQuery, trendSegments, type AnalyticsApiClient, type AnalyticsCoverage, type AnalyticsMetric, type AnalyticsQuery, type AnalyticsSeries, type HistoricalAnalytics } from './analyticsModel'
 import './analytics.css'
 
 function Coverage({ data }: { data: AnalyticsCoverage }) {
@@ -113,17 +113,18 @@ function AnalyticsSession({ apiClient, user }: { apiClient: AnalyticsApiClient; 
   const available = useMemo(() => analyticsParks(user, parks), [user, parks])
   const query = parseAnalyticsQuery(params, available, selectedPark?.id)
   const normalized = analyticsSearch(params, query).toString()
-  const [authorizationFailure, setAuthorizationFailure] = useState<DomainError | null>(null)
-  const onAuthorizationFailure = useCallback((failure: DomainError) => {
-    setAuthorizationFailure(failure)
-    void refreshUser().catch(() => undefined)
-  }, [refreshUser])
+  const [authorizationFailure, setAuthorizationFailure] = useState<{ context: string; failure: DomainError } | null>(null)
   useLayoutEffect(() => {
     if (!loading && normalized !== params.toString()) setParams(normalized, { replace: true })
   }, [loading, normalized, params, setParams])
   const comparePark = available.find(park => park.id === query.compare)
   const requestedParks = useMemo(() => selectedPark ? [selectedPark, ...(comparePark ? [comparePark] : [])] : [], [selectedPark, comparePark])
-  const identity = JSON.stringify([user.id, user.role, user.access_status, user.permissions, user.parks, requestedParks, query.days, query.bucket])
+  const identity = analyticsRequestIdentity(user, requestedParks, query)
+  const contextFailure = authorizationFailure?.context === identity ? authorizationFailure.failure : null
+  const onAuthorizationFailure = useCallback((failure: DomainError) => {
+    setAuthorizationFailure({ context: identity, failure })
+    void refreshUser().catch(() => undefined)
+  }, [identity, refreshUser])
   const update = (next: AnalyticsQuery) => setParams(analyticsSearch(params, next), { replace: true })
   const canRead = user.access_status === 'approved' && !user.must_change_password && ['nav.analytics', 'tracker.read'].every(permission => user.permissions?.includes(permission))
   return <PageLayout title="Аналитика" description="Как меняется процесс и на каких этапах накапливается задержка.">
@@ -132,7 +133,7 @@ function AnalyticsSession({ apiClient, user }: { apiClient: AnalyticsApiClient; 
       <label>Шаг графиков<select aria-label="Шаг графиков" value={query.bucket} onChange={event => update({ ...query, bucket: event.target.value as AnalyticsQuery['bucket'] })}><option value="1d">24 часа</option><option value="2h">2 часа</option></select></label>
       <label>Сравнить с парком<select aria-label="Сравнить с парком" value={query.compare ?? ''} onChange={event => update({ ...query, compare: event.target.value ? Number(event.target.value) : null })}><option value="">Без сравнения</option>{available.filter(park => park.id !== selectedPark?.id).map(park => <option key={park.id} value={park.id}>{park.name}</option>)}</select></label>
     </div> : null}
-    {!canRead ? <ErrorState title="Нет доступа" description="Нужны разрешения на аналитику и чтение Tracker." /> : authorizationFailure ? <ErrorState title={authorizationFailure.title} description={authorizationFailure.description} />
+    {!canRead ? <ErrorState title="Нет доступа" description="Нужны разрешения на аналитику и чтение Tracker." /> : contextFailure ? <ErrorState title={contextFailure.title} description={contextFailure.description} />
       : loading ? <LoadingState label="Загружаем доступные парки" /> : !selectedPark ? <EmptyState title="Парк не выбран" description="Выберите парк для просмотра истории процесса." icon="parks" />
         : !available.some(park => park.id === selectedPark.id) ? <ErrorState title="Нет доступа" description="Выбранный парк недоступен." />
           : <AnalyticsOwner key={identity} apiClient={apiClient} parks={requestedParks} days={query.days} bucket={query.bucket} onAuthorizationFailure={onAuthorizationFailure} />}

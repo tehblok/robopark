@@ -11,7 +11,7 @@ from robopark_api.services import platform_settings, tracker_client
 from robopark_api.services.blocker_history import align_bucket_start
 from robopark_api.services.operations import age_hours, as_utc, get_sla_target
 from robopark_api.services.tracker_filters import issue_status_bucket, park_priority_type
-from robopark_api.services.tracker_policy import issue_tags
+from robopark_api.services.tracker_policy import issue_authorization_status, issue_tags
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,7 @@ def record_observation(
                 issue_key=key,
                 status=status,
                 status_bucket=issue_status_bucket(item),
+                authorization_status=issue_authorization_status(item),
                 age_hours=age_hours(item, observed_at),
             )
         )
@@ -61,6 +62,13 @@ def record_observation(
 
 
 def scan_all_parks_once(db: Session, *, now: datetime | None = None) -> int:
+    # Retention is independent of collection: commit before checking credentials
+    # or contacting Tracker so an unavailable source cannot extend retention.
+    # Explicit child deletion also supports SQLite without FK enforcement.
+    cutoff = align_bucket_start(now or datetime.now(UTC)) - timedelta(days=30)
+    db.execute(delete(AnalyticsObservation).where(AnalyticsObservation.bucket_start < cutoff))
+    db.execute(delete(AnalyticsSnapshot).where(AnalyticsSnapshot.bucket_start < cutoff))
+    db.commit()
     token = platform_settings.get_tracker_token(db)
     if not token:
         return 0
@@ -90,9 +98,4 @@ def scan_all_parks_once(db: Session, *, now: datetime | None = None) -> int:
             logger.warning("Analytics observation failed for park %s", park.id, exc_info=True)
             continue
         scanned += 1
-    # Explicit deletion of child rows also supports SQLite without FK enforcement.
-    cutoff = align_bucket_start(now or datetime.now(UTC)) - timedelta(days=30)
-    db.execute(delete(AnalyticsObservation).where(AnalyticsObservation.bucket_start < cutoff))
-    db.execute(delete(AnalyticsSnapshot).where(AnalyticsSnapshot.bucket_start < cutoff))
-    db.commit()
     return scanned

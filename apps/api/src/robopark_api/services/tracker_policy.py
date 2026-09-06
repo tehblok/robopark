@@ -79,11 +79,17 @@ def issue_tags(issue: dict) -> set[str]:
     return {str(tag).strip() for tag in raw if str(tag).strip()}
 
 
+def issue_authorization_status(issue: dict) -> str | None:
+    """Canonical workflow status for access decisions; no UI/relocation hints."""
+    return status_bucket(str(issue.get("status_key") or ""), str(issue.get("status") or ""))
+
+
 def is_issue_status_visible(user: User, issue: dict) -> bool:
     """Driver authorization uses exact workflow status, never relocation hints."""
-    return rbac.role_slug(user) != RoleSlug.DRIVER or status_bucket(
-        str(issue.get("status_key") or ""), str(issue.get("status") or "")
-    ) in {"new", "moving"}
+    return rbac.role_slug(user) != RoleSlug.DRIVER or issue_authorization_status(issue) in {
+        "new",
+        "moving",
+    }
 
 
 def is_issue_in_scope(db: Session, user: User, issue: dict) -> bool:

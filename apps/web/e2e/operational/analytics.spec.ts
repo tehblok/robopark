@@ -46,3 +46,40 @@ for (const theme of ['light', 'dark'] as const) for (const width of [320, 1440])
     expect(requests).toEqual([])
   })
 }
+
+test('a denied comparison recovers after removal through the real auth and park lifecycle', async ({ page }) => {
+  const requestedParks: number[] = []
+  let authReads = 0
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/auth/me') authReads += 1
+  })
+  await installOperational(page, { role: 'operator', routes: [{ method: 'GET', path: '/api/analytics', handler: request => {
+    const params = new URL(request.url).searchParams
+    const parkId = Number(params.get('park_id'))
+    requestedParks.push(parkId)
+    return parkId === 8 ? { status: 403, json: { detail: 'park_forbidden' } }
+      : { json: analyticsFixture(parkId, Number(params.get('days')), params.get('bucket') === '2h' ? '2h' : '1d') }
+  } }] })
+  await page.goto('/analytics?park=7')
+  await expect(page.getByRole('region', { name: 'История парка Северный парк' })).toBeVisible()
+  await settlePage(page)
+  // StrictMode may bootstrap AuthProvider twice; measure only the denial's refresh.
+  const initialAuthReads = authReads
+  const initialParkReads = requestedParks.length
+  await page.getByLabel('Сравнить с парком').selectOption('8')
+  await expect(page.getByRole('heading', { name: 'Нет доступа' })).toBeVisible()
+  await expect.poll(() => authReads).toBe(initialAuthReads + 1)
+  await settlePage(page)
+  expect(new Set(requestedParks.slice(initialParkReads))).toEqual(new Set([7, 8]))
+  const deniedParkReads = requestedParks.length
+  // Re-render the unchanged request context: a handled denial must not retry.
+  // StrictMode can double the first requests when a keyed owner mounts.
+  await page.getByLabel('Шаг графиков').selectOption('1d')
+  await settlePage(page)
+  expect(requestedParks).toHaveLength(deniedParkReads)
+  await page.getByLabel('Сравнить с парком').selectOption('')
+  await expect(page.getByRole('region', { name: 'История парка Северный парк' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Нет доступа' })).toHaveCount(0)
+  expect(new Set(requestedParks.slice(deniedParkReads))).toEqual(new Set([7]))
+  expect(authReads).toBe(initialAuthReads + 1)
+})

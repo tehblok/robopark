@@ -42,6 +42,14 @@ export const ANALYTICS_UNITS: Record<AnalyticsMetric['unit'], string> = {
 export function analyticsParks(user: User, parks: Park[]): Park[] {
   return parks.filter(park => park.is_active !== false && (user.role === 'admin' || user.role === 'royal' || user.parks.some(assigned => assigned.id === park.id)))
 }
+export function analyticsRequestIdentity(user: User, parks: Park[], query: AnalyticsQuery): string {
+  const scope = (park: Park) => [park.id, park.tag?.trim(), park.tracker_queue?.trim(), park.is_active !== false]
+  return JSON.stringify([
+    user.id, user.role, user.access_status, Boolean(user.must_change_password),
+    [...new Set(user.permissions ?? [])].sort(), [...user.parks].sort((a, b) => a.id - b.id).map(scope),
+    parks.map(scope), query.days, query.bucket,
+  ])
+}
 export function parseAnalyticsQuery(params: URLSearchParams, parks: Park[], selectedId?: number): AnalyticsQuery {
   const period = params.get('period')
   const rawCompare = params.get('compare') ?? ''

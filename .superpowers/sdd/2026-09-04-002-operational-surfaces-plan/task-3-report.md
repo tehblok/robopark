@@ -98,3 +98,103 @@ Migration evidence includes: single expected head; fresh upgrade to head; metada
 Reviewed the query boundaries, park/role scoping, immutable writes, complete-snapshot atomicity, scanner connection ownership, schema/migration parity, null semantics, means vs sums, weighted SLA, observed transitions, actual task links and frontend request ownership. Fixed the unknown-age zero case during review, and isolated the existing worker test before the full suite. No outstanding implementation blocker.
 
 Operational constraints: useful stage history accumulates only after deployment and multiple observations; there is no invented backfill. Snapshot storage scales with the park's open tasks and is retained for 30 days. Flow counters and observations are independent sources with separate coverage. Historical terminal closures and exact transition timestamps remain unavailable under the source model, explicitly described above and in UI copy.
+
+## Fix round 1 — authorization, scoped recovery and retention
+
+Addressed the 1 Critical and 2 Important review findings. The changes below supersede the original implementation details where applicable. The deferred time-only index was not added.
+
+### Changes
+
+1. **Authorization status is separate from presentation.** The unshipped `0018_analytics_observations` model/migration now persist nullable `authorization_status` alongside the existing display `status_bucket`. New `tracker_policy.issue_authorization_status` contains the exact workflow classification already used by `is_issue_status_visible`; task/card checks and observation recording share this function. Restricted Analytics requests apply an SQL `authorization_status IN (...)` predicate before any aggregates, stage durations or drilldowns are built. Unknown authorization statuses remain null and fail closed; `in_relocation` and partial display hints cannot grant access. All response `task_keys` and `drilldown_task_keys` therefore come only from authorized rows. The field is private persistence metadata; the public aggregate JSON contract is unchanged. Schema parity and migration round-trip tests pass with the updated column.
+
+   Presentation buckets remain available for permitted rows. During self-review, added a regression for an explicitly permitted mechanic's canonical `queued` task whose presentation bucket is `moving`; it must contribute to the displayed workload as well as backlog. Metric stage groups now include groups represented by already-authorized rows, without changing the authorization predicate.
+
+2. **403 recovery belongs to the request context.** Analytics stores `{ context, failure }` rather than a global session failure. `analyticsRequestIdentity` includes principal ID, role, access status, password-change state, normalized permission/park scope, ordered primary/comparison parks, period and granularity. Only the unchanged denied context remains blocked. Removing a forbidden comparison, changing the primary park or filters, or changing actual user access starts the applicable request. Reordered but otherwise identical permission/park arrays do not trigger retries. Released deferred results cannot block or repopulate another context. One automatic user refresh occurs for a handled denial; the real-provider E2E also verifies no request is repeated after re-rendering an unchanged denied context.
+
+3. **Retention precedes collection capability checks.** Deletion of observations and then snapshots older than the aligned 30-day cutoff is committed before token lookup or Tracker calls. Missing token and Tracker failure both preserve recent and exactly-on-cutoff history while removing older rows. A separate SQLAlchemy session verifies that cleanup was actually committed even when no collection succeeded.
+
+### Regression names and RED evidence
+
+API additions in `tests/test_analytics.py`:
+
+- `test_analytics_authorization_ignores_relocation_and_display_hints_in_every_metric` — eight combinations: `waitingforrelocation` / `queued` with relocation/display hints × driver/operator/admin/royal. Checks every metric and point for forbidden values, sample counts and keys; permitted roles retain backlog, SLA, workload and observed duration. Also checks persisted authorization vs presentation fields.
+- `test_retention_is_committed_without_collection_and_preserves_current_history` — missing token and unavailable Tracker variants; independently committed deletion, recent rows and cutoff boundary preservation.
+- `test_permitted_workflow_keeps_its_display_stage_in_restricted_analytics` — permitted mechanic scope keeps a differing presentation group in workload.
+
+React additions in `AnalyticsWorkspace.test.tsx`:
+
+- `recovers after disabling a comparison whose deferred request returned 403`
+- `recovers on an accessible primary park after another park returned 403`
+- `does not retry unchanged denied access but recovers after refreshed access changes`
+- `recovers after a denied filter context is changed`
+- `ignores a released comparison denial after the active context already recovered`
+
+Browser addition: `a denied comparison recovers after removal through the real auth and park lifecycle` in `e2e/operational/analytics.spec.ts`.
+
+Observed RED commands, before the corresponding fixes:
+
+```text
+cd apps/api
+PYTHONPATH=src /Users/tehblokdan/Desktop/Проекты/robopark/apps/api/.venv/bin/python -m pytest tests/test_analytics.py -q
+9 failed, 18 passed, 1 warning
+# Driver received backlog=1 from forbidden hinted statuses; authorization column
+# did not exist; missing-token retention kept all 3 snapshots instead of 2.
+
+cd apps/web
+/Users/tehblokdan/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node node_modules/vitest/vitest.mjs run src/domains/analytics/AnalyticsWorkspace.test.tsx
+4 failed, 7 passed
+# The error remained visible after comparison/park/access/filter changes.
+
+cd apps/api
+PYTHONPATH=src /Users/tehblokdan/Desktop/Проекты/robopark/apps/api/.venv/bin/python -m pytest tests/test_analytics.py -k permitted_workflow -q
+1 failed, 27 deselected, 1 warning
+# The permitted mechanic task was counted in backlog but missing from workload.
+```
+
+### Verification commands and results
+
+Exact commands use the same existing API venv and worktree node_modules as the original task; no dependency installation or production DB operation occurred.
+
+```text
+# apps/api — final focused API and migration checks:
+PYTHONPATH=src /Users/tehblokdan/Desktop/Проекты/robopark/apps/api/.venv/bin/python -m pytest tests/test_analytics.py tests/test_models_migration.py -q
+40 passed, 1 warning in 4.39s
+
+# apps/web — focused React checks:
+/Users/tehblokdan/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node node_modules/vitest/vitest.mjs run src/domains/analytics/AnalyticsWorkspace.test.tsx src/pages/Analytics.test.tsx
+2 files passed; 12 tests passed
+
+# apps/web — full unit suite:
+/Users/tehblokdan/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node node_modules/vitest/vitest.mjs run
+87 files passed; 1339 tests passed; 17.84s
+
+# apps/web — typecheck, production build, contrast:
+/Users/tehblokdan/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node node_modules/typescript/bin/tsc -b
+exit 0
+/Users/tehblokdan/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node node_modules/vite/bin/vite.js build
+exit 0; 1976 modules; existing >500 kB bundle advisory
+/Users/tehblokdan/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node scripts/check-contrast.mjs
+exit 0; all light/dark pairs pass
+
+# worktree root:
+/Users/tehblokdan/Desktop/Проекты/robopark/apps/api/.venv/bin/python -m ruff check apps/api/src apps/api/tests apps/api/alembic
+All checks passed!
+git diff --check
+exit 0
+
+# apps/web — final complete Analytics browser suite (scoped local-server escalation):
+/Users/tehblokdan/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node node_modules/@playwright/test/cli.js test e2e/operational/analytics.spec.ts --workers=2
+5 passed (8.2s)
+```
+
+The browser regression initially assumed one bootstrap request and one request per newly mounted owner. Reading `main.tsx` and `auth.tsx` confirmed development StrictMode deliberately repeats initial effects. The test now measures the denial's additional auth refresh against the settled baseline, verifies no repeated requests after an unchanged denied-context render, and verifies comparison removal requests only the accessible primary park. These were test-expectation corrections; the new request-context production implementation passed unchanged.
+
+The full API suite was repeated because the additional permitted-mechanic regression led to one further aggregation correction after the first full result of `729 passed`. Final result on the completed code:
+
+```text
+# apps/api:
+PYTHONPATH=src /Users/tehblokdan/Desktop/Проекты/robopark/apps/api/.venv/bin/python -m pytest -q
+730 passed, 1 warning in 81.11s
+```
+
+Self-review: traced both task/card and Analytics access to the shared canonical classifier; verified that SQL scope filtering precedes all output construction, null classifications fail closed and authorized presentation groups still contribute to metrics. Reviewed stable request identity and released callbacks, and verified committed retention independently of source availability. All three requested findings are resolved; no new migration revision or deferred index was introduced. This fix updates unshipped revision 0018 in place as requested and is a separate commit (`fix: harden historical analytics access and recovery`).

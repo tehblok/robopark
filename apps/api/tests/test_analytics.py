@@ -317,3 +317,163 @@ def test_stage_intervals_do_not_bridge_an_observed_absence(db_session, seed_park
     assert all(
         row["value"] is None for row in build(db_session, seed_park_with_tracker)["stage_durations"]
     )
+
+
+@pytest.mark.parametrize(
+    "status_key,status_display",
+    [
+        ("waitingforrelocation", "Ожидает перемещения"),
+        ("queued", "Подготовка к перемещению"),
+    ],
+)
+@pytest.mark.parametrize("role", ["driver", "operator", "admin", "royal"])
+def test_analytics_authorization_ignores_relocation_and_display_hints_in_every_metric(
+    client,
+    db_session,
+    seed_park_with_tracker,
+    status_key,
+    status_display,
+    role,
+):
+    from robopark_api.models import AnalyticsObservation
+    from robopark_api.services.analytics_history import record_observation
+    from robopark_api.services.tracker_policy import is_issue_status_visible
+
+    user = account(
+        db_session, seed_park_with_tracker, role=role, permissions=["nav.analytics", "tracker.read"]
+    )
+    observed_at = datetime.now(UTC) - timedelta(hours=5)
+    hidden = {
+        **issue("ROBOPARK-HIDDEN", status_key),
+        "status": status_display,
+        "in_relocation": "1",
+        "created": (observed_at - timedelta(hours=30)).isoformat(),
+    }
+    assert is_issue_status_visible(user, hidden) is (role != "driver")
+    record_observation(
+        db_session,
+        park=seed_park_with_tracker,
+        issues=[hidden],
+        observed_at=observed_at,
+        target_hours=24,
+    )
+    # A second raw status within the same hinted display group must not leak a duration.
+    record_observation(
+        db_session,
+        park=seed_park_with_tracker,
+        issues=[{**hidden, "status_key": "blocked", "status": "Ожидает перемещения"}],
+        observed_at=observed_at + timedelta(hours=2),
+        target_hours=24,
+    )
+    login_as(client, "analyst", "secret")
+    response = client.get(f"/analytics?park_id={seed_park_with_tracker.id}&days=1&bucket=2h")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["series"]["backlog"]["value"] == (0 if role == "driver" else 1)
+    assert data["drilldown_task_keys"] == ([] if role == "driver" else ["ROBOPARK-HIDDEN"])
+    metric_groups = [
+        *data["series"].values(),
+        *data["backlog_age_bands"],
+        data["sla_trend"],
+        *data["workload"],
+        *data["stage_durations"],
+    ]
+    if role == "driver":
+        for metric in metric_groups:
+            assert metric["task_keys"] == []
+            assert metric["sample_count"] == 0
+            assert metric["value"] is None or metric["value"] == 0
+            for point in metric.get("points", []):
+                assert point["task_keys"] == []
+                assert point["sample_count"] == 0
+                assert point["value"] is None or point["value"] == 0
+    else:
+        assert data["sla_trend"]["value"] == 100
+        assert next(row for row in data["workload"] if row["key"] == "moving")["value"] == 1
+        duration = next(row for row in data["stage_durations"] if row["key"] == "moving")
+        assert duration["value"] == 2
+        assert duration["task_keys"] == ["ROBOPARK-HIDDEN"]
+    first = db_session.scalar(
+        select(AnalyticsObservation).order_by(AnalyticsObservation.bucket_start)
+    )
+    assert first.status_bucket == "moving"
+    assert first.authorization_status == ("queued" if status_key == "queued" else None)
+
+
+@pytest.mark.parametrize("source", ["no_token", "unavailable"])
+def test_retention_is_committed_without_collection_and_preserves_current_history(
+    db_session,
+    db_engine,
+    seed_park_with_tracker,
+    monkeypatch,
+    source,
+):
+    from sqlalchemy.orm import Session
+
+    from robopark_api.models import AnalyticsObservation, AnalyticsSnapshot
+    from robopark_api.services.analytics_history import scan_all_parks_once
+
+    observe(db_session, seed_park_with_tracker, 31 * 24, [issue("ROBOPARK-OLD")])
+    observe(db_session, seed_park_with_tracker, 30 * 24, [issue("ROBOPARK-BOUNDARY")])
+    observe(db_session, seed_park_with_tracker, 2, [issue("ROBOPARK-CURRENT")])
+    monkeypatch.setattr(
+        platform_settings,
+        "get_tracker_token",
+        lambda db: None if source == "no_token" else "test-token",
+    )
+
+    def unavailable(**kwargs):
+        if source == "no_token":
+            pytest.fail("collection must not run without a token")
+        raise tracker_client.TrackerError("unavailable")
+
+    monkeypatch.setattr(tracker_client, "fetch_park_blockers", unavailable)
+    assert scan_all_parks_once(db_session, now=NOW) == 0
+    # A separate connection proves cleanup was committed even without a successful scan.
+    with Session(db_engine) as reader:
+        assert len(reader.scalars(select(AnalyticsSnapshot)).all()) == 2
+        assert sorted(
+            row.issue_key for row in reader.scalars(select(AnalyticsObservation)).all()
+        ) == [
+            "ROBOPARK-BOUNDARY",
+            "ROBOPARK-CURRENT",
+        ]
+
+
+def test_permitted_workflow_keeps_its_display_stage_in_restricted_analytics(
+    client,
+    db_session,
+    seed_park_with_tracker,
+):
+    from robopark_api.services.analytics_history import record_observation
+
+    account(
+        db_session,
+        seed_park_with_tracker,
+        role="mechanic",
+        permissions=["nav.analytics", "tracker.read"],
+    )
+    observed_at = datetime.now(UTC) - timedelta(hours=3)
+    record_observation(
+        db_session,
+        park=seed_park_with_tracker,
+        issues=[
+            {
+                **issue(),
+                "in_relocation": "1",
+                "created": (observed_at - timedelta(hours=30)).isoformat(),
+            }
+        ],
+        observed_at=observed_at,
+        target_hours=24,
+    )
+    login_as(client, "analyst", "secret")
+    response = client.get(f"/analytics?park_id={seed_park_with_tracker.id}&days=1")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["series"]["backlog"]["value"] == 1
+    workload = {row["key"]: row for row in data["workload"]}
+    assert "moving" in workload
+    assert workload["moving"]["value"] == 1
+    assert workload["moving"]["task_keys"] == ["ROBOPARK-1"]
+    assert workload["queued"]["value"] == 0

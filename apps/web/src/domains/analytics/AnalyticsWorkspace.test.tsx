@@ -78,3 +78,68 @@ it('drops another park’s in-flight result and refreshes authorization once on 
   expect(refreshUser).toHaveBeenCalledTimes(1)
   expect(client.analytics).toHaveBeenCalledTimes(2)
 })
+
+it('recovers after disabling a comparison whose deferred request returned 403', async () => {
+  const denied = deferred<ReturnType<typeof fixture>>()
+  const user = makeUser()
+  const refreshUser = vi.fn(async () => user)
+  const client = { analytics: vi.fn((id: number) => id === 8 ? denied.promise : Promise.resolve(fixture(id))) }
+  render(tree({ client, user, refreshUser, url: '/analytics?park=7&compare=8' }))
+  await act(async () => denied.reject(new ApiError(403)))
+  expect(await screen.findByRole('heading', { name: 'Нет доступа' })).toBeVisible()
+  fireEvent.change(screen.getByLabelText('Сравнить с парком'), { target: { value: '' } })
+  expect(await screen.findByRole('region', { name: 'История парка Север' })).toBeVisible()
+  expect(screen.queryByRole('heading', { name: 'Нет доступа' })).not.toBeInTheDocument()
+  expect(client.analytics.mock.calls.map(call => call[0])).toEqual([7, 8, 7])
+  expect(refreshUser).toHaveBeenCalledTimes(1)
+})
+
+it('recovers on an accessible primary park after another park returned 403', async () => {
+  const user = makeUser()
+  const refreshUser = vi.fn(async () => user)
+  const client = { analytics: vi.fn(async (id: number) => { if (id === 7) throw new ApiError(403); return fixture(id) }) }
+  const view = render(tree({ client, user, refreshUser }))
+  await screen.findByRole('heading', { name: 'Нет доступа' })
+  view.rerender(tree({ client, user, refreshUser, selectedPark: otherPark }))
+  expect(await screen.findByRole('region', { name: 'История парка Юг' })).toBeVisible()
+  expect(client.analytics.mock.calls.map(call => call[0])).toEqual([7, 8])
+})
+
+it('does not retry unchanged denied access but recovers after refreshed access changes', async () => {
+  const user = makeUser()
+  const refreshUser = vi.fn(async () => ({ ...user }))
+  const client = { analytics: vi.fn().mockRejectedValueOnce(new ApiError(403)).mockResolvedValue(fixture()) }
+  const view = render(tree({ client, user, refreshUser }))
+  await screen.findByRole('heading', { name: 'Нет доступа' })
+  view.rerender(tree({ client, refreshUser, user: { ...user, permissions: [...user.permissions!].reverse(), parks: [...user.parks].reverse() } }))
+  await act(async () => {})
+  expect(screen.getByRole('heading', { name: 'Нет доступа' })).toBeVisible()
+  expect(client.analytics).toHaveBeenCalledTimes(1)
+  view.rerender(tree({ client, refreshUser, user: { ...user, permissions: [...user.permissions!, 'reports.create'] } }))
+  expect(await screen.findByRole('region', { name: 'История парка Север' })).toBeVisible()
+  expect(client.analytics).toHaveBeenCalledTimes(2)
+  expect(refreshUser).toHaveBeenCalledTimes(1)
+})
+
+it('recovers after a denied filter context is changed', async () => {
+  const client = { analytics: vi.fn(async (id: number, days: number) => { if (days === 7) throw new ApiError(403); return fixture(id, days) }) }
+  render(tree({ client }))
+  await screen.findByRole('heading', { name: 'Нет доступа' })
+  fireEvent.change(screen.getByLabelText('Период аналитики'), { target: { value: '1' } })
+  expect(await screen.findByRole('region', { name: 'История парка Север' })).toBeVisible()
+  expect(client.analytics).toHaveBeenCalledTimes(2)
+})
+
+it('ignores a released comparison denial after the active context already recovered', async () => {
+  const denied = deferred<ReturnType<typeof fixture>>()
+  const user = makeUser()
+  const refreshUser = vi.fn(async () => user)
+  const client = { analytics: vi.fn((id: number) => id === 8 ? denied.promise : Promise.resolve(fixture(id))) }
+  render(tree({ client, user, refreshUser, url: '/analytics?park=7&compare=8' }))
+  fireEvent.change(screen.getByLabelText('Сравнить с парком'), { target: { value: '' } })
+  await screen.findByRole('region', { name: 'История парка Север' })
+  await act(async () => denied.reject(new ApiError(403)))
+  expect(screen.getByRole('region', { name: 'История парка Север' })).toBeVisible()
+  expect(screen.queryByRole('heading', { name: 'Нет доступа' })).not.toBeInTheDocument()
+  expect(refreshUser).not.toHaveBeenCalled()
+})

@@ -122,21 +122,31 @@ def build_analytics(
     snapshots = [
         row for row in snapshots if align_bucket_start(row.observed_at) == as_utc(row.bucket_start)
     ]
-    observations = db.scalars(
-        select(AnalyticsObservation).where(
-            AnalyticsObservation.park_id == park_id,
-            AnalyticsObservation.bucket_start >= start,
-            AnalyticsObservation.bucket_start < end,
+    observation_query = select(AnalyticsObservation).where(
+        AnalyticsObservation.park_id == park_id,
+        AnalyticsObservation.bucket_start >= start,
+        AnalyticsObservation.bucket_start < end,
+    )
+    if allowed_statuses is not None:
+        # Apply authorization before any metric, duration or drilldown is built.
+        observation_query = observation_query.where(
+            AnalyticsObservation.authorization_status.in_(allowed_statuses)
         )
-    ).all()
+    observations = db.scalars(observation_query).all()
     grouped = defaultdict(list)
     for row in observations:
-        if allowed_statuses is None or row.status_bucket in allowed_statuses:
-            grouped[as_utc(row.bucket_start)].append(row)
+        grouped[as_utc(row.bucket_start)].append(row)
 
     backlog, sla = {}, {}
     ages = {key: {} for key in [*AGE_BANDS, "unknown"]}
-    stages = [stage for stage in STAGES if allowed_statuses is None or stage in allowed_statuses]
+    # Presentation groups can differ from authorization statuses. Keep every
+    # group represented by the already-authorized rows (e.g. queued + relocation).
+    observed_stages = {row.status_bucket for row in observations}
+    stages = [
+        stage
+        for stage in STAGES
+        if allowed_statuses is None or stage in allowed_statuses or stage in observed_stages
+    ]
     workload = {stage: {} for stage in stages}
     durations = defaultdict(list)
     previous = {}

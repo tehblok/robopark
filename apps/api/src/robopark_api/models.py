@@ -171,7 +171,9 @@ class AnalyticsSnapshot(Base):
 
     __tablename__ = "analytics_snapshots"
 
-    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), primary_key=True)
+    park_id: Mapped[int] = mapped_column(
+        ForeignKey("parks.id", ondelete="CASCADE"), primary_key=True
+    )
     bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     target_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -192,6 +194,9 @@ class AnalyticsObservation(Base):
     issue_key: Mapped[str] = mapped_column(String(128), primary_key=True)
     status: Mapped[str] = mapped_column(String(128), primary_key=True)
     status_bucket: Mapped[str] = mapped_column(String(32))
+    # Exact workflow classification shared with task/card authorization. Unknown
+    # statuses fail closed for restricted roles, independently of display hints.
+    authorization_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     age_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
