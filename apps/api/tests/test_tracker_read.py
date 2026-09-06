@@ -253,6 +253,175 @@ def test_mechanic_issue_capabilities_respect_write_policy_but_keep_attachment(
     }
 
 
+@pytest.mark.parametrize("queue", ["ROBOPARK", "SDCFLEETOPS"])
+@pytest.mark.parametrize("closed", [False, True])
+def test_related_repairs_preserve_scope_and_page_only_exact_robot_repairs_of_any_priority(
+    client, db_session, seed_park_with_tracker, monkeypatch, queue, closed
+):
+    seed_park_with_tracker.tracker_queue = queue
+    _seed_operator(db_session, seed_park_with_tracker)
+    db_session.add(Park(name="Foreign", tag="Foreign", tracker_queue=queue))
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    def repair(number, **changes):
+        return {
+            **_scoped_issue(f"{queue}-{number}", "2026-01-01T00:00:00Z"),
+            "queue": queue,
+            "robot": "A447",
+            "status": "Закрыт" if closed else "Открыт",
+            "status_key": "closed" if closed else "open",
+            "type": "Ремонт",
+            "type_key": "repair",
+            "priority": "Обычный",
+            **changes,
+        }
+
+    captured = []
+
+    def search(**kwargs):
+        captured.append(kwargs)
+        return [
+            repair(0),  # Selected parent task is excluded.
+            repair(1, robot="1447"),
+            repair(2, type="Ремонт", type_key="service"),
+            repair(3, tags=["Foreign"]),
+            repair(4, queue="FORBIDDEN"),
+            repair(5, priority="Низкий"),
+            repair(6, priority="Критический", robot="YASADR00000000447"),
+            repair(6),  # Duplicates cannot alter pagination.
+            repair(7, priority="Блокер"),
+        ]
+
+    monkeypatch.setattr(tracker_client, "search_issues", search)
+    login_as(client, "op2", "secret")
+    params = {
+        "related_repairs": "true",
+        "robot_exact": "[A447]",
+        "queue": queue,
+        "park": "Alpha",
+        "exclude_key": f"{queue}-0",
+        "limit": 1,
+        "offset": 1,
+        **({"status": "closed"} if closed else {"open_only": "true"}),
+    }
+
+    response = client.get("/tracker/issues", params=params)
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["key"] for item in body["items"]] == [f"{queue}-6"]
+    assert body["items"][0]["priority"] == "Критический"
+    assert body["total"] == 3
+    assert body["limit"] == 1
+    assert body["offset"] == 1
+    assert body["has_more"] is True
+
+    newest = client.get("/tracker/issues", params={**params, "sort": "newest", "offset": 0})
+    assert [item["key"] for item in newest.json()["items"]] == [f"{queue}-7"]
+    last = client.get("/tracker/issues", params={**params, "offset": 2})
+    assert [item["key"] for item in last.json()["items"]] == [f"{queue}-7"]
+    assert last.json()["has_more"] is False
+    assert len(captured) == 1  # Identical scoped searches reuse the cache across pages.
+    query = captured[0]["query"]
+    assert "Priority:" not in query
+    assert "Type: repair" in query
+    assert "Type: service" not in query
+    assert f"Queue: {queue}" in query
+    assert "Tags: Alpha" in query
+    assert 'Summary: "447"' in query
+    assert captured[0]["filter_open"] is (not closed)
+    if closed:
+        assert "Status: closed" in query
+
+
+@pytest.mark.parametrize("robot", [None, "", "other447", "447/448"])
+def test_related_repairs_require_valid_exact_robot_before_search(
+    client, db_session, seed_park_with_tracker, monkeypatch, robot
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    calls = []
+    monkeypatch.setattr(
+        tracker_client, "search_issues", lambda **kwargs: calls.append(kwargs) or []
+    )
+    login_as(client, "op2", "secret")
+    params = {"related_repairs": "true", "status": "closed"}
+    if robot is not None:
+        params["robot_exact"] = robot
+    response = client.get("/tracker/issues", params=params)
+    assert response.status_code == 400
+    assert response.json()["detail"] == "tracker_robot_exact_required"
+    assert calls == []
+
+
+@pytest.mark.parametrize("params", [{"queue": "FORBIDDEN"}, {"park": "Foreign"}])
+def test_related_repairs_reject_forbidden_selected_scope(
+    client, db_session, seed_park_with_tracker, monkeypatch, params
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    calls = []
+    monkeypatch.setattr(
+        tracker_client, "search_issues", lambda **kwargs: calls.append(kwargs) or []
+    )
+    login_as(client, "op2", "secret")
+    response = client.get(
+        "/tracker/issues", params={"related_repairs": "true", "robot_exact": "447", **params}
+    )
+    assert response.status_code == 403
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("issue_scope", "expected_status"),
+    [({}, 200), ({"queue": "FORBIDDEN"}, 403), ({"tags": ["Foreign"]}, 403)],
+)
+def test_non_blocker_repair_detail_and_comment_keep_existing_scope(
+    client, db_session, seed_park_with_tracker, monkeypatch, issue_scope, expected_status
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    db_session.add(Park(name="Foreign", tag="Foreign", tracker_queue="ROBOPARK"))
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    issue = {
+        **_scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"),
+        "robot": "447",
+        "type": "Ремонт",
+        "type_key": "repair",
+        "priority": "Низкий",
+        **issue_scope,
+    }
+    monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: issue)
+    comments = []
+
+    def add_comment(**kwargs):
+        comments.append(kwargs)
+        return {"id": "1", "text": kwargs["text"]}
+
+    monkeypatch.setattr(tracker_client, "add_comment", add_comment)
+    login_as(client, "op2", "secret")
+    detail = client.get("/tracker/issues/ROBOPARK-1")
+    assert detail.status_code == expected_status
+    response = client.post("/tracker/issues/ROBOPARK-1/comment", json={"text": "Проверила ремонт"})
+    assert response.status_code == expected_status
+    if expected_status == 200:
+        assert detail.json()["priority"] == "Низкий"
+        assert all(detail.json()["capabilities"].values())
+        assert response.json()["action"] == "comment"
+        assert len(comments) == 1
+        assert comments[0]["key"] == "ROBOPARK-1"
+        assert "Проверила ремонт" in comments[0]["text"]
+    else:
+        assert comments == []
+
+
 def test_tracker_read_assignee_filter(client, db_session, seed_park_with_tracker, monkeypatch):
     _seed_operator(db_session, seed_park_with_tracker)
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")

@@ -532,6 +532,7 @@ def issue_to_dict(issue: Any, *, login_cache: dict[str, str] | None = None) -> d
         "reporter": reporter,
         "priority": priority,
         "type": issue_type,
+        "type_key": str(_field(_field(issue, "type"), "key") or ""),
         "components": components,
         "attachments": attachments,
         "queue": queue,

@@ -136,10 +136,9 @@ def _build_query(
     robot: str | None,
     assignee: str | None,
     untagged: bool,
+    related_repairs: bool = False,
 ) -> str:
-    parts: list[str] = [
-        "Priority: blocker",
-    ]
+    parts: list[str] = [] if related_repairs else ["Priority: blocker"]
     # Explicit Status replaces the default open-issues clause (avoid conflicting QL).
     if status_filter:
         bucket = tracker_filters.status_bucket(status_filter)
@@ -197,8 +196,10 @@ def _build_query(
         selected_queue = tracker_client.DEFAULT_QUEUE
         parts.append(f"Queue: {tracker_client.ql_token(selected_queue)}")
 
-    # Type filter only when a single concrete queue is selected (SDCFLEETOPS default types).
-    if selected_queue:
+    # Related repairs override fleet defaults, which can include non-repair types.
+    if related_repairs:
+        parts.append("Type: repair")
+    elif selected_queue:
         type_part = tracker_client.type_clause(selected_queue)
         if type_part:
             parts.append(type_part)
@@ -245,6 +246,7 @@ def list_issues(
     robot_exact: str | None = Query(
         default=None, max_length=tracker_client.MAX_ROBOT_REFERENCE_LENGTH
     ),
+    related_repairs: bool = Query(default=False),
     exclude_key: str | None = Query(default=None, max_length=128),
     assignee: str | None = Query(default=None, max_length=128),
     untagged: bool = Query(default=False),
@@ -256,6 +258,12 @@ def list_issues(
     db: Session = Depends(get_db),
 ) -> TrackerIssuesOut:
     _ensure_tracker_user(user, db)
+    exact_robot = _normalized_robot_number(robot_exact)
+    if related_repairs and exact_robot is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="tracker_robot_exact_required",
+        )
 
     token = settings_svc.get_tracker_token(db)
     if not token:
@@ -273,10 +281,10 @@ def list_issues(
         robot=robot,
         assignee=assignee,
         untagged=untagged,
+        related_repairs=related_repairs,
     )
     if open_only and status_filter:
         query_text = tracker_client.join_query(query_text, tracker_client.open_issues_clause())
-    exact_robot = _normalized_robot_number(robot_exact)
     if robot_exact is not None:
         if exact_robot is None:
             return TrackerIssuesOut(items=[], total=0, limit=limit, offset=offset, has_more=False)
@@ -308,6 +316,8 @@ def list_issues(
         # Out-of-scope issues are filtered out, not fatal: a single foreign issue
         # in the upstream response must not fail the whole listing.
         if not is_issue_in_scope(db, user, issue):
+            continue
+        if related_repairs and str(issue.get("type_key") or "").strip() != "repair":
             continue
         if robot_exact is not None and (
             exact_robot is None or _normalized_robot_number(issue.get("robot")) != exact_robot

@@ -272,3 +272,44 @@
     transition: none;
   }
 }
+
+.rp-work-detail-pane > .rp-tabs,
+.rp-work-detail-pane .rp-tab-panel {
+  min-width: 0;
+}
+
+.rp-work-detail-pane .rp-tab-panel:not([hidden]) {
+  display: grid;
+  gap: var(--rp-space-3);
+}
+
+.rp-work-origin {
+  display: flex;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+
+.rp-work-origin a {
+  align-items: center;
+  display: inline-flex;
+  min-height: var(--rp-control-min-size);
+}
+
+.rp-workbench button.rp-work-robot-link {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
+/* The embedded check fills the task pane instead of using the full-page split. */
+.rp-work-detail-pane .rp-check-workspace {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--rp-space-4);
+  width: 100%;
+}
+
+.rp-work-detail-pane .rp-check-diagram-content[data-events='true'] {
+  grid-template-columns: minmax(0, 1fr);
+}

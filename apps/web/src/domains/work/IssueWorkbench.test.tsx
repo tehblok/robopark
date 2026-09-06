@@ -138,20 +138,14 @@ function renderWorkbench({
   const onStateChange = vi.fn()
   const onOpenIssue = vi.fn()
   const onCloseIssue = vi.fn()
-  const view = render(
-    <IssueWorkbench
-      apiClient={client}
-      issueKey={selectedIssue}
-      onAuthorizationFailure={onAuthorizationFailure}
-      onCloseIssue={onCloseIssue}
-      onOpenIssue={onOpenIssue}
-      onStateChange={onStateChange}
-      selectedPark={selectedPark}
-      state={currentState}
-      user={currentUser}
-    />,
-    { wrapper: Harness, reactStrictMode: strictMode },
-  )
+  function ControlledWorkbench() {
+    const [value, setValue] = useState(currentState)
+    return <IssueWorkbench apiClient={client} issueKey={selectedIssue}
+      onAuthorizationFailure={onAuthorizationFailure} onCloseIssue={onCloseIssue} onOpenIssue={onOpenIssue}
+      onStateChange={(next, options) => { onStateChange(next, options); setValue(next) }}
+      selectedPark={selectedPark} state={value} user={currentUser} />
+  }
+  const view = render(<ControlledWorkbench />, { wrapper: Harness, reactStrictMode: strictMode })
   return {
     ...view,
     onAuthorizationFailure,
@@ -240,25 +234,53 @@ describe('IssueWorkbench', () => {
     expect(screen.getByRole('heading', { name: issue.summary })).toBeInTheDocument()
   })
 
-  it('links to all unfinished work for the known robot without carrying restrictive filters', async () => {
-    renderWorkbench({ currentState: {
+  it('preserves the original blocker and active tab when changing list filters', async () => {
+    const { onStateChange } = renderWorkbench({ currentState: { ...state, rootIssue: 'ROBOPARK-1', detailTab: 'open', checkTab: 'scheme' } })
+    await screen.findByRole('heading', { name: 'Открытые задачи робота 447' })
+    fireEvent.change(screen.getByLabelText('Статус открытых блокеров'), { target: { value: 'queued' } })
+    expect(onStateChange).toHaveBeenCalledWith({
+      filters: { queue: 'ROBOPARK', status: 'queued' }, sort: 'oldest', page: 1,
+      rootIssue: 'ROBOPARK-1', detailTab: 'open', checkTab: 'scheme',
+    }, { replace: false })
+  })
+
+  it('keeps related repairs and robot diagnostics out of the main task until requested', async () => {
+    const client = apiClient()
+    renderWorkbench({ client })
+    await screen.findByRole('heading', { name: issue.summary })
+    expect(screen.getByRole('tab', { name: 'Задача' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Открытые задачи' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Открытые задачи робота 447' })).not.toBeInTheDocument()
+    expect(client.trackerIssues).toHaveBeenCalledTimes(1)
+    expect(document.querySelector('.robot-check')).toBeNull()
+  })
+
+  it('loads repairs without carrying the main blocker status, assignee or age restrictions', async () => {
+    const client = apiClient()
+    renderWorkbench({ client, currentState: {
       filters: { queue: 'ROBOPARK', status: 'closed', assignee: 'ivan', ageHours: 24 },
       sort: 'oldest', page: 3,
     } })
-    const link = await screen.findByRole('link', { name: 'Незавершённые задачи робота 447' })
-    expect(link).toHaveAttribute('href', '/work?park=7&queue=ROBOPARK&status=all&robot=447')
+    fireEvent.click(await screen.findByRole('tab', { name: 'Открытые задачи' }))
+    await waitFor(() => expect(client.trackerIssues).toHaveBeenLastCalledWith({
+      queue: 'ROBOPARK', park: 'Alpha', robot_exact: '447', exclude_key: issue.key,
+      related_repairs: true, open_only: true, sort: 'oldest', limit: 10, offset: 0,
+    }))
   })
 
-  it('preserves the permitted untagged context when opening the robot queue', async () => {
-    renderWorkbench({ currentState: { ...state, filters: { queue: 'ROBOPARK', untagged: true } } })
-    expect(await screen.findByRole('link', { name: 'Незавершённые задачи робота 447' }))
-      .toHaveAttribute('href', '/work?park=7&queue=ROBOPARK&status=all&robot=447&untagged=1')
+  it('preserves permitted untagged context for related repairs', async () => {
+    const client = apiClient()
+    renderWorkbench({ client, currentState: { ...state, detailTab: 'open', filters: { queue: 'ROBOPARK', untagged: true } } })
+    await waitFor(() => expect(client.trackerIssues).toHaveBeenLastCalledWith(expect.objectContaining({
+      robot_exact: '447', park: undefined, related_repairs: true,
+    })))
   })
 
   it('does not invent robot identity from an issue summary', async () => {
     renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => ({
       ...issue, robot: null, summary: 'Проверить YASADR00000000447',
     })) }) })
+    fireEvent.click(await screen.findByRole('tab', { name: 'Открытые задачи' }))
     expect(await screen.findByText('Робот в задаче не указан — связанные задачи недоступны.')).toBeVisible()
     expect(screen.queryByRole('link', { name: /Незавершённые задачи робота/ })).not.toBeInTheDocument()
   })
@@ -294,8 +316,11 @@ describe('IssueWorkbench', () => {
       pendingDetail.resolve({ ...issue, robot })
     })
 
+    expect(client.trackerIssues).toHaveBeenCalledTimes(1)
+    fireEvent.click(await screen.findByRole('tab', { name: 'Открытые задачи' }))
     await screen.findByRole('heading', { name: 'Открытые задачи робота 447' })
-    await screen.findByRole('heading', { name: 'Последние закрытые задачи робота 447' })
+    fireEvent.click(screen.getByRole('tab', { name: 'Закрытые задачи' }))
+    await screen.findByRole('heading', { name: 'Закрытые задачи робота 447' })
     await waitFor(() => expect(client.trackerIssues).toHaveBeenCalledTimes(3))
     expect(client.trackerIssues).toHaveBeenNthCalledWith(2, expect.objectContaining({
       robot_exact: '447',
@@ -305,16 +330,17 @@ describe('IssueWorkbench', () => {
     expect(client.trackerIssues).toHaveBeenNthCalledWith(3, expect.objectContaining({
       robot_exact: '447',
       exclude_key: issue.key,
-      sort: 'newest',
+      sort: 'oldest',
+      related_repairs: true,
       status: 'closed',
     }))
-    expect(document.body.textContent!.indexOf('Открытая задача робота'))
-      .toBeLessThan(document.body.textContent!.indexOf('Последняя закрытая задача робота'))
+    expect(screen.queryByText(/Открытая задача робота/)).not.toBeInTheDocument()
+    expect(screen.getByText(/Последняя закрытая задача робота/)).toBeVisible()
   })
 
   it.each(['other447', 'A447B', '[A447] extra', '447/448', '[A447', 'A447]'])('does not infer related robot tasks from ambiguous identifier %s', async robot => {
     const client = apiClient({ trackerIssue: vi.fn(async () => ({ ...issue, robot })) })
-    renderWorkbench({ client })
+    renderWorkbench({ client, currentState: { ...state, detailTab: 'open' } })
     await screen.findByRole('heading', { name: `Задача ${issue.key}` })
     expect(screen.queryByRole('heading', { name: /Открытые задачи робота/ })).not.toBeInTheDocument()
     expect(client.trackerIssues).toHaveBeenCalledTimes(1)
@@ -332,8 +358,10 @@ describe('IssueWorkbench', () => {
 
     expect(await screen.findByRole('heading', { name: issue.summary })).toBeVisible()
     expect(await screen.findByRole('button', { name: ru.tracker.actions.close })).toBeEnabled()
+    fireEvent.click(screen.getByRole('tab', { name: 'Открытые задачи' }))
     expect(await screen.findByRole('heading', { name: 'Сервис временно недоступен' })).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Последние закрытые задачи робота 447' })).toBeVisible()
+    fireEvent.click(screen.getByRole('tab', { name: 'Задача' }))
+    expect(screen.getByRole('button', { name: ru.tracker.actions.close })).toBeEnabled()
   })
 
   it.each(['success', 'error'] as const)(
@@ -358,7 +386,7 @@ describe('IssueWorkbench', () => {
       const commits: string[] = []
       render(<Harness><Profiler id="related" onRender={() => commits.push(document.body.textContent ?? '')}>
         <IssueWorkbench apiClient={client} issueKey={issue.key} onAuthorizationFailure={vi.fn(async () => undefined)}
-          onCloseIssue={vi.fn()} onOpenIssue={vi.fn()} onStateChange={vi.fn()} selectedPark={park} state={state} user={user} />
+          onCloseIssue={vi.fn()} onOpenIssue={vi.fn()} onStateChange={vi.fn()} selectedPark={park} state={{ ...state, detailTab: 'open' }} user={user} />
       </Profiler></Harness>)
       await waitFor(() => expect(client.trackerIssues).toHaveBeenCalledWith(expect.objectContaining({
         robot_exact: '447',
@@ -426,7 +454,7 @@ describe('IssueWorkbench', () => {
       expect(screen.queryByText(issue.summary)).not.toBeInTheDocument()
       if (change === 'read-revoked') {
         expect(client.trackerIssue).toHaveBeenCalledTimes(1)
-        expect(client.trackerIssues).toHaveBeenCalledTimes(3)
+        expect(client.trackerIssues).toHaveBeenCalledTimes(1)
       }
     },
   )
@@ -530,15 +558,7 @@ describe('IssueWorkbench', () => {
     expect(
       await screen.findByRole('heading', { name: issue.summary }),
     ).toBeInTheDocument()
-    const robotCheckLinks = screen.getAllByRole('link', {
-      name: 'Проверить робота 447',
-    })
-    expect(robotCheckLinks).toHaveLength(2)
-    expect(
-      robotCheckLinks.every(
-        (link) => link.getAttribute('href') === '/robots/447/check',
-      ),
-    ).toBe(true)
+    expect(screen.getByRole('button', { name: 'Проверить робота 447' })).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Следующая страница' }))
     expect(onStateChange).toHaveBeenCalledWith(

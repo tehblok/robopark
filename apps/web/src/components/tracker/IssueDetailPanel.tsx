@@ -112,11 +112,15 @@ export function IssueDetailPanel({
   issue,
   comments,
   commentsAsHistory = false,
+  showRobotCheck = true,
+  onOpenRobotCheck,
   loading,
 }: {
   issue: TrackerIssueDetail | null
   comments: TrackerComment[]
   commentsAsHistory?: boolean
+  showRobotCheck?: boolean
+  onOpenRobotCheck?: () => void
   loading?: boolean
 }) {
   if (loading) {
@@ -181,13 +185,14 @@ export function IssueDetailPanel({
         </Field>
         {robotReference && (
           <Field label={ru.tracker.fields.robot}>
-            <Link
+            {onOpenRobotCheck ? <button className="rp-work-robot-link" type="button" onClick={onOpenRobotCheck}
+              aria-label={`${ru.tracker.robotCheck.open} ${robotReference}`}>{robotReference}</button> : <Link
               aria-label={`${ru.tracker.robotCheck.open} ${robotReference}`}
               className="rp-work-robot-link"
               to={`/robots/${encodeURIComponent(robotReference)}/check`}
             >
               {robotReference}
-            </Link>
+            </Link>}
           </Field>
         )}
         <Field label={ru.tracker.fields.created}>
@@ -264,7 +269,7 @@ export function IssueDetailPanel({
         )}
       </section>
 
-      <RobotCheckPanel robot={issue.robot} />
+      {showRobotCheck ? <RobotCheckPanel robot={issue.robot} /> : null}
 
       <section className={`issue-section${chatLayout ? ' issue-section--history' : ''}`}>
         <h3>

@@ -38,49 +38,41 @@ for (const width of [390, 1440]) {
   })
 }
 
-test('robot remaining-work link opens oldest scoped work with only the robot filter', async ({ page }) => {
+test('related repairs retain robot scope without the main blocker filters', async ({ page }) => {
   const queries: URLSearchParams[] = []
   page.on('request', request => {
     const url = new URL(request.url())
-    if (url.pathname === '/api/tracker/issues') queries.push(url.searchParams)
+    if (url.pathname === '/api/tracker/issues' && url.searchParams.has('robot_exact')) queries.push(url.searchParams)
   })
   await installOperational(page)
   await page.goto('/work/ROBOPARK-42?park=7&status=closed&assignee=other&age=24&page=2')
-  await page.getByRole('link', { name: 'Незавершённые задачи робота 447' }).click()
-  await expect(page).toHaveURL(/\/work\?park=7&queue=ROBOPARK&status=all&robot=447$/)
-  await expect.poll(() => queries.some((params) => (
-    params.get('robot') === '447'
-      && params.get('limit') === '50'
-      && !params.has('status')
-  ))).toBe(true)
-  const scoped = queries.findLast((params) => (
-    params.get('robot') === '447'
-      && params.get('limit') === '50'
-      && !params.has('status')
-  ))!
-  expect(Object.fromEntries(scoped)).toMatchObject({ park: 'north', queue: 'ROBOPARK', robot: '447', sort: 'oldest', offset: '0' })
-  expect(scoped.has('status')).toBe(false)
-  expect(scoped.has('assignee')).toBe(false)
+  await page.getByRole('tab', { name: 'Открытые задачи', exact: true }).click()
+  await expect.poll(() => queries.length).toBe(1)
+  expect(Object.fromEntries(queries[0])).toMatchObject({ park: 'north', queue: 'ROBOPARK', robot_exact: '447', related_repairs: 'true', sort: 'oldest', offset: '0' })
+  expect(queries[0].has('status')).toBe(false)
+  expect(queries[0].has('assignee')).toBe(false)
+  expect(queries[0].has('age_hours')).toBe(false)
 })
 
-test('nested work keeps its parent navigation and loads related robot tasks after the selected issue', async ({ page }) => {
+test('nested work keeps parent navigation and loads each repair tab only when selected', async ({ page }) => {
   const queries: URLSearchParams[] = []
   page.on('request', request => {
     const url = new URL(request.url())
-    if (url.pathname === '/api/tracker/issues') queries.push(url.searchParams)
+    if (url.pathname === '/api/tracker/issues' && url.searchParams.has('robot_exact')) queries.push(url.searchParams)
   })
   await page.setViewportSize({ width: 1440, height: 900 })
   await installOperational(page)
   await page.goto('/work/ROBOPARK-42?park=7')
-
+  await expect(page.getByRole('tab', { name: 'Задача', exact: true })).toHaveAttribute('aria-selected', 'true')
+  expect(queries).toEqual([])
+  await page.getByRole('tab', { name: 'Открытые задачи', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Открытые задачи робота 447' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Последние закрытые задачи робота 447' })).toBeVisible()
-  await expect.poll(() => queries.filter((params) => params.get('robot_exact') === '447').length).toBe(2)
-  expect(queries.filter((params) => params.get('robot_exact') === '447').map((params) => params.get('status')))
-    .toEqual([null, 'closed'])
-  await expect(page.locator('.rp-shell__desktop-nav').getByRole('link', { name: 'Работа', exact: true }))
-    .toHaveAttribute('aria-current', 'page')
-
-  await page.getByRole('link', { name: 'Незавершённые задачи робота 447' }).click()
-  await expect(page).toHaveURL('/work?park=7&queue=ROBOPARK&status=all&robot=447')
+  await expect.poll(() => queries.length).toBe(1)
+  await page.getByRole('tab', { name: 'Закрытые задачи', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Закрытые задачи робота 447' })).toBeVisible()
+  await expect.poll(() => queries.length).toBe(2)
+  expect(queries.map(params => params.get('status'))).toEqual([null, 'closed'])
+  await expect(page.locator('.rp-shell__desktop-nav').getByRole('link', { name: 'Работа', exact: true })).toHaveAttribute('aria-current', 'page')
+  await page.getByRole('link', { name: 'К главному блокеру ROBOPARK-42' }).click()
+  await expect(page.getByRole('tab', { name: 'Задача', exact: true })).toHaveAttribute('aria-selected', 'true')
 })

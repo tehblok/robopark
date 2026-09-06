@@ -9,7 +9,12 @@ export type WorkFilters = {
   ageHours?: number
 }
 
+export type WorkDetailTab = 'task' | 'open' | 'closed' | 'check'
+
 export type WorkUrlState = {
+  detailTab?: WorkDetailTab
+  checkTab?: string
+  rootIssue?: string
   filters: WorkFilters
   sort: WorkSort
   page: number
@@ -59,7 +64,13 @@ export function parseWorkUrl(
   const untagged = params.get('untagged') === '1'
   const ageHours = positiveInteger(params.get('age'))
 
+  const view = text(params, 'view')
+  const root = text(params, 'blocker')
+  const checkTab = text(params, 'check_tab')
   return {
+    ...(['open', 'closed', 'check'].includes(view ?? '') ? { detailTab: view as WorkDetailTab } : {}),
+    ...(root && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(root) ? { rootIssue: root } : {}),
+    ...(checkTab && /^[a-zA-Z0-9_-]{1,80}$/.test(checkTab) ? { checkTab } : {}),
     filters: {
       ...(queue ? { queue } : {}),
       ...(status ? { status } : {}),
@@ -93,6 +104,9 @@ export function buildWorkSearch(state: WorkUrlState, parkId: number | null): str
   }
   if (serializablePage(state.page)) params.set('page', String(state.page))
 
+  if (state.rootIssue) params.set('blocker', state.rootIssue)
+  if (state.detailTab && state.detailTab !== 'task') params.set('view', state.detailTab)
+  if (state.checkTab) params.set('check_tab', state.checkTab)
   const query = params.toString()
   return query ? `?${query}` : ''
 }

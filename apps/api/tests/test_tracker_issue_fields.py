@@ -117,6 +117,7 @@ def test_loaded_sdk_fields_match_rest_payload_without_metadata_requests(monkeypa
     result = issue_to_dict(resource)
     assert result == issue_to_dict(resource.as_dict())
     assert result["status_key"] == "closed"
+    assert result["type_key"] == "repair"
     assert result["resolution"] == "fixed"
     assert result["attachments"][0]["name"] == "photo.png"
     assert result["attachments"][0]["size"] == 512
@@ -146,6 +147,7 @@ def test_rest_dict_payload_is_fully_normalized():
     assert issue["status"] == "Открыт"
     assert issue["priority"] == "Блокер"
     assert issue["type"] == "Ремонт"
+    assert issue["type_key"] == "repair"
     assert issue["assignee"] == {"display": "Иван Петров", "login": "ipetrov"}
     assert issue["reporter"] == {"display": "Анна Смирнова", "login": "asmirnova"}
     assert issue["components"] == ["Шасси"]
@@ -175,6 +177,7 @@ def test_startrek_object_payload_is_fully_normalized():
 
     assert issue["description"] == "Плановое ТО"
     assert issue["priority"] == "Обычный"
+    assert issue["type_key"] == "service"
     assert issue["assignee"]["login"] == "ipetrov"
     assert issue["tags"] == ["Beta"]
 
@@ -188,6 +191,7 @@ def test_missing_optional_fields_are_safe():
     assert issue["reporter"] is None
     assert issue["priority"] == ""
     assert issue["type"] == ""
+    assert issue["type_key"] == ""
     assert issue["components"] == []
     assert issue["updated"] == ""
 

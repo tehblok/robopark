@@ -242,3 +242,20 @@ describe('work URL state', () => {
     },
   )
 })
+
+describe('work task navigation context', () => {
+  it('retains the original blocker through additional tasks and check tabs', () => {
+    const state = parseWorkUrl(new URLSearchParams('park=7&status=queued&blocker=RP-1&view=check&check_tab=scheme'), defaults)
+    expect(state).toMatchObject({ rootIssue: 'RP-1', detailTab: 'check', checkTab: 'scheme' })
+    const next = workIssueHref('RP-3', { ...state, detailTab: 'task' }, 7)
+    const restored = parseWorkUrl(new URLSearchParams(next.split('?')[1]), defaults)
+    expect(restored.rootIssue).toBe('RP-1')
+    expect(restored.detailTab ?? 'task').toBe('task')
+  })
+
+  it('normalizes unknown tabs and invalid origin identifiers', () => {
+    const state = parseWorkUrl(new URLSearchParams('blocker=https://evil.invalid&view=wrong'), defaults)
+    expect(state.rootIssue).toBeUndefined()
+    expect(state.detailTab).toBeUndefined()
+  })
+})
