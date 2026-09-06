@@ -69,6 +69,7 @@ function renderShellWithParkScope(
   role: User['role'],
   setParkId = vi.fn(),
   availableParks?: (typeof north)[],
+  allowAllParks = false,
 ) {
   const south = { id: 9, name: 'Южный', tag: 'south', is_active: true }
   const parks = availableParks ?? [north, south]
@@ -81,8 +82,9 @@ function renderShellWithParkScope(
           <AuthContext.Provider value={{ user: currentUser, loading: false,
             login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn() }}>
             <ParkScopeContext.Provider value={{
-              parkId: 7,
-              selectedPark: north,
+              allowAllParks,
+              parkId: allowAllParks ? null : 7,
+              selectedPark: allowAllParks ? null : north,
               parks,
               loading: false,
               locked: false,
@@ -99,6 +101,8 @@ function renderShellWithParkScope(
     ),
   }
 }
+
+
 
 function BadgeCommitProbe({ parkId, snapshots }: { parkId: number; snapshots: string[] }) {
   useLayoutEffect(() => {
@@ -126,6 +130,17 @@ function declaredCssValue(element: Element, property: string): string {
 }
 
 describe('AppShell', () => {
+  it.each(['admin', 'royal', 'operator'])('offers all and a specific park for %s even with one accessible park', async role => {
+    const { setParkId } = renderShellWithParkScope(role, vi.fn(), [north], true)
+    fireEvent.click(screen.getByRole('button', { name: 'Сменить парк' }))
+    expect(screen.getByRole('option', { name: 'Все доступные парки' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(screen.getByRole('option', { name: north.name }))
+    expect(setParkId).toHaveBeenCalledWith(north.id)
+    fireEvent.click(screen.getByRole('button', { name: 'Сменить парк' }))
+    fireEvent.click(screen.getByRole('option', { name: 'Все доступные парки' }))
+    expect(setParkId).toHaveBeenCalledWith(null)
+  })
+
   let media: MatchMediaController
 
   beforeEach(() => {

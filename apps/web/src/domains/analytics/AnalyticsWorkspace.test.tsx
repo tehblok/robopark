@@ -1,8 +1,9 @@
+import { StrictMode } from 'react'
 import { beforeEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, expect, it, vi } from 'vitest'
-import { ApiError, type User } from '../../api'
+import { ApiError, type User, type Park } from '../../api'
 import { AuthContext } from '../../auth-context'
 import { ParkScopeContext } from '../../app/park/parkScope'
 import { resourceStore } from '../../lib/resource'
@@ -11,8 +12,8 @@ import { deferred, makeUser, otherPark, park } from '../insights/operations.test
 import { analyticsFixture as fixture } from './analytics.test-support'
 type Client = { analytics: (parkId: number, days: number, bucket: '2h' | '1d') => Promise<ReturnType<typeof fixture>> }
 function Location() { return <output aria-label="URL">{useLocation().search}</output> }
-function tree({ client, url = '/analytics?park=7', user = makeUser(), selectedPark = park, refreshUser = vi.fn(async () => user) }: { client: Client; url?: string; user?: User; selectedPark?: typeof park; refreshUser?: () => Promise<User> }) {
-  return <MemoryRouter initialEntries={[url]}><AuthContext.Provider value={{ user, loading: false, login: async () => user, refreshUser, logout: async () => {} }}><ParkScopeContext.Provider value={{ selectedPark, parkId: selectedPark.id, parks: [park, otherPark], loading: false, locked: false, setParkId: vi.fn(), refreshParks: async () => {} }}><Analytics apiClient={client} /><Location /></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>
+function tree({ client, url = '/analytics?park=7', user = makeUser(), selectedPark = park, parks = [park, otherPark], allowAllParks = false, refreshUser = vi.fn(async () => user) }: { client: Client; url?: string; user?: User; selectedPark?: Park | null; parks?: Park[]; allowAllParks?: boolean; refreshUser?: () => Promise<User> }) {
+  return <MemoryRouter initialEntries={[url]}><AuthContext.Provider value={{ user, loading: false, login: async () => user, refreshUser, logout: async () => {} }}><ParkScopeContext.Provider value={{ selectedPark, parkId: selectedPark?.id ?? null, parks, allowAllParks, loading: false, locked: false, setParkId: vi.fn(), refreshParks: async () => {} }}><Analytics apiClient={client} /><Location /></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>
 }
 afterEach(() => { resourceStore.clearAll(); vi.restoreAllMocks(); vi.useRealTimers() })
 
@@ -231,3 +232,97 @@ it.each([200, 403])('does not reuse a retired pending request after remount when
 
 // Keep lifecycle assertions deterministic; pollingCapacity tests exercise jitter.
 beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })
+
+
+it.each(['admin', 'royal', 'operator'] as const)('shows every accessible active park for %s in all mode', async role => {
+  const hiddenPark = { ...park, id: 9, name: 'Недоступный' }
+  const inactivePark = { ...park, id: 10, name: 'Неактивный', is_active: false }
+  const user = makeUser({ role, parks: [park, otherPark] })
+  const client = { analytics: vi.fn(async (id: number) => fixture(id)) }
+  render(tree({ client, user, selectedPark: null, allowAllParks: true, parks: [park, otherPark, hiddenPark, inactivePark], url: '/analytics?park=all&compare=8' }))
+  expect(await screen.findByRole('table', { name: 'Сравнение парков' })).toBeVisible()
+  expect(screen.getByRole('heading', { name: 'Все доступные парки' })).toBeVisible()
+  expect(screen.queryByLabelText('Сравнить с парком')).not.toBeInTheDocument()
+  expect(screen.getByLabelText('URL')).toHaveTextContent('?park=all')
+  expect(screen.getByLabelText('URL')).not.toHaveTextContent('compare=')
+  expect(client.analytics.mock.calls.map(call => call[0])).toEqual(role === 'operator' ? [7, 8] : [7, 8, 9])
+  expect(screen.getByRole('region', { name: 'История парка Север' })).toBeVisible()
+  expect(screen.getByRole('region', { name: 'История парка Юг' })).toBeVisible()
+})
+
+it('does not request any park for an operator with no assigned parks in all mode', () => {
+  const client = { analytics: vi.fn(async (id: number) => fixture(id)) }
+  render(tree({ client, user: makeUser({ role: 'operator', parks: [] }), selectedPark: null, allowAllParks: true }))
+  expect(screen.getByRole('heading', { name: 'Нет доступных парков' })).toBeVisible()
+  expect(client.analytics).not.toHaveBeenCalled()
+})
+
+it('bounds all-park loading to three requests and preserves park ordering', async () => {
+  const parks = Array.from({ length: 5 }, (_, i) => ({ ...park, id: i + 7, name: `Парк ${i + 7}` }))
+  const pending = parks.map(() => deferred<ReturnType<typeof fixture>>())
+  const client = { analytics: vi.fn((id: number) => pending[id - 7].promise) }
+  render(tree({ client, user: makeUser({ role: 'admin' }), parks, selectedPark: null, allowAllParks: true }))
+  expect(client.analytics.mock.calls.map(call => call[0])).toEqual([7, 8, 9])
+  await act(async () => pending[1].resolve(fixture(8)))
+  expect(client.analytics.mock.calls.map(call => call[0])).toEqual([7, 8, 9, 10])
+  await act(async () => pending[0].resolve(fixture(7)))
+  expect(client.analytics.mock.calls.map(call => call[0])).toEqual([7, 8, 9, 10, 11])
+  await act(async () => { pending.slice(2).forEach((item, i) => item.resolve(fixture(i + 9))) })
+  expect(screen.getAllByRole('region', { name: /История парка/ }).map(item => item.getAttribute('aria-label'))).toEqual(parks.map(item => `История парка ${item.name}`))
+})
+
+it.each([200, 403])('stops queued all-park calls and ignores late %s responses when switching to one park', async status => {
+  const parks = Array.from({ length: 5 }, (_, i) => ({ ...park, id: i + 7, name: `Парк ${i + 7}` }))
+  const user = makeUser({ role: 'admin' })
+  const refreshUser = vi.fn(async () => user)
+  const pending = parks.slice(0, 3).map(() => deferred<ReturnType<typeof fixture>>())
+  const client = { analytics: vi.fn((id: number) => id === 11 ? Promise.resolve(fixture(id)) : pending[id - 7].promise) }
+  const view = render(tree({ client, user, refreshUser, parks, selectedPark: null, allowAllParks: true }))
+  view.rerender(tree({ client, user, refreshUser, parks, selectedPark: parks[4], allowAllParks: true }))
+  expect(client.analytics.mock.calls.map(call => call[0])).toEqual([7, 8, 9])
+  await act(async () => { pending.forEach((item, i) => status === 403 ? item.reject(new ApiError(403)) : item.resolve(fixture(i + 7))) })
+  await screen.findByRole('region', { name: 'История парка Парк 11' })
+  expect(client.analytics.mock.calls.map(call => call[0])).toEqual([7, 8, 9, 11])
+  expect(screen.getAllByRole('region', { name: /История парка/ })).toHaveLength(1)
+  expect(refreshUser).not.toHaveBeenCalled()
+})
+
+it.each([401, 403])('stops queued all-park calls immediately after %s denial', async status => {
+  const parks = Array.from({ length: 5 }, (_, i) => ({ ...park, id: i + 7 }))
+  const pending = parks.slice(0, 3).map(() => deferred<ReturnType<typeof fixture>>())
+  const client = { analytics: vi.fn((id: number) => pending[id - 7].promise) }
+  render(tree({ client, user: makeUser({ role: 'admin' }), parks, selectedPark: null, allowAllParks: true }))
+  await act(async () => { pending[1].reject(new ApiError(status)); pending[0].resolve(fixture(7)); pending[2].resolve(fixture(9)) })
+  expect(await screen.findByRole('heading', { name: status === 401 ? 'Сессия истекла' : 'Нет доступа' })).toBeVisible()
+  expect(client.analytics.mock.calls.map(call => call[0])).toEqual([7, 8, 9])
+  expect(screen.queryByRole('region', { name: /История парка/ })).not.toBeInTheDocument()
+})
+
+
+it('loads all parks through StrictMode effect replay', async () => {
+  const client = { analytics: vi.fn(async (id: number) => fixture(id)) }
+  render(<StrictMode>{tree({ client, selectedPark: null, allowAllParks: true })}</StrictMode>)
+  expect(await screen.findByRole('region', { name: 'История парка Север' })).toBeVisible()
+  expect(screen.getAllByRole('region', { name: /История парка/ })).toHaveLength(2)
+})
+
+it('removes cached all-park history when a denial arrives after another park failed', async () => {
+  const user = makeUser()
+  const refreshUser = vi.fn(async () => user)
+  const first = deferred<ReturnType<typeof fixture>>()
+  const second = deferred<ReturnType<typeof fixture>>()
+  let revalidating = false
+  const client = { analytics: vi.fn((id: number) => revalidating ? (id === park.id ? first.promise : second.promise) : Promise.resolve(fixture(id))) }
+  render(tree({ client, user, refreshUser, selectedPark: null, allowAllParks: true }))
+  await screen.findByRole('region', { name: 'История парка Север' })
+  revalidating = true
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
+  fireEvent.focus(window)
+  await waitFor(() => expect(client.analytics).toHaveBeenCalledTimes(4))
+  await act(async () => first.reject(new ApiError(500)))
+  expect(screen.getByRole('region', { name: 'История парка Север' })).toBeVisible()
+  await act(async () => second.reject(new ApiError(403)))
+  expect(await screen.findByRole('heading', { name: 'Нет доступа' })).toBeVisible()
+  expect(screen.queryByRole('region', { name: /История парка/ })).not.toBeInTheDocument()
+  expect(refreshUser).toHaveBeenCalledTimes(1)
+})

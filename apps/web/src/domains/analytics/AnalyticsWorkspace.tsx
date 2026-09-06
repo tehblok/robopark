@@ -9,6 +9,7 @@ import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedba
 import { PageLayout } from '../../design-system/layout/PageLayout'
 import { classifyApiError, type DomainError } from '../../shared/api/classifyApiError'
 import { ANALYTICS_LABELS, analyticsDate, analyticsParks, analyticsRequestIdentity, analyticsSearch, analyticsValue, parseAnalyticsQuery, trendSegments, type AnalyticsApiClient, type AnalyticsCoverage, type AnalyticsMetric, type AnalyticsQuery, type AnalyticsSeries, type HistoricalAnalytics } from './analyticsModel'
+import { limitOperationsRequest } from '../shift/operationsRequestLimit'
 import './analytics.css'
 
 function Coverage({ data }: { data: AnalyticsCoverage }) {
@@ -84,15 +85,56 @@ function Comparison({ data, parks }: { data: HistoricalAnalytics[]; parks: Park[
 function AnalyticsOwner({ apiClient, parks, days, bucket, resourceKey, onAuthorizationFailure }: {
   apiClient: AnalyticsApiClient; parks: Park[]; days: number; bucket: AnalyticsQuery['bucket']; resourceKey: string; onAuthorizationFailure: (failure: DomainError) => void
 }) {
-  const resource = useCachedResource(resourceKey, async () => Promise.all(parks.map(async park => {
-    const result = await apiClient.analytics(park.id, days, bucket)
-    if (result.park_id !== park.id) throw new Error('analytics_park_mismatch')
-    return result
-  })), { persist: false, refreshIntervalMs: 120_000, staleTimeMs: 120_000 })
-  const pending = useRef(resource.isRevalidating)
-  useLayoutEffect(() => { pending.current = resource.isRevalidating }, [resource.isRevalidating])
+  const activeLoads = useRef(0)
+  const ownerGeneration = useRef(Symbol('analytics-owner'))
+  useLayoutEffect(() => {
+    ownerGeneration.current = Symbol('analytics-owner')
+    return () => { ownerGeneration.current = Symbol('retired-analytics-owner') }
+  }, [])
+  const resource = useCachedResource(resourceKey, async () => {
+    activeLoads.current += 1
+    const generation = ownerGeneration.current
+    const results: HistoricalAnalytics[] = new Array(parks.length)
+    let next = 0
+    let stopped = false
+    const active = () => !stopped && generation === ownerGeneration.current
+    // Large accessible scopes share three workers; retired scopes never launch queued calls.
+    const worker = async () => {
+      while (active() && next < parks.length) {
+        const index = next++
+        const park = parks[index]
+        try {
+          const result = await limitOperationsRequest(async () => {
+            if (!active()) throw new Error('analytics_owner_retired')
+            try {
+              const result = await apiClient.analytics(park.id, days, bucket)
+              if (result.park_id !== park.id) throw new Error('analytics_park_mismatch')
+              return result
+            } catch (error) {
+              // Observe each current request's denial, even after a sibling failed.
+              const failure = classifyApiError(error, 'Не удалось загрузить историю процесса.')
+              if (generation === ownerGeneration.current && (failure.kind === 'unauthorized' || failure.kind === 'forbidden')) onAuthorizationFailure(failure)
+              // Stop this scope before releasing the shared request slot.
+              stopped = true
+              throw error
+            }
+          })
+          if (!active()) return
+          results[index] = result
+        } catch (error) {
+          stopped = true
+          throw error
+        }
+      }
+    }
+    try {
+      await Promise.all(Array.from({ length: Math.min(3, parks.length) }, worker))
+      if (!active()) throw new Error('analytics_owner_retired')
+      return results
+    } finally { activeLoads.current -= 1 }
+  }, { persist: false, refreshIntervalMs: 120_000, staleTimeMs: 120_000 })
   // Retain settled history, but do not lend a retired owner's request to a remount.
-  useLayoutEffect(() => () => { if (pending.current) resourceStore.invalidate(resourceKey) }, [resourceKey])
+  useLayoutEffect(() => () => { if (activeLoads.current > 0) resourceStore.invalidate(resourceKey) }, [resourceKey])
   const failure = useMemo(() => resource.error ? classifyApiError(resource.error, 'Не удалось загрузить историю процесса.') : null, [resource.error])
   useEffect(() => {
     if (failure?.kind === 'forbidden' || failure?.kind === 'unauthorized') onAuthorizationFailure(failure)
@@ -108,17 +150,19 @@ function AnalyticsOwner({ apiClient, parks, days, bucket, resourceKey, onAuthori
 
 function AnalyticsSession({ apiClient, user }: { apiClient: AnalyticsApiClient; user: User }) {
   const { refreshUser } = useAuth()
-  const { selectedPark, parks, loading } = useParkScope()
+  const { selectedPark, parks, loading, allowAllParks } = useParkScope()
   const [params, setParams] = useSearchParams()
   const available = useMemo(() => analyticsParks(user, parks), [user, parks])
-  const query = parseAnalyticsQuery(params, available, selectedPark?.id)
+  const allParks = Boolean(allowAllParks && !selectedPark)
+  const parsedQuery = parseAnalyticsQuery(params, available, selectedPark?.id)
+  const query = allParks ? { ...parsedQuery, compare: null } : parsedQuery
   const normalized = analyticsSearch(params, query).toString()
   const [authorizationFailure, setAuthorizationFailure] = useState<{ context: string; failure: DomainError } | null>(null)
-  useLayoutEffect(() => {
+  useEffect(() => {
     if (!loading && normalized !== params.toString()) setParams(normalized, { replace: true })
   }, [loading, normalized, params, setParams])
   const comparePark = available.find(park => park.id === query.compare)
-  const requestedParks = useMemo(() => selectedPark ? [selectedPark, ...(comparePark ? [comparePark] : [])] : [], [selectedPark, comparePark])
+  const requestedParks = useMemo(() => allParks ? available : selectedPark ? [selectedPark, ...(comparePark ? [comparePark] : [])] : [], [allParks, available, selectedPark, comparePark])
   const identity = analyticsRequestIdentity(user, requestedParks, query)
   const refreshStarted = useRef(new Set<string>())
   const contextFailure = authorizationFailure?.failure.kind === 'unauthorized' || authorizationFailure?.context === identity ? authorizationFailure?.failure : null
@@ -137,11 +181,12 @@ function AnalyticsSession({ apiClient, user }: { apiClient: AnalyticsApiClient; 
     {canRead ? <div className="rp-analytics-controls">
       <label>Период аналитики<select aria-label="Период аналитики" value={query.days} onChange={event => update({ ...query, days: Number(event.target.value) })}><option value="1">1 день</option><option value="7">7 дней</option><option value="30">30 дней</option></select></label>
       <label>Шаг графиков<select aria-label="Шаг графиков" value={query.bucket} onChange={event => update({ ...query, bucket: event.target.value as AnalyticsQuery['bucket'] })}><option value="1d">24 часа</option><option value="2h">2 часа</option></select></label>
-      <label>Сравнить с парком<select aria-label="Сравнить с парком" value={query.compare ?? ''} onChange={event => update({ ...query, compare: event.target.value ? Number(event.target.value) : null })}><option value="">Без сравнения</option>{available.filter(park => park.id !== selectedPark?.id).map(park => <option key={park.id} value={park.id}>{park.name}</option>)}</select></label>
+      {!allParks ? <label>Сравнить с парком<select aria-label="Сравнить с парком" value={query.compare ?? ''} onChange={event => update({ ...query, compare: event.target.value ? Number(event.target.value) : null })}><option value="">Без сравнения</option>{available.filter(park => park.id !== selectedPark?.id).map(park => <option key={park.id} value={park.id}>{park.name}</option>)}</select></label> : null}
     </div> : null}
+    {allParks && canRead ? <h2>Все доступные парки</h2> : null}
     {!canRead ? <ErrorState title="Нет доступа" description="Нужны разрешения на аналитику и чтение Tracker." /> : contextFailure ? <ErrorState title={contextFailure.title} description={contextFailure.description} />
-      : loading ? <LoadingState label="Загружаем доступные парки" /> : !selectedPark ? <EmptyState title="Парк не выбран" description="Выберите парк для просмотра истории процесса." icon="parks" />
-        : !available.some(park => park.id === selectedPark.id) ? <ErrorState title="Нет доступа" description="Выбранный парк недоступен." />
+      : loading ? <LoadingState label="Загружаем доступные парки" /> : allParks && !available.length ? <EmptyState title="Нет доступных парков" description="История появится после назначения доступа к активному парку." icon="parks" /> : !allParks && !selectedPark ? <EmptyState title="Парк не выбран" description="Выберите парк для просмотра истории процесса." icon="parks" />
+        : selectedPark && !available.some(park => park.id === selectedPark.id) ? <ErrorState title="Нет доступа" description="Выбранный парк недоступен." />
           : <AnalyticsOwner key={identity} resourceKey={`analytics:${user.id}:${identity}`} apiClient={apiClient} parks={requestedParks} days={query.days} bucket={query.bucket} onAuthorizationFailure={onAuthorizationFailure} />}
   </PageLayout>
 }

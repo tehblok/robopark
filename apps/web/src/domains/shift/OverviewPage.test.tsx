@@ -14,6 +14,7 @@ function Location() { return <output aria-label="URL">{useLocation().search}</ou
 type TreeOptions = {
   user?: User
   selectedPark?: Park | null
+  parks?: Park[]
   client?: { operationsOverview: (parkId: number, days: number, status: string) => Promise<OperationsOverview> }
   refreshUser?: () => Promise<User>
   url?: string
@@ -22,11 +23,12 @@ type TreeOptions = {
 function tree({
   user = makeUser(),
   selectedPark = park as Park | null,
+  parks = user.parks,
   client = { operationsOverview: vi.fn(async () => snapshot()) },
   refreshUser = vi.fn(async () => user),
   url = '/overview?park=7',
 }: TreeOptions = {}) {
-  return <MemoryRouter initialEntries={[url]}><AuthContext.Provider value={{ user, loading: false, login: async () => user, refreshUser, logout: async () => {} }}><ParkScopeContext.Provider value={{ parkId: selectedPark?.id ?? null, selectedPark, parks: user.parks, loading: false, locked: false, setParkId: vi.fn(), refreshParks: async () => {} }}><OverviewPage apiClient={client} /><Location /></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>
+  return <MemoryRouter initialEntries={[url]}><AuthContext.Provider value={{ user, loading: false, login: async () => user, refreshUser, logout: async () => {} }}><ParkScopeContext.Provider value={{ parkId: selectedPark?.id ?? null, selectedPark, parks, loading: false, locked: false, setParkId: vi.fn(), refreshParks: async () => {} }}><OverviewPage apiClient={client} /><Location /></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>
 }
 
 afterEach(() => { resourceStore.clearAll(); vi.restoreAllMocks() })
@@ -150,3 +152,60 @@ it('keeps a 401 session denial after park changes without retrying protected req
 
 // Keep lifecycle assertions deterministic; pollingCapacity tests exercise jitter.
 beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })
+
+it.each(['admin', 'royal', 'operator'])('shows every accessible park separately for %s', async role => {
+  const user = makeUser({ role })
+  const client = { operationsOverview: vi.fn(async (parkId: number) => snapshot({ park_id: parkId })) }
+  render(tree({ user, selectedPark: null, client, url: '/overview' }))
+  for (const entry of user.parks) {
+    const section = await screen.findByRole('region', { name: entry.name })
+    expect(await within(section).findByRole('link', { name: 'Открыть задачу RP-1' })).toHaveAttribute('href', `/work/RP-1?park=${entry.id}`)
+    expect(within(section).getByRole('link', { name: 'Перемещение: 2 задач' })).toHaveAttribute('href', `/overview?status=moving&park=${entry.id}`)
+    expect(within(section).getByRole('heading', { name: 'Поток задач: пришло / ушло' })).toBeVisible()
+  }
+  expect(client.operationsOverview).toHaveBeenCalledTimes(2)
+})
+
+it('limits operator overview to assigned active parks even with fleet management permission', async () => {
+  const inactive = { ...park, id: 10, name: 'Закрыт', is_active: false }
+  const user = makeUser({ parks: [park, inactive], permissions: [...makeUser().permissions!, 'parks.manage'] })
+  const client = { operationsOverview: vi.fn(async (parkId: number) => snapshot({ park_id: parkId })) }
+  render(tree({ user, parks: [...makeUser().parks, inactive], selectedPark: null, client }))
+  await screen.findByRole('link', { name: 'Открыть задачу RP-1' })
+  expect(client.operationsOverview).toHaveBeenCalledTimes(1)
+  expect(client.operationsOverview).toHaveBeenCalledWith(7, 7, 'all')
+  expect(screen.queryByRole('region', { name: 'Юг' })).not.toBeInTheDocument()
+})
+
+it.each([401, 403])('stops queued parks and hides every park when one overview returns %s', async status => {
+  const parks = Array.from({ length: 6 }, (_, index) => ({ ...park, id: index + 1, name: `Парк ${index + 1}` }))
+  const pending = parks.map(() => deferred<OperationsOverview>())
+  const user = makeUser({ role: 'admin', parks })
+  const refreshUser = vi.fn(async () => user)
+  const client = { operationsOverview: vi.fn((id: number) => pending[id - 1].promise) }
+  render(tree({ user, selectedPark: null, client, refreshUser }))
+  await waitFor(() => expect(client.operationsOverview).toHaveBeenCalledTimes(3))
+  await act(async () => pending[0].reject(new ApiError(status, null, 'denied')))
+  await screen.findByRole('heading', { name: status === 401 ? 'Сессия истекла' : 'Нет доступа' })
+  await act(async () => { pending[1].resolve(snapshot({ park_id: 2 })); pending[2].resolve(snapshot({ park_id: 3 })) })
+  expect(client.operationsOverview).toHaveBeenCalledTimes(3)
+  expect(screen.queryByRole('link', { name: 'Открыть задачу RP-1' })).not.toBeInTheDocument()
+  expect(refreshUser).toHaveBeenCalledTimes(1)
+})
+
+it.each([200, 403])('retires queued parks and ignores late all-parks completion %s after selecting a park', async status => {
+  const parks = Array.from({ length: 6 }, (_, index) => ({ ...park, id: index + 1, name: `Парк ${index + 1}` }))
+  const pending = parks.map(() => deferred<OperationsOverview>())
+  const user = makeUser({ role: 'admin', parks })
+  const refreshUser = vi.fn(async () => user)
+  const client = { operationsOverview: vi.fn((id: number) => pending[id - 1].promise) }
+  const view = render(tree({ user, selectedPark: null, client, refreshUser }))
+  await waitFor(() => expect(client.operationsOverview).toHaveBeenCalledTimes(3))
+  view.rerender(tree({ user, selectedPark: parks[5], client, refreshUser }))
+  await act(async () => { if (status === 403) pending[0].reject(new ApiError(403, null, 'retired')); else pending[0].resolve(snapshot({ park_id: 1 })) })
+  await waitFor(() => expect(client.operationsOverview).toHaveBeenCalledTimes(4))
+  expect(client.operationsOverview.mock.calls.map(([id]) => id)).toEqual([1, 2, 3, 6])
+  await act(async () => { pending[5].resolve(snapshot({ park_id: 6 })); pending[1].resolve(snapshot({ park_id: 2 })); pending[2].resolve(snapshot({ park_id: 3 })) })
+  expect(await screen.findByRole('link', { name: 'Открыть задачу RP-1' })).toHaveAttribute('href', '/work/RP-1?park=6')
+  expect(refreshUser).not.toHaveBeenCalled()
+})

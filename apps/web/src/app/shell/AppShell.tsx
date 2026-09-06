@@ -51,6 +51,7 @@ function ParkIdentity({
   loading,
   locked,
   onChange,
+  allowAllParks = false,
 }: {
   user: User
   parkId: number | null
@@ -58,7 +59,8 @@ function ParkIdentity({
   parks: Park[]
   loading: boolean
   locked: boolean
-  onChange: (id: number) => void
+  allowAllParks?: boolean
+  onChange: (id: number | null) => void
 }) {
   const [selectorOpen, setSelectorOpen] = useState(false)
   const [focusedIndex, setFocusedIndex] = useState(0)
@@ -67,12 +69,12 @@ function ParkIdentity({
   const listRef = useRef<HTMLDivElement>(null)
   const brandRef = useRef<HTMLDivElement>(null)
   const typed = useRef({ text: '', at: 0 })
-  const parkName = selectedPark?.name ?? (loading ? ru.loading : 'Без парка')
+  const parkOptions: { id: number | null; name: string }[] = allowAllParks && parks.length
+    ? [{ id: null, name: 'Все доступные парки' }, ...parks] : parks
+  const parkName = selectedPark?.name ?? (loading ? ru.loading : allowAllParks && parks.length ? 'Все доступные парки' : 'Без парка')
   const canSwitch = PARK_SWITCH_ROLES.has(user.role)
     && !locked
-    && !loading
-    && parkId != null
-    && parks.length > 1
+    && parkOptions.length > 1
 
   useLayoutEffect(() => {
     if (selectorOpen) listRef.current?.querySelectorAll('button')[focusedIndex]?.focus()
@@ -89,7 +91,7 @@ function ParkIdentity({
 
   const openSelector = () => {
     typed.current = { text: '', at: 0 }
-    setFocusedIndex(Math.max(0, parks.findIndex((park) => park.id === parkId)))
+    setFocusedIndex(Math.max(0, parkOptions.findIndex((park) => park.id === parkId)))
     setSelectorOpen(true)
   }
 
@@ -109,8 +111,8 @@ function ParkIdentity({
     } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(key)) {
       event.preventDefault()
       typed.current = { text: '', at: 0 }
-      setFocusedIndex(key === 'Home' ? 0 : key === 'End' ? parks.length - 1
-        : Math.max(0, Math.min(parks.length - 1, focusedIndex + (key === 'ArrowDown' ? 1 : -1))))
+      setFocusedIndex(key === 'Home' ? 0 : key === 'End' ? parkOptions.length - 1
+        : Math.max(0, Math.min(parkOptions.length - 1, focusedIndex + (key === 'ArrowDown' ? 1 : -1))))
     } else if (key.length === 1 && key !== ' ' && !event.ctrlKey && !event.metaKey && !event.altKey) {
       event.preventDefault()
       const now = Date.now()
@@ -118,9 +120,9 @@ function ParkIdentity({
       typed.current = { text, at: now }
       const prefix = [...text].every((letter) => letter === text[0]) ? text[0] : text
       const start = prefix.length === 1 ? focusedIndex + 1 : focusedIndex
-      for (let offset = 0; offset < parks.length; offset += 1) {
-        const index = (start + offset) % parks.length
-        if (parks[index].name.toLocaleLowerCase('ru-RU').startsWith(prefix)) {
+      for (let offset = 0; offset < parkOptions.length; offset += 1) {
+        const index = (start + offset) % parkOptions.length
+        if (parkOptions[index].name.toLocaleLowerCase('ru-RU').startsWith(prefix)) {
           setFocusedIndex(index)
           break
         }
@@ -167,10 +169,10 @@ function ParkIdentity({
               ref={listRef}
               role="listbox"
             >
-            {parks.map((park, index) => (
+            {parkOptions.map((park, index) => (
                 <button
                   aria-selected={park.id === parkId}
-                  key={park.id}
+                  key={park.id ?? 'all'}
                   onClick={() => {
                     onChange(park.id)
                     closeSelector()
@@ -232,7 +234,7 @@ function NavigationLink({
 
 export function AppShell() {
   const { user, logout } = useAuth()
-  const { parkId, selectedPark, parks, loading, locked, setParkId } = useParkScope()
+  const { parkId, selectedPark, parks, loading, locked, setParkId, allowAllParks } = useParkScope()
   const {
     preference,
     resolvedTheme,
@@ -364,6 +366,7 @@ export function AppShell() {
       <aside className="sidebar rp-shell__sidebar">
         {!phoneViewport ? (
           <ParkIdentity
+            allowAllParks={allowAllParks}
             loading={loading}
             locked={locked}
             onChange={setParkId}
@@ -408,6 +411,7 @@ export function AppShell() {
         <header className="rp-shell__topbar">
           {phoneViewport ? (
             <ParkIdentity
+              allowAllParks={allowAllParks}
               loading={loading}
               locked={locked}
               onChange={setParkId}

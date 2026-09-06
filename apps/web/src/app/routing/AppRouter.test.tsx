@@ -152,7 +152,7 @@ describe('AppRouter', () => {
     }))
 
     await waitFor(() => {
-      expect(screen.getByTestId('location')).toHaveTextContent('/overview?park=7')
+      expect(screen.getByTestId('location')).toHaveTextContent('/overview?park=all')
     })
   })
 

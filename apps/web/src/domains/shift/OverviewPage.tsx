@@ -1,7 +1,7 @@
 import { SyncStatus } from '../../design-system/status/SyncStatus'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { api, type OperationsOverview, type User } from '../../api'
+import { api, type OperationsOverview, type Park, type User } from '../../api'
 import { useParkScope } from '../../app/park/parkScope'
 import { useAuth } from '../../auth-context'
 import { Button } from '../../design-system/actions/Button'
@@ -19,6 +19,7 @@ import {
   OverviewWorkload,
 } from './OverviewSections'
 import { buildOverviewModel } from './overviewModel'
+import { limitOperationsRequest } from './operationsRequestLimit'
 import './overview.css'
 
 const retainable = new Set<DomainError['kind']>(['offline', 'timeout', 'server'])
@@ -72,42 +73,52 @@ function OverviewResource({ resourceKey, load, parkId, role, selectable, statusH
   </>
 }
 
-function OverviewBoundary({ apiClient, user, query, selectable, statusHref, allHref, authorizationBlocked, onAuthorizationFailure }: {
+function OverviewPark({ apiClient, user, park, query, selectable, params, authorizationBlocked, onAuthorizationFailure, identity }: {
   apiClient: OperationsApiClient
   user: User
+  park: Park
   query: OperationsQuery
   selectable: boolean
-  statusHref: (status: string) => string
-  allHref: string | null
+  params: URLSearchParams
+  identity: string
   authorizationBlocked: () => boolean
   onAuthorizationFailure: (error: unknown) => void
 }) {
-  const { selectedPark } = useParkScope()
-  const cachePrefix = `overview:${user.id}:`
-  const identity = operationsAccessIdentity(user, selectedPark)
-  const resourceKey = selectedPark ? `${cachePrefix}${identity}:${selectedPark.id}:${query.days}:${query.status}` : `${cachePrefix}${identity}:none`
-  const load = useCallback(async () => {
+  const resourceKey = `overview:${user.id}:${identity}:${park.id}`
+  const load = useCallback(() => limitOperationsRequest(async () => {
     if (authorizationBlocked()) throw new Error('overview_authorization_blocked')
-    const result = await apiClient.operationsOverview(selectedPark!.id, query.days, query.status)
-    if (authorizationBlocked()) throw new Error('overview_authorization_blocked')
-    return result
-  }, [apiClient, authorizationBlocked, query.days, query.status, selectedPark])
-
-  if (!canReadOperations(user, 'overview')) return <ErrorState description="Для этого раздела нужны доступ к Tracker и разрешение на обзор смены." title="Нет доступа" />
-  if (!selectedPark) return <EmptyState description="Выберите доступный парк, чтобы увидеть текущие задачи." icon="parks" title="Парк не выбран" />
-  return <OverviewResource allHref={allHref} key={resourceKey} load={load} onAuthorizationFailure={onAuthorizationFailure} parkId={selectedPark.id} resourceKey={resourceKey} role={user.role} selectable={selectable} statusHref={statusHref} />
+    try {
+      const result = await apiClient.operationsOverview(park.id, query.days, query.status)
+      if (authorizationBlocked()) throw new Error('overview_authorization_blocked')
+      return result
+    } catch (error) {
+      onAuthorizationFailure(error)
+      throw error
+    }
+  }), [apiClient, authorizationBlocked, onAuthorizationFailure, park.id, query.days, query.status])
+  const statusHref = (nextStatus: string) => {
+    const next = operationsSearch(params, { days: 7, status: nextStatus })
+    next.set('park', String(park.id))
+    return `?${next.toString()}`
+  }
+  const allHref = selectable && query.status !== 'all' ? statusHref('all') : null
+  return <OverviewResource allHref={allHref} key={resourceKey} load={load} onAuthorizationFailure={onAuthorizationFailure} parkId={park.id} resourceKey={resourceKey} role={user.role} selectable={selectable} statusHref={statusHref} />
 }
 
 function OverviewSessionPage({ apiClient, user }: { apiClient: OperationsApiClient; user: User }) {
   const { refreshUser } = useAuth()
-  const { loading, selectedPark } = useParkScope()
+  const { loading, selectedPark, parks } = useParkScope()
+  const allParks = !selectedPark && canSelectOverviewStatus(user.role)
+  const accessible = (park: Park) => park.is_active !== false && (user.role === 'admin' || user.role === 'royal' || user.parks.some(assigned => assigned.id === park.id && assigned.is_active !== false))
+  const accessibleParks = parks.filter(accessible)
+  const overviewParks = selectedPark ? [selectedPark].filter(accessible) : allParks ? accessibleParks : []
   const [params, setParams] = useSearchParams()
   const parsed = useMemo(() => parseOperationsQuery(params, user.role), [params, user.role])
   const selectable = canSelectOverviewStatus(user.role)
   const query = useMemo<OperationsQuery>(() => ({ days: 7, status: selectable ? parsed.status : 'all' }), [parsed.status, selectable])
   const normalized = useMemo(() => operationsSearch(params, query), [params, query])
   const cachePrefix = `overview:${user.id}:`
-  const identity = `${operationsAccessIdentity(user, selectedPark)}:${query.days}:${query.status}`
+  const identity = `${operationsAccessIdentity(user, selectedPark)}:${JSON.stringify(overviewParks.map(park => operationsAccessIdentity(user, park)))}:${query.days}:${query.status}`
   const requestOwner = useMemo(() => ({ identity }), [identity])
   const owner = useRef<typeof requestOwner | null>(requestOwner)
   useLayoutEffect(() => { owner.current = requestOwner; return () => { owner.current = null } }, [requestOwner])
@@ -136,16 +147,16 @@ function OverviewSessionPage({ apiClient, user }: { apiClient: OperationsApiClie
     if (normalized.toString() !== params.toString()) setParams(normalized, { replace: true })
   }, [normalized, params, setParams])
 
-  const statusHref = useCallback((nextStatus: string) => {
-    const next = operationsSearch(params, { days: 7, status: nextStatus })
-    return next.toString() ? `?${next.toString()}` : ''
-  }, [params])
-  const allHref = selectable && query.status !== 'all' ? statusHref('all') : null
 
-  return <PageLayout description="Что происходит сейчас и где требуется вмешательство в выбранном парке." title="Смена / Обзор">
+  return <PageLayout description={allParks ? "Что происходит сейчас во всех доступных парках. Задачи, SLA и история показаны отдельно по каждому парку." : "Что происходит сейчас и где требуется вмешательство в выбранном парке."} title="Смена / Обзор">
     {contextFailure ? <ErrorState description={contextFailure.description} requestId={contextFailure.requestId} title={contextFailure.title} />
       : loading ? <LoadingState label="Загружаем область парка" variant="page" />
-        : <OverviewBoundary allHref={allHref} apiClient={apiClient} authorizationBlocked={authorizationBlocked} onAuthorizationFailure={observeAuthorizationFailure} query={query} selectable={selectable} statusHref={statusHref} user={user} />}
+        : !canReadOperations(user, 'overview') ? <ErrorState description="Для этого раздела нужны доступ к Tracker и разрешение на обзор смены." title="Нет доступа" />
+          : overviewParks.length === 0 ? <EmptyState description="Нет доступных парков для обзора смены." icon="parks" title="Парк не выбран" />
+            : overviewParks.map(park => {
+              const content = <OverviewPark key={park.id} apiClient={apiClient} authorizationBlocked={authorizationBlocked} identity={identity} onAuthorizationFailure={observeAuthorizationFailure} params={params} park={park} query={query} selectable={selectable} user={user} />
+              return allParks ? <section key={park.id} aria-label={park.name}><h2>{park.name}</h2>{content}</section> : content
+            })}
   </PageLayout>
 }
 

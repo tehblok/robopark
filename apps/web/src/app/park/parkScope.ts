@@ -13,12 +13,13 @@ export function hasFleetParkScope(user: ParkScopeUser): boolean {
 }
 
 export type ParkScopeValue = {
+  allowAllParks?: boolean
   parkId: number | null
   selectedPark: Park | null
   parks: Park[]
   loading: boolean
   locked: boolean
-  setParkId: (id: number, options?: { replace?: boolean }) => void
+  setParkId: (id: number | null, options?: { replace?: boolean }) => void
   refreshParks: () => Promise<void>
 }
 
