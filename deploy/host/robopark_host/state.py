@@ -14,7 +14,9 @@ def atomic_write_json(path: Path, payload: Dict, mode: int = 0o600) -> None:
 
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+    encoded = (
+        json.dumps(payload, allow_nan=False, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
     descriptor, temporary_name = tempfile.mkstemp(
         dir=str(target.parent), prefix=".{0}.".format(target.name)
     )

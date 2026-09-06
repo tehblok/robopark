@@ -15,9 +15,16 @@ _SECRET_MARKERS = (
 _REDACTED = "[REDACTED]"
 
 
+def _normalize_key(key: object) -> str:
+    return "".join(character for character in str(key).casefold() if character.isalnum())
+
+
+_NORMALIZED_SECRET_MARKERS = tuple(_normalize_key(marker) for marker in _SECRET_MARKERS)
+
+
 def _is_secret_key(key: object) -> bool:
-    normalized = str(key).casefold().replace("-", "_")
-    return any(marker in normalized for marker in _SECRET_MARKERS)
+    normalized = _normalize_key(key)
+    return any(marker in normalized for marker in _NORMALIZED_SECRET_MARKERS)
 
 
 def redact(value: object) -> object:
