@@ -566,10 +566,14 @@ def test_atomic_message_from_an_overlapping_source_does_not_reappear_as_unknown(
         r"[[:oops]a{500000}",
         r"(?x)(?-x :#a{500000})",
         "(?x)(? # flags\n-x:#a{500000})",
-        "(?1){1000}" * 11 + "(a)",
     ],
 )
 def test_excessive_regex_compilation_is_rejected_with_bounded_time_and_rss(pattern):
+    outcome = _compile_with_resource_probe(pattern)
+    assert outcome["error"] == "invalid_diagnostic_regex"
+
+
+def _compile_with_resource_probe(pattern):
     probe = """
 import json, resource, sys, time
 sys.path.insert(0, sys.argv[1])
@@ -607,7 +611,35 @@ print(json.dumps({"error": error, "elapsed": elapsed, "rss_increase": increase})
     outcome = json.loads(result.stdout)
     assert outcome["rss_increase"] < 16 * 1024 * 1024, outcome
     assert outcome["elapsed"] < 0.25, outcome
-    assert outcome["error"] == "invalid_diagnostic_regex"
+    return outcome
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        r"(?x)(?(?=a)(?-x)a|b)#a{500000}",
+        r"(?x)(?(?=a)(?-x)a|b)#a{2}",
+        r"(?(?=a)(?x)a|b)#a{500000}",
+        r"(?(?=a)(?x)a|b)#a{2}",
+        r"(?x)(?(?=a)(?-x)a|b)#(?:a{1000}){1000}",
+        r"(?x)(?(?=a)(?-x)a|b)#" + "a{1000}" * 11,
+        r"(a)?(?(1)b|c)",
+        r"(?P<part>a)?(?(part)b|c)",
+        r"(?:(?(?=a)b|c)){2}",
+        r"(?R)",
+        r"(?1)(a)",
+        "(?1){1000}" * 11 + "(a)",
+        r"(?P<part>a)(?&part)",
+        r"(?P<part>a)(?P>part)",
+        r"(?P<part>a)(?P=part)",
+        r"(?|a|b)",
+        r"(*SKIP)a",
+        r"(?V1)a",
+    ],
+)
+def test_unsupported_regex_groups_fail_closed_before_native_compilation(pattern):
+    outcome = _compile_with_resource_probe(pattern)
+    assert outcome["error"] == "unsupported_diagnostic_regex"
 
 
 @pytest.mark.parametrize(
@@ -624,6 +656,12 @@ print(json.dumps({"error": error, "elapsed": elapsed, "rss_increase": increase})
         (r"(?:a{10}){10}", "a" * 100),
         (r"a{1000}", "a" * 1000),
         (r"(?:a{1000}){10}", "a" * 10000),
+        (r"\(\?\(a\)b\|c\)", "(?(a)b|c)"),
+        (r"[(?(]{3}", "(?("),
+        (r"(?# literal (?\( and a{500000})OK", "OK"),
+        ("(?x)OK # literal (?( and a{500000}", "OK"),
+        (r"(?P<part>a)(?<other>b)(?:c)(?=d)d(?!e)(?<=d)(?<!f)(?>g)", "abcdg"),
+        (r"(?r)(?:a{10}){10}", "a" * 100),
     ],
 )
 def test_regex_resource_validation_preserves_literal_braces_and_practical_patterns(
@@ -745,7 +783,7 @@ def test_classified_code_collection_with_empty_slots_does_not_repeat_its_summary
     assert [(item.rule_id, item.raw_value) for item in events] == [(rule.id, "KNOWN")]
 
 
-def test_residual_atomic_code_collection_keeps_identity_after_unknown_items_reorder(db_session):
+def test_residual_atomic_code_collection_preserves_nested_array_order_in_identity(db_session):
     _insert_rule(db_session, source_path="errors.0.code", pattern="KNOWN")
     first = _events(db_session, {"errors": [{"code": ["B", "KNOWN", "A"], "message": "Summary"}]})
     second = _events(db_session, {"errors": [{"code": ["A", "B", "KNOWN"], "message": "Summary"}]})
@@ -758,9 +796,60 @@ def test_residual_atomic_code_collection_keeps_identity_after_unknown_items_reor
         "KNOWN",
         {"code": ["A", "B"], "message": "Summary"},
     ]
-    assert [item.id for item in first] == [item.id for item in second]
+    assert first[0].id == second[0].id
+    assert first[1].id != second[1].id
     assert first[1].source_segments == second[1].source_segments == ["errors", 0]
     assert first[1].source_path == second[1].source_path == "errors.0"
+
+
+@pytest.mark.parametrize(
+    ("first_raw", "second_raw"),
+    [
+        ({"code": "OTHER", "samples": [1, 2]}, {"code": "OTHER", "samples": [2, 1]}),
+        (
+            {"code": "OTHER", "coordinates": [0.25, 0.75]},
+            {"code": "OTHER", "coordinates": [0.75, 0.25]},
+        ),
+        (
+            {"code": "OTHER", "details": {"trace": [{"coordinates": [0.25, 0.75]}]}},
+            {"code": "OTHER", "details": {"trace": [{"coordinates": [0.75, 0.25]}]}},
+        ),
+    ],
+)
+def test_unknown_objects_with_different_nested_array_order_are_not_overwritten(
+    db_session, first_raw, second_raw
+):
+    first = _events(db_session, {"errors": [first_raw, second_raw]})
+    reordered = _events(db_session, {"errors": [second_raw, first_raw]})
+
+    assert [item.raw_value for item in first] == [first_raw, second_raw]
+    assert len({item.id for item in first}) == 2
+    assert [(item.id, item.raw_value) for item in first] == [
+        (item.id, item.raw_value) for item in reordered
+    ]
+    assert [item.source_segments for item in first] == [["errors", 0], ["errors", 1]]
+    assert [item.source_segments for item in reordered] == [["errors", 1], ["errors", 0]]
+
+
+@pytest.mark.parametrize(("earlier", "later"), [(1, 2), (2, 10)])
+def test_identical_unknown_occurrences_dedupe_to_the_first_structural_source_position(
+    db_session, earlier, later
+):
+    _insert_rule(db_session, source_path="errors", pattern="SKIP")
+    raw = {"code": "OTHER", "samples": [1, 2]}
+    items = ["SKIP"] * 12
+    items[earlier] = raw
+    items[later] = {"samples": [1, 2], "code": "OTHER"}
+
+    first = _events(db_session, {"errors": items})
+    repeated = _events(db_session, {"errors": items})
+    unknown = [item for item in first if item.rule_id is None]
+
+    assert len(unknown) == 1
+    assert unknown[0].raw_value == raw
+    assert unknown[0].source_segments == ["errors", earlier]
+    assert unknown[0].source_path == f"errors.{earlier}"
+    assert first == repeated
 
 
 def test_residual_tree_keeps_original_nested_indexes_and_escaped_dictionary_keys(db_session):

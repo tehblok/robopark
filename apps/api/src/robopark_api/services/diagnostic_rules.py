@@ -42,8 +42,9 @@ REGEX_TIMEOUT_SECONDS = 0.01
 MAX_REGEX_REPEAT = 1000
 MAX_REGEX_EXPANSION = 10000
 _COUNTED_REPEAT = re.compile(r"\{([0-9]*)(?:,([0-9]*))?\}")
-_INLINE_FLAGS = re.compile(r"\(\?((?:[abefimprswxLu]|V[01])*)(?:-([abefimprswxLu]+))?([:)])")
+_INLINE_FLAGS = re.compile(r"\(\?((?:[abefimprswxLu]|V0)*)(?:-([abefimprswxLu]+))?([:)])")
 _POSIX_CLASS = re.compile(r"\[:\^?[A-Za-z0-9 &_.-]*(?:[:=][A-Za-z0-9 &_./-]+)?:\]")
+_SUPPORTED_GROUP = re.compile(r"\(\?(?:[:=!>]|<[=!]|(?:P<|<)[A-Za-z_][A-Za-z0-9_]*>)")
 type Location = tuple[str | int, ...]
 type IdentityPath = tuple[str | int | None, ...]
 
@@ -128,6 +129,9 @@ def _check_regex_resources(pattern: str) -> None:
     caps their aggregate expansion at 10000 atoms: adjacent costs add, nested
     counts multiply. This lexical pass leaves syntax validation to the engine.
     Escapes, classes, comments and verbose/scoped flags are not repetition code.
+    Only ordinary/named captures, noncapturing/atomic groups and lookarounds
+    share the modeled group/flag stack. Other group extensions fail closed;
+    notably, a conditional's condition is not an ordinary nested group.
     """
     index, total, last = 0, 0, 0
     verbose = False
@@ -167,6 +171,10 @@ def _check_regex_resources(pattern: str) -> None:
             index = _class_end(pattern, index)
             total, last = total + 1, 1
         elif char == "(":
+            if pattern.startswith(("(?", "(*"), index) and not _SUPPORTED_GROUP.match(
+                pattern, index
+            ):
+                raise ValueError("unsupported_diagnostic_regex")
             groups.append((total, last, verbose))
             total, last = 0, 0
             index += 1
@@ -202,6 +210,10 @@ def compile_diagnostic_regex(pattern: str) -> regex.Pattern:
     engine's configurable default. Do not expose persisted pattern text in errors.
     A 512-character pattern has at most 1000 repetitions per count and a 10000
     atom conservative expansion budget. Validation happens before native compile.
+    Supported group syntax: ordinary captures, ASCII-named (?P<name>)/(?<name>)
+    captures, (?:), lookarounds, (?>), comments and VERSION0 inline flags.
+    Conditional, recursive/subroutine, branch-reset, backreference-group and
+    control-verb extensions raise unsupported_diagnostic_regex before compile.
     """
     if not 1 <= len(pattern) <= 512:
         raise ValueError("invalid_diagnostic_regex")
@@ -292,6 +304,7 @@ def _raw_errors(
 def _event_id(rule_id: int | None, identity_path: IdentityPath, raw_value: Any) -> str:
     # Hash typed path segments, not a lossy joined display string. Collection
     # positions are wildcards, so moving the same raw error keeps its selection.
+    # Array order INSIDE a raw error is semantic (samples, coordinates, traces).
     identity = _canonical([rule_id, identity_path, raw_value]).encode("utf-8")
     return hashlib.sha256(identity).hexdigest()
 
@@ -387,15 +400,6 @@ def _residual_errors(node: _Residual, *, list_item: bool = False) -> Iterator[_R
             yield from _residual_errors(child, list_item=True)
 
 
-def _unknown_identity(value: Any) -> Any:
-    """Diagnostic arrays are collections; retain order in raw_value, not in IDs."""
-    if type(value) is list:
-        return sorted((_unknown_identity(item) for item in value), key=_canonical)
-    if type(value) is dict:
-        return {key: _unknown_identity(item) for key, item in value.items()}
-    return value
-
-
 def match_diagnostic_events(db: Session, payload: dict[str, Any]) -> list[DiagnosticEvent]:
     # Disabled rules still identify diagnostic sources; disabling their marker
     # must not remove a raw fault from a custom telemetry path.
@@ -468,11 +472,19 @@ def match_diagnostic_events(db: Session, payload: dict[str, Any]) -> list[Diagno
         if tree is not None:
             candidates.extend(_residual_errors(tree))
     for error in sorted(
-        candidates, key=lambda item: (len(item.location), _canonical(item.location))
+        candidates,
+        key=lambda item: (
+            len(item.location),
+            tuple((type(part) is int, part) for part in item.location),
+        ),
     ):
         location, raw = error.location, error.value
         source = _display_path(location)
-        event_id = _event_id(None, error.identity_path, _unknown_identity(raw))
+        event_id = _event_id(None, error.identity_path, raw)
+        # Identical raw occurrences on one wildcard-normalized source dedupe to
+        # the first structural position; numeric index 2 precedes index 10.
+        if event_id in events:
+            continue
         event_paths[event_id] = error.identity_path
         events[event_id] = DiagnosticEvent(
             id=event_id,
@@ -492,9 +504,7 @@ def match_diagnostic_events(db: Session, payload: dict[str, Any]) -> list[Diagno
             item.rule_id is None,
             item.rule_id or 0,
             tuple(_canonical(part) for part in event_paths[item.id]),
-            _canonical(
-                _unknown_identity(item.raw_value) if item.rule_id is None else item.raw_value
-            ),
+            _canonical(item.raw_value),
             item.id,
         ),
     )
