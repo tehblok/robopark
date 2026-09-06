@@ -255,3 +255,6 @@ it('rejects a queued focus callback from an owner retired by access denial befor
   })
   expect(requests.slice(count).map(request => request.path)).toEqual([])
 })
+
+// Keep lifecycle assertions deterministic; pollingCapacity tests exercise jitter.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

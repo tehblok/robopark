@@ -17,6 +17,9 @@ test('320px task controls, safe Markdown, persistent drafts and incoming comment
       return { json: { key: issue.key, action: 'comment', status: 'ok', actor: 'mechanic.test', performed_at: FIXED_TIME } }
     } },
   ] })
+  // Nonzero jitter is deterministic: a focus resume waits fifteen seconds.
+  await page.addInitScript(() => { Math.random = () => 0.5 })
+  await page.clock.install({ time: new Date('2026-09-02T09:05:00Z') })
   await page.goto('/work/ROBOPARK-42?park=7')
   await expect(page.locator('.issue-actions')).toBeVisible()
   await settlePage(page)
@@ -56,6 +59,8 @@ test('320px task controls, safe Markdown, persistent drafts and incoming comment
   await page.clock.setFixedTime(new Date('2026-09-02T09:06:01Z'))
   await page.evaluate(() => window.dispatchEvent(new Event('focus')))
   const jump = page.getByRole('button', { name: '1 новый комментарий — перейти' })
+  await expect(jump).toHaveCount(0)
+  await page.clock.runFor(15_000)
   await expect(jump).toBeVisible()
   expect(await page.evaluate(() => scrollY)).toBe(scrollBefore)
   await jump.click()

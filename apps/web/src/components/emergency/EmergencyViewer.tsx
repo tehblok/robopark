@@ -24,7 +24,7 @@ import {
 } from './inspectionUrl'
 import { RobotSchematic } from './RobotSchematic'
 
-const SNAPSHOT_POLL_MS = 2500
+import { ROBOT_POLL_MS as SNAPSHOT_POLL_MS } from '../../domains/robots/polling'
 
 type ResolvePayload = {
   vin: string

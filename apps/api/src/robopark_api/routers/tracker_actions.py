@@ -159,7 +159,7 @@ def add_comment(
 
 
 @router.post("/issues/{key}/attachments", response_model=TrackerActionOut)
-async def attach_file(
+def attach_file(
     key: str,
     request: Request,
     file: UploadFile = File(...),
@@ -171,7 +171,9 @@ async def attach_file(
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "attach", request)
 
-    content = await file.read()
+    # This route uses synchronous Tracker HTTP and SQLAlchemy throughout.
+    # Run it in FastAPI's worker pool, and bound the in-memory upload copy.
+    content = file.file.read(tracker_client.MAX_ATTACHMENT_BYTES + 1)
     if not content:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

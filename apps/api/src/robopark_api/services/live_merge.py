@@ -309,6 +309,12 @@ class LiveMergeStore:
         loader: Callable[[], T],
         is_current: Callable[[], bool] | None = None,
     ) -> T:
+        from robopark_api.db import release_request_session
+
+        # Both file-lock contention and another process's upstream flight can
+        # wait. Return the DB connection before either, including cache hits
+        # discovered after waiting; releasing only in the loader misses them.
+        release_request_session()
         deadline = time.monotonic() + self.waiter_timeout
         claim = uuid.uuid4().hex
         while True:
@@ -335,9 +341,6 @@ class LiveMergeStore:
                 break
             time.sleep(min(_POLL_SEC, max(remaining, 0)))
 
-        from robopark_api.db import release_request_session
-
-        release_request_session()
         try:
             value = loader()
         except BaseException as exc:

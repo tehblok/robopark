@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Robopark backup
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+RandomizedDelaySec=10m
+Persistent=true
+Unit=robopark-backup.service
+
+[Install]
+WantedBy=timers.target

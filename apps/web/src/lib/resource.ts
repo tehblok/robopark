@@ -18,6 +18,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { periodicDelay, resumeDelay, retryAfterMs } from './pollingSchedule'
 
 const LS_PREFIX = 'robopark:res:'
 const LS_VERSION = 1
@@ -386,7 +387,7 @@ export function useCachedResource<T>(
       const failures = retryRef.current.failures + 1
       retryRef.current = {
         failures,
-        after: Date.now() + Math.min(300_000, Math.max(refreshIntervalMs, 1_000) * 2 ** Math.min(failures - 1, 8)),
+        after: Date.now() + Math.max(retryAfterMs(loadError), Math.min(300_000, Math.max(refreshIntervalMs, 1_000) * 2 ** Math.min(failures - 1, 8))),
         blocked: status === 401 || status === 403,
       }
       if (retryRef.current.blocked) resourceStore.evict(key)
@@ -425,15 +426,28 @@ export function useCachedResource<T>(
       if (!canLoadAutomatically() || inflightLoaders.has(key) || !resourceStore.isStale(key, staleTimeMs)) return
       void runLoad(true)
     }
-    const timer = refreshIntervalMs > 0 ? window.setInterval(refreshIfStale, refreshIntervalMs) : undefined
-    document.addEventListener('visibilitychange', refreshIfStale)
-    window.addEventListener('focus', refreshIfStale)
-    window.addEventListener('online', refreshIfStale)
+    let timer: number | undefined
+    let resumeTimer: number | undefined
+    const schedule = (initial = false) => {
+      if (refreshIntervalMs <= 0) return
+      timer = window.setTimeout(() => { refreshIfStale(); schedule() }, periodicDelay(refreshIntervalMs, initial))
+    }
+    const resume = () => {
+      if (resumeTimer !== undefined || !canLoadAutomatically()) return
+      const delay = resumeDelay()
+      if (delay === 0) { refreshIfStale(); return }
+      resumeTimer = window.setTimeout(() => { resumeTimer = undefined; refreshIfStale() }, delay)
+    }
+    schedule(true)
+    document.addEventListener('visibilitychange', resume)
+    window.addEventListener('focus', resume)
+    window.addEventListener('online', resume)
     return () => {
-      if (timer !== undefined) window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', refreshIfStale)
-      window.removeEventListener('focus', refreshIfStale)
-      window.removeEventListener('online', refreshIfStale)
+      window.clearTimeout(timer)
+      window.clearTimeout(resumeTimer)
+      document.removeEventListener('visibilitychange', resume)
+      window.removeEventListener('focus', resume)
+      window.removeEventListener('online', resume)
     }
   }, [enabled, key, refreshIntervalMs, staleTimeMs, runLoad, canLoadAutomatically])
 

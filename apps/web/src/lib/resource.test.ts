@@ -1,3 +1,4 @@
+import { beforeEach } from 'vitest'
 import { createElement } from 'react'
 import { act, cleanup, render, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -368,3 +369,6 @@ describe('successful synchronization timestamp', () => {
     expect(result.current.updatedAt).toBeNull()
   })
 })
+
+// Existing lifecycle assertions use the minimum jitter; capacity tests cover dispersion.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

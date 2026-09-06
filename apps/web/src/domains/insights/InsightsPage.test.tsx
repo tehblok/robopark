@@ -1,3 +1,4 @@
+import { beforeEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -187,3 +188,6 @@ it('retains only same-owner data after offline revalidation and retries', async 
   fireEvent.click(screen.getByRole('button', { name: 'Повторить' }))
   await screen.findByText('Нет задач в выбранных статусах')
 })
+
+// Keep lifecycle assertions deterministic; pollingCapacity tests exercise jitter.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

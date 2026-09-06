@@ -1,3 +1,4 @@
+import { beforeEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -227,3 +228,6 @@ it.each([200, 403])('does not reuse a retired pending request after remount when
   expect(refreshUser).not.toHaveBeenCalled()
   expect(screen.getByRole('region', { name: 'История парка Север' })).toBeVisible()
 })
+
+// Keep lifecycle assertions deterministic; pollingCapacity tests exercise jitter.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

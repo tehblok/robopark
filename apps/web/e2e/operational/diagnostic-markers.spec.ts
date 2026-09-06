@@ -4,6 +4,8 @@ import { installOperational, settlePage, snapshot } from './fixtures'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 
 test.use({ trace: 'off', hasTouch: true })
+// Layout assertions use minimum jitter; robots.spec exercises nonzero timer/resume jitter.
+test.beforeEach(async ({ page }) => { await page.addInitScript(() => { Math.random = () => 0 }) })
 const lidar: DiagnosticEvent = { id: 'lidar', rule_id: 1, source_path: 'errors.0', source_segments: ['errors', 0], raw_value: 'LIDAR_OFFLINE', title: 'Передний лидар недоступен', description: 'Проверьте питание и соединение переднего лидара.', severity: 'critical', sort_order: 0, part: 'Передний лидар', view: 'front', x: .25, y: .6, indicator: 'point' }
 const events: DiagnosticEvent[] = [lidar,
   { ...lidar, id: 'battery', rule_id: 2, title: 'Перегрев батареи', description: 'Проверьте температуру батареи.', raw_value: 'BATTERY_HOT', part: 'Батарея', severity: 'warning', indicator: 'outline', x: .75, y: .3 },
@@ -65,7 +67,7 @@ for (const theme of ['light', 'dark'] as const) for (const width of [320, 390, 7
     await expect.poll(() => page.locator('.rp-check-event-detail').textContent()).toContain(lidar.description)
     await page.getByRole('button', { name: 'Все ошибки (5)', exact: true }).click()
     await expect(page.getByRole('tab', { name: 'Ошибки', exact: true })).toHaveAttribute('aria-selected', 'true')
-    await page.clock.setFixedTime(new Date('2026-09-02T09:05:03Z'))
+    await page.clock.setFixedTime(new Date('2026-09-02T09:05:11Z'))
     await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
     await expect(page.getByRole('list', { name: 'Диагностические события' }).getByRole('listitem')).toHaveCount(1)
     await page.getByRole('tab', { name: 'Схема', exact: true }).click()
@@ -73,7 +75,7 @@ for (const theme of ['light', 'dark'] as const) for (const width of [320, 390, 7
     await page.getByRole('button', { name: 'Показать ошибку', exact: true }).click()
     await expect(page.getByRole('button', { name: 'Сзади', exact: true })).toHaveAttribute('aria-pressed', 'true')
     currentEvents = events
-    await page.clock.setFixedTime(new Date('2026-09-02T09:05:06Z'))
+    await page.clock.setFixedTime(new Date('2026-09-02T09:05:22Z'))
     await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
     await page.getByRole('button', { name: /^Все ошибки/ }).click()
     const list = page.getByRole('list', { name: 'Диагностические события' })
@@ -169,7 +171,7 @@ for (const width of [390, 1440]) test(`selection and passive snapshot/focus upda
   const before = await page.evaluate(() => scrollY)
   const previousReads = reads
   currentEvents = events.map(event => event.id === 'battery' ? { ...event, description: 'Проверьте температуру батареи повторно.' } : event)
-  await page.clock.setFixedTime(new Date('2026-09-02T09:05:03Z'))
+  await page.clock.setFixedTime(new Date('2026-09-02T09:05:11Z'))
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
   await expect.poll(() => reads).toBeGreaterThan(previousReads)
   await expect(page.getByRole('region', { name: 'Выбранная ошибка' })).toContainText('Проверьте температуру батареи повторно.')

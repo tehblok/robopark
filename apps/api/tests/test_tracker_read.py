@@ -562,7 +562,11 @@ def test_selected_status_can_be_restricted_to_open_blockers(
             _scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"),
             {**_scoped_issue("ROBOPARK-2", "2026-01-02T00:00:00Z"), "resolution": "fixed"},
         ]
-        return [item for item in items if not kwargs["filter_open"] or tracker_client.is_issue_open_item(item)]
+        return [
+            item
+            for item in items
+            if not kwargs["filter_open"] or tracker_client.is_issue_open_item(item)
+        ]
 
     monkeypatch.setattr(tracker_client, "search_issues", search)
     login_as(client, "op2", "secret")

@@ -1,3 +1,4 @@
+import { beforeEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { api, ApiError, type AdminRole, type AdminUser, type User } from '../../api'
@@ -93,3 +94,6 @@ it('retires a pending background role read before refreshing after a saved mutat
   expect(screen.getByRole('button', { name: 'Открыть роль Сохранённая роль' })).toBeVisible()
   expect(screen.queryByRole('button', { name: 'Открыть роль Закрытая роль' })).not.toBeInTheDocument()
 })
+
+// Keep lifecycle assertions deterministic; pollingCapacity tests exercise jitter.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

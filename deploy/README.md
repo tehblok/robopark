@@ -1,5 +1,8 @@
 # Deployment: host + Tuna
 
+Для Armbian 26 с 8 ГБ, 200 пользователей и переноса на Ubuntu с 32 ГБ:
+[пошаговая инструкция общего сервера](SHARED-HOST.md).
+
 Robopark runs **only on the host** (Armbian / home server): API, SQLite, web UI.
 
 Remote access uses **[Tuna](https://tuna.am/docs/)** — an HTTP reverse tunnel (ngrok-class).

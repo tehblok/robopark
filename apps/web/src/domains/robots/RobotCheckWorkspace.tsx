@@ -14,6 +14,7 @@ import { RobotDiagnosticDiagram } from './RobotDiagnosticDiagram'
 import { DiagnosticEventDetails } from './DiagnosticEventDetails'
 import { chooseAutomaticView, isLocalizedEvent, leadingDiagnosticEvent } from './diagnosticPresentation'
 import { checkAccessIdentity, checkTabs, classifyCheckError } from './robotCheckUrl'
+import { ROBOT_POLL_MS } from './polling'
 import { useVisibilityPolling } from './useVisibilityPolling'
 import './robot-check.css'
 
@@ -45,7 +46,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
   const cachedRequest = useCallback(<T,>(key: string, load: () => Promise<T>, force: boolean): Promise<T> => {
     const stored = cache.current.get(key)
     if (stored?.pending) return stored.pending as Promise<T>
-    if (!force && stored?.data !== undefined && Date.now() - stored.updatedAt < 2500) return Promise.resolve(stored.data as T)
+    if (!force && stored?.data !== undefined && Date.now() - stored.updatedAt < ROBOT_POLL_MS) return Promise.resolve(stored.data as T)
     const entry = stored ?? { updatedAt: 0 }
     cache.current.set(key, entry)
     const pending = Promise.resolve().then(load).then(data => {

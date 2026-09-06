@@ -294,7 +294,7 @@ describe('RobotPage ownership and lifecycle', () => {
     await screen.findByRole('link', { name: 'Открыть ROBOPARK-42' })
     const denied = deferred<EmergencySnapshot>()
     vi.mocked(apiClient.emergencySnapshot).mockReturnValueOnce(denied.promise)
-    vi.useFakeTimers({ toFake: ['Date'] }); vi.advanceTimersByTime(2500)
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.advanceTimersByTime(10_000)
     fireEvent(document, new Event('visibilitychange'))
     await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2))
     vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
@@ -338,3 +338,6 @@ describe('RobotPage ownership and lifecycle', () => {
     expect(Object.keys(localStorage).filter((key) => key.startsWith('robopark:res:'))).toEqual([])
   })
 })
+
+// Existing lifecycle assertions use the minimum jitter; capacity tests cover dispersion.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

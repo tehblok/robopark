@@ -153,3 +153,6 @@ it('refreshes the account list automatically without replacing an unsaved accoun
   expect(within(detail).getByLabelText('Tracker login')).toHaveValue('unsaved-login')
   expect(api.adminUsers).toHaveBeenCalledTimes(2)
 })
+
+// Keep lifecycle assertions deterministic; pollingCapacity tests exercise jitter.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

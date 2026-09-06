@@ -1,3 +1,4 @@
+import { beforeEach } from 'vitest'
 import { resourceStore } from '../../lib/resource'
 import { fireEvent, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -85,3 +86,6 @@ it('refreshes role rows on focus while keeping the open role draft', async () =>
   expect(name).toHaveValue('Несохранённое название')
   expect(read).toHaveBeenCalledTimes(2)
 })
+
+// Keep lifecycle assertions deterministic; pollingCapacity tests exercise jitter.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

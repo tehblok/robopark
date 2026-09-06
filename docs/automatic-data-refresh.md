@@ -2,14 +2,23 @@
 
 Users read live data without a manual refresh action. Operational resources use
 30-second freshness and refresh intervals; historical analytics and reference
-catalogs can use two minutes. Existing robot telemetry polling retains its own
-cadence. Identical in-flight requests share one result, while fresh cached data
+catalogs can use two minutes. Robot telemetry uses a 10-second base interval for both the snapshot and the
+selected section. Maintenance status uses the shared 30-second cadence (previously
+it issued a request every two seconds from every tab). Identical in-flight requests share one result, while fresh cached data
 can render immediately on return visits. Existing API Tracker/Emergency caches
 continue to merge upstream requests across users.
 
 Automatic refresh pauses offline or in hidden browser tabs and resumes when the
-page is visible/online. Requests do not overlap; failures back off, authentication
-or access denial stops automatic attempts. Background updates retain useful
+page is visible/online. Reconnect/focus requests are spread over 0–30 seconds;
+repeated lifecycle events coalesce. Cold visible/online mounts and explicit
+actions still load immediately. Periodic requests add positive 0–20% jitter;
+the first background interval adds 0–100% to spread synchronized starts. Thus
+robot background intervals are initially 10–20 seconds, then 10–12 seconds;
+operational resources are initially 30–60 seconds, then 30–36 seconds. Requests do not overlap; failures back off, authentication
+or access denial stops automatic attempts. HTTP 429 is a transient failure,
+retains last-known telemetry/session state, and automatic retries honor
+`Retry-After` seconds or HTTP dates in addition to exponential backoff. User
+actions are never automatically replayed. Background updates retain useful
 last-known data and do not repeatedly animate the global progress bar. Mutations
 still force a refresh. Error retry, credential replacement, saving and software
 update actions retain their separate meanings.
@@ -56,3 +65,30 @@ and navigation ordering are unchanged.
   pagination, mutation races and drafts in account/role/diagnostic editors.
 - Live local task SDCFLEETOPS-370188 loads actual data, retains task navigation,
   and displays the labeled bottom bar with the replacement robot glyph.
+
+
+## Capacity envelope — 200 visible users
+
+The busiest normal check view is the robot check embedded in an issue workbench:
+
+| Read | Base requests per user per second |
+| --- | ---: |
+| Robot snapshot + selected section | 2 / 10 |
+| Work list + issue detail + comments + allowed transitions | 4 / 30 |
+| Maintenance status | 1 / 30 |
+| Auth `/me` | 0 periodic; bootstrap, login or explicit refresh only |
+
+This is at most **73.33 steady requests/second for 200 users**, or about 66.67
+using the mean jittered intervals, before network latency. The standalone robot
+page needs snapshot/section, related tickets and maintenance: at most 53.33 RPS.
+The issue's related-tasks panel and robot-check panel are mutually exclusive.
+These are read-only steady-state estimates, not a throughput guarantee: cold
+starts, navigation, writes, attachment traffic and other clients share the same
+Tuna domain quota. Two hundred simultaneous cold starts can still receive 429;
+backoff and jitter recover without replaying mutations or expiring valid sessions.
+A faster Ubuntu host does not increase the tunnel's domain request quota.
+
+Fake-clock tests cover phase dispersion for 200 robot viewers, pause/resume,
+coalescing, Retry-After, preserved sessions/drafts and immediate manual actions.
+Chromium robot checks exercise deterministic nonzero jitter; marker layout tests
+use minimum jitter and advance freshness by more than ten seconds.

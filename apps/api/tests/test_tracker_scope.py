@@ -7,6 +7,7 @@ missing queue, foreign park tag, no park assigned — must be denied.
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import delete, event
 
 from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, Park, User, UserPark
@@ -121,6 +122,44 @@ def test_mechanic_without_park_denied(db_session):
 
 def test_admin_bypasses_scope(db_session, seed_royal):
     enforce_issue_scope(db_session, seed_royal, _issue(queue="ANY", tags=["Whatever"]))
+
+
+def test_list_scope_queries_do_not_grow_per_issue(
+    client, db_engine, db_session, operator, monkeypatch
+):
+    from robopark_api.services import tracker_cache
+
+    db_session.add(Park(name="Beta", tag="Beta", is_active=True, tracker_queue="ROBOPARK"))
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    items = [_issue()]
+    monkeypatch.setattr(tracker_cache, "search_issues", lambda **kwargs: items)
+    assert login_as(client, "op_scope", "secret").status_code == 204
+    statements = []
+
+    def observe(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db_engine, "before_cursor_execute", observe)
+    try:
+        assert client.get("/tracker/issues").status_code == 200
+        one_issue_queries = len(statements)
+        statements.clear()
+        items[:] = [_issue(key=f"ROBOPARK-{i}") for i in range(200)] + [
+            _issue(key="FOREIGN-1", tags=["Beta"])
+        ]
+        response = client.get("/tracker/issues?limit=200")
+        assert response.status_code == 200
+        assert response.json()["total"] == 200
+        assert all(row["key"] != "FOREIGN-1" for row in response.json()["items"])
+        assert len(statements) <= one_issue_queries + 2
+    finally:
+        event.remove(db_engine, "before_cursor_execute", observe)
+
+    # Scope snapshots must never be shared between requests: removing a park
+    # takes effect on the very next request, even for the same raw cache hit.
+    db_session.execute(delete(UserPark).where(UserPark.user_id == operator.id))
+    db_session.commit()
+    assert client.get("/tracker/issues").status_code == 403
 
 
 def test_mechanic_cannot_close_foreign_park_issue(client, db_session, seed_mechanic, monkeypatch):

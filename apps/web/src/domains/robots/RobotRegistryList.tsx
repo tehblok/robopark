@@ -7,6 +7,7 @@ import { EntityRow } from '../../design-system/data/EntityRow'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { Panel } from '../../design-system/layout/PageLayout'
 import { classifyApiError } from '../../shared/api/classifyApiError'
+import { periodicDelay, resumeDelay, retryAfterMs } from '../../lib/pollingSchedule'
 import { checkAccessIdentity } from './robotCheckUrl'
 
 function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial<Pick<typeof api, 'robotRegistry'>>; parkId: number | null; scopeLoading: boolean }) {
@@ -56,6 +57,9 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
     const key = JSON.stringify([parkId, query, state, activeErrors, openTasks, offset])
     if (retry !== lastRetry.current) { cache.current.delete(key); lastRetry.current = retry }
     let timer: number | undefined
+    let initialPoll = true
+    let failures = 0
+    let retryAt = 0
     const automatic = () => current && !document.hidden && navigator.onLine && !denied.current
     const clear = () => window.clearTimeout(timer)
     const publish = (value: RobotRegistry) => {
@@ -69,6 +73,7 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
     const load = async () => {
       clear()
       if (!automatic()) return
+      if (Date.now() < retryAt) { timer = window.setTimeout(() => void load(), retryAt - Date.now()); return }
       const cached = cache.current.get(key)
       try {
         if (cached && Date.now() - cached.updatedAt < 30_000) publish(cached.data)
@@ -83,9 +88,12 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
             requests.current.set(key, pending)
           }
           publish(await pending)
+          failures = 0; retryAt = 0
         }
       } catch (failure) {
         if (!current) return
+        failures += 1
+        retryAt = Date.now() + Math.max(retryAfterMs(failure), Math.min(300_000, 30_000 * 2 ** Math.min(failures - 1, 4)))
         setError(failure)
         const kind = classifyApiError(failure, 'Не удалось загрузить реестр.').kind
         if (kind === 'unauthorized' || kind === 'forbidden') {
@@ -94,10 +102,16 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
         if (kind === 'unauthorized') void refresh.current().catch(() => undefined)
       } finally {
         clear()
-        if (automatic()) timer = window.setTimeout(() => void load(), 30_000)
+        if (automatic()) timer = window.setTimeout(() => void load(), periodicDelay(Math.max(30_000, retryAt - Date.now()), initialPoll))
+        initialPoll = false
       }
     }
-    const resume = () => { clear(); if (automatic()) void load() }
+    const resume = () => {
+      clear()
+      if (!automatic()) return
+      const delay = Math.max(resumeDelay(), retryAt - Date.now())
+      if (delay <= 0) void load(); else timer = window.setTimeout(() => void load(), delay)
+    }
     const cached = cache.current.get(key)
     if (cached) publish(cached.data)
     document.addEventListener('visibilitychange', resume)

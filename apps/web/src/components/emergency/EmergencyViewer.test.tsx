@@ -30,13 +30,13 @@ it('automatically updates snapshot and selected section without polling offline 
   expect(api.emergencySection).toHaveBeenCalledTimes(1)
   const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
   fireEvent(document, new Event('visibilitychange'))
-  await act(async () => vi.advanceTimersByTimeAsync(5000))
+  await act(async () => vi.advanceTimersByTimeAsync(10_000))
   expect(api.emergencySnapshot).toHaveBeenCalledTimes(1)
   hidden.mockReturnValue(false); fireEvent(document, new Event('visibilitychange')); await flush()
   expect(api.emergencySnapshot).toHaveBeenCalledTimes(2)
   const online = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
   fireEvent(window, new Event('offline'))
-  await act(async () => vi.advanceTimersByTimeAsync(5000))
+  await act(async () => vi.advanceTimersByTimeAsync(10_000))
   expect(api.emergencySnapshot).toHaveBeenCalledTimes(2)
   online.mockReturnValue(true); fireEvent(window, new Event('online')); await flush()
   expect(api.emergencySnapshot).toHaveBeenCalledTimes(3)
@@ -45,9 +45,12 @@ it('automatically updates snapshot and selected section without polling offline 
 it('retains the cookie repair action after automatic polling detects invalid credentials', async () => {
   render(tree()); await flush()
   vi.mocked(api.emergencySnapshot).mockRejectedValue(new ApiError(403, 'emergency_cookie_invalid'))
-  await act(async () => vi.advanceTimersByTimeAsync(2500))
+  await act(async () => vi.advanceTimersByTimeAsync(10_000))
   expect(screen.getByRole('link')).toHaveAttribute('href', '/admin')
   const calls = vi.mocked(api.emergencySnapshot).mock.calls.length
   await act(async () => vi.advanceTimersByTimeAsync(30_000))
   expect(api.emergencySnapshot).toHaveBeenCalledTimes(calls)
 })
+
+// Existing lifecycle assertions use the minimum jitter; capacity tests cover dispersion.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

@@ -84,3 +84,7 @@ describe('classifyApiError', () => {
     })
   })
 })
+
+it('treats proxy throttling as recoverable unavailability so robot telemetry survives', () => {
+  expect(classifyApiError(new ApiError(429), 'Повторите позже')).toMatchObject({ kind: 'server', retryable: true })
+})

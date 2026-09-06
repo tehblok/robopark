@@ -82,3 +82,6 @@ it('keeps the expanded fresh list when an old next-page request finishes after a
   expect(screen.getByRole('button', { name: 'Открыть задачу RP-100: После изменения 100' })).toBeVisible()
   expect(list.mock.calls.map(([query]) => query.offset)).toEqual([0, 50, 0, 50])
 })
+
+// Keep lifecycle assertions deterministic; pollingCapacity tests exercise jitter.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

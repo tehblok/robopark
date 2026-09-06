@@ -36,6 +36,7 @@ from robopark_api.services.tracker_policy import (
     can_write_tracker,
     enforce_issue_scope,
     is_issue_in_scope,
+    load_issue_scope,
 )
 
 MAX_PAGE_SIZE = 200
@@ -326,10 +327,13 @@ def list_issues(
     excluded_key = (exclude_key or "").strip()
     scoped: list[TrackerIssueOut] = []
     seen_keys: set[str] = set()
+    # Raw upstream data is shared; authorization is loaded afresh for this
+    # response after the upstream wait and reused only across its rows.
+    scope = load_issue_scope(db, user)
     for issue in ordered:
         # Out-of-scope issues are filtered out, not fatal: a single foreign issue
         # in the upstream response must not fail the whole listing.
-        if not is_issue_in_scope(db, user, issue):
+        if not is_issue_in_scope(db, user, issue, scope=scope):
             continue
         if related_repairs and str(issue.get("type_key") or "").strip() != "repair":
             continue
@@ -539,8 +543,9 @@ def robot_tickets(
             detail="tracker_upstream_error",
         ) from exc
 
+    scope = load_issue_scope(db, user)
     sorted_items = tracker_filters.sort_issues_oldest_first(
-        [item for item in merged if is_issue_in_scope(db, user, item)]
+        [item for item in merged if is_issue_in_scope(db, user, item, scope=scope)]
     )
     return RobotTicketsOut(
         query=query,

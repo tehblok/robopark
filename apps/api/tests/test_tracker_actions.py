@@ -1,3 +1,6 @@
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, Report, User, UserPark
 from robopark_api.security import hash_password
@@ -129,6 +132,41 @@ def test_tracker_action_attach_rejects_non_image(
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "tracker_attachment_invalid_type"
+
+
+def test_slow_attachment_does_not_block_health(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import tracker_client
+
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    _mock_close_tracker(monkeypatch)
+    started = threading.Event()
+    release = threading.Event()
+
+    def upload(**kwargs):
+        started.set()
+        assert release.wait(timeout=5)
+        return "temp-1"
+
+    monkeypatch.setattr(tracker_client, "upload_temp_attachment", upload)
+    monkeypatch.setattr(tracker_client, "add_comment", lambda **kwargs: {"id": "1"})
+    assert login_as(client, "op3", "secret").status_code == 204
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        attachment = executor.submit(
+            client.post,
+            "/tracker/issues/ROBOPARK-1/attachments",
+            files={"file": ("photo.jpg", b"fake-image", "image/jpeg")},
+        )
+        try:
+            assert started.wait(timeout=2)
+            health = executor.submit(client.get, "/health")
+            assert health.result(timeout=1).status_code == 200
+        finally:
+            release.set()
+        assert attachment.result(timeout=2).status_code == 200
 
 
 def test_mechanic_can_attach_when_write_disabled(

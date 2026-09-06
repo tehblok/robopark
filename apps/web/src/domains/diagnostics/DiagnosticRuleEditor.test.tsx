@@ -351,3 +351,6 @@ it('loads the diagnostic catalog after StrictMode cancels its first mount reques
   expect(await screen.findByLabelText('Название ошибки')).toHaveValue(first.title)
   expect(read).toHaveBeenCalledTimes(2)
 })
+
+// Keep lifecycle assertions deterministic; pollingCapacity tests exercise jitter.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

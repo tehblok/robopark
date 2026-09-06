@@ -1,6 +1,9 @@
 import { expect, test } from '@playwright/test'
 import { FIXED_TIME, installOperational, settlePage, snapshot, userForRole } from './fixtures'
 
+// Exercise nonzero fleet jitter deterministically (first 15s, periodic 11s, resume 15s).
+test.beforeEach(async ({ page }) => { await page.addInitScript(() => { Math.random = () => 0.5 }) })
+
 test('robot search stays first and makes no registry requests across reload and park changes', async ({ page }) => {
   const registryRequests: string[] = []
   page.on('request', request => {
@@ -206,7 +209,7 @@ for (const route of [`/robots/${snapshot.vin}/check?tab=wheels&park=7`, '/emerge
     await expect(page.locator('.leaflet-container')).toBeVisible()
     const before = snapshots
     await expect(page.getByRole('button', { name: /^Обновить/ })).toHaveCount(0)
-    await page.clock.runFor(3000)
+    await page.clock.runFor(15_000)
     await expect.poll(() => snapshots).toBeGreaterThan(before)
   })
 }
@@ -227,7 +230,7 @@ test('driver canonical check loads sections, automatically refreshes, and reques
   await settlePage(page)
   await Promise.all([
     page.waitForResponse(response => new URL(response.url()).pathname === `/api/emergency/${snapshot.vin}/snapshot` && response.status() === 200),
-    page.clock.runFor(3000),
+    page.clock.runFor(15_000),
   ])
   await page.getByRole('tab', { name: 'Схема', exact: true }).click()
   await expect(page.getByRole('tab', { name: 'Схема', exact: true })).toHaveAttribute('aria-selected', 'true')
@@ -252,9 +255,12 @@ test('robot offline and browser offline remain different states with automatic r
   await expect(page.getByText('Робот не в сети', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: /^Обновить/ })).toHaveCount(0)
   const before = snapshots
-  await page.clock.runFor(5000)
+  await page.clock.runFor(20_000)
   expect(snapshots).toBe(before)
   await context.setOffline(false)
+  await expect(page.getByText('Нет сети на этом устройстве', { exact: true })).toHaveCount(0)
+  expect(snapshots).toBe(before)
+  await page.clock.runFor(15_000)
   await expect.poll(() => snapshots).toBeGreaterThan(before)
   await expect(page.getByText('Робот не в сети', { exact: true })).toBeVisible()
 })

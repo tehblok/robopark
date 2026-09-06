@@ -454,12 +454,14 @@ export class ApiError extends Error {
   status: number
   detail: string | null
   requestId?: string
+  retryAfterMs?: number
 
-  constructor(status: number, detail: string | null = null, requestId?: string) {
+  constructor(status: number, detail: string | null = null, requestId?: string, retryAfterMs?: number) {
     super(detail ?? String(status))
     this.name = 'ApiError'
     this.status = status
     this.detail = detail
+    this.retryAfterMs = retryAfterMs
     this.requestId = requestId
   }
 }
@@ -499,7 +501,7 @@ async function diagnosticRequest<T>(suffix = '', init: RequestInit = {}): Promis
     if (!response.ok) {
       const body = await response.json().catch(() => null) as { detail?: unknown } | null
       const detail = typeof body?.detail === 'string' && diagnosticErrorCodes.has(body.detail) ? body.detail : null
-      throw new ApiError(response.status, detail, responseRequestId(response))
+      throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
     }
     return { data: await response.json() as T, etag: response.headers.get('ETag') }
   })
@@ -557,6 +559,13 @@ async function fetchWithTimeout<T>(
   }
 }
 
+function responseRetryAfter(response: Response): number | undefined {
+  const value = response.headers.get('Retry-After')?.trim()
+  if (!value) return undefined
+  const delay = /^\d+(?:\.\d+)?$/.test(value) ? Number(value) * 1_000 : Date.parse(value) - Date.now()
+  return Number.isFinite(delay) ? Math.max(0, delay) : undefined
+}
+
 function responseRequestId(response: Response): string | undefined {
   return response.headers.get('X-Request-ID')?.trim() || undefined
 }
@@ -587,7 +596,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     async (response) => {
       if (!response.ok) {
         const detail = await readErrorDetail(response)
-        throw new ApiError(response.status, detail, responseRequestId(response))
+        throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
       }
 
       if (response.status === 204) {
@@ -607,7 +616,7 @@ async function requestBlob(path: string): Promise<Blob> {
     async (response) => {
       if (!response.ok) {
         const detail = await readErrorDetail(response)
-        throw new ApiError(response.status, detail, responseRequestId(response))
+        throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
       }
       return response.blob()
     },
@@ -626,7 +635,7 @@ async function requestForm<T>(path: string, formData: FormData): Promise<T> {
     async (response) => {
       if (!response.ok) {
         const detail = await readErrorDetail(response)
-        throw new ApiError(response.status, detail, responseRequestId(response))
+        throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
       }
 
       return response.json() as Promise<T>

@@ -1,3 +1,4 @@
+import { beforeEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -146,3 +147,6 @@ it('keeps a 401 session denial after park changes without retrying protected req
   expect(client.operationsOverview).toHaveBeenCalledTimes(1)
   expect(refreshUser).toHaveBeenCalledTimes(1)
 })
+
+// Keep lifecycle assertions deterministic; pollingCapacity tests exercise jitter.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

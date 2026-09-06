@@ -23,8 +23,8 @@ COPY docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
 # Run as an unprivileged user; /data is the mounted SQLite volume.
-# UVICORN_WORKERS default 2, cap 4 (see docker-entrypoint.sh). Do not raise
-# above 1 until live-merge overlap tests pass in CI.
+# UVICORN_WORKERS default 2, cap 4. Shared merge and file-SQLite concurrency
+# are covered by API tests; measure on the target host before raising workers.
 RUN useradd --create-home --uid 10001 robopark \
     && mkdir -p /data \
     && chown -R robopark:robopark /app /data

@@ -157,3 +157,6 @@ it('suspends registry requests offline or hidden and coalesces wake events', asy
   expect(client.robotRegistry).toHaveBeenCalledTimes(2)
   await act(async () => done(empty))
 })
+
+// Existing lifecycle assertions use the minimum jitter; capacity tests cover dispersion.
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })
