@@ -11,27 +11,31 @@ import { Link } from 'react-router-dom'
 import {
   api,
   type Park,
+  type Paged,
+  type TrackerIssue,
   type TrackerIssueDetail,
   type User,
 } from '../../api'
 import { IssueActionsPanel } from '../../components/tracker/IssueActionsPanel'
 import { IssueDetailPanel } from '../../components/tracker/IssueDetailPanel'
-import { IssueList } from '../../components/tracker/IssueList'
+import { formatAge, personName, statusTone } from '../../components/tracker/issue-utils'
 import { Button } from '../../design-system/actions/Button'
+import { EntityRow } from '../../design-system/data/EntityRow'
 import {
   EmptyState,
   ErrorState,
   LoadingState,
   StaleBadge,
 } from '../../design-system/feedback/AsyncState'
-import { Panel } from '../../design-system/layout/PageLayout'
+import { MasterDetail } from '../../design-system/layout/MasterDetail'
+import { StatusBadge, type StatusTone } from '../../design-system/status/StatusBadge'
 import {
   classifyApiError,
   type DomainError,
 } from '../../shared/api/classifyApiError'
 import { resourceStore, useCachedResource } from '../../lib/resource'
 import { WorkFilters } from './WorkFilters'
-import { loadWorkPage } from './workData'
+import { loadWorkPage, oldestFirst } from './workData'
 import {
   buildWorkSearch,
   readWorkScroll,
@@ -86,6 +90,89 @@ function isAuthorizationFailure(failure: DomainError): boolean {
 
 function failureFor(error: unknown, fallback: string): DomainError | null {
   return error ? classifyApiError(error, fallback) : null
+}
+
+const RELATED_PAGE_SIZE = 10
+
+function normalizedRobotNumber(raw?: string | null): string | null {
+  const text = raw?.trim() ?? ''
+  if (!text) return null
+  const digits = text.toUpperCase().startsWith('YASADR') ? text.slice(6) : text
+  if (!/^\d+$/.test(digits)) return null
+  return digits.replace(/^0+/, '') || '0'
+}
+
+function issueStatusTone(issue: TrackerIssue): StatusTone {
+  switch (statusTone(issue)) {
+    case 'done': return 'success'
+    case 'waiting': return 'warning'
+    case 'progress': return 'info'
+    default: return 'neutral'
+  }
+}
+
+function issueMeta(issue: TrackerIssue): string {
+  const robot = normalizedRobotNumber(issue.robot)
+  const age = formatAge(issue.hours_created) || 'неизвестен'
+  return [
+    robot ? `Робот ${robot}` : 'Робот не указан',
+    `Возраст ${age}`,
+    'SLA: нет данных',
+    `Ответственный: ${personName(issue.assignee)}`,
+  ].join(' · ')
+}
+
+function WorkIssueRows({
+  items,
+  selected,
+  onOpen,
+}: {
+  items: readonly TrackerIssue[]
+  selected?: string
+  onOpen: (key: string) => void
+}) {
+  return <div className="rp-work-entities">
+    {items.map((item) => <EntityRow
+      actions={<Button
+        aria-current={item.key === selected ? 'page' : undefined}
+        aria-label={`Открыть задачу ${item.key}: ${item.summary}`}
+        onClick={() => onOpen(item.key)}
+        variant="secondary"
+      >Открыть</Button>}
+      key={item.key}
+      meta={issueMeta(item)}
+      status={<StatusBadge tone={issueStatusTone(item)}>{item.status}</StatusBadge>}
+      statusLabel={`Статус задачи ${item.key}`}
+      title={<><strong>{item.key}</strong><span> · {item.summary}</span></>}
+    />)}
+  </div>
+}
+
+function RelatedTaskGroup({
+  title,
+  empty,
+  resource,
+  onOpen,
+}: {
+  title: string
+  empty: string
+  resource: ReturnType<typeof useCachedResource<Paged<TrackerIssue>>>
+  onOpen: (key: string) => void
+}) {
+  const failure = failureFor(resource.error, `Не удалось загрузить раздел «${title}».`)
+  const data = resource.data
+
+  return <section aria-labelledby={`${title}-heading`} className="rp-work-related-tasks">
+    <h3 id={`${title}-heading`}>{title}</h3>
+    {failure ? <ErrorState
+      description={failure.description}
+      onRetry={failure.retryable ? () => void resource.refresh() : undefined}
+      requestId={failure.requestId}
+      title={failure.title}
+    /> : resource.isLoading && !data ? <LoadingState label={`Загружаем: ${title.toLocaleLowerCase('ru')}`} />
+      : data?.items.length ? <WorkIssueRows items={data.items} onOpen={onOpen} />
+        : <p>{empty}</p>}
+  </section>
 }
 
 function workAccessKey(user: User, selectedPark: Park): string {
@@ -237,6 +324,41 @@ function IssueWorkbenchOwner({
     () => guarded(() => apiClient.trackerComments(issueKey as string)),
     { enabled: Boolean(issueKey) },
   )
+  const robotNumber = normalizedRobotNumber(detail.data?.robot)
+  const relatedQueue = detail.data?.queue?.trim()
+    || selectedPark.tracker_queue?.trim()
+    || requestState.filters.queue?.trim()
+  const relatedPark = requestState.filters.untagged ? undefined : selectedPark.tag
+  const relatedPrefix = robotNumber && relatedQueue
+    ? `${accessPrefix}related:${issueKey}:${relatedQueue}:${relatedPark ?? 'untagged'}:${robotNumber}`
+    : ''
+  // Related tasks are deliberately not guarded with the main work owner: the
+  // detail remains usable if one secondary Tracker read fails or is denied.
+  const relatedOpen = useCachedResource<Paged<TrackerIssue>>(
+    relatedPrefix ? `${relatedPrefix}:open` : '',
+    () => apiClient.trackerIssues({
+      queue: relatedQueue,
+      park: relatedPark,
+      robot: robotNumber ?? undefined,
+      sort: 'oldest',
+      limit: RELATED_PAGE_SIZE,
+      offset: 0,
+    }),
+    { enabled: Boolean(relatedPrefix) },
+  )
+  const relatedClosed = useCachedResource<Paged<TrackerIssue>>(
+    relatedPrefix ? `${relatedPrefix}:closed` : '',
+    () => apiClient.trackerIssues({
+      queue: relatedQueue,
+      park: relatedPark,
+      robot: robotNumber ?? undefined,
+      status: 'closed',
+      sort: 'newest',
+      limit: RELATED_PAGE_SIZE,
+      offset: 0,
+    }),
+    { enabled: Boolean(relatedPrefix) },
+  )
   const transitionsEnabled = Boolean(
     issueKey && detail.data?.capabilities.transition,
   )
@@ -280,6 +402,7 @@ function IssueWorkbenchOwner({
     resourceStore.invalidate(detailKey)
     resourceStore.invalidate(commentsKey)
     resourceStore.invalidate(`${accessPrefix}transitions:${issueKey}`)
+    resourceStore.invalidate(`${accessPrefix}related:${issueKey}:`, { prefix: true })
   }, [accessPrefix, commentsKey, detailFailure?.kind, detailKey, issueKey])
 
   const search = buildWorkSearch(state, selectedPark.id)
@@ -331,10 +454,12 @@ function IssueWorkbenchOwner({
     resourceStore.invalidate(detailKey)
     resourceStore.invalidate(commentsKey)
     resourceStore.invalidate(`${accessPrefix}transitions:${issueKey}`)
+    resourceStore.invalidate(`${accessPrefix}related:${issueKey}:`, { prefix: true })
     void Promise.allSettled([
       list.refresh(),
       detail.refresh(),
       comments.refresh(),
+      ...(relatedPrefix ? [relatedOpen.refresh(), relatedClosed.refresh()] : []),
       ...(transitionsEnabled ? [transitions.refresh()] : []),
     ])
   }, [
@@ -345,6 +470,9 @@ function IssueWorkbenchOwner({
     detailKey,
     issueKey,
     list,
+    relatedClosed,
+    relatedOpen,
+    relatedPrefix,
     selectedPark.id,
     transitions,
     transitionsEnabled,
@@ -410,148 +538,151 @@ function IssueWorkbenchOwner({
         className="rp-workbench"
         data-has-detail={Boolean(issueKey)}
       >
-        <Panel className="rp-work-list-pane" title="Очередь задач">
-          <ResourceBoundary
-            dataAvailable={list.data !== undefined}
-            failure={listFailure}
-            onRetry={() => void list.refresh()}
-          >
-            {list.isLoading && !list.data ? (
-              <LoadingState label="Загружаем очередь задач" />
-            ) : !listFailure && list.data?.items.length === 0 ? (
+        <MasterDetail
+          detail={<div className="rp-work-detail-pane">
+            <h2>{issueKey ? `Задача ${issueKey}` : 'Детали задачи'}</h2>
+            {!issueKey ? (
               <EmptyState
-                description="Измените фильтры или проверьте выбранный парк."
+                description="Выберите задачу в очереди, чтобы увидеть подробности."
                 icon="work"
-                title="Нет задач"
+                title="Задача не выбрана"
               />
-            ) : list.data ? (
-              <div className="rp-work-list-scroll" ref={listScrollRef}>
-                <IssueList
-                  items={list.data.items}
-                  loading={list.isRevalidating}
-                  onSelect={saveAndOpenIssue}
-                  selected={issueKey ?? ''}
-                  total={list.data.total}
-                />
-              </div>
-            ) : null}
-
-            {list.data ? (
-              <nav aria-label="Страницы задач" className="rp-work-pagination">
-                <Button
-                  aria-label="Предыдущая страница"
-                  disabled={state.page <= 1 || list.isRevalidating}
-                  onClick={() => onStateChange(
-                    { ...state, page: Math.max(1, state.page - 1) },
-                    { replace: false },
-                  )}
-                  variant="secondary"
-                >
-                  Назад
-                </Button>
-                <span>Страница {state.page}</span>
-                <Button
-                  aria-label="Следующая страница"
-                  disabled={!list.data.has_more || list.isRevalidating}
-                  onClick={() => onStateChange(
-                    { ...state, page: state.page + 1 },
-                    { replace: false },
-                  )}
-                  variant="secondary"
-                >
-                  Далее
-                </Button>
-              </nav>
-            ) : null}
-          </ResourceBoundary>
-        </Panel>
-
-        <Panel
-          className="rp-work-detail-pane"
-          title={issueKey ? `Задача ${issueKey}` : 'Детали задачи'}
-        >
-          {issueKey ? (
-            <Button
-              className="rp-work-detail-back"
-              onClick={onCloseIssue}
-              variant="ghost"
-            >
-              Назад к списку
-            </Button>
-          ) : null}
-
-          {!issueKey ? (
-            <EmptyState
-              description="Выберите задачу в очереди, чтобы увидеть подробности."
-              icon="work"
-              title="Задача не выбрана"
-            />
-          ) : (
-            <ResourceBoundary
-              dataAvailable={detailSideDataAvailable}
-              failure={detailSideFailure}
-              onRetry={() => void Promise.allSettled([
-                detail.refresh(),
-                comments.refresh(),
-                ...(transitionsEnabled ? [transitions.refresh()] : []),
-              ])}
-            >
-              {detail.isLoading && !detail.data ? (
-                <LoadingState label="Загружаем задачу" />
-              ) : (
-                <>
-                  <IssueDetailPanel
-                    comments={comments.data ?? []}
-                    issue={detail.data ?? null}
-                    loading={detail.isLoading && !detail.data}
-                  />
-                  {detail.data ? (
-                    <div className="rp-work-related-tasks">
-                      {detail.data.robot?.trim() ? (
-                        <Link className="rp-work-robot-link" to={workListHref({
-                          filters: {
-                            queue: detail.data.queue || selectedPark.tracker_queue || requestState.filters.queue,
-                            robot: detail.data.robot.trim(),
-                            ...(requestState.filters.untagged ? { untagged: true } : {}),
-                          },
-                          sort: 'oldest',
-                          page: 1,
-                        }, selectedPark.id)}>
-                          Незавершённые задачи робота {detail.data.robot.trim()}
-                        </Link>
-                      ) : <p>Робот в задаче не указан — связанные задачи недоступны.</p>}
-                    </div>
-                  ) : null}
-                  {canRenderDetailActions && detail.data ? (
-                    <IssueActionsPanel
-                      capabilities={detail.data.capabilities}
-                      currentUser={user.tracker_login ?? user.username}
-                      issueKey={detail.data.key}
-                      issueUrl={detail.data.url}
-                      onAssign={(assignee) => mutate(
-                        () => apiClient.trackerAssign(detail.data!.key, assignee),
-                      )}
-                      onAttach={(file) => mutate(
-                        () => apiClient.trackerAttach(detail.data!.key, file),
-                      )}
-                      onClose={() => mutate(() => apiClient.trackerClose(detail.data!.key), onCloseIssue)}
-                      onComment={(text) => mutate(
-                        () => apiClient.trackerComment(detail.data!.key, text),
-                      )}
-                      onTransition={(transition) => mutate(
-                        () => apiClient.trackerTransition(detail.data!.key, transition),
-                      )}
-                      onUnassign={() => mutate(
-                        () => apiClient.trackerUnassign(detail.data!.key),
-                      )}
-                      transitions={transitions.data ?? []}
+            ) : (
+              <ResourceBoundary
+                dataAvailable={detailSideDataAvailable}
+                failure={detailSideFailure}
+                onRetry={() => void Promise.allSettled([
+                  detail.refresh(),
+                  comments.refresh(),
+                  ...(transitionsEnabled ? [transitions.refresh()] : []),
+                ])}
+              >
+                {detail.isLoading && !detail.data ? (
+                  <LoadingState label="Загружаем задачу" />
+                ) : (
+                  <>
+                    <IssueDetailPanel
+                      comments={comments.data ?? []}
+                      issue={detail.data ?? null}
+                      loading={detail.isLoading && !detail.data}
                     />
-                  ) : null}
-                </>
-              )}
+                    {detail.data ? (
+                      <div className="rp-work-related-panel">
+                        {robotNumber ? <>
+                          <Link className="rp-work-robot-link" to={workListHref({
+                            filters: {
+                              queue: relatedQueue,
+                              robot: robotNumber,
+                              ...(requestState.filters.untagged ? { untagged: true } : {}),
+                            },
+                            sort: 'oldest',
+                            page: 1,
+                          }, selectedPark.id)}>
+                            Незавершённые задачи робота {robotNumber}
+                          </Link>
+                          <RelatedTaskGroup
+                            empty="Открытых задач по этому роботу нет."
+                            onOpen={saveAndOpenIssue}
+                            resource={relatedOpen}
+                            title={`Открытые задачи робота ${robotNumber}`}
+                          />
+                          <RelatedTaskGroup
+                            empty="Закрытых задач по этому роботу нет."
+                            onOpen={saveAndOpenIssue}
+                            resource={relatedClosed}
+                            title={`Последние закрытые задачи робота ${robotNumber}`}
+                          />
+                        </> : <p>Робот в задаче не указан — связанные задачи недоступны.</p>}
+                      </div>
+                    ) : null}
+                    {canRenderDetailActions && detail.data ? (
+                      <IssueActionsPanel
+                        capabilities={detail.data.capabilities}
+                        currentUser={user.tracker_login ?? user.username}
+                        issueKey={detail.data.key}
+                        issueUrl={detail.data.url}
+                        onAssign={(assignee) => mutate(
+                          () => apiClient.trackerAssign(detail.data!.key, assignee),
+                        )}
+                        onAttach={(file) => mutate(
+                          () => apiClient.trackerAttach(detail.data!.key, file),
+                        )}
+                        onClose={() => mutate(() => apiClient.trackerClose(detail.data!.key), onCloseIssue)}
+                        onComment={(text) => mutate(
+                          () => apiClient.trackerComment(detail.data!.key, text),
+                        )}
+                        onTransition={(transition) => mutate(
+                          () => apiClient.trackerTransition(detail.data!.key, transition),
+                        )}
+                        onUnassign={() => mutate(
+                          () => apiClient.trackerUnassign(detail.data!.key),
+                        )}
+                        transitions={transitions.data ?? []}
+                      />
+                    ) : null}
+                  </>
+                )}
+              </ResourceBoundary>
+            )}
+          </div>}
+          detailOpen={Boolean(issueKey)}
+          list={<div className="rp-work-list-pane">
+            <h2>Очередь задач</h2>
+            <ResourceBoundary
+              dataAvailable={list.data !== undefined}
+              failure={listFailure}
+              onRetry={() => void list.refresh()}
+            >
+              {list.isLoading && !list.data ? (
+                <LoadingState label="Загружаем очередь задач" />
+              ) : !listFailure && list.data?.items.length === 0 ? (
+                <EmptyState
+                  description="Измените фильтры или проверьте выбранный парк."
+                  icon="work"
+                  title="Нет задач"
+                />
+              ) : list.data ? (
+                <div className="rp-work-list-scroll" ref={listScrollRef}>
+                  <p className="rp-work-list-count">Показано {list.data.items.length}{list.data.total > list.data.items.length ? ` из ${list.data.total}` : ''}</p>
+                  <WorkIssueRows
+                    items={oldestFirst(list.data.items)}
+                    onOpen={saveAndOpenIssue}
+                    selected={issueKey}
+                  />
+                </div>
+              ) : null}
+
+              {list.data ? (
+                <nav aria-label="Страницы задач" className="rp-work-pagination">
+                  <Button
+                    aria-label="Предыдущая страница"
+                    disabled={state.page <= 1 || list.isRevalidating}
+                    onClick={() => onStateChange(
+                      { ...state, page: Math.max(1, state.page - 1) },
+                      { replace: false },
+                    )}
+                    variant="secondary"
+                  >
+                    Назад
+                  </Button>
+                  <span>Страница {state.page}</span>
+                  <Button
+                    aria-label="Следующая страница"
+                    disabled={!list.data.has_more || list.isRevalidating}
+                    onClick={() => onStateChange(
+                      { ...state, page: state.page + 1 },
+                      { replace: false },
+                    )}
+                    variant="secondary"
+                  >
+                    Далее
+                  </Button>
+                </nav>
+              ) : null}
             </ResourceBoundary>
-          )}
-        </Panel>
+          </div>}
+          onBack={onCloseIssue}
+        />
       </div>
     </div>
   )

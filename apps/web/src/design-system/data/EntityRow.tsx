@@ -5,6 +5,7 @@ export type EntityRowProps = {
   title: ReactNode
   meta?: ReactNode
   status?: ReactNode
+  statusLabel?: string
   actions?: ReactNode
 }
 
@@ -12,6 +13,7 @@ export function EntityRow({
   title,
   meta,
   status,
+  statusLabel = 'Статус',
   actions,
 }: EntityRowProps): ReactElement {
   return (
@@ -20,7 +22,7 @@ export function EntityRow({
         <div className="rp-entity-row__title">{title}</div>
         {meta ? <div className="rp-entity-row__meta">{meta}</div> : null}
       </div>
-      {status ? <div aria-label="Статус" className="rp-entity-row__status" role="group">{status}</div> : null}
+      {status ? <div aria-label={statusLabel} className="rp-entity-row__status" role="group">{status}</div> : null}
       {actions ? <div className="rp-entity-row__actions">{actions}</div> : null}
     </article>
   )

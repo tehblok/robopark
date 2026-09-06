@@ -48,8 +48,39 @@ test('robot remaining-work link opens oldest scoped work with only the robot fil
   await page.goto('/work/ROBOPARK-42?park=7&status=closed&assignee=other&age=24&page=2')
   await page.getByRole('link', { name: 'Незавершённые задачи робота 447' }).click()
   await expect(page).toHaveURL(/\/work\?park=7&queue=ROBOPARK&robot=447$/)
-  await expect.poll(() => queries.at(-1)?.get('robot')).toBe('447')
-  expect(Object.fromEntries(queries.at(-1)!)).toMatchObject({ park: 'north', queue: 'ROBOPARK', robot: '447', sort: 'oldest', offset: '0' })
-  expect(queries.at(-1)!.has('status')).toBe(false)
-  expect(queries.at(-1)!.has('assignee')).toBe(false)
+  await expect.poll(() => queries.some((params) => (
+    params.get('robot') === '447'
+      && params.get('limit') === '50'
+      && !params.has('status')
+  ))).toBe(true)
+  const scoped = queries.findLast((params) => (
+    params.get('robot') === '447'
+      && params.get('limit') === '50'
+      && !params.has('status')
+  ))!
+  expect(Object.fromEntries(scoped)).toMatchObject({ park: 'north', queue: 'ROBOPARK', robot: '447', sort: 'oldest', offset: '0' })
+  expect(scoped.has('status')).toBe(false)
+  expect(scoped.has('assignee')).toBe(false)
+})
+
+test('nested work keeps its parent navigation and loads related robot tasks after the selected issue', async ({ page }) => {
+  const queries: URLSearchParams[] = []
+  page.on('request', request => {
+    const url = new URL(request.url())
+    if (url.pathname === '/api/tracker/issues') queries.push(url.searchParams)
+  })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await installOperational(page)
+  await page.goto('/work/ROBOPARK-42?park=7')
+
+  await expect(page.getByRole('heading', { name: 'Открытые задачи робота 447' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Последние закрытые задачи робота 447' })).toBeVisible()
+  await expect.poll(() => queries.filter((params) => params.get('robot') === '447').length).toBe(2)
+  expect(queries.filter((params) => params.get('robot') === '447').map((params) => params.get('status')))
+    .toEqual([null, 'closed'])
+  await expect(page.locator('.rp-shell__desktop-nav').getByRole('link', { name: 'Работа', exact: true }))
+    .toHaveAttribute('aria-current', 'page')
+
+  await page.getByRole('link', { name: 'Незавершённые задачи робота 447' }).click()
+  await expect(page).toHaveURL('/work?park=7&queue=ROBOPARK&robot=447')
 })

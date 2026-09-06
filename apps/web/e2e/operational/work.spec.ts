@@ -108,7 +108,7 @@ test('comment, assignment, transition and attachment use their complete action c
   await page.getByRole('button', { name: 'Снять исполнителя', exact: true }).click()
   await expect.poll(() => actions).toContain('unassign')
   await page.getByRole('button', { name: 'Решить', exact: true }).click()
-  await expect(page.locator('.rp-work-detail-pane').getByText('Закрыт', { exact: true })).toBeVisible()
+  await expect(page.locator('.issue-detail').getByText('Закрыт', { exact: true })).toBeVisible()
   await page.locator('.issue-actions input[type=file]').setInputFiles({ name: 'wheel.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA/0AAAAASUVORK5CYII=', 'base64') })
   await page.getByRole('button', { name: 'Прикрепить', exact: true }).click()
   await expect.poll(() => actions).toEqual(['comment', 'assign', 'unassign', 'transition', 'attachments'])

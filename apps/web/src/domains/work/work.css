@@ -1,5 +1,6 @@
 .rp-work-domain,
 .rp-workbench,
+.rp-workbench .rp-master-detail,
 .rp-work-list-pane,
 .rp-work-detail-pane,
 .rp-work-list-scroll,
@@ -17,9 +18,8 @@
   gap: var(--rp-space-4);
 }
 
-.rp-workbench {
-  display: grid;
-  gap: var(--rp-space-4);
+.rp-workbench .rp-master-detail {
+  align-items: start;
 }
 
 .rp-work-filters {
@@ -63,12 +63,25 @@
   padding-block: var(--rp-space-3);
 }
 
-.rp-work-related-tasks {
-  margin-block: var(--rp-space-3);
+.rp-work-list-pane,
+.rp-work-detail-pane,
+.rp-work-related-panel,
+.rp-work-related-tasks,
+.rp-work-entities {
+  display: grid;
+  gap: var(--rp-space-3);
 }
 
-.rp-work-related-tasks p {
+.rp-work-list-pane > h2,
+.rp-work-detail-pane > h2,
+.rp-work-related-tasks > h3 {
+  margin: 0;
+}
+
+.rp-work-list-count,
+.rp-work-related-tasks > p {
   color: var(--rp-text-muted);
+  margin: 0;
 }
 
 .rp-work-list-pane,
@@ -114,11 +127,6 @@
 .rp-work-warning__copy span,
 .rp-work-warning__copy small {
   color: var(--rp-text-muted);
-}
-
-.rp-work-detail-back {
-  display: none;
-  margin-bottom: var(--rp-space-3);
 }
 
 .rp-workbench :where(.issue-summary, .issue-detail-summary, .issue-description, a) {
@@ -203,20 +211,6 @@
     flex: 1;
   }
 
-  .rp-workbench[data-has-detail='true'] .rp-work-list-pane,
-  .rp-workbench[data-has-detail='false'] .rp-work-detail-pane {
-    display: none;
-  }
-
-  .rp-work-detail-back {
-    display: inline-flex;
-    min-height: 44px;
-  }
-
-  .rp-workbench .issue-row {
-    min-height: 44px;
-  }
-
   .rp-work-list-scroll {
     max-height: none;
     overflow-y: visible;
@@ -245,16 +239,6 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .rp-workbench[data-has-detail='true'] .rp-work-list-pane,
-  .rp-workbench[data-has-detail='false'] .rp-work-detail-pane {
-    display: none;
-  }
-
-  .rp-work-detail-back {
-    display: inline-flex;
-    min-height: 44px;
-  }
-
   .rp-work-list-scroll {
     max-height: none;
     overflow-y: visible;
@@ -262,37 +246,20 @@
 }
 
 @media (min-width: 900px) and (max-width: 1199px) {
-  .rp-workbench {
-    grid-template-columns: minmax(20rem, 42%) minmax(0, 1fr);
-  }
-
   .rp-work-filters {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
 @media (min-width: 1200px) {
-  .rp-workbench {
-    grid-template-columns: minmax(22rem, 38%) minmax(0, 1fr);
-  }
-
   .rp-work-filters {
     grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 }
 
 @container rp-work-domain (max-width: 34rem) {
-  .rp-workbench {
+  .rp-workbench .rp-master-detail {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .rp-workbench[data-has-detail='true'] .rp-work-list-pane,
-  .rp-workbench[data-has-detail='false'] .rp-work-detail-pane {
-    display: none;
-  }
-
-  .rp-work-detail-back {
-    display: inline-flex;
   }
 }
 

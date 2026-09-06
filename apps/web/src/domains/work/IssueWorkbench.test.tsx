@@ -263,6 +263,69 @@ describe('IssueWorkbench', () => {
     expect(screen.queryByRole('link', { name: /Незавершённые задачи робота/ })).not.toBeInTheDocument()
   })
 
+  it('loads normalized robot tasks only after the selected issue resolves, with open work before latest closed work', async () => {
+    const pendingDetail = deferred<TrackerIssueDetail>()
+    const openTask: TrackerIssue = {
+      ...issue,
+      key: 'ROBOPARK-7',
+      summary: 'Открытая задача робота',
+      created_at: '2026-09-01T09:00:00Z',
+    }
+    const closedTask: TrackerIssue = {
+      ...issue,
+      key: 'ROBOPARK-8',
+      summary: 'Последняя закрытая задача робота',
+      status: 'Closed',
+      created_at: '2026-09-03T09:00:00Z',
+    }
+    const client = apiClient({
+      trackerIssue: vi.fn(() => pendingDetail.promise),
+      trackerIssues: vi.fn()
+        .mockResolvedValueOnce(page())
+        .mockResolvedValueOnce(page([openTask]))
+        .mockResolvedValueOnce(page([closedTask])),
+    })
+
+    renderWorkbench({ client })
+    await waitFor(() => expect(client.trackerIssues).toHaveBeenCalledTimes(1))
+    expect(screen.queryByText('Открытая задача робота')).not.toBeInTheDocument()
+
+    await act(async () => {
+      pendingDetail.resolve({ ...issue, robot: 'YASADR00000000447' })
+    })
+
+    await screen.findByRole('heading', { name: 'Открытые задачи робота 447' })
+    await screen.findByRole('heading', { name: 'Последние закрытые задачи робота 447' })
+    await waitFor(() => expect(client.trackerIssues).toHaveBeenCalledTimes(3))
+    expect(client.trackerIssues).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      robot: '447',
+      sort: 'oldest',
+    }))
+    expect(client.trackerIssues).toHaveBeenNthCalledWith(3, expect.objectContaining({
+      robot: '447',
+      sort: 'newest',
+      status: 'closed',
+    }))
+    expect(document.body.textContent!.indexOf('Открытая задача робота'))
+      .toBeLessThan(document.body.textContent!.indexOf('Последняя закрытая задача робота'))
+  })
+
+  it('keeps the selected issue and its capability-gated actions available when related robot work fails', async () => {
+    const client = apiClient({
+      trackerIssues: vi.fn()
+        .mockResolvedValueOnce(page())
+        .mockRejectedValueOnce(new ApiError(502, 'tracker_upstream_error'))
+        .mockResolvedValueOnce(page()),
+    })
+
+    renderWorkbench({ client })
+
+    expect(await screen.findByRole('heading', { name: issue.summary })).toBeVisible()
+    expect(await screen.findByRole('button', { name: ru.tracker.actions.close })).toBeEnabled()
+    expect(await screen.findByRole('heading', { name: 'Сервис временно недоступен' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Последние закрытые задачи робота 447' })).toBeVisible()
+  })
+
   it.each(['permissions', 'read-revoked', 'tag', 'queue'] as const)(
     'isolates cached payload and actions after a same-ID %s change, including remount',
     async (change) => {
@@ -304,7 +367,7 @@ describe('IssueWorkbench', () => {
       expect(screen.queryByText(issue.summary)).not.toBeInTheDocument()
       if (change === 'read-revoked') {
         expect(client.trackerIssue).toHaveBeenCalledTimes(1)
-        expect(client.trackerIssues).toHaveBeenCalledTimes(1)
+        expect(client.trackerIssues).toHaveBeenCalledTimes(3)
       }
     },
   )
@@ -501,7 +564,7 @@ describe('IssueWorkbench', () => {
     fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
 
     await screen.findByText('Действие выполнено')
-    expect(invalidate).toHaveBeenCalledTimes(4)
+    expect(invalidate).toHaveBeenCalledTimes(5)
     expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}list:${park.id}:`, {
       prefix: true,
     })
