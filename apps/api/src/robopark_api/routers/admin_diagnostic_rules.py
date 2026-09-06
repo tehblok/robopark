@@ -4,6 +4,7 @@ GET and mutation responses include a catalog ETag. PUT /reorder requires that
 exact ETag in If-Match and every ID, including disabled rules, exactly once.
 Missing preconditions return 428, stale catalogs/uniqueness conflicts 409, and
 invalid input 422. Ordinary create/update/disable do not require a precondition.
+PATCH rejects sort_order; changing an existing rule's order requires reorder.
 """
 
 import hashlib
@@ -74,6 +75,32 @@ class DiagnosticRulePreview(BaseModel):
 class DiagnosticRulePreviewOut(BaseModel):
     matched: bool
     events: list[DiagnosticEvent]
+
+
+def validation_error_details(errors: list[Any]) -> list[dict[str, Any]]:
+    """Keep validation guidance, excluding input, decoder context and user-supplied keys."""
+    known_locations = set(DiagnosticRuleCreate.model_fields) | {
+        "body",
+        "path",
+        "query",
+        "header",
+        "rule",
+        "payload",
+        "ids",
+        "rule_id",
+        "if-match",
+    }
+    return [
+        {
+            "loc": [
+                part if isinstance(part, int) or part in known_locations else "[redacted]"
+                for part in error["loc"]
+            ],
+            "msg": error["msg"],
+            "type": error["type"],
+        }
+        for error in errors
+    ]
 
 
 def _validate_rule(rule: DiagnosticRuleCreate) -> tuple[str, ...]:

@@ -295,11 +295,12 @@ class DiagnosticRuleUpdate(BaseModel):
     y: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     indicator: DiagnosticIndicator | None = None
     is_enabled: bool | None = None
-    sort_order: int | None = None
 
     @model_validator(mode="before")
     @classmethod
     def reject_explicit_nulls(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "sort_order" in data:
+            raise ValueError("diagnostic_sort_order_use_reorder")
         return _reject_explicit_nulls(
             data,
             (
@@ -316,7 +317,6 @@ class DiagnosticRuleUpdate(BaseModel):
                 "y",
                 "indicator",
                 "is_enabled",
-                "sort_order",
             ),
         )
 

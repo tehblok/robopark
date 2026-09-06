@@ -34,6 +34,7 @@ RULE = {
     "is_enabled": True,
     "sort_order": 0,
 }
+PRIVATE_INPUT = "private-diagnostic-validation-token-9382"
 
 
 def insert_rule(db_session, **changes):
@@ -591,3 +592,144 @@ def test_extreme_sort_orders_are_validation_errors(royal_client, db_session, sor
 def test_extreme_mutation_id_is_validation_error(royal_client):
     assert royal_client.patch(f"{BASE}/{2**63}", json={"title": "Invalid"}).status_code == 422
     assert royal_client.post(f"{BASE}/{2**63}/disable").status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("POST", BASE, [PRIVATE_INPUT]),
+        ("POST", BASE, {**RULE, "x": PRIVATE_INPUT}),
+        ("POST", BASE, {**RULE, "example": {"raw": PRIVATE_INPUT}}),
+        ("POST", BASE, {**RULE, "example": None}),
+        ("PATCH", f"{BASE}/1", {"title": None, "example": PRIVATE_INPUT, "pattern": PRIVATE_INPUT}),
+        ("PATCH", f"{BASE}/1", {"x": PRIVATE_INPUT}),
+        ("POST", f"{BASE}/preview", {"rule": {**RULE, "x": PRIVATE_INPUT}}),
+        ("POST", f"{BASE}/preview", {"rule": RULE, "payload": [PRIVATE_INPUT]}),
+        ("POST", f"{BASE}/preview", {"rule": RULE, PRIVATE_INPUT: "unknown field"}),
+        ("PUT", f"{BASE}/reorder", {"ids": [PRIVATE_INPUT]}),
+        ("PUT", f"{BASE}/reorder", {"ids": [], PRIVATE_INPUT: "unknown field"}),
+        ("POST", BASE, {**RULE, "match_kind": "regex", "pattern": PRIVATE_INPUT * 20}),
+        ("PATCH", f"{BASE}/1", {"match_kind": "regex", "pattern": PRIVATE_INPUT * 20}),
+        (
+            "POST",
+            f"{BASE}/preview",
+            {"rule": {**RULE, "match_kind": "regex", "pattern": PRIVATE_INPUT * 20}},
+        ),
+        (
+            "POST",
+            BASE,
+            {**RULE, "match_kind": "regex", "pattern": f"(?# {PRIVATE_INPUT})a{{1001}}"},
+        ),
+        ("PATCH", f"{BASE}/1", {"match_kind": "regex", "pattern": f"(?# {PRIVATE_INPUT})(?R)"}),
+        (
+            "POST",
+            f"{BASE}/preview",
+            {"rule": {**RULE, "match_kind": "regex", "pattern": f"(?# {PRIVATE_INPUT})(?R)"}},
+        ),
+    ],
+)
+def test_validation_responses_and_logs_do_not_echo_diagnostic_input(
+    royal_client, db_session, caplog, method, path, body
+):
+    insert_rule(db_session)
+    caplog.set_level(logging.INFO)
+    response = royal_client.request(method, path, json=body)
+    assert response.status_code == 422
+    assert PRIVATE_INPUT not in response.text
+    detail = response.json()["detail"]
+    if isinstance(detail, list):
+        assert detail
+        for error in detail:
+            assert set(error) == {"loc", "msg", "type"}
+            assert error["loc"][0] in {"body", "path", "query", "header"}
+            assert error["msg"]
+            assert error["type"]
+    assert PRIVATE_INPUT not in caplog.text
+    assert rule_audits(db_session) == []
+
+
+def test_invalid_diagnostic_json_excludes_decoder_context(royal_client, caplog):
+    response = royal_client.post(
+        f"{BASE}/preview",
+        content='{"rule": "' + PRIVATE_INPUT + '" trailing}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 422
+    error = response.json()["detail"][0]
+    assert set(error) == {"loc", "msg", "type"}
+    assert error["type"] == "json_invalid"
+    assert PRIVATE_INPUT not in response.text
+    assert PRIVATE_INPUT not in caplog.text
+
+
+def test_diagnostic_error_sanitizing_keeps_other_route_contracts(royal_client):
+    response = royal_client.post("/admin/emergency/sections", json=[PRIVATE_INPUT])
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["input"] == [PRIVATE_INPUT]
+
+
+@pytest.mark.parametrize("precondition", ["absent", "fresh", "stale"])
+@pytest.mark.parametrize("sort_order", [0, 1, None, PRIVATE_INPUT])
+def test_patch_explicit_sort_order_always_requires_reorder(
+    royal_client, db_session, caplog, precondition, sort_order
+):
+    rule = insert_rule(db_session)
+    listed = royal_client.get(BASE)
+    headers = {}
+    if precondition != "absent":
+        headers["If-Match"] = listed.headers["etag"] if precondition == "fresh" else '"old"'
+    response = royal_client.patch(
+        f"{BASE}/{rule.id}",
+        json={"sort_order": sort_order, "title": "Must not be saved", "example": PRIVATE_INPUT},
+        headers=headers,
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["msg"] == "Value error, diagnostic_sort_order_use_reorder"
+    assert PRIVATE_INPUT not in response.text
+    assert PRIVATE_INPUT not in caplog.text
+    assert royal_client.get(BASE).json() == listed.json()
+    assert rule_audits(db_session) == []
+
+
+def test_stale_editor_cannot_undo_atomic_reorder_via_patch(royal_client, db_session):
+    first = insert_rule(db_session, pattern="A", sort_order=0)
+    second = insert_rule(db_session, pattern="B", sort_order=1, is_enabled=False)
+    editor_a_snapshot = royal_client.get(BASE)
+    stale_header = {"If-Match": editor_a_snapshot.headers["etag"]}
+    editor_b_reorder = royal_client.put(
+        f"{BASE}/reorder", json={"ids": [second.id, first.id]}, headers=stale_header
+    )
+    assert editor_b_reorder.status_code == 200
+    assert [(rule["id"], rule["sort_order"]) for rule in editor_b_reorder.json()] == [
+        (second.id, 0),
+        (first.id, 1),
+    ]
+    stale_save = royal_client.patch(
+        f"{BASE}/{first.id}", json={"title": "Editor A", "sort_order": 0}, headers=stale_header
+    )
+    assert stale_save.status_code == 422
+    assert royal_client.get(BASE).json() == editor_b_reorder.json()
+    regular_save = royal_client.patch(
+        f"{BASE}/{first.id}", json={"title": "Editor A"}, headers=stale_header
+    )
+    assert regular_save.status_code == 200
+    assert regular_save.json()["title"] == "Editor A"
+    assert regular_save.json()["sort_order"] == 1
+    assert (
+        royal_client.put(
+            f"{BASE}/reorder", json={"ids": [first.id, second.id]}, headers=stale_header
+        ).status_code
+        == 409
+    )
+    latest = royal_client.get(BASE)
+    reordered = royal_client.put(
+        f"{BASE}/reorder",
+        json={"ids": [first.id, second.id]},
+        headers={"If-Match": latest.headers["etag"]},
+    )
+    assert reordered.status_code == 200
+    assert [(rule["id"], rule["sort_order"]) for rule in reordered.json()] == [
+        (first.id, 0),
+        (second.id, 1),
+    ]
+    assert reordered.json()[1]["is_enabled"] is False

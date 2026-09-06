@@ -120,8 +120,16 @@ def create_app() -> FastAPI:
     app.state.session_cookie_name = settings.session_cookie_name
 
     @app.exception_handler(RequestValidationError)
-    async def hide_emergency_cookie_validation_input(request: Request, exc: RequestValidationError):
-        """Do not echo candidate cookie values in Pydantic validation output."""
+    async def hide_sensitive_validation_input(request: Request, exc: RequestValidationError):
+        """Sanitize sensitive route families without changing other validation contracts."""
+        diagnostics_prefix = admin_diagnostic_rules.router.prefix
+        if request.url.path == diagnostics_prefix or request.url.path.startswith(
+            diagnostics_prefix + "/"
+        ):
+            return JSONResponse(
+                status_code=422,
+                content={"detail": admin_diagnostic_rules.validation_error_details(exc.errors())},
+            )
         if request.url.path != "/admin/settings/emergency-cookie":
             return await request_validation_exception_handler(request, exc)
         errors = []
