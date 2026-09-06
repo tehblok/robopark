@@ -79,6 +79,7 @@ class OpsContext:
     health_check: Callable[[], bool] | None = None
     before_db_replace: Callable[[], None] | None = None
     use_ops_agent: bool | None = None
+    release_public_key: bytes | None = None
 
 
 def begin_job(ctx: OpsContext, kind: str, *, exempt_token_hash: str) -> OpsJob:
@@ -291,11 +292,18 @@ def run_update(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) ->
     try:
         job.phase = "validating"
         save_job(ctx.ops_dir, job)
-        inspect_archive(archive, expected_kind=KIND_RELEASE)
+        inspect_archive(
+            archive, expected_kind=KIND_RELEASE, public_key=ctx.release_public_key
+        )
         if staging.exists():
             shutil.rmtree(staging)
         save_job(ctx.ops_dir, job)
-        unpack_archive(archive, staging, expected_kind=KIND_RELEASE)
+        unpack_archive(
+            archive,
+            staging,
+            expected_kind=KIND_RELEASE,
+            public_key=ctx.release_public_key,
+        )
         append_log(ctx.ops_dir, job, "Архив проверен, запуск тестов…")
         job.phase = "testing"
         save_job(ctx.ops_dir, job)

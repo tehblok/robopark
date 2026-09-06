@@ -1,4 +1,6 @@
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -99,7 +101,25 @@ def db_session(db_engine):
 
 
 @pytest.fixture
-def test_settings(db_engine, tmp_path):
+def release_key_pair(tmp_path):
+    private = Ed25519PrivateKey.generate()
+    private_bytes = private.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    public_path = tmp_path / "release-public-key.pem"
+    public_path.write_bytes(
+        private.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    return private_bytes, public_path
+
+
+@pytest.fixture
+def test_settings(db_engine, tmp_path, release_key_pair):
     (tmp_path / "host.env").write_text("SECRET_KEY=test-ops-key\n", encoding="utf-8")
     return Settings(
         _env_file=None,
@@ -111,6 +131,7 @@ def test_settings(db_engine, tmp_path):
         ops_dir=str(tmp_path / "ops"),
         ops_apply_root=str(tmp_path / "apply"),
         ops_host_env_path=str(tmp_path / "host.env"),
+        ops_release_public_key_path=str(release_key_pair[1]),
         ops_sync=True,
     )
 

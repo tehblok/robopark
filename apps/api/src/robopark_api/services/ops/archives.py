@@ -16,16 +16,42 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import stat
 import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
 
+# ``datetime.UTC`` is unavailable to the system Python used by pack-release.sh.
+UTC = getattr(datetime, "UTC", timezone.utc)  # noqa: UP017
 FORMAT_VERSION = 1
+RELEASE_FORMAT_VERSION = 2
 KIND_SNAPSHOT = "snapshot"
 KIND_RELEASE = "release"
 MANIFEST_NAME = "manifest.json"
+MANIFEST_SIGNATURE_NAME = "manifest.sig"
+
+_RELEASE_METADATA_DEFAULTS = {
+    "min_installer_version": "0",
+    "migration_compatibility": {},
+    "required_capabilities": [],
+    "update_notes": "",
+}
+_RELEASE_MANIFEST_KEYS = {
+    "kind",
+    "format",
+    "app_version",
+    "git_sha",
+    "migration_head",
+    "min_installer_version",
+    "migration_compatibility",
+    "required_capabilities",
+    "created_at",
+    "update_notes",
+    "files",
+}
 
 # Caps apply to both kinds. Large SQLite files need headroom; zip bombs do not.
 MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
@@ -44,6 +70,8 @@ class ArchiveMeta:
     format: int
     app_version: str
     files: dict[str, str]
+    git_sha: str | None = None
+    migration_head: str | None = None
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -62,7 +90,7 @@ def _normalize_member(name: str) -> str:
     raw = name.replace("\\", "/").strip()
     if not raw or raw.endswith("/"):
         raise ArchiveError("unsafe_path")
-    if raw == MANIFEST_NAME:
+    if raw in {MANIFEST_NAME, MANIFEST_SIGNATURE_NAME}:
         return raw
     path = Path(raw)
     if path.is_absolute() or ".." in path.parts:
@@ -72,8 +100,85 @@ def _normalize_member(name: str) -> str:
 
 def _iter_files(root: Path) -> Iterable[Path]:
     for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ArchiveError("unsafe_path")
         if path.is_file():
             yield path
+
+
+def _release_manifest(
+    *, app_version: str, files: dict[str, dict[str, int | str]], release_meta: dict | None
+) -> dict:
+    if not isinstance(release_meta, dict):
+        raise ArchiveError("invalid_manifest")
+    if set(release_meta) - (
+        {"git_sha", "migration_head", "created_at"} | set(_RELEASE_METADATA_DEFAULTS)
+    ):
+        raise ArchiveError("invalid_manifest")
+    metadata = {
+        **_RELEASE_METADATA_DEFAULTS,
+        "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        **release_meta,
+    }
+    manifest = {
+        "kind": KIND_RELEASE,
+        "format": RELEASE_FORMAT_VERSION,
+        "app_version": app_version,
+        "files": files,
+        **metadata,
+    }
+    _validate_release_manifest(manifest)
+    return manifest
+
+
+def _validate_release_manifest(manifest: object) -> tuple[dict[str, str], str, str]:
+    if not isinstance(manifest, dict) or set(manifest) != _RELEASE_MANIFEST_KEYS:
+        raise ArchiveError("invalid_manifest")
+    if manifest.get("kind") != KIND_RELEASE or manifest.get("format") != RELEASE_FORMAT_VERSION:
+        raise ArchiveError("unsupported_format")
+    app_version = manifest.get("app_version")
+    git_sha = manifest.get("git_sha")
+    migration_head = manifest.get("migration_head")
+    if not isinstance(app_version, str) or not app_version:
+        raise ArchiveError("invalid_manifest")
+    if not isinstance(git_sha, str) or len(git_sha) != 40 or any(c not in "0123456789abcdef" for c in git_sha.lower()):
+        raise ArchiveError("invalid_manifest")
+    if not isinstance(migration_head, str) or not migration_head:
+        raise ArchiveError("invalid_manifest")
+    if not isinstance(manifest.get("min_installer_version"), str):
+        raise ArchiveError("invalid_manifest")
+    if not isinstance(manifest.get("migration_compatibility"), dict):
+        raise ArchiveError("invalid_manifest")
+    if not isinstance(manifest.get("required_capabilities"), list) or not all(
+        isinstance(value, str) and value for value in manifest["required_capabilities"]
+    ):
+        raise ArchiveError("invalid_manifest")
+    if not isinstance(manifest.get("created_at"), str) or not manifest["created_at"]:
+        raise ArchiveError("invalid_manifest")
+    if not isinstance(manifest.get("update_notes"), str):
+        raise ArchiveError("invalid_manifest")
+    files = manifest.get("files")
+    if not isinstance(files, dict):
+        raise ArchiveError("invalid_manifest")
+    listed: dict[str, str] = {}
+    for name, descriptor in files.items():
+        if not isinstance(name, str) or not isinstance(descriptor, dict):
+            raise ArchiveError("invalid_manifest")
+        if set(descriptor) != {"sha256", "size"}:
+            raise ArchiveError("invalid_manifest")
+        digest = descriptor.get("sha256")
+        size = descriptor.get("size")
+        if not isinstance(digest, str) or len(digest) != 64 or any(
+            char not in "0123456789abcdef" for char in digest.lower()
+        ):
+            raise ArchiveError("invalid_manifest")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise ArchiveError("invalid_manifest")
+        normalized = _normalize_member(name)
+        if normalized in {MANIFEST_NAME, MANIFEST_SIGNATURE_NAME} or normalized in listed:
+            raise ArchiveError("invalid_manifest")
+        listed[normalized] = digest
+    return listed, git_sha, migration_head
 
 
 def build_archive(
@@ -82,29 +187,47 @@ def build_archive(
     source_root: Path,
     app_version: str,
     extra: dict | None = None,
+    release_meta: dict | None = None,
+    signing_key: bytes | None = None,
 ) -> bytes:
     if kind not in {KIND_SNAPSHOT, KIND_RELEASE}:
         raise ArchiveError("unexpected_kind")
     source_root = source_root.resolve()
     files: dict[str, str] = {}
+    release_files: dict[str, dict[str, int | str]] = {}
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for path in _iter_files(source_root):
             rel = path.relative_to(source_root).as_posix()
-            if rel == MANIFEST_NAME:
+            if rel in {MANIFEST_NAME, MANIFEST_SIGNATURE_NAME}:
                 raise ArchiveError("unsafe_path")
             data = path.read_bytes()
             files[rel] = sha256_bytes(data)
+            release_files[rel] = {"sha256": files[rel], "size": len(data)}
             zf.writestr(rel, data)
-        manifest = {
-            "kind": kind,
-            "format": FORMAT_VERSION,
-            "app_version": app_version,
-            "files": files,
-        }
-        if extra:
-            manifest["extra"] = extra
-        zf.writestr(MANIFEST_NAME, json.dumps(manifest, ensure_ascii=False, indent=2))
+        if kind == KIND_RELEASE:
+            if extra is not None or signing_key is None:
+                raise ArchiveError("signing_key_required")
+            manifest = _release_manifest(
+                app_version=app_version, files=release_files, release_meta=release_meta
+            )
+            from robopark_api.services.ops.release_signing import (
+                canonical_manifest_bytes,
+                sign_manifest,
+            )
+
+            zf.writestr(MANIFEST_NAME, canonical_manifest_bytes(manifest))
+            zf.writestr(MANIFEST_SIGNATURE_NAME, sign_manifest(manifest, signing_key))
+        else:
+            manifest = {
+                "kind": kind,
+                "format": FORMAT_VERSION,
+                "app_version": app_version,
+                "files": files,
+            }
+            if extra:
+                manifest["extra"] = extra
+            zf.writestr(MANIFEST_NAME, json.dumps(manifest, ensure_ascii=False, indent=2))
     payload = buffer.getvalue()
     if len(payload) > MAX_ARCHIVE_BYTES:
         raise ArchiveError("archive_too_large")
@@ -115,6 +238,7 @@ def inspect_archive(
     data: bytes | BinaryIO,
     *,
     expected_kind: str | None = None,
+    public_key: bytes | None = None,
 ) -> ArchiveMeta:
     raw = data if isinstance(data, bytes) else data.read()
     if len(raw) > MAX_ARCHIVE_BYTES:
@@ -124,15 +248,23 @@ def inspect_archive(
     except zipfile.BadZipFile as exc:
         raise ArchiveError("invalid_zip") from exc
     with zf:
-        return _inspect_open(zf, expected_kind=expected_kind)
+        return _inspect_open(zf, expected_kind=expected_kind, public_key=public_key)
 
 
-def _inspect_open(zf: zipfile.ZipFile, *, expected_kind: str | None) -> ArchiveMeta:
+def _inspect_open(
+    zf: zipfile.ZipFile, *, expected_kind: str | None, public_key: bytes | None
+) -> ArchiveMeta:
     names = zf.namelist()
     if len(names) > MAX_MEMBER_COUNT:
         raise ArchiveError("too_many_files")
+    if len(names) != len(set(names)):
+        raise ArchiveError("duplicate_member")
     uncompressed = 0
     for info in zf.infolist():
+        mode = (info.external_attr >> 16) & 0o170000
+        if mode not in {0, stat.S_IFREG}:
+            raise ArchiveError("unsafe_path")
+        _normalize_member(info.filename)
         uncompressed += max(info.file_size, 0)
         if uncompressed > MAX_UNCOMPRESSED_BYTES:
             raise ArchiveError("archive_too_large")
@@ -149,40 +281,68 @@ def _inspect_open(zf: zipfile.ZipFile, *, expected_kind: str | None) -> ArchiveM
         manifest = json.loads(manifest_raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ArchiveError("invalid_manifest") from exc
+    if not isinstance(manifest, dict):
+        raise ArchiveError("invalid_manifest")
     kind = manifest.get("kind")
     fmt = manifest.get("format")
-    app_version = manifest.get("app_version")
-    files = manifest.get("files")
     if kind not in {KIND_SNAPSHOT, KIND_RELEASE}:
         raise ArchiveError("unexpected_kind")
     if expected_kind is not None and kind != expected_kind:
         raise ArchiveError("unexpected_kind")
-    if fmt != FORMAT_VERSION:
-        raise ArchiveError("unsupported_format")
-    if not isinstance(app_version, str) or not app_version:
-        raise ArchiveError("invalid_manifest")
-    if not isinstance(files, dict):
-        raise ArchiveError("invalid_manifest")
+    git_sha: str | None = None
+    migration_head: str | None = None
+    if kind == KIND_RELEASE:
+        if fmt != RELEASE_FORMAT_VERSION:
+            raise ArchiveError("unsupported_format")
+        listed, git_sha, migration_head = _validate_release_manifest(manifest)
+        if MANIFEST_SIGNATURE_NAME not in names or public_key is None:
+            raise ArchiveError("signature_invalid")
+        from robopark_api.services.ops.release_signing import verify_manifest_signature
 
-    listed = {_normalize_member(str(name)): digest for name, digest in files.items()}
-    members = []
-    for name in names:
-        if name.endswith("/"):
-            continue
-        members.append(_normalize_member(name))
+        try:
+            signature = zf.read(MANIFEST_SIGNATURE_NAME)
+        except KeyError as exc:
+            raise ArchiveError("signature_invalid") from exc
+        verify_manifest_signature(manifest, signature, public_key)
+    else:
+        app_version = manifest.get("app_version")
+        files = manifest.get("files")
+        if fmt != FORMAT_VERSION:
+            raise ArchiveError("unsupported_format")
+        if not isinstance(app_version, str) or not app_version or not isinstance(files, dict):
+            raise ArchiveError("invalid_manifest")
+        listed = {}
+        for name, digest in files.items():
+            if not isinstance(name, str) or not isinstance(digest, str):
+                raise ArchiveError("invalid_manifest")
+            normalized = _normalize_member(name)
+            if normalized in listed:
+                raise ArchiveError("invalid_manifest")
+            listed[normalized] = digest
+    members = [_normalize_member(name) for name in names]
     member_set = set(members)
     if MANIFEST_NAME not in member_set:
         raise ArchiveError("missing_manifest")
-    payload_members = member_set - {MANIFEST_NAME}
+    payload_members = member_set - {MANIFEST_NAME, MANIFEST_SIGNATURE_NAME}
     listed_set = set(listed)
     if payload_members != listed_set:
         raise ArchiveError("manifest_files_mismatch")
 
     for rel, expected in listed.items():
-        actual = sha256_bytes(zf.read(rel))
+        actual_data = zf.read(rel)
+        if kind == KIND_RELEASE and len(actual_data) != manifest["files"][rel]["size"]:
+            raise ArchiveError("checksum_mismatch")
+        actual = sha256_bytes(actual_data)
         if actual != expected:
             raise ArchiveError("checksum_mismatch")
-    return ArchiveMeta(kind=kind, format=fmt, app_version=app_version, files=listed)
+    return ArchiveMeta(
+        kind=kind,
+        format=fmt,
+        app_version=manifest["app_version"],
+        files=listed,
+        git_sha=git_sha,
+        migration_head=migration_head,
+    )
 
 
 def unpack_archive(
@@ -190,13 +350,14 @@ def unpack_archive(
     dest: Path,
     *,
     expected_kind: str,
+    public_key: bytes | None = None,
 ) -> ArchiveMeta:
-    meta = inspect_archive(data, expected_kind=expected_kind)
+    meta = inspect_archive(data, expected_kind=expected_kind, public_key=public_key)
     dest = dest.resolve()
     dest.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         for name in zf.namelist():
-            if name.endswith("/") or name == MANIFEST_NAME:
+            if name.endswith("/") or name in {MANIFEST_NAME, MANIFEST_SIGNATURE_NAME}:
                 continue
             rel = _normalize_member(name)
             target = (dest / rel).resolve()

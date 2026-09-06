@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from robopark_api.services.ops import runner as runner_mod
 from robopark_api.services.ops.archives import KIND_RELEASE, KIND_SNAPSHOT, build_archive
@@ -27,11 +29,23 @@ from robopark_api.services.ops.runner import (
 )
 from robopark_api.services.ops.snapshot import build_snapshot_tree
 
+_RELEASE_PRIVATE = Ed25519PrivateKey.generate()
+_RELEASE_PRIVATE_KEY = _RELEASE_PRIVATE.private_bytes(
+    serialization.Encoding.PEM,
+    serialization.PrivateFormat.PKCS8,
+    serialization.NoEncryption(),
+)
+_RELEASE_PUBLIC_KEY = _RELEASE_PRIVATE.public_key().public_bytes(
+    serialization.Encoding.PEM,
+    serialization.PublicFormat.SubjectPublicKeyInfo,
+)
+
 
 def _ctx(tmp_path: Path, db: Path, apply_root: Path | None = None, **kwargs) -> OpsContext:
     env = tmp_path / "host.env"
     env.write_text("SECRET_KEY=k\n", encoding="utf-8")
     kwargs.setdefault("use_ops_agent", False)
+    kwargs.setdefault("release_public_key", _RELEASE_PUBLIC_KEY)
     return OpsContext(
         ops_dir=tmp_path / "ops",
         database_url=f"sqlite:///{db}",
@@ -58,7 +72,13 @@ def _release_zip(tmp_path: Path, *, tests_ok: bool) -> bytes:
     (api / "tests").mkdir()
     body = "def test_ok():\n    assert True\n" if tests_ok else "def test_ok():\n    assert False\n"
     (api / "tests" / "test_ok.py").write_text(body, encoding="utf-8")
-    return build_archive(kind=KIND_RELEASE, source_root=root, app_version="2")
+    return build_archive(
+        kind=KIND_RELEASE,
+        source_root=root,
+        app_version="2",
+        release_meta={"git_sha": "a" * 40, "migration_head": "0017_driver_work_reports"},
+        signing_key=_RELEASE_PRIVATE_KEY,
+    )
 
 
 def test_failed_tests_do_not_copy_files(tmp_path: Path):
