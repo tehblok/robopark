@@ -373,3 +373,60 @@ def test_tracker_robot_search_royal(
     body = response.json()
     assert body["query"] == "447"
     assert body["items"][0]["key"] == "ROBOPARK-9"
+
+
+def test_selected_status_can_be_restricted_to_open_blockers(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    captured = []
+
+    def search(**kwargs):
+        captured.append(kwargs)
+        items = [
+            _scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"),
+            {**_scoped_issue("ROBOPARK-2", "2026-01-02T00:00:00Z"), "resolution": "fixed"},
+        ]
+        return [item for item in items if not kwargs["filter_open"] or tracker_client.is_issue_open_item(item)]
+
+    monkeypatch.setattr(tracker_client, "search_issues", search)
+    login_as(client, "op2", "secret")
+    response = client.get("/tracker/issues?status=open&open_only=true")
+    assert response.status_code == 200
+    assert [item["key"] for item in response.json()["items"]] == ["ROBOPARK-1"]
+    assert response.json()["total"] == 1
+    assert captured[0]["filter_open"] is True
+    assert tracker_client.open_issues_clause() in captured[0]["query"]
+    assert "Priority: blocker" in captured[0]["query"]
+    assert "Status: open" in captured[0]["query"]
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("waiting_parts", "Status: delieveryWaiting"),
+        ("waiting_team", "Status: waitingForAnotherTeam"),
+        ("queued", 'Status: "В очереди"'),
+        ("diagnostics", 'Status: "Диагностика"'),
+    ],
+)
+def test_status_query_preserves_case_sensitive_tracker_workflow_names(
+    client, db_session, seed_park_with_tracker, monkeypatch, status, expected
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    queries = []
+
+    def search(**kwargs):
+        queries.append(kwargs["query"])
+        return []
+
+    monkeypatch.setattr(tracker_client, "search_issues", search)
+    login_as(client, "op2", "secret")
+    assert client.get(f"/tracker/issues?status={status}&open_only=true").status_code == 200
+    assert expected in queries[0]

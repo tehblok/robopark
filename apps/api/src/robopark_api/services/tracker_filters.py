@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+# Keep Tracker spelling and case for QL; status_bucket normalizes only for local comparison.
 STATUS_BUCKETS: dict[str, tuple[str, ...]] = {
-    "new": ("new", "open", "новый", "новая", "открыт", "открыта"),
-    "diagnostics": ("diagnostics", "diagnostic", "diagnosis", "диагностика", "на диагностике"),
-    "queued": ("queued", "в очереди"),
-    "moving": ("moving", "перемещение"),
-    "waiting_team": ("waitingforanotherteam", "ждём смежников", "ждем смежников"),
-    "waiting_parts": ("delieverywaiting", "deliverywaiting", "ожидание поставки"),
+    "new": ("new", "open", "Новый", "Новая", "Открыт", "Открыта"),
+    "diagnostics": ("diagnostics", "diagnostic", "diagnosis", "Диагностика", "На диагностике"),
+    "queued": ("queued", "В очереди"),
+    "moving": ("moving", "Перемещение"),
+    "waiting_team": ("waitingForAnotherTeam", "Ждём смежников", "Ждем смежников"),
+    "waiting_parts": ("delieveryWaiting", "deliveryWaiting", "Ожидание поставки"),
 }
 
 STATUS_FILTER_BUTTONS: tuple[tuple[str, str], ...] = (

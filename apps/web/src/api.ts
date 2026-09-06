@@ -905,6 +905,7 @@ export const api = {
     park?: string
     status?: string
     robot?: string
+    open_only?: boolean
     robot_exact?: string
     exclude_key?: string
     assignee?: string

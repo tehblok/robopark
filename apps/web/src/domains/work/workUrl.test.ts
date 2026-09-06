@@ -16,6 +16,12 @@ describe('work URL state', () => {
     sessionStorage.clear()
   })
 
+  it.each(['closed', 'resolved'])('normalizes legacy completed status %s to the first page of open blockers', (status) => {
+    expect(parseWorkUrl(new URLSearchParams({ status, page: '3' }), defaults)).toEqual({
+      filters: { queue: 'ROBOPARK' }, sort: 'oldest', page: 1,
+    })
+  })
+
   it('parses filters and a positive page while normalizing legacy newest sorting', () => {
     const state = parseWorkUrl(
       new URLSearchParams({
@@ -34,7 +40,7 @@ describe('work URL state', () => {
 
     expect(state).toEqual({
       filters: {
-        queue: 'OPS',
+        queue: 'ROBOPARK',
         status: 'open',
         robot: '447',
         assignee: 'ivan',

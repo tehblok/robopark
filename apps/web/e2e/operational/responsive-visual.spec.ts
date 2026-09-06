@@ -83,6 +83,13 @@ async function assertPhotoGeometry(page: Page) {
 }
 
 async function assertWorkMode(page: Page, width: number) {
+  for (const row of await page.locator('.rp-work-entities .rp-entity-row:visible').all()) {
+    const age = await row.locator('.rp-work-issue-age').boundingBox()
+    const status = await row.locator('.rp-entity-row__status').boundingBox()
+    expect(age && status).toBeTruthy()
+    expect(age!.x + age!.width <= status!.x || status!.x + status!.width <= age!.x
+      || age!.y + age!.height <= status!.y || status!.y + status!.height <= age!.y).toBe(true)
+  }
   await expect(page.locator('.rp-work-detail-pane')).toBeVisible()
   if (width >= 900) {
     await expect(page.locator('.rp-work-list-pane')).toBeInViewport()
@@ -92,9 +99,9 @@ async function assertWorkMode(page: Page, width: number) {
 
 for (const boundary of [
   { width: 899, mode: 'sequential', filterColumns: 2 },
-  { width: 900, mode: 'compact split', filterColumns: 3 },
-  { width: 1199, mode: 'compact split', filterColumns: 3 },
-  { width: 1200, mode: 'wide split', filterColumns: 6 },
+  { width: 900, mode: 'compact split', filterColumns: 2 },
+  { width: 1199, mode: 'compact split', filterColumns: 2 },
+  { width: 1200, mode: 'wide split', filterColumns: 2 },
 ] as const) {
   test(`responsive boundary ${boundary.width}: ${boundary.mode}`, async ({ page }) => {
     await page.setViewportSize({ width: boundary.width, height: 900 })

@@ -48,8 +48,10 @@ export function parseWorkUrl(
   params: URLSearchParams,
   defaults: WorkDefaults,
 ): WorkUrlState {
-  const queue = text(params, 'queue') ?? defaults.queue
-  const status = text(params, 'status')
+  const queue = defaults.queue
+  const rawStatus = text(params, 'status')
+  const completedStatus = ['closed', 'resolved'].includes(rawStatus?.toLowerCase() ?? '')
+  const status = completedStatus ? undefined : rawStatus
   const robot = text(params, 'robot')
   const assignee = text(params, 'assignee')
   const untagged = params.get('untagged') === '1'
@@ -65,7 +67,7 @@ export function parseWorkUrl(
       ...(ageHours ? { ageHours } : {}),
     },
     sort: 'oldest',
-    page: pageNumber(params.get('page')) ?? 1,
+    page: completedStatus ? 1 : pageNumber(params.get('page')) ?? 1,
   }
 }
 

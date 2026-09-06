@@ -240,6 +240,7 @@ def list_issues(
     queue: str | None = Query(default=None),
     park: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
+    open_only: bool = Query(default=False),
     robot: str | None = Query(default=None),
     robot_exact: str | None = Query(
         default=None, max_length=tracker_client.MAX_ROBOT_REFERENCE_LENGTH
@@ -273,6 +274,8 @@ def list_issues(
         assignee=assignee,
         untagged=untagged,
     )
+    if open_only and status_filter:
+        query_text = tracker_client.join_query(query_text, tracker_client.open_issues_clause())
     exact_robot = _normalized_robot_number(robot_exact)
     if robot_exact is not None:
         if exact_robot is None:
@@ -282,7 +285,7 @@ def list_issues(
         )
     try:
         items = tracker_cache.search_issues(
-            token=token, query=query_text, filter_open=not bool(status_filter)
+            token=token, query=query_text, filter_open=open_only or not bool(status_filter)
         )
     except tracker_client.TrackerError as exc:
         logger.exception("tracker search failed query=%r", query_text)

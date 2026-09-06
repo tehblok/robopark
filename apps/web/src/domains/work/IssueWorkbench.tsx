@@ -111,15 +111,17 @@ function issueStatusTone(issue: TrackerIssue): StatusTone {
   }
 }
 
-function issueMeta(issue: TrackerIssue): string {
+function issueMeta(issue: TrackerIssue): ReactNode {
   const robot = normalizedRobotNumber(issue.robot)
   const age = formatAge(issue.hours_created) || 'неизвестен'
-  return [
-    robot ? `Робот ${robot}` : 'Робот не указан',
-    `Возраст ${age}`,
-    'SLA: нет данных',
-    `Ответственный: ${personName(issue.assignee)}`,
-  ].join(' · ')
+  return <div className="rp-work-issue-meta">
+    <span className="rp-work-issue-age">Возраст: <strong>{age}</strong></span>
+    <span>{[
+      robot ? `Робот ${robot}` : 'Робот не указан',
+      'SLA: нет данных',
+      `Ответственный: ${personName(issue.assignee)}`,
+    ].join(' · ')}</span>
+  </div>
 }
 
 function WorkIssueRows({
@@ -559,12 +561,11 @@ function IssueWorkbenchOwner({
   return (
     <div className="rp-work-domain">
       <WorkFilters
-        allowUntagged={allowUntagged}
+        driver={user.role === 'driver'}
         key={buildWorkSearch(state, null)}
         loading={list.isRevalidating}
         onApply={(next) => onStateChange(next, { replace: false })}
-        trackerLogin={user.tracker_login}
-        value={state}
+        value={requestState}
       />
 
       <div

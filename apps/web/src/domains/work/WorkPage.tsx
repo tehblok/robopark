@@ -107,7 +107,7 @@ function WorkPageOwner({
 
   return (
     <PageLayout
-      description={`Парк: ${selectedPark.name} · очередь ${queue}`}
+      description={`Парк: ${selectedPark.name} · открытые блокеры`}
       title="Работа"
     >
       <IssueWorkbench

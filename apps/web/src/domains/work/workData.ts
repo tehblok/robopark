@@ -60,6 +60,7 @@ export function loadWorkPage(
     queue: filters.queue,
     park: filters.untagged ? undefined : parkTag,
     status: filters.status,
+    open_only: true,
     robot: filters.robot,
     assignee: filters.assignee,
     untagged: filters.untagged,
