@@ -69,7 +69,17 @@ export async function startDiagnosticApi(actor: Actor = 'admin') {
     }
     const id = ++sequence; pending.set(id, { resolve, reject }); child.stdin.write(`${JSON.stringify({ id, actor: as, ...input, headers: { 'content-type': 'application/json', ...input.headers } })}\n`)
   })
-  const forward = async (request: Request) => call({ method: request.method, path: new URL(request.url).pathname.replace(/^\/api/, '') + new URL(request.url).search, body: ['GET', 'HEAD'].includes(request.method) ? undefined : await request.text(), headers: { 'content-type': 'application/json', ...(request.headers.has('if-match') ? { 'if-match': request.headers.get('if-match')! } : {}) } })
+  const forward = async (request: Request): Promise<MockResponse> => {
+    try {
+      return await call({ method: request.method, path: new URL(request.url).pathname.replace(/^\/api/, '') + new URL(request.url).search, body: ['GET', 'HEAD'].includes(request.method) ? undefined : await request.text(), headers: { 'content-type': 'application/json', ...(request.headers.has('if-match') ? { 'if-match': request.headers.get('if-match')! } : {}) } })
+    } catch (error) {
+      // Browser revalidation may still be in flight when test teardown closes
+      // the bridge. Only deliberate shutdown gets an ordinary route response;
+      // unexpected process exits and direct test API calls still fail loudly.
+      if (closing) return { status: 503, json: { detail: 'diagnostic_api_closed' } }
+      throw error
+    }
+  }
   const routes: MockRoute[] = (['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const).map(method => ({ method, path: /^\/api\/(?:admin\/diagnostic-rules(?:\/.*)?|auth\/me|emergency\/(?:resolve|[^/]+\/snapshot))$/, handler: forward }))
   return { call, routes, close }
 }

@@ -28,6 +28,7 @@ USER_AGENT = os.environ.get("TRACKER_USER_AGENT", "robopark-api/0.1")
 # Tracker API отдаёт не более 50 тикетов за один HTTP-запрос; find() сам
 # дочитывает следующие страницы по Link header при итерации.
 API_PAGE_SIZE = 50
+MAX_ROBOT_REFERENCE_LENGTH = 64
 DEFAULT_QUEUE = "SDCFLEETOPS"
 DEFAULT_ISSUE_TYPES = ("repair", "service", "calibration")
 MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
@@ -301,7 +302,14 @@ def parse_robot_from_summary(summary: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _loaded_value(raw: Any) -> Any:
+    """Read SDK response data without triggering lazy Reference/Resource HTTP."""
+    value = getattr(raw, "__dict__", {}).get("_value")
+    return value if isinstance(value, dict) else raw
+
+
 def _status_display(status: Any) -> str:
+    status = _loaded_value(status)
     if status is None:
         return ""
     if isinstance(status, dict):
@@ -314,6 +322,7 @@ def _status_display(status: Any) -> str:
 
 
 def _status_key(status: Any) -> str:
+    status = _loaded_value(status)
     if status is None:
         return ""
     if isinstance(status, dict):
@@ -325,6 +334,7 @@ def _status_key(status: Any) -> str:
 
 
 def _queue_display(queue: Any) -> str:
+    queue = _loaded_value(queue)
     if queue is None:
         return ""
     if isinstance(queue, dict):
@@ -348,6 +358,7 @@ def _tags_from(raw: Any) -> list[str]:
         return []
     out: list[str] = []
     for item in items:
+        item = _loaded_value(item)
         if isinstance(item, dict):
             value = item.get("name") or item.get("display") or item.get("key") or ""
         else:
@@ -369,6 +380,7 @@ def _attachments_from(raw: Any) -> list[dict[str, Any]]:
     items = raw if isinstance(raw, list) else [raw]
     out: list[dict[str, Any]] = []
     for item in items:
+        item = _loaded_value(item)
         if isinstance(item, dict):
             name = str(item.get("name") or item.get("filename") or "").strip()
             attachment_id = str(item.get("id") or item.get("self") or "").strip()
@@ -417,7 +429,7 @@ def _attachments_from(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _person(raw: Any) -> dict[str, str] | None:
+def _person(raw: Any, login_cache: dict[str, str] | None = None) -> dict[str, str] | None:
     """Normalize a Tracker user reference to ``{display, login}``."""
     if raw is None:
         return None
@@ -428,8 +440,16 @@ def _person(raw: Any) -> dict[str, str] | None:
         display = raw.get("display") or raw.get("login") or ""
         login = raw.get("login") or raw.get("id") or ""
     else:
-        display = getattr(raw, "display", None) or getattr(raw, "login", None) or ""
-        login = getattr(raw, "login", None) or getattr(raw, "id", None) or ""
+        display = _field(raw, "display") or _field(raw, "login") or ""
+        identity = str(_field(raw, "id") or "")
+        if login_cache is not None and identity in login_cache:
+            login = login_cache[identity]
+        else:
+            # User references often omit login. Resolve once per search, retaining
+            # the real login needed by workload and assignee filters.
+            login = getattr(raw, "login", None) or identity
+            if login_cache is not None and identity:
+                login_cache[identity] = str(login or "").strip()
     display = str(display or "").strip()
     login = str(login or "").strip()
     if not display and not login:
@@ -438,6 +458,7 @@ def _person(raw: Any) -> dict[str, str] | None:
 
 
 def _plain(raw: Any) -> str:
+    raw = _loaded_value(raw)
     if raw is None:
         return ""
     if isinstance(raw, dict):
@@ -453,6 +474,7 @@ def _plain(raw: Any) -> str:
 
 
 def _resolution_display(resolution: Any) -> str:
+    resolution = _loaded_value(resolution)
     if resolution is None:
         return ""
     if isinstance(resolution, dict):
@@ -466,12 +488,13 @@ def _resolution_display(resolution: Any) -> str:
 
 def _field(issue: Any, name: str) -> Any:
     """Read a field from a REST dict or a Startrek object uniformly."""
+    issue = _loaded_value(issue)
     if isinstance(issue, dict):
         return issue.get(name)
     return getattr(issue, name, None)
 
 
-def issue_to_dict(issue: Any) -> dict[str, Any]:
+def issue_to_dict(issue: Any, *, login_cache: dict[str, str] | None = None) -> dict[str, Any]:
     """Normalize a Tracker issue (REST dict or Startrek object) to our DTO."""
     created = str(_field(issue, "createdAt") or "")
     status = _status_display(_field(issue, "status"))
@@ -485,8 +508,8 @@ def issue_to_dict(issue: Any) -> dict[str, Any]:
     # Fields needed to render a Tracker-like issue card.
     description = str(_field(issue, "description") or "")
     updated = str(_field(issue, "updatedAt") or "")
-    assignee = _person(_field(issue, "assignee"))
-    reporter = _person(_field(issue, "createdBy"))
+    assignee = _person(_field(issue, "assignee"), login_cache)
+    reporter = _person(_field(issue, "createdBy"), login_cache)
     priority = _plain(_field(issue, "priority"))
     issue_type = _plain(_field(issue, "type"))
     components = _tags_from(_field(issue, "components"))
@@ -608,8 +631,9 @@ def _search(
 
     def _run() -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
+        login_cache: dict[str, str] = {}
         for issue in client.issues.find(query, **kwargs):
-            item = issue_to_dict(issue)
+            item = issue_to_dict(issue, login_cache=login_cache)
             if filter_open and not is_issue_open_item(item):
                 continue
             items.append(item)
@@ -968,6 +992,20 @@ def _robot_search_variants(robot_number: str) -> list[str]:
             seen.add(variant)
             ordered.append(variant)
     return ordered
+
+
+def robot_summary_clause(number: str) -> str:
+    """Narrow by indexed robot spellings; callers still compare exact identities.
+
+    Tracker matches whole words: searching for 447 does not find a447.
+    Include padding through the API's reference length limit, not a shorter
+    arbitrary limit that could drop a previously accepted exact identity.
+    """
+    variants = []
+    for width in range(len(number), MAX_ROBOT_REFERENCE_LENGTH + 1):
+        padded = number.zfill(width)
+        variants.extend((padded, f"a{padded}", f"YASADR{padded}"))
+    return "(" + " OR ".join(f"Summary: {_ql_quote(v)}" for v in dict.fromkeys(variants)) + ")"
 
 
 def _summary_matches_robot(summary: str, robot_number: str) -> bool:

@@ -118,6 +118,14 @@ it('rejects requests after close instead of waiting for a stopped bridge', async
   await expect(within(api.call({ method: 'GET', path: '/health' }))).rejects.toThrow('bridge closed')
 })
 
+it('finishes browser requests during teardown without an unhandled route rejection', async () => {
+  const { api } = await startFixture()
+  const pending = Promise.resolve(api.routes[0].handler(new Request('http://local/api/hang'))).catch(error => error)
+  await within(api.close())
+  expect(await pending).toMatchObject({ status: 503 })
+  expect(await api.routes[0].handler(new Request('http://local/api/health'))).toMatchObject({ status: 503 })
+})
+
 it('shares concurrent and repeated close completion and clears graceful timers', async () => {
   const { api, child } = await startFixture()
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })

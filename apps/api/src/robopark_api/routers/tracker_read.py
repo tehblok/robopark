@@ -241,7 +241,9 @@ def list_issues(
     park: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
     robot: str | None = Query(default=None),
-    robot_exact: str | None = Query(default=None, max_length=64),
+    robot_exact: str | None = Query(
+        default=None, max_length=tracker_client.MAX_ROBOT_REFERENCE_LENGTH
+    ),
     exclude_key: str | None = Query(default=None, max_length=128),
     assignee: str | None = Query(default=None, max_length=128),
     untagged: bool = Query(default=False),
@@ -271,6 +273,13 @@ def list_issues(
         assignee=assignee,
         untagged=untagged,
     )
+    exact_robot = _normalized_robot_number(robot_exact)
+    if robot_exact is not None:
+        if exact_robot is None:
+            return TrackerIssuesOut(items=[], total=0, limit=limit, offset=offset, has_more=False)
+        query_text = tracker_client.join_query(
+            query_text, tracker_client.robot_summary_clause(exact_robot)
+        )
     try:
         items = tracker_cache.search_issues(
             token=token, query=query_text, filter_open=not bool(status_filter)
@@ -289,7 +298,6 @@ def list_issues(
     if sort_order == "newest":
         ordered.reverse()
 
-    exact_robot = _normalized_robot_number(robot_exact)
     excluded_key = (exclude_key or "").strip()
     scoped: list[TrackerIssueOut] = []
     seen_keys: set[str] = set()

@@ -163,6 +163,7 @@ export async function settlePage(page: Page) {
   await expect(page.locator('.global-progress')).toHaveAttribute('aria-hidden', 'true')
   await page.evaluate(async () => {
     await document.fonts.ready
-    await Promise.all(document.getAnimations().filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity).map(animation => animation.finished))
+    // Replacing a loading state can cancel its transition; cancellation is settled too.
+    await Promise.allSettled(document.getAnimations().filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity).map(animation => animation.finished))
   })
 }

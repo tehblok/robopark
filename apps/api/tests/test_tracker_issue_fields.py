@@ -10,6 +10,118 @@ from types import SimpleNamespace
 from robopark_api.services.tracker_client import issue_to_dict
 
 
+def test_search_reuses_user_lookups_and_does_not_hydrate_display_references(monkeypatch):
+    from yandex_tracker_client import TrackerClient
+    from yandex_tracker_client.objects import Reference, Resource
+
+    from robopark_api.services import tracker_client
+
+    sdk = TrackerClient(token="test", org_id="test")
+    calls = []
+
+    def get(*, path, **_kwargs):
+        calls.append(path)
+        if path == "/v2/users/123":
+            return Resource(sdk._connection, path, {"id": "123", "login": "mechanic"})
+        if path == "/v2/fields/":
+            return []
+        if path == "/v2/components/1":
+            return Resource(sdk._connection, path, {"id": "1", "name": "Шасси"})
+        raise AssertionError(f"Unexpected hydration: {path}")
+
+    monkeypatch.setattr(sdk._connection, "get", get)
+
+    def issues(*_args, **_kwargs):
+        return [
+            Resource(
+                sdk._connection,
+                f"/v2/issues/ROBOPARK-{i}",
+                {
+                    "key": f"ROBOPARK-{i}",
+                    "summary": "[447] repair",
+                    "assignee": Reference(
+                        sdk._connection, "/v2/users/123", {"id": "123", "display": "Механик"}
+                    ),
+                    "createdBy": Reference(
+                        sdk._connection, "/v2/users/123", {"id": "123", "display": "Механик"}
+                    ),
+                    "components": [
+                        Reference(
+                            sdk._connection, "/v2/components/1", {"id": "1", "display": "Шасси"}
+                        )
+                    ],
+                },
+            )
+            for i in range(50)
+        ]
+
+    monkeypatch.setattr(sdk.issues, "find", issues)
+    monkeypatch.setattr(tracker_client, "_client", lambda _: sdk)
+    monkeypatch.setattr(tracker_client, "call_with_retry", lambda fn, **_: fn())
+
+    rows = tracker_client.search_issues(token="test", query="Queue: ROBOPARK")
+
+    assert len(rows) == 50
+    assert all(row["assignee"] == {"display": "Механик", "login": "mechanic"} for row in rows)
+    assert all(row["reporter"]["login"] == "mechanic" for row in rows)
+    assert all(row["components"] == ["Шасси"] for row in rows)
+    assert calls == ["/v2/users/123"]
+
+    calls.clear()
+    tracker_client.search_issues(token="other-token", query="Queue: ROBOPARK")
+    assert calls == ["/v2/users/123"]  # The memo belongs to one search, not another token.
+
+
+def test_loaded_sdk_fields_match_rest_payload_without_metadata_requests(monkeypatch):
+    from yandex_tracker_client import TrackerClient
+    from yandex_tracker_client.objects import Reference, Resource
+
+    sdk = TrackerClient(token="test", org_id="test")
+
+    def unexpected_request(**_kwargs):
+        raise AssertionError("Loaded fields must not require another HTTP request")
+
+    monkeypatch.setattr(sdk._connection, "get", unexpected_request)
+    payload = {
+        "key": "ROBOPARK-1",
+        "summary": "[447] repair",
+        "description": "Описание",
+        "status": Reference(
+            sdk._connection, "/v2/statuses/1", {"key": "closed", "display": "Закрыт"}
+        ),
+        "resolution": Reference(
+            sdk._connection, "/v2/resolutions/1", {"key": "fixed", "display": "Исправлен"}
+        ),
+        "queue": Reference(sdk._connection, "/v2/queues/ROBOPARK", {"key": "ROBOPARK"}),
+        "priority": Reference(
+            sdk._connection, "/v2/priorities/1", {"key": "blocker", "display": "Блокер"}
+        ),
+        "type": Reference(
+            sdk._connection, "/v2/issuetypes/1", {"key": "repair", "display": "Ремонт"}
+        ),
+        "attachment": [
+            Resource(
+                sdk._connection,
+                "/v2/attachments/1",
+                {
+                    "id": "1",
+                    "name": "photo.png",
+                    "size": 512,
+                    "mimetype": "image/png",
+                    "content": "https://tracker.example.invalid/attachments/1",
+                },
+            )
+        ],
+    }
+    resource = Resource(sdk._connection, "/v2/issues/ROBOPARK-1", payload)
+    result = issue_to_dict(resource)
+    assert result == issue_to_dict(resource.as_dict())
+    assert result["status_key"] == "closed"
+    assert result["resolution"] == "fixed"
+    assert result["attachments"][0]["name"] == "photo.png"
+    assert result["attachments"][0]["size"] == 512
+
+
 def test_rest_dict_payload_is_fully_normalized():
     issue = issue_to_dict(
         {

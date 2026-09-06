@@ -169,7 +169,11 @@ def test_tracker_list_exact_robot_filters_before_deduplication_and_pagination(
     assert captured[0]["filter_open"] is True
     assert "Queue: ROBOPARK" in captured[0]["query"]
     assert "Tags: Alpha" in captured[0]["query"]
-    assert "Summary:" not in captured[0]["query"]
+    assert 'Summary: "447"' in captured[0]["query"]
+    assert 'Summary: "a447"' in captured[0]["query"]
+    assert 'Summary: "0447"' in captured[0]["query"]
+    assert 'Summary: "YASADR00000000447"' in captured[0]["query"]
+    assert f'Summary: "{"447".zfill(64)}"' in captured[0]["query"]
 
     closed = client.get(
         "/tracker/issues?queue=ROBOPARK&park=Alpha&status=closed&robot_exact=447&exclude_key=ROBOPARK-42"
@@ -178,6 +182,7 @@ def test_tracker_list_exact_robot_filters_before_deduplication_and_pagination(
     assert [item["key"] for item in closed.json()["items"]] == ["ROBOPARK-4"]
     assert captured[1]["filter_open"] is False
     assert "Status: closed" in captured[1]["query"]
+    assert 'Summary: "a447"' in captured[1]["query"]
 
 
 @pytest.mark.parametrize(
