@@ -124,13 +124,27 @@ def test_tracker_list_exact_robot_filters_before_deduplication_and_pagination(
     captured: list[dict] = []
     open_items = [
         {**_scoped_issue("ROBOPARK-42", "2026-01-01T00:00:00Z"), "robot": "447"},
-        {**_scoped_issue("ROBOPARK-1447", "2026-01-01T01:00:00Z"), "robot": "1447", "summary": "Робот 447 в тексте"},
-        {**_scoped_issue("ROBOPARK-1", "2026-01-01T02:00:00Z"), "robot": "447", "summary": "Без номера в summary"},
+        {
+            **_scoped_issue("ROBOPARK-1447", "2026-01-01T01:00:00Z"),
+            "robot": "1447",
+            "summary": "Робот 447 в тексте",
+        },
+        {
+            **_scoped_issue("ROBOPARK-1", "2026-01-01T02:00:00Z"),
+            "robot": "447",
+            "summary": "Без номера в summary",
+        },
         {**_scoped_issue("ROBOPARK-2", "2026-01-01T03:00:00Z"), "robot": "YASADR00000000447"},
-        {**_scoped_issue("ROBOPARK-2", "2026-01-02T00:00:00Z"), "robot": "447", "summary": "Дубликат ключа"},
+        {
+            **_scoped_issue("ROBOPARK-2", "2026-01-02T00:00:00Z"),
+            "robot": "447",
+            "summary": "Дубликат ключа",
+        },
         {**_scoped_issue("ROBOPARK-3", "2026-01-01T04:00:00Z"), "robot": "447"},
     ]
-    closed_items = [{**_scoped_issue("ROBOPARK-4", "2026-01-02T00:00:00Z"), "robot": "447", "status": "Closed"}]
+    closed_items = [
+        {**_scoped_issue("ROBOPARK-4", "2026-01-02T00:00:00Z"), "robot": "447", "status": "Closed"}
+    ]
 
     def search(**kwargs):
         captured.append(kwargs)

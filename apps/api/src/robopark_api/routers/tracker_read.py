@@ -298,8 +298,7 @@ def list_issues(
         if not is_issue_in_scope(db, user, issue):
             continue
         if robot_exact is not None and (
-            exact_robot is None
-            or _normalized_robot_number(issue.get("robot")) != exact_robot
+            exact_robot is None or _normalized_robot_number(issue.get("robot")) != exact_robot
         ):
             continue
         key = str(issue.get("key") or "").strip()

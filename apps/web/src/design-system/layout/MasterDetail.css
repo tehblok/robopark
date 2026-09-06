@@ -27,7 +27,7 @@
 }
 
 .rp-master-detail__detail-actions {
-  display: flex;
+  display: none;
 }
 
 .rp-master-detail__back {
@@ -129,6 +129,10 @@
 
   .rp-master-detail[data-detail-open='false'] .rp-master-detail__detail {
     display: none;
+  }
+
+  .rp-master-detail__detail-actions {
+    display: flex;
   }
 
   .rp-master-detail__back {

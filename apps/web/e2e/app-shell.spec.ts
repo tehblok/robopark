@@ -50,31 +50,25 @@ test('operator shell is accessible in the light theme', async ({ page }) => {
 })
 
 for (const width of [320, 1440]) {
-  test(`operator park wordmark is the switch target at ${width}px`, async ({ page }) => {
+  test(`operator park switcher exposes its accessible listbox at ${width}px`, async ({ page }) => {
     const southPark = { ...northPark, id: 8, name: 'Next' }
     const user = { ...operatorUser, parks: [northPark, southPark] }
     await installMockApi(page, { user, parks: user.parks, routes: currentOverviewRoutes })
     await page.setViewportSize({ width, height: 900 })
     await page.goto('/overview?park=7')
 
-    const wordmark = page.locator('.rp-shell__park-brand')
-    const switcher = page.getByRole('combobox', { name: 'Сменить парк' })
-    const [wordmarkBox, switcherBox] = await Promise.all([wordmark.boundingBox(), switcher.boundingBox()])
-    expect(wordmarkBox).not.toBeNull()
+    const switcher = page.getByRole('button', { name: 'Сменить парк' })
+    await expect(switcher).toContainText('Северный парк')
+    const switcherBox = await switcher.boundingBox()
     expect(switcherBox).not.toBeNull()
-    expect(Math.abs(switcherBox!.x - wordmarkBox!.x)).toBeLessThanOrEqual(1)
-    expect(Math.abs(switcherBox!.y - wordmarkBox!.y)).toBeLessThanOrEqual(1)
-    expect(Math.abs(switcherBox!.width - wordmarkBox!.width)).toBeLessThanOrEqual(2)
-    expect(switcherBox!.height).toBe(wordmarkBox!.height)
     expect(switcherBox!.height).toBeGreaterThanOrEqual(44)
 
-    await switcher.evaluate((element) => element.addEventListener('click', () => {
-      document.body.dataset.parkSwitcherClicked = 'true'
-    }, { once: true }))
-    await wordmark.click()
-    await expect(page.locator('body')).toHaveAttribute('data-park-switcher-clicked', 'true')
+    await switcher.click()
+    await expect(page.getByRole('listbox', { name: 'Сменить парк' })).toBeVisible()
     await page.keyboard.press('Escape')
-    await switcher.selectOption('8')
+    await expect(switcher).toBeFocused()
+    await switcher.click()
+    await page.getByRole('option', { name: 'Next' }).click()
     await expect(page).toHaveURL(/\/overview\?park=8$/)
   })
 }
