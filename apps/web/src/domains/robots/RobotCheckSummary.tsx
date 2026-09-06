@@ -3,6 +3,7 @@ import { Button } from '../../design-system/actions/Button'
 import { StaleBadge } from '../../design-system/feedback/AsyncState'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { buildRobotDetailModel } from './robotDetailModel'
+import { RobotQrButton } from './RobotQrButton'
 
 export function RobotCheckSummary({ snapshot, online, failed, pending, onRefresh }: { snapshot: EmergencySnapshot; online: boolean; failed: boolean; pending: boolean; onRefresh: () => void }) {
   const model = buildRobotDetailModel(snapshot, online)
@@ -12,6 +13,7 @@ export function RobotCheckSummary({ snapshot, online, failed, pending, onRefresh
   const retry = !online || failed
   return <section className="rp-check-summary" aria-label="Состояние робота" aria-busy={pending}>
     <h2>Робот {model.shortNumber}</h2><p className="rp-check-vin">{snapshot.vin}</p>
+    <RobotQrButton vin={snapshot.vin} />
     <StatusBadge tone={model.connection.tone}>{model.connection.label}</StatusBadge>
     <StaleBadge state={failed ? 'stale' : model.freshness} updatedAt={snapshot.observed_at} />
     <p><time dateTime={snapshot.observed_at}>Данные на {date}{time ? ` · ${time}` : ''}</time></p>

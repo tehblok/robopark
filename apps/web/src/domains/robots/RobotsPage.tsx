@@ -9,6 +9,7 @@ import { RobotResolver, type RobotResolverApiClient } from './RobotResolver'
 import { checkAccessIdentity } from './robotCheckUrl'
 import { clearRecentRobots, loadRecentRobots, type RecentRobot } from './recentRobots'
 import './robots.css'
+import { RobotQrButton } from './RobotQrButton'
 
 export function RobotsPage({ apiClient = api }: { apiClient?: RobotResolverApiClient }) {
   const { user } = useAuth()
@@ -42,7 +43,7 @@ function RobotsPageOwner({
       description={`Поиск и недавние роботы · ${selectedPark?.name ?? 'доступные парки'}`}
       title="Роботы"
     >
-      <Panel className="rp-robots-search-panel" title="Открыть по номеру или сканировать">
+      <Panel className="rp-robots-search-panel" title="Открыть по номеру или сканировать" actions={<RobotQrButton initialValue={value} />}>
         <RobotResolver
           apiClient={apiClient}
           onResolved={(result) => {
