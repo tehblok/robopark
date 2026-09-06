@@ -8,7 +8,12 @@ form. Repairs and diagnostics load only when their tab is opened.
 
 Related lists request the same exact robot and allowed park/queue, type `repair`,
 with any priority. The current issue is excluded. Both lists use oldest-first
-ordering and pages of ten. The API requires a valid `robot_exact` for
+ordering and pages of ten. Closed repairs are limited to the last 14 days by
+Tracker's `resolvedAt`, regardless of creation or update date. The API narrows
+the upstream search by resolution date and applies the exact rolling cutoff
+before totals and pagination, also on cache hits. Missing or invalid resolution
+dates are excluded. Other Tracker history lists retain their existing scope.
+The API requires a valid `robot_exact` for
 `related_repairs=true`; the type and robot filters run before pagination. The
 ordinary Work list remains an open-blocker queue. Existing permissions govern
 viewing and changing additional repairs.
@@ -39,3 +44,12 @@ so checking the robot does not leave the work context.
 - Live verification on robot 1217: related history included a medium-priority
   repair; opening it retained blocker SDCFLEETOPS-370188. Its check loaded actual
   robot data and the root link returned to the original blocker and Task tab.
+
+### Closed repair history window — 2026-09-06
+
+- Full API suite: 1075 passed; date boundaries, timezone offsets, invalid/missing
+  dates, cached rows aging out and pagination are covered.
+- Full web suite: 1504 passed; full Chromium suite: 198 passed. Build, lint
+  (existing warnings), navigation and contrast checks passed.
+- Live read-only check of blocker SDCFLEETOPS-370188 / robot 1217 shows five
+  closed repairs in the 14-day window, with the period stated in the tab.

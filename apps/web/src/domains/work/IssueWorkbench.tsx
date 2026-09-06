@@ -195,9 +195,9 @@ function RelatedTasksPanel({ apiClient, issueKey, onOpen, park, resourcePrefix, 
     }),
   )
   return <>
-    <p className="rp-work-list-count">Ремонты любого приоритета · от старых к новым</p>
+    <p className="rp-work-list-count">Ремонты любого приоритета · от старых к новым{kind === 'closed' ? ' · закрыты за последние 14 дней' : ''}</p>
     <RelatedTaskGroup
-      empty={kind === 'open' ? 'Открытых ремонтов по этому роботу нет.' : 'Закрытых ремонтов по этому роботу нет.'}
+      empty={kind === 'open' ? 'Открытых ремонтов по этому роботу нет.' : 'За последние 14 дней закрытых ремонтов по этому роботу нет.'}
       onOpen={onOpen} resource={related}
       title={`${kind === 'open' ? 'Открытые' : 'Закрытые'} задачи робота ${robotNumber}`}
     />

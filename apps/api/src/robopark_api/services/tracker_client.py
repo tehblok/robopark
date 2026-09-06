@@ -522,6 +522,7 @@ def issue_to_dict(issue: Any, *, login_cache: dict[str, str] | None = None) -> d
         "status": status,
         "created": created,
         "updated": updated,
+        "resolved": str(_field(issue, "resolvedAt") or ""),
         "hours_created": _fmt_hours(hours_created),
         "in_relocation": "1" if _is_relocation_status(status) else "0",
         "robot": parse_robot_from_summary(summary),

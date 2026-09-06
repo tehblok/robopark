@@ -86,6 +86,7 @@ def test_loaded_sdk_fields_match_rest_payload_without_metadata_requests(monkeypa
         "key": "ROBOPARK-1",
         "summary": "[447] repair",
         "description": "Описание",
+        "resolvedAt": "2026-09-05T10:00:00.000+0000",
         "status": Reference(
             sdk._connection, "/v2/statuses/1", {"key": "closed", "display": "Закрыт"}
         ),
@@ -116,6 +117,7 @@ def test_loaded_sdk_fields_match_rest_payload_without_metadata_requests(monkeypa
     resource = Resource(sdk._connection, "/v2/issues/ROBOPARK-1", payload)
     result = issue_to_dict(resource)
     assert result == issue_to_dict(resource.as_dict())
+    assert result["resolved"] == "2026-09-05T10:00:00.000+0000"
     assert result["status_key"] == "closed"
     assert result["type_key"] == "repair"
     assert result["resolution"] == "fixed"

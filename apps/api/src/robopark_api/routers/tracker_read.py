@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -291,6 +292,19 @@ def list_issues(
         query_text = tracker_client.join_query(
             query_text, tracker_client.robot_summary_clause(exact_robot)
         )
+    resolved_until = datetime.now(UTC)
+    resolved_since = (
+        resolved_until - timedelta(days=14)
+        if related_repairs and (status_filter or "").strip().lower() == "closed"
+        else None
+    )
+    if resolved_since is not None:
+        # Keep the search cache reusable between pages. The exact rolling
+        # boundary is applied below, including when a cached row ages out.
+        query_since = resolved_since.replace(minute=0, second=0, microsecond=0)
+        query_text = tracker_client.join_query(
+            query_text, f'Resolved: >= "{query_since:%Y-%m-%d %H:%M:%S}"'
+        )
     try:
         items = tracker_cache.search_issues(
             token=token, query=query_text, filter_open=open_only or not bool(status_filter)
@@ -319,6 +333,15 @@ def list_issues(
             continue
         if related_repairs and str(issue.get("type_key") or "").strip() != "repair":
             continue
+        if resolved_since is not None:
+            try:
+                resolved = datetime.fromisoformat(str(issue.get("resolved") or ""))
+            except ValueError:
+                continue
+            if resolved.tzinfo is None:
+                resolved = resolved.replace(tzinfo=UTC)
+            if not resolved_since <= resolved <= resolved_until:
+                continue
         if robot_exact is not None and (
             exact_robot is None or _normalized_robot_number(issue.get("robot")) != exact_robot
         ):

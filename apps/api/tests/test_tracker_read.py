@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from conftest import login_as, role_id_for
@@ -275,6 +277,7 @@ def test_related_repairs_preserve_scope_and_page_only_exact_robot_repairs_of_any
             "type": "Ремонт",
             "type_key": "repair",
             "priority": "Обычный",
+            "resolved": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
             **changes,
         }
 
@@ -599,3 +602,78 @@ def test_status_query_preserves_case_sensitive_tracker_workflow_names(
     login_as(client, "op2", "secret")
     assert client.get(f"/tracker/issues?status={status}&open_only=true").status_code == 200
     assert expected in queries[0]
+
+
+def test_closed_related_repairs_use_resolution_date_and_filter_before_pagination(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.routers import tracker_read
+    from robopark_api.services import tracker_client
+
+    class Clock(datetime):
+        elapsed_seconds = 0
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 9, 6, 12, 30, tzinfo=UTC) + timedelta(seconds=cls.elapsed_seconds)
+
+    monkeypatch.setattr(tracker_read, "datetime", Clock)
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    dates = [
+        "2026-08-23T12:29:59Z",  # One second too old, despite a recent update.
+        "2026-08-23T15:30:00+0300",  # Inclusive boundary with a timezone offset.
+        "2026-09-05T12:00:00Z",  # An old task closed recently is included.
+        "",
+        "invalid",
+        None,
+        "2026-09-07T12:00:00Z",  # Future timestamps cannot enter the period.
+    ]
+    rows = [
+        {
+            **_scoped_issue(f"ROBOPARK-{i}", "2020-01-01T00:00:00Z"),
+            "robot": "447",
+            "type_key": "repair",
+            "status_key": "closed",
+            "resolved": value,
+            "updated": "2026-09-06T12:00:00Z",
+        }
+        for i, value in enumerate(dates)
+    ]
+    queries = []
+
+    def search(**kwargs):
+        queries.append(kwargs["query"])
+        return rows
+
+    monkeypatch.setattr(tracker_client, "search_issues", search)
+    login_as(client, "op2", "secret")
+    params = {
+        "related_repairs": "true",
+        "robot_exact": "447",
+        "status": "closed",
+        "queue": "ROBOPARK",
+        "park": "Alpha",
+        "limit": 1,
+    }
+    first = client.get("/tracker/issues", params=params).json()
+    assert [item["key"] for item in first["items"]] == ["ROBOPARK-1"]
+    assert first["total"] == 2
+    assert first["has_more"] is True
+    last = client.get("/tracker/issues", params={**params, "offset": 1}).json()
+    assert [item["key"] for item in last["items"]] == ["ROBOPARK-2"]
+    assert last["has_more"] is False
+    assert len(queries) == 1
+    assert 'Resolved: >= "2026-08-23 12:00:00"' in queries[0]
+
+    Clock.elapsed_seconds = 1
+    aged = client.get("/tracker/issues", params=params).json()
+    assert [item["key"] for item in aged["items"]] == ["ROBOPARK-2"]
+    assert aged["total"] == 1
+    assert aged["has_more"] is False
+    assert len(queries) == 1  # Reapply the cutoff even when upstream results are cached.
+
+    # Other Tracker history callers retain their existing unrestricted behavior.
+    ordinary = client.get("/tracker/issues", params={**params, "related_repairs": "false"}).json()
+    assert ordinary["total"] == len(rows)
+    assert "Resolved:" not in queries[-1]
