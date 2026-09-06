@@ -218,7 +218,8 @@ The existing `release` ZIP format advances to a versioned manifest containing:
 - file paths, sizes, and SHA-256 hashes;
 - required host capabilities;
 - creation timestamp and update notes;
-- a detached Ed25519 signature over canonical manifest bytes.
+- an Ed25519 signature in the separate ZIP member `manifest.sig`, calculated over
+  canonical `manifest.json` bytes.
 
 The signing private key never enters the repository or installer. The public verification key is installed in `/etc/robopark/release-public-key.pem`. Both the API and host updater verify the signature, but the host updater is the final trust boundary. Unsigned archives, unknown keys, duplicate ZIP paths, symlinks, special files, path traversal, checksum mismatches, oversized archives, incompatible formats, and unapproved downgrades are rejected before tests or host changes.
 
@@ -323,7 +324,7 @@ Repository scripts produce:
 - SHA-256 checksum files;
 - release metadata suitable for GitHub Release assets.
 
-Local packaging accepts the signing private key only through a protected file path or CI secret. GitHub Actions may build and sign release assets when the signing secret is configured. CI never prints the key and does not publish an unsigned production release.
+Local packaging accepts the signing private key only through a protected file path or CI secret. GitHub Actions may build and sign release assets when the signing secret is configured. CI never prints the key and does not publish an unsigned production release. GitHub assets additionally include an Ed25519 signature for the complete release ZIP, allowing the host checker to authenticate the download before opening it; a manually uploaded ZIP remains self-contained through its internal `manifest.sig`.
 
 The installer archive embeds the exact initial signed release and matching public key. A verification command checks an archive without installing it.
 
