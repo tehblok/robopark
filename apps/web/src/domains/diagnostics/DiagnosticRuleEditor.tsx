@@ -1,0 +1,279 @@
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type PointerEvent } from 'react'
+import { useLocation, useSearchParams } from 'react-router-dom'
+import { api, ApiError, type DiagnosticCatalog, type DiagnosticPreview, type DiagnosticRule, type DiagnosticRuleCreate, type User } from '../../api'
+import { useAuth } from '../../auth-context'
+import { Toggle } from '../../components/ui/Tabs'
+import { Button } from '../../design-system/actions/Button'
+import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
+import { FormField } from '../../design-system/forms/FormField'
+import { MasterDetail } from '../../design-system/layout/MasterDetail'
+import { StatusBadge } from '../../design-system/status/StatusBadge'
+import { ROBOT_PHOTOS } from '../robots/robotPhotos'
+import './diagnostics.css'
+
+type Draft = Required<Omit<DiagnosticRuleCreate, 'sort_order'>>
+const SEVERITIES = { info: 'Информация', warning: 'Предупреждение', critical: 'Критическая ошибка' } as const
+const INDICATORS = { point: 'Точка', outline: 'Контур', zone: 'Зона' } as const
+const emptyDraft: Draft = { source_path: '', match_kind: 'exact', pattern: '', example: '', title: '', description: '', severity: 'warning', part: '', preferred_view: 'front', x: .5, y: .5, indicator: 'point', is_enabled: true }
+function toDraft(rule: DiagnosticRule): Draft {
+  const { source_path, match_kind, pattern, example, title, description, severity, part, preferred_view, x, y, indicator, is_enabled } = rule
+  return { source_path, match_kind, pattern, example, title, description, severity, part, preferred_view, x, y, indicator, is_enabled }
+}
+function errorText(error: unknown) {
+  if (error instanceof ApiError) {
+    if (error.status === 401) return 'Сессия истекла. Войдите снова.'
+    if (error.status === 403) return 'Нет доступа к каталогу ошибок. Обратитесь к администратору.'
+    if (error.detail === 'unsupported_diagnostic_regex') return 'Этот шаблон не поддерживается или слишком сложен. Упростите регулярное выражение.'
+    if (error.detail === 'invalid_diagnostic_regex') return 'Некорректное регулярное выражение. Проверьте скобки и специальные символы.'
+    if (error.detail === 'diagnostic_preview_source_too_large') return 'Пример требует слишком большого массива. Уменьшите индексы в пути источника.'
+    if (error.detail === 'invalid_diagnostic_source_path') return 'Проверьте путь источника: используйте имена полей и индексы через точку.'
+    if (error.status === 422) return 'Проверьте поля правила и пример: сервер не смог их обработать.'
+    if (error.status === 409) return 'Правило конфликтует с каталогом. Обновите список и повторите сохранение.'
+  }
+  return 'Не удалось выполнить запрос. Повторите попытку.'
+}
+
+export function DiagnosticRuleEditor() {
+  const { user } = useAuth()
+  const [params] = useSearchParams()
+  const park = params.get('park')
+  const [owner, setOwner] = useState({ user, park, generation: 0 })
+  // An auth object replacement is a new owner even if its numeric ID is reused.
+  // Reset during render so protected drafts are never painted for that owner.
+  if (owner.user !== user || owner.park !== park) {
+    setOwner({ user, park, generation: owner.generation + 1 })
+    return null
+  }
+  if (!user || user.access_status !== 'approved' || !['admin', 'royal'].includes(user.role)) return null
+  return <DiagnosticCatalogEditor key={owner.generation} user={user} />
+}
+
+function DiagnosticCatalogEditor({ user }: { user: User }) {
+  const { refreshUser } = useAuth()
+  const [params, setParams] = useSearchParams()
+  const location = useLocation()
+  const navigation = useRef(location.key)
+  useLayoutEffect(() => { navigation.current = location.key }, [location.key])
+  const [catalog, setCatalog] = useState<DiagnosticCatalog | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [denied, setDenied] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const mutation = useRef(false)
+  const alive = useRef(false)
+  const listGeneration = useRef(0)
+  const refreshAuth = useRef(refreshUser)
+  useLayoutEffect(() => { refreshAuth.current = refreshUser }, [refreshUser])
+  const deniedRef = useRef(false)
+  const validOwner = () => alive.current && !deniedRef.current
+  const handleAccess = useCallback((failure: unknown) => {
+    if (!(failure instanceof ApiError) || ![401, 403].includes(failure.status) || !alive.current) return
+    deniedRef.current = true
+    setCatalog(null); setDenied(true); setError(errorText(failure)); setNotice('')
+    if (failure.status === 401) void refreshAuth.current().catch(() => undefined)
+  }, [])
+  const reload = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++listGeneration.current
+    setLoading(true)
+    try {
+      const next = await api.diagnosticRules(signal)
+      if (alive.current && !deniedRef.current && generation === listGeneration.current) {
+        setCatalog(next); setError('')
+      }
+      return next
+    } catch (failure) {
+      if (alive.current && !signal?.aborted && generation === listGeneration.current) {
+        handleAccess(failure); setError(errorText(failure))
+      }
+      throw failure
+    } finally {
+      if (alive.current && generation === listGeneration.current) setLoading(false)
+    }
+  }, [handleAccess])
+  useEffect(() => {
+    alive.current = true
+    const controller = new AbortController()
+    void reload(controller.signal).catch(() => undefined)
+    return () => { alive.current = false; controller.abort() }
+  }, [reload, user])
+
+  const select = (id: string | null) => {
+    const next = new URLSearchParams(params)
+    if (id) next.set('rule', id); else next.delete('rule')
+    setParams(next)
+  }
+  const selected = params.get('rule')
+  const rule = catalog?.rules.find(item => String(item.id) === selected)
+  const reorder = async (index: number, offset: number) => {
+    if (!catalog || mutation.current || !validOwner()) return
+    mutation.current = true; setBusy(true); setNotice(''); setError('')
+    try {
+      if (!catalog.etag) throw new ApiError(428)
+      const ids = catalog.rules.map(item => item.id)
+      ;[ids[index], ids[index + offset]] = [ids[index + offset], ids[index]]
+      await api.reorderDiagnosticRules(ids, catalog.etag)
+      if (!validOwner()) return
+      await reload()
+      if (validOwner()) setNotice('Порядок сохранён.')
+    } catch (failure) {
+      if (!validOwner()) return
+      handleAccess(failure)
+      if (failure instanceof ApiError && [409, 428].includes(failure.status)) {
+        try {
+          await reload()
+          if (validOwner()) setNotice('Каталог изменился. Список обновлён — повторите перемещение.')
+        } catch { /* reload owns the visible retry error */ }
+      } else setError(errorText(failure))
+    } finally { mutation.current = false; if (alive.current) setBusy(false) }
+  }
+  const save = async (draft: Draft, id?: number, disable = false) => {
+    if (mutation.current || !validOwner()) throw new Error('operation_unavailable')
+    mutation.current = true; setBusy(true); setNotice('')
+    try {
+      const result = disable && id ? await api.disableDiagnosticRule(id) : id
+        ? await api.updateDiagnosticRule(id, draft)
+        : await api.createDiagnosticRule({ ...draft, sort_order: Math.max(-1, ...catalog!.rules.map(item => item.sort_order)) + 1 })
+      if (validOwner()) {
+        // The mutation is already committed. Keep its authoritative identity if
+        // the subsequent catalog read fails, so Create cannot be retried twice.
+        setCatalog(current => current ? {
+          etag: null,
+          rules: current.rules.some(item => item.id === result.id)
+            ? current.rules.map(item => item.id === result.id ? result : item)
+            : [...current.rules, result],
+        } : current)
+        await reload().catch(() => undefined)
+      }
+      return result
+    } catch (failure) { if (validOwner()) handleAccess(failure); throw failure }
+    finally { mutation.current = false; if (alive.current) setBusy(false) }
+  }
+
+  if (denied) return <ErrorState title="Каталог недоступен" description={error} />
+  return <div className="rp-diagnostic-editor">
+    <p className="rp-diagnostic-hint">Правила действуют во всех парках. Выберите ошибку или создайте правило и укажите её место на изображении.</p>
+    {error ? <ErrorState title="Не удалось обновить каталог" description={error} onRetry={() => { void reload().catch(() => undefined) }} /> : null}
+    {notice ? <p role="status">{notice}</p> : null}
+    {loading ? <LoadingState label={catalog ? 'Обновление каталога' : 'Загрузка каталога'} variant="inline" /> : null}
+    {catalog ? <MasterDetail detailOpen={Boolean(selected)} onBack={() => select(null)} list={<>
+      <div className="rp-diagnostic-list-heading"><h2>Каталог ошибок</h2><Button type="button" variant="secondary" onClick={() => select('new')}>Новое правило</Button></div>
+      {!catalog.rules.length ? <EmptyState title="Правил пока нет" description="Создайте первое правило по примеру ошибки." /> : <ol className="rp-diagnostic-list">
+        {catalog.rules.map((item, index) => <li key={item.id} data-selected={selected === String(item.id)}>
+          <button type="button" className="rp-diagnostic-select" aria-label={`Открыть правило ${item.title}`} aria-pressed={selected === String(item.id)} onClick={() => select(String(item.id))}>
+            <strong>{item.title}</strong>
+            <StatusBadge tone={item.severity}>{SEVERITIES[item.severity]}</StatusBadge>
+            <span>{item.is_enabled ? 'Включено' : 'Отключено'} · {ROBOT_PHOTOS.find(photo => photo.id === item.preferred_view)?.title}</span>
+          </button>
+          <div className="rp-diagnostic-order">
+            <Button type="button" variant="ghost" aria-label={`Выше: ${item.title}`} disabled={busy || loading || index === 0} onClick={() => void reorder(index, -1)}>↑</Button>
+            <Button type="button" variant="ghost" aria-label={`Ниже: ${item.title}`} disabled={busy || loading || index === catalog.rules.length - 1} onClick={() => void reorder(index, 1)}>↓</Button>
+          </div>
+        </li>)}
+      </ol>}
+    </>} detail={selected === 'new' || rule ? <RuleForm key={selected} rule={rule} busy={busy} onSave={save} onAccess={handleAccess}
+      onCreated={id => select(String(id))} isCurrentNavigation={() => navigation.current === location.key} /> : <EmptyState title={selected ? 'Правило не найдено' : 'Выберите правило'} description={selected ? 'Возможно, каталог изменился. Выберите правило из списка.' : 'Откройте ошибку из каталога, чтобы настроить расшифровку и индикацию.'} />} /> : null}
+  </div>
+}
+
+function RuleForm({ rule, busy, onSave, onCreated, onAccess, isCurrentNavigation }: {
+  rule?: DiagnosticRule; busy: boolean
+  onSave: (draft: Draft, id?: number, disable?: boolean) => Promise<DiagnosticRule>
+  onCreated: (id: number) => void; onAccess: (error: unknown) => void; isCurrentNavigation: () => boolean
+}) {
+  const [draft, setDraft] = useState<Draft>(() => rule ? toDraft(rule) : { ...emptyDraft })
+  const [preview, setPreview] = useState<DiagnosticPreview | null>(null)
+  const [previewBusy, setPreviewBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+  const [failedImage, setFailedImage] = useState<string | null>(null)
+  const revision = useRef(0)
+  const mounted = useRef(false)
+  const previewRequest = useRef<AbortController | null>(null)
+  const retire = useCallback(() => { mounted.current = false; revision.current++; previewRequest.current?.abort() }, [])
+  useEffect(() => { mounted.current = true; return retire }, [retire])
+  const edit = (change: Partial<Draft>) => {
+    revision.current++; previewRequest.current?.abort(); setPreviewBusy(false)
+    setDraft(current => ({ ...current, ...change })); setPreview(null); setError(''); setMessage('')
+  }
+  const valid = ['source_path', 'pattern', 'example', 'title', 'description', 'part'].every(key => String(draft[key as keyof Draft]).trim())
+    && [draft.x, draft.y].every(value => Number.isFinite(value) && value >= 0 && value <= 1)
+  const photo = ROBOT_PHOTOS.find(item => item.id === draft.preferred_view)!
+  const place = (event: PointerEvent<HTMLImageElement>) => {
+    if (failedImage === photo.id || (event.button !== 0 && event.button !== -1)) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (!rect.width || !rect.height) return
+    const clamp = (value: number) => Math.round(Math.max(0, Math.min(1, value)) * 10000) / 10000
+    edit({ x: clamp((event.clientX - rect.left) / rect.width), y: clamp((event.clientY - rect.top) / rect.height) })
+  }
+  const check = async () => {
+    if (previewBusy || !valid) return
+    const current = revision.current
+    const controller = new AbortController(); previewRequest.current = controller
+    setPreviewBusy(true); setError(''); setPreview(null)
+    try {
+      const result = await api.previewDiagnosticRule(draft, undefined, controller.signal)
+      if (mounted.current && current === revision.current) setPreview(result)
+    } catch (failure) {
+      if (mounted.current && !controller.signal.aborted && current === revision.current) { onAccess(failure); setError(errorText(failure)) }
+    } finally { if (mounted.current && current === revision.current) setPreviewBusy(false) }
+  }
+  const save = async (event?: FormEvent, disable = false) => {
+    event?.preventDefault()
+    if (busy || (!disable && !valid)) return
+    const current = revision.current
+    setError(''); setMessage('')
+    try {
+      const result = await onSave(draft, rule?.id, disable)
+      if (!mounted.current || current !== revision.current || !isCurrentNavigation()) return
+      setDraft(toDraft(result)); setPreview(null)
+      setMessage(disable ? 'Правило отключено.' : 'Правило сохранено.')
+      if (!rule) onCreated(result.id)
+    } catch (failure) {
+      if (mounted.current && current === revision.current) setError(errorText(failure))
+    }
+  }
+  return <form className="rp-diagnostic-form" onSubmit={event => void save(event)}>
+    <h2>{rule ? 'Редактирование правила' : 'Новое правило'}</h2>
+    <div className="rp-diagnostic-fields">
+      <FormField id="diagnostic-title" label="Название ошибки" required><input maxLength={256} value={draft.title} onChange={event => edit({ title: event.target.value })} /></FormField>
+      <FormField id="diagnostic-part" label="Часть робота" required><input maxLength={128} value={draft.part} onChange={event => edit({ part: event.target.value })} /></FormField>
+      <FormField id="diagnostic-source" label="Путь источника" required hint="Поля и индексы через точку, например errors или data.errors.0"><input maxLength={256} value={draft.source_path} onChange={event => edit({ source_path: event.target.value })} /></FormField>
+      <FormField id="diagnostic-kind" label="Сопоставление"><select value={draft.match_kind} onChange={event => edit({ match_kind: event.target.value as Draft['match_kind'] })}><option value="exact">Точное значение</option><option value="regex">Регулярное выражение</option></select></FormField>
+      <FormField id="diagnostic-pattern" label="Код или шаблон" required><input maxLength={512} value={draft.pattern} onChange={event => edit({ pattern: event.target.value })} /></FormField>
+      <FormField id="diagnostic-severity" label="Уровень ошибки"><select value={draft.severity} onChange={event => edit({ severity: event.target.value as Draft['severity'] })}>{Object.entries(SEVERITIES).map(([id, title]) => <option key={id} value={id}>{title}</option>)}</select></FormField>
+    </div>
+    <FormField id="diagnostic-description" label="Расшифровка" required><textarea rows={3} value={draft.description} onChange={event => edit({ description: event.target.value })} /></FormField>
+    <section className="rp-diagnostic-placement" aria-label="Расположение ошибки">
+      <h3>Место на роботе</h3>
+      <div className="rp-diagnostic-fields">
+        <FormField id="diagnostic-view" label="Ракурс"><select value={draft.preferred_view} onChange={event => edit({ preferred_view: event.target.value as Draft['preferred_view'] })}>{ROBOT_PHOTOS.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></FormField>
+        <FormField id="diagnostic-indicator" label="Индикация"><select value={draft.indicator} onChange={event => edit({ indicator: event.target.value as Draft['indicator'] })}>{Object.entries(INDICATORS).map(([id, title]) => <option key={id} value={id}>{title}</option>)}</select></FormField>
+      </div>
+      <p id="diagnostic-placement-hint" className="rp-diagnostic-hint">Нажмите на изображение или задайте координаты от 0 до 1. Начало координат — верхний левый угол.</p>
+      <figure className="rp-diagnostic-figure">
+        <div className="rp-diagnostic-photo" style={{ maxWidth: `${Math.min(420, 440 * photo.width / photo.height)}px` }}>
+          <img key={photo.id} src={photo.src} alt={photo.title} width={photo.width} height={photo.height} draggable={false} onPointerUp={place} onError={() => setFailedImage(photo.id)} />
+          {failedImage !== photo.id && Number.isFinite(draft.x) && Number.isFinite(draft.y) ? <span role="img" aria-label={`Маркер: ${draft.part || 'часть робота'}`} className="rp-diagnostic-marker" data-severity={draft.severity} data-indicator={draft.indicator} style={{ left: `${draft.x * 100}%`, top: `${draft.y * 100}%` }}>!</span> : null}
+        </div>
+        <figcaption>Иллюстрация модели · {photo.title}</figcaption>
+      </figure>
+      {failedImage === photo.id ? <p role="alert">Изображение не загрузилось. Выберите другой ракурс или задайте координаты вручную.</p> : null}
+      <div className="rp-diagnostic-fields">
+        {(['x', 'y'] as const).map(axis => <FormField key={axis} id={`diagnostic-${axis}`} label={`Координата ${axis.toUpperCase()}`} required><input type="number" min={0} max={1} step="0.0001" aria-describedby="diagnostic-placement-hint" value={Number.isNaN(draft[axis]) ? '' : draft[axis]} onChange={event => edit({ [axis]: event.target.value === '' ? NaN : Number(event.target.value) })} /></FormField>)}
+      </div>
+    </section>
+    <FormField id="diagnostic-example" label="Пример входного значения" required hint="Текст или JSON. Пример проверяется сервером по этому правилу."><textarea rows={3} value={draft.example} onChange={event => edit({ example: event.target.value })} /></FormField>
+    <div><Button type="button" variant="secondary" disabled={!valid} busy={previewBusy} onClick={() => void check()}>Проверить пример</Button></div>
+    {preview ? <section className="rp-diagnostic-preview" aria-label="Результат проверки" role="status">
+      <StatusBadge tone={preview.matched ? 'success' : 'warning'}>{preview.matched ? 'Совпадение найдено' : 'Совпадение не найдено'}</StatusBadge>
+      {!preview.matched ? <p>Значение не распознано этим правилом. Проверьте код, путь и пример.</p> : null}
+      {preview.events.map(item => <div key={item.id}><strong>{item.title}</strong><p>{item.description}</p><p>{item.part ?? 'Без локализации'} · {SEVERITIES[item.severity]}</p></div>)}
+    </section> : null}
+    {error ? <ErrorState title="Не удалось обработать правило" description={error} /> : null}
+    {message ? <p role="status">{message}</p> : null}
+    <Toggle label="Правило включено" checked={draft.is_enabled} onChange={is_enabled => edit({ is_enabled })} />
+    <div className="rp-diagnostic-save"><Button type="submit" disabled={!valid} busy={busy}>Сохранить правило</Button></div>
+    {rule?.is_enabled ? <div className="rp-diagnostic-disable"><p>Отключённое правило остаётся в каталоге и истории.</p><Button type="button" variant="secondary" disabled={busy} onClick={() => void save(undefined, true)}>Отключить правило</Button></div> : null}
+  </form>
+}

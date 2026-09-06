@@ -1,4 +1,8 @@
 import { type FormEvent, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { useAuth } from '../auth-context'
+import { Tabs, TabPanel } from '../design-system/navigation/Tabs'
+import { DiagnosticRuleEditor } from '../domains/diagnostics/DiagnosticRuleEditor'
 import {
   api,
   type EmergencyAdminSection,
@@ -14,6 +18,21 @@ import { useCachedResource } from '../lib/resource'
 const roles: EmergencyViewerRole[] = ['mechanic', 'operator', 'admin', 'royal', 'driver']
 
 export function AdminEmergencyConfig() {
+  const { user } = useAuth()
+  const [params, setParams] = useSearchParams()
+  const canEditRules = user?.access_status === 'approved' && ['admin', 'royal'].includes(user.role)
+  const tab = canEditRules && params.get('tab') === 'indication' ? 'indication' : 'fields'
+  return <PageShell backTo="/admin" title="Настройки проверки робота" subtitle="Разделы диагностики и общие для всех парков правила ошибок.">
+    <div className="rp-check-settings-tabs"><Tabs ariaLabel="Настройки проверки робота" value={tab} panelIdFor={id => `check-settings-${id}`}
+      items={[{ id: 'fields', label: 'Разделы и поля' }, ...(canEditRules ? [{ id: 'indication', label: 'Ошибки и индикация' }] : [])]}
+      onChange={id => { const next = new URLSearchParams(params); next.set('tab', id); next.delete('rule'); setParams(next) }} /></div>
+    <TabPanel id={`check-settings-${tab}`} labelledBy={`tab-${tab}`} active>
+      {tab === 'indication' ? <DiagnosticRuleEditor /> : <EmergencyFieldsConfig />}
+    </TabPanel>
+  </PageShell>
+}
+
+function EmergencyFieldsConfig() {
   const sectionsRes = useCachedResource<EmergencyAdminSection[]>(
     'admin:emergency-sections',
     () => api.adminEmergencySections(),
@@ -153,28 +172,16 @@ export function AdminEmergencyConfig() {
   const showColdSkeleton = sectionsRes.isLoading && !cached
 
   if (showColdSkeleton) {
-    return (
-      <PageShell
-        backTo="/admin"
-        subtitle="Разделы и поля, доступ по ролям, порядок и выгрузка конфигурации."
-        title="Настройки проверки робота"
-      >
-        <SkeletonList rows={4} />
-      </PageShell>
-    )
+    return <SkeletonList rows={4} />
   }
 
   return (
-    <PageShell
-      actions={(
+    <div className="page-body">
+      <div className="form-actions">
         <button className="btn btn-secondary" onClick={downloadExport} type="button">
           Скачать JSON
         </button>
-      )}
-      backTo="/admin"
-      subtitle="Разделы и поля, доступ по ролям, порядок и выгрузка конфигурации."
-      title="Настройки проверки робота"
-    >
+      </div>
       {displayError && <Alert tone="error">{displayError}</Alert>}
       {message && <Alert tone="success">{message}</Alert>}
 
@@ -393,6 +400,6 @@ export function AdminEmergencyConfig() {
           )
         })
       )}
-    </PageShell>
+    </div>
   )
 }

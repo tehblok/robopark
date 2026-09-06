@@ -463,6 +463,54 @@ export class ApiError extends Error {
   }
 }
 
+export type DiagnosticView = 'top' | 'front' | 'rear' | 'left' | 'right' | 'isometric'
+export type DiagnosticSeverity = 'info' | 'warning' | 'critical'
+export type DiagnosticIndicator = 'point' | 'outline' | 'zone'
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+export type DiagnosticRuleCreate = {
+  source_path: string; match_kind: 'exact' | 'regex'; pattern: string; example: string
+  title: string; description: string; severity: DiagnosticSeverity; part: string
+  preferred_view: DiagnosticView; x: number; y: number; indicator: DiagnosticIndicator
+  is_enabled?: boolean; sort_order?: number
+}
+export type DiagnosticRule = Required<DiagnosticRuleCreate> & { id: number }
+export type DiagnosticRuleUpdate = Partial<Omit<DiagnosticRuleCreate, 'sort_order'>>
+export type DiagnosticCatalog = { rules: DiagnosticRule[]; etag: string | null }
+export type DiagnosticEvent = {
+  id: string; rule_id: number | null; source_path: string; source_segments: (string | number)[]
+  raw_value: JsonValue; title: string; description: string; severity: DiagnosticSeverity
+  sort_order: number; part: string | null; view: DiagnosticView | null
+  x: number | null; y: number | null; indicator: DiagnosticIndicator | null
+}
+export type DiagnosticPreview = { matched: boolean; events: DiagnosticEvent[] }
+
+// Keep only fixed backend codes. Validation bodies may contain sensitive examples.
+const diagnosticErrorCodes = new Set([
+  'invalid_diagnostic_source_path', 'invalid_diagnostic_regex', 'unsupported_diagnostic_regex',
+  'diagnostic_preview_source_too_large', 'invalid_diagnostic_rule', 'diagnostic_rule_conflict',
+  'diagnostic_rules_write_conflict', 'diagnostic_rules_changed', 'diagnostic_rules_precondition_required',
+])
+
+async function diagnosticRequest<T>(suffix = '', init: RequestInit = {}): Promise<{ data: T; etag: string | null }> {
+  return fetchWithTimeout(`/api/admin/diagnostic-rules${suffix}`, {
+    ...init, credentials: 'include', headers: { 'Content-Type': 'application/json', ...init.headers },
+  }, JSON_TIMEOUT_MS, async response => {
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as { detail?: unknown } | null
+      const detail = typeof body?.detail === 'string' && diagnosticErrorCodes.has(body.detail) ? body.detail : null
+      throw new ApiError(response.status, detail, responseRequestId(response))
+    }
+    return { data: await response.json() as T, etag: response.headers.get('ETag') }
+  })
+}
+
+function diagnosticChanges(changes: DiagnosticRuleUpdate): DiagnosticRuleUpdate {
+  const { source_path, match_kind, pattern, example, title, description, severity, part,
+    preferred_view, x, y, indicator, is_enabled } = changes
+  return { source_path, match_kind, pattern, example, title, description, severity, part,
+    preferred_view, x, y, indicator, is_enabled }
+}
+
 export class ApiTimeoutError extends Error {
   readonly timeoutMs: number
 
@@ -586,6 +634,24 @@ async function requestForm<T>(path: string, formData: FormData): Promise<T> {
 }
 
 export const api = {
+  diagnosticRules: async (signal?: AbortSignal): Promise<DiagnosticCatalog> => {
+    const result = await diagnosticRequest<DiagnosticRule[]>('', { signal })
+    return { rules: result.data, etag: result.etag }
+  },
+  createDiagnosticRule: async (rule: DiagnosticRuleCreate) =>
+    (await diagnosticRequest<DiagnosticRule>('', { method: 'POST', body: JSON.stringify(rule) })).data,
+  updateDiagnosticRule: async (id: number, changes: DiagnosticRuleUpdate) =>
+    (await diagnosticRequest<DiagnosticRule>(`/${id}`, { method: 'PATCH', body: JSON.stringify(diagnosticChanges(changes)) })).data,
+  disableDiagnosticRule: async (id: number) =>
+    (await diagnosticRequest<DiagnosticRule>(`/${id}/disable`, { method: 'POST' })).data,
+  reorderDiagnosticRules: async (ids: number[], etag: string): Promise<DiagnosticCatalog> => {
+    const result = await diagnosticRequest<DiagnosticRule[]>('/reorder', {
+      method: 'PUT', headers: { 'If-Match': etag }, body: JSON.stringify({ ids }),
+    })
+    return { rules: result.data, etag: result.etag }
+  },
+  previewDiagnosticRule: async (rule: DiagnosticRuleCreate, payload?: Record<string, JsonValue>, signal?: AbortSignal) =>
+    (await diagnosticRequest<DiagnosticPreview>('/preview', { method: 'POST', body: JSON.stringify({ rule, payload }), signal })).data,
   me: () => request<User>('/auth/me'),
   login: (username: string, password: string, rememberMe = false) =>
     request<void>('/auth/login', {
