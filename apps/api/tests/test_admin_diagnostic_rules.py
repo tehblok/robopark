@@ -561,6 +561,34 @@ def test_invalid_regex_never_echoes_sensitive_pattern_or_logs_it(royal_client, c
     assert secret not in caplog.text
 
 
+@pytest.mark.parametrize("operation", ["create", "update", "preview"])
+@pytest.mark.parametrize("pattern", [r"\N{KEYCAP DIGIT ONE}", r"\N{TAMIL SYLLABLE SAI}"])
+def test_named_sequence_regex_is_rejected_without_mutation_or_input_disclosure(
+    royal_client, db_session, caplog, operation, pattern
+):
+    rule = insert_rule(db_session)
+    before = royal_client.get(BASE)
+    caplog.set_level(logging.INFO)
+    candidate = {**RULE, "match_kind": "regex", "pattern": f"(?# {PRIVATE_INPUT}){pattern}"}
+    if operation == "create":
+        response = royal_client.post(BASE, json=candidate)
+    elif operation == "update":
+        response = royal_client.patch(
+            f"{BASE}/{rule.id}",
+            json={"match_kind": "regex", "pattern": candidate["pattern"]},
+        )
+    else:
+        response = royal_client.post(f"{BASE}/preview", json={"rule": candidate})
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "invalid_diagnostic_regex"}
+    assert PRIVATE_INPUT not in response.text
+    assert PRIVATE_INPUT not in caplog.text
+    assert royal_client.get(BASE).json() == before.json()
+    assert royal_client.get(BASE).headers["etag"] == before.headers["etag"]
+    assert rule_audits(db_session) == []
+
+
 def test_browser_can_read_and_send_catalog_preconditions(royal_client, test_settings):
     origin = test_settings.cors_origins.split(",")[0]
     preflight = royal_client.options(

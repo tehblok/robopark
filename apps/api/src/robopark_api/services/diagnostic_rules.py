@@ -220,7 +220,9 @@ def compile_diagnostic_regex(pattern: str) -> regex.Pattern:
     _check_regex_resources(pattern)
     try:
         return regex.compile(pattern, flags=regex.VERSION0)
-    except (regex.error, OverflowError, RecursionError, KeyError) as exc:
+    except (regex.error, OverflowError, RecursionError, KeyError, TypeError) as exc:
+        # Named Unicode sequences can reach the engine's single-character ord()
+        # parser and raise TypeError. Normalize only errors from native compile.
         raise ValueError("invalid_diagnostic_regex") from exc
 
 

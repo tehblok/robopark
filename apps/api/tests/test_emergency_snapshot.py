@@ -251,6 +251,34 @@ def test_snapshot_route_matches_fresh_rules_against_cached_payload(
     assert calls == [{"cookie": "test-cookie", "vin": "YASADR00000000447"}]
 
 
+def test_snapshot_skips_persisted_named_sequence_regex_and_preserves_other_events(
+    client, db_session, seed_royal, monkeypatch
+):
+    malformed = _snapshot_rule(db_session)
+    malformed.match_kind = "regex"
+    malformed.pattern = r"\N{KEYCAP DIGIT ONE}"
+    db_session.commit()
+    valid = _snapshot_rule(db_session)
+    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "test-cookie")
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        lambda **kwargs: {"errors": ["WHEEL_BLOCKED", "UNKNOWN"]},
+    )
+    assert login_as(client, "royal", "secret").status_code == 204
+
+    response = client.get("/emergency/447/snapshot")
+
+    assert response.status_code == 200
+    assert response.json()["error_banner"] == "ERROR: WHEEL_BLOCKED"
+    events = response.json()["diagnostic_events"]
+    assert [(event["rule_id"], event["raw_value"]) for event in events] == [
+        (valid.id, "WHEEL_BLOCKED"),
+        (None, "UNKNOWN"),
+    ]
+    assert all(events[1][field] is None for field in ("part", "view", "x", "y", "indicator"))
+
+
 @pytest.mark.parametrize(
     ("outcome", "expected_status", "detail"),
     [

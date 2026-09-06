@@ -317,7 +317,16 @@ def test_disabling_a_rule_for_a_custom_source_keeps_its_raw_error_visible(db_ses
 
 
 @pytest.mark.parametrize(
-    "pattern", ["[", "(?P<", "x{9999999999999999999999999999}", "(?V1)KNOWN", "a{500000}"]
+    "pattern",
+    [
+        "[",
+        "(?P<",
+        "x{9999999999999999999999999999}",
+        "(?V1)KNOWN",
+        "a{500000}",
+        r"\N{KEYCAP DIGIT ONE}",
+        r"\N{TAMIL SYLLABLE SAI}",
+    ],
 )
 def test_malformed_persisted_regex_does_not_hide_raw_errors_or_break_matching(db_session, pattern):
     _insert_rule(db_session, match_kind="regex", pattern=pattern)
@@ -330,6 +339,14 @@ def test_malformed_persisted_regex_does_not_hide_raw_errors_or_break_matching(db
         (valid.id, "KNOWN"),
         (None, "NEW"),
     ]
+
+
+@pytest.mark.parametrize("pattern", [r"\N{KEYCAP DIGIT ONE}", r"\N{TAMIL SYLLABLE SAI}"])
+def test_named_sequence_regex_compile_failure_has_safe_validation_code(pattern):
+    from robopark_api.services.diagnostic_rules import compile_diagnostic_regex
+
+    with pytest.raises(ValueError, match="^invalid_diagnostic_regex$"):
+        compile_diagnostic_regex(pattern)
 
 
 @pytest.mark.parametrize(
