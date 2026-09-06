@@ -209,7 +209,7 @@ def validate_attachment_storage(db: Session) -> int:
         for row in rows:
             path = _resolve_storage_key(row.storage_key)
             if not path.is_file() or path.stat().st_size != row.size_bytes:
-                raise AttachmentStorageError(_STORAGE_ERROR)
+                raise LookupError("report_attachment_not_found")
     except (LookupError, OSError):
         raise AttachmentStorageError(_STORAGE_ERROR) from None
     return len(rows)
