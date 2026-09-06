@@ -75,6 +75,35 @@ function integration(status: IntegrationSettings['emergency_cookie_status']): In
   }
 }
 
+test('cold integration success does not invent editable screenshot protection', async ({ page }, info) => {
+  await page.setViewportSize({ width: 390, height: 900 })
+  let recovered = false
+  let mutations = 0
+  await installOperational(page, { role: 'admin', routes: [
+    { method: 'GET', path: '/api/admin/park-requests', handler: () => ({ json: [] }) },
+    { method: 'GET', path: '/api/admin/settings/integrations', handler: () => recovered ? { json: integration('valid') } : { status: 503, json: { detail: 'bootstrap_offline' } } },
+    { method: 'GET', path: '/api/admin/settings/tracker-policy', handler: () => ({ json: { operator_show_untagged: false, operator_show_raw: false, operator_show_firmware_profile: false, mechanic_can_write: false } }) },
+    { method: 'GET', path: '/api/admin/settings/screenshot-guard', handler: () => ({ json: { operator: true, mechanic: false, driver: false, admin: false, royal: false } }) },
+    { method: 'PUT', path: '/api/admin/settings/screenshot-guard', handler: () => { mutations += 1; return { status: 500 } } },
+    { method: 'POST', path: '/api/admin/settings/emergency-cookie/check', handler: () => ({ json: integration('valid') }) },
+  ] })
+  await page.goto('/admin/settings?park=7')
+  await page.getByRole('button', { name: 'Проверить текущую', exact: true }).click()
+  await expect(page.getByText('Действительна', { exact: true })).toBeVisible()
+  await expect(page.getByRole('status').filter({ hasText: 'Состояние защиты не загружено' })).toBeVisible()
+  await expect(page.getByRole('checkbox', { name: /Запрет скриншотов/ })).toHaveCount(0)
+  expect(mutations).toBe(0)
+  await expectAdminFits(page)
+  await assertNoSeriousA11yViolations(page)
+  await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); window.scrollTo(0, 0) })
+  await page.mouse.move(0, 0)
+  await page.screenshot({ path: info.outputPath('settings-partial-light-390.png'), fullPage: true, animations: 'disabled' })
+  recovered = true
+  await page.getByRole('button', { name: 'Повторить загрузку настроек' }).click()
+  await expect(page.getByRole('checkbox', { name: 'Запрет скриншотов — Оператор', exact: true })).toBeChecked()
+  await expect(page.getByText('Действительна', { exact: true })).toBeVisible()
+})
+
 for (const theme of ['light', 'dark'] as const) {
  for (const width of [320, 390, 768, 1024, 1440]) {
   test(`admin validates a replacement robot-check cookie at ${width}px ${theme}`, async ({ page }, info) => {
@@ -118,6 +147,7 @@ for (const theme of ['light', 'dark'] as const) {
     await expectAdminFits(page)
     await assertNoSeriousA11yViolations(page)
     await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); window.scrollTo(0, 0) })
+    await page.mouse.move(0, 0)
     await page.screenshot({ path: info.outputPath(`settings-${theme}-${width}.png`), fullPage: true, animations: 'disabled' })
   })
  }

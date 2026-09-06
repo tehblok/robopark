@@ -23,6 +23,19 @@ describe('Management routes', () => {
     expect(within(sections).getByRole('link', { name: 'Пользователи' })).toHaveAttribute('href', '/admin/users?park=7')
   })
 
+  it.each([
+    ['/admin/users?tab=parks', 'Пользователи'],
+    ['/admin/roles?tab=parks', 'Роли и доступы'],
+  ])('ignores a foreign settings tab when highlighting %s', async (url, label) => {
+    vi.spyOn(api, 'parks').mockResolvedValue([north])
+    vi.spyOn(api, 'adminUsers').mockResolvedValue([])
+    vi.spyOn(api, 'adminRoles').mockResolvedValue([])
+    vi.spyOn(api, 'adminRolePermissionCatalog').mockResolvedValue([])
+    renderApp(url, testUser({ role: 'royal', permissions: ['users.manage', 'roles.manage'], parks: [north] }))
+    const sections = await screen.findByRole('navigation', { name: 'Разделы управления' })
+    expect(within(sections).getByRole('link', { name: label })).toHaveAttribute('aria-current', 'page')
+  })
+
   it('lets a granular users manager open accounts even when integrations are unavailable', async () => {
     const integration = vi.spyOn(api, 'integrationSettings').mockRejectedValue(new Error('offline'))
     vi.spyOn(api, 'parks').mockResolvedValue([north])

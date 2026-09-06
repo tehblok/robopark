@@ -32,27 +32,19 @@ type AdminBootstrap = {
   parkRequests: ParkRequest[]
   settings: IntegrationSettings | null
   trackerPolicy: TrackerPolicySettings | null
-  screenshotGuard: ScreenshotGuardSettings
+  screenshotGuard: ScreenshotGuardSettings | null
   screenshotGuardLive?: boolean
   pendingUserCount: number
 }
 
-const DEFAULT_SCREENSHOT_GUARD: ScreenshotGuardSettings = {
-  operator: false,
-  mechanic: false,
-  admin: false,
-  royal: false,
-  driver: false,
-}
-
 async function loadScreenshotGuardSettings(): Promise<{
-  settings: ScreenshotGuardSettings
+  settings: ScreenshotGuardSettings | null
   live: boolean
 }> {
   try {
     return { settings: await api.screenshotGuardSettings(), live: true }
   } catch {
-    return { settings: DEFAULT_SCREENSHOT_GUARD, live: false }
+    return { settings: null, live: false }
   }
 }
 
@@ -64,7 +56,7 @@ async function loadAdminBootstrap(canIntegrations: boolean): Promise<AdminBootst
       parkRequests: [],
       settings: null,
       trackerPolicy: null,
-      screenshotGuard: DEFAULT_SCREENSHOT_GUARD,
+      screenshotGuard: null,
       screenshotGuardLive: false,
       pendingUserCount: 0,
     }
@@ -183,10 +175,10 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
   const [trackerPolicy, setTrackerPolicy] = useState<TrackerPolicySettings | null>(
     boot?.trackerPolicy ?? null,
   )
-  const [screenshotGuard, setScreenshotGuard] = useState<ScreenshotGuardSettings>(
-    boot?.screenshotGuard ?? DEFAULT_SCREENSHOT_GUARD,
+  const [screenshotGuard, setScreenshotGuard] = useState<ScreenshotGuardSettings | null>(
+    boot?.screenshotGuard ?? null,
   )
-  const [screenshotGuardLive, setScreenshotGuardLive] = useState(true)
+  const [screenshotGuardLive, setScreenshotGuardLive] = useState(boot?.screenshotGuardLive === true)
   const [name, setName] = useState('')
   const [tag, setTag] = useState('')
   const [trackerToken, setTrackerToken] = useState('')
@@ -219,10 +211,10 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
     setTrackerPolicy(boot?.trackerPolicy ?? null)
   }, [boot?.trackerPolicy])
   useEffect(() => {
-    if (boot?.screenshotGuard) setScreenshotGuard(boot.screenshotGuard)
+    setScreenshotGuard(boot?.screenshotGuard ?? null)
   }, [boot?.screenshotGuard])
   useEffect(() => {
-    setScreenshotGuardLive(boot?.screenshotGuardLive ?? true)
+    setScreenshotGuardLive(boot?.screenshotGuardLive === true)
   }, [boot?.screenshotGuardLive])
 
   useEffect(() => {
@@ -581,12 +573,12 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
         )}
 
         <Panel hint={ru.screenshotGuard.adminHint} title="Защита от скриншотов">
-          {!screenshotGuardLive && (
-            <Alert tone="warning">
-              API не отвечает на /admin/settings/screenshot-guard — перезапустите backend
-              (uvicorn). Переключатели не сохранятся, пока сервер не обновлён.
-            </Alert>
-          )}
+          {!screenshotGuard || !screenshotGuardLive ? <>
+            <p role="status">{bootRes.isRevalidating
+              ? 'Загрузка состояния защиты…'
+              : 'Состояние защиты не загружено. Изменения недоступны, пока сервер не вернёт текущие настройки.'}</p>
+            <button className="btn btn-secondary" disabled={bootRes.isRevalidating} onClick={() => void bootRes.refresh()} type="button">Повторить загрузку настроек</button>
+          </> :
           <div className="toggle-list">
             {(['operator', 'mechanic', 'driver', 'admin', 'royal'] as const).map((role) => (
               <Toggle
@@ -594,16 +586,17 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
                 checked={Boolean(screenshotGuard[role])}
                 disabled={busy || !screenshotGuardLive}
                 label={ru.screenshotGuard.adminToggle(roleLabel(role))}
-                onChange={(next) =>
-                  run(async () => {
+                onChange={(next) => {
+                  if (!screenshotGuard || !screenshotGuardLive) return
+                  return run(async () => {
                     const updated = await api.updateScreenshotGuardSettings({ [role]: next })
                     setScreenshotGuard(updated)
                     setScreenshotGuardLive(true)
                   }, 'Защита обновлена')
-                }
+                }}
               />
             ))}
-          </div>
+          </div>}
         </Panel>
 
         <Panel title="Быстрые переходы">

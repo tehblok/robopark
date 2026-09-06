@@ -59,6 +59,10 @@ function ReportsOwner({
 }) {
   const location = useLocation()
   const active = useRef(true)
+  const navigation = useRef({ identity, key: location.key })
+  useLayoutEffect(() => {
+    navigation.current = { identity, key: location.key }
+  }, [identity, location.key])
   useLayoutEffect(() => {
     active.current = true
     return () => { active.current = false }
@@ -142,11 +146,13 @@ function ReportsOwner({
     ])
   }, [createEnabled, inboxEnabled, inboxRes, mineRes, parkId])
   const handleDetailUpdated = async () => {
+    const requestedNavigation = navigation.current
+    const isCurrent = () => active.current && navigation.current === requestedNavigation
     resourceStore.invalidate(detailKey)
     await detailRes.refresh()
-    if (!active.current) return
+    if (!isCurrent()) return
     await refreshLists()
-    if (!active.current) return
+    if (!isCurrent()) return
     refreshReportsBadge()
     const fresh = resourceStore.get<Report>(detailKey)
     if (fresh && fresh.status !== 'open') closeDetail()

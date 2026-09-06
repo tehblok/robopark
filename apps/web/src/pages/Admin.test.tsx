@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, ApiError, type IntegrationSettings, type Park } from '../api'
@@ -134,6 +134,35 @@ describe('Admin Emergency cookie validation', () => {
     expect(screen.getByText('Действительна')).toBeVisible()
     expect(screen.getByText(/робот 447/)).toBeVisible()
     expect(api.integrationSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['bootstrap', 'screenshot-guard'])('does not turn unknown protection into editable false after %s failure', async failure => {
+    const actor = userEvent.setup()
+    setup()
+    const authoritative = settings({ emergency_cookie_status: 'valid', emergency_cookie_valid: true })
+    if (failure === 'bootstrap') vi.mocked(api.integrationSettings).mockRejectedValue(new Error('bootstrap offline'))
+    else vi.mocked(api.screenshotGuardSettings).mockRejectedValue(new Error('protection offline'))
+    const mutate = vi.spyOn(api, 'updateScreenshotGuardSettings')
+    vi.spyOn(api, 'checkEmergencyCookie').mockResolvedValue(authoritative)
+    const heading = await screen.findByRole('heading', { name: 'Защита от скриншотов' })
+    const protection = within(heading.closest('section')!)
+    expect(protection.queryAllByRole('checkbox')).toHaveLength(0)
+    expect(protection.getByRole('status')).toHaveTextContent('Состояние защиты не загружено')
+    await actor.click(screen.getByRole('button', { name: 'Проверить текущую' }))
+    expect(await screen.findByText('Действительна')).toBeVisible()
+    expect(protection.queryAllByRole('checkbox')).toHaveLength(0)
+    expect(mutate).not.toHaveBeenCalled()
+    const pending = deferred<Awaited<ReturnType<typeof api.screenshotGuardSettings>>>()
+    vi.mocked(api.integrationSettings).mockResolvedValue(authoritative)
+    vi.mocked(api.screenshotGuardSettings).mockReturnValue(pending.promise)
+    await actor.click(protection.getByRole('button', { name: 'Повторить загрузку настроек' }))
+    expect(protection.getByRole('status')).toHaveTextContent('Загрузка состояния защиты')
+    expect(protection.queryAllByRole('checkbox')).toHaveLength(0)
+    await act(async () => pending.resolve({ operator: true, mechanic: false, driver: false, admin: false, royal: false }))
+    const toggle = await screen.findByRole('checkbox', { name: 'Запрет скриншотов — Оператор' })
+    expect(toggle).toBeChecked()
+    expect(toggle).toBeEnabled()
+    expect(screen.getByText('Действительна')).toBeVisible()
   })
 
   it('does not reuse settings or a pending mutation in a new user context', async () => {

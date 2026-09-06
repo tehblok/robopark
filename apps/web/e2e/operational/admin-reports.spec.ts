@@ -58,8 +58,87 @@ async function evidence(page: Page, info: TestInfo, name: string) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await assertNoSeriousA11yViolations(page)
   await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); window.scrollTo(0, 0) })
+  await page.mouse.move(0, 0)
   await page.screenshot({ path: info.outputPath(`${name}.png`), fullPage: true, animations: 'disabled' })
 }
+
+test('a late completed report refresh cannot close a different selected report', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const first = { ...report, status: 'open', title: 'Репорт A' }
+  const second = { ...first, id: 10, title: 'Репорт B' }
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  let completed = false
+  let listPending = false
+  await installOperational(page, { role: 'operator', routes: [
+    { method: 'GET', path: '/api/reports/inbox', handler: async () => {
+      if (completed) { listPending = true; await pending; return { json: [second] } }
+      return { json: [first, second] }
+    } },
+    { method: 'GET', path: '/api/reports/mine', handler: () => ({ json: [] }) },
+    { method: 'GET', path: '/api/reports/9', handler: () => ({ json: completed ? { ...first, status: 'done' } : first }) },
+    { method: 'GET', path: '/api/reports/10', handler: () => ({ json: second }) },
+    { method: 'POST', path: '/api/reports/9/done', handler: () => { completed = true; return { json: { ...first, status: 'done' } } } },
+  ] })
+  await page.goto('/reports/9?park=7&pane=inbox')
+  await page.getByRole('button', { name: 'Готово', exact: true }).click()
+  await expect.poll(() => listPending).toBe(true)
+  await page.getByRole('button', { name: 'Открыть репорт Репорт B', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Репорт B', exact: true })).toBeVisible()
+  const response = page.waitForResponse(value => value.url().includes('/api/reports/inbox'))
+  release()
+  await response
+  await settlePage(page)
+  await expect(page).toHaveURL('/reports/10?park=7&pane=inbox')
+  await expect(page.getByRole('heading', { name: 'Репорт B', exact: true })).toBeVisible()
+})
+
+test('late account PATCH updates its row without replacing a different selected account', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const other = { ...account, id: 3, username: 'mechanic.other', tracker_login: 'other.login' }
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  let saving = false
+  await installOperational(page, { role: 'royal', routes: [
+    { method: 'GET', path: '/api/admin/users', handler: () => ({ json: [account, other] }) },
+    { method: 'GET', path: '/api/admin/roles', handler: () => ({ json: roles }) },
+    { method: 'GET', path: '/api/admin/roles/permissions/catalog', handler: () => ({ json: catalog }) },
+    { method: 'PATCH', path: '/api/admin/users/2', handler: async () => { saving = true; await pending; return { json: { ...account, tracker_login: 'saved.first' } } } },
+  ] })
+  await page.goto('/admin/users?park=7')
+  await page.getByRole('button', { name: 'Открыть аккаунт mechanic.shift', exact: true }).click()
+  const detail = page.getByRole('region', { name: 'Детали' })
+  await detail.getByRole('button', { name: 'Сохранить', exact: true }).click()
+  await expect.poll(() => saving).toBe(true)
+  await page.getByRole('button', { name: 'Открыть аккаунт mechanic.other', exact: true }).click()
+  const response = page.waitForResponse(value => value.request().method() === 'PATCH')
+  release()
+  await response
+  await settlePage(page)
+  await expect(detail.getByLabel('Tracker login', { exact: true })).toHaveValue('other.login')
+  await expect(page.getByText('Изменения сохранены', { exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Открыть аккаунт mechanic.shift', exact: true }).click()
+  await expect(detail.getByLabel('Tracker login', { exact: true })).toHaveValue('saved.first')
+})
+
+test('owner role displays immutable effective permissions despite empty stored defaults', async ({ page }, info) => {
+  await page.setViewportSize({ width: 390, height: 900 })
+  const ownerRole = { ...roles[0], id: 3, slug: 'royal', name: 'Владелец', description: 'Полный доступ к управлению системой', permissions: [] }
+  await installOperational(page, { role: 'royal', routes: [
+    { method: 'GET', path: '/api/admin/roles', handler: () => ({ json: [ownerRole] }) },
+    { method: 'GET', path: '/api/admin/roles/permissions/catalog', handler: () => ({ json: [...catalog, { key: 'users.approve', label: 'Одобрять регистрации', category: 'action', sort_order: 4 }] }) },
+  ] })
+  await page.goto('/admin/roles?park=7&tab=parks')
+  await page.getByRole('button', { name: 'Открыть роль Владелец', exact: true }).click()
+  const detail = page.getByRole('region', { name: 'Детали' })
+  await expect(detail.getByRole('region', { name: 'Итоговые доступы' })).toContainText('Одобрять регистрации')
+  for (const checkbox of await detail.getByRole('checkbox').all()) {
+    await expect(checkbox).toBeChecked()
+    await expect(checkbox).toBeDisabled()
+  }
+  await expect(page.getByRole('navigation', { name: 'Разделы управления' }).getByRole('link', { name: 'Роли и доступы' })).toHaveAttribute('aria-current', 'page')
+  await evidence(page, info, 'roles-owner-light-390')
+})
 
 for (const width of [390, 1440]) for (const theme of ['light', 'dark'] as const) {
   test(`management hub ${width}px ${theme}`, async ({ page }, info) => {

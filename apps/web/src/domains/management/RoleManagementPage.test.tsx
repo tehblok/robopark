@@ -30,3 +30,39 @@ it('edits role grants in a detail pane and separates deletion from routine save'
   expect(within(danger).getByRole('button', { name: 'Удалить роль' })).toBeEnabled()
   expect(within(danger).queryByRole('button', { name: 'Сохранить' })).not.toBeInTheDocument()
 })
+
+it.each(['royal', 'lead'])('previews %s effective permissions according to owner-only RBAC rules', async slug => {
+  installMatchMedia()
+  const actor = userEvent.setup()
+  const role: AdminRole = { id: 3, slug, name: slug === 'royal' ? 'Владелец' : 'Старший', description: '', is_system: slug === 'royal', is_active: true, permissions: ['nav.tasks', ...(slug === 'royal' ? [] : ['users.approve'])], user_count: 1 }
+  vi.spyOn(api, 'adminRoles').mockResolvedValue([role])
+  vi.spyOn(api, 'adminRolePermissionCatalog').mockResolvedValue([
+    { key: 'nav.tasks', label: 'Работа', category: 'nav', sort_order: 1 },
+    { key: 'reports.create', label: 'Создавать репорты', category: 'action', sort_order: 2 },
+    { key: 'users.approve', label: 'Одобрять регистрации', category: 'action', sort_order: 3 },
+  ])
+  const update = vi.spyOn(api, 'updateAdminRole').mockResolvedValue(role)
+  renderApp('/admin/roles', testUser({ role: 'royal', permissions: ['roles.manage'] }))
+  await actor.click(await screen.findByRole('button', { name: `Открыть роль ${role.name}` }))
+  const detail = screen.getByRole('region', { name: 'Детали' })
+  const preview = within(detail).getByRole('region', { name: 'Итоговые доступы' })
+  expect(preview).toHaveTextContent('Работа')
+  if (slug === 'royal') {
+    expect(preview).toHaveTextContent('Создавать репорты')
+    expect(preview).toHaveTextContent('Одобрять регистрации')
+    expect(within(detail).getByText(/Владелец всегда имеет все доступы/)).toBeVisible()
+    for (const checkbox of within(detail).getAllByRole('checkbox')) {
+      expect(checkbox).toBeChecked()
+      expect(checkbox).toBeDisabled()
+    }
+  } else {
+    expect(preview).not.toHaveTextContent('Одобрять регистрации')
+    expect(within(detail).queryByRole('checkbox', { name: 'Одобрять регистрации' })).not.toBeInTheDocument()
+    await actor.click(within(detail).getByRole('checkbox', { name: 'Создавать репорты' }))
+    expect(preview).toHaveTextContent('Создавать репорты')
+  }
+  await actor.click(within(detail).getByRole('button', { name: 'Сохранить' }))
+  expect(update).toHaveBeenCalledWith(3, slug === 'royal'
+    ? { name: 'Владелец', description: '' }
+    : { name: 'Старший', description: '', permissions: ['nav.tasks', 'reports.create'] })
+})

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api, type AdminRole, type AdminUser, type Park, type PermissionCatalogItem } from '../../api'
 import { useAuth } from '../../auth-context'
 import { Alert, Panel } from '../PageShell'
@@ -61,8 +61,19 @@ function draftFromUser(user: AdminUser): UserDraft {
 }
 
 export function AdminUsersPanel({ parks }: { parks: Park[] }) {
+  const { user } = useAuth()
+  const owner = JSON.stringify([user?.id, user?.username, user?.role, user?.permissions, user?.parks])
+  return <AdminUsersWorkspace key={owner} parks={parks} />
+}
+
+function AdminUsersWorkspace({ parks }: { parks: Park[] }) {
   const { user: actor } = useAuth()
   const isRoyal = actor?.role === 'royal'
+  const active = useRef(true)
+  useLayoutEffect(() => {
+    active.current = true
+    return () => { active.current = false }
+  }, [])
 
   const [users, setUsers] = useState<AdminUser[]>([])
   const [roles, setRoles] = useState<AdminRole[]>([])
@@ -72,6 +83,8 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
   const [success, setSuccess] = useState('')
   const [busy, setBusy] = useState(false)
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const currentSelection = useRef(selectedId)
+  useLayoutEffect(() => { currentSelection.current = selectedId }, [selectedId])
   const [detailOpen, setDetailOpen] = useState(false)
   const [draft, setDraft] = useState<UserDraft>(emptyDraft())
   const [filterRole, setFilterRole] = useState('')
@@ -208,6 +221,8 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
 
   const saveUser = async () => {
     if (!selectedUser || selectedLocked) return
+    const requestedId = selectedUser.id
+    const isCurrentSelection = () => active.current && currentSelection.current === requestedId
     setBusy(true)
     setError('')
     setSuccess('')
@@ -226,14 +241,17 @@ export function AdminUsersPanel({ parks }: { parks: Park[] }) {
       if (draft.password.trim()) {
         payload.password = draft.password
       }
-      const updated = await api.updateAdminUser(selectedUser.id, payload)
+      const updated = await api.updateAdminUser(requestedId, payload)
+      if (!active.current) return
       setUsers((rows) => rows.map((row) => (row.id === updated.id ? updated : row)))
+      if (!isCurrentSelection()) return
       setDraft({ ...draftFromUser(updated), password: '' })
       setSuccess('Изменения сохранены')
     } catch (saveError) {
+      if (!isCurrentSelection()) return
       setError(mapApiError(saveError) || 'Не удалось сохранить пользователя')
     } finally {
-      setBusy(false)
+      if (active.current) setBusy(false)
     }
   }
 

@@ -1,4 +1,4 @@
-import { screen, within, waitFor } from '@testing-library/react'
+import { act, screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, type AdminRole, type AdminUser } from '../../api'
@@ -74,4 +74,26 @@ it('saves owner password, role, park and section changes and isolates account de
   await waitFor(() => expect(remove).toHaveBeenCalledWith(2))
   expect(await screen.findByText('Аккаунт удалён')).toBeVisible()
   expect(screen.queryByRole('button', { name: /mechanic-two/ })).not.toBeInTheDocument()
+})
+
+it.each(['selection', 'owner'])('does not apply a late account PATCH draft after %s changes', async change => {
+  const actor = userEvent.setup()
+  const other = { ...account, id: 3, username: 'mechanic-three', tracker_login: 'other.login' }
+  vi.mocked(api.adminUsers).mockResolvedValue([account, other])
+  let resolve!: (updated: AdminUser) => void
+  const pending = new Promise<AdminUser>(done => { resolve = done })
+  vi.spyOn(api, 'updateAdminUser').mockReturnValue(pending)
+  const view = openAccounts()
+  const detail = await screen.findByRole('region', { name: 'Детали' })
+  await actor.click(within(detail).getByRole('button', { name: 'Сохранить' }))
+  await waitFor(() => expect(api.updateAdminUser).toHaveBeenCalledTimes(1))
+  if (change === 'owner') view.rerenderAuth(testUser({ id: 200, role: 'royal', permissions: ['users.manage'], parks: [north, south] }))
+  await actor.click(await screen.findByRole('button', { name: 'Открыть аккаунт mechanic-three' }))
+  const currentDetail = screen.getByRole('region', { name: 'Детали' })
+  expect(within(currentDetail).getByLabelText('Tracker login')).toHaveValue('other.login')
+  await act(async () => resolve({ ...account, tracker_login: 'saved.first' }))
+  expect(within(currentDetail).getByLabelText('Tracker login')).toHaveValue('other.login')
+  expect(screen.queryByText('Изменения сохранены')).not.toBeInTheDocument()
+  await actor.click(screen.getByRole('button', { name: 'Открыть аккаунт mechanic-two' }))
+  expect(within(screen.getByRole('region', { name: 'Детали' })).getByLabelText('Tracker login')).toHaveValue(change === 'selection' ? 'saved.first' : '')
 })

@@ -173,3 +173,30 @@ it('does not refresh a retired owner list after a pending post-mutation detail l
   expect(screen.getByLabelText('URL')).toHaveTextContent('/reports/9?park=7&pane=inbox')
   expect(screen.getByRole('heading', { name: 'Репорт B' })).toBeVisible()
 })
+
+it.each(['detail', 'list'] as const)('keeps selected report B when report A completes its late %s refresh', async (stage) => {
+  const actor = userEvent.setup()
+  const a = report(9, 'Репорт A')
+  const b = report(10, 'Репорт B')
+  const lateDetail = deferred<Report>()
+  const lateList = deferred<Report[]>()
+  const apiClient = client({
+    reportsMine: vi.fn(async () => []),
+    reportsInbox: vi.fn().mockResolvedValueOnce([a, b]).mockImplementation(() => lateList.promise),
+    report: vi.fn().mockResolvedValueOnce(a).mockImplementationOnce(() => lateDetail.promise).mockResolvedValue(b),
+    reportDone: vi.fn(async () => ({ ...a, status: 'done' })),
+  })
+  const resolver = { ...userA, permissions: ['nav.reports', 'reports.create', 'reports.resolve'] }
+  render(tree(resolver, apiClient, '/reports/9?park=7&pane=inbox'))
+  await actor.click(await screen.findByRole('button', { name: 'Готово' }))
+  await waitFor(() => expect(apiClient.report).toHaveBeenCalledTimes(2))
+  if (stage === 'list') {
+    await act(async () => lateDetail.resolve({ ...a, status: 'done' }))
+    await waitFor(() => expect(apiClient.reportsInbox).toHaveBeenCalledTimes(2))
+  }
+  await actor.click(within(screen.getByRole('region', { name: 'Список' })).getByRole('button', { name: /Репорт B/ }))
+  expect(await screen.findByRole('heading', { name: 'Репорт B' })).toBeVisible()
+  await act(async () => { lateDetail.resolve({ ...a, status: 'done' }); lateList.resolve([b]) })
+  expect(screen.getByLabelText('URL')).toHaveTextContent('/reports/10?park=7&pane=inbox')
+  expect(screen.getByRole('heading', { name: 'Репорт B' })).toBeVisible()
+})

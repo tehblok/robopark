@@ -45,7 +45,14 @@ export function AdminRolesPanel() {
     void load()
   }, [])
 
-  const availableCatalog = actorPermissionCatalog(catalog, user?.role)
+  const editing = editingId != null ? roles.find((row) => row.id === editingId) : null
+  const ownerRole = editing?.slug === 'royal'
+  const effectivePermissions = (slug: string | undefined, permissions: Iterable<string>) => new Set(
+    slug === 'royal' ? catalog.map(item => item.key) : [...permissions].filter(key => key !== 'users.approve'),
+  )
+  const effectiveDraft = effectivePermissions(editing?.slug, draft.permissions)
+  const availableCatalog = (ownerRole ? catalog : actorPermissionCatalog(catalog, user?.role))
+    .filter(item => ownerRole || item.key !== 'users.approve')
   const navPerms = availableCatalog.filter((item) => item.category === 'nav')
   const actionPerms = availableCatalog.filter((item) => item.category === 'action')
 
@@ -77,7 +84,7 @@ export function AdminRolesPanel() {
       const updated = await api.updateAdminRole(editingId, {
         name: draft.name.trim(),
         description: draft.description.trim(),
-        permissions: [...draft.permissions],
+        ...(ownerRole ? {} : { permissions: [...effectiveDraft] }),
       })
       setRoles((rows) => rows.map((row) => (row.id === updated.id ? updated : row)))
     } catch (saveError) {
@@ -97,7 +104,7 @@ export function AdminRolesPanel() {
         slug,
         name: draft.name.trim(),
         description: draft.description.trim(),
-        permissions: [...draft.permissions],
+        permissions: [...effectiveDraft],
       })
       setRoles((rows) => [...rows, created])
       setNewSlug('')
@@ -128,8 +135,6 @@ export function AdminRolesPanel() {
     return <Spinner label="Загрузка ролей…" />
   }
 
-  const editing = editingId != null ? roles.find((row) => row.id === editingId) : null
-
   return (
     <div className="admin-roles">
       {error && <Alert tone="error">{error}</Alert>}
@@ -143,7 +148,7 @@ export function AdminRolesPanel() {
           {roles.map((role) => (
             <li key={role.id}>
               <button aria-label={`Открыть роль ${role.name}`} aria-pressed={editingId === role.id} className={`rp-management-select${editingId === role.id ? ' is-selected' : ''}`} onClick={() => startEdit(role)} type="button">
-                <EntityRow title={role.name} meta={`${role.slug} · ${role.user_count} польз. · ${role.permissions.length} разрешений`}
+                <EntityRow title={role.name} meta={`${role.slug} · ${role.user_count} польз. · ${effectivePermissions(role.slug, role.permissions).size} разрешений`}
                   status={<StatusBadge tone="neutral">{role.is_system ? 'Системная' : 'Пользовательская'}</StatusBadge>} />
               </button>
             </li>
@@ -173,12 +178,16 @@ export function AdminRolesPanel() {
           />
         </label>
 
+        <p className="panel-hint">{ownerRole
+          ? 'Владелец всегда имеет все доступы. Этот набор нельзя изменить через настройки роли.'
+          : 'Одобрение регистраций доступно только владельцу и не выдаётся другим ролям.'}</p>
         <h4 className="admin-perm-group-title">Разделы меню</h4>
         <div className="admin-perm-grid">
           {navPerms.map((perm) => (
             <label className="admin-perm-check" key={perm.key}>
               <input
-                checked={draft.permissions.has(perm.key)}
+                checked={effectiveDraft.has(perm.key)}
+                disabled={ownerRole}
                 onChange={() => togglePerm(perm.key)}
                 type="checkbox"
               />
@@ -192,7 +201,8 @@ export function AdminRolesPanel() {
           {actionPerms.map((perm) => (
             <label className="admin-perm-check" key={perm.key}>
               <input
-                checked={draft.permissions.has(perm.key)}
+                checked={effectiveDraft.has(perm.key)}
+                disabled={ownerRole}
                 onChange={() => togglePerm(perm.key)}
                 type="checkbox"
               />
@@ -201,7 +211,7 @@ export function AdminRolesPanel() {
           ))}
         </div>
 
-        <EffectivePermissions permissions={draft.permissions} catalog={catalog} />
+        <EffectivePermissions permissions={effectiveDraft} catalog={catalog} />
         <div className="form-actions">
           {editing ? (
             <button className="btn" disabled={busy} onClick={() => void saveRole()} type="button">
