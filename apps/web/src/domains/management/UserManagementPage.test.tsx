@@ -1,4 +1,4 @@
-import { act, screen, within, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, type AdminRole, type AdminUser } from '../../api'
@@ -133,9 +133,23 @@ it.each(['selection', 'owner'])('does not apply a late account PATCH draft after
   await actor.click(await screen.findByRole('button', { name: 'Открыть аккаунт mechanic-three' }))
   const currentDetail = screen.getByRole('region', { name: 'Детали' })
   expect(within(currentDetail).getByLabelText('Tracker login')).toHaveValue('other.login')
+  if (change === 'selection') vi.mocked(api.adminUsers).mockResolvedValue([{ ...account, tracker_login: 'saved.first' }, other])
   await act(async () => resolve({ ...account, tracker_login: 'saved.first' }))
   expect(within(currentDetail).getByLabelText('Tracker login')).toHaveValue('other.login')
   expect(screen.queryByText('Изменения сохранены')).not.toBeInTheDocument()
   await actor.click(screen.getByRole('button', { name: 'Открыть аккаунт mechanic-two' }))
   expect(within(screen.getByRole('region', { name: 'Детали' })).getByLabelText('Tracker login')).toHaveValue(change === 'selection' ? 'saved.first' : '')
+})
+
+
+it('refreshes the account list automatically without replacing an unsaved account draft', async () => {
+  openAccounts()
+  const detail = await screen.findByRole('region', { name: 'Детали' })
+  fireEvent.change(within(detail).getByLabelText('Tracker login'), { target: { value: 'unsaved-login' } })
+  vi.mocked(api.adminUsers).mockResolvedValue([{ ...account, username: 'renamed-elsewhere', tracker_login: 'server-login' }])
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
+  fireEvent.focus(window)
+  await screen.findByRole('button', { name: /renamed-elsewhere/ })
+  expect(within(detail).getByLabelText('Tracker login')).toHaveValue('unsaved-login')
+  expect(api.adminUsers).toHaveBeenCalledTimes(2)
 })

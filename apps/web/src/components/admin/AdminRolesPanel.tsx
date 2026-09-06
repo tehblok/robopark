@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useState } from 'react'
 import { api, type AdminRole, type PermissionCatalogItem } from '../../api'
 import { useAuth } from '../../auth-context'
 import { Alert, Panel } from '../PageShell'
@@ -9,13 +9,25 @@ import { MasterDetail } from '../../design-system/layout/MasterDetail'
 import { EntityRow } from '../../design-system/data/EntityRow'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { EffectivePermissions } from './EffectivePermissions'
+import { resourceStore, useCachedResource } from '../../lib/resource'
+import { adminAccessDeniedMessage, adminAccessFailure, adminResourceKey, adminResourceOptions } from './adminResources'
 
 export function AdminRolesPanel() {
   const { user } = useAuth()
+  return <AdminRolesScope key={adminResourceKey('workspace', user)} />
+}
+
+function AdminRolesScope() {
+  const [denied, setDenied] = useState(false)
+  return denied ? <Alert tone="error">{adminAccessDeniedMessage}</Alert> : <AdminRolesWorkspace onDenied={setDenied} />
+}
+
+function AdminRolesWorkspace({ onDenied }: { onDenied: (denied: boolean) => void }) {
+  const { user } = useAuth()
   const [roles, setRoles] = useState<AdminRole[]>([])
   const [catalog, setCatalog] = useState<PermissionCatalogItem[]>([])
-  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [initialized, setInitialized] = useState(false)
   const [busy, setBusy] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -24,26 +36,19 @@ export function AdminRolesPanel() {
   )
   const [newSlug, setNewSlug] = useState('')
 
-  const load = async () => {
-    setLoading(true)
-    setError('')
-    try {
-      const [roleRows, permCatalog] = await Promise.all([
-        api.adminRoles(),
-        api.adminRolePermissionCatalog(),
-      ])
-      setRoles(roleRows)
-      setCatalog(permCatalog)
-    } catch (loadError) {
-      setError(mapApiError(loadError) || 'Не удалось загрузить роли')
-    } finally {
-      setLoading(false)
-    }
-  }
-
+  const rolesResource = useCachedResource(adminResourceKey('roles', user), () => api.adminRoles(), adminResourceOptions)
+  const catalogResource = useCachedResource(adminResourceKey('permissions', user), () => api.adminRolePermissionCatalog(), adminResourceOptions)
+  const accessFailure = adminAccessFailure(rolesResource.error, catalogResource.error)
   useEffect(() => {
-    void load()
-  }, [])
+    if (!accessFailure) return
+    for (const kind of ['roles', 'permissions']) resourceStore.invalidate(adminResourceKey(kind, user))
+    onDenied(true)
+  }, [accessFailure, user, onDenied])
+  const loading = [rolesResource, catalogResource].some(resource => resource.data === undefined && !resource.error)
+  useLayoutEffect(() => { if (!loading) setInitialized(true) }, [loading])
+  const loadError = rolesResource.error || catalogResource.error
+  useEffect(() => { if (rolesResource.data) setRoles(rolesResource.data) }, [rolesResource.data])
+  useEffect(() => { if (catalogResource.data) setCatalog(catalogResource.data) }, [catalogResource.data])
 
   const editing = editingId != null ? roles.find((row) => row.id === editingId) : null
   const ownerRole = editing?.slug === 'royal'
@@ -87,6 +92,8 @@ export function AdminRolesPanel() {
         ...(ownerRole ? {} : { permissions: [...effectiveDraft] }),
       })
       setRoles((rows) => rows.map((row) => (row.id === updated.id ? updated : row)))
+      resourceStore.invalidate(adminResourceKey('roles', user))
+      void rolesResource.refresh()
     } catch (saveError) {
       setError(mapApiError(saveError) || 'Не удалось сохранить роль')
     } finally {
@@ -107,6 +114,8 @@ export function AdminRolesPanel() {
         permissions: [...effectiveDraft],
       })
       setRoles((rows) => [...rows, created])
+      resourceStore.invalidate(adminResourceKey('roles', user))
+      void rolesResource.refresh()
       setNewSlug('')
       setEditingId(created.id)
     } catch (createError) {
@@ -123,6 +132,8 @@ export function AdminRolesPanel() {
     try {
       await api.deleteAdminRole(role.id)
       setRoles((rows) => rows.filter((row) => row.id !== role.id))
+      resourceStore.invalidate(adminResourceKey('roles', user))
+      void rolesResource.refresh()
       if (editingId === role.id) setEditingId(null)
     } catch (deleteError) {
       setError(mapApiError(deleteError) || 'Не удалось удалить роль')
@@ -131,13 +142,14 @@ export function AdminRolesPanel() {
     }
   }
 
-  if (loading) {
+  if (accessFailure) return <Alert tone="error">{adminAccessDeniedMessage}</Alert>
+  if (loading && !initialized) {
     return <Spinner label="Загрузка ролей…" />
   }
 
   return (
     <div className="admin-roles">
-      {error && <Alert tone="error">{error}</Alert>}
+      {Boolean(error || loadError) && <Alert tone="error">{error || mapApiError(loadError)}</Alert>}
 
       <MasterDetail detailOpen={detailOpen} onBack={() => setDetailOpen(false)} list={
       <Panel hint="Выберите роль для просмотра и изменения доступов." title="Роли"

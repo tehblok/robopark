@@ -36,6 +36,8 @@ function EmergencyFieldsConfig() {
   const sectionsRes = useCachedResource<EmergencyAdminSection[]>(
     'admin:emergency-sections',
     () => api.adminEmergencySections(),
+    // Keep editable section drafts until an explicit save or retry.
+    { refreshIntervalMs: 0 },
   )
   const cached = sectionsRes.data
   const [sections, setSections] = useState<EmergencyAdminSection[]>(cached ?? [])

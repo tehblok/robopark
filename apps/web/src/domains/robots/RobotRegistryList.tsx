@@ -7,8 +7,9 @@ import { EntityRow } from '../../design-system/data/EntityRow'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { Panel } from '../../design-system/layout/PageLayout'
 import { classifyApiError } from '../../shared/api/classifyApiError'
+import { checkAccessIdentity } from './robotCheckUrl'
 
-export function RobotRegistryList({ apiClient, parkId, scopeLoading }: { apiClient: Partial<Pick<typeof api, 'robotRegistry'>>; parkId: number | null; scopeLoading: boolean }) {
+function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial<Pick<typeof api, 'robotRegistry'>>; parkId: number | null; scopeLoading: boolean }) {
   const { user, refreshUser } = useAuth()
   const [params, setParams] = useSearchParams()
   // ParkScopeProvider settles its URL selection after render. Do not treat that
@@ -23,6 +24,9 @@ export function RobotRegistryList({ apiClient, parkId, scopeLoading }: { apiClie
   const [error, setError] = useState<unknown>(null)
   const [resultPark, setResultPark] = useState(parkId)
   const [retry, setRetry] = useState(0)
+  const lastRetry = useRef(0)
+  const cache = useRef(new Map<string, { data: RobotRegistry; updatedAt: number }>())
+  const requests = useRef(new Map<string, Promise<RobotRegistry>>())
   const settledPark = useRef<number | null | undefined>(scopePending ? undefined : parkId)
   const updateParams = useRef(setParams)
   updateParams.current = setParams
@@ -49,23 +53,63 @@ export function RobotRegistryList({ apiClient, parkId, scopeLoading }: { apiClie
     setData(null); setError(null)
     setResultPark(parkId)
     if (!allowed || !apiClient.robotRegistry) return
-    void apiClient.robotRegistry({ park_id: parkId ?? undefined, query, state, active_errors: activeErrors, open_tasks: openTasks, offset, limit: 50 }).then(value => {
+    const key = JSON.stringify([parkId, query, state, activeErrors, openTasks, offset])
+    if (retry !== lastRetry.current) { cache.current.delete(key); lastRetry.current = retry }
+    let timer: number | undefined
+    const automatic = () => current && !document.hidden && navigator.onLine && !denied.current
+    const clear = () => window.clearTimeout(timer)
+    const publish = (value: RobotRegistry) => {
       if (!current) return
-      // A refreshed batch may be shorter. Canonicalize and load the last valid
-      // page before publishing rows, so an out-of-range reply never looks empty.
       if (offset > 0 && offset >= value.total) {
         replaceOffset(Math.max(0, Math.floor((value.total - 1) / 50) * 50))
         return
       }
-      setData(value)
-    }, failure => {
-      if (!current) return
-      setError(failure)
-      const kind = classifyApiError(failure, 'Не удалось загрузить реестр.').kind
-      if (kind === 'unauthorized' || kind === 'forbidden') denied.current = { kind, parkId }
-      if (kind === 'unauthorized') void refresh.current().catch(() => undefined)
-    })
-    return () => { current = false }
+      setData(value); setError(null)
+    }
+    const load = async () => {
+      clear()
+      if (!automatic()) return
+      const cached = cache.current.get(key)
+      try {
+        if (cached && Date.now() - cached.updatedAt < 30_000) publish(cached.data)
+        else {
+          let pending = requests.current.get(key)
+          if (!pending) {
+            pending = apiClient.robotRegistry!({ park_id: parkId ?? undefined, query, state, active_errors: activeErrors, open_tasks: openTasks, offset, limit: 50 }).then(value => {
+              if (cache.current.size >= 50) cache.current.delete(cache.current.keys().next().value!)
+              cache.current.set(key, { data: value, updatedAt: Date.now() })
+              return value
+            }).finally(() => { requests.current.delete(key) })
+            requests.current.set(key, pending)
+          }
+          publish(await pending)
+        }
+      } catch (failure) {
+        if (!current) return
+        setError(failure)
+        const kind = classifyApiError(failure, 'Не удалось загрузить реестр.').kind
+        if (kind === 'unauthorized' || kind === 'forbidden') {
+          denied.current = { kind, parkId }; cache.current.clear(); setData(null)
+        }
+        if (kind === 'unauthorized') void refresh.current().catch(() => undefined)
+      } finally {
+        clear()
+        if (automatic()) timer = window.setTimeout(() => void load(), 30_000)
+      }
+    }
+    const resume = () => { clear(); if (automatic()) void load() }
+    const cached = cache.current.get(key)
+    if (cached) publish(cached.data)
+    document.addEventListener('visibilitychange', resume)
+    window.addEventListener('online', resume)
+    window.addEventListener('offline', clear)
+    void load()
+    return () => {
+      current = false; clear()
+      document.removeEventListener('visibilitychange', resume)
+      window.removeEventListener('online', resume)
+      window.removeEventListener('offline', clear)
+    }
   }, [apiClient, parkId, scopePending, query, state, activeErrors, openTasks, offset, retry, allowed])
   const change = (key: string, value: string) => {
     const next = new URLSearchParams(params)
@@ -93,7 +137,7 @@ export function RobotRegistryList({ apiClient, parkId, scopeLoading }: { apiClie
     {!allowed ? <EmptyState title="Реестр недоступен" description="Для реестра нужен доступ к задачам Tracker. Можно открыть робота по номеру ниже." />
       : failure ? <ErrorState {...failure} onRetry={failure.retryable ? () => setRetry(value => value + 1) : undefined} />
         : !apiClient.robotRegistry ? null : !visible || !data ? <LoadingState label="Загружаем реестр роботов" /> : <>
-          <div className="rp-robot-registry__summary"><p>Найдено: {data.total}</p><Button variant="secondary" leadingIcon="refresh" onClick={() => setRetry(value => value + 1)}>Обновить реестр</Button></div>
+          <div className="rp-robot-registry__summary"><p>Найдено: {data.total}</p></div>
           <p className="rp-robot-registry__note" role="status">Телеметрия получена только из недавних проверок. {data.partial ? 'Часть данных неизвестна; откройте робота для проверки.' : 'Доступны сохранённые данные.'}</p>
           {data.items.length ? <div className="rp-robot-registry__rows" role="list" aria-label="Реестр роботов">
             <div className="rp-robot-registry__columns" aria-hidden="true"><span>Робот / VIN</span><span>Доступность · заряд · ошибки</span><span>Действия</span></div>
@@ -106,4 +150,9 @@ export function RobotRegistryList({ apiClient, parkId, scopeLoading }: { apiClie
           <nav aria-label="Страницы реестра" className="rp-robot-registry__pagination"><Button variant="secondary" disabled={offset === 0} onClick={() => change('offset', String(Math.max(0, offset - 50)))}>Назад</Button><span>{data.total ? `${data.offset + 1}–${data.offset + data.items.length} из ${data.total}` : '0 роботов'}</span><Button variant="secondary" disabled={!data.has_more} onClick={() => change('offset', String(offset + 50))}>Далее</Button></nav>
         </>}
   </Panel>
+}
+
+export function RobotRegistryList(props: React.ComponentProps<typeof RegistryOwner>) {
+  const { user } = useAuth()
+  return <RegistryOwner key={user ? `${user.id}:${checkAccessIdentity(user)}` : 'anonymous'} {...props} />
 }

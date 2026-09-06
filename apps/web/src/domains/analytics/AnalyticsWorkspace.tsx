@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, type Park, type User } from '../../api'
 import { useParkScope } from '../../app/park/parkScope'
 import { useAuth } from '../../auth-context'
 import { Button } from '../../design-system/actions/Button'
+import { resourceStore, useCachedResource } from '../../lib/resource'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { PageLayout } from '../../design-system/layout/PageLayout'
 import { classifyApiError, type DomainError } from '../../shared/api/classifyApiError'
@@ -80,30 +81,29 @@ function Comparison({ data, parks }: { data: HistoricalAnalytics[]; parks: Park[
   </section>
 }
 
-function AnalyticsOwner({ apiClient, parks, days, bucket, onAuthorizationFailure }: {
-  apiClient: AnalyticsApiClient; parks: Park[]; days: number; bucket: AnalyticsQuery['bucket']; onAuthorizationFailure: (failure: DomainError) => void
+function AnalyticsOwner({ apiClient, parks, days, bucket, resourceKey, onAuthorizationFailure }: {
+  apiClient: AnalyticsApiClient; parks: Park[]; days: number; bucket: AnalyticsQuery['bucket']; resourceKey: string; onAuthorizationFailure: (failure: DomainError) => void
 }) {
-  const [data, setData] = useState<HistoricalAnalytics[] | null>(null)
-  const [failure, setFailure] = useState<DomainError | null>(null)
-  const [attempt, setAttempt] = useState(0)
+  const resource = useCachedResource(resourceKey, async () => Promise.all(parks.map(async park => {
+    const result = await apiClient.analytics(park.id, days, bucket)
+    if (result.park_id !== park.id) throw new Error('analytics_park_mismatch')
+    return result
+  })), { persist: false, refreshIntervalMs: 120_000, staleTimeMs: 120_000 })
+  const pending = useRef(resource.isRevalidating)
+  useLayoutEffect(() => { pending.current = resource.isRevalidating }, [resource.isRevalidating])
+  // Retain settled history, but do not lend a retired owner's request to a remount.
+  useLayoutEffect(() => () => { if (pending.current) resourceStore.invalidate(resourceKey) }, [resourceKey])
+  const failure = useMemo(() => resource.error ? classifyApiError(resource.error, 'Не удалось загрузить историю процесса.') : null, [resource.error])
   useEffect(() => {
-    let active = true
-    setData(null); setFailure(null)
-    void Promise.all(parks.map(async park => {
-      const result = await apiClient.analytics(park.id, days, bucket)
-      if (result.park_id !== park.id) throw new Error('analytics_park_mismatch')
-      return result
-    })).then(results => { if (active) setData(results) }, error => {
-      if (!active) return
-      const next = classifyApiError(error, 'Не удалось загрузить историю процесса.')
-      setFailure(next)
-      if (next.kind === 'forbidden' || next.kind === 'unauthorized') onAuthorizationFailure(next)
-    })
-    return () => { active = false }
-  }, [apiClient, parks, days, bucket, attempt, onAuthorizationFailure])
-  if (failure) return <ErrorState title={failure.title} description={failure.description} requestId={failure.requestId} onRetry={failure.retryable ? () => setAttempt(value => value + 1) : undefined} />
+    if (failure?.kind === 'forbidden' || failure?.kind === 'unauthorized') onAuthorizationFailure(failure)
+  }, [failure, onAuthorizationFailure])
+  const data = resource.data
+  // An authorization failure must never paint protected cached history.
+  if (failure?.kind === 'forbidden' || failure?.kind === 'unauthorized') return null
+  const retainData = failure && ['offline', 'timeout', 'server'].includes(failure.kind)
+  if (failure && !(data && retainData)) return <ErrorState title={failure.title} description={failure.description} requestId={failure.requestId} onRetry={failure.retryable ? () => void resource.refresh() : undefined} />
   if (!data) return <LoadingState label="Загружаем историю процесса" variant="page" />
-  return <><Comparison data={data} parks={parks} /><div className="rp-analytics-parks">{data.map((result, index) => <ParkHistory key={result.park_id} data={result} park={parks[index]} />)}</div><Button variant="secondary" leadingIcon="refresh" onClick={() => setAttempt(value => value + 1)}>Обновить историю</Button></>
+  return <>{failure ? <div className="rp-analytics-warning" role="alert"><strong>{failure.title}</strong><p>{failure.description}</p>{failure.retryable ? <Button variant="secondary" busy={resource.isRevalidating} onClick={() => void resource.refresh()}>Повторить</Button> : null}</div> : null}<Comparison data={data} parks={parks} /><div className="rp-analytics-parks">{data.map((result, index) => <ParkHistory key={result.park_id} data={result} park={parks[index]} />)}</div></>
 }
 
 function AnalyticsSession({ apiClient, user }: { apiClient: AnalyticsApiClient; user: User }) {
@@ -120,11 +120,17 @@ function AnalyticsSession({ apiClient, user }: { apiClient: AnalyticsApiClient; 
   const comparePark = available.find(park => park.id === query.compare)
   const requestedParks = useMemo(() => selectedPark ? [selectedPark, ...(comparePark ? [comparePark] : [])] : [], [selectedPark, comparePark])
   const identity = analyticsRequestIdentity(user, requestedParks, query)
-  const contextFailure = authorizationFailure?.context === identity ? authorizationFailure.failure : null
+  const refreshStarted = useRef(new Set<string>())
+  const contextFailure = authorizationFailure?.failure.kind === 'unauthorized' || authorizationFailure?.context === identity ? authorizationFailure?.failure : null
   const onAuthorizationFailure = useCallback((failure: DomainError) => {
+    resourceStore.invalidate(`analytics:${user.id}:`, { prefix: true })
     setAuthorizationFailure({ context: identity, failure })
-    void refreshUser().catch(() => undefined)
-  }, [identity, refreshUser])
+    const refreshKey = failure.kind === 'unauthorized' ? 'session' : identity
+    if (!refreshStarted.current.has(refreshKey)) {
+      refreshStarted.current.add(refreshKey)
+      void refreshUser().catch(() => undefined)
+    }
+  }, [identity, refreshUser, user.id, setAuthorizationFailure])
   const update = (next: AnalyticsQuery) => setParams(analyticsSearch(params, next), { replace: true })
   const canRead = user.access_status === 'approved' && !user.must_change_password && ['nav.analytics', 'tracker.read'].every(permission => user.permissions?.includes(permission))
   return <PageLayout title="Аналитика" description="Как меняется процесс и на каких этапах накапливается задержка.">
@@ -136,7 +142,7 @@ function AnalyticsSession({ apiClient, user }: { apiClient: AnalyticsApiClient; 
     {!canRead ? <ErrorState title="Нет доступа" description="Нужны разрешения на аналитику и чтение Tracker." /> : contextFailure ? <ErrorState title={contextFailure.title} description={contextFailure.description} />
       : loading ? <LoadingState label="Загружаем доступные парки" /> : !selectedPark ? <EmptyState title="Парк не выбран" description="Выберите парк для просмотра истории процесса." icon="parks" />
         : !available.some(park => park.id === selectedPark.id) ? <ErrorState title="Нет доступа" description="Выбранный парк недоступен." />
-          : <AnalyticsOwner key={identity} apiClient={apiClient} parks={requestedParks} days={query.days} bucket={query.bucket} onAuthorizationFailure={onAuthorizationFailure} />}
+          : <AnalyticsOwner key={identity} resourceKey={`analytics:${user.id}:${identity}`} apiClient={apiClient} parks={requestedParks} days={query.days} bucket={query.bucket} onAuthorizationFailure={onAuthorizationFailure} />}
   </PageLayout>
 }
 

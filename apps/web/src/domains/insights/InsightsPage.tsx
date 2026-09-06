@@ -51,7 +51,6 @@ function OperationsOwner({ resourceKey, load, parkId, onAuthorizationFailure }: 
   if (!data) return <LoadingState label="Загружаем операционный обзор" variant="page" />
   return <>{failure ? <OperationsWarning failure={failure} busy={resource.isRevalidating} onRetry={() => void resource.refresh()} /> : null}
     <OperationsContent data={data} />
-    <Button busy={resource.isRevalidating} leadingIcon="refresh" onClick={() => void resource.refresh()} variant="secondary">Обновить данные</Button>
   </>
 }
 

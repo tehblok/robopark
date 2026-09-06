@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, ApiError, type IntegrationSettings, type Park } from '../api'
@@ -54,6 +54,21 @@ describe('Admin Emergency cookie validation', () => {
     vi.restoreAllMocks()
   })
 
+  it('keeps an unsaved park draft when stale data could otherwise reload on focus', async () => {
+    const parks = [{ id: 7, name: 'Северный', tag: 'north', is_active: true }]
+    setup({}, parks, ['nav.admin', 'parks.manage'])
+    fireEvent.click(await screen.findByRole('tab', { name: 'Парки' }))
+    const input = await screen.findByDisplayValue('Северный')
+    fireEvent.change(input, { target: { value: 'Название в работе' } })
+    const calls = vi.mocked(api.adminParkRequests).mock.calls.length
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
+    fireEvent.focus(window)
+    fireEvent(window, new Event('online'))
+    await act(async () => {})
+    expect(input).toHaveValue('Название в работе')
+    expect(api.adminParkRequests).toHaveBeenCalledTimes(calls)
+  })
+
   it('renders an invalid cookie status without exposing the secret', async () => {
     setup({
       emergency_cookie_status: 'invalid',
@@ -107,6 +122,7 @@ describe('Admin Emergency cookie validation', () => {
     vi.spyOn(api, 'checkEmergencyCookie').mockResolvedValue(settings({
       emergency_cookie_status: 'valid', emergency_cookie_valid: true,
     }))
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_001)
     const second = renderApp('/admin/settings', testUser({ role: 'admin', permissions: ['nav.admin'] }))
     await waitFor(() => expect(api.integrationSettings).toHaveBeenCalledTimes(2))
     await actor.click(screen.getByRole('button', { name: 'Проверить текущую' }))

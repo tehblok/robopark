@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   api,
   type TrackerIssue,
@@ -48,11 +48,29 @@ export function TrackerWorkspace({
   const [selected, setSelected] = useState('')
   const [validationError, setValidationError] = useState('')
   const loadMoreRef = useRef(false)
+  const loadedExtent = useRef(new Map<string, number>())
+  const appendRequest = useRef<{ key: string; base: ListPage } | null>(null)
 
   const invalidFilter = filters.untagged && !filters.queue
+  const currentListKey = invalidFilter ? '' : listKey(filters)
   const listRes = useCachedResource<ListPage>(
-    invalidFilter ? '' : listKey(filters),
-    () => api.trackerIssues({ ...filters, limit: PAGE_SIZE, offset: 0 }),
+    currentListKey,
+    async () => {
+      const append = appendRequest.current
+      appendRequest.current = null
+      if (append?.key === currentListKey) {
+        const page = await api.trackerIssues({ ...filters, limit: PAGE_SIZE, offset: append.base.items.length })
+        return { ...page, items: [...append.base.items, ...page.items] }
+      }
+      const target = Math.max(PAGE_SIZE, loadedExtent.current.get(currentListKey) ?? 0, resourceStore.get<ListPage>(currentListKey)?.items.length ?? 0)
+      const refreshed: TrackerIssue[] = []
+      let page: ListPage
+      do {
+        page = await api.trackerIssues({ ...filters, limit: PAGE_SIZE, offset: refreshed.length })
+        refreshed.push(...page.items)
+      } while (refreshed.length < target && page.has_more && page.items.length > 0)
+      return { ...page, items: refreshed }
+    },
     { enabled: !invalidFilter },
   )
 
@@ -111,29 +129,34 @@ export function TrackerWorkspace({
     }
   }, [listRes.data, selected])
 
+  const currentOwner = `${user?.id}:${currentListKey}:${selected}`
+  const owner = useRef(currentOwner)
+  useLayoutEffect(() => {
+    owner.current = currentOwner
+    return () => { owner.current = '' }
+  }, [currentOwner])
+
   const loadMore = async () => {
-    if (loadMoreRef.current) return
+    if (loadMoreRef.current || listRes.isRevalidating || !listRes.data) return
     loadMoreRef.current = true
+    const base = listRes.data
+    loadedExtent.current.set(currentListKey, base.items.length + PAGE_SIZE)
+    appendRequest.current = { key: currentListKey, base }
+    // Route pagination through the same request generation as background reads.
+    resourceStore.invalidate(currentListKey)
+    resourceStore.set(currentListKey, base, true)
     try {
-      const data = await api.trackerIssues({
-        ...filters,
-        limit: PAGE_SIZE,
-        offset: items.length,
-      })
-      const merged: ListPage = {
-        items: [...items, ...data.items],
-        total: data.total,
-        has_more: data.has_more,
-      }
-      // Update the cached page so the extra rows survive re-mounts.
-      resourceStore.set(listKey(filters), merged, true)
+      await listRes.refresh()
     } finally {
       loadMoreRef.current = false
     }
   }
 
   const refreshSelected = async () => {
-    if (!selected) return
+    if (!selected || owner.current !== currentOwner) return
+    resourceStore.invalidate(`tracker:issue:${selected}`)
+    resourceStore.invalidate(`tracker:comments:${selected}`)
+    resourceStore.invalidate(`tracker:transitions:${selected}`)
     await Promise.all([
       detailRes.refresh(),
       commentsRes.refresh(),
@@ -142,8 +165,10 @@ export function TrackerWorkspace({
   }
 
   const refreshAll = async () => {
-    await refreshSelected()
-    await listRes.refresh()
+    if (owner.current !== currentOwner) return
+    loadedExtent.current.set(currentListKey, Math.max(loadedExtent.current.get(currentListKey) ?? 0, resourceStore.get<ListPage>(currentListKey)?.items.length ?? 0))
+    resourceStore.invalidate(currentListKey)
+    await Promise.all([refreshSelected(), listRes.refresh()])
   }
 
   return (

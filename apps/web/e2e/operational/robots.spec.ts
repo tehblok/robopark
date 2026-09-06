@@ -186,6 +186,7 @@ for (const route of [`/robots/${snapshot.vin}/check?tab=wheels&park=7`, '/emerge
     let snapshots = 0
     page.on('request', request => { if (new URL(request.url()).pathname.endsWith('/snapshot')) snapshots += 1 })
     await installOperational(page)
+    await page.clock.install({ time: new Date('2026-09-02T09:05:00Z') })
     await page.goto(route)
     await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7&tab=wheels`)
     const wheels = page.getByRole('tab', { name: 'Колёса', exact: true })
@@ -204,17 +205,19 @@ for (const route of [`/robots/${snapshot.vin}/check?tab=wheels&park=7`, '/emerge
     await expect(page.getByRole('button', { name: 'Слежение включено', exact: true })).toBeVisible()
     await expect(page.locator('.leaflet-container')).toBeVisible()
     const before = snapshots
-    await page.getByRole('button', { name: 'Обновить данные робота', exact: true }).click()
+    await expect(page.getByRole('button', { name: /^Обновить/ })).toHaveCount(0)
+    await page.clock.runFor(3000)
     await expect.poll(() => snapshots).toBeGreaterThan(before)
   })
 }
 
-test('driver canonical check loads sections, refreshes, and requests scoped Tracker work', async ({ page }) => {
+test('driver canonical check loads sections, automatically refreshes, and requests scoped Tracker work', async ({ page }) => {
   const trackerRequests: string[] = []
   page.on('request', request => {
     if (new URL(request.url()).pathname.startsWith('/api/tracker/')) trackerRequests.push(new URL(request.url()).pathname)
   })
   await installOperational(page, { role: 'driver' })
+  await page.clock.install({ time: new Date('2026-09-02T09:05:00Z') })
   await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=wheels`)
   await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7&tab=wheels`)
   await expect(page.getByRole('heading', { name: 'Робот 447', exact: true })).toBeVisible()
@@ -224,7 +227,7 @@ test('driver canonical check loads sections, refreshes, and requests scoped Trac
   await settlePage(page)
   await Promise.all([
     page.waitForResponse(response => new URL(response.url()).pathname === `/api/emergency/${snapshot.vin}/snapshot` && response.status() === 200),
-    page.getByRole('button', { name: 'Обновить данные робота', exact: true }).click(),
+    page.clock.runFor(3000),
   ])
   await page.getByRole('tab', { name: 'Схема', exact: true }).click()
   await expect(page.getByRole('tab', { name: 'Схема', exact: true })).toHaveAttribute('aria-selected', 'true')
@@ -236,16 +239,23 @@ test('driver canonical check loads sections, refreshes, and requests scoped Trac
   expect(new Set(trackerRequests)).toEqual(new Set([`/api/tracker/robots/${snapshot.vin}/tickets`]))
 })
 
-test('robot offline and browser offline remain different actionable states', async ({ page, context }) => {
+test('robot offline and browser offline remain different states with automatic recovery', async ({ page, context }) => {
+  let snapshots = 0
+  page.on('request', request => { if (new URL(request.url()).pathname.endsWith('/snapshot')) snapshots += 1 })
   await installOperational(page, { snapshot: { ...snapshot, online: false } })
+  await page.clock.install({ time: new Date('2026-09-02T09:05:00Z') })
   await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=wheels`)
   await expect(page.getByText('Робот не в сети', { exact: true })).toBeVisible()
   await expect(page.getByText('Нет сети на этом устройстве', { exact: true })).toHaveCount(0)
   await context.setOffline(true)
   await expect(page.getByText('Нет сети на этом устройстве', { exact: true })).toBeVisible()
   await expect(page.getByText('Робот не в сети', { exact: true })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Обновить данные робота', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: /^Обновить/ })).toHaveCount(0)
+  const before = snapshots
+  await page.clock.runFor(5000)
+  expect(snapshots).toBe(before)
   await context.setOffline(false)
+  await expect.poll(() => snapshots).toBeGreaterThan(before)
   await expect(page.getByText('Робот не в сети', { exact: true })).toBeVisible()
 })
 

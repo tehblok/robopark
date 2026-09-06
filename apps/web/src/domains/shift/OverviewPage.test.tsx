@@ -85,7 +85,9 @@ it('retains cached overview content and offers retry after deferred offline reva
   render(tree({ client }))
 
   await screen.findByRole('link', { name: 'Открыть задачу RP-1' })
-  fireEvent.click(screen.getByRole('button', { name: 'Обновить данные' }))
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_001)
+  fireEvent.focus(window)
+  await waitFor(() => expect(client.operationsOverview).toHaveBeenCalledTimes(2))
   await act(async () => revalidation.reject(new TypeError('offline')))
   expect(await screen.findByText('Нет сети')).toBeVisible()
   expect(screen.getByRole('link', { name: 'Открыть задачу RP-1' })).toBeVisible()
@@ -100,7 +102,8 @@ it.each([401, 403])('clears cached protected overview data and refreshes auth af
   render(tree({ user, refreshUser, client }))
 
   await screen.findByRole('link', { name: 'Открыть задачу RP-1' })
-  fireEvent.click(screen.getByRole('button', { name: 'Обновить данные' }))
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_001)
+  fireEvent.focus(window)
   expect(await screen.findByRole('heading', { name: status === 403 ? 'Нет доступа' : 'Сессия истекла' })).toBeVisible()
   expect(screen.queryByRole('link', { name: 'Открыть задачу RP-1' })).not.toBeInTheDocument()
   expect(refreshUser).toHaveBeenCalledTimes(1)

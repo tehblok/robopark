@@ -3,7 +3,7 @@ import { pollDelayAfterFailure } from './polling'
 
 // A stable task callback is the request identity. A changed callback starts a new
 // generation; old requests cannot coalesce with it or schedule its next timeout.
-export function useVisibilityPolling({ enabled, online, task }: { enabled: boolean; online: boolean; task: () => Promise<void> }) {
+export function useVisibilityPolling({ enabled, online, task }: { enabled: boolean; online: boolean; task: (force?: boolean) => Promise<void> }) {
   const [pending, setPending] = useState(false)
   const runner = useRef<(manual: boolean) => Promise<void>>(async () => undefined)
   const connection = useRef(online)
@@ -21,7 +21,7 @@ export function useVisibilityPolling({ enabled, online, task }: { enabled: boole
       if (inFlight) return inFlight
       clear(); setPending(true)
       inFlight = Promise.resolve().then(() => {
-        if (current && enabled) return task()
+        if (current && enabled && (manual || automatic())) return task(manual)
       }).then(() => {
         if (!current) return
         failures = 0; schedule(2500)

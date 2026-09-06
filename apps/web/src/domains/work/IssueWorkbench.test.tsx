@@ -171,6 +171,8 @@ function accessPrefix(currentUser = user, currentPark = park) {
 }
 
 function seedCurrentWork(currentUser = user, currentIssue = issue) {
+  // Seed stale data so these revalidation tests exercise a real refresh.
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 60_000)
   resourceStore.set(listKey(currentUser), page([currentIssue]), true)
   resourceStore.set(`${accessPrefix(currentUser)}issue:${currentIssue.key}`, currentIssue, true)
   resourceStore.set(`${accessPrefix(currentUser)}comments:${currentIssue.key}`, [], true)
@@ -179,6 +181,7 @@ function seedCurrentWork(currentUser = user, currentIssue = issue) {
     [{ id: 'resolve', display: 'Решить' }],
     true,
   )
+  clock.mockRestore()
 }
 
 afterEach(() => {

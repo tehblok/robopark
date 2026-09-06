@@ -99,11 +99,12 @@ test('late account PATCH updates its row without replacing a different selected 
   let release!: () => void
   const pending = new Promise<void>(resolve => { release = resolve })
   let saving = false
+  let currentAccount = account
   await installOperational(page, { role: 'royal', routes: [
-    { method: 'GET', path: '/api/admin/users', handler: () => ({ json: [account, other] }) },
+    { method: 'GET', path: '/api/admin/users', handler: () => ({ json: [currentAccount, other] }) },
     { method: 'GET', path: '/api/admin/roles', handler: () => ({ json: roles }) },
     { method: 'GET', path: '/api/admin/roles/permissions/catalog', handler: () => ({ json: catalog }) },
-    { method: 'PATCH', path: '/api/admin/users/2', handler: async () => { saving = true; await pending; return { json: { ...account, tracker_login: 'saved.first' } } } },
+    { method: 'PATCH', path: '/api/admin/users/2', handler: async () => { saving = true; await pending; currentAccount = { ...account, tracker_login: 'saved.first' }; return { json: currentAccount } } },
   ] })
   await page.goto('/admin/users?park=7')
   await page.getByRole('button', { name: 'Открыть аккаунт mechanic.shift', exact: true }).click()

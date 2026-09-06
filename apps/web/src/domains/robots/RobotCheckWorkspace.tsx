@@ -19,7 +19,7 @@ import './robot-check.css'
 
 export type RobotCheckApiClient = Pick<typeof api, 'emergencySnapshot' | 'emergencySection'>
 export type RobotCheckWorkspaceProps = {
-  vin: string; user: AccessUser; sections: EmergencySection[]; activeTab: string
+  vin: string; user: AccessUser & { id?: number }; sections: EmergencySection[]; activeTab: string
   onTabChange: (tab: string) => void; apiClient?: RobotCheckApiClient
   onAuthorizationFailure?: (failure: DomainError) => void
   renderSummary?: (snapshot: EmergencySnapshot, failure: DomainError | null, refresh: () => void) => ReactNode
@@ -40,6 +40,20 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
   const [diagnosticSelection, setDiagnosticSelection] = useState<{ view: DiagnosticView; eventId: string | null }>({ view: 'top', eventId: null })
   // Owned by the same VIN/access/park lifetime as the snapshot, never by a tab.
   const automaticApplied = useRef(false)
+  // This cache belongs to one VIN/access lifetime and never persists to disk.
+  const cache = useRef(new Map<string, { data?: unknown; updatedAt: number; pending?: Promise<unknown> }>())
+  const cachedRequest = useCallback(<T,>(key: string, load: () => Promise<T>, force: boolean): Promise<T> => {
+    const stored = cache.current.get(key)
+    if (stored?.pending) return stored.pending as Promise<T>
+    if (!force && stored?.data !== undefined && Date.now() - stored.updatedAt < 2500) return Promise.resolve(stored.data as T)
+    const entry = stored ?? { updatedAt: 0 }
+    cache.current.set(key, entry)
+    const pending = Promise.resolve().then(load).then(data => {
+      entry.data = data; entry.updatedAt = Date.now(); return data
+    }).finally(() => { if (entry.pending === pending) entry.pending = undefined })
+    entry.pending = pending
+    return pending
+  }, [])
   const denial = useRef(false)
   const generation = useRef(0)
   const notify = useRef(onAuthorizationFailure)
@@ -50,7 +64,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
     generation.current += 1
     return () => { generation.current += 1 }
   }, [vin, tab.id, tab.kind, apiClient])
-  const task = useCallback(async () => {
+  const task = useCallback(async (force = false) => {
     const requestedGeneration = generation.current
     const current = () => requestedGeneration === generation.current && !denial.current
     const observeFailure = (error: unknown, section?: string) => {
@@ -58,7 +72,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
       const failure = classifyCheckError(error)
       if (failure.kind === 'unauthorized' || failure.kind === 'forbidden') {
         denial.current = true
-        setSnapshot(null); setDetails({}); setErrors({}); setSnapshotError(null); setDenied(failure)
+        cache.current.clear(); setSnapshot(null); setDetails({}); setErrors({}); setSnapshotError(null); setDenied(failure)
         notify.current?.(failure)
       } else if (section) setErrors(previous => ({ ...previous, [section]: failure }))
       else {
@@ -68,7 +82,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
     }
     if (!current()) return
     // Observe both independently: denial cannot wait for a hung sibling.
-    const snapshotRequest = Promise.resolve().then(() => apiClient.emergencySnapshot(vin)).then(value => {
+    const snapshotRequest = cachedRequest('snapshot', () => apiClient.emergencySnapshot(vin), force).then(value => {
       if (current()) {
         setSnapshot(value); setSnapshotError(null)
         if (!automaticApplied.current && value.diagnostic_events?.length) {
@@ -78,13 +92,13 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
       }
     }, error => { observeFailure(error); throw error })
     const requests = [snapshotRequest]
-    if (tab.kind === 'section') requests.push(Promise.resolve().then(() => apiClient.emergencySection(vin, tab.id)).then(value => {
+    if (tab.kind === 'section') requests.push(cachedRequest(`section:${tab.id}`, () => apiClient.emergencySection(vin, tab.id), force).then(value => {
       if (current()) { setDetails(previous => ({ ...previous, [tab.id]: value })); setErrors(previous => ({ ...previous, [tab.id]: null })) }
     }, error => { observeFailure(error, tab.id); throw error }))
     const results = await Promise.allSettled(requests)
     const rejected = results.find(result => result.status === 'rejected')
     if (rejected?.status === 'rejected') throw rejected.reason
-  }, [vin, tab.id, tab.kind, apiClient])
+  }, [vin, tab.id, tab.kind, apiClient, cachedRequest])
   const { pending, refreshNow } = useVisibilityPolling({ enabled: !denied, online, task })
   const refresh = () => { void refreshNow() }
   if (denied) return <CheckError failure={denied} user={user} />
@@ -105,9 +119,9 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
         : <section className="rp-check-summary" aria-busy={pending}>
           {!online ? <p role="status">Нет сети на этом устройстве</p> : null}
           {!snapshotError && online ? <LoadingState label="Загружаем данные робота" /> : null}
-          <Button leadingIcon="refresh" onClick={refresh}>{!online ? 'Повторить проверку' : 'Обновить данные'}</Button>
+          {!online ? <Button onClick={refresh}>Повторить проверку</Button> : null}
         </section>}
-      {snapshotError && (!renderSummary || !snapshot) ? <div className="rp-check-warning"><CheckError failure={snapshotError} user={user} onRetry={renderSummary ? refresh : undefined} />{snapshot ? <p>Показаны последние полученные данные.</p> : null}
+      {snapshotError && (!renderSummary || !snapshot) ? <div className="rp-check-warning"><CheckError failure={snapshotError} user={user} onRetry={refresh} />{snapshot ? <p>Показаны последние полученные данные.</p> : null}
         {snapshotError.kind === 'not-found' ? <Link to="/robots">К поиску роботов</Link> : null}</div> : null}
     </div>
   const detail = <div className="rp-check-detail">
@@ -151,5 +165,5 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
   </div>
 }
 export function RobotCheckWorkspace(props: RobotCheckWorkspaceProps) {
-  return <WorkspaceOwner key={`${props.vin}:${checkAccessIdentity(props.user)}`} {...props} />
+  return <WorkspaceOwner key={`${props.user.id}:${props.vin}:${checkAccessIdentity(props.user)}`} {...props} />
 }

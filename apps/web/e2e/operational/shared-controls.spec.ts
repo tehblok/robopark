@@ -16,13 +16,12 @@ for (const theme of ['light', 'dark']) {
 }
 
 for (const theme of ['light', 'dark']) for (const width of [390, 1440]) {
-  test(`shared admin controls and background refresh at ${width}px ${theme}`, async ({ page }, info) => {
+  test(`shared admin controls reuse cache and preserve drafts at ${width}px ${theme}`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 900 })
     await page.addInitScript(value => localStorage.setItem('robopark-theme', value), theme)
     let reads = 0
-    let release: (() => void) | undefined
     await installOperational(page, { role: 'admin', routes: [{ method: 'GET', path: '/api/admin/emergency/sections', handler: async () => {
-      if (++reads > 1) await new Promise<void>(resolve => { release = resolve })
+      reads += 1
       return { json: sections }
     } }] })
     await page.goto('/admin/emergency/config?park=7')
@@ -34,17 +33,18 @@ for (const theme of ['light', 'dark']) for (const width of [390, 1440]) {
 
     await page.getByRole('tab', { name: 'Ошибки и индикация', exact: true }).click()
     await page.getByRole('tab', { name: 'Разделы и поля', exact: true }).click()
-    await expect.poll(() => !!release).toBe(true)
-    try {
-      const progress = page.getByRole('progressbar', { name: 'Обновление данных' })
-      await expect(progress).toBeVisible()
-      await page.getByLabel('ID раздела', { exact: true }).fill('draft')
-      await expect(page.getByLabel('ID раздела', { exact: true })).toHaveValue('draft')
-      await page.screenshot({ path: info.outputPath(`refresh-${theme}-${width}.png`), animations: 'disabled' })
-      await page.emulateMedia({ reducedMotion: 'reduce' })
-      await expect(progress).toBeVisible()
-      expect(await progress.evaluate(element => getComputedStyle(element, '::after').animationName)).toBe('none')
-    } finally { release?.() }
+    await expect(page.getByLabel('Путь поля 9')).toHaveValue('data.status')
+    expect(reads).toBe(1)
+    await page.getByLabel('ID раздела', { exact: true }).fill('draft')
+    await page.clock.setFixedTime(new Date('2026-09-02T09:08:00Z'))
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('focus'))
+      window.dispatchEvent(new Event('online'))
+    })
+    await expect(page.getByLabel('ID раздела', { exact: true })).toHaveValue('draft')
+    expect(reads).toBe(1)
+    await expect(page.getByRole('button', { name: /^Обновить данные/ })).toHaveCount(0)
+    await page.screenshot({ path: info.outputPath(`cached-draft-${theme}-${width}.png`), animations: 'disabled' })
     await expect(page.getByRole('progressbar')).toBeHidden()
   })
 }

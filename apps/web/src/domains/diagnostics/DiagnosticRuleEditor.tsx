@@ -9,7 +9,16 @@ import { FormField } from '../../design-system/forms/FormField'
 import { MasterDetail } from '../../design-system/layout/MasterDetail'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { ROBOT_PHOTOS } from '../robots/robotPhotos'
+import { resourceStore, useCachedResource } from '../../lib/resource'
+import { adminResourceOptions } from '../../components/admin/adminResources'
 import './diagnostics.css'
+
+const catalogOwners = new WeakMap<User, number>()
+let nextCatalogOwner = 0
+function catalogKey(user: User, park: string | null) {
+  if (!catalogOwners.has(user)) catalogOwners.set(user, ++nextCatalogOwner)
+  return `admin:diagnostic-rules:${catalogOwners.get(user)}:${park ?? ''}`
+}
 
 type Draft = Required<Omit<DiagnosticRuleCreate, 'sort_order'>>
 const SEVERITIES = { info: 'Информация', warning: 'Предупреждение', critical: 'Критическая ошибка' } as const
@@ -55,7 +64,8 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
   const location = useLocation()
   const navigation = useRef(location.key)
   useLayoutEffect(() => { navigation.current = location.key }, [location.key])
-  const [catalog, setCatalog] = useState<DiagnosticCatalog | null>(null)
+  const cacheKey = catalogKey(user, params.get('park'))
+  const [catalog, setCatalog] = useState<DiagnosticCatalog | null>(() => resourceStore.get<DiagnosticCatalog>(cacheKey) ?? null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -74,6 +84,7 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
   const mutation = useRef(false)
   const alive = useRef(false)
   const listGeneration = useRef(0)
+  const pendingLists = useRef(0)
   const refreshAuth = useRef(refreshUser)
   useLayoutEffect(() => { refreshAuth.current = refreshUser }, [refreshUser])
   const deniedRef = useRef(false)
@@ -81,19 +92,22 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
   const handleAccess = useCallback((failure: unknown) => {
     if (!(failure instanceof ApiError) || ![401, 403].includes(failure.status) || !alive.current) return
     deniedRef.current = true
+    resourceStore.invalidate(cacheKey)
     setCatalog(null); setDenied(true); setError(errorText(failure)); setNotice('')
     if (failure.status === 401) void refreshAuth.current().catch(() => undefined)
-  }, [])
+  }, [cacheKey])
   const reload = useCallback(async (signal?: AbortSignal) => {
     advancePreviewOwner()
     const generation = ++listGeneration.current
+    pendingLists.current++
     setLoading(true)
     try {
       const next = await api.diagnosticRules(signal)
       if (alive.current && !deniedRef.current && generation === listGeneration.current) {
         advancePreviewOwner()
-        setCatalog(next); setError('')
+        setCatalog(next); resourceStore.set(cacheKey, next, false); setError('')
       }
+      if (!alive.current || deniedRef.current || generation !== listGeneration.current) throw new DOMException('Retired catalog request', 'AbortError')
       return next
     } catch (failure) {
       if (alive.current && !signal?.aborted && generation === listGeneration.current) {
@@ -101,15 +115,27 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
       }
       throw failure
     } finally {
+      pendingLists.current--
       if (alive.current && generation === listGeneration.current) setLoading(false)
     }
-  }, [handleAccess, advancePreviewOwner])
+  }, [handleAccess, advancePreviewOwner, cacheKey])
+  const catalogRequest = useRef<AbortController | null>(null)
   useEffect(() => {
     alive.current = true
     const controller = new AbortController()
-    void reload(controller.signal).catch(() => undefined)
-    return () => { alive.current = false; controller.abort() }
-  }, [reload, user])
+    catalogRequest.current = controller
+    return () => {
+      alive.current = false
+      // StrictMode may immediately mount again. Do not let that mount share a
+      // request this owner is about to abort; completed cache entries survive.
+      if (pendingLists.current > 0) resourceStore.invalidate(cacheKey)
+      controller.abort()
+    }
+  }, [reload, user, cacheKey])
+  useCachedResource(cacheKey, () => reload(catalogRequest.current?.signal), {
+    ...adminResourceOptions,
+    enabled: !denied,
+  })
 
   const select = (id: string | null) => {
     if (params.get('rule') === id) return

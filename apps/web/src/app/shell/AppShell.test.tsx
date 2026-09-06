@@ -617,6 +617,33 @@ describe('AppShell', () => {
     expect(navigation.querySelectorAll('[aria-current="page"]')).toHaveLength(1)
   })
 
+  it.each(['royal', 'admin', 'operator', 'mechanic', 'driver'] as const)('keeps %s bottom navigation captions from collapsing in compact mode', role => {
+    act(() => media.setWidth(320))
+    localStorage.setItem('robopark-density', 'compact')
+    const style = document.createElement('style')
+    style.textContent = shellCss
+    document.head.append(style)
+    // JSDOM does not evaluate media queries; apply the active CSS rules using
+    // the same viewport controller as the shell.
+    const active = document.createElement('style')
+    active.textContent = Array.from(style.sheet!.cssRules).flatMap(rule =>
+      'conditionText' in rule && 'cssRules' in rule && matchMedia(rule.conditionText as string).matches
+        ? Array.from((rule as CSSMediaRule).cssRules).map(child => child.cssText) : [],
+    ).join('\n')
+    document.head.append(active)
+    try {
+      renderShellPath('/robots', { ...operator, role })
+      const captions = document.querySelectorAll('.rp-shell__bottom-nav .rp-shell__nav-label')
+      expect(captions.length).toBeGreaterThan(1)
+      for (const caption of captions) {
+        expect(caption.textContent?.trim()).not.toBe('')
+        expect(getComputedStyle(caption).flexShrink).toBe('0')
+        expect(getComputedStyle(caption).flexBasis).toBe('auto')
+        expect(getComputedStyle(caption).display).not.toBe('none')
+      }
+    } finally { active.remove(); style.remove() }
+  })
+
   it('gives the skip link and Overview primary action the shared minimum control size', async () => {
     const style = document.createElement('style')
     style.textContent = `${shellCss}\n${overviewCss}`

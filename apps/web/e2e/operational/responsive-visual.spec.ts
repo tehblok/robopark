@@ -46,6 +46,16 @@ async function assertResponsiveContracts(page: Page, width: number) {
       if (fontSize < minimum) failures.push(`font ${fontSize}<${minimum}: ${name(element)}`)
       if (width <= 899 && element.matches('input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),select,textarea') && fontSize < 16) failures.push(`input font ${fontSize}<16: ${name(element)}`)
     }
+    if (width <= 899) {
+      const navigation = document.querySelector('.rp-shell__bottom-nav')!
+      for (const label of navigation.querySelectorAll('.rp-shell__nav-label')) {
+        const box = label.getBoundingClientRect()
+        const control = label.closest('a,button')!.getBoundingClientRect()
+        const icon = label.parentElement!.querySelector('svg')!.getBoundingClientRect()
+        if (!visible(label) || box.height <= 0 || box.width <= 0) failures.push(`hidden navigation caption: ${name(label)}`)
+        if (box.top < icon.bottom - 1 || box.left < control.left - 1 || box.right > control.right + 1 || box.bottom > control.bottom + 1) failures.push(`navigation caption outside its control or above icon: ${name(label)}`)
+      }
+    }
     if (width === 320 || width === 390) {
       for (const element of document.querySelectorAll('button,a,input,select,textarea')) {
         if (!visible(element)) continue

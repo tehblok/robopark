@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Blocker, EmergencySnapshot } from '../../api'
-import { Button } from '../../design-system/actions/Button'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { Panel } from '../../design-system/layout/PageLayout'
 import type { DomainError } from '../../shared/api/classifyApiError'
@@ -39,7 +38,6 @@ export function RobotDetailView({ display = 'all', snapshot, reference, relatedW
     <div className="rp-robot-detail">
       {display !== 'tasks' && (model ? <RobotIdentityCard model={model} canOpenCheck={canOpenCheck} parkId={parkId}>
         {snapshotError ? <ErrorState {...snapshotError} onRetry={snapshotError.retryable ? onRetrySnapshot : undefined} /> : null}
-        <Button variant="secondary" leadingIcon="refresh" onClick={onRetrySnapshot}>Обновить данные робота</Button>
       </RobotIdentityCard> : <Panel className="rp-robot-detail__identity" title={`Робот ${reference}`}>
         <p>Идентификатор из адреса: {reference}. Сведения о роботе не подтверждены диагностикой.</p>
         <p>Диагностика недоступна: нет разрешения на проверку робота.</p>

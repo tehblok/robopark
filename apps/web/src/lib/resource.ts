@@ -4,8 +4,8 @@
  * The idea:
  *   1. When a screen mounts, show whatever is already cached — a paint from
  *      memory or a mirror in localStorage — with no spinner.
- *   2. In the background, ask the API for the current version. Show a thin
- *      top progress bar only while any resource is revalidating.
+ *   2. Revalidate stale responses automatically while visible and online.
+ *      Only initial or explicitly requested loads use the top progress bar.
  *   3. When the fresh payload arrives, swap it in atomically.
  *
  * The bulk of the win comes from *not* looking at `<SkeletonList>` when the
@@ -21,6 +21,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 
 const LS_PREFIX = 'robopark:res:'
 const LS_VERSION = 1
+export const RESOURCE_REFRESH_MS = 30_000
 /** Drop persisted snapshots older than this; next visit is a cold load. */
 export const LS_MAX_AGE_MS = 12 * 60 * 60 * 1000
 
@@ -107,10 +108,22 @@ class ResourceStore {
     return undefined
   }
 
+  isStale(key: string, staleTimeMs: number): boolean {
+    if (this.get(key) === undefined) return true
+    return Date.now() - (this.mem.get(key)?.updatedAt ?? 0) >= staleTimeMs
+  }
+
   set(key: string, data: unknown, persist: boolean): void {
     const entry: StoredEntry = { v: LS_VERSION, updatedAt: Date.now(), data }
     this.mem.set(key, entry)
     if (persist) writeToStorage(key, entry)
+    this.notify(key)
+  }
+
+  /** Drop denied data without retiring sibling consumers of the same request. */
+  evict(key: string): void {
+    this.mem.delete(key)
+    removeFromStorage(key)
     this.notify(key)
   }
 
@@ -266,8 +279,12 @@ export function useIsRevalidating(): boolean {
 type Options = {
   /** Mirror successful responses to localStorage (default: true). */
   persist?: boolean
-  /** Fire the loader on mount even if we already have cached data (default: true). */
+  /** Explicit true forces mount refresh; by default only stale data revalidates. */
   refreshOnMount?: boolean
+  /** Fresh cache avoids repeat loads on mount, focus and timer ticks. */
+  staleTimeMs?: number
+  /** Visible/online refresh cadence. Zero disables automatic polling and resume. */
+  refreshIntervalMs?: number
   /** Set to false to defer loading until a real key is available. */
   enabled?: boolean
   /**
@@ -294,7 +311,9 @@ export function useCachedResource<T>(
   opts: Options = {},
 ): CachedResource<T> {
   const persist = opts.persist ?? true
-  const refreshOnMount = opts.refreshOnMount ?? true
+  const refreshOnMount = opts.refreshOnMount
+  const staleTimeMs = opts.staleTimeMs ?? RESOURCE_REFRESH_MS
+  const refreshIntervalMs = opts.refreshIntervalMs ?? RESOURCE_REFRESH_MS
   const enabled = opts.enabled ?? true
   const trackProgress = opts.trackProgress ?? true
 
@@ -307,9 +326,12 @@ export function useCachedResource<T>(
   loaderRef.current = loader
   const requestIdRef = useRef(0)
   const ownerGenerationRef = useRef(Symbol('cached-resource-owner'))
+  const retryRef = useRef({ failures: 0, after: 0, blocked: false })
 
   useEffect(() => {
     const ownerGeneration = ownerGenerationRef.current
+    retryRef.current = { failures: 0, after: 0, blocked: false }
+    setError(null)
     return () => {
       if (ownerGenerationRef.current === ownerGeneration) {
         ownerGenerationRef.current = Symbol('cached-resource-owner')
@@ -326,13 +348,14 @@ export function useCachedResource<T>(
     return unsub
   }, [key, enabled])
 
-  const runLoad = useCallback(async () => {
+  const runLoad = useCallback(async (background = false) => {
     if (!enabled) return
     const requestId = ++requestIdRef.current
     const loadGeneration = captureLoadGeneration(key)
     const ownerGeneration = ownerGenerationRef.current
     setIsRevalidating(true)
-    if (trackProgress) inFlight.begin()
+    const showProgress = trackProgress && !background
+    if (showProgress) inFlight.begin()
     try {
       const fresh = await coalesceLoader(key, () => loaderRef.current())
       if (
@@ -341,6 +364,7 @@ export function useCachedResource<T>(
         !isLoadGenerationCurrent(key, loadGeneration)
       ) return
       resourceStore.set(key, fresh, persist)
+      retryRef.current = { failures: 0, after: 0, blocked: false }
       setError(null)
     } catch (loadError) {
       if (
@@ -348,6 +372,14 @@ export function useCachedResource<T>(
         ownerGeneration !== ownerGenerationRef.current ||
         !isLoadGenerationCurrent(key, loadGeneration)
       ) return
+      const status = loadError && typeof loadError === 'object' && 'status' in loadError ? loadError.status : undefined
+      const failures = retryRef.current.failures + 1
+      retryRef.current = {
+        failures,
+        after: Date.now() + Math.min(300_000, Math.max(refreshIntervalMs, 1_000) * 2 ** Math.min(failures - 1, 8)),
+        blocked: status === 401 || status === 403,
+      }
+      if (retryRef.current.blocked) resourceStore.evict(key)
       setError(loadError)
     } finally {
       if (
@@ -356,23 +388,52 @@ export function useCachedResource<T>(
       ) {
         setIsRevalidating(false)
       }
-      if (trackProgress) inFlight.end()
+      if (showProgress) inFlight.end()
     }
-  }, [enabled, key, persist, trackProgress])
+  }, [enabled, key, persist, trackProgress, refreshIntervalMs])
+
+  const canLoadAutomatically = useCallback(() => (
+    !document.hidden && document.visibilityState !== 'hidden' && navigator.onLine !== false &&
+    !retryRef.current.blocked && Date.now() >= retryRef.current.after
+  ), [])
+
+  useEffect(() => {
+    if (!enabled || !canLoadAutomatically()) return
+    const cached = resourceStore.get<T>(key)
+    if (cached === undefined || refreshOnMount === true ||
+        (refreshOnMount !== false && resourceStore.isStale(key, staleTimeMs))) {
+      void runLoad(cached !== undefined)
+    }
+  }, [enabled, key, refreshOnMount, staleTimeMs, runLoad, canLoadAutomatically])
 
   useEffect(() => {
     if (!enabled) return
-    const cached = resourceStore.get<T>(key)
-    if (refreshOnMount || cached === undefined) {
-      void runLoad()
+    const refreshIfStale = () => {
+      // Draft-backed resources opt out of periodic replacement, but a cold
+      // mount deferred while offline still needs its first response on return.
+      if (refreshIntervalMs <= 0 && resourceStore.get(key) !== undefined) return
+      if (!canLoadAutomatically() || inflightLoaders.has(key) || !resourceStore.isStale(key, staleTimeMs)) return
+      void runLoad(true)
     }
-  }, [enabled, key, refreshOnMount, runLoad])
+    const timer = refreshIntervalMs > 0 ? window.setInterval(refreshIfStale, refreshIntervalMs) : undefined
+    document.addEventListener('visibilitychange', refreshIfStale)
+    window.addEventListener('focus', refreshIfStale)
+    window.addEventListener('online', refreshIfStale)
+    return () => {
+      if (timer !== undefined) window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', refreshIfStale)
+      window.removeEventListener('focus', refreshIfStale)
+      window.removeEventListener('online', refreshIfStale)
+    }
+  }, [enabled, key, refreshIntervalMs, staleTimeMs, runLoad, canLoadAutomatically])
+
+  const refresh = useCallback(() => runLoad(), [runLoad])
 
   return {
     data,
     error,
     isRevalidating,
     isLoading: data === undefined && isRevalidating,
-    refresh: runLoad,
+    refresh,
   }
 }

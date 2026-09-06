@@ -1,10 +1,11 @@
-import { screen, within } from '@testing-library/react'
+import { resourceStore } from '../../lib/resource'
+import { fireEvent, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { api, type AdminRole } from '../../api'
 import { installMatchMedia, renderApp, testUser } from '../../test/renderApp'
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => { vi.restoreAllMocks(); resourceStore.clearAll() })
 
 it('edits role grants in a detail pane and separates deletion from routine save', async () => {
   installMatchMedia()
@@ -65,4 +66,22 @@ it.each(['royal', 'lead'])('previews %s effective permissions according to owner
   expect(update).toHaveBeenCalledWith(3, slug === 'royal'
     ? { name: 'Владелец', description: '' }
     : { name: 'Старший', description: '', permissions: ['nav.tasks', 'reports.create'] })
+})
+
+
+it('refreshes role rows on focus while keeping the open role draft', async () => {
+  installMatchMedia()
+  const role: AdminRole = { id: 2, slug: 'lead', name: 'Старший смены', description: '', is_system: false, is_active: true, permissions: [], user_count: 2 }
+  const read = vi.spyOn(api, 'adminRoles').mockResolvedValue([role])
+  vi.spyOn(api, 'adminRolePermissionCatalog').mockResolvedValue([])
+  renderApp('/admin/roles', testUser({ role: 'royal', permissions: ['roles.manage'] }))
+  fireEvent.click(await screen.findByRole('button', { name: /Открыть роль Старший смены/ }))
+  const name = screen.getByLabelText('Название')
+  fireEvent.change(name, { target: { value: 'Несохранённое название' } })
+  read.mockResolvedValue([{ ...role, name: 'Новое серверное имя' }])
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
+  fireEvent.focus(window)
+  await screen.findByRole('button', { name: 'Открыть роль Новое серверное имя' })
+  expect(name).toHaveValue('Несохранённое название')
+  expect(read).toHaveBeenCalledTimes(2)
 })

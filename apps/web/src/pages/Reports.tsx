@@ -6,7 +6,7 @@ import { ReportDetail } from '../components/reports/ReportDetail'
 import { ReportForms } from '../components/reports/ReportForms'
 import { ReportList } from '../components/reports/ReportList'
 import { Alert, Panel } from '../components/PageShell'
-import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
+import { EmptyBlock, SkeletonList } from '../components/ui/Feedback'
 import { TabPanel, Tabs } from '../design-system/navigation/Tabs'
 import { MasterDetail } from '../design-system/layout/MasterDetail'
 import {
@@ -16,7 +16,7 @@ import {
 } from '../domains/reports/reports'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
-import { useCachedResource, resourceStore } from '../lib/resource'
+import { useCachedResource, resourceStore, RESOURCE_REFRESH_MS } from '../lib/resource'
 import { useParkContext } from '../park-context'
 import { refreshReportsBadge } from '../reports-badge'
 
@@ -96,13 +96,13 @@ function ReportsOwner({
   const mineRes = useCachedResource<Report[]>(
     mineKey,
     () => apiClient.reportsMine(),
-    { enabled: (listRoute || detailRoute) && createEnabled && !parksLoading, persist: false },
+    { enabled: (listRoute || detailRoute) && createEnabled && !parksLoading, persist: false, refreshIntervalMs: listRoute && visiblePane === 'mine' ? RESOURCE_REFRESH_MS : 0 },
   )
   const inboxKey = `${resourcePrefix}inbox`
   const inboxRes = useCachedResource<Report[]>(
     inboxKey,
     () => apiClient.reportsInbox(parkId as number),
-    { enabled: (listRoute || detailRoute) && inboxEnabled && parkId != null && !parksLoading, persist: false },
+    { enabled: (listRoute || detailRoute) && inboxEnabled && parkId != null && !parksLoading, persist: false, refreshIntervalMs: listRoute && visiblePane === 'inbox' ? RESOURCE_REFRESH_MS : 0 },
   )
   const detailKey = `${resourcePrefix}detail:${parsedReportId ?? 'none'}`
   const detailRes = useCachedResource<Report>(
@@ -140,11 +140,16 @@ function ReportsOwner({
     return parks.find((park) => park.id === report.park_id)?.name ?? `Парк #${report.park_id}`
   }
   const refreshLists = useCallback(async () => {
+    for (const key of [mineKey, inboxKey]) {
+      const cached = resourceStore.get<Report[]>(key)
+      resourceStore.invalidate(key)
+      if (cached) resourceStore.set(key, cached, false)
+    }
     await Promise.all([
       createEnabled ? mineRes.refresh() : Promise.resolve(),
       inboxEnabled && parkId != null ? inboxRes.refresh() : Promise.resolve(),
     ])
-  }, [createEnabled, inboxEnabled, inboxRes, mineRes, parkId])
+  }, [createEnabled, inboxEnabled, inboxKey, inboxRes, mineKey, mineRes, parkId])
   const handleDetailUpdated = async () => {
     const requestedNavigation = navigation.current
     const isCurrent = () => active.current && navigation.current === requestedNavigation
@@ -227,14 +232,6 @@ function ReportsOwner({
               Создать репорт
             </Link>
           )}
-          <button
-            className="btn btn-secondary"
-            disabled={activeList.isRevalidating || parksLoading || (visiblePane === 'inbox' && parkId == null)}
-            onClick={() => void refreshLists()}
-            type="button"
-          >
-            {activeList.isRevalidating ? <Spinner label="Обновление" /> : 'Обновить'}
-          </button>
         </div>
       </div>
 

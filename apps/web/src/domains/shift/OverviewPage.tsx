@@ -67,7 +67,6 @@ function OverviewResource({ resourceKey, load, parkId, role, selectable, statusH
   return <>
     {failure ? <OverviewWarning busy={resource.isRevalidating} failure={failure} onRetry={() => void resource.refresh()} /> : null}
     <OverviewContent allHref={allHref} data={data} role={role} selectable={selectable} statusHref={statusHref} />
-    <Button busy={resource.isRevalidating} leadingIcon="refresh" onClick={() => void resource.refresh()} variant="secondary">Обновить данные</Button>
   </>
 }
 

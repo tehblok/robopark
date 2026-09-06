@@ -410,10 +410,12 @@
     background: transparent;
     flex-direction: column;
     font-size: var(--rp-font-size-body);
-    gap: 0;
+    gap: var(--rp-space-1);
     justify-content: center;
-    min-height: var(--rp-control-min-size);
-    padding: var(--rp-space-1);
+    line-height: 1.25;
+    min-height: 3.5rem;
+    min-width: 0;
+    padding: var(--rp-space-1) 2px;
     position: relative;
   }
 
@@ -423,8 +425,12 @@
     top: 0;
   }
 
+  .rp-shell__mobile-link > svg {
+    flex: none;
+  }
+
   .rp-shell__mobile-link .rp-shell__nav-label {
-    flex: 0;
+    flex: none;
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;

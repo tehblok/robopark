@@ -6,7 +6,7 @@ import {
 } from '../api'
 import { Alert, PageShell, Panel } from '../components/PageShell'
 import { IssueDrawer } from '../components/tracker/IssueDrawer'
-import { EmptyBlock, SkeletonKpi, SkeletonList, Spinner } from '../components/ui/Feedback'
+import { EmptyBlock, SkeletonKpi, SkeletonList } from '../components/ui/Feedback'
 import { useAuth } from '../auth-context'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
@@ -238,14 +238,8 @@ export function Dashboard() {
   const historyError = historyRes.error
     ? mapApiError(historyRes.error, ru.errors.load)
     : ''
-  const loading = summaryRes.isRevalidating || historyRes.isRevalidating
   const showSummarySkeleton = summaryRes.isLoading && !summary && !summaryError
   const showHistorySkeleton = historyRes.isLoading && !history && !historyError
-
-  const refresh = () => {
-    void summaryRes.refresh()
-    void historyRes.refresh()
-  }
 
   if (openKey) {
     return (
@@ -269,14 +263,6 @@ export function Dashboard() {
     <div className="dashboard-page animate-in">
       <div className="dashboard-toolbar">
         <h1 className="dashboard-title">{ru.nav.dashboard}</h1>
-        <button
-          className="btn btn-secondary"
-          disabled={loading || parkId == null || parksLoading}
-          onClick={refresh}
-          type="button"
-        >
-          {loading ? <Spinner label="Обновление" /> : 'Обновить'}
-        </button>
       </div>
 
       {quickLinks.length > 0 && (
@@ -309,7 +295,7 @@ export function Dashboard() {
               {showHistorySkeleton && <SkeletonList rows={1} />}
               {history && <BlockerHistoryChart points={history.points} />}
               {!history && !historyError && !showHistorySkeleton && (
-                <EmptyBlock icon="📈" title="Нажмите «Обновить», чтобы загрузить историю" />
+                <EmptyBlock icon="📈" title="История пока недоступна" />
               )}
             </Panel>
           </div>
@@ -335,7 +321,7 @@ export function Dashboard() {
                 </div>
               )}
               {!summary && !summaryError && !showSummarySkeleton && (
-                <EmptyBlock icon="📋" title="Нажмите «Обновить», чтобы загрузить показатели" />
+                <EmptyBlock icon="📋" title="Показатели пока недоступны" />
               )}
             </Panel>
           </div>
@@ -371,7 +357,7 @@ export function Dashboard() {
                 <EmptyBlock icon="✅" title="Нет блокеров в статусе «Перемещение»" />
               )}
               {!summary && !summaryError && !showSummarySkeleton && (
-                <EmptyBlock icon="🚚" title="Нажмите «Обновить», чтобы загрузить список" />
+                <EmptyBlock icon="🚚" title="Список пока недоступен" />
               )}
             </Panel>
           </div>

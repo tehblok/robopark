@@ -4,13 +4,14 @@ import { Spinner } from '../../components/ui/Feedback'
 import { api, type Park } from '../../api'
 import { mapApiError } from '../../i18n/errors'
 import { useCachedResource } from '../../lib/resource'
+import { useAuth } from '../../auth-context'
+import { adminResourceKey, adminResourceOptions } from '../../components/admin/adminResources'
 import { ManagementNavigation } from './ManagementNavigation'
 import './management.css'
 
 export function UserManagementPage() {
-  const parks = useCachedResource<Park[]>('management:parks', () => api.parks(), {
-    persist: false,
-  })
+  const { user } = useAuth()
+  const parks = useCachedResource<Park[]>(adminResourceKey('parks', user), () => api.parks(), adminResourceOptions)
   const error = parks.error ? mapApiError(parks.error, 'Не удалось загрузить парки') : ''
 
   return (

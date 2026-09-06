@@ -161,6 +161,8 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
   }
   const bootRes = useCachedResource<Partial<AdminBootstrap>>(bootstrapKey, () => loadAdminBootstrap(canIntegrations), {
     persist: false,
+    // Background snapshots must not replace unsaved settings drafts.
+    refreshIntervalMs: 0,
   })
   const boot = bootRes.data
   const settings = boot?.settings ?? null

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type NowReport } from '../api'
 import { Alert, PageShell, Panel } from '../components/PageShell'
-import { EmptyBlock, SkeletonKpi, SkeletonList, Spinner } from '../components/ui/Feedback'
+import { EmptyBlock, SkeletonKpi, SkeletonList } from '../components/ui/Feedback'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
 import { useCachedResource } from '../lib/resource'
@@ -108,16 +108,6 @@ export function OperatorNowReport() {
 
   return (
     <PageShell
-      actions={
-        <button
-          className="btn btn-secondary"
-          disabled={reportRes.isRevalidating || parksLoading || !reportEnabled}
-          onClick={() => void reportRes.refresh()}
-          type="button"
-        >
-          {reportRes.isRevalidating ? <Spinner label="Обновление" /> : 'Обновить'}
-        </button>
-      }
       subtitle="Живой срез открытых blocker по вашим паркам."
       title="Сейчас по Tracker"
     >
@@ -178,7 +168,7 @@ export function OperatorNowReport() {
         {showReportSkeleton && <SkeletonKpi items={4} />}
         {report && <MetricsGrid metrics={report.totals} />}
         {!showReportSkeleton && !report && !error && reportEnabled && (
-          <EmptyBlock hint="Нажмите «Обновить» в шапке." icon="◔" title="Сводка ещё не загружена" />
+          <EmptyBlock hint="Данные загружаются автоматически." icon="◔" title="Сводка ещё не загружена" />
         )}
       </Panel>
 

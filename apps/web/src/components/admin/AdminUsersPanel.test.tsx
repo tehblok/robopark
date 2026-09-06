@@ -1,3 +1,4 @@
+import { resourceStore } from '../../lib/resource'
 import { render, screen, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { api, type AdminRole, type AdminUser, type User } from '../../api'
@@ -30,7 +31,7 @@ const privilegedUser: AdminUser = {
   role_permissions: ['nav.admin'],
 }
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => { vi.restoreAllMocks(); resourceStore.clearAll() })
 
 it('hides custom privileged roles and locks an existing privileged identity for a non-owner', async () => {
   vi.spyOn(api, 'adminUsers').mockResolvedValue([privilegedUser])

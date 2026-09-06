@@ -1,9 +1,9 @@
-import { useEffect } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import { api, type TrackerTransition } from '../../api'
 import { useAuth } from '../../auth-context'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
-import { useCachedResource } from '../../lib/resource'
+import { resourceStore, useCachedResource } from '../../lib/resource'
 import { IssueActionsPanel } from './IssueActionsPanel'
 import { IssueDetailPanel } from './IssueDetailPanel'
 
@@ -46,13 +46,23 @@ export function IssueDrawer({
   const errorText = loadError ? mapApiError(loadError) || ru.tracker.detailsError : ''
   const loading = detailRes.isLoading && !detail
 
+  const identity = `${user?.id}:${issueKey}`
+  const owner = useRef(identity)
+  useLayoutEffect(() => {
+    owner.current = identity
+    return () => { owner.current = '' }
+  }, [identity])
   const reload = async () => {
+    if (owner.current !== identity) return
+    resourceStore.invalidate(`tracker:issue:${issueKey}`)
+    resourceStore.invalidate(`tracker:comments:${issueKey}`)
+    resourceStore.invalidate(`tracker:transitions:${issueKey}`)
     await Promise.all([
       detailRes.refresh(),
       commentsRes.refresh(),
       canWrite ? transitionsRes.refresh() : Promise.resolve(),
     ])
-    onChanged?.()
+    if (owner.current === identity) onChanged?.()
   }
 
   useEffect(() => {

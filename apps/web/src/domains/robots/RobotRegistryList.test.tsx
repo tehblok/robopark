@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Profiler } from 'react'
 import { MemoryRouter, useSearchParams } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, type RobotRegistry, type User } from '../../api'
 import { AuthContext } from '../../auth-context'
 import { RobotRegistryList } from './RobotRegistryList'
@@ -32,6 +32,9 @@ function scopedTree(client: Parameters<typeof tree>[0], onRender = () => undefin
     </AuthContext.Provider>
   </MemoryRouter>
 }
+
+beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true) })
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('registry resource states', () => {
   it('shows loading then a stable empty result and no enabled pagination', async () => {
@@ -97,7 +100,7 @@ describe('registry resource states', () => {
     const client = { robotRegistry: vi.fn().mockResolvedValueOnce(secondPage).mockResolvedValueOnce({ ...empty, offset: 50, total: 1 }).mockResolvedValue({ ...empty, items: [row], total: 1 }) }
     render(scopedTree(client, () => { committed.push(document.body.textContent ?? '') }))
     expect(await screen.findByText('51–51 из 51')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Обновить реестр' }))
+    vi.advanceTimersByTime(30_000); fireEvent(document, new Event('visibilitychange'))
     expect(await screen.findByText('1–1 из 1')).toBeVisible()
     expect(screen.getByRole('link', { name: 'Открыть робота 447' })).toBeVisible()
     expect(client.robotRegistry).toHaveBeenCalledTimes(3)
@@ -110,11 +113,47 @@ describe('registry resource states', () => {
     const client = { robotRegistry: vi.fn().mockResolvedValueOnce(secondPage).mockResolvedValue({ ...empty, offset: 50 }) }
     render(scopedTree(client))
     expect(await screen.findByText('51–51 из 51')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Обновить реестр' }))
+    vi.advanceTimersByTime(30_000); fireEvent(document, new Event('visibilitychange'))
     expect(await screen.findByRole('heading', { name: 'Роботы не найдены' })).toBeVisible()
     expect(screen.getByLabelText('Registry URL')).not.toHaveTextContent('offset=')
     expect(screen.getByText('0 роботов')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Назад' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Далее' })).toBeDisabled()
   })
+})
+
+it('reuses a fresh registry batch across filter round trips and resumes stale data automatically', async () => {
+  const client = { robotRegistry: vi.fn().mockResolvedValue({ ...empty, items: [row], total: 1 }) }
+  render(tree(client)); await screen.findByRole('link', { name: 'Открыть робота 447' })
+  expect(screen.queryByRole('button', { name: /Обновить/ })).not.toBeInTheDocument()
+  const search = screen.getByLabelText('Поиск по номеру, VIN или задаче')
+  fireEvent.change(search, { target: { value: '447' } }); await act(async () => undefined)
+  fireEvent.change(search, { target: { value: '' } }); await act(async () => undefined)
+  expect(client.robotRegistry).toHaveBeenCalledTimes(2)
+  vi.advanceTimersByTime(30_000); fireEvent(document, new Event('visibilitychange')); await act(async () => undefined)
+  expect(client.robotRegistry).toHaveBeenCalledTimes(3)
+})
+
+it('suspends registry requests offline or hidden and coalesces wake events', async () => {
+  vi.useFakeTimers()
+  const online = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
+  const client = { robotRegistry: vi.fn().mockResolvedValue(empty) }
+  render(tree(client)); await act(async () => undefined)
+  await act(async () => vi.advanceTimersByTimeAsync(60_000))
+  expect(client.robotRegistry).not.toHaveBeenCalled()
+  online.mockReturnValue(true); fireEvent(window, new Event('online')); await act(async () => undefined)
+  expect(client.robotRegistry).toHaveBeenCalledTimes(1)
+  const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+  fireEvent(document, new Event('visibilitychange'))
+  await act(async () => vi.advanceTimersByTimeAsync(60_000))
+  expect(client.robotRegistry).toHaveBeenCalledTimes(1)
+  let done!: (value: RobotRegistry) => void
+  client.robotRegistry.mockImplementation(() => new Promise(resolve => { done = resolve }))
+  hidden.mockReturnValue(false)
+  fireEvent(document, new Event('visibilitychange')); fireEvent(window, new Event('online'))
+  await act(async () => undefined)
+  expect(client.robotRegistry).toHaveBeenCalledTimes(2)
+  await act(async () => vi.advanceTimersByTimeAsync(60_000))
+  expect(client.robotRegistry).toHaveBeenCalledTimes(2)
+  await act(async () => done(empty))
 })

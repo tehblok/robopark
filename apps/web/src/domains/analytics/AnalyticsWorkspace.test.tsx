@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { ApiError, type User } from '../../api'
 import { AuthContext } from '../../auth-context'
 import { ParkScopeContext } from '../../app/park/parkScope'
+import { resourceStore } from '../../lib/resource'
 import { Analytics } from '../../pages/Analytics'
 import { deferred, makeUser, otherPark, park } from '../insights/operations.test-support'
 import { analyticsFixture as fixture } from './analytics.test-support'
@@ -12,7 +13,7 @@ function Location() { return <output aria-label="URL">{useLocation().search}</ou
 function tree({ client, url = '/analytics?park=7', user = makeUser(), selectedPark = park, refreshUser = vi.fn(async () => user) }: { client: Client; url?: string; user?: User; selectedPark?: typeof park; refreshUser?: () => Promise<User> }) {
   return <MemoryRouter initialEntries={[url]}><AuthContext.Provider value={{ user, loading: false, login: async () => user, refreshUser, logout: async () => {} }}><ParkScopeContext.Provider value={{ selectedPark, parkId: selectedPark.id, parks: [park, otherPark], loading: false, locked: false, setParkId: vi.fn(), refreshParks: async () => {} }}><Analytics apiClient={client} /><Location /></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>
 }
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => { resourceStore.clearAll(); vi.restoreAllMocks(); vi.useRealTimers() })
 
 it('loads historical analytics with trends, coverage and genuine task drilldowns', async () => {
   const client = { analytics: vi.fn(async () => fixture()) }
@@ -142,4 +143,87 @@ it('ignores a released comparison denial after the active context already recove
   expect(screen.getByRole('region', { name: 'История парка Север' })).toBeVisible()
   expect(screen.queryByRole('heading', { name: 'Нет доступа' })).not.toBeInTheDocument()
   expect(refreshUser).not.toHaveBeenCalled()
+})
+
+
+it('reuses fresh history on remount and refreshes stale history on focus', async () => {
+  const client = { analytics: vi.fn(async () => fixture()) }
+  const view = render(tree({ client }))
+  await screen.findByRole('region', { name: 'История парка Север' })
+  expect(screen.queryByRole('button', { name: /Обновить/ })).not.toBeInTheDocument()
+  view.unmount()
+  render(tree({ client }))
+  expect(screen.getByRole('region', { name: 'История парка Север' })).toBeVisible()
+  expect(client.analytics).toHaveBeenCalledTimes(1)
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
+  fireEvent.focus(window)
+  await waitFor(() => expect(client.analytics).toHaveBeenCalledTimes(2))
+  expect(Object.keys(localStorage).filter(key => key.includes('analytics:'))).toEqual([])
+})
+
+it.each([401, 403])('clears cached history after automatic %s revalidation and halts retries', async status => {
+  const user = makeUser()
+  const refreshUser = vi.fn(async () => user)
+  const client = { analytics: vi.fn().mockResolvedValueOnce(fixture()).mockRejectedValue(new ApiError(status)) }
+  render(tree({ client, user, refreshUser }))
+  await screen.findByRole('region', { name: 'История парка Север' })
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
+  fireEvent.focus(window)
+  await screen.findByRole('heading', { name: status === 401 ? 'Сессия истекла' : 'Нет доступа' })
+  expect(screen.queryByRole('region', { name: 'История парка Север' })).not.toBeInTheDocument()
+  fireEvent.focus(window)
+  fireEvent(window, new Event('online'))
+  expect(client.analytics).toHaveBeenCalledTimes(2)
+  expect(refreshUser).toHaveBeenCalledTimes(1)
+})
+
+it('keeps an expired session denied when the selected park changes', async () => {
+  const client = { analytics: vi.fn().mockRejectedValue(new ApiError(401)) }
+  const view = render(tree({ client }))
+  await screen.findByRole('heading', { name: 'Сессия истекла' })
+  view.rerender(tree({ client, selectedPark: otherPark }))
+  expect(screen.getByRole('heading', { name: 'Сессия истекла' })).toBeVisible()
+  expect(client.analytics).toHaveBeenCalledTimes(1)
+})
+
+it('keeps historical content during an offline background refresh and allows retry', async () => {
+  const client = { analytics: vi.fn().mockResolvedValueOnce(fixture()).mockRejectedValueOnce(new TypeError('offline')).mockResolvedValue(fixture()) }
+  render(tree({ client }))
+  await screen.findByRole('region', { name: 'История парка Север' })
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
+  fireEvent.focus(window)
+  await screen.findByText('Нет сети')
+  expect(screen.getByRole('region', { name: 'История парка Север' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Повторить' }))
+  await waitFor(() => expect(screen.queryByText('Нет сети')).not.toBeInTheDocument())
+  expect(client.analytics).toHaveBeenCalledTimes(3)
+})
+
+
+it('polls historical analytics every two minutes without clearing the loaded view', async () => {
+  vi.useFakeTimers()
+  const client = { analytics: vi.fn(async () => fixture()) }
+  render(tree({ client }))
+  await act(async () => {})
+  expect(screen.getByRole('region', { name: 'История парка Север' })).toBeVisible()
+  await act(async () => { await vi.advanceTimersByTimeAsync(119_999) })
+  expect(client.analytics).toHaveBeenCalledTimes(1)
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(client.analytics).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole('region', { name: 'История парка Север' })).toBeVisible()
+})
+
+
+it.each([200, 403])('does not reuse a retired pending request after remount when it later returns %s', async status => {
+  const pending = deferred<ReturnType<typeof fixture>>()
+  const refreshUser = vi.fn(async () => makeUser())
+  const client = { analytics: vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue(fixture()) }
+  const first = render(tree({ client, refreshUser }))
+  first.unmount()
+  render(tree({ client, refreshUser }))
+  await screen.findByRole('region', { name: 'История парка Север' })
+  await act(async () => { if (status === 403) pending.reject(new ApiError(403)); else pending.resolve(fixture()) })
+  expect(client.analytics).toHaveBeenCalledTimes(2)
+  expect(refreshUser).not.toHaveBeenCalled()
+  expect(screen.getByRole('region', { name: 'История парка Север' })).toBeVisible()
 })

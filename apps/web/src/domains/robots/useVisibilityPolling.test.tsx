@@ -48,3 +48,12 @@ it('StrictMode cleanup rejects old ownership and unmount clears scheduling', asy
   await act(async () => vi.advanceTimersByTimeAsync(2500)); expect(task).toHaveBeenCalledTimes(initial + 1)
   view.unmount(); await act(async () => vi.advanceTimersByTimeAsync(30000)); expect(task).toHaveBeenCalledTimes(initial + 1)
 })
+
+it('rechecks visibility before starting a queued automatic request', async () => {
+  const task = vi.fn(async () => undefined)
+  render(<Probe task={task} />)
+  Object.defineProperty(document, 'hidden', { value: true })
+  fireEvent(document, new Event('visibilitychange'))
+  await flush()
+  expect(task).not.toHaveBeenCalled()
+})

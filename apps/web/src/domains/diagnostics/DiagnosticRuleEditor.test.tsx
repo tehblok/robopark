@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { type User } from '../../api'
+import { api, type User } from '../../api'
+import { StrictMode } from 'react'
 import { AuthContext } from '../../auth-context'
 import { resourceStore } from '../../lib/resource'
 import { AdminEmergencyConfig } from '../../pages/AdminEmergencyConfig'
@@ -323,4 +324,30 @@ it.each(['disable', 'save', 'reorder', 'reload'] as const)('invalidates a pendin
   expect(await screen.findByText(operation === 'disable' ? 'Совпадение не найдено' : 'Совпадение найдено')).toBeVisible()
   const latest = requests.filter(request => request.path.endsWith('/preview')).at(-1)!
   expect(JSON.parse(String(latest.init.body)).rule.is_enabled).toBe(operation !== 'disable')
+})
+
+
+it('automatically refreshes the diagnostic catalog without resetting the rule draft', async () => {
+  render(tree())
+  const title = await screen.findByLabelText('Название ошибки')
+  fireEvent.change(title, { target: { value: 'Мой черновик' } })
+  catalog = [{ ...first, title: 'Изменение другого администратора' }, second]
+  etag = '"background-version"'
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
+  fireEvent.focus(window)
+  await screen.findByRole('button', { name: 'Открыть правило Изменение другого администратора' })
+  expect(title).toHaveValue('Мой черновик')
+  expect(requests.filter(request => request.path === '/api/admin/diagnostic-rules' && !request.init.method)).toHaveLength(2)
+})
+
+
+it('loads the diagnostic catalog after StrictMode cancels its first mount request', async () => {
+  const read = vi.spyOn(api, 'diagnosticRules')
+    .mockImplementationOnce(signal => new Promise((_, reject) => {
+      signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+    }))
+    .mockResolvedValue({ rules: [first, second] as Awaited<ReturnType<typeof api.diagnosticRules>>['rules'], etag })
+  render(<StrictMode>{tree()}</StrictMode>)
+  expect(await screen.findByLabelText('Название ошибки')).toHaveValue(first.title)
+  expect(read).toHaveBeenCalledTimes(2)
 })

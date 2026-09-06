@@ -200,3 +200,24 @@ it.each(['detail', 'list'] as const)('keeps selected report B when report A comp
   expect(screen.getByLabelText('URL')).toHaveTextContent('/reports/10?park=7&pane=inbox')
   expect(screen.getByRole('heading', { name: 'Репорт B' })).toBeVisible()
 })
+
+it('replaces a pre-mutation pending inbox request before showing the completed report list', async () => {
+  const actor = userEvent.setup()
+  const oldInbox = deferred<Report[]>()
+  const current = report(9, 'Завершённый репорт')
+  const inbox = vi.fn().mockReturnValueOnce(oldInbox.promise).mockResolvedValue([])
+  const apiClient = client({
+    reportsMine: vi.fn(async () => []),
+    reportsInbox: inbox,
+    report: vi.fn().mockResolvedValueOnce(current).mockResolvedValue({ ...current, status: 'done' }),
+    reportDone: vi.fn(async () => ({ ...current, status: 'done' })),
+  })
+  const resolver = { ...userA, permissions: ['nav.reports', 'reports.create', 'reports.resolve'] }
+  render(tree(resolver, apiClient, '/reports/9?park=7&pane=inbox'))
+  await actor.click(await screen.findByRole('button', { name: 'Готово' }))
+  await waitFor(() => expect(inbox).toHaveBeenCalledTimes(2))
+  await waitFor(() => expect(screen.getByLabelText('URL')).toHaveTextContent('/reports?park=7&pane=inbox'))
+  await act(async () => oldInbox.resolve([current]))
+  expect(screen.queryByRole('button', { name: /Завершённый репорт/ })).not.toBeInTheDocument()
+  expect(screen.getByText('Нет открытых репортов для выбранного парка.')).toBeVisible()
+})
