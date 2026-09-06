@@ -825,6 +825,8 @@ export const api = {
     park?: string
     status?: string
     robot?: string
+    robot_exact?: string
+    exclude_key?: string
     assignee?: string
     untagged?: boolean
     age_hours?: number

@@ -298,11 +298,13 @@ describe('IssueWorkbench', () => {
     await screen.findByRole('heading', { name: 'Последние закрытые задачи робота 447' })
     await waitFor(() => expect(client.trackerIssues).toHaveBeenCalledTimes(3))
     expect(client.trackerIssues).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      robot: '447',
+      robot_exact: '447',
+      exclude_key: issue.key,
       sort: 'oldest',
     }))
     expect(client.trackerIssues).toHaveBeenNthCalledWith(3, expect.objectContaining({
-      robot: '447',
+      robot_exact: '447',
+      exclude_key: issue.key,
       sort: 'newest',
       status: 'closed',
     }))
@@ -325,6 +327,55 @@ describe('IssueWorkbench', () => {
     expect(await screen.findByRole('heading', { name: 'Сервис временно недоступен' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Последние закрытые задачи робота 447' })).toBeVisible()
   })
+
+  it.each(['success', 'error'] as const)(
+    'does not paint related %s state for robot A under pending robot B headings',
+    async (mode) => {
+      const pendingOpenB = deferred<Paged<TrackerIssue>>()
+      const pendingClosedB = deferred<Paged<TrackerIssue>>()
+      const aTask = { ...issue, key: 'ROBOPARK-A', summary: 'Данные робота A' }
+      const client = apiClient({
+        trackerIssues: vi.fn((query) => {
+          if (query.robot_exact === '447' && !query.status) {
+            return mode === 'success'
+              ? Promise.resolve(page([aTask]))
+              : Promise.reject(new ApiError(502, 'tracker_upstream_error'))
+          }
+          if (query.robot_exact === '447') return Promise.resolve(page())
+          if (query.robot_exact === '448' && !query.status) return pendingOpenB.promise
+          if (query.robot_exact === '448') return pendingClosedB.promise
+          return Promise.resolve(page())
+        }),
+      })
+      const commits: string[] = []
+      render(<Harness><Profiler id="related" onRender={() => commits.push(document.body.textContent ?? '')}>
+        <IssueWorkbench apiClient={client} issueKey={issue.key} onAuthorizationFailure={vi.fn(async () => undefined)}
+          onCloseIssue={vi.fn()} onOpenIssue={vi.fn()} onStateChange={vi.fn()} selectedPark={park} state={state} user={user} />
+      </Profiler></Harness>)
+      await waitFor(() => expect(client.trackerIssues).toHaveBeenCalledWith(expect.objectContaining({
+        robot_exact: '447',
+      })))
+      if (mode === 'success') await screen.findByText(/Данные робота A/)
+      else await screen.findByRole('heading', { name: 'Сервис временно недоступен' })
+
+      const before = commits.length
+      act(() => {
+        resourceStore.set(`${accessPrefix()}issue:${issue.key}`, {
+          ...issue,
+          queue: 'ROBO-B',
+          robot: '448',
+        }, true)
+      })
+
+      await screen.findByRole('heading', { name: 'Открытые задачи робота 448' })
+      await waitFor(() => expect(client.trackerIssues).toHaveBeenCalledWith(expect.objectContaining({
+        robot_exact: '448',
+        queue: 'ROBO-B',
+      })))
+      expect(commits.slice(before).every((text) => !text.includes('Данные робота A'))).toBe(true)
+      expect(commits.slice(before).every((text) => !text.includes('Сервис временно недоступен'))).toBe(true)
+    },
+  )
 
   it.each(['permissions', 'read-revoked', 'tag', 'queue'] as const)(
     'isolates cached payload and actions after a same-ID %s change, including remount',

@@ -75,8 +75,8 @@ test('nested work keeps its parent navigation and loads related robot tasks afte
 
   await expect(page.getByRole('heading', { name: 'Открытые задачи робота 447' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Последние закрытые задачи робота 447' })).toBeVisible()
-  await expect.poll(() => queries.filter((params) => params.get('robot') === '447').length).toBe(2)
-  expect(queries.filter((params) => params.get('robot') === '447').map((params) => params.get('status')))
+  await expect.poll(() => queries.filter((params) => params.get('robot_exact') === '447').length).toBe(2)
+  expect(queries.filter((params) => params.get('robot_exact') === '447').map((params) => params.get('status')))
     .toEqual([null, 'closed'])
   await expect(page.locator('.rp-shell__desktop-nav').getByRole('link', { name: 'Работа', exact: true }))
     .toHaveAttribute('aria-current', 'page')

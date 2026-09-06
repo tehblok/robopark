@@ -32,6 +32,34 @@ describe('loadWorkPage', () => {
     ])
   })
 
+  it('globally orders dated and age-derived records while leaving unknown ages stable', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-10T12:00:00Z'))
+    const items: TrackerIssue[] = [
+      { key: 'UNKNOWN-A', summary: '', status: 'Open', created_at: null, hours_created: '', url: '' },
+      { key: 'DATED', summary: '', status: 'Open', created_at: '2026-01-06T09:00:00Z', hours_created: '1', url: '' },
+      { key: 'AGE-100', summary: '', status: 'Open', created_at: 'not-a-date', hours_created: '100', url: '' },
+      { key: 'UNKNOWN-B', summary: '', status: 'Open', created_at: null, hours_created: 'NaN', url: '' },
+      { key: 'UNKNOWN-C', summary: '', status: 'Open', created_at: '', hours_created: 'Infinity', url: '' },
+    ]
+
+    expect(oldestFirst(items).map((item) => item.key)).toEqual([
+      'AGE-100',
+      'DATED',
+      'UNKNOWN-A',
+      'UNKNOWN-B',
+      'UNKNOWN-C',
+    ])
+    expect(items.map((item) => item.key)).toEqual([
+      'UNKNOWN-A',
+      'DATED',
+      'AGE-100',
+      'UNKNOWN-B',
+      'UNKNOWN-C',
+    ])
+    vi.useRealTimers()
+  })
+
   it('maps filters and pagination while forcing oldest even for legacy caller state', async () => {
     const result = emptyPage(WORK_PAGE_SIZE * 2)
     const trackerIssues = vi.fn(async () => result)

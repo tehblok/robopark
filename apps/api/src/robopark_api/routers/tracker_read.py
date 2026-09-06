@@ -82,6 +82,15 @@ def _issue_out(issue: dict) -> TrackerIssueOut:
     )
 
 
+def _normalized_robot_number(raw: object) -> str | None:
+    text = str(raw or "").strip().upper()
+    if text.startswith("YASADR"):
+        text = text[6:]
+    if not text or not text.isdecimal():
+        return None
+    return text.lstrip("0") or "0"
+
+
 def _detail_out(issue: dict, *, db: Session, user: User) -> TrackerIssueDetailOut:
     attachments = [TrackerAttachmentOut(**item) for item in (issue.get("attachments") or [])]
     writable = can_write_tracker(db, user)
@@ -231,6 +240,8 @@ def list_issues(
     park: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
     robot: str | None = Query(default=None),
+    robot_exact: str | None = Query(default=None, max_length=64),
+    exclude_key: str | None = Query(default=None, max_length=128),
     assignee: str | None = Query(default=None, max_length=128),
     untagged: bool = Query(default=False),
     age_hours: int | None = Query(default=None, ge=1),
@@ -277,11 +288,22 @@ def list_issues(
     if sort_order == "newest":
         ordered.reverse()
 
+    exact_robot = _normalized_robot_number(robot_exact)
+    excluded_key = (exclude_key or "").strip()
     scoped: list[TrackerIssueOut] = []
+    seen_keys: set[str] = set()
     for issue in ordered:
         # Out-of-scope issues are filtered out, not fatal: a single foreign issue
         # in the upstream response must not fail the whole listing.
         if not is_issue_in_scope(db, user, issue):
+            continue
+        if robot_exact is not None and (
+            exact_robot is None
+            or _normalized_robot_number(issue.get("robot")) != exact_robot
+        ):
+            continue
+        key = str(issue.get("key") or "").strip()
+        if key == excluded_key or key in seen_keys:
             continue
         if age_hours and issue.get("hours_created"):
             try:
@@ -289,6 +311,7 @@ def list_issues(
                     continue
             except (TypeError, ValueError):
                 pass
+        seen_keys.add(key)
         scoped.append(_issue_out(issue))
 
     total = len(scoped)

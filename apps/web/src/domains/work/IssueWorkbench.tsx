@@ -175,6 +175,68 @@ function RelatedTaskGroup({
   </section>
 }
 
+function RelatedTasksPanel({
+  apiClient,
+  issueKey,
+  onOpen,
+  park,
+  resourcePrefix,
+  robotNumber,
+  queue,
+}: {
+  apiClient: IssueWorkbenchApiClient
+  issueKey: string
+  onOpen: (key: string) => void
+  park?: string
+  resourcePrefix: string
+  robotNumber: string
+  queue: string
+}) {
+  // This component is keyed by the complete related-task identity below. Its
+  // local resources therefore cannot carry a prior robot's rows or error into
+  // a revalidated detail that now names another robot or queue.
+  const relatedOpen = useCachedResource<Paged<TrackerIssue>>(
+    `${resourcePrefix}:open`,
+    () => apiClient.trackerIssues({
+      queue,
+      park,
+      robot_exact: robotNumber,
+      exclude_key: issueKey,
+      sort: 'oldest',
+      limit: RELATED_PAGE_SIZE,
+      offset: 0,
+    }),
+  )
+  const relatedClosed = useCachedResource<Paged<TrackerIssue>>(
+    `${resourcePrefix}:closed`,
+    () => apiClient.trackerIssues({
+      queue,
+      park,
+      robot_exact: robotNumber,
+      exclude_key: issueKey,
+      status: 'closed',
+      sort: 'newest',
+      limit: RELATED_PAGE_SIZE,
+      offset: 0,
+    }),
+  )
+
+  return <>
+    <RelatedTaskGroup
+      empty="Открытых задач по этому роботу нет."
+      onOpen={onOpen}
+      resource={relatedOpen}
+      title={`Открытые задачи робота ${robotNumber}`}
+    />
+    <RelatedTaskGroup
+      empty="Закрытых задач по этому роботу нет."
+      onOpen={onOpen}
+      resource={relatedClosed}
+      title={`Последние закрытые задачи робота ${robotNumber}`}
+    />
+  </>
+}
+
 function workAccessKey(user: User, selectedPark: Park): string {
   const parkScope = (park: Park) => [park.id, park.tag?.trim(), park.tracker_queue?.trim(), park.is_active !== false]
   return JSON.stringify([
@@ -273,6 +335,7 @@ function IssueWorkbenchOwner({
   const refreshStartedRef = useRef(false)
   const ownerGeneration = useRef(0)
   const [authorizationFailure, setAuthorizationFailure] = useState<DomainError | null>(null)
+  const [relatedRefreshGeneration, setRelatedRefreshGeneration] = useState(0)
 
   useLayoutEffect(() => () => { ++ownerGeneration.current }, [])
 
@@ -332,33 +395,6 @@ function IssueWorkbenchOwner({
   const relatedPrefix = robotNumber && relatedQueue
     ? `${accessPrefix}related:${issueKey}:${relatedQueue}:${relatedPark ?? 'untagged'}:${robotNumber}`
     : ''
-  // Related tasks are deliberately not guarded with the main work owner: the
-  // detail remains usable if one secondary Tracker read fails or is denied.
-  const relatedOpen = useCachedResource<Paged<TrackerIssue>>(
-    relatedPrefix ? `${relatedPrefix}:open` : '',
-    () => apiClient.trackerIssues({
-      queue: relatedQueue,
-      park: relatedPark,
-      robot: robotNumber ?? undefined,
-      sort: 'oldest',
-      limit: RELATED_PAGE_SIZE,
-      offset: 0,
-    }),
-    { enabled: Boolean(relatedPrefix) },
-  )
-  const relatedClosed = useCachedResource<Paged<TrackerIssue>>(
-    relatedPrefix ? `${relatedPrefix}:closed` : '',
-    () => apiClient.trackerIssues({
-      queue: relatedQueue,
-      park: relatedPark,
-      robot: robotNumber ?? undefined,
-      status: 'closed',
-      sort: 'newest',
-      limit: RELATED_PAGE_SIZE,
-      offset: 0,
-    }),
-    { enabled: Boolean(relatedPrefix) },
-  )
   const transitionsEnabled = Boolean(
     issueKey && detail.data?.capabilities.transition,
   )
@@ -455,11 +491,11 @@ function IssueWorkbenchOwner({
     resourceStore.invalidate(commentsKey)
     resourceStore.invalidate(`${accessPrefix}transitions:${issueKey}`)
     resourceStore.invalidate(`${accessPrefix}related:${issueKey}:`, { prefix: true })
+    setRelatedRefreshGeneration((generation) => generation + 1)
     void Promise.allSettled([
       list.refresh(),
       detail.refresh(),
       comments.refresh(),
-      ...(relatedPrefix ? [relatedOpen.refresh(), relatedClosed.refresh()] : []),
       ...(transitionsEnabled ? [transitions.refresh()] : []),
     ])
   }, [
@@ -470,9 +506,6 @@ function IssueWorkbenchOwner({
     detailKey,
     issueKey,
     list,
-    relatedClosed,
-    relatedOpen,
-    relatedPrefix,
     selectedPark.id,
     transitions,
     transitionsEnabled,
@@ -580,18 +613,16 @@ function IssueWorkbenchOwner({
                           }, selectedPark.id)}>
                             Незавершённые задачи робота {robotNumber}
                           </Link>
-                          <RelatedTaskGroup
-                            empty="Открытых задач по этому роботу нет."
+                          {relatedPrefix && relatedQueue ? <RelatedTasksPanel
+                            apiClient={apiClient}
+                            issueKey={issueKey ?? ''}
+                            key={`${relatedPrefix}:${relatedRefreshGeneration}`}
                             onOpen={saveAndOpenIssue}
-                            resource={relatedOpen}
-                            title={`Открытые задачи робота ${robotNumber}`}
-                          />
-                          <RelatedTaskGroup
-                            empty="Закрытых задач по этому роботу нет."
-                            onOpen={saveAndOpenIssue}
-                            resource={relatedClosed}
-                            title={`Последние закрытые задачи робота ${robotNumber}`}
-                          />
+                            park={relatedPark}
+                            resourcePrefix={relatedPrefix}
+                            robotNumber={robotNumber}
+                            queue={relatedQueue}
+                          /> : null}
                         </> : <p>Робот в задаче не указан — связанные задачи недоступны.</p>}
                       </div>
                     ) : null}

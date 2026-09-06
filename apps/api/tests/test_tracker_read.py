@@ -114,6 +114,56 @@ def test_tracker_list_uses_issue_key_as_a_deterministic_sort_tiebreaker(
     assert [item["key"] for item in newest] == ["ROBOPARK-2", "ROBOPARK-1"]
 
 
+def test_tracker_list_exact_robot_filters_before_deduplication_and_pagination(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    captured: list[dict] = []
+    open_items = [
+        {**_scoped_issue("ROBOPARK-42", "2026-01-01T00:00:00Z"), "robot": "447"},
+        {**_scoped_issue("ROBOPARK-1447", "2026-01-01T01:00:00Z"), "robot": "1447", "summary": "Робот 447 в тексте"},
+        {**_scoped_issue("ROBOPARK-1", "2026-01-01T02:00:00Z"), "robot": "447", "summary": "Без номера в summary"},
+        {**_scoped_issue("ROBOPARK-2", "2026-01-01T03:00:00Z"), "robot": "YASADR00000000447"},
+        {**_scoped_issue("ROBOPARK-2", "2026-01-02T00:00:00Z"), "robot": "447", "summary": "Дубликат ключа"},
+        {**_scoped_issue("ROBOPARK-3", "2026-01-01T04:00:00Z"), "robot": "447"},
+    ]
+    closed_items = [{**_scoped_issue("ROBOPARK-4", "2026-01-02T00:00:00Z"), "robot": "447", "status": "Closed"}]
+
+    def search(**kwargs):
+        captured.append(kwargs)
+        return open_items if kwargs["filter_open"] else closed_items
+
+    monkeypatch.setattr(tracker_client, "search_issues", search)
+    login_as(client, "op2", "secret")
+
+    response = client.get(
+        "/tracker/issues?queue=ROBOPARK&park=Alpha&robot_exact=447&exclude_key=ROBOPARK-42&limit=2"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["key"] for item in body["items"]] == ["ROBOPARK-1", "ROBOPARK-2"]
+    assert body["total"] == 3
+    assert body["has_more"] is True
+    assert "ROBOPARK-42" not in [item["key"] for item in body["items"]]
+    assert "ROBOPARK-1447" not in [item["key"] for item in body["items"]]
+    assert captured[0]["filter_open"] is True
+    assert "Queue: ROBOPARK" in captured[0]["query"]
+    assert "Tags: Alpha" in captured[0]["query"]
+    assert "Summary:" not in captured[0]["query"]
+
+    closed = client.get(
+        "/tracker/issues?queue=ROBOPARK&park=Alpha&status=closed&robot_exact=447&exclude_key=ROBOPARK-42"
+    )
+    assert closed.status_code == 200
+    assert [item["key"] for item in closed.json()["items"]] == ["ROBOPARK-4"]
+    assert captured[1]["filter_open"] is False
+    assert "Status: closed" in captured[1]["query"]
+
+
 def test_mechanic_issue_capabilities_respect_write_policy_but_keep_attachment(
     client, db_session, seed_mechanic, monkeypatch
 ):
