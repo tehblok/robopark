@@ -15,6 +15,7 @@ from robopark_api.middleware.maintenance import MaintenanceGateMiddleware
 from robopark_api.routers import (
     admin_audit,
     admin_diagnostic_rules,
+    admin_diagnostic_unknowns,
     admin_emergency,
     admin_ops,
     admin_park_requests,
@@ -122,9 +123,12 @@ def create_app() -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def hide_sensitive_validation_input(request: Request, exc: RequestValidationError):
         """Sanitize sensitive route families without changing other validation contracts."""
-        diagnostics_prefix = admin_diagnostic_rules.router.prefix
-        if request.url.path == diagnostics_prefix or request.url.path.startswith(
-            diagnostics_prefix + "/"
+        if any(
+            request.url.path == prefix or request.url.path.startswith(prefix + "/")
+            for prefix in (
+                admin_diagnostic_rules.router.prefix,
+                admin_diagnostic_unknowns.router.prefix,
+            )
         ):
             return JSONResponse(
                 status_code=422,
@@ -159,6 +163,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_users.router)
     app.include_router(admin_audit.router)
     app.include_router(admin_diagnostic_rules.router)
+    app.include_router(admin_diagnostic_unknowns.router)
     app.include_router(admin_emergency.router)
     app.include_router(admin_settings.router)
     app.include_router(admin_ops.router)

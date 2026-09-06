@@ -11,6 +11,8 @@ import { ConfirmDialog } from '../../design-system/overlays/ConfirmDialog'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
 import { safeHttpUrl } from '../../lib/safeUrl'
+import { useCommentDraft } from './useCommentDraft'
+import './task-card.css'
 
 const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
 
@@ -111,11 +113,12 @@ function AttachmentActions({
   )
 }
 
-export function IssueActionsPanel({
+function IssueActionsPanelContent({
   canWrite,
   capabilities,
   transitions,
   currentUser,
+  draftOwner,
   issueKey,
   issueUrl: issueUrlRaw,
   onComment,
@@ -129,6 +132,7 @@ export function IssueActionsPanel({
   capabilities?: TrackerIssueCapabilities
   transitions: TrackerTransition[]
   currentUser?: string
+  draftOwner?: string
   issueKey?: string
   issueUrl?: string
   onComment: (text: string) => Promise<void>
@@ -147,7 +151,7 @@ export function IssueActionsPanel({
     close: Boolean(canWrite),
     attach: Boolean(onAttach),
   }
-  const [comment, setComment] = useState('')
+  const { comment, setComment, capture } = useCommentDraft(draftOwner ?? currentUser, issueKey)
   const [assignee, setAssignee] = useState('')
   const [suggestions, setSuggestions] = useState<TrackerUserSuggestion[]>([])
   const [busy, setBusy] = useState('')
@@ -221,7 +225,8 @@ export function IssueActionsPanel({
     event.preventDefault()
     const text = comment.trim()
     if (!text) return
-    if (await run('comment', () => onComment(text))) setComment('')
+    const clearSubmittedDraft = capture()
+    if (await run('comment', () => onComment(text))) clearSubmittedDraft()
   }
 
   const submitAssign = async (event: FormEvent) => {
@@ -405,4 +410,8 @@ export function IssueActionsPanel({
       />
     </section>
   )
+}
+
+export function IssueActionsPanel(props: React.ComponentProps<typeof IssueActionsPanelContent>) {
+  return <IssueActionsPanelContent {...props} key={JSON.stringify([props.draftOwner ?? props.currentUser, props.issueKey])} />
 }

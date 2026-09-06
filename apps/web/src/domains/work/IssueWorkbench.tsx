@@ -17,6 +17,7 @@ import {
   type TrackerIssueDetail,
   type User,
 } from '../../api'
+import { SyncStatus } from '../../design-system/status/SyncStatus'
 import { IssueActionsPanel } from '../../components/tracker/IssueActionsPanel'
 import { IssueDetailPanel } from '../../components/tracker/IssueDetailPanel'
 import { formatAge, personName, statusTone } from '../../components/tracker/issue-utils'
@@ -196,6 +197,7 @@ function RelatedTasksPanel({ apiClient, issueKey, onOpen, park, resourcePrefix, 
   )
   return <>
     <p className="rp-work-list-count">Ремонты любого приоритета · от старых к новым{kind === 'closed' ? ' · закрыты за последние 14 дней' : ''}</p>
+    <SyncStatus {...related} />
     <RelatedTaskGroup
       empty={kind === 'open' ? 'Открытых ремонтов по этому роботу нет.' : 'За последние 14 дней закрытых ремонтов по этому роботу нет.'}
       onOpen={onOpen} resource={related}
@@ -580,7 +582,12 @@ function IssueWorkbenchOwner({
                         panelIdFor={tab => `work-panel-${tab}`} />
                     </> : null}
                     <TabPanel id="work-panel-task" labelledBy="tab-task" active={activeTab === 'task'} key={issueKey}>
+                    <SyncStatus updatedAt={detail.updatedAt !== null && comments.updatedAt !== null ? Math.min(detail.updatedAt, comments.updatedAt) : null}
+                      isRevalidating={detail.isRevalidating || comments.isRevalidating}
+                      error={detail.error || comments.error} />
                     <IssueDetailPanel
+                      currentUser={user.tracker_login ?? user.username} accountKey={user.username}
+                      commentsLoading={comments.isLoading && !comments.data}
                       comments={comments.data ?? []} issue={detail.data ?? null}
                       loading={detail.isLoading && !detail.data} showRobotCheck={false}
                       onOpenRobotCheck={() => changeTab('check')}
@@ -588,6 +595,7 @@ function IssueWorkbenchOwner({
                     {canRenderDetailActions && detail.data ? (
                       <IssueActionsPanel
                         capabilities={detail.data.capabilities}
+                        draftOwner={user.username}
                         currentUser={user.tracker_login ?? user.username}
                         issueKey={detail.data.key}
                         issueUrl={detail.data.url}
@@ -637,6 +645,7 @@ function IssueWorkbenchOwner({
           detailOpen={Boolean(issueKey)}
           list={<div className="rp-work-list-pane">
             <h2>Очередь задач</h2>
+            <SyncStatus {...list} />
             <ResourceBoundary
               dataAvailable={list.data !== undefined}
               failure={listFailure}

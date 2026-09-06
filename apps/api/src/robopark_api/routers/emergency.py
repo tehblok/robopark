@@ -15,6 +15,7 @@ from robopark_api.schemas import (
     EmergencySnapshotOut,
 )
 from robopark_api.services import (
+    diagnostic_unknowns,
     emergency_cache,
     emergency_client,
     emergency_scope,
@@ -134,6 +135,7 @@ def emergency_snapshot_for_user(vin: str, user: User, db: Session) -> EmergencyS
     _enforce_vin_scope(db, user, vin)
     payload = _get_robot_payload(db, vin)
     snap = parse_emergency_snapshot(payload, vin=vin, db=db)
+    diagnostic_unknowns.capture_unknowns(db, snap["diagnostic_events"], vin, payload=payload)
     return EmergencySnapshotOut(**snap, observed_at=datetime.now(UTC))
 
 

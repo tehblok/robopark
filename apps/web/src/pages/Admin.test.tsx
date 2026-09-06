@@ -27,7 +27,7 @@ function settings(validation: Partial<IntegrationSettings> = {}): IntegrationSet
   }
 }
 
-function setup(validation: Partial<IntegrationSettings> = {}, parks: Park[] = [], permissions = ['nav.admin']) {
+function setup(validation: Partial<IntegrationSettings> = {}, parks: Park[] = [], permissions = ['nav.admin'], route = '/admin/settings') {
   vi.spyOn(api, 'parks').mockResolvedValue(parks)
   vi.spyOn(api, 'adminParkRequests').mockResolvedValue([])
   vi.spyOn(api, 'integrationSettings').mockResolvedValue(settings(validation))
@@ -41,7 +41,7 @@ function setup(validation: Partial<IntegrationSettings> = {}, parks: Park[] = []
     operator: false, mechanic: false, admin: false, royal: false, driver: false,
   })
   vi.spyOn(api, 'adminUsers').mockResolvedValue([])
-  return renderApp('/admin/settings', testUser({ role: 'admin', permissions, parks }))
+  return renderApp(route, testUser({ role: 'admin', permissions, parks }))
 }
 
 describe('Admin Emergency cookie validation', () => {
@@ -56,8 +56,7 @@ describe('Admin Emergency cookie validation', () => {
 
   it('keeps an unsaved park draft when stale data could otherwise reload on focus', async () => {
     const parks = [{ id: 7, name: 'Северный', tag: 'north', is_active: true }]
-    setup({}, parks, ['nav.admin', 'parks.manage'])
-    fireEvent.click(await screen.findByRole('tab', { name: 'Парки' }))
+    setup({}, parks, ['nav.admin', 'parks.manage'], '/admin/settings?park=7&tab=parks')
     const input = await screen.findByDisplayValue('Северный')
     fireEvent.change(input, { target: { value: 'Название в работе' } })
     const calls = vi.mocked(api.adminParkRequests).mock.calls.length

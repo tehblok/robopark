@@ -1,3 +1,6 @@
+import { useEffect, useRef, useState } from 'react'
+import { Button } from '../../design-system/actions/Button'
+import { IssueRichText } from './IssueRichText'
 import type { TrackerAttachment, TrackerComment, TrackerIssueDetail } from '../../api'
 import { Link } from 'react-router-dom'
 import { safeHttpUrl } from '../../lib/safeUrl'
@@ -63,9 +66,11 @@ function CommentAttachmentImage({ attachment }: { attachment: TrackerAttachment 
 function CommentItem({
   comment,
   chatLayout = false,
+  isNew = false,
 }: {
   comment: TrackerComment
   chatLayout?: boolean
+  isNew?: boolean
 }) {
   const author = { display: comment.author ?? '', login: comment.author_login ?? '' }
   const { body, signature } = splitPlatformComment(comment.text)
@@ -74,7 +79,7 @@ function CommentItem({
   const otherAttachments = attachments.filter((item) => !isImageAttachment(item))
 
   return (
-    <li className={`issue-comment${chatLayout ? ' issue-comment--chat' : ''}`}>
+    <li data-comment-id={comment.id} tabIndex={-1} className={`issue-comment${chatLayout ? ' issue-comment--chat' : ''}${isNew ? ' issue-comment--new' : ''}`}>
       <span className="issue-avatar issue-avatar--comment" aria-hidden="true">
         {initials(author)}
       </span>
@@ -85,7 +90,7 @@ function CommentItem({
           </span>
           <time className="issue-comment-date">{formatDateTime(comment.created_at)}</time>
         </div>
-        {body && <p className="issue-comment-text">{body}</p>}
+        {body && <div className="issue-comment-text"><IssueRichText text={body} /></div>}
         {imageAttachments.length > 0 && (
           <div className="issue-comment-images">
             {imageAttachments.map((attachment) => (
@@ -108,10 +113,13 @@ function CommentItem({
   )
 }
 
-export function IssueDetailPanel({
+function IssueDetailPanelContent({
   issue,
   comments,
   commentsAsHistory = false,
+  commentsLoading = false,
+  currentUser,
+  accountKey,
   showRobotCheck = true,
   onOpenRobotCheck,
   loading,
@@ -119,10 +127,43 @@ export function IssueDetailPanel({
   issue: TrackerIssueDetail | null
   comments: TrackerComment[]
   commentsAsHistory?: boolean
+  commentsLoading?: boolean
+  currentUser?: string
+  accountKey?: string
   showRobotCheck?: boolean
   onOpenRobotCheck?: () => void
   loading?: boolean
 }) {
+  const articleRef = useRef<HTMLElement>(null)
+  const baseline = useRef<{ issue: string | null; comments: Set<string> | null }>({ issue: null, comments: null })
+  const [newCommentIds, setNewCommentIds] = useState<string[]>([])
+  const [issueChanged, setIssueChanged] = useState(false)
+  const fingerprint = issue ? JSON.stringify([
+    issue.summary, issue.status, issue.assignee?.login ?? '', issue.assignee?.display ?? '', issue.description ?? '',
+  ]) : null
+
+  useEffect(() => {
+    if (!issue || loading) return
+    if (baseline.current.issue !== null && baseline.current.issue !== fingerprint) setIssueChanged(true)
+    baseline.current.issue = fingerprint
+    if (commentsLoading) return
+    const previous = baseline.current.comments
+    if (previous) {
+      const incoming = comments.filter(comment => !previous.has(comment.id)
+        && !(comment.author_login && [currentUser, accountKey].includes(comment.author_login)))
+      if (incoming.length) setNewCommentIds(ids => [...new Set([...ids, ...incoming.map(comment => comment.id)])])
+    }
+    baseline.current.comments = new Set([...(previous ?? []), ...comments.map(comment => comment.id)])
+  }, [issue, fingerprint, loading, comments, commentsLoading, currentUser, accountKey])
+
+  const jumpToNew = () => {
+    const target = Array.from(articleRef.current?.querySelectorAll<HTMLElement>('[data-comment-id]') ?? [])
+      .find(element => newCommentIds.includes(element.dataset.commentId ?? ''))
+    target?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    target?.focus({ preventScroll: true })
+    setNewCommentIds([])
+  }
+
   if (loading) {
     return <p className="issue-detail-empty">{ru.loading}</p>
   }
@@ -143,7 +184,7 @@ export function IssueDetailPanel({
   const robotReference = issue.robot?.trim()
 
   return (
-    <article className="issue-detail">
+    <article className="issue-detail" ref={articleRef}>
       <header className="issue-detail-head">
         <div className="issue-detail-title-row">
           {issueUrl ? (
@@ -168,6 +209,17 @@ export function IssueDetailPanel({
         </div>
         <h2 className="issue-detail-summary">{issue.summary}</h2>
       </header>
+
+      {(issueChanged || newCommentIds.length > 0) && <div className="issue-update-notice" role="status">
+        {issueChanged && <span>Задача обновлена</span>}
+        {newCommentIds.length > 0 && <Button type="button" variant="secondary" onClick={jumpToNew}>
+          {newCommentIds.length} {newCommentIds.length % 10 === 1 && newCommentIds.length % 100 !== 11
+            ? 'новый комментарий' : newCommentIds.length % 10 >= 2 && newCommentIds.length % 10 <= 4
+              && !(newCommentIds.length % 100 >= 12 && newCommentIds.length % 100 <= 14)
+              ? 'новых комментария' : 'новых комментариев'} — перейти
+        </Button>}
+        <Button type="button" variant="ghost" onClick={() => { setIssueChanged(false); setNewCommentIds([]) }}>Скрыть уведомление</Button>
+      </div>}
 
       <dl className="issue-fields">
         <Field label={ru.tracker.fields.assignee}>
@@ -263,7 +315,7 @@ export function IssueDetailPanel({
       <section className="issue-section">
         <h3>{ru.tracker.description}</h3>
         {issue.description?.trim() ? (
-          <p className="issue-description">{issue.description}</p>
+          <IssueRichText text={issue.description} collapsible />
         ) : (
           <p className="issue-muted">{ru.tracker.descriptionEmpty}</p>
         )}
@@ -281,11 +333,15 @@ export function IssueDetailPanel({
         ) : (
           <ul className="issue-comments">
             {sortedComments.map((comment) => (
-              <CommentItem chatLayout={chatLayout} comment={comment} key={comment.id} />
+              <CommentItem chatLayout={chatLayout} comment={comment} isNew={newCommentIds.includes(comment.id)} key={comment.id} />
             ))}
           </ul>
         )}
       </section>
     </article>
   )
+}
+
+export function IssueDetailPanel(props: React.ComponentProps<typeof IssueDetailPanelContent>) {
+  return <IssueDetailPanelContent {...props} key={JSON.stringify([props.accountKey ?? props.currentUser, props.issue?.key])} />
 }

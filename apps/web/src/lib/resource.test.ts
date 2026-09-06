@@ -338,3 +338,33 @@ describe('automatic cached refresh', () => {
     expect(view.result.current.data?.value).toBe('updated')
   })
 })
+
+describe('successful synchronization timestamp', () => {
+  afterEach(() => { cleanup(); resourceStore.clearAll(); vi.restoreAllMocks() })
+
+  it('keeps the last successful time on failure and clears it when access is denied', async () => {
+    const loader = vi.fn().mockResolvedValue({ value: 'first' })
+    const { result } = renderHook(() => useCachedResource('sync:owner', loader, { persist: false }))
+    await waitFor(() => expect(result.current.data).toEqual({ value: 'first' }))
+    const success = result.current.updatedAt
+    expect(success).toEqual(expect.any(Number))
+    loader.mockRejectedValueOnce(new Error('offline'))
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.updatedAt).toBe(success)
+    loader.mockRejectedValueOnce({ status: 403 })
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.updatedAt).toBeNull()
+    expect(result.current.data).toBeUndefined()
+  })
+
+  it('restores cache time without inventing a new synchronization', () => {
+    const savedAt = Date.now() - 10_000
+    localStorage.setItem('robopark:res:sync:cached', JSON.stringify({ v: 1, updatedAt: savedAt, data: { value: 'cached' } }))
+    const loader = vi.fn()
+    const { result, rerender } = renderHook(({ cacheKey }) => useCachedResource(cacheKey, loader, { enabled: cacheKey !== 'disabled' }), { initialProps: { cacheKey: 'sync:cached' } })
+    expect(result.current.updatedAt).toBe(savedAt)
+    expect(loader).not.toHaveBeenCalled()
+    rerender({ cacheKey: 'disabled' })
+    expect(result.current.updatedAt).toBeNull()
+  })
+})

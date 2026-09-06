@@ -39,3 +39,9 @@
   .rp-diagnostic-fields { grid-template-columns: minmax(0, 1fr); }
   .rp-diagnostic-save .rp-button { width: 100%; }
 }
+.rp-diagnostic-panel { display: grid; gap: var(--rp-space-4); min-inline-size: 0; }
+.rp-diagnostic-panel[hidden] { display: none; }
+.rp-diagnostic-pagination { display: flex; align-items: center; flex-wrap: wrap; gap: var(--rp-space-3); }
+.rp-diagnostic-raw { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: var(--rp-space-3); background: var(--rp-surface); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-control); }
+.rp-diagnostic-unknown-pattern { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.rp-diagnostic-raw { max-block-size: 20rem; overflow: auto; }

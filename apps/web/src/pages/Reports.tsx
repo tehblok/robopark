@@ -1,3 +1,4 @@
+import { SyncStatus } from '../design-system/status/SyncStatus'
 import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, type Park, type Report, type User } from '../api'
@@ -269,6 +270,7 @@ function ReportsOwner({
         </label>
       )}
 
+      <SyncStatus {...activeList} />
       {listError && <Alert tone="error">{listError}</Alert>}
 
       {createEnabled && (

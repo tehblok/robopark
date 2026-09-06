@@ -204,6 +204,9 @@ export function TrackerWorkspace({
 
         <IssueDetailPanel
           comments={comments}
+          commentsLoading={commentsRes.isLoading && !commentsRes.data}
+          currentUser={user?.tracker_login ?? user?.username}
+          accountKey={user?.username}
           commentsAsHistory={user?.role === 'mechanic'}
           issue={detail}
           loading={detailLoading}
@@ -213,6 +216,8 @@ export function TrackerWorkspace({
           <IssueActionsPanel
             canWrite={canWrite}
             currentUser={user?.tracker_login ?? undefined}
+            draftOwner={user?.username}
+            issueKey={detail.key}
             issueUrl={detail.url}
             onAssign={async (assignee) => {
               await api.trackerAssign(detail.key, assignee)

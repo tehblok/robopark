@@ -517,3 +517,26 @@ def match_diagnostic_events_for_rules(
             item.id,
         ),
     )
+
+
+def diagnostic_rule_matches_sample(
+    rule: DiagnosticRule, payload: dict[str, Any], sample_location: Location
+) -> bool:
+    """Match only actual units at/below a recorded sample, excluding its envelope.
+
+    Inbox reconstruction introduces ancestor containers and empty array padding.
+    A rule must match the recorded unit (or its descendants), never a synthetic
+    wrapper whose real upstream siblings were deliberately not retained.
+    """
+    parts = diagnostic_source_parts(rule.source_path)
+    if not rule.is_enabled or parts is None:
+        return False
+    location, value = _lookup(payload, parts)
+    pattern = compile_diagnostic_regex(rule.pattern) if rule.match_kind == "regex" else None
+    for error in _raw_errors(value, location):
+        if not _is_within(error.location, sample_location):
+            continue
+        text = _raw_text(error.value)
+        if diagnostic_regex_matches(pattern, text) if pattern is not None else rule.pattern == text:
+            return True
+    return False

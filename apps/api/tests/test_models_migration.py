@@ -32,13 +32,15 @@ def test_metadata_has_required_tables():
         "analytics_snapshots",
         "analytics_observations",
         "diagnostic_rules",
+        "diagnostic_unknowns",
+        "diagnostic_unknown_sightings",
     }
 
 
-def test_alembic_head_is_diagnostic_rules():
+def test_alembic_head_is_diagnostic_unknowns():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0019_diagnostic_rules"]
+    assert script.get_heads() == ["0021_diagnostic_unknown_original"]
 
 
 def test_diagnostic_rules_upgrade_from_previous_head(sqlite_database_url, monkeypatch):
@@ -336,3 +338,50 @@ def test_migrated_parks_have_tracker_columns_and_history_table(sqlite_database_u
         "uq_park_blocker_history_park_bucket" in unique_indexes
         or "uq_park_blocker_history_park_bucket" in unique_constraints
     )
+
+
+def test_unknown_upgrade_is_additive(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0019_diagnostic_rules")
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO parks (id, name, tag, is_active) VALUES (1, 'Test', 'test', 1)")
+        )
+    command.upgrade(config, "0020_diagnostic_unknowns")
+    assert {"diagnostic_unknowns", "diagnostic_unknown_sightings"} <= set(
+        inspect(engine).get_table_names()
+    )
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT name FROM parks WHERE id=1")).scalar_one() == "Test"
+    command.downgrade(config, "0019_diagnostic_rules")
+    assert "diagnostic_unknowns" not in inspect(engine).get_table_names()
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT name FROM parks WHERE id=1")).scalar_one() == "Test"
+
+
+def test_original_unit_upgrade_leaves_legacy_samples_unverified(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0020_diagnostic_unknowns")
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO diagnostic_unknowns (identity, source_path, source_segments_json, raw_json, first_seen_at, last_seen_at, observations, last_robot, state) VALUES ('legacy', 'errors', '[\"errors\"]', '\"TARGET\"', '2026-09-01', '2026-09-01', 1, 'robot', 'new')"
+            )
+        )
+    command.upgrade(config, "0021_diagnostic_unknown_original")
+    with engine.connect() as connection:
+        assert tuple(
+            connection.execute(
+                text("SELECT raw_json, original_json, state FROM diagnostic_unknowns")
+            ).one()
+        ) == ('"TARGET"', None, "new")
+    command.downgrade(config, "0020_diagnostic_unknowns")
+    with engine.connect() as connection:
+        assert (
+            connection.execute(text("SELECT raw_json FROM diagnostic_unknowns")).scalar_one()
+            == '"TARGET"'
+        )

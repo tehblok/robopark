@@ -113,6 +113,11 @@ class ResourceStore {
     return Date.now() - (this.mem.get(key)?.updatedAt ?? 0) >= staleTimeMs
   }
 
+  updatedAt(key: string): number | null {
+    if (this.get(key) === undefined) return null
+    return this.mem.get(key)?.updatedAt ?? null
+  }
+
   set(key: string, data: unknown, persist: boolean): void {
     const entry: StoredEntry = { v: LS_VERSION, updatedAt: Date.now(), data }
     this.mem.set(key, entry)
@@ -296,6 +301,8 @@ type Options = {
 
 export type CachedResource<T> = {
   data: T | undefined
+  /** Time of the last successful response, retained during failed refreshes. */
+  updatedAt: number | null
   error: unknown
   /** True only when we have no cached data and a load is in flight. */
   isLoading: boolean
@@ -319,6 +326,7 @@ export function useCachedResource<T>(
 
   const initial = enabled ? resourceStore.get<T>(key) : undefined
   const [data, setData] = useState<T | undefined>(initial)
+  const [syncTime, setSyncTime] = useState(() => ({ key, time: enabled ? resourceStore.updatedAt(key) : null }))
   const [error, setError] = useState<unknown>(null)
   const [isRevalidating, setIsRevalidating] = useState(false)
 
@@ -342,8 +350,10 @@ export function useCachedResource<T>(
   useEffect(() => {
     if (!enabled) return
     setData(resourceStore.get<T>(key))
+    setSyncTime({ key, time: resourceStore.updatedAt(key) })
     const unsub = resourceStore.subscribe(key, () => {
       setData(resourceStore.get<T>(key))
+      setSyncTime({ key, time: resourceStore.updatedAt(key) })
     })
     return unsub
   }, [key, enabled])
@@ -431,6 +441,7 @@ export function useCachedResource<T>(
 
   return {
     data,
+    updatedAt: enabled && syncTime.key === key ? syncTime.time : null,
     error,
     isRevalidating,
     isLoading: data === undefined && isRevalidating,

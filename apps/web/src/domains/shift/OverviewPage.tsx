@@ -1,3 +1,4 @@
+import { SyncStatus } from '../../design-system/status/SyncStatus'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api, type OperationsOverview, type User } from '../../api'
@@ -66,6 +67,7 @@ function OverviewResource({ resourceKey, load, parkId, role, selectable, statusH
 
   return <>
     {failure ? <OverviewWarning busy={resource.isRevalidating} failure={failure} onRetry={() => void resource.refresh()} /> : null}
+    <SyncStatus {...resource} />
     <OverviewContent allHref={allHref} data={data} role={role} selectable={selectable} statusHref={statusHref} />
   </>
 }

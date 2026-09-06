@@ -431,3 +431,39 @@ class ReportAttachment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     report: Mapped[Report] = relationship(back_populates="attachments")
+
+
+class DiagnosticUnknown(Base):
+    __tablename__ = "diagnostic_unknowns"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('new', 'mapped', 'ignored')", name="ck_diagnostic_unknowns_state"
+        ),
+        CheckConstraint("observations >= 1", name="ck_diagnostic_unknowns_observations"),
+        Index("ix_diagnostic_unknowns_state_last_seen", "state", "last_seen_at", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    identity: Mapped[str] = mapped_column(String(64), unique=True)
+    source_path: Mapped[str] = mapped_column(String(256))
+    source_segments_json: Mapped[str] = mapped_column(Text)
+    raw_json: Mapped[str] = mapped_column(Text)
+    original_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    observations: Mapped[int] = mapped_column(Integer, default=1)
+    last_robot: Mapped[str] = mapped_column(String(128))
+    state: Mapped[str] = mapped_column(String(16), default="new")
+    rule_id: Mapped[int | None] = mapped_column(ForeignKey("diagnostic_rules.id"), nullable=True)
+
+
+class DiagnosticUnknownSighting(Base):
+    """Last counted observation per robot/error; prevents polling from inflating counts."""
+
+    __tablename__ = "diagnostic_unknown_sightings"
+
+    unknown_id: Mapped[int] = mapped_column(
+        ForeignKey("diagnostic_unknowns.id", ondelete="CASCADE"), primary_key=True
+    )
+    robot: Mapped[str] = mapped_column(String(128), primary_key=True)
+    sampled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
