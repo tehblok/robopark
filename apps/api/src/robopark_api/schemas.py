@@ -194,7 +194,13 @@ DiagnosticIndicator = Literal["point", "outline", "zone"]
 class DiagnosticEvent(BaseModel):
     id: str
     rule_id: int | None = None
-    source_path: str
+    source_path: str = Field(
+        description="Dotted display path; dots/backslashes in keys are escaped."
+    )
+    source_segments: list[str | int] = Field(
+        default_factory=list,
+        description="Authoritative JSON source path: string dictionary keys and integer list indexes.",
+    )
     raw_value: JsonValue
     title: str
     description: str

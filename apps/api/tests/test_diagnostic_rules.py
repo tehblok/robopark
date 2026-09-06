@@ -183,6 +183,7 @@ def test_exact_match_returns_display_ready_event_and_preserves_raw_value(db_sess
     assert event.model_dump(exclude={"id"}) == {
         "rule_id": rule.id,
         "source_path": "errors.navigation",
+        "source_segments": ["errors", "navigation"],
         "raw_value": "WHEEL_BLOCKED",
         "title": "Wheel is blocked",
         "description": "Remove the obstacle and inspect the wheel.",
@@ -281,8 +282,10 @@ def test_severity_then_rule_order_then_id_and_raw_value_define_stable_order(db_s
         "UNKNOWN_Z",
         "I",
     ]
-    assert [event.model_dump() for event in events] == [
-        event.model_dump() for event in reversed_events
+    # An unknown value's physical list index follows the current payload;
+    # selection identity, ordering and presentation remain stable.
+    assert [event.model_dump(exclude={"source_path", "source_segments"}) for event in events] == [
+        event.model_dump(exclude={"source_path", "source_segments"}) for event in reversed_events
     ]
     assert len({event.id for event in events}) == len(events)
 
@@ -420,3 +423,123 @@ def test_multiple_rules_and_raw_values_keep_distinct_stable_event_identities(db_
     ]
     assert len({event.id for event in first}) == 3
     assert [event.id for event in first] == [event.id for event in second]
+
+
+@pytest.mark.parametrize(
+    ("source_path", "payload"),
+    [
+        ("errors.0.navigation", {"errors": [{"navigation": "KNOWN", "power": "LOW"}]}),
+        ("errors.navigation", {"errors": {"navigation": "KNOWN", "power": "LOW"}}),
+        ("errors.code", {"errors": {"code": "KNOWN", "message": "Blocked", "power": "LOW"}}),
+    ],
+)
+def test_nested_match_keeps_unknown_sibling_errors(db_session, source_path, payload):
+    rule = _insert_rule(db_session, source_path=source_path, pattern="KNOWN")
+
+    events = _events(db_session, payload)
+
+    assert [(item.rule_id, item.raw_value) for item in events] == [
+        (rule.id, "KNOWN"),
+        (None, "LOW"),
+    ]
+    assert events[1].part is None
+
+
+def test_nested_match_preserves_unknown_errors_across_mixed_lists_and_dictionaries(db_session):
+    rule = _insert_rule(db_session, source_path="errors.0.navigation.0.code", pattern="KNOWN")
+    power = {"code": "LOW", "message": "Low voltage"}
+    payload = {
+        "errors": [
+            {
+                "navigation": [{"code": "KNOWN", "message": "Blocked"}, "UNKNOWN_NAV"],
+                "power": [power, "HOT"],
+            }
+        ]
+    }
+
+    events = _events(db_session, payload)
+
+    assert [(item.rule_id, item.raw_value) for item in events] == [
+        (rule.id, "KNOWN"),
+        (None, "UNKNOWN_NAV"),
+        (None, "HOT"),
+        (None, power),
+    ]
+
+
+def test_atomic_code_and_message_do_not_duplicate_after_a_nested_match(db_session):
+    rule = _insert_rule(db_session, source_path="errors.0.code", pattern="KNOWN")
+
+    events = _events(db_session, {"errors": [{"code": "KNOWN", "message": "Blocked"}]})
+
+    assert [(item.rule_id, item.raw_value) for item in events] == [(rule.id, "KNOWN")]
+
+
+def test_unknown_dotted_keys_cannot_collide_with_nested_paths(db_session):
+    events = _events(db_session, {"errors": {"a.b": "SAME", "a": {"b": "SAME"}}})
+
+    assert len(events) == 2
+    assert len({item.id for item in events}) == 2
+    assert {item.source_path for item in events} == {r"errors.a\.b", "errors.a.b"}
+    assert {tuple(item.source_segments) for item in events} == {
+        ("errors", "a.b"),
+        ("errors", "a", "b"),
+    }
+
+
+def test_custom_indexed_sources_keep_distinct_unknown_identities_and_resolvable_paths(db_session):
+    _insert_rule(db_session, source_path="telemetry.0.fault", is_enabled=False)
+    _insert_rule(db_session, source_path="telemetry.1.fault", is_enabled=False)
+    payload = {"telemetry": [{"fault": "SAME"}, {"fault": "SAME"}]}
+
+    events = _events(db_session, payload)
+
+    assert len(events) == 2
+    assert len({item.id for item in events}) == 2
+    assert [item.source_path for item in events] == ["telemetry.0.fault", "telemetry.1.fault"]
+    assert [item.source_segments for item in events] == [
+        ["telemetry", 0, "fault"],
+        ["telemetry", 1, "fault"],
+    ]
+    for item in events:
+        value = payload
+        for segment in item.source_segments:
+            value = value[segment]
+        assert value == item.raw_value
+
+
+def test_unknown_collection_reorder_keeps_selection_ids_and_order_but_updates_raw_location(
+    db_session,
+):
+    first = _events(db_session, {"errors": ["B", "A"]})
+    second = _events(db_session, {"errors": ["A", "B"]})
+
+    assert [item.raw_value for item in first] == ["A", "B"]
+    assert [(item.id, item.raw_value) for item in first] == [
+        (item.id, item.raw_value) for item in second
+    ]
+    assert [item.source_segments for item in first] == [["errors", 1], ["errors", 0]]
+    assert [item.source_segments for item in second] == [["errors", 0], ["errors", 1]]
+
+
+def test_unknown_dict_key_and_list_index_have_different_typed_source_identity(db_session):
+    dictionary = _events(db_session, {"errors": {"0": "SAME"}})[0]
+    collection = _events(db_session, {"errors": ["SAME"]})[0]
+
+    assert dictionary.id != collection.id
+    assert dictionary.source_segments == ["errors", "0"]
+    assert collection.source_segments == ["errors", 0]
+
+
+def test_atomic_message_from_an_overlapping_source_does_not_reappear_as_unknown(db_session):
+    rule = _insert_rule(db_session, source_path="errors.0.code", pattern="KNOWN")
+    _insert_rule(db_session, source_path="errors.0.message", is_enabled=False)
+
+    events = _events(
+        db_session, {"errors": [{"code": "KNOWN", "message": "Blocked", "power": "LOW"}]}
+    )
+
+    assert [(item.rule_id, item.raw_value) for item in events] == [
+        (rule.id, "KNOWN"),
+        (None, "LOW"),
+    ]

@@ -1,11 +1,16 @@
+import json
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from pathlib import Path
 from threading import Event, current_thread
+from time import monotonic
 
 import httpx
 import pytest
-from sqlalchemy import event, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import login_as
 from robopark_api import schemas
@@ -15,7 +20,7 @@ from robopark_api.db import (
     release_request_session,
     reset_request_session,
 )
-from robopark_api.models import DiagnosticRule
+from robopark_api.models import Base, DiagnosticRule
 from robopark_api.routers.emergency import emergency_snapshot_for_user
 from robopark_api.services import emergency_cache, emergency_client, emergency_scope
 from robopark_api.services import platform_settings as settings_svc
@@ -388,3 +393,79 @@ def test_concurrent_snapshots_share_upstream_flight_but_match_in_their_own_sessi
         (None, "UNKNOWN"),
     ]
     assert calls == [{"cookie": "test-cookie", "vin": "YASADR00000000447"}]
+
+
+def _regex_budget_probe(database_path, pattern, length):
+    """Run real requests in a disposable process so a broken engine cannot hang pytest."""
+    engine = create_engine(f"sqlite:///{database_path}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        rule = _snapshot_rule(db)
+        rule.match_kind = "regex"
+        rule.pattern = pattern
+        db.commit()
+        rule_id = rule.id
+        settings_svc.set_setting(db, settings_svc.EMERGENCY_COOKIE_KEY, "test-cookie")
+    factory = sessionmaker(bind=engine)
+    raw = "a" * length + "!"
+    emergency_client.fetch_robot_payload = lambda **_kwargs: {"errors": [raw]}
+    emergency_scope.vin_allowed_for_user = lambda *_args: True
+
+    def request():
+        wrapper = RequestSession(factory)
+        token = bind_request_session(wrapper)
+        try:
+            return emergency_snapshot_for_user("447", None, wrapper)
+        finally:
+            wrapper.close()
+            reset_request_session(token)
+
+    started = monotonic()
+    first = request()
+    elapsed = monotonic() - started
+    assert elapsed < 0.5, f"Diagnostic matching exceeded request budget: {elapsed}"
+    assert [(item.rule_id, item.raw_value) for item in first.diagnostic_events] == [(None, raw)]
+    assert first.diagnostic_events[0].part is None
+    emergency_cache.clear_cache_for_tests()
+    raw = "aaaa"
+    second = request()
+    assert [(item.rule_id, item.raw_value) for item in second.diagnostic_events] == [
+        (rule_id, "aaaa")
+    ]
+    assert engine.pool.checkedout() == 0
+    print(json.dumps({"elapsed": elapsed, "recovered": True}))
+
+
+@pytest.mark.parametrize(
+    ("pattern", "length"), [(r"^(a+)+$", 32), (r"^(a+)+$", 30000), (r"^(a|aa)+$", 1000)]
+)
+def test_regex_timeout_returns_unknown_and_next_snapshot_recovers(tmp_path, pattern, length):
+    api_root = Path(__file__).resolve().parent.parent
+    probe = (
+        "import sys; sys.path[:0] = sys.argv[1:3]; "
+        "from test_emergency_snapshot import _regex_budget_probe; "
+        "_regex_budget_probe(sys.argv[3], sys.argv[4], int(sys.argv[5]))"
+    )
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                probe,
+                str(api_root / "src"),
+                str(api_root / "tests"),
+                str(tmp_path / "probe.db"),
+                pattern,
+                str(length),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("Regex blocked the snapshot worker beyond the 3-second process watchdog")
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads(result.stdout)
+    assert outcome["recovered"] is True
+    assert outcome["elapsed"] < 0.5
