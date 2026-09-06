@@ -20,6 +20,7 @@ from robopark_api.routers import (
     admin_roles,
     admin_settings,
     admin_users,
+    analytics,
     auth,
     dashboard,
     emergency,
@@ -162,6 +163,7 @@ def create_app() -> FastAPI:
     app.include_router(tracker_actions.router)
     app.include_router(dashboard.router)
     app.include_router(operations.router)
+    app.include_router(analytics.router)
     app.include_router(reports.router)
     return app
 

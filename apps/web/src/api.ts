@@ -1,3 +1,5 @@
+import type { AnalyticsBucket, HistoricalAnalytics } from './domains/analytics/analyticsModel'
+
 export type Park = {
   id: number
   name: string
@@ -916,6 +918,8 @@ export const api = {
     request<DashboardSummary>(`/dashboard/summary?park_id=${parkId}`),
   operationsOverview: (parkId: number, days = 7, status = 'all') =>
     request<OperationsOverview>(`/operations/overview?${new URLSearchParams({ park_id: String(parkId), days: String(days), status })}`),
+  analytics: (parkId: number, days = 7, bucket: AnalyticsBucket = '1d') =>
+    request<HistoricalAnalytics>(`/analytics?${new URLSearchParams({ park_id: String(parkId), days: String(days), bucket })}`),
   operationsSlaPolicy: (parkId: number) =>
     request<OperationsSlaPolicy>(`/operations/sla-policy?park_id=${parkId}`),
   updateOperationsSlaPolicy: (parkId: number, body: { target_hours: number | null }) =>

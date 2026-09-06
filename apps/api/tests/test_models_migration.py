@@ -29,13 +29,55 @@ def test_metadata_has_required_tables():
         "roles",
         "role_permissions",
         "user_permissions",
+        "analytics_snapshots",
+        "analytics_observations",
     }
 
 
-def test_alembic_head_is_driver_work_reports():
+def test_alembic_head_is_analytics_observations():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0017_driver_work_reports"]
+    assert script.get_heads() == ["0018_analytics_observations"]
+
+
+def test_analytics_upgrade_and_downgrade_preserve_existing_history(
+    sqlite_database_url, monkeypatch
+):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0017_driver_work_reports")
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO parks (id, name, tag, is_active) VALUES (1, 'Test', 'test', 1)")
+        )
+        connection.execute(
+            text(
+                "INSERT INTO park_blocker_history (park_id, bucket_start, arrived_count, departed_count, definition_version) VALUES (1, '2026-09-01 00:00:00', 4, 9, 2)"
+            )
+        )
+    command.upgrade(config, "0018_analytics_observations")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO analytics_snapshots (park_id, bucket_start, observed_at) VALUES (1, '2026-09-01 00:00:00', '2026-09-01 00:12:00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO analytics_observations (park_id, bucket_start, issue_key, status, status_bucket) VALUES (1, '2026-09-01 00:00:00', 'RP-1', 'new', 'new')"
+            )
+        )
+    command.downgrade(config, "0017_driver_work_reports")
+    assert "analytics_snapshots" not in inspect(engine).get_table_names()
+    with engine.connect() as connection:
+        assert tuple(
+            connection.execute(
+                text("SELECT arrived_count, departed_count FROM park_blocker_history")
+            ).one()
+        ) == (4, 9)
+    command.upgrade(config, "head")
+    assert "analytics_observations" in inspect(engine).get_table_names()
 
 
 def test_history_migration_preserves_legacy_definition(sqlite_database_url, monkeypatch):

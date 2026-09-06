@@ -6,7 +6,9 @@ from enum import StrEnum
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -162,6 +164,35 @@ class ParkBlockerHistory(Base):
     definition_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
     park: Mapped[Park] = relationship(back_populates="blocker_history")
+
+
+class AnalyticsSnapshot(Base):
+    """A complete, successful source read, including a measured empty park."""
+
+    __tablename__ = "analytics_snapshots"
+
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), primary_key=True)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    target_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class AnalyticsObservation(Base):
+    __tablename__ = "analytics_observations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["park_id", "bucket_start"],
+            ["analytics_snapshots.park_id", "analytics_snapshots.bucket_start"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    park_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    issue_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    status: Mapped[str] = mapped_column(String(128), primary_key=True)
+    status_bucket: Mapped[str] = mapped_column(String(32))
+    age_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class PlatformSetting(Base):

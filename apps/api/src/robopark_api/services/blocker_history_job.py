@@ -8,6 +8,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from robopark_api.db import SessionLocal
+from robopark_api.services.analytics_history import scan_all_parks_once as scan_analytics_once
 from robopark_api.services.blocker_history import (
     BUCKET_SECONDS,
     align_bucket_start,
@@ -56,4 +57,9 @@ async def run_blocker_history_loop(
 
 def _scan_once() -> None:
     with SessionLocal() as db:
-        scan_all_parks_once(db)
+        try:
+            scan_all_parks_once(db)
+        finally:
+            # A flow-counter failure must not erase the opportunity to observe state.
+            db.rollback()
+            scan_analytics_once(db)
