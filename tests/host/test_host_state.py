@@ -46,6 +46,17 @@ def test_atomic_state_replaces_existing_json(host_paths):
     assert not list(target.parent.glob(".status.json.*"))
 
 
+def test_atomic_state_rejects_nonstandard_numbers_without_replacing_state(host_paths):
+    target = host_paths.state / "status.json"
+    atomic_write_json(target, {"state": "ready"})
+
+    with pytest.raises(ValueError, match="Out of range float values"):
+        atomic_write_json(target, {"temperature": float("nan")})
+
+    assert json.loads(target.read_text()) == {"state": "ready"}
+    assert not list(target.parent.glob(".status.json.*"))
+
+
 def test_exclusive_lock_creates_private_lock_file(host_paths):
     target = host_paths.ops / "host.lock"
 
@@ -72,6 +83,22 @@ def test_redaction_keeps_structure_for_lists_and_tuples():
     value = [{"api_key": "secret"}, ("ok", {"secret": "hidden"})]
 
     assert redact(value) == [{"api_key": "[REDACTED]"}, ("ok", {"secret": "[REDACTED]"})]
+
+
+def test_redaction_normalizes_secret_key_separators_without_redacting_normal_keys():
+    value = {
+        "nested": [
+            {"privateKey": "private", "accessKey": "access"},
+            {"api.key": "api", "publicKey": "visible", "apiVersion": "v1"},
+        ]
+    }
+
+    assert redact(value) == {
+        "nested": [
+            {"privateKey": "[REDACTED]", "accessKey": "[REDACTED]"},
+            {"api.key": "[REDACTED]", "publicKey": "visible", "apiVersion": "v1"},
+        ]
+    }
 
 
 @pytest.mark.parametrize(
