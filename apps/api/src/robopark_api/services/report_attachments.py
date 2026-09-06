@@ -38,6 +38,10 @@ class AttachmentStorageError(RuntimeError):
     """Attachment metadata and the persisted file tree do not match."""
 
 
+class _AttachmentStorageInvalid(RuntimeError):
+    """Internal marker for attachment storage validation failures."""
+
+
 def attachments_root() -> Path:
     settings = get_settings()
     if settings.report_attachments_dir:
@@ -203,13 +207,20 @@ def get_attachment(
     return row, path
 
 
+def _validate_attachment_file(row: ReportAttachment) -> None:
+    try:
+        path = _resolve_storage_key(row.storage_key)
+        if not path.is_file() or path.stat().st_size != row.size_bytes:
+            raise _AttachmentStorageInvalid
+    except (LookupError, OSError):
+        raise _AttachmentStorageInvalid from None
+
+
 def validate_attachment_storage(db: Session) -> int:
     rows = list(db.scalars(select(ReportAttachment)).all())
     try:
         for row in rows:
-            path = _resolve_storage_key(row.storage_key)
-            if not path.is_file() or path.stat().st_size != row.size_bytes:
-                raise AttachmentStorageError(_STORAGE_ERROR)
-    except (LookupError, OSError):
+            _validate_attachment_file(row)
+    except _AttachmentStorageInvalid:
         raise AttachmentStorageError(_STORAGE_ERROR) from None
     return len(rows)
