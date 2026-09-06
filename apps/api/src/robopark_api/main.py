@@ -14,6 +14,7 @@ from robopark_api.dev_seed import ensure_dev_seed
 from robopark_api.middleware.maintenance import MaintenanceGateMiddleware
 from robopark_api.routers import (
     admin_audit,
+    admin_diagnostic_rules,
     admin_emergency,
     admin_ops,
     admin_park_requests,
@@ -140,7 +141,8 @@ def create_app() -> FastAPI:
         allow_origins=origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Accept"],
+        allow_headers=["Authorization", "Content-Type", "Accept", "If-Match"],
+        expose_headers=["ETag"],
     )
     app.include_router(auth.router)
     app.include_router(health.router)
@@ -148,6 +150,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_roles.router)
     app.include_router(admin_users.router)
     app.include_router(admin_audit.router)
+    app.include_router(admin_diagnostic_rules.router)
     app.include_router(admin_emergency.router)
     app.include_router(admin_settings.router)
     app.include_router(admin_ops.router)

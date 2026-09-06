@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -236,7 +236,8 @@ def diagnostic_regex_matches(pattern: regex.Pattern, value: str) -> bool:
         return False
 
 
-def _source_parts(path: str) -> tuple[str, ...] | None:
+def diagnostic_source_parts(path: str) -> tuple[str, ...] | None:
+    """Validate the shared dotted key/index syntax without evaluating input."""
     parts = tuple(path.split("."))
     if len(path) > 256 or any(
         not _PATH_PART.fullmatch(part) or part.startswith("__") for part in parts
@@ -401,15 +402,21 @@ def _residual_errors(node: _Residual, *, list_item: bool = False) -> Iterator[_R
 
 
 def match_diagnostic_events(db: Session, payload: dict[str, Any]) -> list[DiagnosticEvent]:
+    return match_diagnostic_events_for_rules(list(db.scalars(select(DiagnosticRule))), payload)
+
+
+def match_diagnostic_events_for_rules(
+    rules: Sequence[DiagnosticRule], payload: dict[str, Any]
+) -> list[DiagnosticEvent]:
+    """The shared live/preview normalizer; supplied rules need no database attachment."""
     # Disabled rules still identify diagnostic sources; disabling their marker
     # must not remove a raw fault from a custom telemetry path.
-    rules = list(db.scalars(select(DiagnosticRule)))
     sources = set(_ERROR_SOURCES) | {rule.source_path for rule in rules}
     values: dict[str, list[_RawError]] = {}
     source_locations: dict[str, Location] = {}
     source_roots: dict[Location, _RawError] = {}
     for source in sorted(sources):
-        parts = _source_parts(source)
+        parts = diagnostic_source_parts(source)
         if parts is not None:
             location, value = _lookup(payload, parts)
             source_locations[source] = location
