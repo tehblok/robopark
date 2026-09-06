@@ -46,7 +46,7 @@ describe('buildOverviewModel', () => {
     expect(model.state.title).toBe(title)
     expect(model.primaryAction).toEqual({
       label,
-      href: '/work/ROBOPARK-42?park=7&queue=ROBOPARK',
+      href: '/work/ROBOPARK-42?park=7&queue=ROBOPARK&status=all',
       icon: 'work',
     })
     expect(model.updatedAt).toBe('2026-09-02T09:00:00Z')
@@ -111,13 +111,13 @@ describe('buildOverviewModel', () => {
       canOpenAdministration: false,
     }, now)
 
-    expect(model.primaryAction?.href).toBe('/work/ROBOPARK-42?park=7&queue=ROBOPARK')
+    expect(model.primaryAction?.href).toBe('/work/ROBOPARK-42?park=7&queue=ROBOPARK&status=all')
     expect(model.risk?.issueKey).toBe('ROBOPARK-42')
     expect(model.queue).toEqual([{
       key: 'ROBOPARK-99',
       summary: 'Проверить колесо',
       robot: '448',
-      href: '/work/ROBOPARK-99?park=7&queue=ROBOPARK',
+      href: '/work/ROBOPARK-99?park=7&queue=ROBOPARK&status=all',
     }])
     expect(model.metrics).toEqual([
       { label: 'Пришли', value: 2 },
@@ -137,7 +137,7 @@ describe('buildOverviewModel', () => {
 
     expect(model.primaryAction).toEqual({
       label: 'Разобрать ROBOPARK-99',
-      href: '/work/ROBOPARK-99?park=7&queue=ROBOPARK',
+      href: '/work/ROBOPARK-99?park=7&queue=ROBOPARK&status=all',
       icon: 'work',
     })
     expect(model.risk?.issueKey).toBe('ROBOPARK-99')
@@ -155,7 +155,7 @@ describe('buildOverviewModel', () => {
     expect(model.risk).toBeNull()
     expect(model.primaryAction).toEqual({
       label: 'Открыть работу',
-      href: '/work?park=7&queue=ROBOPARK',
+      href: '/work?park=7&queue=ROBOPARK&status=all',
       icon: 'work',
     })
   })
@@ -173,8 +173,8 @@ describe('buildOverviewModel', () => {
       canOpenAdministration: false,
     }, now)
 
-    expect(model.primaryAction?.href).toBe('/work/Q%2F42%20%3F%23?park=7&queue=TEAM+%26+OPS')
-    expect(model.queue[0]?.href).toBe('/work/Q%2F42%20%3F%23?park=7&queue=TEAM+%26+OPS')
+    expect(model.primaryAction?.href).toBe('/work/Q%2F42%20%3F%23?park=7&queue=TEAM+%26+OPS&status=all')
+    expect(model.queue[0]?.href).toBe('/work/Q%2F42%20%3F%23?park=7&queue=TEAM+%26+OPS&status=all')
   })
 
   it.each([
@@ -251,7 +251,7 @@ describe('buildOverviewModel', () => {
       title: 'Наибольшая текущая очередь: Юг · 9',
       tone: 'info',
     })
-    expect(model.primaryAction?.href).toBe('/work?park=8')
+    expect(model.primaryAction?.href).toBe('/work?park=8&status=all')
     expect(model.metrics).toEqual([
       { label: 'Пришли', value: 4 },
       { label: 'Завершены', value: 8 },
@@ -262,12 +262,12 @@ describe('buildOverviewModel', () => {
       {
         key: 'ROBOPARK-42',
         summary: 'Робот 447 остановился',
-        href: '/work/ROBOPARK-42?park=7&queue=ROBOPARK',
+        href: '/work/ROBOPARK-42?park=7&queue=ROBOPARK&status=all',
       },
       {
         key: 'ROBOPARK-88',
         summary: 'Робот в пути',
-        href: '/work/ROBOPARK-88?park=8&queue=ROBOPARK',
+        href: '/work/ROBOPARK-88?park=8&queue=ROBOPARK&status=all',
       },
     ])
     expect(payload).toEqual(original)
@@ -287,7 +287,7 @@ describe('buildOverviewModel', () => {
       canOpenAdministration: true,
     }, now)
 
-    expect(model.primaryAction?.href).toBe('/work?park=8')
+    expect(model.primaryAction?.href).toBe('/work?park=8&status=all')
   })
 
   it('keeps an empty fleet truthful without fabricated metrics, freshness or a park action', () => {

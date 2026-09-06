@@ -89,7 +89,7 @@ function WorkPageOwner({
     )
   }
 
-  const state = parseWorkUrl(params, { queue })
+  const state = parseWorkUrl(params, { queue, status: user.role === 'driver' ? 'new' : 'queued' })
   const writeState = (
     next: WorkUrlState,
     options: { replace?: boolean } = {},

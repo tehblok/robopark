@@ -15,7 +15,7 @@ export type WorkUrlState = {
   page: number
 }
 
-export type WorkDefaults = Pick<WorkFilters, 'queue'>
+export type WorkDefaults = Pick<WorkFilters, 'queue' | 'status'>
 
 const WORK_PAGE_SIZE_FOR_OFFSET = 50
 const MAX_WORK_PAGE =
@@ -51,7 +51,9 @@ export function parseWorkUrl(
   const queue = defaults.queue
   const rawStatus = text(params, 'status')
   const completedStatus = ['closed', 'resolved'].includes(rawStatus?.toLowerCase() ?? '')
-  const status = completedStatus ? undefined : rawStatus
+  const status = completedStatus || rawStatus === 'all'
+    ? undefined
+    : rawStatus ?? defaults.status ?? 'queued'
   const robot = text(params, 'robot')
   const assignee = text(params, 'assignee')
   const untagged = params.get('untagged') === '1'
@@ -79,7 +81,7 @@ export function buildWorkSearch(state: WorkUrlState, parkId: number | null): str
     params.set('park', String(parkId))
   }
   if (filters.queue) params.set('queue', filters.queue)
-  if (filters.status) params.set('status', filters.status)
+  params.set('status', filters.status || 'all')
   if (filters.robot) params.set('robot', filters.robot)
   if (filters.assignee) params.set('assignee', filters.assignee)
   if (filters.untagged) params.set('untagged', '1')

@@ -1,7 +1,9 @@
 # Open-blocker status selection on Work
 
 The Work screen now shows a single status selector, applied immediately. The
-queue comes from the selected park; a legacy URL queue cannot override it.
+default status is Queued (New for drivers, whose permitted statuses exclude Queued).
+An explicit `status=all` preserves a manual all-open selection across reloads and
+keeps links to all tasks of a robot unfiltered. The queue comes from the selected park; a legacy URL queue cannot override it.
 Technical park integration settings remain in administration. Linked robot,
 assignee, age and untagged restrictions remain visible and can be cleared.
 Changing status resets pagination. Completed-status URLs return to the first
@@ -32,6 +34,12 @@ to that directory. Running it from the worktree root incorrectly fails migration
 checks. API tests use isolated data and cache directories. No live mutations or
 broad closed-history probes were performed for this change.
 
-Final checks: 1061 API tests, 1498 web unit tests and 194 Chromium tests passed.
+Final checks: 1061 API tests, 1500 web unit tests and 194 Chromium tests passed.
 Production build, navigation check and theme contrast check passed. Lint completed
 without errors (existing warnings remain). Code review found no blockers.
+
+For the subsequent queued-default adjustment: 1500 web tests and build passed.
+Chromium passed 192/194 on the full run; the two remaining expectations used the
+old URL without `status=all`. After updating those expectations, all 5 workspace
+navigation tests passed. The runtime code did not change between those runs.
+Live `/work?park=1` selected Queued and loaded four matching tasks.

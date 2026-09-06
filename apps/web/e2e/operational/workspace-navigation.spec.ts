@@ -47,7 +47,7 @@ test('robot remaining-work link opens oldest scoped work with only the robot fil
   await installOperational(page)
   await page.goto('/work/ROBOPARK-42?park=7&status=closed&assignee=other&age=24&page=2')
   await page.getByRole('link', { name: 'Незавершённые задачи робота 447' }).click()
-  await expect(page).toHaveURL(/\/work\?park=7&queue=ROBOPARK&robot=447$/)
+  await expect(page).toHaveURL(/\/work\?park=7&queue=ROBOPARK&status=all&robot=447$/)
   await expect.poll(() => queries.some((params) => (
     params.get('robot') === '447'
       && params.get('limit') === '50'
@@ -82,5 +82,5 @@ test('nested work keeps its parent navigation and loads related robot tasks afte
     .toHaveAttribute('aria-current', 'page')
 
   await page.getByRole('link', { name: 'Незавершённые задачи робота 447' }).click()
-  await expect(page).toHaveURL('/work?park=7&queue=ROBOPARK&robot=447')
+  await expect(page).toHaveURL('/work?park=7&queue=ROBOPARK&status=all&robot=447')
 })

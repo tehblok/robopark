@@ -246,13 +246,13 @@ describe('IssueWorkbench', () => {
       sort: 'oldest', page: 3,
     } })
     const link = await screen.findByRole('link', { name: 'Незавершённые задачи робота 447' })
-    expect(link).toHaveAttribute('href', '/work?park=7&queue=ROBOPARK&robot=447')
+    expect(link).toHaveAttribute('href', '/work?park=7&queue=ROBOPARK&status=all&robot=447')
   })
 
   it('preserves the permitted untagged context when opening the robot queue', async () => {
     renderWorkbench({ currentState: { ...state, filters: { queue: 'ROBOPARK', untagged: true } } })
     expect(await screen.findByRole('link', { name: 'Незавершённые задачи робота 447' }))
-      .toHaveAttribute('href', '/work?park=7&queue=ROBOPARK&robot=447&untagged=1')
+      .toHaveAttribute('href', '/work?park=7&queue=ROBOPARK&status=all&robot=447&untagged=1')
   })
 
   it('does not invent robot identity from an issue summary', async () => {
