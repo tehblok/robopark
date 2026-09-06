@@ -5,6 +5,7 @@ from enum import StrEnum
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -198,6 +199,53 @@ class AnalyticsObservation(Base):
     # statuses fail closed for restricted roles, independently of display hints.
     authorization_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     age_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class DiagnosticRule(Base):
+    __tablename__ = "diagnostic_rules"
+    __table_args__ = (
+        CheckConstraint(
+            "match_kind IN ('exact', 'regex')",
+            name="ck_diagnostic_rules_match_kind",
+        ),
+        CheckConstraint(
+            "severity IN ('info', 'warning', 'critical')",
+            name="ck_diagnostic_rules_severity",
+        ),
+        CheckConstraint(
+            "preferred_view IN ('top', 'front', 'rear', 'left', 'right', 'isometric')",
+            name="ck_diagnostic_rules_preferred_view",
+        ),
+        CheckConstraint(
+            "indicator IN ('point', 'outline', 'zone')",
+            name="ck_diagnostic_rules_indicator",
+        ),
+        CheckConstraint("x = x AND x >= 0.0 AND x <= 1.0", name="ck_diagnostic_rules_x"),
+        CheckConstraint("y = y AND y >= 0.0 AND y <= 1.0", name="ck_diagnostic_rules_y"),
+        UniqueConstraint(
+            "source_path",
+            "match_kind",
+            "pattern",
+            name="uq_diagnostic_rules_source_match_pattern",
+        ),
+        Index("ix_diagnostic_rules_sort_order_id", "sort_order", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_path: Mapped[str] = mapped_column(String(256))
+    match_kind: Mapped[str] = mapped_column(String(16))
+    pattern: Mapped[str] = mapped_column(String(512))
+    example: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(String(256))
+    description: Mapped[str] = mapped_column(Text)
+    severity: Mapped[str] = mapped_column(String(16))
+    part: Mapped[str] = mapped_column(String(128))
+    preferred_view: Mapped[str] = mapped_column(String(16))
+    x: Mapped[float] = mapped_column(Float)
+    y: Mapped[float] = mapped_column(Float)
+    indicator: Mapped[str] = mapped_column(String(16))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class PlatformSetting(Base):

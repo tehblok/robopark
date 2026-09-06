@@ -231,6 +231,75 @@ def _reject_explicit_nulls(data: Any, fields: tuple[str, ...]) -> Any:
     return data
 
 
+DiagnosticMatchKind = Literal["exact", "regex"]
+DiagnosticSeverity = Literal["info", "warning", "critical"]
+DiagnosticView = Literal["top", "front", "rear", "left", "right", "isometric"]
+DiagnosticIndicator = Literal["point", "outline", "zone"]
+
+
+class DiagnosticRuleCreate(BaseModel):
+    source_path: str = Field(min_length=1, max_length=256)
+    match_kind: DiagnosticMatchKind
+    pattern: str = Field(min_length=1, max_length=512)
+    example: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=256)
+    description: str = Field(min_length=1)
+    severity: DiagnosticSeverity
+    part: str = Field(min_length=1, max_length=128)
+    preferred_view: DiagnosticView
+    x: float = Field(ge=0, le=1, allow_inf_nan=False)
+    y: float = Field(ge=0, le=1, allow_inf_nan=False)
+    indicator: DiagnosticIndicator
+    is_enabled: bool = True
+    sort_order: int = 0
+
+
+class DiagnosticRuleUpdate(BaseModel):
+    source_path: str | None = Field(default=None, min_length=1, max_length=256)
+    match_kind: DiagnosticMatchKind | None = None
+    pattern: str | None = Field(default=None, min_length=1, max_length=512)
+    example: str | None = Field(default=None, min_length=1)
+    title: str | None = Field(default=None, min_length=1, max_length=256)
+    description: str | None = Field(default=None, min_length=1)
+    severity: DiagnosticSeverity | None = None
+    part: str | None = Field(default=None, min_length=1, max_length=128)
+    preferred_view: DiagnosticView | None = None
+    x: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    y: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    indicator: DiagnosticIndicator | None = None
+    is_enabled: bool | None = None
+    sort_order: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_explicit_nulls(cls, data: Any) -> Any:
+        return _reject_explicit_nulls(
+            data,
+            (
+                "source_path",
+                "match_kind",
+                "pattern",
+                "example",
+                "title",
+                "description",
+                "severity",
+                "part",
+                "preferred_view",
+                "x",
+                "y",
+                "indicator",
+                "is_enabled",
+                "sort_order",
+            ),
+        )
+
+
+class DiagnosticRuleOut(DiagnosticRuleCreate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+
+
 class EmergencyFieldUpdate(BaseModel):
     path: str | None = Field(default=None, min_length=1, max_length=256)
     label: str | None = Field(default=None, min_length=1, max_length=128)

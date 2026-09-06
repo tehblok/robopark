@@ -31,13 +31,70 @@ def test_metadata_has_required_tables():
         "user_permissions",
         "analytics_snapshots",
         "analytics_observations",
+        "diagnostic_rules",
     }
 
 
-def test_alembic_head_is_analytics_observations():
+def test_alembic_head_is_diagnostic_rules():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0018_analytics_observations"]
+    assert script.get_heads() == ["0019_diagnostic_rules"]
+
+
+def test_diagnostic_rules_upgrade_from_previous_head(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    api_dir = Path(__file__).parents[1]
+    config = Config(api_dir / "alembic.ini")
+
+    command.upgrade(config, "0018_analytics_observations")
+    engine = create_engine(sqlite_database_url, future=True)
+    assert "diagnostic_rules" not in inspect(engine).get_table_names()
+
+    command.upgrade(config, "0019_diagnostic_rules")
+
+    inspector = inspect(engine)
+    assert {column["name"] for column in inspector.get_columns("diagnostic_rules")} == {
+        "id",
+        "source_path",
+        "match_kind",
+        "pattern",
+        "example",
+        "title",
+        "description",
+        "severity",
+        "part",
+        "preferred_view",
+        "x",
+        "y",
+        "indicator",
+        "is_enabled",
+        "sort_order",
+    }
+    assert all(not column["nullable"] for column in inspector.get_columns("diagnostic_rules"))
+    assert any(
+        constraint["name"] == "uq_diagnostic_rules_source_match_pattern"
+        and constraint["column_names"] == ["source_path", "match_kind", "pattern"]
+        for constraint in inspector.get_unique_constraints("diagnostic_rules")
+    )
+    assert any(
+        index["name"] == "ix_diagnostic_rules_sort_order_id"
+        and index["column_names"] == ["sort_order", "id"]
+        and not index["unique"]
+        for index in inspector.get_indexes("diagnostic_rules")
+    )
+    assert {
+        constraint["name"] for constraint in inspector.get_check_constraints("diagnostic_rules")
+    } == {
+        "ck_diagnostic_rules_indicator",
+        "ck_diagnostic_rules_match_kind",
+        "ck_diagnostic_rules_preferred_view",
+        "ck_diagnostic_rules_severity",
+        "ck_diagnostic_rules_x",
+        "ck_diagnostic_rules_y",
+    }
+
+    command.downgrade(config, "0018_analytics_observations")
+    assert "diagnostic_rules" not in inspect(engine).get_table_names()
 
 
 def test_analytics_upgrade_and_downgrade_preserve_existing_history(
