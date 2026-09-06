@@ -1,5 +1,45 @@
 import { expect, test } from '@playwright/test'
+import type { RobotRegistry } from '../../src/api'
 import { FIXED_TIME, installOperational, settlePage, snapshot, userForRole } from './fixtures'
+
+function registryPage(request: Request, total: number): RobotRegistry {
+  const params = new URL(request.url).searchParams
+  const offset = Number(params.get('offset') ?? 0)
+  const parkId = Number(params.get('park_id'))
+  return {
+    items: offset < total ? [{ vin: snapshot.vin, short_number: '447', park_ids: [parkId], state: 'unknown', telemetry: null, error_count: null, task_count: 1, task_keys: ['ROBOPARK-42'], issue_keys: ['ROBOPARK-42'] }] : [],
+    total, offset, limit: 50, has_more: offset + 50 < total, partial: true, source_complete: true, source: 'scoped_tracker_issues', park_id: parkId,
+  }
+}
+
+test('registry keeps a deep-linked page and resets offset before reading a changed park', async ({ page }) => {
+  const requests: URLSearchParams[] = []
+  await installOperational(page, { role: 'operator', routes: [{ method: 'GET', path: '/api/robots', handler: request => {
+    const params = new URL(request.url).searchParams
+    requests.push(params)
+    return { json: registryPage(request, params.get('park_id') === '8' ? 1 : 51) }
+  } }] })
+  await page.goto('/robots?park=7&offset=50&query=447')
+  await expect(page.getByText('51–51 из 51')).toBeVisible()
+  await page.getByRole('button', { name: 'Сменить парк' }).click()
+  await page.getByRole('option', { name: 'Южный парк' }).click()
+  await expect(page.getByText('1–1 из 1')).toBeVisible()
+  expect(new URL(page.url()).searchParams.toString()).toBe('park=8&query=447')
+  expect(requests.filter(params => params.get('park_id') === '8').map(params => params.get('offset'))).toEqual(['0'])
+})
+
+test('registry recovers an out-of-range refreshed page and replaces the URL', async ({ page }) => {
+  let total = 51
+  await installOperational(page, { routes: [{ method: 'GET', path: '/api/robots', handler: request => ({ json: registryPage(request, total) }) }] })
+  await page.goto('/robots?park=7&offset=50')
+  await expect(page.getByText('51–51 из 51')).toBeVisible()
+  total = 1
+  await page.getByRole('button', { name: 'Обновить реестр' }).click()
+  await expect(page.getByText('1–1 из 1')).toBeVisible()
+  expect(new URL(page.url()).searchParams.has('offset')).toBe(false)
+  await expect(page.getByRole('heading', { name: 'Роботы не найдены' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Назад', exact: true })).toBeDisabled()
+})
 
 test('registry filters survive reload and fetch no Emergency until opening a robot', async ({ page }) => {
   const registry: URL[] = []

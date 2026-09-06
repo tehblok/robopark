@@ -1,6 +1,7 @@
 """Tracker-derived registry: one paginated search, cache-only diagnostics."""
 
 import re
+from dataclasses import dataclass
 from typing import Literal
 
 from fastapi import HTTPException
@@ -12,9 +13,31 @@ from robopark_api.models import Park, User
 from robopark_api.services import emergency_cache, rbac, tracker_cache, tracker_client
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.emergency_snapshot import parse_emergency_snapshot
-from robopark_api.services.tracker_policy import is_issue_in_scope, issue_tags
+from robopark_api.services.tracker_policy import issue_authorization_status, issue_tags
 
 RegistryState = Literal["all", "online", "offline", "unknown", "errors", "tasks"]
+
+
+@dataclass(frozen=True)
+class RegistryAccess:
+    """Request-local policy snapshot: no ORM objects or per-issue database reads."""
+
+    permissions: frozenset[str]
+    driver: bool
+    parks: tuple[tuple[int, str, str], ...]
+
+    def matching_parks(self, issue: dict) -> tuple[int, ...]:
+        if self.driver and issue_authorization_status(issue) not in {"new", "moving"}:
+            return ()
+        queue = str(issue.get("queue") or "").strip()
+        tags = issue_tags(issue)
+        # Registry identities/counts require a provable active queue+park pair,
+        # including the all-parks view and staff. Untagged Tracker work is not a roster.
+        return tuple(
+            park_id
+            for park_id, park_queue, tag in self.parks
+            if queue == park_queue and tag in tags
+        )
 
 
 def _vin(raw: object) -> str | None:
@@ -42,6 +65,22 @@ def _parks(db: Session, user: User, park_id: int | None) -> list[Park]:
     return [park for park in parks if park.is_active]
 
 
+def _access(db: Session, user: User, park_id: int | None) -> RegistryAccess:
+    rbac.assert_approved(user)
+    permissions = frozenset(rbac.permissions_for_user(db, user))
+    if not {rbac.PERMISSION_NAV_ROBOT_SEARCH, rbac.PERMISSION_TRACKER_READ} <= permissions:
+        raise HTTPException(403)
+    return RegistryAccess(
+        permissions=permissions,
+        driver=rbac.role_slug(user) == rbac.RoleSlug.DRIVER,
+        parks=tuple(
+            (park.id, park.tracker_queue.strip(), park.tag.strip())
+            for park in _parks(db, user, park_id)
+            if park.tracker_queue and park.tracker_queue.strip() and park.tag and park.tag.strip()
+        ),
+    )
+
+
 def registry_rows(
     db: Session,
     user: User,
@@ -54,12 +93,8 @@ def registry_rows(
     offset: int,
     limit: int,
 ) -> dict:
-    rbac.require_approved_permission(db, user, rbac.PERMISSION_NAV_ROBOT_SEARCH)
-    rbac.require_approved_permission(db, user, rbac.PERMISSION_TRACKER_READ)
-    parks = _parks(db, user, park_id)
-    queues = sorted(
-        {p.tracker_queue.strip() for p in parks if p.tracker_queue and p.tracker_queue.strip()}
-    )
+    access = _access(db, user, park_id)
+    queues = sorted({queue for _, queue, _ in access.parks})
     issues = []
     if queues:
         token = settings_svc.get_tracker_token(db)
@@ -76,14 +111,8 @@ def registry_rows(
             raise HTTPException(502, detail="tracker_upstream_error") from exc
     rows: dict[str, dict] = {}
     for issue in issues:
-        if issue.get("queue") not in queues or not is_issue_in_scope(db, user, issue):
-            continue
-        matches = [
-            p.id
-            for p in parks
-            if p.tracker_queue == issue.get("queue") and p.tag in issue_tags(issue)
-        ]
-        if park_id is not None and park_id not in matches:
+        matches = access.matching_parks(issue)
+        if not matches:
             continue
         key = str(issue.get("key") or "").strip()
         vin = _vin(issue.get("robot"))
@@ -104,7 +133,7 @@ def registry_rows(
         if tracker_client.is_issue_open_item(issue):
             row["task_keys"].add(key)
     identity = settings_svc.get_emergency_cookie_probe(db)[1]
-    can_diagnose = rbac.has_permission(db, user, rbac.PERMISSION_NAV_EMERGENCY)
+    can_diagnose = rbac.PERMISSION_NAV_EMERGENCY in access.permissions
     cached = (
         emergency_cache.peek_robot_payloads(vins=list(rows), identity=identity)
         if can_diagnose

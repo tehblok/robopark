@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { Profiler } from 'react'
+import { MemoryRouter, useSearchParams } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import { ApiError, type RobotRegistry, type User } from '../../api'
 import { AuthContext } from '../../auth-context'
@@ -7,10 +8,29 @@ import { RobotRegistryList } from './RobotRegistryList'
 
 const user: User = { id: 1, role: 'mechanic', username: 'm', access_status: 'approved', parks: [], permissions: ['tracker.read', 'nav.robot_search'] }
 const empty: RobotRegistry = { items: [], total: 0, offset: 0, limit: 50, has_more: false, partial: false, source_complete: true, source: 'scoped_tracker_issues', park_id: 7 }
+const row: RobotRegistry['items'][number] = { vin: 'YASADR00000000447', short_number: '447', park_ids: [7], task_keys: ['ROBOPARK-1'], issue_keys: ['ROBOPARK-1'], task_count: 1, error_count: null, telemetry: null, state: 'unknown' }
+const secondPage: RobotRegistry = { ...empty, items: [row], offset: 50, total: 51 }
 function tree(client: { robotRegistry: (params: unknown) => Promise<RobotRegistry> }, principal = user, refreshUser = vi.fn(async () => principal)) {
   return <MemoryRouter><AuthContext.Provider value={{ user: principal, loading: false, login: async () => principal, logout: async () => undefined, refreshUser }}>
     <RobotRegistryList apiClient={client} parkId={7} scopeLoading={false} />
   </AuthContext.Provider></MemoryRouter>
+}
+
+function ScopedRegistry({ client, scopeLoading = false }: { client: Parameters<typeof tree>[0]; scopeLoading?: boolean }) {
+  const [params, setParams] = useSearchParams()
+  return <>
+    <output aria-label="Registry URL">{params.toString()}</output>
+    <button onClick={() => { const next = new URLSearchParams(params); next.set('park', '8'); setParams(next) }}>Другой парк</button>
+    <RobotRegistryList apiClient={client} parkId={scopeLoading ? null : Number(params.get('park'))} scopeLoading={scopeLoading} />
+  </>
+}
+
+function scopedTree(client: Parameters<typeof tree>[0], onRender = () => undefined, scopeLoading = false) {
+  return <MemoryRouter initialEntries={['/robots?park=7&offset=50&query=447&open_tasks=true']}>
+    <AuthContext.Provider value={{ user, loading: false, login: async () => user, logout: async () => undefined, refreshUser: async () => user }}>
+      <Profiler id="registry" onRender={onRender}><ScopedRegistry client={client} scopeLoading={scopeLoading} /></Profiler>
+    </AuthContext.Provider>
+  </MemoryRouter>
 }
 
 describe('registry resource states', () => {
@@ -45,5 +65,56 @@ describe('registry resource states', () => {
     fireEvent.change(screen.getByLabelText('Поиск по номеру, VIN или задаче'), { target: { value: '447' } })
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
     expect(client.robotRegistry).toHaveBeenCalledTimes(1)
+  })
+
+  it('retains a valid deep-linked page but resets it on a park URL transition', async () => {
+    const client = { robotRegistry: vi.fn().mockResolvedValueOnce(secondPage).mockResolvedValue({ ...empty, park_id: 8, items: [row], total: 1 }) }
+    render(scopedTree(client))
+    expect(await screen.findByText('51–51 из 51')).toBeVisible()
+    expect(client.robotRegistry).toHaveBeenCalledWith(expect.objectContaining({ park_id: 7, offset: 50 }))
+    fireEvent.click(screen.getByRole('button', { name: 'Другой парк' }))
+    expect(await screen.findByText('1–1 из 1')).toBeVisible()
+    expect(screen.getByLabelText('Registry URL')).toHaveTextContent('park=8&query=447&open_tasks=true')
+    expect(client.robotRegistry).toHaveBeenCalledTimes(2)
+    expect(client.robotRegistry).toHaveBeenLastCalledWith(expect.objectContaining({ park_id: 8, offset: 0, query: '447', open_tasks: true }))
+  })
+
+  it('retains the settled page across transient park loading without requesting the all-parks scope', async () => {
+    const client = { robotRegistry: vi.fn().mockResolvedValue(secondPage) }
+    const view = render(scopedTree(client))
+    expect(await screen.findByText('51–51 из 51')).toBeVisible()
+    view.rerender(scopedTree(client, undefined, true))
+    expect(screen.getByText('Загружаем реестр роботов')).toBeVisible()
+    expect(client.robotRegistry).toHaveBeenCalledTimes(1)
+    view.rerender(scopedTree(client))
+    expect(await screen.findByText('51–51 из 51')).toBeVisible()
+    expect(client.robotRegistry).toHaveBeenLastCalledWith(expect.objectContaining({ park_id: 7, offset: 50 }))
+    expect(screen.getByLabelText('Registry URL')).toHaveTextContent('offset=50')
+  })
+
+  it('clamps a now-out-of-range page without committing a false empty result or reversed range', async () => {
+    const committed: string[] = []
+    const client = { robotRegistry: vi.fn().mockResolvedValueOnce(secondPage).mockResolvedValueOnce({ ...empty, offset: 50, total: 1 }).mockResolvedValue({ ...empty, items: [row], total: 1 }) }
+    render(scopedTree(client, () => { committed.push(document.body.textContent ?? '') }))
+    expect(await screen.findByText('51–51 из 51')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Обновить реестр' }))
+    expect(await screen.findByText('1–1 из 1')).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Открыть робота 447' })).toBeVisible()
+    expect(client.robotRegistry).toHaveBeenCalledTimes(3)
+    expect(client.robotRegistry).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 }))
+    expect(screen.getByLabelText('Registry URL')).not.toHaveTextContent('offset=')
+    expect(committed.some(text => text.includes('Роботы не найдены') || text.includes('51–50'))).toBe(false)
+  })
+
+  it('resets pagination when the total shrinks to zero and disables both page actions', async () => {
+    const client = { robotRegistry: vi.fn().mockResolvedValueOnce(secondPage).mockResolvedValue({ ...empty, offset: 50 }) }
+    render(scopedTree(client))
+    expect(await screen.findByText('51–51 из 51')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Обновить реестр' }))
+    expect(await screen.findByRole('heading', { name: 'Роботы не найдены' })).toBeVisible()
+    expect(screen.getByLabelText('Registry URL')).not.toHaveTextContent('offset=')
+    expect(screen.getByText('0 роботов')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Назад' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Далее' })).toBeDisabled()
   })
 })

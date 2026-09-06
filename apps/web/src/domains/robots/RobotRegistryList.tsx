@@ -11,6 +11,9 @@ import { classifyApiError } from '../../shared/api/classifyApiError'
 export function RobotRegistryList({ apiClient, parkId, scopeLoading }: { apiClient: Partial<Pick<typeof api, 'robotRegistry'>>; parkId: number | null; scopeLoading: boolean }) {
   const { user, refreshUser } = useAuth()
   const [params, setParams] = useSearchParams()
+  // ParkScopeProvider settles its URL selection after render. Do not treat that
+  // initial null (or the previous park during navigation) as a selected scope.
+  const scopePending = scopeLoading || (params.has('park') && params.get('park') !== String(parkId))
   const query = params.get('query') ?? ''
   const state = ['online', 'offline', 'unknown'].includes(params.get('state') ?? '') ? params.get('state')! : 'all'
   const activeErrors = params.get('active_errors') === 'true'
@@ -20,19 +23,41 @@ export function RobotRegistryList({ apiClient, parkId, scopeLoading }: { apiClie
   const [error, setError] = useState<unknown>(null)
   const [resultPark, setResultPark] = useState(parkId)
   const [retry, setRetry] = useState(0)
+  const settledPark = useRef<number | null | undefined>(scopePending ? undefined : parkId)
+  const updateParams = useRef(setParams)
+  updateParams.current = setParams
   const denied = useRef<{ kind: string; parkId: number | null } | null>(null)
   const refresh = useRef(refreshUser)
   refresh.current = refreshUser
   const allowed = Boolean(user?.permissions?.includes('tracker.read'))
   useEffect(() => {
     let current = true
+    if (scopePending) return
+    const replaceOffset = (nextOffset: number) => updateParams.current(previous => {
+      const next = new URLSearchParams(previous)
+      if (nextOffset) next.set('offset', String(nextOffset)); else next.delete('offset')
+      return next
+    }, { replace: true })
+    const scopeChanged = settledPark.current !== undefined && settledPark.current !== parkId
+    settledPark.current = parkId
+    if (scopeChanged && offset > 0) {
+      replaceOffset(0)
+      return
+    }
     if (denied.current?.kind === 'unauthorized' || (denied.current && denied.current.parkId === parkId)) return
     denied.current = null
     setData(null); setError(null)
     setResultPark(parkId)
-    if (!allowed || scopeLoading || !apiClient.robotRegistry) return
+    if (!allowed || !apiClient.robotRegistry) return
     void apiClient.robotRegistry({ park_id: parkId ?? undefined, query, state, active_errors: activeErrors, open_tasks: openTasks, offset, limit: 50 }).then(value => {
-      if (current) setData(value)
+      if (!current) return
+      // A refreshed batch may be shorter. Canonicalize and load the last valid
+      // page before publishing rows, so an out-of-range reply never looks empty.
+      if (offset > 0 && offset >= value.total) {
+        replaceOffset(Math.max(0, Math.floor((value.total - 1) / 50) * 50))
+        return
+      }
+      setData(value)
     }, failure => {
       if (!current) return
       setError(failure)
@@ -41,14 +66,14 @@ export function RobotRegistryList({ apiClient, parkId, scopeLoading }: { apiClie
       if (kind === 'unauthorized') void refresh.current().catch(() => undefined)
     })
     return () => { current = false }
-  }, [apiClient, parkId, scopeLoading, query, state, activeErrors, openTasks, offset, retry, allowed])
+  }, [apiClient, parkId, scopePending, query, state, activeErrors, openTasks, offset, retry, allowed])
   const change = (key: string, value: string) => {
     const next = new URLSearchParams(params)
     if (value) next.set(key, value); else next.delete(key)
     if (key !== 'offset') next.delete('offset')
     setParams(next, { replace: true })
   }
-  const visible = resultPark === parkId && !scopeLoading
+  const visible = resultPark === parkId && !scopePending
   const failure = error && (visible || denied.current?.kind === 'unauthorized') ? classifyApiError(error, 'Не удалось загрузить реестр роботов.') : null
   const href = (vin: string, tab?: string) => {
     const next = new URLSearchParams()
@@ -78,7 +103,7 @@ export function RobotRegistryList({ apiClient, parkId, scopeLoading }: { apiClie
               status={<><span data-state={row.state}>{row.state === 'online' ? 'На связи' : row.state === 'offline' ? 'Не в сети' : 'Нет данных'}</span><span>Заряд: {row.telemetry?.charge_percent == null ? '—' : `${row.telemetry.charge_percent} %`}</span><span>Ошибки: {row.error_count ?? '—'}</span></>}
               actions={<Link to={href(row.vin, 'tasks')} aria-label={`Задачи робота ${row.short_number}`}>Задачи: {row.task_count}</Link>} /></div>)}
           </div> : <EmptyState title="Роботы не найдены" description="Измените поиск или фильтры. Можно открыть робота по номеру ниже." />}
-          <nav aria-label="Страницы реестра" className="rp-robot-registry__pagination"><Button variant="secondary" disabled={offset === 0} onClick={() => change('offset', String(Math.max(0, offset - 50)))}>Назад</Button><span>{data.total ? `${offset + 1}–${offset + data.items.length} из ${data.total}` : '0 роботов'}</span><Button variant="secondary" disabled={!data.has_more} onClick={() => change('offset', String(offset + 50))}>Далее</Button></nav>
+          <nav aria-label="Страницы реестра" className="rp-robot-registry__pagination"><Button variant="secondary" disabled={offset === 0} onClick={() => change('offset', String(Math.max(0, offset - 50)))}>Назад</Button><span>{data.total ? `${data.offset + 1}–${data.offset + data.items.length} из ${data.total}` : '0 роботов'}</span><Button variant="secondary" disabled={!data.has_more} onClick={() => change('offset', String(offset + 50))}>Далее</Button></nav>
         </>}
   </Panel>
 }
