@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '../../design-system/actions/Button'
+import { summarizeIssueDescription } from './issueDescription'
 import { IssueRichText } from './IssueRichText'
 import type { TrackerAttachment, TrackerComment, TrackerIssueDetail } from '../../api'
 import { Link } from 'react-router-dom'
@@ -180,6 +181,7 @@ function IssueDetailPanelContent({
   const chatLayout = sortedComments.some(
     (comment) => (comment.attachments?.length ?? 0) > 0 || commentsAsHistory,
   )
+  const description = summarizeIssueDescription(issue.description ?? '')
   const issueUrl = safeHttpUrl(issue.url)
   const robotReference = issue.robot?.trim()
 
@@ -314,8 +316,8 @@ function IssueDetailPanelContent({
 
       <section className="issue-section">
         <h3>{ru.tracker.description}</h3>
-        {issue.description?.trim() ? (
-          <IssueRichText text={issue.description} collapsible />
+        {description.trim() ? (
+          <IssueRichText text={description} collapsible />
         ) : (
           <p className="issue-muted">{ru.tracker.descriptionEmpty}</p>
         )}

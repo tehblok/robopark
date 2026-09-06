@@ -69,3 +69,27 @@ test('320px task controls, safe Markdown, persistent drafts and incoming comment
   await page.reload()
   await expect(composer).toHaveValue('')
 })
+
+test('robot repair descriptions keep classification, comment, zone and repair notes only', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 })
+  await installOperational(page, { issue: { ...issue, description: `**SUF**: робот находится под управлением системы SUF
+**Classificator:** Disk space
+**Comment:** Недостаточно места на диске
+**Zone:** Lavka Smolensky
+**Port:** Moscow Robot
+**Rover name:** a1217
+**Mode:** AUTO_MODE_AUTO
+Что было сделано: Агрессивная чистка, почищены старые докер-образы. Рекомендации: Забит логами, необходимо слить по шнурку.` } })
+  await page.goto('/work/ROBOPARK-42?park=7')
+  const description = page.locator('.issue-section').filter({ has: page.getByRole('heading', { name: 'Описание', exact: true }) })
+  await expect(description).toContainText('Classificator: Disk space')
+  await expect(description).toContainText('Comment: Недостаточно места на диске')
+  await expect(description).toContainText('Zone: Lavka Smolensky')
+  await expect(description).toContainText('Что было сделано: Агрессивная чистка, почищены старые докер-образы.')
+  await expect(description).toContainText('Рекомендации: Забит логами, необходимо слить по шнурку.')
+  await expect(description).not.toContainText('SUF')
+  await expect(description).not.toContainText('Port:')
+  await expect(description).not.toContainText('AUTO_MODE_AUTO')
+  await expect(description.getByRole('button')).toHaveCount(0)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+})

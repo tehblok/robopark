@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TrackerComment, TrackerIssueDetail } from '../../api'
@@ -173,4 +173,15 @@ describe('incoming task updates', () => {
     view.rerender(detail([comment('1')], { accountKey: 'someone-else' }))
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
+})
+
+
+it('shows the compact description while preserving the full comment text', () => {
+  render(<MemoryRouter><IssueDetailPanel issue={{ ...issue, description: '**Classificator:** Disk space\n**Comment:** Недостаточно места на диске\n**Zone:** Lavka Smolensky\n**Port:** Moscow\n**Рекомендации:** Слить логи.' }} comments={[{ id: 'history', text: '**Port:** Уточнение в комментарии' }]} showRobotCheck={false} /></MemoryRouter>)
+  const description = screen.getByRole('heading', { name: ru.tracker.description }).closest('section')!
+  expect(description).toHaveTextContent('Classificator: Disk space')
+  expect(description).toHaveTextContent('Рекомендации: Слить логи.')
+  expect(description).not.toHaveTextContent('Port:')
+  expect(within(description).queryByRole('button', { name: 'Показать описание полностью' })).not.toBeInTheDocument()
+  expect(screen.getByText('Уточнение в комментарии')).toBeInTheDocument()
 })
