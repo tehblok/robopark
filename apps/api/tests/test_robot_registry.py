@@ -192,6 +192,39 @@ def test_registry_upstream_failure_and_invalid_filters(client, registry):
     assert client.get("/robots?offset=-1").status_code == 422
 
 
+def test_registry_shared_upstream_failure_keeps_public_error_contract(
+    client, registry, tmp_path, monkeypatch
+):
+    from robopark_api.services import tracker_cache
+    from robopark_api.services.live_merge import LiveMergeStore
+
+    shared = LiveMergeStore(tmp_path / "shared")
+    monkeypatch.setattr(tracker_cache._issues_cache, "_shared", shared)
+    with patch(
+        "robopark_api.services.tracker_client.search_issues",
+        side_effect=TrackerError("private upstream failure"),
+    ) as upstream:
+        for _ in range(2):
+            response = client.get("/robots")
+            assert response.status_code == 502
+            assert response.json() == {"detail": "tracker_upstream_error"}
+        upstream.assert_called_once()
+
+
+def test_registry_shared_wait_timeout_keeps_public_error_contract(
+    client, registry, tmp_path, monkeypatch
+):
+    from robopark_api.services import tracker_cache
+    from robopark_api.services.live_merge import LiveMergeStore, LiveMergeTimeout
+
+    shared = LiveMergeStore(tmp_path / "shared")
+    monkeypatch.setattr(tracker_cache._issues_cache, "_shared", shared)
+    with patch.object(shared, "merge_load", side_effect=LiveMergeTimeout("private cache key")):
+        response = client.get("/robots")
+    assert response.status_code == 502
+    assert response.json() == {"detail": "tracker_upstream_error"}
+
+
 def test_registry_requires_authentication(client):
     assert client.get("/robots").status_code == 401
 
