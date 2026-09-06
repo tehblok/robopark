@@ -15,6 +15,7 @@ type Draft = Required<Omit<DiagnosticRuleCreate, 'sort_order'>>
 const SEVERITIES = { info: 'Информация', warning: 'Предупреждение', critical: 'Критическая ошибка' } as const
 const INDICATORS = { point: 'Точка', outline: 'Контур', zone: 'Зона' } as const
 const emptyDraft: Draft = { source_path: '', match_kind: 'exact', pattern: '', example: '', title: '', description: '', severity: 'warning', part: '', preferred_view: 'front', x: .5, y: .5, indicator: 'point', is_enabled: true }
+const isCoordinate = (value: number) => Number.isFinite(value) && value >= 0 && value <= 1
 function toDraft(rule: DiagnosticRule): Draft {
   const { source_path, match_kind, pattern, example, title, description, severity, part, preferred_view, x, y, indicator, is_enabled } = rule
   return { source_path, match_kind, pattern, example, title, description, severity, part, preferred_view, x, y, indicator, is_enabled }
@@ -60,6 +61,16 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
   const [notice, setNotice] = useState('')
   const [denied, setDenied] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [createdDraft, setCreatedDraft] = useState<{ id: number; draft: Draft } | null>(null)
+  const clearCreatedDraft = useCallback(() => setCreatedDraft(null), [])
+  const [previewOwner, setPreviewOwner] = useState<object>({})
+  const previewOwnerRef = useRef(previewOwner)
+  const advancePreviewOwner = useCallback(() => {
+    const next = {}
+    previewOwnerRef.current = next
+    setPreviewOwner(next)
+  }, [])
+  const isPreviewOwner = useCallback((owner: object) => previewOwnerRef.current === owner, [])
   const mutation = useRef(false)
   const alive = useRef(false)
   const listGeneration = useRef(0)
@@ -74,11 +85,13 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
     if (failure.status === 401) void refreshAuth.current().catch(() => undefined)
   }, [])
   const reload = useCallback(async (signal?: AbortSignal) => {
+    advancePreviewOwner()
     const generation = ++listGeneration.current
     setLoading(true)
     try {
       const next = await api.diagnosticRules(signal)
       if (alive.current && !deniedRef.current && generation === listGeneration.current) {
+        advancePreviewOwner()
         setCatalog(next); setError('')
       }
       return next
@@ -90,7 +103,7 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
     } finally {
       if (alive.current && generation === listGeneration.current) setLoading(false)
     }
-  }, [handleAccess])
+  }, [handleAccess, advancePreviewOwner])
   useEffect(() => {
     alive.current = true
     const controller = new AbortController()
@@ -99,14 +112,19 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
   }, [reload, user])
 
   const select = (id: string | null) => {
+    clearCreatedDraft()
     const next = new URLSearchParams(params)
     if (id) next.set('rule', id); else next.delete('rule')
     setParams(next)
   }
   const selected = params.get('rule')
+  useEffect(() => {
+    if (createdDraft && selected !== 'new' && selected !== String(createdDraft.id)) clearCreatedDraft()
+  }, [createdDraft, selected, clearCreatedDraft])
   const rule = catalog?.rules.find(item => String(item.id) === selected)
   const reorder = async (index: number, offset: number) => {
     if (!catalog || mutation.current || !validOwner()) return
+    advancePreviewOwner()
     mutation.current = true; setBusy(true); setNotice(''); setError('')
     try {
       if (!catalog.etag) throw new ApiError(428)
@@ -129,12 +147,14 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
   }
   const save = async (draft: Draft, id?: number, disable = false) => {
     if (mutation.current || !validOwner()) throw new Error('operation_unavailable')
+    advancePreviewOwner()
     mutation.current = true; setBusy(true); setNotice('')
     try {
       const result = disable && id ? await api.disableDiagnosticRule(id) : id
         ? await api.updateDiagnosticRule(id, draft)
         : await api.createDiagnosticRule({ ...draft, sort_order: Math.max(-1, ...catalog!.rules.map(item => item.sort_order)) + 1 })
       if (validOwner()) {
+        advancePreviewOwner()
         // The mutation is already committed. Keep its authoritative identity if
         // the subsequent catalog read fails, so Create cannot be retried twice.
         setCatalog(current => current ? {
@@ -171,17 +191,26 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
           </div>
         </li>)}
       </ol>}
-    </>} detail={selected === 'new' || rule ? <RuleForm key={selected} rule={rule} busy={busy} onSave={save} onAccess={handleAccess}
-      onCreated={id => select(String(id))} isCurrentNavigation={() => navigation.current === location.key} /> : <EmptyState title={selected ? 'Правило не найдено' : 'Выберите правило'} description={selected ? 'Возможно, каталог изменился. Выберите правило из списка.' : 'Откройте ошибку из каталога, чтобы настроить расшифровку и индикацию.'} />} /> : null}
+    </>} detail={selected === 'new' || rule ? <RuleForm key={selected} rule={rule} busy={busy || loading} onSave={save} onAccess={handleAccess}
+      previewOwner={previewOwner} isPreviewOwner={isPreviewOwner}
+      initialDraft={createdDraft?.id === rule?.id ? createdDraft?.draft : undefined} onDraftAdopted={clearCreatedDraft}
+      onCreated={(id, draft) => {
+        setCreatedDraft({ id, draft })
+        const next = new URLSearchParams(params); next.set('rule', String(id)); setParams(next, { replace: true })
+      }} isCurrentNavigation={() => navigation.current === location.key} /> : <EmptyState title={selected ? 'Правило не найдено' : 'Выберите правило'} description={selected ? 'Возможно, каталог изменился. Выберите правило из списка.' : 'Откройте ошибку из каталога, чтобы настроить расшифровку и индикацию.'} />} /> : null}
   </div>
 }
 
-function RuleForm({ rule, busy, onSave, onCreated, onAccess, isCurrentNavigation }: {
+function RuleForm({ rule, initialDraft, onDraftAdopted, busy, onSave, onCreated, onAccess, isCurrentNavigation, previewOwner, isPreviewOwner }: {
   rule?: DiagnosticRule; busy: boolean
+  initialDraft?: Draft; onDraftAdopted: () => void
   onSave: (draft: Draft, id?: number, disable?: boolean) => Promise<DiagnosticRule>
-  onCreated: (id: number) => void; onAccess: (error: unknown) => void; isCurrentNavigation: () => boolean
+  onCreated: (id: number, draft: Draft) => void; onAccess: (error: unknown) => void; isCurrentNavigation: () => boolean
+  previewOwner: object; isPreviewOwner: (owner: object) => boolean
 }) {
-  const [draft, setDraft] = useState<Draft>(() => rule ? toDraft(rule) : { ...emptyDraft })
+  const [draft, setDraft] = useState<Draft>(() => initialDraft ?? (rule ? toDraft(rule) : { ...emptyDraft }))
+  const latestDraft = useRef(draft)
+  useEffect(() => { if (initialDraft) onDraftAdopted() }, [initialDraft, onDraftAdopted])
   const [preview, setPreview] = useState<DiagnosticPreview | null>(null)
   const [previewBusy, setPreviewBusy] = useState(false)
   const [error, setError] = useState('')
@@ -190,14 +219,22 @@ function RuleForm({ rule, busy, onSave, onCreated, onAccess, isCurrentNavigation
   const revision = useRef(0)
   const mounted = useRef(false)
   const previewRequest = useRef<AbortController | null>(null)
-  const retire = useCallback(() => { mounted.current = false; revision.current++; previewRequest.current?.abort() }, [])
+  const previewGeneration = useRef(0)
+  const invalidatePreview = useCallback(() => {
+    previewGeneration.current++
+    previewRequest.current?.abort()
+    setPreviewBusy(false); setPreview(null)
+  }, [])
+  useLayoutEffect(invalidatePreview, [previewOwner, invalidatePreview])
+  const retire = useCallback(() => { mounted.current = false; revision.current++; previewGeneration.current++; previewRequest.current?.abort() }, [])
   useEffect(() => { mounted.current = true; return retire }, [retire])
   const edit = (change: Partial<Draft>) => {
-    revision.current++; previewRequest.current?.abort(); setPreviewBusy(false)
-    setDraft(current => ({ ...current, ...change })); setPreview(null); setError(''); setMessage('')
+    revision.current++; invalidatePreview()
+    latestDraft.current = { ...latestDraft.current, ...change }
+    setDraft(latestDraft.current); setPreview(null); setError(''); setMessage('')
   }
-  const valid = ['source_path', 'pattern', 'example', 'title', 'description', 'part'].every(key => String(draft[key as keyof Draft]).trim())
-    && [draft.x, draft.y].every(value => Number.isFinite(value) && value >= 0 && value <= 1)
+  const coordinatesValid = [draft.x, draft.y].every(isCoordinate)
+  const valid = coordinatesValid && ['source_path', 'pattern', 'example', 'title', 'description', 'part'].every(key => String(draft[key as keyof Draft]).trim())
   const photo = ROBOT_PHOTOS.find(item => item.id === draft.preferred_view)!
   const place = (event: PointerEvent<HTMLImageElement>) => {
     if (failedImage === photo.id || (event.button !== 0 && event.button !== -1)) return
@@ -207,28 +244,39 @@ function RuleForm({ rule, busy, onSave, onCreated, onAccess, isCurrentNavigation
     edit({ x: clamp((event.clientX - rect.left) / rect.width), y: clamp((event.clientY - rect.top) / rect.height) })
   }
   const check = async () => {
-    if (previewBusy || !valid) return
+    if (busy || previewBusy || !valid) return
     const current = revision.current
+    const generation = ++previewGeneration.current
     const controller = new AbortController(); previewRequest.current = controller
+    const ownsPreview = () => mounted.current && !controller.signal.aborted && current === revision.current
+      && generation === previewGeneration.current && isPreviewOwner(previewOwner) && isCurrentNavigation()
     setPreviewBusy(true); setError(''); setPreview(null)
     try {
       const result = await api.previewDiagnosticRule(draft, undefined, controller.signal)
-      if (mounted.current && current === revision.current) setPreview(result)
+      if (ownsPreview()) setPreview(result)
     } catch (failure) {
-      if (mounted.current && !controller.signal.aborted && current === revision.current) { onAccess(failure); setError(errorText(failure)) }
-    } finally { if (mounted.current && current === revision.current) setPreviewBusy(false) }
+      if (ownsPreview()) { onAccess(failure); setError(errorText(failure)) }
+    } finally { if (ownsPreview()) setPreviewBusy(false) }
   }
   const save = async (event?: FormEvent, disable = false) => {
     event?.preventDefault()
     if (busy || (!disable && !valid)) return
+    invalidatePreview()
     const current = revision.current
     setError(''); setMessage('')
     try {
       const result = await onSave(draft, rule?.id, disable)
-      if (!mounted.current || current !== revision.current || !isCurrentNavigation()) return
-      setDraft(toDraft(result)); setPreview(null)
+      if (!mounted.current || !isCurrentNavigation()) return
+      // A successful POST owns an identity even if local edits outlive its
+      // request. Transfer that latest draft across the URL-keyed form remount.
+      if (!rule) {
+        onCreated(result.id, current === revision.current ? toDraft(result) : latestDraft.current)
+        return
+      }
+      if (current !== revision.current) return
+      latestDraft.current = toDraft(result)
+      setDraft(latestDraft.current); setPreview(null)
       setMessage(disable ? 'Правило отключено.' : 'Правило сохранено.')
-      if (!rule) onCreated(result.id)
     } catch (failure) {
       if (mounted.current && current === revision.current) setError(errorText(failure))
     }
@@ -254,17 +302,17 @@ function RuleForm({ rule, busy, onSave, onCreated, onAccess, isCurrentNavigation
       <figure className="rp-diagnostic-figure">
         <div className="rp-diagnostic-photo" style={{ maxWidth: `${Math.min(420, 440 * photo.width / photo.height)}px` }}>
           <img key={photo.id} src={photo.src} alt={photo.title} width={photo.width} height={photo.height} draggable={false} onPointerUp={place} onError={() => setFailedImage(photo.id)} />
-          {failedImage !== photo.id && Number.isFinite(draft.x) && Number.isFinite(draft.y) ? <span role="img" aria-label={`Маркер: ${draft.part || 'часть робота'}`} className="rp-diagnostic-marker" data-severity={draft.severity} data-indicator={draft.indicator} style={{ left: `${draft.x * 100}%`, top: `${draft.y * 100}%` }}>!</span> : null}
+          {failedImage !== photo.id && coordinatesValid ? <span role="img" aria-label={`Маркер: ${draft.part || 'часть робота'}`} className="rp-diagnostic-marker" data-severity={draft.severity} data-indicator={draft.indicator} style={{ left: `${draft.x * 100}%`, top: `${draft.y * 100}%` }}>!</span> : null}
         </div>
         <figcaption>Иллюстрация модели · {photo.title}</figcaption>
       </figure>
       {failedImage === photo.id ? <p role="alert">Изображение не загрузилось. Выберите другой ракурс или задайте координаты вручную.</p> : null}
       <div className="rp-diagnostic-fields">
-        {(['x', 'y'] as const).map(axis => <FormField key={axis} id={`diagnostic-${axis}`} label={`Координата ${axis.toUpperCase()}`} required><input type="number" min={0} max={1} step="0.0001" aria-describedby="diagnostic-placement-hint" value={Number.isNaN(draft[axis]) ? '' : draft[axis]} onChange={event => edit({ [axis]: event.target.value === '' ? NaN : Number(event.target.value) })} /></FormField>)}
+        {(['x', 'y'] as const).map(axis => <FormField key={axis} id={`diagnostic-${axis}`} label={`Координата ${axis.toUpperCase()}`} required error={isCoordinate(draft[axis]) ? undefined : 'Укажите число от 0 до 1.'}><input type="number" min={0} max={1} step="0.0001" aria-describedby="diagnostic-placement-hint" value={Number.isNaN(draft[axis]) ? '' : draft[axis]} onChange={event => edit({ [axis]: event.target.value === '' ? NaN : Number(event.target.value) })} /></FormField>)}
       </div>
     </section>
     <FormField id="diagnostic-example" label="Пример входного значения" required hint="Текст или JSON. Пример проверяется сервером по этому правилу."><textarea rows={3} value={draft.example} onChange={event => edit({ example: event.target.value })} /></FormField>
-    <div><Button type="button" variant="secondary" disabled={!valid} busy={previewBusy} onClick={() => void check()}>Проверить пример</Button></div>
+    <div><Button type="button" variant="secondary" disabled={busy || !valid} busy={previewBusy} onClick={() => void check()}>Проверить пример</Button></div>
     {preview ? <section className="rp-diagnostic-preview" aria-label="Результат проверки" role="status">
       <StatusBadge tone={preview.matched ? 'success' : 'warning'}>{preview.matched ? 'Совпадение найдено' : 'Совпадение не найдено'}</StatusBadge>
       {!preview.matched ? <p>Значение не распознано этим правилом. Проверьте код, путь и пример.</p> : null}

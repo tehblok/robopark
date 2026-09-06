@@ -5,13 +5,13 @@ import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 
 test.use({ trace: 'off', hasTouch: true })
 const rule: DiagnosticRule = { id: 1, title: 'Неисправность переднего лидара', description: 'Проверьте питание и соединение переднего лидара.', part: 'Передний лидар', source_path: 'errors', match_kind: 'exact', pattern: 'LIDAR_OFFLINE', example: 'LIDAR_OFFLINE', severity: 'critical', preferred_view: 'front', x: .25, y: .6, indicator: 'point', is_enabled: true, sort_order: 0 }
-async function installEditor(page: Page) {
+async function installEditor(page: Page, pending: { create?: () => Promise<void>; preview?: () => Promise<void> } = {}) {
   let rules = [rule, { ...rule, id: 2, title: 'Перегрев батареи', part: 'Батарея', pattern: 'BATTERY_HOT', severity: 'warning' as const, preferred_view: 'rear' as const, is_enabled: false, sort_order: 1 }]
   let revision = 1
   const etag = () => `"v${revision}"`
   await installOperational(page, { role: 'admin', routes: [
     { method: 'GET', path: '/api/admin/diagnostic-rules', handler: () => ({ json: rules, headers: { ETag: etag() } }) },
-    { method: 'POST', path: '/api/admin/diagnostic-rules', handler: async request => { const created = { ...await request.json(), id: 3 } as DiagnosticRule; rules = [...rules, created]; revision++; return { status: 201, json: created } } },
+    { method: 'POST', path: '/api/admin/diagnostic-rules', handler: async request => { const created = { ...await request.json(), id: 3 } as DiagnosticRule; await pending.create?.(); rules = [...rules, created]; revision++; return { status: 201, json: created } } },
     { method: 'PATCH', path: /\/api\/admin\/diagnostic-rules\/\d+$/, handler: async request => {
       const body = await request.json(); expect(body).not.toHaveProperty('sort_order'); expect(body).not.toHaveProperty('id')
       const id = Number(new URL(request.url).pathname.split('/').at(-1)); rules = rules.map(item => item.id === id ? { ...item, ...body } : item); revision++
@@ -27,11 +27,48 @@ async function installEditor(page: Page) {
     { method: 'POST', path: '/api/admin/diagnostic-rules/preview', handler: async request => {
       const candidate = (await request.json()).rule as DiagnosticRule
       const matched = candidate.example === candidate.pattern && candidate.is_enabled
+      await pending.preview?.()
       return { json: { matched, events: matched ? [{ ...candidate, id: 'candidate', rule_id: 0, raw_value: candidate.example, source_segments: ['errors'], view: candidate.preferred_view, sort_order: 0 }] : [] } }
     } },
     { method: 'GET', path: '/api/admin/emergency/sections', handler: () => ({ json: [{ id: 'state', title: 'Состояние робота', is_enabled: true, roles: ['admin'], fields: [{ id: 9, path: 'data.status', label: 'Статус', sort_order: 0 }], sort_order: 0 }] }) },
   ] })
 }
+
+test('a delayed preview cannot restore a match after disabling the rule', async ({ page }) => {
+  let release!: () => void; let released = false
+  await installEditor(page, { preview: async () => { await new Promise<void>(resolve => { release = resolve }); released = true } })
+  await page.setViewportSize({ width: 390, height: 900 })
+  await page.goto('/admin/emergency/config?park=7&tab=indication&rule=1')
+  await page.getByRole('button', { name: 'Проверить пример' }).click()
+  await expect.poll(() => typeof release).toBe('function')
+  await page.getByRole('button', { name: 'Отключить правило' }).click()
+  await expect(page.getByLabel('Правило включено')).not.toBeChecked()
+  release(); await expect.poll(() => released).toBe(true)
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  await expect(page.getByText('Совпадение найдено', { exact: true })).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Проверить пример' })).toBeEnabled()
+})
+
+test('creation adopts its ID while retaining later edits and saves them with PATCH', async ({ page }) => {
+  let release!: () => void; let posts = 0; const patches: string[] = []
+  page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/admin/diagnostic-rules')) posts++; if (request.method() === 'PATCH') patches.push(request.url()) })
+  await installEditor(page, { create: () => new Promise<void>(resolve => { release = resolve }) })
+  await page.setViewportSize({ width: 390, height: 900 })
+  await page.goto('/admin/emergency/config?park=7&tab=indication&rule=new')
+  for (const [label, value] of [['Название ошибки', 'Батарея'], ['Часть робота', 'Батарея'], ['Путь источника', 'errors'], ['Код или шаблон', 'BAT'], ['Расшифровка', 'Проверить батарею'], ['Пример входного значения', 'BAT']]) await page.getByLabel(label, { exact: true }).fill(value)
+  await page.getByRole('button', { name: 'Сохранить правило' }).click()
+  await expect.poll(() => typeof release).toBe('function')
+  await page.getByLabel('Название ошибки').fill('Батарея после отправки')
+  await page.getByLabel('Ракурс', { exact: true }).selectOption('rear')
+  release()
+  await expect(page).toHaveURL(/rule=3/)
+  await expect(page.getByLabel('Название ошибки')).toHaveValue('Батарея после отправки')
+  await expect(page.getByLabel('Ракурс', { exact: true })).toHaveValue('rear')
+  await page.getByRole('button', { name: 'Сохранить правило' }).click()
+  await expect(page.getByText('Правило сохранено.', { exact: true })).toBeVisible()
+  expect(posts).toBe(1); expect(patches).toHaveLength(1); expect(patches[0]).toMatch(/\/admin\/diagnostic-rules\/3$/)
+  await page.reload(); await expect(page.getByLabel('Название ошибки')).toHaveValue('Батарея после отправки')
+})
 
 async function geometry(page: Page) {
   const overflow = await page.getByRole('main').evaluate(main => {
@@ -50,6 +87,31 @@ async function geometry(page: Page) {
     expect(Math.round(bounds!.height * 100) / 100, name).toBeGreaterThanOrEqual(44)
   }
 }
+
+for (const theme of ['light', 'dark'] as const) test(`invalid coordinates remain contained at 390px ${theme}`, async ({ page }, info) => {
+  await page.setViewportSize({ width: 390, height: 900 })
+  await page.addInitScript(value => localStorage.setItem('robopark-theme', value), theme)
+  await installEditor(page)
+  await page.goto('/admin/emergency/config?park=7&tab=indication&rule=1')
+  for (const [axis, value] of [['X', '9'], ['X', '-1'], ['Y', '9'], ['Y', '-1']]) {
+    const coordinate = page.getByLabel(`Координата ${axis}`)
+    await coordinate.fill(value)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+    await expect(page.getByRole('img', { name: 'Маркер: Передний лидар' })).toBeHidden()
+    await expect(coordinate).toHaveAttribute('aria-invalid', 'true')
+    await expect(page.getByText('Укажите число от 0 до 1.', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Сохранить правило' })).toBeDisabled()
+    await expect(page.getByRole('button', { name: 'Проверить пример' })).toBeDisabled()
+    await geometry(page)
+    if (axis === 'X' && value === '9') {
+      await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); document.querySelector('main')?.scrollTo(0, 0); window.scrollTo(0, 0) })
+      await page.mouse.move(0, 0)
+      await page.screenshot({ path: info.outputPath(`editor-invalid-${theme}-390.png`), fullPage: true, animations: 'disabled' })
+    }
+    await coordinate.fill('0.5')
+    await expect(page.getByRole('img', { name: 'Маркер: Передний лидар' })).toBeVisible()
+  }
+})
 
 for (const theme of ['light', 'dark'] as const) for (const width of [320, 390, 768, 1024, 1440]) {
   test(`editor places, previews and restores a rule at ${width}px ${theme}`, async ({ page }, info) => {

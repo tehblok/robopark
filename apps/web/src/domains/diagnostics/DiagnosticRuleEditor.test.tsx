@@ -26,7 +26,7 @@ beforeEach(() => {
     if (path === '/api/admin/emergency/sections') return json([{ id: 'state', title: 'Состояние', is_enabled: true, roles: ['admin'], sort_order: 0, fields: [{ id: 9, path: 'data.status', label: 'Статус', sort_order: 0 }] }])
     if (path.endsWith('/preview')) return json({ matched: true, events: [event] })
     if (path === '/api/admin/diagnostic-rules' && init.method === 'POST') { const created = { ...first, ...JSON.parse(String(init.body)), id: 3 }; catalog = [...catalog, created]; return json(created, 201) }
-    if (init.method === 'PATCH') { catalog = catalog.map(rule => rule.id === 1 ? { ...rule, ...JSON.parse(String(init.body)) } : rule); return json(catalog[0]) }
+    if (init.method === 'PATCH') { const id = Number(path.split('/').at(-1)); catalog = catalog.map(rule => rule.id === id ? { ...rule, ...JSON.parse(String(init.body)) } : rule); return json(catalog.find(rule => rule.id === id)) }
     if (path.endsWith('/disable')) { catalog = catalog.map(rule => rule.id === 1 ? { ...rule, is_enabled: false } : rule); etag = '"disabled"'; return json(catalog[0]) }
     if (path.endsWith('/reorder')) { catalog = [...catalog].reverse(); etag = '"v2"'; return json(catalog, 200, { ETag: etag }) }
     return json(catalog, 200, { ETag: etag })
@@ -203,4 +203,102 @@ it.each(['park', 'auth', 'view'] as const)('does not let an old save overwrite a
   expect(screen.getByLabelText('Название ошибки')).toHaveValue('Лидар')
   if (owner === 'view') expect(screen.getByLabelText('Ракурс')).toHaveValue('rear')
   expect(screen.queryByText('Правило сохранено.')).not.toBeInTheDocument()
+})
+
+function fillNewRule() {
+  for (const [label, value] of [['Название ошибки', 'Батарея'], ['Часть робота', 'Батарея'], ['Путь источника', 'errors'], ['Код или шаблон', 'BAT'], ['Расшифровка', 'Проверить батарею'], ['Пример входного значения', 'BAT']]) fireEvent.change(screen.getByLabelText(label), { target: { value } })
+}
+
+it.each(['post', 'refresh'] as const)('promotes a committed creation and preserves edits made during pending %s for the next PATCH', async pending => {
+  let complete!: (response: Response) => void; let reads = 0
+  const normal = handler
+  handler = (path, init) => {
+    if (pending === 'post' && path === '/api/admin/diagnostic-rules' && init.method === 'POST') return new Promise(resolve => { complete = resolve })
+    if (pending === 'refresh' && path === '/api/admin/diagnostic-rules' && !init.method && ++reads === 2) return new Promise(resolve => { complete = resolve })
+    return normal(path, init)
+  }
+  render(tree(user, '/admin/emergency/config?park=7&tab=indication&rule=new'))
+  await screen.findByLabelText('Название ошибки'); fillNewRule()
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить правило' }))
+  await waitFor(() => expect(complete).toBeTypeOf('function'))
+  fireEvent.change(screen.getByLabelText('Название ошибки'), { target: { value: 'Батарея после отправки' } })
+  fireEvent.change(screen.getByLabelText('Ракурс'), { target: { value: 'rear' } })
+  const created = { ...first, title: 'Батарея', part: 'Батарея', id: 3 }
+  if (pending === 'post') catalog = [...catalog, created]
+  await act(async () => complete(json(pending === 'post' ? created : catalog, pending === 'post' ? 201 : 200, { ETag: '"created"' })))
+  await waitFor(() => expect(screen.getByLabelText('Адрес')).toHaveTextContent('rule=3'))
+  expect(screen.getByLabelText('Название ошибки')).toHaveValue('Батарея после отправки')
+  expect(screen.getByLabelText('Ракурс')).toHaveValue('rear')
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить правило' }))
+  await waitFor(() => expect(requests.some(request => request.path === '/api/admin/diagnostic-rules/3' && request.init.method === 'PATCH')).toBe(true))
+  expect(JSON.parse(String(requests.find(request => request.path.endsWith('/3') && request.init.method === 'PATCH')!.init.body))).toMatchObject({ title: 'Батарея после отправки', preferred_view: 'rear' })
+  expect(requests.filter(request => request.path === '/api/admin/diagnostic-rules' && request.init.method === 'POST')).toHaveLength(1)
+  await screen.findByText('Правило сохранено.')
+  expect(screen.getByLabelText('Название ошибки')).toHaveValue('Батарея после отправки')
+  expect(catalog.find(rule => rule.id === 3)).toMatchObject({ title: 'Батарея после отправки', preferred_view: 'rear' })
+})
+
+it.each(['selection', 'park', 'auth'] as const)('does not promote an old creation into a changed %s owner', async owner => {
+  let complete!: (response: Response) => void
+  const normal = handler
+  handler = (path, init) => path === '/api/admin/diagnostic-rules' && init.method === 'POST' ? new Promise(resolve => { complete = resolve }) : normal(path, init)
+  const mounted = render(tree(user, '/admin/emergency/config?park=7&tab=indication&rule=new'))
+  await screen.findByLabelText('Название ошибки'); fillNewRule()
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить правило' }))
+  if (owner === 'selection') fireEvent.click(screen.getByRole('button', { name: 'Открыть правило Колесо' }))
+  else if (owner === 'park') fireEvent.click(screen.getByText('Другой парк'))
+  else mounted.rerender(tree({ ...user, id: 9 }, '/admin/emergency/config?park=7&tab=indication&rule=new'))
+  const created = { ...first, id: 3, title: 'Старое создание' }; catalog = [...catalog, created]
+  await act(async () => complete(json(created, 201)))
+  expect(screen.getByLabelText('Адрес')).not.toHaveTextContent('rule=3')
+  expect(screen.getByLabelText('Название ошибки')).toHaveValue(owner === 'selection' ? 'Колесо' : owner === 'park' ? 'Лидар' : '')
+})
+
+it.each([['X', '9'], ['X', '-1'], ['Y', '9'], ['Y', '-1']])('does not draw out-of-bounds %s=%s and explains why save is blocked', async (axis, value) => {
+  render(tree())
+  const coordinate = await screen.findByLabelText(`Координата ${axis}`)
+  fireEvent.change(coordinate, { target: { value } })
+  expect(screen.queryByLabelText('Маркер: Лидар')).not.toBeInTheDocument()
+  expect(coordinate).toHaveValue(Number(value))
+  expect(coordinate).toHaveAttribute('aria-invalid', 'true')
+  expect(screen.getByText('Укажите число от 0 до 1.')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Сохранить правило' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Проверить пример' })).toBeDisabled()
+  fireEvent.change(coordinate, { target: { value: '.5' } })
+  expect(screen.getByLabelText('Маркер: Лидар')).toHaveStyle(axis === 'X' ? { left: '50%' } : { top: '50%' })
+  expect(coordinate).not.toHaveAttribute('aria-invalid', 'true')
+  expect(screen.getByRole('button', { name: 'Сохранить правило' })).toBeEnabled()
+})
+
+it.each(['disable', 'save', 'reorder', 'reload'] as const)('invalidates a pending preview after authoritative %s and permits only a fresh preview', async operation => {
+  let complete!: (response: Response) => void; let previewReads = 0; let listReads = 0
+  const normal = handler
+  handler = (path, init) => {
+    if (path.endsWith('/preview')) {
+      if (++previewReads === 1) return new Promise(resolve => { complete = resolve })
+      const enabled = JSON.parse(String(init.body)).rule.is_enabled
+      return json({ matched: enabled, events: enabled ? [event] : [] })
+    }
+    if (operation === 'reload' && path === '/api/admin/diagnostic-rules' && !init.method && ++listReads === 2) return json({}, 503)
+    return normal(path, init)
+  }
+  render(tree()); await screen.findByLabelText('Название ошибки')
+  if (operation === 'reload') {
+    fireEvent.click(screen.getByRole('button', { name: 'Ниже: Лидар' }))
+    await screen.findByText('Не удалось обновить каталог')
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Проверить пример' }))
+  const previewRequest = requests.find(request => request.path.endsWith('/preview'))!
+  fireEvent.click(screen.getByRole('button', { name: operation === 'disable' ? 'Отключить правило' : operation === 'save' ? 'Сохранить правило' : operation === 'reorder' ? 'Ниже: Лидар' : 'Повторить' }))
+  if (operation === 'disable') await waitFor(() => expect(screen.getByLabelText('Правило включено')).not.toBeChecked())
+  else if (operation === 'save') await screen.findByText('Правило сохранено.')
+  else if (operation === 'reorder') await screen.findByText('Порядок сохранён.')
+  else await waitFor(() => expect(screen.queryByText('Не удалось обновить каталог')).not.toBeInTheDocument())
+  await act(async () => complete(json({ matched: true, events: [event] })))
+  expect(screen.queryByText('Совпадение найдено')).not.toBeInTheDocument()
+  expect(previewRequest.init.signal?.aborted).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: 'Проверить пример' }))
+  expect(await screen.findByText(operation === 'disable' ? 'Совпадение не найдено' : 'Совпадение найдено')).toBeVisible()
+  const latest = requests.filter(request => request.path.endsWith('/preview')).at(-1)!
+  expect(JSON.parse(String(latest.init.body)).rule.is_enabled).toBe(operation !== 'disable')
 })
