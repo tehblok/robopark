@@ -1,6 +1,63 @@
 import { expect, test } from '@playwright/test'
 import { FIXED_TIME, installOperational, settlePage, snapshot, userForRole } from './fixtures'
 
+test('registry filters survive reload and fetch no Emergency until opening a robot', async ({ page }) => {
+  const registry: URL[] = []
+  const emergency: string[] = []
+  page.on('request', request => {
+    const url = new URL(request.url())
+    if (url.pathname === '/api/robots') registry.push(url)
+    if (url.pathname.startsWith('/api/emergency/')) emergency.push(url.pathname)
+  })
+  await installOperational(page)
+  await page.goto('/robots?park=7')
+  await expect(page.getByRole('link', { name: 'Открыть робота 447', exact: true })).toBeVisible()
+  await page.getByLabel('Поиск по номеру, VIN или задаче').fill('ROBOPARK-42')
+  await page.getByRole('combobox', { name: 'Доступность', exact: true }).selectOption('unknown')
+  await page.getByRole('checkbox', { name: 'Открытые задачи', exact: true }).click()
+  await expect(page.getByRole('checkbox', { name: 'Открытые задачи', exact: true })).toBeChecked()
+  await page.reload()
+  await expect(page.getByLabel('Поиск по номеру, VIN или задаче')).toHaveValue('ROBOPARK-42')
+  await expect(page.getByRole('combobox', { name: 'Доступность', exact: true })).toHaveValue('unknown')
+  await expect(page.getByLabel('Открытые задачи', { exact: true })).toBeChecked()
+  await expect(page.getByRole('link', { name: 'Задачи робота 447', exact: true })).toBeVisible()
+  expect(registry.at(-1)!.searchParams.get('park_id')).toBe('7')
+  expect(emergency).toEqual([])
+  await page.getByRole('link', { name: 'Задачи робота 447', exact: true }).click()
+  await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7&tab=tasks`)
+  await expect(page.getByRole('tab', { name: 'Задачи', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
+  expect(emergency.length).toBeGreaterThan(0)
+  await expect(page.locator('.rp-shell__desktop-nav').getByRole('link', { name: 'Роботы', exact: true })).toHaveAttribute('aria-current', 'page')
+  await page.getByRole('tab', { name: 'История', exact: true }).click()
+  await expect(page.getByRole('tabpanel')).toContainText('История событий пока недоступна')
+})
+
+test('registry unavailable filter has a clear empty state and can recover', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 900 })
+  await installOperational(page)
+  await page.goto('/robots?park=7')
+  await page.getByRole('checkbox', { name: 'Активные ошибки', exact: true }).click()
+  await expect(page.getByRole('checkbox', { name: 'Активные ошибки', exact: true })).toBeChecked()
+  await expect(page.getByRole('heading', { name: 'Роботы не найдены' })).toBeVisible()
+  await page.getByRole('checkbox', { name: 'Активные ошибки', exact: true }).click()
+  await expect(page.getByRole('checkbox', { name: 'Активные ошибки', exact: true })).not.toBeChecked()
+  await expect(page.getByRole('link', { name: 'Открыть робота 447', exact: true })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0)
+})
+
+test('a restored workspace tab is horizontally visible on a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 900 })
+  await installOperational(page)
+  await page.goto(`/robots/${snapshot.vin}?park=7&tab=scheme`)
+  const tab = page.getByRole('tab', { name: 'Схема', exact: true })
+  await expect(tab).toHaveAttribute('aria-selected', 'true')
+  const bounds = await page.getByRole('tablist').boundingBox()
+  const selected = await tab.boundingBox()
+  expect(selected!.x).toBeGreaterThanOrEqual(bounds!.x)
+  expect(selected!.x + selected!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width)
+})
+
 for (const reference of ['447', 'YASADR00000000447', 'https://robopark.example.invalid/emergency?q=447&tab=wheels&park=7']) {
   test(`resolves manual reference ${reference}`, async ({ page }) => {
     const resolved: string[] = []
@@ -18,6 +75,8 @@ for (const reference of ['447', 'YASADR00000000447', 'https://robopark.example.i
     await expect(page.getByRole('heading', { name: 'Робот 447', exact: true })).toBeVisible()
     await expect(page.getByText(snapshot.vin, { exact: true })).toBeVisible()
     expect(resolved[0]).toBe(reference.startsWith('https:') ? '447' : reference)
+    await page.getByRole('tab', { name: 'Задачи', exact: true }).click()
+    await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
     await settlePage(page)
     expect(trackerRequests.length).toBeGreaterThan(0)
     expect(new Set(trackerRequests)).toEqual(new Set([`/api/tracker/robots/${snapshot.vin}/tickets`]))
@@ -73,7 +132,7 @@ for (const route of [`/robots/${snapshot.vin}/check?tab=wheels&park=7`, '/emerge
     page.on('request', request => { if (new URL(request.url()).pathname.endsWith('/snapshot')) snapshots += 1 })
     await installOperational(page)
     await page.goto(route)
-    await expect(page).toHaveURL(`/robots/${snapshot.vin}/check?park=7&tab=wheels`)
+    await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7&tab=wheels`)
     const wheels = page.getByRole('tab', { name: 'Колёса', exact: true })
     await expect(wheels).toHaveAttribute('aria-selected', 'true')
     await expect(page.getByRole('tabpanel')).toContainText('Неисправность: требуется проверка')
@@ -102,7 +161,7 @@ test('driver canonical check loads sections, refreshes, and requests scoped Trac
   })
   await installOperational(page, { role: 'driver' })
   await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=wheels`)
-  await expect(page).toHaveURL(`/robots/${snapshot.vin}/check?park=7&tab=wheels`)
+  await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7&tab=wheels`)
   await expect(page.getByRole('heading', { name: 'Робот 447', exact: true })).toBeVisible()
   await expect(page.getByText('Робот на связи', { exact: true })).toBeVisible()
   await expect(page.getByRole('tab', { name: 'Колёса', exact: true })).toHaveAttribute('aria-selected', 'true')
@@ -115,6 +174,8 @@ test('driver canonical check loads sections, refreshes, and requests scoped Trac
   await page.getByRole('tab', { name: 'Схема', exact: true }).click()
   await expect(page.getByRole('tab', { name: 'Схема', exact: true })).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByRole('button', { name: 'Переднее левое колесо: неисправность', exact: true })).toBeVisible()
+  await page.getByRole('tab', { name: 'Задачи', exact: true }).click()
+  await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
   await settlePage(page)
   expect(trackerRequests.length).toBeGreaterThan(0)
   expect(new Set(trackerRequests)).toEqual(new Set([`/api/tracker/robots/${snapshot.vin}/tickets`]))

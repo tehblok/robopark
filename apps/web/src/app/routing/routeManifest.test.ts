@@ -137,7 +137,7 @@ describe('ROUTE_MANIFEST', () => {
       },
       {
         id: 'robot-detail', path: '/robots/:vin', label: 'Робот', icon: 'robot',
-        permission: 'nav.robot_search', prerequisites: ['password-changed', 'approved', 'mechanic-has-park'], surface: 'shell',
+        anyPermissions: ['nav.robot_search', 'nav.emergency'], prerequisites: ['password-changed', 'approved', 'mechanic-has-park'], surface: 'shell',
       },
       {
         id: 'robot-check', path: '/robots/:vin/check', label: 'Проверка робота', icon: 'robot-check',

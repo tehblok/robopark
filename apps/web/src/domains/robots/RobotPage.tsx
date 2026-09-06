@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, type User } from '../../api'
 import { useAuth } from '../../auth-context'
@@ -101,7 +101,7 @@ function RobotResourceOwner({ apiClient, resolverClient, checkClient, user, refe
   const location = useLocation()
   const params = new URLSearchParams(location.search)
   const activeTab = parseRobotCheckTab(params, resolved?.sections ?? [])
-  const suffix = location.pathname.endsWith('/check') ? '/check' : ''
+  const suffix = ''
   // Alias-aware ownership avoids a second resolver and snapshot on URL replacement.
   const canonical = resolved ? `/robots/${encodeURIComponent(resolved.vin)}${suffix}${buildRobotCheckSearch(params, activeTab)}` : null
   useLayoutEffect(() => {
@@ -111,17 +111,21 @@ function RobotResourceOwner({ apiClient, resolverClient, checkClient, user, refe
   const refresh = () => { manual.current = true; setRetry(value => value + 1) }
   const robotReference = resolved?.vin ?? reference
   const workKey = `robot-detail-work:${user.id}:${robotReference}:${checkAccessIdentity(user)}:${parkId}`
-  const detail = (snapshot: RobotDetailViewProps['snapshot'], snapshotError: DomainError | null, onRetrySnapshot: () => void) => <RelatedWorkOwner
+  const detail = (snapshot: RobotDetailViewProps['snapshot'], snapshotError: DomainError | null, onRetrySnapshot: () => void, display: RobotDetailViewProps['display'] = 'identity') => display === 'identity' ? <RobotDetailView
+    display="identity" reference={robotReference} snapshot={snapshot} snapshotError={snapshotError}
+    relatedWork={null} relatedWorkError={null} workScopeLabel="" parkId={parkId} browserOnline={online}
+    canOpenCheck={false} canOpenWork={false} onRetrySnapshot={onRetrySnapshot} onRetryWork={() => undefined} /> : <RelatedWorkOwner
     key={workKey} resourceKey={workKey} apiClient={apiClient} user={user} reference={robotReference}
-    onAuthorizationFailure={onAuthorizationFailure} snapshot={snapshot} snapshotError={snapshotError}
+    onAuthorizationFailure={onAuthorizationFailure} snapshot={snapshot} snapshotError={snapshotError} display={display}
     browserOnline={online} parkId={parkId} canOpenCheck={false} canOpenWork={canAccessRoute(user, 'work')}
     workScopeLabel="доступные роли очереди Tracker; выбор парка не определяет фактический парк робота"
     onRetrySnapshot={onRetrySnapshot} />
-  if (!canCheck) return detail(null, null, () => undefined)
+  if (!canCheck) return detail(null, null, () => undefined, 'all')
   if (failure) return <><CheckError failure={failure} user={user} onRetry={refresh} />{failure.kind === 'not-found' ? <Link to="/robots">К поиску роботов</Link> : null}</>
   if (!resolved) return !online ? <><p role="status">Нет сети на этом устройстве</p><Button onClick={refresh}>Повторить проверку</Button></> : <LoadingState label="Находим робота" variant="page" />
   return <RobotCheckWorkspace vin={resolved.vin} sections={resolved.sections} activeTab={activeTab} user={user}
     apiClient={checkClient} onAuthorizationFailure={onAuthorizationFailure} renderSummary={detail}
+    renderTasks={(snapshot, failure, refresh) => snapshot ? detail(snapshot, failure, refresh, 'tasks') : <LoadingState label="Загружаем данные робота" />}
     onTabChange={tab => navigate(`/robots/${encodeURIComponent(resolved.vin)}${suffix}${buildRobotCheckSearch(new URLSearchParams(location.search), tab)}`, { replace: true })} />
 }
 
@@ -132,6 +136,10 @@ function RobotUserPage({ apiClient, resolverClient, checkClient, user, refreshUs
   const reference = parseRobotReference(vin)
   const { loading, parkId } = useParkScope()
   const location = useLocation()
+  const navigate = useNavigate()
+  useEffect(() => {
+    if (location.pathname.endsWith('/check')) navigate(`${location.pathname.slice(0, -6)}${location.search}`, { replace: true })
+  }, [location.pathname, location.search, navigate])
   const requestedPark = new URLSearchParams(location.search).get('park')
   // The provider temporarily clears selection while loading; the same requested
   // park must not reset a denial. This identity never grants API access.
@@ -156,7 +164,7 @@ function RobotUserPage({ apiClient, resolverClient, checkClient, user, refreshUs
   }, [identity, user.id])
   const denial = unauthorized ?? (forbidden?.identity === identity ? forbidden.failure : null)
   return <PageLayout title="Рабочее пространство робота">
-    <nav className="rp-check-backlinks" aria-label="Навигация робота"><Link to="/robots">Все роботы</Link></nav>
+    <nav className="rp-check-backlinks" aria-label="Навигация робота"><Link to={`/robots${parkId == null ? '' : `?park=${parkId}`}`}>Все роботы</Link></nav>
     {denial ? <CheckError failure={denial} user={user} />
       : !reference ? <ErrorState title="Робот не указан" description="Проверьте номер или VIN робота." />
         : loading ? <LoadingState label="Загружаем область работы" variant="page" />

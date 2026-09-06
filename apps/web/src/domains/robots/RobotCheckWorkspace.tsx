@@ -5,6 +5,7 @@ import { canAccessRoute, type AccessUser } from '../../app/routing/accessPolicy'
 import { InspectionMap } from '../../components/emergency/InspectionMap'
 import { Button } from '../../design-system/actions/Button'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
+import { MasterDetail } from '../../design-system/layout/MasterDetail'
 import type { DomainError } from '../../shared/api/classifyApiError'
 import { useOnlineStatus } from '../../shared/browser/useOnlineStatus'
 import { RobotCheckSummary } from './RobotCheckSummary'
@@ -20,12 +21,13 @@ export type RobotCheckWorkspaceProps = {
   onTabChange: (tab: string) => void; apiClient?: RobotCheckApiClient
   onAuthorizationFailure?: (failure: DomainError) => void
   renderSummary?: (snapshot: EmergencySnapshot, failure: DomainError | null, refresh: () => void) => ReactNode
+  renderTasks?: (snapshot: EmergencySnapshot | null, failure: DomainError | null, refresh: () => void) => ReactNode
 }
 export function CheckError({ failure, user, onRetry }: { failure: DomainError; user: AccessUser; onRetry?: () => void }) {
   return <><ErrorState {...failure} onRetry={failure.retryable ? onRetry : undefined} />
     {failure.kind === 'configuration' && canAccessRoute(user, 'admin-robot-check') ? <Link to="/admin/emergency/config">Открыть настройки</Link> : null}</>
 }
-function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient = api, onAuthorizationFailure, renderSummary }: RobotCheckWorkspaceProps) {
+function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient = api, onAuthorizationFailure, renderSummary, renderTasks }: RobotCheckWorkspaceProps) {
   const online = useOnlineStatus()
   const [snapshot, setSnapshot] = useState<EmergencySnapshot | null>(null)
   const [snapshotError, setSnapshotError] = useState<DomainError | null>(null)
@@ -79,8 +81,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
     <CheckError failure={snapshotError} user={user} onRetry={refresh} />
     {snapshotError.kind === 'not-found' ? <Link to="/robots">К поиску роботов</Link> : null}
   </>
-  return <div className="rp-check-workspace" data-unified={Boolean(renderSummary)}>
-    <div className="rp-check-first-level">
+  const identity = <div className="rp-check-first-level">
       {snapshot ? renderSummary ? renderSummary(snapshot, snapshotError, refresh) : <RobotCheckSummary snapshot={snapshot} online={online} failed={Boolean(snapshotError)} pending={pending} onRefresh={refresh} />
         : <section className="rp-check-summary" aria-busy={pending}>
           {!online ? <p role="status">Нет сети на этом устройстве</p> : null}
@@ -89,9 +90,16 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
         </section>}
       {snapshotError && !renderSummary ? <div className="rp-check-warning"><CheckError failure={snapshotError} user={user} />{snapshot ? <p>Показаны последние полученные данные.</p> : null}</div> : null}
     </div>
-    <div className="rp-check-detail">
+  const detail = <div className="rp-check-detail">
       <RobotCheckTabs tabs={tabs} activeId={tab.id} onChange={onTabChange} />
       <section className="rp-check-panel" role="tabpanel" tabIndex={0} id={`robot-check-panel-${tab.id}`} aria-labelledby={`robot-check-tab-${tab.id}`}>
+        {tab.kind === 'state' ? <dl className="rp-check-telemetry"><div><dt>Режим</dt><dd>{snapshot?.mode ?? 'Нет данных'}</dd></div><div><dt>Связь робота</dt><dd>{snapshot?.online == null ? 'Нет данных' : snapshot.online ? 'На связи' : 'Не в сети'}</dd></div><div><dt>Заряд</dt><dd>{snapshot?.charge_percent == null ? 'Нет данных' : `${snapshot.charge_percent} %`}</dd></div></dl> : null}
+        {tab.kind === 'errors' ? <>
+          {snapshot?.error_banner ? <p role="status">{snapshot.error_banner}</p> : <p>Сообщения об ошибках не получены.</p>}
+          {snapshot?.wheels_fault.length ? <><p>Есть сообщения о неисправности колёс.</p><Button variant="secondary" onClick={() => onTabChange('scheme')}>Посмотреть на схеме</Button></> : <p>Данные о неисправностях колёс не сообщены.</p>}
+        </> : null}
+        {tab.kind === 'tasks' ? renderTasks?.(snapshot, snapshotError, refresh) ?? <EmptyState title="Связанные задачи недоступны" /> : null}
+        {tab.kind === 'history' ? <EmptyState title="История событий пока недоступна" description="Источник истории событий пока не подключён." icon="info" /> : null}
         {tab.kind === 'map' ? snapshot?.lat != null && snapshot.lon != null ? <>
           <Button variant="secondary" aria-pressed={follow} onClick={() => setFollow(!follow)}>{follow ? 'Слежение включено' : 'Следовать за роботом'}</Button>
           <InspectionMap lat={snapshot.lat} lon={snapshot.lon} follow={follow} onUserPan={() => setFollow(false)} />
@@ -107,6 +115,8 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
         </> : null}
       </section>
     </div>
+  return <div className="rp-check-workspace" data-unified={Boolean(renderSummary)}>
+    {renderSummary ? <MasterDetail list={identity} detail={detail} detailOpen onBack={() => onTabChange('state')} /> : <>{identity}{detail}</>}
   </div>
 }
 export function RobotCheckWorkspace(props: RobotCheckWorkspaceProps) {

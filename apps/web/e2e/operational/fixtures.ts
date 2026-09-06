@@ -98,6 +98,13 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
   const user = options.user ?? userForRole('mechanic')
   const blocker = (): Blocker => ({ key: currentIssue.key, summary: currentIssue.summary, status: currentIssue.status, status_key: currentIssue.status_key, robot: currentIssue.robot ?? null, created_at: FIXED_TIME, hours_created: '0', url: currentIssue.url, bucket: 'open', priority: 'normal', assignee: currentIssue.assignee })
   const routes: MockRoute[] = [
+    { method: 'GET', path: '/api/robots', handler: request => {
+      const params = new URL(request.url).searchParams
+      const query = (params.get('query') ?? '').toUpperCase()
+      const matches = (!query || ['447', currentSnapshot.vin, currentIssue.key].includes(query)) && !params.get('active_errors')?.includes('true') && !['online', 'offline'].includes(params.get('state') ?? '')
+      const items = matches ? [{ vin: currentSnapshot.vin, short_number: '447', park_ids: [Number(params.get('park_id') ?? 7)], state: 'unknown', telemetry: null, error_count: null, task_count: 1, task_keys: [currentIssue.key], issue_keys: [currentIssue.key] }] : []
+      return { json: { items, total: items.length, offset: 0, limit: 50, has_more: false, partial: true, source_complete: true, source: 'scoped_tracker_issues', park_id: Number(params.get('park_id') ?? 7) } }
+    } },
     { method: 'GET', path: '/api/operations/overview', handler: request => ({ json: operationsOverview(user, request) }) },
     { method: 'GET', path: '/api/dashboard/summary', handler: request => ({ json: summaryForPark(Number(new URL(request.url).searchParams.get('park_id'))) }) },
     { method: 'GET', path: '/api/tracker/issues', handler: request => {

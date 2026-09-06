@@ -37,6 +37,23 @@ def _shared_key(identity: str | None, vin: str) -> str:
     return f"{identity or 'legacy'}:{vin}"
 
 
+def peek_robot_payloads(*, vins: list[str], identity: str | None) -> dict[str, dict[str, Any]]:
+    """Read fresh, identity-bound payloads only; never load, wait or refresh.
+
+    Registry misses remain unknown. In-process entries deliberately retain the
+    same 2.5 second lifetime as the detail endpoint; no second telemetry store.
+    """
+    now = time.monotonic()
+    with _lock:
+        return {
+            vin: cached[2]
+            for vin in vins
+            if (cached := _cache.get(vin)) is not None
+            and cached[1] == identity
+            and now - cached[0] < PAYLOAD_CACHE_TTL_SECONDS
+        }
+
+
 def invalidate_vin(vin: str, *, identity: str | None = None) -> None:
     with _lock:
         cached = _cache.get(vin)

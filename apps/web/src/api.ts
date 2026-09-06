@@ -46,6 +46,14 @@ export type User = {
   parks: Park[]
 }
 
+export type RobotRegistryRow = {
+  vin: string; short_number: string; park_ids: number[]; task_count: number; task_keys: string[]; issue_keys: string[]
+  state: 'online' | 'offline' | 'unknown'; error_count: number | null
+  telemetry: { source: 'emergency_cache'; online: boolean | null; charge_percent: number | null; mode: string | null; connection: string | null } | null
+}
+export type RobotRegistryParams = { park_id?: number; query?: string; state?: string; active_errors?: boolean; open_tasks?: boolean; offset?: number; limit?: number }
+export type RobotRegistry = { items: RobotRegistryRow[]; total: number; offset: number; limit: number; has_more: boolean; partial: boolean; source_complete: boolean; source: 'scoped_tracker_issues'; park_id: number | null }
+
 export type AdminRole = {
   id: number
   slug: string
@@ -748,6 +756,11 @@ export const api = {
     const params = new URLSearchParams({ status })
     if (parkId != null) params.set('park_id', String(parkId))
     return request<MechanicTasks>(`/mechanic/tasks?${params.toString()}`)
+  },
+  robotRegistry: (filters: RobotRegistryParams) => {
+    const params = new URLSearchParams()
+    Object.entries(filters).forEach(([key, value]) => { if (value !== undefined) params.set(key, String(value)) })
+    return request<RobotRegistry>(`/robots?${params}`)
   },
   mechanicRobotTickets: (query: string) =>
     request<{ query: string; items: Blocker[] }>(

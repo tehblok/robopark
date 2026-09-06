@@ -4,28 +4,30 @@ import { api } from '../../api'
 import { useAuth } from '../../auth-context'
 import { useParkScope } from '../../app/park/parkScope'
 import { Button } from '../../design-system/actions/Button'
-import { Icon } from '../../design-system/icons/Icon'
 import { PageLayout, Panel } from '../../design-system/layout/PageLayout'
 import { RobotResolver, type RobotResolverApiClient } from './RobotResolver'
+import { RobotRegistryList } from './RobotRegistryList'
+import { checkAccessIdentity } from './robotCheckUrl'
 import { clearRecentRobots, loadRecentRobots, type RecentRobot } from './recentRobots'
 import './robots.css'
 
-export function RobotsPage({ apiClient = api }: { apiClient?: RobotResolverApiClient }) {
+type RegistryClient = RobotResolverApiClient & Partial<Pick<typeof api, 'robotRegistry'>>
+export function RobotsPage({ apiClient = api }: { apiClient?: RegistryClient }) {
   const { user } = useAuth()
   if (!user) return null
-  return <RobotsPageOwner apiClient={apiClient} key={user.id} userId={user.id} />
+  return <RobotsPageOwner apiClient={apiClient} key={`${user.id}:${checkAccessIdentity(user)}`} userId={user.id} />
 }
 
 function RobotsPageOwner({
   apiClient,
   userId,
 }: {
-  apiClient: RobotResolverApiClient
+  apiClient: RegistryClient
   userId: number
 }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
-  const { parkId } = useParkScope()
+  const { parkId, loading, selectedPark } = useParkScope()
   const [recent, setRecent] = useState<RecentRobot[]>(() => loadRecentRobots(userId))
   const value = searchParams.get('q') ?? ''
 
@@ -39,10 +41,11 @@ function RobotsPageOwner({
   return (
     <PageLayout
       className="rp-robots-page"
-      description="Найдите робота по номеру, VIN или ссылке на проверку."
+      description={`Реестр роботов · ${selectedPark?.name ?? 'доступные парки'}`}
       title="Роботы"
     >
-      <Panel className="rp-robots-search-panel" title="Найти робота">
+      <RobotRegistryList apiClient={apiClient} parkId={parkId} scopeLoading={loading} />
+      <Panel className="rp-robots-search-panel" title="Открыть по номеру или сканировать">
         <RobotResolver
           apiClient={apiClient}
           onResolved={(result) => {
@@ -55,11 +58,6 @@ function RobotsPageOwner({
           value={value}
         />
       </Panel>
-
-      <section className="rp-robots-scheme" aria-label="Схема робота">
-        <Icon name="robot" size={56} />
-        <p>Проверка начинается с подтверждения номера робота.</p>
-      </section>
 
       <Panel
         actions={(
@@ -79,7 +77,7 @@ function RobotsPageOwner({
       >
         {recent.length > 0 ? (
           <ul className="rp-robots-recent-list">
-            {recent.map((item) => <RecentRobotLink item={item} key={item.vin} />)}
+            {recent.map((item) => <RecentRobotLink item={item} parkId={parkId} key={item.vin} />)}
           </ul>
         ) : <p>Недавно открытых роботов нет.</p>}
       </Panel>
@@ -87,11 +85,11 @@ function RobotsPageOwner({
   )
 }
 
-function RecentRobotLink({ item }: { item: RecentRobot }) {
+function RecentRobotLink({ item, parkId }: { item: RecentRobot; parkId: number | null }) {
   const openedAt = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium' }).format(new Date(item.openedAt))
   return (
     <li className="rp-robots-recent-card">
-      <Link to={`/robots/${encodeURIComponent(item.vin)}`}>
+      <Link to={`/robots/${encodeURIComponent(item.vin)}${parkId == null ? '' : `?park=${parkId}`}`}>
         <strong>{item.query}</strong>
         <span>{item.vin}</span>
         <small>Открыт {openedAt}</small>

@@ -17,7 +17,7 @@ function tree(resolverClient: RobotResolverApiClient, options: { currentUser?: U
   return <MemoryRouter initialEntries={[`/robots/${options.reference ?? VIN}/check${options.search ?? '?park=7&tab=wheels'}`]}>
     <AuthContext.Provider value={{ user: options.currentUser ?? user, loading: false, refreshUser: options.refreshUser ?? (async () => user), login: async () => user, logout: async () => undefined }}>
       <ParkScopeContext.Provider value={{ parkId: 7, selectedPark: null, parks: [], loading: options.loading ?? false, locked: false, setParkId: vi.fn(), refreshParks: async () => undefined }}>
-        <Routes><Route path="/robots/:vin/check" element={<RobotCheckPage resolverClient={resolverClient} checkClient={checkClient} />} /></Routes><Probe />
+        <Routes><Route path="/robots/:vin/check" element={<RobotCheckPage resolverClient={resolverClient} checkClient={checkClient} />} /><Route path="/robots/:vin" element={<RobotCheckPage resolverClient={resolverClient} checkClient={checkClient} />} /></Routes><Probe />
       </ParkScopeContext.Provider>
     </AuthContext.Provider>
   </MemoryRouter>
@@ -26,14 +26,14 @@ beforeEach(() => { localStorage.clear(); vi.clearAllMocks(); vi.spyOn(navigator,
 afterEach(() => vi.restoreAllMocks())
 it.each(['447', VIN.toLowerCase()])('canonicalizes literal %s, keeps numeric park and valid tab, remembers current success', async reference => {
   const resolver = { emergencyResolve: vi.fn(async () => ({ vin: VIN, sections })) }
-  render(tree(resolver, { reference })); await waitFor(() => expect(screen.getByLabelText('Адрес')).toHaveTextContent(`/robots/${VIN}/check?park=7&tab=wheels`))
+  render(tree(resolver, { reference })); await waitFor(() => expect(screen.getByLabelText('Адрес')).toHaveTextContent(`/robots/${VIN}?park=7&tab=wheels`))
   expect(await screen.findByRole('heading', { name: 'Рабочее пространство робота' })).toBeInTheDocument()
   expect(screen.queryByRole('link', { name: 'Карточка робота' })).not.toBeInTheDocument()
   expect(loadRecentRobots(user.id)[0].vin).toBe(VIN)
 })
 it('removes invalid tab and nonnumeric park', async () => {
   render(tree({ emergencyResolve: vi.fn(async () => ({ vin: VIN, sections })) }, { search: '?park=oops&tab=secret' }))
-  await waitFor(() => expect(screen.getByLabelText('Адрес').textContent).toBe(`/robots/${VIN}/check`))
+  await waitFor(() => expect(screen.getByLabelText('Адрес').textContent).toBe(`/robots/${VIN}`))
 })
 it.each([false, true])('classifies configuration 403 before scope and permits settings only by capability %s', async allowed => {
   render(tree({ emergencyResolve: vi.fn().mockRejectedValue(new ApiError(403, 'emergency_cookie_invalid', 'config-id')) }, { currentUser: { ...user, role: allowed ? 'custom' : 'operator', permissions: allowed ? ['nav.emergency', 'nav.admin.emergency'] : ['nav.emergency'] } }))

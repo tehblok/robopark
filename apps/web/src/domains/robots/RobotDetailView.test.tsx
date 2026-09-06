@@ -46,7 +46,7 @@ function LocationProbe() {
   return <><output aria-label="Адрес">{location.pathname}{location.search}</output><button onClick={() => navigate('/robots/448?park=7')}>Другой робот</button></>
 }
 function tree(apiClient: RobotDetailApiClient, currentUser: User | null = user(), reference = VIN, refreshUser = vi.fn(async () => user()), onRender: () => void = () => undefined) {
-  return <MemoryRouter initialEntries={[`/robots/${reference}?park=7&source=search`]}>
+  return <MemoryRouter initialEntries={[`/robots/${reference}?park=7&source=search&tab=tasks`]}>
     <AuthContext.Provider value={{ user: currentUser, loading: false, login: async () => user(), refreshUser, logout: async () => undefined }}>
       <ParkScopeProvider><Profiler id="detail" onRender={onRender}><Routes>
         <Route path="/robots/:vin" element={<RobotPage apiClient={apiClient} />} />
