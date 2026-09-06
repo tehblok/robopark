@@ -81,7 +81,9 @@ def test_restore_bad_confirm_is_400(client, seed_royal):
     assert response.json()["detail"] == "confirm_required"
 
 
-def test_release_tests_fail_leaves_apply_root_empty(client, seed_royal, tmp_path, test_settings):
+def test_release_tests_fail_leaves_apply_root_empty(
+    client, seed_royal, tmp_path, test_settings, release_key_pair
+):
     login_as(client, "royal", "secret")
     root = tmp_path / "rel"
     api = root / "apps" / "api"
@@ -89,7 +91,13 @@ def test_release_tests_fail_leaves_apply_root_empty(client, seed_royal, tmp_path
     (api / "tests" / "test_ok.py").write_text(
         "def test_ok():\n    assert False\n", encoding="utf-8"
     )
-    blob = build_archive(kind=KIND_RELEASE, source_root=root, app_version="9")
+    blob = build_archive(
+        kind=KIND_RELEASE,
+        source_root=root,
+        app_version="9",
+        release_meta={"git_sha": "a" * 40, "migration_head": "0017_driver_work_reports"},
+        signing_key=release_key_pair[0],
+    )
     updated = client.post(
         "/admin/ops/update",
         data={"confirm": UPDATE_PHRASE},

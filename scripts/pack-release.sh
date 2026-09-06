@@ -5,6 +5,10 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="${1:-"$root/robopark-release.zip"}"
+version="${ROBOPARK_RELEASE_VERSION:-0.1.0}"
+git_sha="$(git -C "$root" rev-parse HEAD)"
+: "${ROBOPARK_SIGNING_KEY_FILE:?set ROBOPARK_SIGNING_KEY_FILE to the Ed25519 PEM key}"
+test -r "$ROBOPARK_SIGNING_KEY_FILE"
 stage="$(mktemp -d "${TMPDIR:-/tmp}/robopark-release.XXXX")"
 cleanup() { rm -rf "$stage"; }
 trap cleanup EXIT
@@ -40,13 +44,6 @@ if [[ -d "$root/scripts" ]]; then
 fi
 [[ -f "$root/README.md" ]] && cp "$root/README.md" "$stage/README.md"
 
-python3 - <<PY
-from pathlib import Path
-import sys
-sys.path.insert(0, "$root/apps/api/src")
-from robopark_api.services.ops.archives import KIND_RELEASE, build_archive
-payload = Path("$stage")
-data = build_archive(kind=KIND_RELEASE, source_root=payload, app_version="0.1.0")
-Path("$out").write_bytes(data)
-print("wrote", "$out", "bytes", len(data))
-PY
+python3 "$root/scripts/release_pack.py" \
+  --root "$stage" --output "$out" --version "$version" \
+  --git-sha "$git_sha" --signing-key "$ROBOPARK_SIGNING_KEY_FILE"

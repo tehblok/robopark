@@ -55,3 +55,6 @@ startrek_client-2.8/
 .superpowers/
 docs/superpowers/
 .skaroignore
+
+# Offline release-signing material
+.release-secrets/

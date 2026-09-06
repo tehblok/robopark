@@ -9,6 +9,8 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from robopark_api.services.ops.archives import (
     FORMAT_VERSION,
@@ -23,6 +25,32 @@ from robopark_api.services.ops.archives import (
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+@pytest.fixture
+def release_keys() -> tuple[bytes, bytes]:
+    private = Ed25519PrivateKey.generate()
+    return (
+        private.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ),
+        private.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ),
+    )
+
+
+def _signed_release(root: Path, keys: tuple[bytes, bytes], *, version: str = "1") -> bytes:
+    return build_archive(
+        kind=KIND_RELEASE,
+        source_root=root,
+        app_version=version,
+        release_meta={"git_sha": "a" * 40, "migration_head": "0017_driver_work_reports"},
+        signing_key=keys[0],
+    )
 
 
 def test_build_and_inspect_snapshot_roundtrip(tmp_path: Path):
@@ -61,26 +89,17 @@ def test_release_rejects_snapshot_kind():
         inspect_archive(buf.getvalue(), expected_kind=KIND_RELEASE)
 
 
-def test_checksum_mismatch_is_rejected(tmp_path: Path):
+def test_checksum_mismatch_is_rejected(tmp_path: Path, release_keys: tuple[bytes, bytes]):
     payload = tmp_path / "tree"
     payload.mkdir()
     (payload / "a.txt").write_text("ok", encoding="utf-8")
+    source = zipfile.ZipFile(io.BytesIO(_signed_release(payload, release_keys)))
     lying = io.BytesIO()
-    with zipfile.ZipFile(lying, "w") as zf:
-        zf.writestr(
-            "manifest.json",
-            json.dumps(
-                {
-                    "kind": KIND_RELEASE,
-                    "format": FORMAT_VERSION,
-                    "app_version": "1",
-                    "files": {"a.txt": "0" * 64},
-                }
-            ),
-        )
-        zf.writestr("a.txt", "ok")
+    with source, zipfile.ZipFile(lying, "w") as zf:
+        for info in source.infolist():
+            zf.writestr(info.filename, b"changed" if info.filename == "a.txt" else source.read(info.filename))
     with pytest.raises(ArchiveError, match="checksum_mismatch"):
-        inspect_archive(lying.getvalue(), expected_kind=KIND_RELEASE)
+        inspect_archive(lying.getvalue(), expected_kind=KIND_RELEASE, public_key=release_keys[1])
 
 
 def test_zip_slip_is_rejected():
@@ -102,12 +121,12 @@ def test_zip_slip_is_rejected():
         inspect_archive(buf.getvalue(), expected_kind=KIND_RELEASE)
 
 
-def test_unpack_writes_only_under_dest(tmp_path: Path):
+def test_unpack_writes_only_under_dest(tmp_path: Path, release_keys: tuple[bytes, bytes]):
     payload = tmp_path / "tree"
     (payload / "apps" / "api").mkdir(parents=True)
     (payload / "apps" / "api" / "ok.py").write_text("x = 1\n", encoding="utf-8")
-    archive = build_archive(kind=KIND_RELEASE, source_root=payload, app_version="1")
+    archive = _signed_release(payload, release_keys)
     dest = tmp_path / "out"
-    unpack_archive(archive, dest, expected_kind=KIND_RELEASE)
+    unpack_archive(archive, dest, expected_kind=KIND_RELEASE, public_key=release_keys[1])
     assert (dest / "apps" / "api" / "ok.py").read_text(encoding="utf-8") == "x = 1\n"
     assert not (tmp_path / "etc").exists()
