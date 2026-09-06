@@ -1,3 +1,5 @@
+import { TaskCollaboration } from '../../components/tracker/TaskCollaboration'
+import { attachmentIdentity, runTrackerSubmission } from '../../components/tracker/trackerReliability'
 import {
   type ReactNode,
   useCallback,
@@ -490,10 +492,19 @@ function IssueWorkbenchOwner({
     transitionsEnabled,
   ])
 
-  const mutate = useCallback(async (action: () => Promise<unknown>, onSuccess?: () => void) => {
+  const mutate = useCallback(async (action: (assertCurrent: () => void) => Promise<unknown>, onSuccess?: () => void) => {
     const generation = ownerGeneration.current
     const accessGeneration = getAccessGeneration()
-    await guarded(action)
+    const assertCurrent = () => {
+      if (generation !== ownerGeneration.current || getAccessGeneration() !== accessGeneration || accessGeneration < 0 || blockedRef.current) throw new Error('work_access_changed')
+    }
+    try {
+      await guarded(() => action(assertCurrent))
+    } catch (error) {
+      if (generation === ownerGeneration.current && getAccessGeneration() === accessGeneration
+        && error instanceof ApiError && error.detail === 'tracker_state_conflict') invalidateMutationResources()
+      throw error
+    }
     if (generation !== ownerGeneration.current || getAccessGeneration() !== accessGeneration) return
     invalidateMutationResources()
     onSuccess?.()
@@ -585,6 +596,7 @@ function IssueWorkbenchOwner({
                     <SyncStatus updatedAt={detail.updatedAt !== null && comments.updatedAt !== null ? Math.min(detail.updatedAt, comments.updatedAt) : null}
                       isRevalidating={detail.isRevalidating || comments.isRevalidating}
                       error={detail.error || comments.error} />
+                    {detail.data && <TaskCollaboration issueKey={detail.data.key} owner={user.username} active={activeTab === 'task'} canWrite={detail.data.capabilities.comment} onAuthorizationFailure={observeAuthorizationFailure} />}
                     <IssueDetailPanel
                       currentUser={user.tracker_login ?? user.username} accountKey={user.username}
                       commentsLoading={comments.isLoading && !comments.data}
@@ -600,20 +612,20 @@ function IssueWorkbenchOwner({
                         issueKey={detail.data.key}
                         issueUrl={detail.data.url}
                         onAssign={(assignee) => mutate(
-                          () => apiClient.trackerAssign(detail.data!.key, assignee),
+                          (assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'assign', { assignee }, headers => apiClient.trackerAssign(detail.data!.key, assignee, headers), assertCurrent),
                         )}
                         onAttach={(file) => mutate(
-                          () => apiClient.trackerAttach(detail.data!.key, file),
+                          async (assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'attach', await attachmentIdentity(file), headers => apiClient.trackerAttach(detail.data!.key, file, headers), assertCurrent),
                         )}
-                        onClose={() => mutate(() => apiClient.trackerClose(detail.data!.key), onCloseIssue)}
+                        onClose={() => mutate((assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'close', {}, headers => apiClient.trackerClose(detail.data!.key, headers), assertCurrent), onCloseIssue)}
                         onComment={(text) => mutate(
-                          () => apiClient.trackerComment(detail.data!.key, text),
+                          (assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'comment', { text }, headers => apiClient.trackerComment(detail.data!.key, text, headers), assertCurrent),
                         )}
                         onTransition={(transition) => mutate(
-                          () => apiClient.trackerTransition(detail.data!.key, transition),
+                          (assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'transition', { transition }, headers => apiClient.trackerTransition(detail.data!.key, transition, undefined, headers), assertCurrent),
                         )}
                         onUnassign={() => mutate(
-                          () => apiClient.trackerUnassign(detail.data!.key),
+                          (assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'unassign', {}, headers => apiClient.trackerUnassign(detail.data!.key, headers), assertCurrent),
                         )}
                         transitions={transitions.data ?? []}
                       />

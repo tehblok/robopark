@@ -140,8 +140,13 @@ def test_scheduled_snapshot_is_restorable_and_rotates_only_its_own_artifact(
         restored.write_bytes(archive.read("data/robopark.db"))
     with sqlite3.connect(restored) as connection:
         assert connection.execute("SELECT value FROM example").fetchone() == ("preserved",)
+    receipt = ctx.ops_dir / "scheduled-copy.json"
+    assert not receipt.exists()
     monkeypatch.setattr(sys, "argv", ["backup-snapshot.py", "--ack", first.name])
     helper.main()
+    from robopark_api.services.operational_health import backup_status
+
+    assert backup_status(ctx.ops_dir)["verified_at"] is not None
     manual = first.parent / "manual.zip"
     manual.write_bytes(b"manual")
     monkeypatch.setattr(sys, "argv", ["backup-snapshot.py"])

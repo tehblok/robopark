@@ -11,6 +11,7 @@ import { ConfirmDialog } from '../../design-system/overlays/ConfirmDialog'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
 import { safeHttpUrl } from '../../lib/safeUrl'
+import { pendingTrackerSubmissions, trackerReliabilityError } from './trackerReliability'
 import { useCommentDraft } from './useCommentDraft'
 import './task-card.css'
 
@@ -155,6 +156,14 @@ function IssueActionsPanelContent({
   const [assignee, setAssignee] = useState('')
   const [suggestions, setSuggestions] = useState<TrackerUserSuggestion[]>([])
   const [busy, setBusy] = useState('')
+  const submitting = useRef(false)
+  const [pendingCount, setPendingCount] = useState(() => pendingTrackerSubmissions(draftOwner ?? currentUser, issueKey))
+  useEffect(() => {
+    const update = () => setPendingCount(pendingTrackerSubmissions(draftOwner ?? currentUser, issueKey))
+    window.addEventListener('tracker-submissions-changed', update)
+    window.addEventListener('storage', update)
+    return () => { window.removeEventListener('tracker-submissions-changed', update); window.removeEventListener('storage', update) }
+  }, [draftOwner, currentUser, issueKey])
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [closeOpen, setCloseOpen] = useState(false)
@@ -197,6 +206,8 @@ function IssueActionsPanelContent({
   }, [effectiveCapabilities.close])
 
   const run: RunAction = async (name, action) => {
+    if (submitting.current) return false
+    submitting.current = true
     setBusy(name)
     setError('')
     setSuccess('')
@@ -206,7 +217,7 @@ function IssueActionsPanelContent({
       setSuccess('Действие выполнено')
       return true
     } catch (caught) {
-      const safeMessage = mapApiError(caught) || ru.tracker.actions.failed
+      const safeMessage = trackerReliabilityError(caught) || mapApiError(caught) || ru.tracker.actions.failed
       const message = caught instanceof ApiError && caught.requestId
         ? `${safeMessage} Код запроса: ${caught.requestId}`
         : safeMessage
@@ -217,6 +228,7 @@ function IssueActionsPanelContent({
       }
       return false
     } finally {
+      submitting.current = false
       setBusy('')
     }
   }
@@ -252,6 +264,7 @@ function IssueActionsPanelContent({
 
   return (
     <section className="issue-actions">
+      {pendingCount > 0 && !busy && <p role="status">Есть отправка без подтверждения. Проверьте историю Tracker перед изменением текста или новой отправкой. Повтор того же содержимого использует сохранённый ключ.</p>}
       {error && <p className="alert alert-error" role="alert">{error}</p>}
       {success && <p aria-live="polite">{success}</p>}
 

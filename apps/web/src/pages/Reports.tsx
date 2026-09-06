@@ -1,4 +1,5 @@
 import { SyncStatus } from '../design-system/status/SyncStatus'
+import { deleteReportPhotoDraft } from '../domains/reports/reportPhotoDrafts'
 import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, type Park, type Report, type User } from '../api'
@@ -364,6 +365,7 @@ export function Reports({ apiClient = api }: { apiClient?: ReportsApiClient } = 
       resourceStore.invalidate(committed.current.resourcePrefix, { prefix: true })
     }
     if (committed.current.draftKey) {
+      void deleteReportPhotoDraft(committed.current.draftKey).catch(() => {})
       try {
         localStorage.removeItem(committed.current.draftKey)
       } catch {

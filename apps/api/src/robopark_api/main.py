@@ -12,11 +12,13 @@ from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
 from robopark_api.dev_seed import ensure_dev_seed
 from robopark_api.middleware.maintenance import MaintenanceGateMiddleware
+from robopark_api.middleware.observations import ObservationMiddleware
 from robopark_api.routers import (
     admin_audit,
     admin_diagnostic_rules,
     admin_diagnostic_unknowns,
     admin_emergency,
+    admin_health,
     admin_ops,
     admin_park_requests,
     admin_roles,
@@ -39,6 +41,7 @@ from robopark_api.routers import (
     reports,
     robot_registry,
     tracker_actions,
+    tracker_collaboration,
     tracker_read,
 )
 from robopark_api.seed import ensure_seed_user
@@ -148,12 +151,20 @@ def create_app() -> FastAPI:
     # a wildcard here would let the browser send credentialed requests with
     # arbitrary custom headers to every configured origin.
     app.add_middleware(MaintenanceGateMiddleware)
+    app.add_middleware(ObservationMiddleware, root=resolved_ops_dir(settings) / "observations")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Accept", "If-Match"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "Accept",
+            "If-Match",
+            "Idempotency-Key",
+            "X-Tracker-State",
+        ],
         expose_headers=["ETag"],
     )
     app.include_router(auth.router)
@@ -167,6 +178,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_emergency.router)
     app.include_router(admin_settings.router)
     app.include_router(admin_ops.router)
+    app.include_router(admin_health.router)
     app.include_router(operator_parks.router)
     app.include_router(operator_blockers.router)
     app.include_router(operator_report.router)
@@ -178,6 +190,7 @@ def create_app() -> FastAPI:
     app.include_router(mechanic_emergency.router)
     app.include_router(tracker_read.router)
     app.include_router(tracker_actions.router)
+    app.include_router(tracker_collaboration.router)
     app.include_router(dashboard.router)
     app.include_router(robot_registry.router)
     app.include_router(operations.router)

@@ -1,8 +1,11 @@
 """Run inside the API container; stdout is only the validated artifact path."""
 
+import json
+import os
 import sqlite3
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -29,6 +32,13 @@ def main():
         pending = marker.with_suffix(".tmp")
         pending.write_text(name)
         pending.replace(marker)
+        receipt = ctx.ops_dir / "scheduled-copy.json"
+        receipt_pending = receipt.with_suffix(".tmp")
+        with receipt_pending.open("w") as stream:
+            json.dump({"verified_at": time.time()}, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        receipt_pending.replace(receipt)
         if previous and previous != name and Path(previous).name == previous:
             (root / previous).unlink(missing_ok=True)
         return

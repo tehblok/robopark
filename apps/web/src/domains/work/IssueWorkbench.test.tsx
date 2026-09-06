@@ -1,7 +1,8 @@
+import { webcrypto } from 'node:crypto'
 import { Profiler, type ReactNode, useLayoutEffect, useState } from 'react'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ApiError,
   type Park,
@@ -504,7 +505,7 @@ describe('IssueWorkbench', () => {
     await screen.findByRole('heading', { name: issue.summary })
     fireEvent.click(screen.getByRole('button', { name: ru.tracker.actions.close }))
     fireEvent.click(screen.getByRole('button', { name: 'Подтвердить закрытие' }))
-    expect(client.trackerClose).toHaveBeenCalledWith(issue.key)
+    await waitFor(() => expect(client.trackerClose).toHaveBeenCalledWith(issue.key, expect.objectContaining({ 'Idempotency-Key': expect.any(String), 'X-Tracker-State': expect.any(String) })))
     vi.mocked(client.trackerIssue).mockResolvedValue(nextIssue)
     view.rerender(tree(true))
     await screen.findByRole('heading', { name: nextIssue.summary })
@@ -549,6 +550,7 @@ describe('IssueWorkbench', () => {
     await screen.findByRole('heading', { name: issue.summary })
     fireEvent.click(screen.getByRole('button', { name: ru.tracker.actions.close }))
     fireEvent.click(screen.getByRole('button', { name: 'Подтвердить закрытие' }))
+    await waitFor(() => expect(client.trackerClose).toHaveBeenCalledOnce())
     await act(async () => { pending.resolve(actionResult('close')) })
     expect(onCloseIssue).toHaveBeenCalledOnce()
     expect(client.trackerIssue).toHaveBeenCalledTimes(3)
@@ -1053,4 +1055,35 @@ describe('WorkPage authorization lifetime', () => {
     expect(screen.queryByText('Код запроса: req-old-principal')).not.toBeInTheDocument()
     expect(refreshUser).toHaveBeenCalledTimes(1)
   })
+})
+
+beforeEach(() => { vi.stubGlobal('crypto', webcrypto) })
+
+it('does not send a mutation if the principal changes while its payload is being hashed', async () => {
+  const hash = deferred<ArrayBuffer>()
+  vi.spyOn(crypto.subtle, 'digest').mockReturnValueOnce(hash.promise)
+  const client = apiClient()
+  const tree = (nextUser = user) => <Harness><IssueWorkbench apiClient={client}
+    user={nextUser} selectedPark={park} issueKey={issue.key} state={state}
+    onCloseIssue={vi.fn()} onAuthorizationFailure={vi.fn(async () => undefined)}
+    onOpenIssue={vi.fn()} onStateChange={vi.fn()} /></Harness>
+  const view = render(tree())
+  await screen.findByRole('heading', { name: issue.summary })
+  fireEvent.click(screen.getByRole('button', { name: ru.tracker.actions.close }))
+  fireEvent.click(screen.getByRole('button', { name: 'Подтвердить закрытие' }))
+  view.rerender(tree({ ...user, id: 99, username: 'different-principal' }))
+  await act(async () => { hash.resolve(new ArrayBuffer(32)) })
+  expect(client.trackerClose).not.toHaveBeenCalled()
+})
+
+it('refreshes a conflicting status immediately and preserves the comment draft for review', async () => {
+  const client = apiClient({ trackerComment: vi.fn(async () => { throw new ApiError(409, 'tracker_state_conflict') }) })
+  renderWorkbench({ client })
+  await screen.findByRole('heading', { name: issue.summary })
+  vi.mocked(client.trackerIssue).mockResolvedValue({ ...issue, status: 'На проверке', status_key: 'review' })
+  fireEvent.change(screen.getByRole('textbox', { name: ru.tracker.comments }), { target: { value: 'Не потерять этот черновик' } })
+  fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
+  await screen.findByText(/Статус или исполнитель изменились/)
+  await screen.findByText('На проверке')
+  expect(screen.getByRole('textbox', { name: ru.tracker.comments })).toHaveValue('Не потерять этот черновик')
 })

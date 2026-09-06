@@ -354,3 +354,75 @@ it('loads the diagnostic catalog after StrictMode cancels its first mount reques
 
 // Keep lifecycle assertions deterministic; pollingCapacity tests exercise jitter.
 beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })
+
+const sampleResult = { items: [
+  { id: 9, outcome: 'matched', overlap_rule_ids: [2], reason: null },
+  { id: 8, outcome: 'missed', overlap_rule_ids: [], reason: null },
+  { id: 7, outcome: 'skipped', overlap_rule_ids: [], reason: 'legacy' },
+], matched: 1, missed: 1, skipped: 1, overlapping: 1, limit: 50, has_more: true, budget_exhausted: false, invalid_rule_ids: [] }
+
+it('tests collected originals on demand and keeps publication explicit', async () => {
+  const normal = handler
+  handler = (path, init) => path.endsWith('/test-samples') ? json(sampleResult) : normal(path, init)
+  render(tree())
+  const check = await screen.findByRole('button', { name: 'Проверить собранные ошибки' })
+  expect(requests.some(request => request.path.endsWith('/test-samples'))).toBe(false)
+  fireEvent.change(screen.getByLabelText('Код или шаблон'), { target: { value: 'DRAFT' } })
+  fireEvent.click(check)
+  expect(await screen.findByText('Совпало: 1 · Не совпало: 1 · Пропущено: 1')).toBeVisible()
+  fireEvent.click(screen.getByText('Образцы и пересечения'))
+  expect(screen.getByText('Образец #9')).toBeVisible()
+  expect(screen.getByText('Также распознают правила: #2')).toBeVisible()
+  expect(screen.getByText(/Показаны последние 50 образцов/)).toBeVisible()
+  expect(screen.getByText(/Нет сохранённого оригинала/)).toBeVisible()
+  const sent = requests.find(request => request.path.endsWith('/test-samples'))!
+  expect(JSON.parse(String(sent.init.body))).toMatchObject({ rule: { pattern: 'DRAFT' }, exclude_rule_id: 1, limit: 50 })
+  expect(requests.filter(request => request.init.method === 'POST')).toHaveLength(1)
+  expect(screen.getByRole('button', { name: 'Сохранить правило' })).toBeEnabled()
+  fireEvent.change(screen.getByLabelText('Код или шаблон'), { target: { value: 'ANOTHER' } })
+  expect(screen.queryByText('Образец #9')).not.toBeInTheDocument()
+})
+
+it.each(['draft', 'selection', 'park', 'auth', 'catalog'] as const)('retires delayed sample evaluation when %s changes', async owner => {
+  let complete!: (response: Response) => void
+  const normal = handler
+  handler = (path, init) => path.endsWith('/test-samples') ? new Promise(resolve => { complete = resolve }) : normal(path, init)
+  const mounted = render(tree())
+  fireEvent.click(await screen.findByRole('button', { name: 'Проверить собранные ошибки' }))
+  if (owner === 'draft') fireEvent.change(screen.getByLabelText('Название ошибки'), { target: { value: 'Черновик' } })
+  else if (owner === 'selection') fireEvent.click(screen.getByRole('button', { name: 'Открыть правило Колесо' }))
+  else if (owner === 'park') fireEvent.click(screen.getByText('Другой парк'))
+  else if (owner === 'auth') mounted.rerender(tree({ ...user, id: 9 }))
+  else {
+    fireEvent.click(screen.getByRole('button', { name: 'Ниже: Лидар' }))
+    await screen.findByText('Порядок сохранён.')
+  }
+  await act(async () => complete(json(sampleResult)))
+  expect(screen.queryByText('Образец #9')).not.toBeInTheDocument()
+  expect(requests.find(request => request.path.endsWith('/test-samples'))!.init.signal?.aborted).toBe(true)
+})
+
+it.each([401, 403])('clears sample results and protected controls on denied evaluation %s', async status => {
+  const normal = handler
+  handler = (path, init) => path.endsWith('/test-samples') ? json({}, status) : normal(path, init)
+  render(tree())
+  fireEvent.click(await screen.findByRole('button', { name: 'Проверить собранные ошибки' }))
+  expect(await screen.findByText('Каталог недоступен')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Проверить собранные ошибки' })).not.toBeInTheDocument()
+})
+
+it('explains incomplete and empty evaluations without treating skipped samples as misses', async () => {
+  const normal = handler
+  let calls = 0
+  handler = (path, init) => path.endsWith('/test-samples') ? json(++calls === 1
+    ? { ...sampleResult, budget_exhausted: true, invalid_rule_ids: [77], items: [{ id: 7, outcome: 'skipped', overlap_rule_ids: [], reason: 'budget' }], matched: 0, missed: 0, skipped: 1, overlapping: 0 }
+    : { ...sampleResult, items: [], matched: 0, missed: 0, skipped: 0, overlapping: 0, has_more: false }) : normal(path, init)
+  render(tree())
+  fireEvent.click(await screen.findByRole('button', { name: 'Проверить собранные ошибки' }))
+  expect(await screen.findByText(/Проверка завершена частично/)).toBeVisible()
+  expect(screen.getByText('Совпало: 0 · Не совпало: 0 · Пропущено: 1')).toBeVisible()
+  expect(screen.getByText('Не удалось проверить пересечения с правилами: #77.')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Проверить собранные ошибки' }))
+  expect(await screen.findByText('Собранных образцов пока нет.')).toBeVisible()
+  expect(screen.queryByText(/Проверка завершена частично/)).not.toBeInTheDocument()
+})

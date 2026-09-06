@@ -69,3 +69,8 @@
   }
   .issue-actions :is(.btn, .rp-button) { min-height: 44px; }
 }
+
+.issue-collaboration { margin-block: 1rem; padding: .75rem; border: 1px solid var(--border); border-radius: .5rem; }
+.issue-collaboration summary { cursor: pointer; font-weight: 600; }
+.issue-handoff-field { display: grid; gap: .35rem; margin-block: .75rem; }
+.issue-handoff-field textarea { width: 100%; min-width: 0; resize: vertical; }

@@ -304,6 +304,10 @@ async def exercise(base, args, stub):
                                 expected=201,
                             )
                         )
+                    elif args.presence and (index + turn) % 10 == 0:
+                        records.append(
+                            await request(index, f"/tracker/issues/{issue_key}/presence", "POST")
+                        )
                     else:
                         records.append(
                             await request(index, user_routes[(index + turn) % len(user_routes)])
@@ -355,6 +359,11 @@ def main():
     parser.add_argument("--stub-delay-ms", type=float, default=100)
     parser.add_argument("--timeout", type=float, default=15)
     parser.add_argument("--stress-rounds", type=int, default=3)
+    parser.add_argument(
+        "--presence",
+        action="store_true",
+        help="Replace about 10% of sustained reads with task-presence writes",
+    )
     args = parser.parse_args()
     if (
         min(
@@ -387,6 +396,7 @@ def main():
             "duration_seconds": args.duration,
             "cadence_seconds": args.cadence,
             "target_cadence_rps": args.users / args.cadence,
+            "presence_writes": args.presence,
             "upstream_stub_delay_ms": args.stub_delay_ms,
             "timeout_seconds": args.timeout,
             "stress_rounds": args.stress_rounds,
@@ -477,6 +487,9 @@ def main():
                             "reports_after": db.execute("SELECT count(*) FROM reports").fetchone()[
                                 0
                             ],
+                            "presence_rows": db.execute(
+                                "SELECT count(*) FROM tracker_presence"
+                            ).fetchone()[0],
                             "integrity_check": db.execute("PRAGMA integrity_check").fetchone()[0],
                         }
                 finally:
@@ -540,6 +553,8 @@ def main():
         ),
         "sqlite_integrity_ok": result.get("database", {}).get("integrity_check") == "ok",
         "local_writes_persisted": result.get("database", {}).get("reports_after", 0) > args.users,
+        "presence_writes_persisted": not args.presence
+        or result.get("database", {}).get("presence_rows", 0) > 0,
         "no_harness_error": "harness_error" not in result,
     }
     result["passed"] = all(result["acceptance"].values())

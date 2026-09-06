@@ -1,3 +1,5 @@
+import { TaskCollaboration } from './TaskCollaboration'
+import { attachmentIdentity, runTrackerSubmission } from './trackerReliability'
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import { api, type TrackerTransition } from '../../api'
 import { useAuth } from '../../auth-context'
@@ -83,6 +85,8 @@ export function IssueDrawer({
 
       {errorText && <p className="alert alert-error">{errorText}</p>}
 
+        {detail && <TaskCollaboration issueKey={detail.key} owner={user?.username ?? ''} active canWrite={canWrite} />}
+
       <IssueDetailPanel
         comments={comments}
         commentsAsHistory={user?.role === 'mechanic'}
@@ -93,30 +97,32 @@ export function IssueDrawer({
       {detail && (
         <IssueActionsPanel
           canWrite={canWrite}
+          draftOwner={user?.username}
+          issueKey={issueKey}
           currentUser={user?.username}
           issueUrl={detail.url}
           onAssign={async (assignee) => {
-            await api.trackerAssign(issueKey, assignee)
+            await runTrackerSubmission(user?.username ?? '', detail, 'assign', { assignee }, headers => api.trackerAssign(issueKey, assignee, headers), () => { if (owner.current !== identity) throw new Error('work_access_changed') })
             await reload()
           }}
           onClose={async () => {
-            await api.trackerClose(issueKey)
+            await runTrackerSubmission(user?.username ?? '', detail, 'close', {}, headers => api.trackerClose(issueKey, headers), () => { if (owner.current !== identity) throw new Error('work_access_changed') })
             await reload()
           }}
           onComment={async (text) => {
-            await api.trackerComment(issueKey, text)
+            await runTrackerSubmission(user?.username ?? '', detail, 'comment', { text }, headers => api.trackerComment(issueKey, text, headers), () => { if (owner.current !== identity) throw new Error('work_access_changed') })
             await reload()
           }}
           onAttach={async (file) => {
-            await api.trackerAttach(issueKey, file)
+            await runTrackerSubmission(user?.username ?? '', detail, 'attach', await attachmentIdentity(file), headers => api.trackerAttach(issueKey, file, headers), () => { if (owner.current !== identity) throw new Error('work_access_changed') })
             await reload()
           }}
           onTransition={async (transition) => {
-            await api.trackerTransition(issueKey, transition)
+            await runTrackerSubmission(user?.username ?? '', detail, 'transition', { transition }, headers => api.trackerTransition(issueKey, transition, undefined, headers), () => { if (owner.current !== identity) throw new Error('work_access_changed') })
             await reload()
           }}
           onUnassign={async () => {
-            await api.trackerUnassign(issueKey)
+            await runTrackerSubmission(user?.username ?? '', detail, 'unassign', {}, headers => api.trackerUnassign(issueKey, headers), () => { if (owner.current !== identity) throw new Error('work_access_changed') })
             await reload()
           }}
           transitions={transitions}

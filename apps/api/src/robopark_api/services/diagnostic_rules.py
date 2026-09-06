@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -520,7 +520,11 @@ def match_diagnostic_events_for_rules(
 
 
 def diagnostic_rule_matches_sample(
-    rule: DiagnosticRule, payload: dict[str, Any], sample_location: Location
+    rule: DiagnosticRule,
+    payload: dict[str, Any],
+    sample_location: Location,
+    *,
+    consume: Callable[[], None] | None = None,
 ) -> bool:
     """Match only actual units at/below a recorded sample, excluding its envelope.
 
@@ -533,7 +537,11 @@ def diagnostic_rule_matches_sample(
         return False
     location, value = _lookup(payload, parts)
     pattern = compile_diagnostic_regex(rule.pattern) if rule.match_kind == "regex" else None
+    if consume is not None:
+        consume()
     for error in _raw_errors(value, location):
+        if consume is not None:
+            consume()
         if not _is_within(error.location, sample_location):
             continue
         text = _raw_text(error.value)

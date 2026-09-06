@@ -45,3 +45,5 @@
 .rp-diagnostic-raw { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: var(--rp-space-3); background: var(--rp-surface); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-control); }
 .rp-diagnostic-unknown-pattern { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 .rp-diagnostic-raw { max-block-size: 20rem; overflow: auto; }
+.rp-diagnostic-sample-list { display: grid; gap: var(--rp-space-3); padding-inline-start: var(--rp-space-4); max-block-size: 24rem; overflow: auto; }
+.rp-diagnostic-preview summary { cursor: pointer; padding-block: var(--rp-space-2); }

@@ -15,6 +15,7 @@ import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
 import { TabPanel, Tabs, Toggle } from '../components/ui/Tabs'
 import { PasswordField } from '../components/ui/PasswordField'
 import { AdminOpsPanel } from '../components/admin/AdminOpsPanel'
+import { HostHealthPanel } from '../components/admin/HostHealthPanel'
 import { useAuth } from '../auth-context'
 import { mapApiError } from '../i18n/errors'
 import { roleLabel, ru } from '../i18n/ru'
@@ -25,7 +26,7 @@ import { ManagementNavigation } from '../domains/management/ManagementNavigation
 import { MetricCard } from '../design-system/data/MetricCard'
 import { StatusBadge } from '../design-system/status/StatusBadge'
 
-type TabId = 'integrations' | 'parks' | 'ops'
+type TabId = 'integrations' | 'parks' | 'ops' | 'health'
 
 type AdminBootstrap = {
   parks: Park[]
@@ -149,6 +150,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
   const firstPermittedTab: TabId = canIntegrations ? 'integrations' : canParks ? 'parks' : 'ops'
   const isPermittedTab = (candidate: string | null): candidate is TabId => (
     (candidate === 'integrations' && canIntegrations)
+    || (candidate === 'health' && canIntegrations)
     || (candidate === 'parks' && canParks)
     || (candidate === 'ops' && canOps)
   )
@@ -395,6 +397,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
       <Tabs
         items={[
           ...(canIntegrations ? [{ id: 'integrations', label: 'Интеграции' }] : []),
+          ...(canIntegrations ? [{ id: 'health', label: 'Состояние сервера' }] : []),
           ...(canParks ? [{ id: 'parks', label: 'Парки', count: parkRequests.length }] : []),
           ...(user?.role === 'royal' ? [{ id: 'ops', label: ru.ops.tab }] : []),
         ]}
@@ -403,6 +406,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
       />
 
       {/* --- Integrations ------------------------------------------------- */}
+      {canIntegrations && tab === 'health' && <TabPanel active><HostHealthPanel /></TabPanel>}
       {canIntegrations && <TabPanel active={tab === 'integrations'}>
         {user?.role === 'royal' && (
           <Panel

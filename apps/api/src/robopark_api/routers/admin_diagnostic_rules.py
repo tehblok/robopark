@@ -34,6 +34,11 @@ from robopark_api.services.diagnostic_rules import (
     diagnostic_source_parts,
     match_diagnostic_events_for_rules,
 )
+from robopark_api.services.diagnostic_sample_tests import (
+    CatalogTooLarge,
+    SampleTestResult,
+    evaluate_samples,
+)
 
 
 def require_rule_admin(user: User = Depends(require_user)) -> User:
@@ -88,6 +93,8 @@ def validation_error_details(errors: list[Any]) -> list[dict[str, Any]]:
         "payload",
         "ids",
         "rule_id",
+        "limit",
+        "exclude_rule_id",
         "if-match",
     }
     return [
@@ -305,6 +312,26 @@ def preview_rule(payload: DiagnosticRulePreview, response: Response) -> Diagnost
     return DiagnosticRulePreviewOut(
         matched=any(event.rule_id == 0 for event in events), events=events
     )
+
+
+class DiagnosticSampleTest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    rule: DiagnosticRuleCreate
+    limit: Annotated[int, Field(strict=True, ge=1, le=100)] = 50
+    exclude_rule_id: Annotated[int, Field(strict=True, gt=0, le=2**63 - 1)] | None = None
+
+
+@router.post("/test-samples", response_model=SampleTestResult)
+def test_rule_samples(
+    payload: DiagnosticSampleTest, response: Response, db: Session = Depends(get_db)
+) -> SampleTestResult:
+    _validate_rule(payload.rule)
+    response.headers["Cache-Control"] = "no-store"
+    candidate = DiagnosticRule(id=0, **payload.rule.model_dump())
+    try:
+        return evaluate_samples(db, candidate, payload.limit, payload.exclude_rule_id)
+    except CatalogTooLarge:
+        raise HTTPException(status_code=422, detail="diagnostic_sample_catalog_too_large") from None
 
 
 @router.patch("/{rule_id}", response_model=DiagnosticRuleOut)

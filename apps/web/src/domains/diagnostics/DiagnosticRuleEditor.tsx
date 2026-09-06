@@ -12,6 +12,8 @@ import { ROBOT_PHOTOS } from '../robots/robotPhotos'
 import { resourceStore, useCachedResource } from '../../lib/resource'
 import { adminResourceOptions } from '../../components/admin/adminResources'
 import { UnknownDiagnosticInbox } from './UnknownDiagnosticInbox'
+import { testDiagnosticSamples, type DiagnosticSampleResult } from './diagnosticSampleApi'
+import { DiagnosticSampleSummary } from './DiagnosticSampleSummary'
 import './diagnostics.css'
 
 const catalogOwners = new WeakMap<User, number>()
@@ -40,6 +42,7 @@ export function errorText(error: unknown) {
     if (error.detail === 'invalid_diagnostic_source_path') return 'Проверьте путь источника: используйте имена полей и индексы через точку.'
     if (error.detail === 'unknown_sample_requires_observation') return 'Повторите проверку робота для получения исходного сигнала.'
     if (error.detail === 'unknown_rule_does_not_match') return 'Правило не распознаёт исходный сигнал. Проверьте шаблон и повторите проверку примера.'
+    if (error.detail === 'diagnostic_sample_catalog_too_large') return 'Каталог слишком велик для полной проверки пересечений. Допускается до 100 включённых правил.'
     if (error.status === 422) return 'Проверьте поля правила и пример: сервер не смог их обработать.'
     if (error.detail === 'diagnostic_unknown_already_mapped') return 'Эту ошибку уже разметили. Откройте связанное правило.'
     if (error.status === 409) return 'Правило конфликтует с каталогом. Обновите список и повторите сохранение.'
@@ -267,6 +270,9 @@ export function RuleForm({ rule, initialDraft, onDraftAdopted, busy, onSave, onC
   useEffect(() => { if (initialDraft) onDraftAdopted() }, [initialDraft, onDraftAdopted])
   const [preview, setPreview] = useState<DiagnosticPreview | null>(null)
   const [previewBusy, setPreviewBusy] = useState(false)
+  const [sampleResult, setSampleResult] = useState<DiagnosticSampleResult | null>(null)
+  const [sampleBusy, setSampleBusy] = useState(false)
+  const sampleRequest = useRef<AbortController | null>(null)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [failedImage, setFailedImage] = useState<string | null>(null)
@@ -277,10 +283,12 @@ export function RuleForm({ rule, initialDraft, onDraftAdopted, busy, onSave, onC
   const invalidatePreview = useCallback(() => {
     previewGeneration.current++
     previewRequest.current?.abort()
+    sampleRequest.current?.abort()
+    setSampleBusy(false); setSampleResult(null)
     setPreviewBusy(false); setPreview(null)
   }, [])
   useLayoutEffect(invalidatePreview, [previewOwner, invalidatePreview])
-  const retire = useCallback(() => { mounted.current = false; revision.current++; previewGeneration.current++; previewRequest.current?.abort() }, [])
+  const retire = useCallback(() => { mounted.current = false; revision.current++; previewGeneration.current++; previewRequest.current?.abort(); sampleRequest.current?.abort() }, [])
   useEffect(() => { mounted.current = true; return retire }, [retire])
   const edit = (change: Partial<Draft>) => {
     revision.current++; invalidatePreview()
@@ -311,6 +319,20 @@ export function RuleForm({ rule, initialDraft, onDraftAdopted, busy, onSave, onC
     } catch (failure) {
       if (ownsPreview()) { onAccess(failure); setError(errorText(failure)) }
     } finally { if (ownsPreview()) setPreviewBusy(false) }
+  }
+  const checkSamples = async () => {
+    if (busy || sampleBusy || !valid) return
+    const current = revision.current
+    const controller = new AbortController(); sampleRequest.current = controller
+    const ownsResult = () => mounted.current && !controller.signal.aborted && current === revision.current
+      && isPreviewOwner(previewOwner) && isCurrentNavigation()
+    setSampleBusy(true); setSampleResult(null); setError('')
+    try {
+      const result = await testDiagnosticSamples(draft, rule?.id, controller.signal)
+      if (ownsResult()) setSampleResult(result)
+    } catch (failure) {
+      if (ownsResult()) { onAccess(failure); setError(errorText(failure)) }
+    } finally { if (ownsResult()) setSampleBusy(false) }
   }
   const save = async (event?: FormEvent, disable = false) => {
     event?.preventDefault()
@@ -373,6 +395,9 @@ export function RuleForm({ rule, initialDraft, onDraftAdopted, busy, onSave, onC
       {!preview.matched ? <p>Значение не распознано этим правилом. Проверьте код, путь и пример.</p> : null}
       {preview.events.map(item => <div key={item.id}><strong>{item.title}</strong><p>{item.description}</p><p>{item.part ?? 'Без локализации'} · {SEVERITIES[item.severity]}</p></div>)}
     </section> : null}
+    <div><Button type="button" variant="secondary" disabled={busy || !valid} busy={sampleBusy} onClick={() => void checkSamples()}>Проверить собранные ошибки</Button></div>
+    <p className="rp-diagnostic-hint">Проверка черновика по последним 50 сохранённым исходным сигналам всех парков, включая размеченные и игнорируемые. Правило публикуется только после сохранения.</p>
+    {sampleResult ? <DiagnosticSampleSummary result={sampleResult} /> : null}
     {error ? <ErrorState title="Не удалось обработать правило" description={error} /> : null}
     {message ? <p role="status">{message}</p> : null}
     <Toggle label="Правило включено" checked={draft.is_enabled} onChange={is_enabled => edit({ is_enabled })} />

@@ -581,7 +581,7 @@ async function readErrorDetail(response: Response): Promise<string | null> {
   return null
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return fetchWithTimeout(
     `/api${path}`,
     {
@@ -623,13 +623,14 @@ async function requestBlob(path: string): Promise<Blob> {
   )
 }
 
-async function requestForm<T>(path: string, formData: FormData): Promise<T> {
+async function requestForm<T>(path: string, formData: FormData, headers?: Record<string, string>): Promise<T> {
   return fetchWithTimeout(
     `/api${path}`,
     {
       credentials: 'include',
       method: 'POST',
       body: formData,
+      headers,
     },
     FORM_TIMEOUT_MS,
     async (response) => {
@@ -962,36 +963,42 @@ export const api = {
     request<TrackerComment[]>(`/tracker/issues/${encodeURIComponent(key)}/comments`),
   trackerTransitions: (key: string) =>
     request<TrackerTransition[]>(`/tracker/transitions/${encodeURIComponent(key)}`),
-  trackerComment: (key: string, text: string) =>
+  trackerComment: (key: string, text: string, headers?: Record<string, string>) =>
     request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/comment`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify({ text }),
     }),
-  trackerAttach: (key: string, file: File) => {
+  trackerAttach: (key: string, file: File, headers?: Record<string, string>) => {
     const form = new FormData()
     form.append('file', file, file.name)
     return requestForm<TrackerActionResult>(
       `/tracker/issues/${encodeURIComponent(key)}/attachments`,
       form,
+      headers,
     )
   },
-  trackerAssign: (key: string, assignee: string) =>
+  trackerAssign: (key: string, assignee: string, headers?: Record<string, string>) =>
     request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/assign`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify({ assignee }),
     }),
-  trackerUnassign: (key: string) =>
+  trackerUnassign: (key: string, headers?: Record<string, string>) =>
     request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/unassign`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
     }),
-  trackerTransition: (key: string, transition: string, resolution?: string) =>
+  trackerTransition: (key: string, transition: string, resolution?: string, headers?: Record<string, string>) =>
     request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/transition`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify({ transition, resolution }),
     }),
-  trackerClose: (key: string) =>
+  trackerClose: (key: string, headers?: Record<string, string>) =>
     request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/close`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
     }),
   operatorBlockers: (parkId: number, status = 'all') =>
     request<OperatorBlockers>(

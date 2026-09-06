@@ -70,6 +70,9 @@ SETTINGS = config.Settings(
 )
 config.get_settings = lambda: SETTINGS
 
+from robopark_api import (
+    collaboration_models,  # noqa: F401 — include task metadata in isolated schema
+)
 from robopark_api.db import SessionLocal, engine
 from robopark_api.models import (
     AuthSession,

@@ -1,3 +1,4 @@
+import { webcrypto } from 'node:crypto'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, type TrackerIssueDetail } from '../../api'
@@ -85,3 +86,5 @@ it('keeps the expanded fresh list when an old next-page request finishes after a
 
 // Keep lifecycle assertions deterministic; pollingCapacity tests exercise jitter.
 beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })
+
+beforeEach(() => { vi.stubGlobal('crypto', webcrypto) })

@@ -95,7 +95,7 @@ def _client(token: str):
     if cached is not None:
         return cached
     Startrek = _import_startrek()
-    client = Startrek(useragent=USER_AGENT, base_url=API_BASE, token=token)
+    client = Startrek(useragent=USER_AGENT, base_url=API_BASE, token=token, retries=0, timeout=10)
     _CLIENTS[token] = client
     return client
 
@@ -606,6 +606,21 @@ def _run_tracked(fn, *, max_attempts: int = 2, call_timeout: float = 25.0):
         raise mapped from exc
 
 
+def _run_mutation(fn):
+    """One synchronous write: no retry and no orphan future after timeout.
+
+    The SDK has finite HTTP timeouts and retries=0. Holding the caller here
+    also keeps its per-task lease until the actual write attempt terminates.
+    """
+    from robopark_api.services.tracker_api import tracker_slot
+
+    try:
+        with tracker_slot():
+            return fn()
+    except Exception as exc:
+        raise TrackerError(str(exc)) from exc
+
+
 def _parse_count_result(result: Any) -> int | None:
     if isinstance(result, (int, float)):
         return int(result)
@@ -795,7 +810,7 @@ def add_comment(
                 "text": str(data.get("text") or text),
             }
 
-        return _run_tracked(_run)
+        return _run_mutation(_run)
 
     client = _client(token)
 
@@ -806,7 +821,7 @@ def add_comment(
             "text": str(getattr(comment, "text", "") or text),
         }
 
-    return _run_tracked(_run)
+    return _run_mutation(_run)
 
 
 def upload_temp_attachment(
@@ -837,7 +852,7 @@ def upload_temp_attachment(
             raise TrackerError("temp attachment upload missing id")
         return attachment_id
 
-    return _run_tracked(_run)
+    return _run_mutation(_run)
 
 
 def guess_image_content_type(filename: str, content: bytes) -> str | None:
@@ -903,7 +918,7 @@ def add_attachment(
             "mimetype": content_type,
         }
 
-    return _run_tracked(_run)
+    return _run_mutation(_run)
 
 
 def assign_issue(*, token: str, key: str, assignee: str) -> None:
@@ -912,7 +927,7 @@ def assign_issue(*, token: str, key: str, assignee: str) -> None:
     def _run() -> None:
         client.issues[key].update(assignee=assignee)
 
-    _run_tracked(_run)
+    _run_mutation(_run)
 
 
 def unassign_issue(*, token: str, key: str) -> None:
@@ -921,7 +936,7 @@ def unassign_issue(*, token: str, key: str) -> None:
     def _run() -> None:
         client.issues[key].update(assignee=None)
 
-    _run_tracked(_run)
+    _run_mutation(_run)
 
 
 def list_transitions(*, token: str, key: str) -> list[dict[str, Any]]:
@@ -971,7 +986,7 @@ def transition_issue(
             kwargs["resolution"] = resolution
         client.issues[key].transitions[transition].execute(**kwargs)
 
-    _run_tracked(_run)
+    _run_mutation(_run)
 
 
 def _robot_search_variants(robot_number: str) -> list[str]:

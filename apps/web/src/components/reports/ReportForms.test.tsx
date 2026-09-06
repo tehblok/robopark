@@ -1,6 +1,9 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { IDBFactory } from 'fake-indexeddb'
+import { Blob as NativeBlob, File as NativeFile } from 'node:buffer'
+import * as drafts from '../../domains/reports/reportPhotoDrafts'
 import { api, type Report } from '../../api'
 import type { ReportsApiClient } from '../../domains/reports/reports'
 import { ReportForms } from './ReportForms'
@@ -13,6 +16,12 @@ const created: Report = {
 }
 
 describe('ReportForms', () => {
+  beforeEach(async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    vi.stubGlobal('File', NativeFile)
+    vi.stubGlobal('Blob', NativeBlob)
+    await drafts.clearReportPhotoDrafts()
+  })
   afterEach(() => {
     localStorage.clear()
     vi.restoreAllMocks()
@@ -49,6 +58,7 @@ describe('ReportForms', () => {
       .mockResolvedValueOnce({ id: 11, kind: 'device_photo', filename: 'robot.jpg', content_type: 'image/jpeg', size_bytes: 3 })
     render(form())
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Проблема' })).toBeEnabled())
     await actor.click(screen.getByRole('button', { name: 'Проблема' }))
     await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Проблема')
     await actor.click(screen.getByRole('button', { name: 'Создать' }))
@@ -72,6 +82,7 @@ describe('ReportForms', () => {
     })
     render(form())
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Проблема' })).toBeEnabled())
     await actor.click(screen.getByRole('button', { name: 'Проблема' }))
     await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Проблема')
     await actor.click(screen.getByRole('button', { name: 'Создать' }))
@@ -94,6 +105,7 @@ describe('ReportForms', () => {
     })
     render(form())
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Проблема' })).toBeEnabled())
     await actor.click(screen.getByRole('button', { name: 'Проблема' }))
     await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Проблема')
     await actor.click(screen.getByRole('button', { name: 'Создать' }))
@@ -110,6 +122,7 @@ describe('ReportForms', () => {
     const createReport = vi.fn().mockRejectedValue(new TypeError('offline'))
     const first = render(form({ apiClient: client({ createReport }) }))
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Проблема' })).toBeEnabled())
     await actor.click(screen.getByRole('button', { name: 'Проблема' }))
     await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Не едет')
     await actor.type(screen.getByRole('textbox', { name: 'Описание' }), 'Колесо заблокировано')
@@ -129,6 +142,7 @@ describe('ReportForms', () => {
     const createReport = vi.fn().mockResolvedValue(created)
     render(form({ apiClient: client({ createReport }) }))
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Проблема' })).toBeEnabled())
     await actor.click(screen.getByRole('button', { name: 'Проблема' }))
     await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Не едет')
     expect(localStorage.getItem('robopark:report-draft:1:7')).toContain('Не едет')
@@ -150,6 +164,7 @@ describe('ReportForms', () => {
     const onCreated = vi.fn()
     const view = render(form({ apiClient: client({ createReport, reportAttach }), onCreated }))
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Проблема' })).toBeEnabled())
     await actor.click(screen.getByRole('button', { name: 'Проблема' }))
     await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Старый владелец')
     await actor.click(screen.getByRole('button', { name: 'Создать' }))
@@ -166,6 +181,7 @@ describe('ReportForms', () => {
     expect(screen.queryByLabelText('Вложения к репорту')).not.toBeInTheDocument()
     expect(onCreated).not.toHaveBeenCalled()
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Проблема' })).toBeEnabled())
     await actor.click(screen.getByRole('button', { name: 'Проблема' }))
     await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Новый владелец')
     await actor.click(screen.getByRole('button', { name: 'Создать' }))
@@ -184,6 +200,7 @@ describe('ReportForms', () => {
     const apiClient = client({ createReport: vi.fn().mockResolvedValue(created), reportAttach })
     const view = render(form({ apiClient }))
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Проблема' })).toBeEnabled())
     await actor.click(screen.getByRole('button', { name: 'Проблема' }))
     await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Старый')
     await actor.click(screen.getByRole('button', { name: 'Создать' }))
@@ -195,5 +212,134 @@ describe('ReportForms', () => {
     await act(async () => pending.resolve({ id: 1, kind: 'device_photo', filename: 'old.jpg', content_type: 'image/jpeg', size_bytes: 3 }))
     expect(screen.queryByText('Файл прикреплён к созданному репорту.')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Вложения к репорту')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Файл')).toHaveValue('')
   })
+  it('restores a selected photo and failed attachment after reload without creating a duplicate report', async () => {
+    const actor = userEvent.setup()
+    const createReport = vi.fn().mockResolvedValue(created)
+    const reportAttach = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ id: 11 })
+    const apiClient = client({ createReport, reportAttach })
+    let view = render(form({ apiClient }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Проблема' })).toBeEnabled())
+    await actor.click(screen.getByRole('button', { name: 'Проблема' }))
+    await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'С фото')
+    await actor.upload(screen.getByLabelText('Файл'), new File(['photo bytes'], 'robot.jpg', { type: 'image/jpeg' }))
+    await waitFor(() => expect(screen.getByText('Черновик сохранён на этом устройстве.')).toBeVisible())
+    view.unmount()
+    view = render(form({ apiClient }))
+    await screen.findByText(/robot.jpg/)
+    await actor.click(screen.getByRole('button', { name: 'Создать' }))
+    await screen.findByText('Репорт отправлен оператору.')
+    await actor.click(screen.getByRole('button', { name: 'Прикрепить файл' }))
+    await screen.findByRole('alert')
+    await waitFor(async () => expect((await drafts.readReportPhotoDraft('robopark:report-draft:1:7'))?.createdReportId).toBe(42))
+    view.unmount()
+    render(form({ apiClient }))
+    await screen.findByText(/robot.jpg/)
+    expect(screen.getByRole('button', { name: 'Создать' })).toBeDisabled()
+    await actor.click(screen.getByRole('button', { name: 'Прикрепить файл' }))
+    await screen.findByText('Файл прикреплён к созданному репорту.')
+    expect(createReport).toHaveBeenCalledTimes(1)
+    expect(reportAttach).toHaveBeenLastCalledWith(42, 'device_photo', expect.any(File))
+    expect(await reportAttach.mock.calls[1][2].text()).toBe('photo bytes')
+    await waitFor(async () => expect(await drafts.readReportPhotoDraft('robopark:report-draft:1:7')).toBeNull())
+  })
+
+  it('shows storage failure while keeping the selected file usable and deletable', async () => {
+    const actor = userEvent.setup()
+    vi.spyOn(drafts, 'writeReportPhotoDraft').mockRejectedValue(new DOMException('full', 'QuotaExceededError'))
+    render(form())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Проблема' })).toBeEnabled())
+    await actor.click(screen.getByRole('button', { name: 'Проблема' }))
+    await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Не терять')
+    await actor.upload(screen.getByLabelText('Файл'), new File(['photo'], 'keep.jpg', { type: 'image/jpeg' }))
+    expect(await screen.findByText(/Не удалось сохранить черновик/)).toBeVisible()
+    expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toHaveValue('Не терять')
+    expect(screen.getByText(/keep.jpg/)).toBeVisible()
+    await actor.click(screen.getByRole('button', { name: 'Удалить черновик' }))
+    expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toHaveValue('')
+    expect(screen.queryByText(/keep.jpg/)).not.toBeInTheDocument()
+  })
+
+  it('does not expose a late IndexedDB result to a different account', async () => {
+    const pending = deferred<drafts.ReportPhotoDraft | null>()
+    vi.spyOn(drafts, 'readReportPhotoDraft').mockImplementationOnce(() => pending.promise).mockResolvedValue(null)
+    const view = render(form())
+    view.rerender(form({ ownerKey: 'owner-b', principalId: 2, parkId: 8 }))
+    await act(async () => pending.resolve({ key: 'robopark:report-draft:1:7', ownerKey: 'owner-a', revision: 'old', activeForm: 'problem', title: 'Секретный старый', body: '', trackerKey: '', createdReportId: 42, attachmentKind: 'device_photo', attachment: { blob: new Blob(['old']), name: 'old.jpg', lastModified: 0 } }))
+    expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toHaveValue('')
+    expect(screen.queryByText(/old.jpg/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Вложения к репорту')).not.toBeInTheDocument()
+  })
+
+  it('preserves the acknowledged report ID and saved photo when the post-create disk write fails', async () => {
+    const actor = userEvent.setup()
+    const apiClient = client({ createReport: vi.fn().mockResolvedValue(created) })
+    const view = render(form({ apiClient }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Проблема' })).toBeEnabled())
+    await actor.click(screen.getByRole('button', { name: 'Проблема' }))
+    await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Диск заполнен')
+    await actor.upload(screen.getByLabelText('Файл'), new File(['photo'], 'saved.jpg', { type: 'image/jpeg' }))
+    await screen.findByText('Черновик сохранён на этом устройстве.')
+    const write = vi.spyOn(drafts, 'writeReportPhotoDraft').mockRejectedValue(new DOMException('full', 'QuotaExceededError'))
+    await actor.click(screen.getByRole('button', { name: 'Создать' }))
+    await screen.findByText(/Не удалось сохранить черновик/)
+    view.unmount()
+    write.mockRestore()
+    render(form({ apiClient }))
+    await screen.findByText(/saved.jpg/)
+    expect(screen.getByRole('button', { name: 'Создать' })).toBeDisabled()
+    expect(screen.getByText(/Репорт №42/)).toBeVisible()
+    expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'Прикрепить файл' })).toBeEnabled()
+  })
+
+  it('keeps newer text when the submitted revision succeeds', async () => {
+    const actor = userEvent.setup()
+    const pending = deferred<Report>()
+    render(form({ apiClient: client({ createReport: vi.fn(() => pending.promise) }) }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Проблема' })).toBeEnabled())
+    await actor.click(screen.getByRole('button', { name: 'Проблема' }))
+    await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Отправленное')
+    await actor.click(screen.getByRole('button', { name: 'Создать' }))
+    await actor.clear(screen.getByRole('textbox', { name: 'Заголовок *' }))
+    await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Новая правка')
+    await act(async () => pending.resolve(created))
+    expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toHaveValue('Новая правка')
+    expect(localStorage.getItem('robopark:report-draft:1:7')).toContain('Новая правка')
+  })
+
+  it('clears submitted text before the creation callback closes the form', async () => {
+    const actor = userEvent.setup()
+    const view = render(form({ apiClient: client({ createReport: vi.fn().mockResolvedValue(created) }), onCreated: () => view.unmount() }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Проблема' })).toBeEnabled())
+    await actor.click(screen.getByRole('button', { name: 'Проблема' }))
+    await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Отправлено')
+    await actor.click(screen.getByRole('button', { name: 'Создать' }))
+    await waitFor(() => expect(localStorage.getItem('robopark:report-draft:1:7')).toBeNull())
+  })
+
+  it('does not resurrect a delivered photo when deletion from IndexedDB fails', async () => {
+    const actor = userEvent.setup()
+    const apiClient = client({ createReport: vi.fn().mockResolvedValue(created), reportAttach: vi.fn().mockResolvedValue({ id: 11 }) })
+    const view = render(form({ apiClient }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Проблема' })).toBeEnabled())
+    await actor.click(screen.getByRole('button', { name: 'Проблема' }))
+    await actor.type(screen.getByRole('textbox', { name: 'Заголовок *' }), 'Фото')
+    await actor.upload(screen.getByLabelText('Файл'), new File(['photo'], 'delivered.jpg', { type: 'image/jpeg' }))
+    await screen.findByText('Черновик сохранён на этом устройстве.')
+    await actor.click(screen.getByRole('button', { name: 'Создать' }))
+    await screen.findByText('Репорт отправлен оператору.')
+    await waitFor(async () => expect((await drafts.readReportPhotoDraft('robopark:report-draft:1:7'))?.createdReportId).toBe(42))
+    vi.spyOn(drafts, 'deleteReportPhotoDraft').mockRejectedValue(new Error('disk unavailable'))
+    await actor.click(screen.getByRole('button', { name: 'Прикрепить файл' }))
+    await screen.findByText('Файл прикреплён к созданному репорту.')
+    await screen.findByText(/Не удалось сохранить черновик/)
+    view.unmount()
+    render(form({ apiClient }))
+    await waitFor(() => expect(screen.getByLabelText('Файл')).toBeEnabled())
+    expect(screen.queryByText(/Выбран файл: delivered.jpg/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Прикрепить файл' })).toBeDisabled()
+  })
+
 })
