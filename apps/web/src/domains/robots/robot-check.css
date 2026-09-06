@@ -83,7 +83,7 @@
 .rp-check-diagnostic-details { min-width: 0; }
 .rp-check-event-detail, .rp-check-events li { display: grid; justify-items: start; gap: var(--rp-space-3); padding: var(--rp-space-4); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-control); background: var(--rp-surface-sunken); min-width: 0; overflow-wrap: anywhere; }
 .rp-check-event-detail > *, .rp-check-events li > * { min-width: 0; max-width: 100%; }
-.rp-check-event-detail { scroll-margin-block: var(--rp-space-4); }
+.rp-check-event-detail { scroll-margin-block-start: var(--rp-space-4); scroll-margin-block-end: calc(var(--rp-space-4) + var(--rp-check-bottom-occlusion, 0px)); }
 .rp-check-event-detail :is(h3,p), .rp-check-events :is(h3,p) { margin: 0; }
 .rp-check-event-raw-label { display: block; color: var(--rp-text-muted); margin-block-end: var(--rp-space-1); }
 .rp-check-events { display: grid; gap: var(--rp-space-4); list-style: none; margin: var(--rp-space-4) 0; padding: 0; }

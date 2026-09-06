@@ -93,15 +93,79 @@ test('failed photo suppresses server markers but preserves the selected explanat
   await expect(page.getByText('Выбрано: Переднее левое колесо', { exact: true })).toBeVisible()
 })
 
-test('touching a marker brings its explanation into the phone viewport', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 700 })
-  await installOperational(page, { snapshot: { ...snapshot, diagnostic_events: events } })
-  await page.goto(`/robots/${snapshot.vin}?park=7&tab=scheme`)
-  const photo = page.locator('.rp-check-photo-frame > img')
-  await expect(photo).toBeVisible()
-  await photo.evaluate(image => image.scrollIntoView({ block: 'start' }))
-  await page.getByRole('button', { name: 'Ошибка: Перегрев батареи', exact: true }).tap()
+async function assertExplanationUncovered(page: Page) {
   const detail = page.getByRole('region', { name: 'Выбранная ошибка' })
-  await expect(detail).toContainText('Проверьте температуру батареи.')
-  await expect(detail).toBeInViewport({ ratio: 1 })
+  await expect(detail).toContainText('BATTERY_HOT')
+  const failures = await detail.evaluate(region => {
+    const nav = document.querySelector('.rp-shell__bottom-nav')!.getBoundingClientRect()
+    const header = document.querySelector('.rp-shell__topbar')!.getBoundingClientRect()
+    const bounds = region.getBoundingClientRect()
+    const failures = bounds.top < header.bottom - 1 || bounds.bottom > nav.top + 1
+      ? [`Detail ${bounds.top}..${bounds.bottom} outside clear area ${header.bottom}..${nav.top}`] : []
+    for (const item of region.querySelectorAll('h3,.rp-status-badge,p,.rp-check-event-raw-label,pre,button,a')) {
+      const rect = item.getBoundingClientRect()
+      for (const y of [rect.top + 2, (rect.top + rect.bottom) / 2, rect.bottom - 2]) {
+        const hit = document.elementFromPoint((rect.left + rect.right) / 2, y)
+        if (!hit || !item.contains(hit)) failures.push(`${item.textContent}: covered at ${y} by ${hit?.className ?? 'outside viewport'}`)
+      }
+    }
+    return failures
+  })
+  expect(failures).toEqual([])
+}
+
+for (const theme of ['light', 'dark'] as const) for (const width of [320, 390]) for (const height of [568, 700]) {
+  test(`marker reveal clears fixed navigation at ${width}x${height} ${theme}`, async ({ page, context }, info) => {
+    await page.setViewportSize({ width, height })
+    await page.addInitScript(value => localStorage.setItem('robopark-theme', value), theme)
+    await installOperational(page, { snapshot: { ...snapshot, diagnostic_events: events } })
+    const session = await context.newCDPSession(page)
+    await page.goto(`/robots/${snapshot.vin}?park=7&tab=scheme`)
+    const photo = page.locator('.rp-check-photo-frame > img')
+    await expect(photo).toBeVisible()
+    await expect.poll(() => photo.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true)
+    const marker = page.getByRole('button', { name: 'Ошибка: Перегрев батареи', exact: true })
+    // Undefined exercises the environment fallback; 34 exercises the actual CSS env value.
+    let zeroInsetNavigationHeight = 0
+    for (const bottom of [undefined, 0, 34]) {
+      await session.send('Emulation.setSafeAreaInsetsOverride', { insets: bottom == null ? {} : { bottom } })
+      await photo.evaluate(image => image.scrollIntoView({ block: 'start' }))
+      await marker.tap()
+      const navigation = (await page.locator('.rp-shell__bottom-nav').boundingBox())!
+      if (bottom === 0) zeroInsetNavigationHeight = navigation.height
+      if (bottom === 34) expect(navigation.height).toBeCloseTo(zeroInsetNavigationHeight + 34, 2)
+      await assertExplanationUncovered(page)
+      // Repeated selection and keyboard activation must reveal the same event again.
+      await photo.evaluate(image => image.scrollIntoView({ block: 'start' }))
+      await marker.focus()
+      await marker.press('Enter')
+      await assertExplanationUncovered(page)
+      await expect(marker).toBeFocused()
+      await page.screenshot({ path: info.outputPath(`reveal-${theme}-${width}x${height}-safe-${bottom ?? 'fallback'}.png`), animations: 'disabled' })
+    }
+    await session.detach()
+  })
+}
+
+for (const width of [390, 1440]) test(`selection and passive snapshot/focus updates preserve the scroll position at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: width === 390 ? 700 : 1100 })
+  let currentEvents = events; let reads = 0
+  await installOperational(page, { routes: [{ method: 'GET', path: /^\/api\/emergency\/[^/]+\/snapshot$/, handler: () => { reads++; return { json: { ...snapshot, diagnostic_events: currentEvents } } } }] })
+  await page.goto(`/robots/${snapshot.vin}?park=7&tab=scheme`)
+  const marker = page.getByRole('button', { name: 'Ошибка: Перегрев батареи', exact: true })
+  await expect(marker).toBeVisible()
+  expect(await page.evaluate(() => scrollY)).toBe(0)
+  await marker.evaluate(element => (element as HTMLElement).focus({ preventScroll: true }))
+  expect(await page.evaluate(() => scrollY)).toBe(0)
+  await marker.press('Enter')
+  if (width === 1440) expect(await page.evaluate(() => scrollY)).toBe(0)
+  else await assertExplanationUncovered(page)
+  await page.evaluate(() => window.scrollTo(0, 100))
+  const before = await page.evaluate(() => scrollY)
+  const previousReads = reads
+  currentEvents = events.map(event => event.id === 'battery' ? { ...event, description: 'Проверьте температуру батареи повторно.' } : event)
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
+  await expect.poll(() => reads).toBeGreaterThan(previousReads)
+  await expect(page.getByRole('region', { name: 'Выбранная ошибка' })).toContainText('Проверьте температуру батареи повторно.')
+  expect(await page.evaluate(() => scrollY)).toBe(before)
 })

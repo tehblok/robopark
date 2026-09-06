@@ -23,7 +23,14 @@ export function RobotDiagnosticDiagram({ faults, events, view, selectedEventId, 
   const [revealRevision, setRevealRevision] = useState(0)
   useLayoutEffect(() => {
     // Only an activation scrolls. Focus, initial load and polling keep their position.
-    if (revealRevision) detailRef.current?.scrollIntoView?.({ block: 'nearest' })
+    const detail = detailRef.current
+    if (!revealRevision || !detail) return
+    // The fixed shell navigation overlays the viewport. Measure its actual frame,
+    // including safe-area padding, so reveal also works after viewport/inset changes.
+    const navigation = detail.closest('.rp-app-shell')?.querySelector('.rp-shell__bottom-nav')?.getBoundingClientRect()
+    const occlusion = navigation?.height ? Math.max(0, window.innerHeight - navigation.top) : 0
+    detail.style.setProperty('--rp-check-bottom-occlusion', `${occlusion}px`)
+    detail.scrollIntoView?.({ block: 'nearest' })
   }, [revealRevision])
   const [failedImages, setFailedImages] = useState<Partial<Record<RobotPhotoId, boolean>>>({})
   const [selected, setSelected] = useState<PhotoWheelSlot | null>(null)
