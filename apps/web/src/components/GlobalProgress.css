@@ -1,0 +1,38 @@
+.global-progress {
+  position: fixed;
+  inset: 0 0 auto;
+  height: 3px;
+  overflow: hidden;
+  z-index: 9999;
+  pointer-events: none;
+  background: var(--rp-state-selected);
+  opacity: 0;
+  transition: opacity var(--rp-motion-normal);
+}
+
+.global-progress[data-active='true'] { opacity: 1; }
+
+.global-progress::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 35%;
+  border-radius: var(--rp-radius-control);
+  background: var(--rp-action);
+  animation: rp-refresh-slide 1400ms ease-in-out infinite;
+  animation-play-state: paused;
+}
+
+.global-progress[data-active='true']::after { animation-play-state: running; }
+
+@keyframes rp-refresh-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(286%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .global-progress::after {
+    animation: none;
+    width: 100%;
+  }
+}

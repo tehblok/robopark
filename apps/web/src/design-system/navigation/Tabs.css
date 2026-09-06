@@ -30,6 +30,10 @@
   color: var(--rp-text);
 }
 
+.rp-tabs__tab:focus-visible {
+  outline-offset: -2px;
+}
+
 .rp-tabs__tab[aria-selected='true'] {
   background: var(--rp-state-selected);
   border-bottom-color: var(--rp-action);

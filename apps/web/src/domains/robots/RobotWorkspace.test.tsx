@@ -143,7 +143,7 @@ it('redirects a legacy check URL even when the resolver cannot load diagnostics'
   expect(apiClient.emergencyResolve).toHaveBeenCalledTimes(1)
 })
 
-it('filters the batch registry and opens canonical card or task tabs without Emergency requests', async () => {
+it('opens robots by number within the selected park without requesting the registry', async () => {
   const rows = [{ vin: VIN, short_number: '447', park_ids: [8], state: 'unknown' as const, telemetry: null,
     task_count: 2, task_keys: ['ROBOPARK-1', 'ROBOPARK-2'], issue_keys: ['ROBOPARK-1', 'ROBOPARK-2'], error_count: null }]
   const apiClient = { ...client(), robotRegistry: vi.fn(async () => ({ items: rows, total: 1, offset: 0, limit: 50, has_more: false, partial: true, source_complete: true, source: 'scoped_tracker_issues' as const, park_id: 8 })) }
@@ -153,17 +153,19 @@ it('filters the batch registry and opens canonical card or task tabs without Eme
       locked: false, setParkId: vi.fn(), refreshParks: async () => undefined }}>
       <RobotsPage apiClient={apiClient} /><Probe />
     </ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>)
-  expect(await screen.findByRole('link', { name: 'Открыть робота 447' })).toHaveAttribute('href', `/robots/${VIN}?park=8`)
-  expect(screen.getByRole('link', { name: 'Задачи робота 447' })).toHaveAttribute('href', `/robots/${VIN}?park=8&tab=tasks`)
-  expect(screen.getByText(/Телеметрия получена только/)).toBeVisible()
-  fireEvent.change(screen.getByLabelText('Поиск по номеру, VIN или задаче'), { target: { value: 'ROBOPARK-1' } })
-  fireEvent.change(screen.getByLabelText('Доступность'), { target: { value: 'unknown' } })
-  fireEvent.click(screen.getByLabelText('Активные ошибки'))
-  fireEvent.click(screen.getByLabelText('Открытые задачи'))
-  await waitFor(() => expect(apiClient.robotRegistry).toHaveBeenLastCalledWith(expect.objectContaining({ park_id: 8, query: 'ROBOPARK-1', state: 'unknown', active_errors: true, open_tasks: true })))
-  expect(screen.getByLabelText('Адрес')).toHaveTextContent('state=unknown')
+  await act(async () => undefined)
+  expect(apiClient.robotRegistry).not.toHaveBeenCalled()
+  expect(screen.queryByRole('heading', { name: 'Роботы в работе' })).not.toBeInTheDocument()
+  expect(screen.getAllByRole('heading', { level: 2 }).map(heading => heading.textContent)).toEqual([
+    'Открыть по номеру или сканировать', 'Недавние роботы',
+  ])
   expect(apiClient.emergencyResolve).not.toHaveBeenCalled()
   expect(apiClient.emergencySnapshot).not.toHaveBeenCalled()
+  fireEvent.change(screen.getByLabelText('Номер или VIN робота'), { target: { value: '447' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Найти робота' }))
+  await waitFor(() => expect(screen.getByLabelText('Адрес')).toHaveTextContent(`/robots/${VIN}?park=8`))
+  expect(apiClient.emergencyResolve).toHaveBeenCalledWith('447')
+  expect(apiClient.robotRegistry).not.toHaveBeenCalled()
 })
 
 it.each([VIN, '447'])('uses validated reference %s for related work without making protected check requests', async reference => {
