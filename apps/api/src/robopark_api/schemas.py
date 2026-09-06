@@ -199,7 +199,11 @@ class DiagnosticEvent(BaseModel):
     )
     source_segments: list[str | int] = Field(
         default_factory=list,
-        description="Authoritative JSON source path: string dictionary keys and integer list indexes.",
+        description=(
+            "Authoritative JSON source path: string keys and integer indexes. "
+            "For a residual atomic event, identifies the original object; raw_value is its "
+            "unclassified projection."
+        ),
     )
     raw_value: JsonValue
     title: str

@@ -1,4 +1,8 @@
+import json
 import math
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -312,7 +316,9 @@ def test_disabling_a_rule_for_a_custom_source_keeps_its_raw_error_visible(db_ses
     ]
 
 
-@pytest.mark.parametrize("pattern", ["[", "(?P<", "x{9999999999999999999999999999}"])
+@pytest.mark.parametrize(
+    "pattern", ["[", "(?P<", "x{9999999999999999999999999999}", "(?V1)KNOWN", "a{500000}"]
+)
 def test_malformed_persisted_regex_does_not_hide_raw_errors_or_break_matching(db_session, pattern):
     _insert_rule(db_session, match_kind="regex", pattern=pattern)
     valid = _insert_rule(db_session, pattern="KNOWN")
@@ -542,4 +548,277 @@ def test_atomic_message_from_an_overlapping_source_does_not_reappear_as_unknown(
     assert [(item.rule_id, item.raw_value) for item in events] == [
         (rule.id, "KNOWN"),
         (None, "LOW"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        r"a{500000}",
+        r"a{500000,}",
+        r"a{1,500000}",
+        r"(?:a{1000}){1000}",
+        "a{1000}" * 11,
+        r"(?x)a{ 500000 }",
+        "(?x:a{500 # count\n000})",
+        r"[[.]a{500000}",
+        r"[[=]a{500000}",
+        r"[[:oops]a{500000}",
+        r"(?x)(?-x :#a{500000})",
+        "(?x)(? # flags\n-x:#a{500000})",
+        "(?1){1000}" * 11 + "(a)",
+    ],
+)
+def test_excessive_regex_compilation_is_rejected_with_bounded_time_and_rss(pattern):
+    probe = """
+import json, resource, sys, time
+sys.path.insert(0, sys.argv[1])
+from robopark_api.services.diagnostic_rules import compile_diagnostic_regex
+before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+start = time.monotonic()
+error = None
+try:
+    compile_diagnostic_regex(sys.argv[2])
+except ValueError as exc:
+    error = str(exc)
+elapsed = time.monotonic() - start
+increase = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before
+if sys.platform != "darwin":
+    increase *= 1024
+print(json.dumps({"error": error, "elapsed": elapsed, "rss_increase": increase}))
+"""
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                probe,
+                str(Path(__file__).resolve().parent.parent / "src"),
+                pattern,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("Regex compilation exceeded the subprocess resource watchdog")
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads(result.stdout)
+    assert outcome["rss_increase"] < 16 * 1024 * 1024, outcome
+    assert outcome["elapsed"] < 0.25, outcome
+    assert outcome["error"] == "invalid_diagnostic_regex"
+
+
+@pytest.mark.parametrize(
+    ("pattern", "raw"),
+    [
+        (r"a\{500000\}", "a{500000}"),
+        (r"a{500000x}", "a{500000x}"),
+        (r"a{500000,foo}", "a{500000,foo}"),
+        (r"[{500000}]", "{"),
+        (r"[]{}500000]", "]"),
+        (r"[[:digit:]{500000}]", "{"),
+        (r"(?# ignore a{500000})OK", "OK"),
+        ("(?x)OK # ignore a{500000}", "OK"),
+        (r"(?:a{10}){10}", "a" * 100),
+        (r"a{1000}", "a" * 1000),
+        (r"(?:a{1000}){10}", "a" * 10000),
+    ],
+)
+def test_regex_resource_validation_preserves_literal_braces_and_practical_patterns(
+    db_session, pattern, raw
+):
+    rule = _insert_rule(db_session, source_path="errors", match_kind="regex", pattern=pattern)
+
+    events = _events(db_session, {"errors": [raw]})
+
+    assert [(item.rule_id, item.raw_value) for item in events] == [(rule.id, raw)]
+
+
+@pytest.mark.parametrize(
+    ("source_path", "raw", "unknown"),
+    [
+        (
+            "errors.0.message.navigation",
+            {"message": {"navigation": "KNOWN", "power": "LOW"}, "voltage": "HOT"},
+            ["LOW", "HOT"],
+        ),
+        (
+            "errors.0.code.0",
+            {"code": ["KNOWN", "UNKNOWN"], "message": "Summary"},
+            [{"code": ["UNKNOWN"], "message": "Summary"}],
+        ),
+        (
+            "errors.0.message.navigation.0.code",
+            {
+                "message": {
+                    "navigation": [
+                        {"code": "KNOWN", "message": "Known detail"},
+                        {"code": "OTHER", "message": "Other detail"},
+                    ],
+                    "power": {"rear": ["LOW"]},
+                },
+                "voltage": "HOT",
+            },
+            [{"code": "OTHER", "message": "Other detail"}, {"rear": ["LOW"]}, "HOT"],
+        ),
+        (
+            "errors.0.message.navigation",
+            {"code": "OTHER", "message": {"navigation": "KNOWN", "power": "LOW"}},
+            [{"code": "OTHER", "message": {"power": "LOW"}}],
+        ),
+        (
+            "errors.0.code.navigation",
+            {"code": {"navigation": "KNOWN", "power": ["LOW", "HOT"]}, "message": "Summary"},
+            [{"code": {"power": ["LOW", "HOT"]}, "message": "Summary"}],
+        ),
+        (
+            "errors.0.code",
+            {
+                "code": "KNOWN",
+                "message": {"navigation": "OTHER", "power": "LOW"},
+                "text": "Known detail",
+            },
+            [{"navigation": "OTHER", "power": "LOW"}],
+        ),
+        (
+            "errors.0.message",
+            {"code": ["OTHER", "LOW"], "message": "KNOWN"},
+            [{"code": ["OTHER", "LOW"]}],
+        ),
+    ],
+)
+def test_residual_tree_preserves_unknown_siblings_and_structured_diagnostic_context(
+    db_session, source_path, raw, unknown
+):
+    rule = _insert_rule(db_session, source_path=source_path, pattern="KNOWN")
+
+    events = _events(db_session, {"errors": [raw]})
+
+    assert [(item.rule_id, item.raw_value) for item in events] == [
+        (rule.id, "KNOWN"),
+        *[(None, value) for value in unknown],
+    ]
+    assert all(item.part is None for item in events if item.rule_id is None)
+
+
+def test_unclassified_atomic_pair_stays_coherent_after_an_unrelated_sibling_matches(db_session):
+    rule = _insert_rule(db_session, source_path="errors.power", pattern="KNOWN")
+    _insert_rule(db_session, source_path="errors.message", is_enabled=False)
+
+    events = _events(
+        db_session,
+        {"errors": {"code": "OTHER", "message": "Details", "power": "KNOWN", "voltage": "HOT"}},
+    )
+
+    assert [(item.rule_id, item.raw_value) for item in events] == [
+        (rule.id, "KNOWN"),
+        (None, {"code": "OTHER", "message": "Details"}),
+        (None, "HOT"),
+    ]
+    assert events[1].source_segments == ["errors"]
+    assert events[2].source_segments == ["errors", "voltage"]
+
+
+def test_multiple_rules_prune_all_classified_code_items_without_repeating_summary(db_session):
+    first = _insert_rule(db_session, source_path="errors.0.code", pattern="ONE")
+    second = _insert_rule(db_session, source_path="errors.0.code", pattern="TWO")
+    _insert_rule(db_session, source_path="errors.0.message", is_enabled=False)
+
+    events = _events(
+        db_session, {"errors": [{"code": ["ONE", "TWO"], "message": "Summary", "voltage": "HOT"}]}
+    )
+
+    assert [(item.rule_id, item.raw_value) for item in events] == [
+        (first.id, "ONE"),
+        (second.id, "TWO"),
+        (None, "HOT"),
+    ]
+
+
+def test_classified_code_collection_with_empty_slots_does_not_repeat_its_summary(db_session):
+    rule = _insert_rule(db_session, source_path="errors.0.code", pattern="KNOWN")
+
+    events = _events(db_session, {"errors": [{"code": [None, "KNOWN", ""], "message": "Summary"}]})
+
+    assert [(item.rule_id, item.raw_value) for item in events] == [(rule.id, "KNOWN")]
+
+
+def test_residual_atomic_code_collection_keeps_identity_after_unknown_items_reorder(db_session):
+    _insert_rule(db_session, source_path="errors.0.code", pattern="KNOWN")
+    first = _events(db_session, {"errors": [{"code": ["B", "KNOWN", "A"], "message": "Summary"}]})
+    second = _events(db_session, {"errors": [{"code": ["A", "B", "KNOWN"], "message": "Summary"}]})
+
+    assert [item.raw_value for item in first] == [
+        "KNOWN",
+        {"code": ["B", "A"], "message": "Summary"},
+    ]
+    assert [item.raw_value for item in second] == [
+        "KNOWN",
+        {"code": ["A", "B"], "message": "Summary"},
+    ]
+    assert [item.id for item in first] == [item.id for item in second]
+    assert first[1].source_segments == second[1].source_segments == ["errors", 0]
+    assert first[1].source_path == second[1].source_path == "errors.0"
+
+
+def test_residual_tree_keeps_original_nested_indexes_and_escaped_dictionary_keys(db_session):
+    _insert_rule(db_session, source_path="errors.0.message.navigation", pattern="KNOWN")
+    payload = {
+        "errors": [{"message": {"navigation": ["KNOWN", "OTHER"], "a.b": "LOW", "a": {"b": "LOW"}}}]
+    }
+
+    events = _events(db_session, payload)
+    unknown = [item for item in events if item.rule_id is None]
+
+    assert [item.source_segments for item in unknown] == [
+        ["errors", 0, "message", "a"],
+        ["errors", 0, "message", "a.b"],
+        ["errors", 0, "message", "navigation", 1],
+    ]
+    assert [item.source_path for item in unknown] == [
+        "errors.0.message.a",
+        r"errors.0.message.a\.b",
+        "errors.0.message.navigation.1",
+    ]
+    assert len({item.id for item in unknown}) == 3
+    for item in unknown:
+        raw = payload
+        for part in item.source_segments:
+            raw = raw[part]
+        assert raw == item.raw_value
+
+
+def test_multiple_rules_keep_one_coherent_residue_and_stable_order_when_collections_reorder(
+    db_session,
+):
+    _insert_rule(db_session, source_path="errors.0.code", pattern="ONE")
+    _insert_rule(db_session, source_path="errors.0.code", pattern="TWO")
+    first = _events(
+        db_session,
+        {
+            "errors": [
+                {"code": ["ONE", "UNKNOWN", "TWO"], "message": "Summary", "power": ["HOT", "LOW"]}
+            ]
+        },
+    )
+    second = _events(
+        db_session,
+        {
+            "errors": [
+                {"power": ["LOW", "HOT"], "message": "Summary", "code": ["TWO", "ONE", "UNKNOWN"]}
+            ]
+        },
+    )
+
+    assert [item.raw_value for item in first] == [
+        "ONE",
+        "TWO",
+        {"code": ["UNKNOWN"], "message": "Summary"},
+        "HOT",
+        "LOW",
+    ]
+    assert [item.model_dump(exclude={"source_path", "source_segments"}) for item in first] == [
+        item.model_dump(exclude={"source_path", "source_segments"}) for item in second
     ]
