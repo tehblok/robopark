@@ -16,7 +16,7 @@ _SAFE_SERVICE_FIELDS = ("Service", "Name", "State", "Health", "ExitCode", "Resta
 def compose_command(paths: HostPaths, arguments: Sequence[str]) -> list[str]:
     """Address exactly the compose file belonging to the active immutable release."""
 
-    compose_file = paths.current / "deploy" / "docker-compose.yml"
+    compose_file = paths.state / "current-compose.json"
     return [
         "docker",
         "compose",

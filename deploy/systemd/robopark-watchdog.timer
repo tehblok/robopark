@@ -1,0 +1,11 @@
+[Unit]
+Description=Robopark watchdog schedule
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+Persistent=true
+Unit=robopark-watchdog.service
+
+[Install]
+WantedBy=timers.target

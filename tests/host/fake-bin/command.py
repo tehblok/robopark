@@ -31,6 +31,8 @@ elif name == 'apt-get':
 elif name == 'curl':
     if '--output' in args:
         Path(args[args.index('--output') + 1]).write_text('fake signed repository key')
+    elif args[-1] == 'http://127.0.0.1:8080/api/health/ready':
+        sys.exit(int(os.environ.get('API_UNREADY', '0')))
     else:
         sys.exit('curl must save repository key explicitly')
 elif name == 'gpg':
@@ -59,7 +61,14 @@ elif name == 'chown':
         owner, group = map(int, args[0].split(':'))
         for path in args[1:]:
             os.chown(path, owner, group)
-elif name in ('sleep', 'systemctl', 'docker'):
+elif name == 'docker':
+    if args[:2] == ['image', 'inspect']:
+        print('sha256:' + ('1' if 'api' in args[-1] else '2') * 64)
+    elif 'config' in args:
+        print(json.dumps({'services': {'api': {'build': {'context': 'api'}, 'environment': {}}, 'web': {'build': {'context': 'web'}}, 'ops-agent': {}}}))
+    elif 'build' in args and os.environ.get('BUILD_FAIL') == '1':
+        sys.exit(1)
+elif name in ('sleep', 'systemctl'):
     pass
 else:
     sys.exit('unexpected fake command: ' + name)

@@ -6,19 +6,18 @@ set -eu
 BIND="${TUNA_BIND:-127.0.0.1:8080}"
 TUNA_BIN="${TUNA_BIN:-tuna}"
 
+# Readiness is also checked on every service restart, including after a reboot.
+[ "$BIND" = 127.0.0.1:8080 ] || { echo 'robopark-tuna: invalid local bind' >&2; exit 1; }
+command -v curl >/dev/null 2>&1 || { echo 'robopark-tuna: curl required' >&2; exit 1; }
 i=0
-if command -v curl >/dev/null 2>&1; then
-  while ! curl -fsS "http://${BIND}/api/health" >/dev/null 2>&1; do
-    i=$((i + 1))
-    if [ "$i" -ge 60 ]; then
-      echo "robopark-tuna: ${BIND}/api/health not ready" >&2
-      exit 1
-    fi
-    sleep 2
-  done
-else
-  echo "robopark-tuna: curl not found, starting without health wait" >&2
-fi
+while ! curl -fsS --connect-timeout 1 --max-time 2 "http://${BIND}/api/health/ready" >/dev/null 2>&1; do
+  i=$((i + 1))
+  if [ "$i" -ge 30 ]; then
+    echo 'robopark-tuna: local API not ready' >&2
+    exit 1
+  fi
+  sleep 2
+done
 
 set -- http "$BIND" --https-redirect
 if [ -n "${TUNA_DOMAIN:-}" ]; then

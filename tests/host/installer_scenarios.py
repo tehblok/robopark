@@ -50,8 +50,10 @@ class InstallerScenarios(unittest.TestCase):
         self.source.mkdir()
         (self.source / 'VERSION').write_text('1.0.0\n')
         (self.source / 'run.sh').write_text('#!/bin/sh\necho release\n')
-        (self.source / 'deploy/host').mkdir(parents=True)
-        (self.source / 'deploy/host/robopark').write_text('#!/bin/sh\nexit 0\n')
+        shutil.copytree(REPO / 'deploy/host', self.source / 'deploy/host', ignore=shutil.ignore_patterns('__pycache__'))
+        shutil.copytree(REPO / 'deploy/systemd', self.source / 'deploy/systemd')
+        shutil.copyfile(REPO / 'deploy/docker-compose.yml', self.source / 'deploy/docker-compose.yml')
+        shutil.copyfile(REPO / 'deploy/tuna-http.sh', self.source / 'deploy/tuna-http.sh')
         self.write_release()
         self.config = self.base / 'answers.env'
         self.config.write_text('TUNA_TOKEN=tt_fixture_secret\nTUNA_SUBDOMAIN=park\nTUNA_LOCATION=ru\nSEED_USERNAME=royal\nSEED_PASSWORD=Strong!Fixture123\nGITHUB_REPOSITORY=example/robopark\nGITHUB_TOKEN=github_fixture_secret\n')
@@ -76,6 +78,58 @@ class InstallerScenarios(unittest.TestCase):
 
     def state(self):
         return json.loads((self.root / 'var/lib/robopark/ops/state/install.json').read_text())
+
+    def test_services_are_installed_and_tuna_starts_after_readiness(self):
+        self.run_installer()
+        installed = self.root / 'etc/systemd/system'
+        for source in (self.source / 'deploy/systemd').iterdir():
+            target = installed / source.name
+            self.assertTrue(target.is_file())
+            self.assertEqual(target.read_bytes(), source.read_bytes())
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o644)
+        calls = self.commands()
+        def index(name, args):
+            return next(i for i, item in enumerate(calls) if item['name'] == name and item['args'] == args)
+        reload = index('systemctl', ['daemon-reload'])
+        start = index('systemctl', ['start', 'robopark.service'])
+        tunnel = index('systemctl', ['start', 'robopark-tuna.service'])
+        ready = next(i for i, item in enumerate(calls) if item['name'] == 'curl' and 'http://127.0.0.1:8080/api/health/ready' in item['args'])
+        self.assertLess(reload, start)
+        self.assertLess(start, ready)
+        self.assertLess(ready, tunnel)
+        enabled = [arg for call in self.commands('systemctl') if call['args'][0] == 'enable' for arg in call['args'][1:]]
+        for name in ('docker.service', 'robopark.service', 'robopark-tuna.service', 'robopark-updater.service', 'robopark-doctor.timer', 'robopark-watchdog.timer', 'robopark-update-check.timer'):
+            self.assertIn(name, enabled)
+        for name in ('data', 'api-ops'):
+            path = self.root / 'var/lib/robopark' / name
+            self.assertTrue(path.is_dir())
+            self.assertTrue(any(call['args'] == ['10001:10001', str(path)] for call in self.commands('chown')))
+        public = self.root / 'var/lib/robopark/ops/public'
+        self.assertEqual(stat.S_IMODE(public.stat().st_mode), 0o755)
+        config = self.root / 'var/lib/robopark/ops/state/current-compose.json'
+        self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
+        document = json.loads(config.read_text())
+        self.assertEqual(document['services']['api']['image'], 'sha256:' + '1' * 64)
+        self.assertNotIn('ops-agent', document['services'])
+
+    def test_readiness_failure_never_starts_tuna_and_resume_recovers(self):
+        self.run_installer(success=False, API_UNREADY='1')
+        self.assertEqual(self.state()['phase'], 'services')
+        self.assertFalse(any(call['args'] == ['start', 'robopark-tuna.service'] for call in self.commands('systemctl')))
+        self.run_installer('--resume')
+        self.assertEqual(self.state()['phase'], 'complete')
+
+    def test_failed_image_build_never_publishes_runtime_or_starts_app(self):
+        self.run_installer(success=False, BUILD_FAIL='1')
+        self.assertFalse((self.root / 'var/lib/robopark/ops/state/current-compose.json').exists())
+        self.assertFalse(any(call['args'] == ['start', 'robopark.service'] for call in self.commands('systemctl')))
+
+    def test_resume_preserves_installed_runtime_and_does_not_rebuild(self):
+        self.run_installer()
+        config = self.root / 'var/lib/robopark/ops/state/current-compose.json'
+        before = config.read_bytes()
+        self.run_installer('--resume', BUILD_FAIL='1')
+        self.assertEqual(config.read_bytes(), before)
 
     def test_clean_armbian_and_secret_boundary(self):
         self.run_installer()

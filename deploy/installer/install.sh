@@ -6,7 +6,7 @@ set -eu
 umask 077
 unset TUNA_TOKEN SEED_PASSWORD SECRET_KEY GITHUB_TOKEN OPERATOR_SHARED_PASSWORD
 INSTALLER_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-for module in common preflight packages layout configure install-release; do
+for module in common preflight packages layout configure install-release services; do
     . "$INSTALLER_DIR/lib/$module.sh"
 done
 MODE=interactive
@@ -41,6 +41,7 @@ fi
 run_phase layout prepare_layout
 run_phase configure configure_host
 run_phase release install_release
+run_phase services install_services
 CURRENT_PHASE=complete
 write_state complete complete
-printf '%s\n' 'Установка файлов Robopark завершена. Настройка автозапуска выполняется этапом сервисов.'
+printf '%s\n' 'Robopark установлен, API готов, автозапуск и Tuna включены.'

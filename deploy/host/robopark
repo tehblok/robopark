@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Entrypoint for the Robopark host utility."""
 
+import sys
+from pathlib import Path
+
+# -I ignores PYTHONPATH and the caller's working directory; only this trusted
+# launcher target contributes host modules.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from robopark_host.cli import main
 
 

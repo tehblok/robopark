@@ -145,6 +145,8 @@ def test_success_waits_for_ready_services(tmp_path: Path):
     assert docker_log[0] == f"HOST_ENV_FILE={tree.host_repo / 'deploy' / 'host.env'}"
     assert docker_log[1:] == [
         "compose",
+        "--project-name",
+        "robopark",
         "-f",
         str(tree.host_repo / "deploy" / "docker-compose.yml"),
         "up",

@@ -1,0 +1,26 @@
+[Unit]
+Description=Robopark updater
+After=network-online.target robopark.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /opt/robopark/host-tools/robopark update
+TimeoutStartSec=1800
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+ReadWritePaths=/var/lib/robopark /opt/robopark /etc/robopark /etc/systemd/system
+
+[Install]
+WantedBy=multi-user.target

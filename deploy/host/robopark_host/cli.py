@@ -147,7 +147,18 @@ def _watchdog_handler(paths: HostPaths) -> int:
     return 0
 
 
+def _bootstrap_handler(paths: HostPaths) -> int:
+    from .runtime import bootstrap_compose
+    try:
+        bootstrap_compose(paths)
+    except (ValueError, OSError, subprocess.SubprocessError):
+        print('Runtime bootstrap failed')
+        return 1
+    return 0
+
+
 COMMAND_HANDLERS: dict[str, Handler] = {
+    "bootstrap-compose": _bootstrap_handler,
     "status": _status_handler,
     "doctor": _doctor_handler,
     "repair": _repair_handler,

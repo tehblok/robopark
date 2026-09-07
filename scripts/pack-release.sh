@@ -6,7 +6,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="${1:-"$root/robopark-release.zip"}"
 version="${ROBOPARK_RELEASE_VERSION:-0.1.0}"
-git_sha="$(git -C "$root" rev-parse HEAD)"
+git_sha="$(python3 "$root/scripts/release-git-sha.py" "$root")"
 : "${ROBOPARK_SIGNING_KEY_FILE:?set ROBOPARK_SIGNING_KEY_FILE to the Ed25519 PEM key}"
 : "${ROBOPARK_MIGRATION_HEAD:?set ROBOPARK_MIGRATION_HEAD to the Alembic migration head}"
 test -r "$ROBOPARK_SIGNING_KEY_FILE"
@@ -42,7 +42,12 @@ copy_tree "$root/deploy" "$stage/deploy"
 if [[ -d "$root/scripts" ]]; then
   copy_tree "$root/scripts" "$stage/scripts"
 fi
-[[ -f "$root/README.md" ]] && cp "$root/README.md" "$stage/README.md"
+# Root metadata is an explicit allowlist; never copy root env/key files.
+for metadata in README.md VERSION .dockerignore; do
+  if [[ -f "$root/$metadata" && ! -L "$root/$metadata" ]]; then
+    cp "$root/$metadata" "$stage/$metadata"
+  fi
+done
 
 python3 "$root/scripts/release_pack.py" \
   --root "$stage" --output "$out" --version "$version" \

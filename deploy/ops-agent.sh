@@ -165,7 +165,7 @@ process_job() {
   esac
 
   export HOST_ENV_FILE
-  if docker compose -f "$COMPOSE_FILE" up -d --build \
+  if docker compose --project-name robopark -f "$COMPOSE_FILE" up -d --build \
     --wait --wait-timeout "$READY_TIMEOUT_SECONDS" api web; then
     # Result may land after the new API has already started; API reconciles on
     # /ops/maintenance and /admin/ops/job polls (and on lifespan).
