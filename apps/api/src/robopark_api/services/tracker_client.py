@@ -1,6 +1,6 @@
 """Internal Yandex Startrek client (st-api.yandex-team.ru).
 
-Uses vendored ``startrek_client`` the same way as bot_otchet:
+Uses the declared ``yandex-tracker-client`` package:
 ``per_page=API_PAGE_SIZE`` (50) — клиент сам ходит по Link next;
 ``count_only`` с разбором int/dict/_value и fallback на пагинацию;
 слоты/retry через ``tracker_api.call_with_retry``.
@@ -11,9 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-import sys
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -58,31 +56,13 @@ class TrackerError(Exception):
     pass
 
 
-def _ensure_startrek_on_path() -> None:
-    env_path = (os.environ.get("TRACKER_STARTREK_PATH") or "").strip()
-    candidates: list[Path] = []
-    if env_path:
-        candidates.append(Path(env_path))
-    here = Path(__file__).resolve()
-    for idx in (5, 7):
-        if idx < len(here.parents):
-            candidates.append(here.parents[idx] / "startrek_client-2.8")
-    for root in candidates:
-        if (root / "startrek_client").is_dir():
-            path = str(root)
-            if path not in sys.path:
-                sys.path.insert(0, path)
-            return
-    raise TrackerError(
-        "startrek_client-2.8 not found; place it at repo root or set TRACKER_STARTREK_PATH"
-    )
-
-
 def _import_startrek():
-    _ensure_startrek_on_path()
-    from startrek_client import Startrek  # type: ignore
+    try:
+        from yandex_tracker_client import TrackerClient
+    except ImportError as exc:
+        raise TrackerError("yandex-tracker-client is not installed") from exc
 
-    return Startrek
+    return TrackerClient
 
 
 def clear_tracker_clients() -> None:
@@ -94,8 +74,14 @@ def _client(token: str):
     cached = _CLIENTS.get(token)
     if cached is not None:
         return cached
-    Startrek = _import_startrek()
-    client = Startrek(useragent=USER_AGENT, base_url=API_BASE, token=token, retries=0, timeout=10)
+    TrackerClient = _import_startrek()
+    client = TrackerClient(
+        headers={"User-Agent": USER_AGENT},
+        base_url=API_BASE,
+        token=token,
+        retries=0,
+        timeout=10,
+    )
     _CLIENTS[token] = client
     return client
 

@@ -369,6 +369,14 @@ def test_sdk_retries_disabled_for_durable_mutations(monkeypatch):
     tracker_client._client("test-only")
     assert constructed[0]["retries"] == 0
     assert constructed[0]["timeout"] == 10
+    assert constructed[0]["headers"] == {"User-Agent": tracker_client.USER_AGENT}
+    assert "useragent" not in constructed[0]
+
+
+def test_tracker_uses_the_declared_production_sdk():
+    from yandex_tracker_client import TrackerClient
+
+    assert tracker_client._import_startrek() is TrackerClient
 
 
 @pytest.mark.parametrize("action", ["transition", "close"])
