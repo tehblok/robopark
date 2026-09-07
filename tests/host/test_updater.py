@@ -966,3 +966,12 @@ def test_public_probe_retries_transient_failure_within_budget(host, monkeypatch)
     assert updater._wait_public_ready(host.paths, runner, timeout=3)
     assert runner.calls == 2
     assert elapsed == 1
+
+
+@pytest.mark.parametrize("version", ["2.0.0-rc.1", "2.0.0+build.1"])
+def test_prerelease_semver_can_complete_host_update_and_reconciliation(host, version):
+    request = host.request(host.package(version, filename="semver.zip"))
+    assert apply_release(request, host.paths, host.runner).state == "awaiting_reconciliation"
+    assert host.paths.current.resolve().name == version + "-" + request.job_id
+    assert reconcile_after_exit(host.paths, host.runner).state == "current_healthy"
+    assert json.loads((host.paths.ops / "public/rebuild.result").read_text())["ok"] is True

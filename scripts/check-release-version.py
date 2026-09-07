@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require one numeric semantic version across shipped version sources and tag."""
+"""Require one canonical semantic version across shipped version sources and tag."""
 
 import argparse
 import ast
@@ -12,7 +12,16 @@ from pathlib import Path
 
 def check(root, tag=None):
     version = (root / "VERSION").read_text().strip()
-    if not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version):
+    pattern = (
+        r"(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})"
+        r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+    )
+    match = re.fullmatch(pattern, version) if len(version) <= 100 else None
+    if (
+        not match
+        or match[4]
+        and any(part.isdigit() and len(part) > 1 and part[0] == "0" for part in match[4].split("."))
+    ):
         raise ValueError()
     api = tomllib.loads((root / "apps/api/pyproject.toml").read_text())["project"]["version"]
     web = json.loads((root / "apps/web/package.json").read_text())["version"]
@@ -26,9 +35,12 @@ def check(root, tag=None):
             isinstance(target, ast.Name) and target.id == "APP_VERSION" for target in node.targets
         )
     ]
-    if host != [version] or {api, web, lock["version"], lock["packages"][""]["version"]} != {
-        version
-    }:
+    if host != [version] or {
+        api,
+        web,
+        lock["version"],
+        lock["packages"][""]["version"],
+    } != {version}:
         raise ValueError()
     if tag is not None and tag != "v" + version:
         raise ValueError()

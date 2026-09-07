@@ -49,6 +49,24 @@ METADATA_KEYS = {
 }
 
 
+def require_semver(value):
+    """Same bounded SemVer contract as the independently installed host verifier."""
+    pattern = (
+        r"(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})"
+        r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+        r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+    )
+    match = re.fullmatch(pattern, value) if isinstance(value, str) and len(value) <= 100 else None
+    require(match is not None)
+    if match[4]:
+        require(
+            all(
+                not part.isdigit() or len(part) == 1 or part[0] != "0"
+                for part in match[4].split(".")
+            )
+        )
+
+
 def require(condition):
     if not condition:
         raise ValueError("artifact_invalid")
@@ -118,11 +136,12 @@ def verify_release(raw, key):
             and type(manifest["format"]) is int
             and manifest["format"] == 2
         )
-        for field in ("app_version", "min_installer_version"):
-            require(
-                isinstance(manifest[field], str)
-                and re.fullmatch(r"\d{1,9}(?:\.\d{1,9}){0,2}", manifest[field])
-            )
+        require_semver(manifest["app_version"])
+        require_semver(
+            "0.0.0"
+            if manifest["min_installer_version"] == "0"
+            else manifest["min_installer_version"]
+        )
         require(
             isinstance(manifest["git_sha"], str)
             and re.fullmatch(r"[a-fA-F0-9]{40}", manifest["git_sha"])

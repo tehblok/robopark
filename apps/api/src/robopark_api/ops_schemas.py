@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 CHECK_LABELS = {
     "supported_platform": "ОС и архитектура",
@@ -125,3 +125,28 @@ def public_result(value):
         performed=actions("performed"),
         failed=actions("failed"),
     )
+
+
+class AvailableReleaseOut(BaseModel):
+    release_id: int = Field(strict=True, gt=0, lt=2**63)
+    version: str = Field(
+        max_length=100,
+        pattern=r"^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$",
+    )
+    git_sha: str = Field(pattern=r"^[a-fA-F0-9]{40}$")
+    size: int = Field(strict=True, gt=0, le=512 * 1024 * 1024)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class AvailableUpdateOut(BaseModel):
+    state: Literal["available", "up_to_date", "discovery_stale", "disabled", "approved"] = (
+        "discovery_stale"
+    )
+    checked_at: datetime | None = None
+    release: AvailableReleaseOut | None = None
+
+
+class GithubApprovalIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    release_id: int = Field(strict=True, gt=0, lt=2**63)
+    confirm: str

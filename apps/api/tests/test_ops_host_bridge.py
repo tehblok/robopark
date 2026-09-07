@@ -364,3 +364,110 @@ def test_snapshot_conflicts_with_active_host_work_without_local_job(client, seed
     login_as(client, "royal", "secret")
     (installed / "public/command-claim.json").write_text('{"active":true,"kind":"update"}')
     assert client.post("/admin/ops/snapshot").status_code == 409
+
+
+def available_fixture(installed):
+    from datetime import UTC, datetime
+
+    (installed / "public/available-update.json").write_text(
+        json.dumps(
+            {
+                "state": "available",
+                "checked_at": datetime.now(UTC).isoformat(),
+                "release": {
+                    "release_id": 101,
+                    "version": "1.3.0-rc.1",
+                    "git_sha": "a" * 40,
+                    "size": 1000,
+                    "sha256": "b" * 64,
+                    "token": "LEAK",
+                    "browser_download_url": "https://evil/?token=LEAK",
+                },
+                "token": "LEAK",
+            }
+        )
+    )
+
+
+@pytest.mark.parametrize("role", [rbac.RoleSlug.ADMIN, rbac.RoleSlug.OPERATOR])
+@pytest.mark.parametrize(
+    "method,path", [("get", "available-update"), ("post", "github-update/approve")]
+)
+def test_github_routes_require_royal(client, seed_royal, db_session, role, method, path):
+    test_host_routes_require_royal(client, seed_royal, db_session, role, method, path)
+
+
+def test_github_availability_projection_and_explicit_approval(
+    client, seed_royal, installed, test_settings
+):
+    login_as(client, "royal", "secret")
+    available_fixture(installed)
+    response = client.get("/admin/ops/available-update")
+    assert response.status_code == 200
+    assert "LEAK" not in response.text
+    assert response.json()["release"]["release_id"] == 101
+    for body in (
+        {"release_id": 101, "confirm": " ОБНОВИТЬ"},
+        {"release_id": 102, "confirm": "ОБНОВИТЬ"},
+    ):
+        assert client.post("/admin/ops/github-update/approve", json=body).status_code == 400
+    assert (
+        client.post(
+            "/admin/ops/github-update/approve",
+            json={"release_id": 101, "confirm": "ОБНОВИТЬ", "url": "https://evil"},
+        ).status_code
+        == 422
+    )
+    body = {"release_id": 101, "confirm": "ОБНОВИТЬ"}
+    approved = client.post("/admin/ops/github-update/approve", json=body)
+    assert approved.status_code == 200, approved.text
+    command = json.loads((installed / "inbox/approved.json").read_text())
+    assert set(command) == {"job_id", "kind", "release_id", "actor_user_id", "created_at"}
+    assert command["release_id"] == 101 and command["actor_user_id"] == seed_royal.id
+    assert command["kind"] == "github-update"
+    again = client.post("/admin/ops/github-update/approve", json=body)
+    assert again.status_code == 200 and again.json()["id"] == approved.json()["id"]
+    (installed / "public/rebuild.result").write_text(
+        json.dumps({"job_id": command["job_id"], "ok": True})
+    )
+    client.get("/admin/ops/system-health")
+    assert load_job(Path(test_settings.ops_dir)).state == "succeeded"
+
+
+def test_stale_github_availability_is_not_approvable(client, seed_royal, installed):
+    login_as(client, "royal", "secret")
+    available_fixture(installed)
+    path = installed / "public/available-update.json"
+    value = json.loads(path.read_text())
+    value["checked_at"] = "2020-01-01T00:00:00+00:00"
+    path.write_text(json.dumps(value))
+    response = client.get("/admin/ops/available-update")
+    assert response.status_code == 200 and response.json()["state"] == "discovery_stale"
+    assert (
+        client.post(
+            "/admin/ops/github-update/approve", json={"release_id": 101, "confirm": "ОБНОВИТЬ"}
+        ).status_code
+        == 400
+    )
+
+
+def test_new_explicit_github_approval_can_retry_failed_network_download(
+    client, seed_royal, installed
+):
+    login_as(client, "royal", "secret")
+    available_fixture(installed)
+    body = {"release_id": 101, "confirm": "ОБНОВИТЬ"}
+    first = client.post("/admin/ops/github-update/approve", json=body)
+    assert first.status_code == 200
+    (installed / "inbox/approved.json").unlink()
+    (installed / "public/rebuild.result").write_text(
+        json.dumps({"job_id": first.json()["id"], "ok": False})
+    )
+    # A fresh host check republishes the same immutable, not-yet-consumed release.
+    available_fixture(installed)
+    second = client.post("/admin/ops/github-update/approve", json=body)
+    assert second.status_code == 200
+    assert second.json()["id"] != first.json()["id"]
+    assert (
+        json.loads((installed / "inbox/approved.json").read_text())["job_id"] == second.json()["id"]
+    )
