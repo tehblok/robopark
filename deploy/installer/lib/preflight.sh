@@ -1,3 +1,15 @@
+require_free_space() {
+    storage_path=$1
+    # Target directories need not exist on a clean host. The nearest existing
+    # parent identifies the actual receiving filesystem without creating files.
+    while [ ! -d "$storage_path" ]; do
+        storage_path=$(dirname "$storage_path")
+    done
+    free_kib=$(df -Pk "$storage_path" | awk 'NR==2 {print $4}')
+    case "$free_kib" in ''|*[!0-9]*) die disk_check_failed ;; esac
+    [ "$free_kib" -ge 6291456 ] || die insufficient_disk
+}
+
 preflight() {
     ROBOPARK_ROOT=${ROBOPARK_ROOT:-/}
     case "$ROBOPARK_ROOT" in /*) ;; *) die invalid_root ;; esac
@@ -28,16 +40,16 @@ preflight() {
     esac
     APT_CODENAME=${UBUNTU_CODENAME:-$VERSION_CODENAME}
     case "$APT_CODENAME" in ''|*[!a-z0-9-]*) die unsupported_os_release ;; esac
-    for prerequisite in apt-get dpkg systemctl flock; do
+    for prerequisite in apt-get dpkg systemctl flock sync; do
         command -v "$prerequisite" >/dev/null 2>&1 || die missing_prerequisite
     done
     [ -d "$ROBOPARK_ROOT/run/systemd/system" ] || die systemd_required
-    free_kib=$(df -Pk "$ROBOPARK_ROOT" | awk 'NR==2 {print $4}')
-    case "$free_kib" in ''|*[!0-9]*) die disk_check_failed ;; esac
-    [ "$free_kib" -ge 6291456 ] || die insufficient_disk
     ROBOPARK_ETC=${ROBOPARK_ROOT%/}/etc/robopark
     ROBOPARK_VAR=${ROBOPARK_ROOT%/}/var/lib/robopark
     ROBOPARK_OPT=${ROBOPARK_ROOT%/}/opt/robopark
+    require_free_space "$ROBOPARK_ROOT"
+    require_free_space "$ROBOPARK_OPT/releases"
+    require_free_space "$ROBOPARK_VAR"
     for host_directory in "$ROBOPARK_ETC" "$ROBOPARK_VAR" "$ROBOPARK_OPT" "$ROBOPARK_VAR/ops" "$ROBOPARK_VAR/ops/state" "$ROBOPARK_OPT/releases"; do
         [ ! -L "$host_directory" ] || die symlinked_host_directory
     done

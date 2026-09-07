@@ -1,5 +1,6 @@
 """Run the real installer and verifier in a temporary host with fake APT/systemd."""
 import io
+import runpy
 import json
 import os
 import fcntl
@@ -13,13 +14,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'apps/api/src'))
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from robopark_api.services.ops.archives import build_archive, KIND_RELEASE
+from robopark_api.services.ops.archives import build_archive, inspect_archive, KIND_RELEASE
 
 SECRETS = ('tt_fixture_secret', 'Strong!Fixture123', 'github_fixture_secret')
 
@@ -174,6 +176,163 @@ class InstallerScenarios(unittest.TestCase):
         self.run_installer('--resume')
         self.assertEqual(len(self.commands('apt-get')), count)
         self.assertEqual(self.state()['phase'], 'complete')
+
+
+    def assert_retained_signed_release(self):
+        current = self.root / 'opt/robopark/current'
+        with zipfile.ZipFile(self.payload) as archive:
+            for name in ('manifest.json', 'manifest.sig'):
+                path = current / name
+                self.assertTrue(path.is_file(), f'{name} must be retained')
+                self.assertEqual(path.read_bytes(), archive.read(name))
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
+                self.assertEqual(path.stat().st_uid, os.getuid())
+        # A consumer needs no bootstrap ZIP to verify the complete installed tree.
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as archive:
+            for path in sorted(current.resolve().rglob('*')):
+                if path.is_file():
+                    archive.writestr(path.relative_to(current.resolve()).as_posix(), path.read_bytes())
+        verified = inspect_archive(buffer.getvalue(), expected_kind=KIND_RELEASE, public_key=(self.root / 'etc/robopark/release-public-key.pem').read_bytes())
+        self.assertEqual(verified.app_version, '1.0.0')
+        self.assertEqual(verified.git_sha, 'a' * 40)
+
+    def test_signed_metadata_survives_clean_install_and_resume(self):
+        self.run_installer()
+        self.assert_retained_signed_release()
+        self.config.unlink()
+        self.run_installer('--resume')
+        self.assert_retained_signed_release()
+
+    def test_signed_metadata_is_retained_after_failed_release_resume(self):
+        valid = self.payload.read_bytes()
+        self.payload.write_bytes(b'bad zip')
+        self.run_installer(success=False)
+        self.payload.write_bytes(valid)
+        self.config.unlink()
+        self.run_installer('--resume')
+        self.assert_retained_signed_release()
+
+    def test_resume_rejects_modified_retained_signature(self):
+        self.run_installer()
+        signature = self.root / 'opt/robopark/current/manifest.sig'
+        self.assertTrue(signature.is_file(), 'authenticated signature must be retained')
+        signature.write_bytes(b'tampered signature')
+        self.run_installer('--resume', success=False)
+        self.assertEqual(signature.read_bytes(), b'tampered signature')
+
+    def test_unrelated_installed_regular_package_cannot_override_bootstrap(self):
+        unrelated = self.base / 'unrelated-site-packages'
+        package = unrelated / 'robopark_api'
+        package.mkdir(parents=True)
+        marker = self.base / 'unrelated-package-imported'
+        (package / '__init__.py').write_text(f'from pathlib import Path\nPath({str(marker)!r}).touch()\nraise RuntimeError("unrelated verifier package executed")\n')
+        self.run_installer(PYTHONPATH=str(unrelated))
+        self.assertFalse(marker.exists())
+        self.assert_retained_signed_release()
+
+    def test_preloaded_unrelated_verifier_modules_cannot_override_bootstrap(self):
+        self.run_installer()
+        marker = self.base / 'unrelated-module-used'
+        script = self.base / 'preloaded-verifier.py'
+        script.write_text("""import runpy
+import sys
+import types
+from pathlib import Path
+module = types.ModuleType('robopark_api.services.ops.archives')
+def wrong(*args, **kwargs):
+    Path(sys.argv[4]).touch()
+    raise RuntimeError('unrelated verifier module used')
+module.inspect_archive = wrong
+module.unpack_archive = wrong
+module.KIND_RELEASE = 'release'
+module.MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
+sys.modules[module.__name__] = module
+helper = sys.argv[1]
+sys.argv = [helper, sys.argv[2], sys.argv[3]]
+runpy.run_path(helper, run_name='__main__')
+""".replace('Path(sys.argv[4])', f'Path({str(marker)!r})'))
+        result = subprocess.run([sys.executable, str(script), str(self.bundle / 'lib/install-release.py'), str(self.root), str(self.bundle)], env=self.env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(marker.exists())
+        self.assert_retained_signed_release()
+
+
+    def test_low_space_on_separate_opt_or_var_stops_before_mutation(self):
+        (self.root / 'opt').mkdir()
+        (self.root / 'var/lib').mkdir(parents=True)
+        for shortage in ({'FREE_OPT_GIB': '5'}, {'FREE_VAR_GIB': '5'}):
+            self.run_installer(success=False, **shortage)
+            self.assertFalse(self.commands('apt-get'))
+            self.assertFalse((self.root / 'etc/robopark').exists())
+            self.assertFalse((self.root / 'var/lib/robopark').exists())
+
+    def test_journal_flush_failure_stops_before_package_mutation(self):
+        self.run_installer(success=False, SYNC_FAIL='1')
+        self.assertFalse(self.commands('apt-get'))
+
+    def test_journal_syncs_file_before_rename_and_parent_after(self):
+        self.run_installer()
+        calls = self.commands('sync')
+        self.assertTrue(calls, 'journal writes require durable flushes')
+        self.assertEqual(len(calls) % 2, 0)
+        state_dir = self.root / 'var/lib/robopark/ops/state'
+        for before, after in zip(calls[::2], calls[1::2]):
+            self.assertEqual(before['args'][0], '-f')
+            self.assertEqual(Path(before['args'][1]).parent, state_dir)
+            self.assertTrue(Path(before['args'][1]).name.startswith('.install.'))
+            self.assertEqual(after['args'], ['-f', str(state_dir)])
+
+    def test_atomic_link_flushes_parent_after_each_publication(self):
+        helper = runpy.run_path(str(REPO / 'deploy/installer/lib/install-release.py'))
+        link = self.base / 'current'
+        parent_inode = self.base.stat().st_ino
+        actual_fsync = os.fsync
+        observed = []
+        def record_fsync(descriptor):
+            info = os.fstat(descriptor)
+            observed.append((stat.S_ISDIR(info.st_mode), info.st_ino, os.readlink(link)))
+            return actual_fsync(descriptor)
+        with mock.patch.object(os, 'fsync', side_effect=record_fsync):
+            helper['atomic_link'](link, self.base / 'first')
+            helper['atomic_link'](link, self.base / 'second')
+        self.assertEqual(observed, [(True, parent_inode, str(self.base / 'first')), (True, parent_inode, str(self.base / 'second'))])
+
+
+    def test_release_payload_is_durable_before_current_link_is_published(self):
+        helper = runpy.run_path(str(REPO / 'deploy/installer/lib/install-release.py'))
+        (self.root / 'etc/robopark').mkdir()
+        native_fsync, native_replace = os.fsync, os.replace
+        flushed, at_cutover = set(), []
+        def record_fsync(descriptor):
+            info = os.fstat(descriptor)
+            flushed.add((info.st_dev, info.st_ino))
+            return native_fsync(descriptor)
+        def record_replace(source, destination):
+            if Path(destination).name == 'current':
+                at_cutover.append(flushed.copy())
+            return native_replace(source, destination)
+        with mock.patch.object(os, 'fsync', side_effect=record_fsync), mock.patch.object(os, 'replace', side_effect=record_replace):
+            helper['install'](str(self.root), str(self.bundle))
+        release = self.root / 'opt/robopark/releases/1.0.0'
+        required = { (path.stat().st_dev, path.stat().st_ino) for path in [release.parent, release, *release.rglob('*')] }
+        self.assertEqual(len(at_cutover), 1)
+        self.assertTrue(required <= at_cutover[0], 'release files and directory entries must be flushed before cutover')
+
+    def test_container_exchange_directories_are_private_and_root_state_is_closed(self):
+        self.run_installer()
+        ops = self.root / 'var/lib/robopark/ops'
+        for name in ('inbox', 'artifacts'):
+            path = ops / name
+            self.assertTrue(path.is_dir(), f'{name} must exist for container uid 10001')
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
+            # Privileged ownership is an external host boundary faked on macOS.
+            self.assertTrue(any(call['args'] == ['10001:10001', str(path)] for call in self.commands('chown')))
+        for path in (ops / 'state', ops / 'compose', ops / 'rollbacks'):
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
+            self.assertTrue(any(call['args'] == ['0:0', str(path)] for call in self.commands('chown')))
+        self.assertEqual(stat.S_IMODE(ops.stat().st_mode), 0o750)
+        self.assertEqual(stat.S_IMODE((ops / 'state/install.json').stat().st_mode), 0o600)
 
     def test_existing_current_outside_release_tree_is_rejected(self):
         (self.root / 'opt/robopark').mkdir(parents=True)

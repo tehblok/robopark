@@ -1,11 +1,35 @@
 """Verify with bootstrap code, then atomically install the immutable release."""
 import hashlib
+import importlib.util
+import io
 import os
 from pathlib import Path
 import re
 import shutil
 import sys
 import tempfile
+import types
+import zipfile
+
+
+def sync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def sync_tree(root):
+    # A durable link must never point at an unflushed release tree.
+    entries = list(root.rglob('*'))
+    for path in entries:
+        if path.is_file():
+            with path.open('rb') as stream:
+                os.fsync(stream.fileno())
+    for path in sorted((p for p in entries if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+        sync_directory(path)
+    sync_directory(root)
 
 
 def atomic_bytes(path, data, mode):
@@ -17,6 +41,7 @@ def atomic_bytes(path, data, mode):
             os.fsync(stream.fileno())
         os.chmod(temporary, mode)
         os.replace(temporary, path)
+        sync_directory(path.parent)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -28,6 +53,7 @@ def atomic_link(path, target):
         temporary.unlink()
     temporary.symlink_to(target)
     os.replace(temporary, path)
+    sync_directory(path.parent)
 
 
 def validate_link(path, releases):
@@ -39,15 +65,39 @@ def validate_link(path, releases):
         raise ValueError('invalid_existing_link')
 
 
+def load_bootstrap_verifier(bundle):
+    bootstrap = bundle / 'verifier'
+    if not bootstrap.is_dir():
+        bootstrap = bundle.parents[1] / 'apps/api/src'
+    module_root = bootstrap / 'robopark_api/services/ops'
+    # An earlier namespace portion does not outrank a later regular package.
+    # Replace this namespace completely, including any previously loaded modules,
+    # then execute exactly the two trusted files without package __init__ hooks.
+    for name in list(sys.modules):
+        if name == 'robopark_api' or name.startswith('robopark_api.'):
+            del sys.modules[name]
+    for name in ('robopark_api', 'robopark_api.services', 'robopark_api.services.ops'):
+        package = types.ModuleType(name)
+        package.__package__ = name
+        package.__path__ = []
+        sys.modules[name] = package
+    for leaf in ('archives', 'release_signing'):
+        source = module_root / (leaf + '.py')
+        if not source.is_file() or source.is_symlink():
+            raise ValueError('bootstrap_verifier_missing')
+        name = 'robopark_api.services.ops.' + leaf
+        spec = importlib.util.spec_from_file_location(name, source)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules['robopark_api.services.ops.archives']
+
+
 def install(root, bundle):
     root, bundle = Path(root), Path(bundle).resolve()
-    # Both alternatives belong to the trusted bootstrap distribution/checkout.
-    # Never import a module from the ZIP or an extracted application release.
-    bootstrap_verifier = bundle / 'verifier'
-    if not bootstrap_verifier.is_dir():
-        bootstrap_verifier = bundle.parents[1] / 'apps/api/src'
-    sys.path.insert(0, str(bootstrap_verifier))
-    from robopark_api.services.ops.archives import inspect_archive, unpack_archive, KIND_RELEASE, MAX_ARCHIVE_BYTES
+    verifier = load_bootstrap_verifier(bundle)
+    inspect_archive, unpack_archive = verifier.inspect_archive, verifier.unpack_archive
+    KIND_RELEASE, MAX_ARCHIVE_BYTES = verifier.KIND_RELEASE, verifier.MAX_ARCHIVE_BYTES
 
     etc, opt = root / 'etc/robopark', root / 'opt/robopark'
     releases = opt / 'releases'
@@ -70,6 +120,8 @@ def install(root, bundle):
     meta = inspect_archive(data, expected_kind=KIND_RELEASE, public_key=target_key.read_bytes())
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,127}', meta.app_version):
         raise ValueError('invalid_release_version')
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        authenticated_metadata = {name: archive.read(name) for name in ('manifest.json', 'manifest.sig')}
     target = releases / meta.app_version
     # Only authenticated metadata can cause a release directory to be created.
     releases.mkdir(parents=True, exist_ok=True, mode=0o755)
@@ -77,8 +129,12 @@ def install(root, bundle):
         raise ValueError('invalid_release_path')
     if target.exists():
         actual_files = {p.relative_to(target).as_posix() for p in target.rglob('*') if p.is_file() or p.is_symlink()}
-        if actual_files != set(meta.files):
+        if actual_files != set(meta.files) | set(authenticated_metadata):
             raise ValueError('existing_release_mismatch')
+        for name, expected in authenticated_metadata.items():
+            path = target / name
+            if path.is_symlink() or path.read_bytes() != expected:
+                raise ValueError('existing_release_mismatch')
         for name, digest in meta.files.items():
             path = target / name
             if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
@@ -87,6 +143,8 @@ def install(root, bundle):
         staging = Path(tempfile.mkdtemp(prefix='.install-', dir=releases))
         try:
             unpack_archive(data, staging, expected_kind=KIND_RELEASE, public_key=key_data)
+            for name, content in authenticated_metadata.items():
+                atomic_bytes(staging / name, content, 0o644)
             for path in staging.rglob('*'):
                 if path.is_dir():
                     path.chmod(0o755)
@@ -94,7 +152,9 @@ def install(root, bundle):
                     executable = path.suffix == '.sh' or path.relative_to(staging).as_posix() == 'deploy/host/robopark'
                     path.chmod(0o755 if executable else 0o644)
             staging.chmod(0o755)
+            sync_tree(staging)
             os.replace(staging, target)
+            sync_directory(releases)
         finally:
             if staging.exists():
                 shutil.rmtree(staging)
