@@ -25,6 +25,7 @@ from typing import Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
 
+from .operational_state import record_backup
 from .paths import HostPaths
 from .release import (
     ReleaseError,
@@ -686,7 +687,15 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
             phase("stopping")
             runner.run(["systemctl", "stop", "robopark.service"], timeout=120)
             phase("snapshotting")
-            snapshot(paths, journal)
+            try:
+                snapshot(paths, journal)
+            except Exception:
+                # The status receipt is informational; never hide the original
+                # snapshot failure if its own durable write also fails.
+                with suppress(OSError, ValueError):
+                    record_backup(paths, "failed")
+                raise
+            record_backup(paths, "success")
             phase("snapshotted", snapshot_done=True)
             phase("tools_staging")
             runner.run(

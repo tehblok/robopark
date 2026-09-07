@@ -304,6 +304,17 @@ def test_success_stages_isolated_compose_then_reconciles_after_worker_exit(host)
     ).resolve().name == request.job_id + "-production.json"
     assert (host.paths.opt / "host-tools").resolve() == host.paths.current.resolve() / "deploy/host"
     assert json.loads((host.paths.ops / "rebuild.result").read_text())["ok"] is True
+    assert json.loads((host.paths.state / "last-backup.json").read_text())["status"] == "success"
+
+
+def test_failed_pre_cutover_snapshot_records_failed_backup(host, monkeypatch):
+    from robopark_host import updater
+
+    monkeypatch.setattr(updater, "snapshot", lambda *_args: (_ for _ in ()).throw(OSError()))
+    result = apply_release(host.request(), host.paths, host.runner)
+
+    assert result.error == "update_failed"
+    assert json.loads((host.paths.state / "last-backup.json").read_text())["status"] == "failed"
 
 
 def test_failed_health_restores_previous_code_units_and_snapshot(host):
