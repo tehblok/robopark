@@ -373,10 +373,17 @@ def test_version_sources_match_authoritative_version():
     assert values == [version]
 
 
-@pytest.mark.parametrize("tag", ["v0.1.0", "v9.9.9", "0.1.0", "v0.1.0;echo evil"])
-def test_release_tag_consistency(tag):
+@pytest.mark.parametrize("tag_kind", ["valid", "wrong", "missing_prefix", "injection"])
+def test_release_tag_consistency(tag_kind):
+    version = (ROOT / "VERSION").read_text().strip()
+    tag = {
+        "valid": f"v{version}",
+        "wrong": "v9.9.9",
+        "missing_prefix": version,
+        "injection": f"v{version};echo evil",
+    }[tag_kind]
     result = run(sys.executable, ROOT / "scripts/check-release-version.py", "--tag", tag)
-    assert (result.returncode == 0) == (tag == "v0.1.0")
+    assert (result.returncode == 0) == (tag_kind == "valid")
 
 
 @pytest.mark.parametrize("secret", ["valid", "missing", "invalid", "wrong_key", "ed448"])

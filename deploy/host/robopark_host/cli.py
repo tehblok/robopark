@@ -185,6 +185,10 @@ def _bootstrap_handler(paths: HostPaths) -> int:
             f"Runtime bootstrap failed: {explain_process_failure(error)} (exit {error.returncode})",
             file=sys.stderr,
         )
+        print(
+            f"Полный лог сборки: {paths.root / 'var/log/robopark/runtime-bootstrap.log'}",
+            file=sys.stderr,
+        )
         return 1
     except subprocess.TimeoutExpired:
         print("Runtime bootstrap failed: docker_timeout", file=sys.stderr)

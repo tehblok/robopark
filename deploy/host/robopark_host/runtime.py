@@ -12,19 +12,70 @@ import json
 import os
 import re
 import subprocess
+import threading
+from collections import deque
 from collections.abc import Callable, Sequence
+from pathlib import Path
 
 from .paths import HostPaths
 from .rollback import atomic_symlink
 from .state import atomic_write_json
 
 
-def _run(command: Sequence[str]) -> str:
+def _stream_build(command: Sequence[str], log_path: Path | None) -> str:
+    """Stream a long build while retaining its output for diagnosis."""
+
+    output_tail: deque[str] = deque(maxlen=500)
+    log = None
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log = log_path.open("w", encoding="utf-8")
+        os.chmod(log_path, 0o600)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+
+    def copy_output() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            output_tail.append(line)
+            if log is not None:
+                log.write(line)
+                log.flush()
+
+    reader = threading.Thread(target=copy_output, name="robopark-build-output", daemon=True)
+    reader.start()
+    try:
+        returncode = process.wait(timeout=1800)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        reader.join(timeout=10)
+        if log is not None:
+            log.close()
+    detail = "".join(output_tail)
+    if returncode:
+        raise subprocess.CalledProcessError(
+            returncode,
+            command,
+            output=detail,
+            stderr=detail,
+        )
+    return detail
+
+
+def _run(command: Sequence[str], *, build_log: Path | None = None) -> str:
     if "build" in command:
-        # Docker BuildKit provides useful live progress and may run for many
-        # minutes on ARM. Inheriting the terminal makes activity visible.
-        subprocess.run(command, check=True, text=True, timeout=1800)
-        return ""
+        return _stream_build(command, build_log)
     return subprocess.run(command, check=True, capture_output=True, text=True, timeout=1800).stdout
 
 
@@ -38,10 +89,33 @@ def explain_process_failure(error: subprocess.CalledProcessError) -> str:
         return "compose_version_unsupported"
     if "no space left" in detail or "disk quota" in detail:
         return "docker_disk_full"
-    if any(value in detail for value in ("network is unreachable", "temporary failure", "connection timed out", "tls handshake timeout")):
+    if any(
+        value in detail
+        for value in (
+            "network is unreachable",
+            "temporary failure",
+            "connection timed out",
+            "tls handshake timeout",
+        )
+    ):
         return "docker_network_failed"
-    if "out of memory" in detail or "cannot allocate memory" in detail or error.returncode in {137, -9}:
+    if (
+        "out of memory" in detail
+        or "cannot allocate memory" in detail
+        or error.returncode in {137, -9}
+    ):
         return "docker_out_of_memory"
+    if re.search(r"\berror ts\d+:", detail):
+        return "frontend_typescript_failed"
+    if any(package in detail for package in ("rollup", "rolldown", "esbuild")) and any(
+        marker in detail
+        for marker in (
+            "cannot find module",
+            "unsupported platform",
+            "not supported on this platform",
+        )
+    ):
+        return "frontend_arm_dependency_failed"
     return "docker_command_failed"
 
 
@@ -114,6 +188,13 @@ def pin_images(document, run):
 
 
 def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
+    if run is _run:
+        runtime_log = paths.root / "var/log/robopark/runtime-bootstrap.log"
+
+        def logged_run(command):
+            return _run(command, build_log=runtime_log)
+
+        run = logged_run
     target = paths.state / "current-compose.json"
     if target.is_symlink():
         resolved = target.resolve(strict=True)
@@ -158,7 +239,12 @@ def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
 
         require_record_capacity(paths)
         _progress(3, "Собираю API и web; на ARM это может занять несколько минут")
-        run([*build_command, "build", "api", "web"])
+        # Keep peak RAM predictable on the 8 GiB Armbian target. Compose builds
+        # independent services concurrently when they are passed together.
+        print("    • API", flush=True)
+        run([*build_command, "build", "api"])
+        print("    • Web", flush=True)
+        run([*build_command, "build", "web"])
         _progress(4, "Проверяю и закрепляю собранные образы")
         pin_images(document, run)
         record(paths, release, "release-" + release_id, document)

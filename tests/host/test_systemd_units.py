@@ -4,6 +4,7 @@ import configparser
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -22,9 +23,7 @@ def unit(name):
 def test_tuna_requires_ready_application_and_bounded_restart():
     tuna = unit("robopark-tuna.service")
     assert "robopark.service" in tuna["Unit"]["Requires"].split()
-    assert {"network-online.target", "robopark.service"} <= set(
-        tuna["Unit"]["After"].split()
-    )
+    assert {"network-online.target", "robopark.service"} <= set(tuna["Unit"]["After"].split())
     assert tuna["Service"]["Restart"] == "on-failure"
     assert int(tuna["Service"]["TimeoutStartSec"]) <= 180
     assert int(tuna["Unit"]["StartLimitBurst"]) <= 5
@@ -55,8 +54,7 @@ def test_boot_never_builds_or_uses_a_mutable_compose_config():
 def test_privileged_units_use_trusted_launcher_and_sandbox(name, command):
     service = unit(f"robopark-{name}.service")["Service"]
     assert (
-        service["ExecStart"]
-        == f"/usr/bin/python3 -I /opt/robopark/host-tools/robopark {command}"
+        service["ExecStart"] == f"/usr/bin/python3 -I /opt/robopark/host-tools/robopark {command}"
     )
     assert service["NoNewPrivileges"] == "true"
     assert service["PrivateTmp"] == "true"
@@ -127,6 +125,11 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
         raise AssertionError(command)
 
     bootstrap_compose(host_paths, run)
+    build_calls = [command for command in calls if "build" in command]
+    assert [command[-2:] for command in build_calls] == [
+        ["build", "api"],
+        ["build", "web"],
+    ]
     target = host_paths.state / "current-compose.json"
     document = json.loads(target.read_text())
     assert document["x-robopark-release"] == str(release.resolve())
@@ -158,26 +161,27 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
             assert command[command.index("--project-name") + 1] == "robopark"
             assert "--file" in command
     before = target.read_bytes()
-    bootstrap_compose(
-        host_paths, lambda _: pytest.fail("existing runtime must not be rebuilt")
-    )
+    bootstrap_compose(host_paths, lambda _: pytest.fail("existing runtime must not be rebuilt"))
     assert target.read_bytes() == before
 
 
-def test_runtime_runner_streams_long_docker_build_output(monkeypatch):
+def test_runtime_runner_streams_and_retains_failed_docker_build_output(tmp_path, capsys):
     from robopark_host import runtime
 
-    calls = []
+    log = tmp_path / "runtime-bootstrap.log"
+    command = [
+        sys.executable,
+        "-c",
+        "import sys; print('error TS2322: diagnostic marker', flush=True); sys.exit(2)",
+        "build",
+    ]
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        runtime._run(command, build_log=log)
 
-    def fake_run(command, **options):
-        calls.append((command, options))
-        return subprocess.CompletedProcess(command, 0, stdout="image-id\n")
-
-    monkeypatch.setattr(runtime.subprocess, "run", fake_run)
-    assert runtime._run(["docker", "compose", "build", "api", "web"]) == ""
-    assert "capture_output" not in calls[0][1]
-    assert runtime._run(["docker", "image", "inspect", "api"]) == "image-id\n"
-    assert calls[1][1]["capture_output"] is True
+    assert "error TS2322: diagnostic marker" in capsys.readouterr().out
+    assert "error TS2322: diagnostic marker" in caught.value.stderr
+    assert "error TS2322: diagnostic marker" in log.read_text()
+    assert log.stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.parametrize(
@@ -186,6 +190,12 @@ def test_runtime_runner_streams_long_docker_build_output(monkeypatch):
         ("unknown flag: --no-env-resolution", "compose_version_unsupported"),
         ("write failed: no space left on device", "docker_disk_full"),
         ("failed to solve: network is unreachable", "docker_network_failed"),
+        ("src/App.tsx(3,2): error TS2322: bad type", "frontend_typescript_failed"),
+        (
+            "Cannot find module @rollup/rollup-linux-arm64-musl",
+            "frontend_arm_dependency_failed",
+        ),
+        ("FATAL ERROR: JavaScript heap out of memory", "docker_out_of_memory"),
         ("process exited", "docker_command_failed"),
     ],
 )
