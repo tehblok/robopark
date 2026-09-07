@@ -1,0 +1,350 @@
+"""File-only installed-host bridge. Never executes commands or writes root state."""
+
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import io
+import json
+import os
+import re
+import stat
+import tempfile
+import zipfile
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+from uuid import UUID, uuid4
+
+from robopark_api.ops_schemas import (
+    SystemHealthOut,
+    UpdateInspectionOut,
+    public_checks,
+    public_result,
+)
+from robopark_api.services.ops.archives import KIND_RELEASE, inspect_archive
+from robopark_api.services.ops.jobs import (
+    ACTIVE_STATES,
+    STATE_RUNNING,
+    JobConflict,
+    _save_job_unlocked,
+    ensure_ops_dir,
+    load_job,
+    new_job,
+    require_idle,
+)
+
+
+class BridgeError(ValueError):
+    pass
+
+
+def host_root(settings) -> Path:
+    raw = settings.ops_host_root
+    if not raw:
+        raise BridgeError("host_bridge_unavailable")
+    root = Path(raw)
+    if not root.is_absolute() or root.is_symlink() or not root.is_dir():
+        raise BridgeError("host_bridge_unavailable")
+    root = root.resolve()
+    ordinary = Path(settings.ops_dir).resolve() if settings.ops_dir else None
+    if ordinary and (
+        root == ordinary or root.is_relative_to(ordinary) or ordinary.is_relative_to(root)
+    ):
+        raise BridgeError("host_bridge_unavailable")
+    if any(
+        (root / part).is_symlink() or not (root / part).is_dir()
+        for part in ("inbox", "artifacts", "public")
+    ):
+        raise BridgeError("host_bridge_unavailable")
+    if any((root / part).exists() for part in ("state", "host.lock")):
+        raise BridgeError("host_bridge_unavailable")
+    return root
+
+
+def read_json(path: Path, limit=65536):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError()
+            result[key] = value
+        return result
+
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+                return {}
+            value = json.loads(stream.read(limit + 1), object_pairs_hook=unique)
+            return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        return {}
+
+
+def _atomic(path, raw):
+    fd, name = tempfile.mkstemp(prefix=".bridge-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+        _sync(path.parent)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def _sync(directory):
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def _locked(ops):
+    paths = ensure_ops_dir(ops)
+    with paths["lock"].open("a+") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+def _timestamp(value):
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def system_health(root):
+    value = read_json(root / "public/system-health.json")
+    health = SystemHealthOut()
+    if isinstance(value.get("version"), str) and re.fullmatch(
+        r"\d{1,9}(?:\.\d{1,9}){0,2}", value["version"]
+    ):
+        health.version = value["version"]
+    if isinstance(value.get("git_sha"), str) and re.fullmatch(r"[a-fA-F0-9]{40}", value["git_sha"]):
+        health.git_sha = value["git_sha"]
+    health.generated_at = _timestamp(value.get("generated_at"))
+    health.overall = (
+        value.get("overall") if value.get("overall") in ("ok", "degraded") else "unknown"
+    )
+    health.checks = public_checks(value.get("checks"))
+    update = read_json(root / "public/host-status.json") or value.get("update", {})
+    if isinstance(update, dict):
+        if update.get("state") in (
+            "idle",
+            "updating",
+            "current_healthy",
+            "rolled_back",
+            "maintenance",
+        ):
+            health.update.state = update["state"]
+        if update.get("publication") == "degraded":
+            health.update.publication = "degraded"
+    backup = value.get("last_backup")
+    if isinstance(backup, dict):
+        if backup.get("status") in ("success", "failed"):
+            health.last_backup.status = backup["status"]
+        health.last_backup.completed_at = _timestamp(backup.get("completed_at"))
+    return health
+
+
+def inspect_update(settings, ops, root, blob, actor):
+    try:
+        key = Path(settings.ops_release_public_key_path).read_bytes()
+    except OSError as exc:
+        raise BridgeError("host_bridge_unavailable") from exc
+    meta = inspect_archive(blob, expected_kind=KIND_RELEASE, public_key=key)
+    with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+        notes = json.loads(archive.read("manifest.json"))["update_notes"][:8000]
+    identity = str(uuid4())
+    artifact = f"update-{identity}.zip"
+    with _locked(ops):
+        _atomic(root / "artifacts" / artifact, blob)
+        directory = ops / "inspections"
+        directory.mkdir(exist_ok=True)
+        record = {
+            "inspection_id": identity,
+            "actor_user_id": actor,
+            "artifact": artifact,
+            "sha256": hashlib.sha256(blob).hexdigest(),
+            "created_at": datetime.now(UTC).isoformat(),
+            "version": meta.app_version,
+            "git_sha": meta.git_sha,
+            "migration_head": meta.migration_head,
+            "notes": notes,
+        }
+        _atomic(directory / (identity + ".json"), json.dumps(record).encode())
+    return UpdateInspectionOut(**{k: record[k] for k in UpdateInspectionOut.model_fields})
+
+
+def _dispatch(ops, root, job):
+    request = job.extra["host_request"]
+    target = root / "inbox/approved.json"
+    existing = read_json(target, 4096)
+    if existing:
+        if existing != request:
+            raise JobConflict("host_work_in_progress")
+        return
+    claim = read_json(root / "public/command-claim.json", 4096)
+    if claim.get("job_id") == job.id:
+        return
+    # Persist ownership BEFORE publication. Retry may only publish this exact request.
+    job.extra["host_dispatch"] = "dispatched"
+    _save_job_unlocked(ops, job)
+    fd, name = tempfile.mkstemp(prefix=".approved-", dir=target.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(request, stream, ensure_ascii=False, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(name, target)  # no clobber: approved.json is the single slot
+            _sync(target.parent)
+        except FileExistsError as exc:
+            if read_json(target, 4096) != request:
+                raise JobConflict("host_work_in_progress") from exc
+        except OSError:
+            # Durable reservation remains retryable, never failed/aborted.
+            pass
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def approve_update(settings, ops, root, identity, actor, exempt):
+    identity = str(UUID(str(identity)))
+    with _locked(ops):
+        record = read_json(ops / "inspections" / (identity + ".json"))
+        if not record or record.get("actor_user_id") != actor:
+            raise BridgeError("inspection_not_found")
+        job = load_job(ops)
+        if job and job.extra.get("inspection_id") == identity:
+            if not record.get("approved_job_id"):
+                record["approved_job_id"] = job.id
+                _atomic(ops / "inspections" / (identity + ".json"), json.dumps(record).encode())
+            if job.state in ACTIVE_STATES:
+                _dispatch(ops, root, job)
+            return job
+        if record.get("approved_job_id"):
+            raise JobConflict("inspection_already_approved")
+        require_idle(ops)
+        require_host_idle(root)
+        artifact = f"update-{identity}.zip"
+        target = root / "artifacts" / artifact
+        if record.get("artifact") != artifact or target.is_symlink() or not target.is_file():
+            raise BridgeError("artifact_missing")
+        if target.stat().st_size > settings.ops_max_upload_bytes:
+            raise BridgeError("archive_too_large")
+        blob = target.read_bytes()
+        if hashlib.sha256(blob).hexdigest() != record.get("sha256"):
+            raise BridgeError("artifact_changed")
+        inspect_archive(
+            blob,
+            expected_kind=KIND_RELEASE,
+            public_key=Path(settings.ops_release_public_key_path).read_bytes(),
+        )
+        job = _new_host_job("update", actor, exempt, artifact)
+        job.extra["inspection_id"] = identity
+        _save_job_unlocked(ops, job)
+        record["approved_job_id"] = job.id
+        _atomic(ops / "inspections" / (identity + ".json"), json.dumps(record).encode())
+        _dispatch(ops, root, job)
+        return job
+
+
+def require_host_idle(root):
+    if (root / "inbox/approved.json").exists():
+        raise JobConflict("host_work_in_progress")
+    maintenance = read_json(root / "public/maintenance.json")
+    claim = read_json(root / "public/command-claim.json")
+    if maintenance.get("enabled") is True or claim.get("active") is True:
+        raise JobConflict("host_work_in_progress")
+
+
+def _new_host_job(kind, actor, exempt, artifact=None):
+    if type(actor) is not int or not 0 < actor < 2**63:
+        raise BridgeError("actor_required")
+    job = new_job(kind, exempt_token_hash=exempt)
+    job.state = STATE_RUNNING
+    job.phase = "awaiting_host"
+    request = {"job_id": job.id, "kind": kind, "actor_user_id": actor, "created_at": job.created_at}
+    if artifact:
+        request["artifact"] = artifact
+    job.extra = {"host_updater": True, "host_request": request}
+    return job
+
+
+def enqueue_operation(ops, root, kind, actor, exempt):
+    if kind not in {"diagnostics", "repair"}:
+        raise BridgeError("invalid_command")
+    with _locked(ops):
+        require_idle(ops)
+        require_host_idle(root)
+        job = _new_host_job(kind, actor, exempt)
+        _save_job_unlocked(ops, job)
+        _dispatch(ops, root, job)
+        return job
+
+
+def reconcile_host_job(ops, root):
+    with _locked(ops):
+        job = load_job(ops)
+        if not job or not job.extra.get("host_updater") or job.state not in ACTIVE_STATES:
+            return job
+        update = job.kind == "update"
+        result = read_json(
+            root / ("public/rebuild.result" if update else "public/command-result.json")
+        )
+        if result.get("job_id") != job.id:
+            return job
+        if update:
+            if type(result.get("ok")) is not bool:
+                return job
+            ok = result["ok"]
+        else:
+            request = job.extra.get("host_request", {})
+            if (
+                result.get("kind") != job.kind
+                or result.get("actor_user_id") != request.get("actor_user_id")
+                or result.get("state") not in ("succeeded", "failed")
+            ):
+                return job
+            ok = result["state"] == "succeeded"
+        if read_json(root / "public/maintenance.json").get("enabled") is True:
+            return job
+        if not update:
+            job.extra["host_result"] = public_result(result).model_dump(mode="json")
+        job.state = "succeeded" if ok else "failed"
+        job.phase = "completed" if ok else "failed"
+        job.error = None if ok else "host_operation_failed"
+        job.log = "Операция на хосте завершена." if ok else "Операция на хосте завершилась ошибкой."
+        job.restart_required = False
+        if job.kind == "diagnostics" and ok and result.get("artifact") == job.id + ".zip":
+            job.artifact_name = job.id + ".zip"
+        _save_job_unlocked(ops, job)
+        return job
+
+
+def diagnostic_artifact(root, job):
+    if (
+        not job
+        or job.kind != "diagnostics"
+        or job.state != "succeeded"
+        or job.artifact_name != job.id + ".zip"
+    ):
+        return None
+    directory = root / "public/artifacts"
+    target = directory / job.artifact_name
+    if (
+        directory.is_symlink()
+        or target.is_symlink()
+        or not target.is_file()
+        or target.resolve().parent != directory.resolve()
+    ):
+        return None
+    return target

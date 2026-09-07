@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     # --- Royal ops (snapshot / restore / ZIP update) -----------------------
     #: Directory for job state, staging, and snapshot artifacts.
     ops_dir: str | None = None
+    #: Installed host bridge mount; unset for manual Compose installations.
+    ops_host_root: str | None = None
     #: Cross-process live-merge blobs (default: ``<sqlite-dir>/live-merge``).
     live_merge_dir: str | None = None
     #: Tree that a successful release is copied onto (repo root in local/dev).

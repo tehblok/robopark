@@ -1,0 +1,10 @@
+[Unit]
+Description=Robopark approved host commands
+After=robopark.service
+
+[Path]
+PathExists=/var/lib/robopark/ops/inbox/approved.json
+Unit=robopark-commands.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1021,7 +1021,12 @@ def _complete(paths, journal, runner):
         return _handle_failure(paths, journal, runner, "cutover_unhealthy")
     _verify_database_head(paths, runner, manifest["migration_head"])
     phase("publication")
-    for unit in ("robopark-update-check.timer", "robopark-doctor.timer", "robopark-watchdog.timer"):
+    for unit in (
+        "robopark-update-check.timer",
+        "robopark-doctor.timer",
+        "robopark-watchdog.timer",
+        "robopark-commands.path",
+    ):
         if (candidate / "deploy/systemd" / unit).is_file():
             runner.run(["systemctl", "try-restart", unit], timeout=60)
     publication_degraded = False

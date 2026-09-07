@@ -101,8 +101,14 @@ def _memory_check(runner: Runner) -> CheckResult:
     except ValueError:
         return CheckResult("memory_load_swap", "warning", "Не удалось измерить swap", None)
     exhausted_swap = swap_total > 0 and swap_used / swap_total >= 0.95
-    status = "failed" if available < 128 or exhausted_swap else "warning" if available < 512 else "ok"
-    return CheckResult(status=status, code="memory_load_swap", message=f"Доступно памяти: {available} MiB; swap: {swap_used}/{swap_total} MiB")
+    status = (
+        "failed" if available < 128 or exhausted_swap else "warning" if available < 512 else "ok"
+    )
+    return CheckResult(
+        status=status,
+        code="memory_load_swap",
+        message=f"Доступно памяти: {available} MiB; swap: {swap_used}/{swap_total} MiB",
+    )
 
 
 def _load_check(runner: Runner) -> CheckResult:
@@ -157,9 +163,13 @@ def _configuration_check(paths: HostPaths) -> CheckResult:
     if origin and public_url and origin.rstrip("/") != public_url.rstrip("/"):
         invalid.append("public_url")
     if invalid:
-        return CheckResult("configuration", "failed", "Конфигурация Robopark требует исправления", None)
+        return CheckResult(
+            "configuration", "failed", "Конфигурация Robopark требует исправления", None
+        )
     if absent:
-        return CheckResult("configuration", "warning", "Часть конфигурации Robopark ещё не создана", None)
+        return CheckResult(
+            "configuration", "warning", "Часть конфигурации Robopark ещё не создана", None
+        )
     return CheckResult("configuration", "ok", "Конфигурация Robopark проверена", None)
 
 
@@ -172,16 +182,22 @@ def _release_check(paths: HostPaths) -> CheckResult:
     except OSError:
         return CheckResult("release_layout", "failed", "Ссылка на текущий релиз повреждена", None)
     if paths.releases not in target.parents:
-        return CheckResult("release_layout", "failed", "Текущий релиз находится вне каталога релизов", None)
+        return CheckResult(
+            "release_layout", "failed", "Текущий релиз находится вне каталога релизов", None
+        )
     manifest = target / "manifest.json"
     if not paths.previous.is_symlink() or not manifest.is_file():
         return CheckResult("release_layout", "failed", "У текущего релиза нет манифеста", None)
     try:
         previous_target = paths.previous.resolve(strict=True)
     except OSError:
-        return CheckResult("release_layout", "failed", "Ссылка на предыдущий релиз повреждена", None)
+        return CheckResult(
+            "release_layout", "failed", "Ссылка на предыдущий релиз повреждена", None
+        )
     if paths.releases not in previous_target.parents:
-        return CheckResult("release_layout", "failed", "Предыдущий релиз находится вне каталога релизов", None)
+        return CheckResult(
+            "release_layout", "failed", "Предыдущий релиз находится вне каталога релизов", None
+        )
     try:
         payload = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -201,12 +217,17 @@ def _release_check(paths: HostPaths) -> CheckResult:
 def _container_check(paths: HostPaths, runner: Runner) -> CheckResult:
     result = execute(runner, compose_command(paths, ["ps", "--format", "json"]))
     if not result.ok:
-        return CheckResult("containers", "failed", "Состояние контейнеров недоступно", "restart_app")
+        return CheckResult(
+            "containers", "failed", "Состояние контейнеров недоступно", "restart_app"
+        )
     containers = parse_compose_services(result.stdout)
     if containers is None:
-        return CheckResult("containers", "failed", "Compose вернул неполный статус контейнеров", "restart_app")
+        return CheckResult(
+            "containers", "failed", "Compose вернул неполный статус контейнеров", "restart_app"
+        )
     by_service = {str(item.get("Service", "")): item for item in containers}
     missing = EXPECTED_SERVICES - set(by_service)
+
     def number(item: Mapping[str, Any], name: str) -> int:
         try:
             return int(str(item.get(name, "0") or "0"))
@@ -223,13 +244,14 @@ def _container_check(paths: HostPaths, runner: Runner) -> CheckResult:
         )
         or number(item, "ExitCode") != 0
     ]
-    restarted = [
-        item
-        for item in containers
-        if number(item, "RestartCount") >= 5
-    ]
+    restarted = [item for item in containers if number(item, "RestartCount") >= 5]
     if missing or unhealthy or restarted:
-        return CheckResult("containers", "failed", "Есть остановленные, нездоровые или отсутствующие контейнеры Compose", "restart_app")
+        return CheckResult(
+            "containers",
+            "failed",
+            "Есть остановленные, нездоровые или отсутствующие контейнеры Compose",
+            "restart_app",
+        )
     return CheckResult(
         "containers",
         "ok",
@@ -260,12 +282,21 @@ def _endpoint_check(http: Any) -> CheckResult:
         response = _http_get(http, "http://127.0.0.1:8080/", timeout=5)
         headers: Mapping[str, str] = getattr(response, "headers", {})
     except Exception:
-        return CheckResult("local_endpoint", "failed", "Локальный веб-интерфейс недоступен", "restart_app")
+        return CheckResult(
+            "local_endpoint", "failed", "Локальный веб-интерфейс недоступен", "restart_app"
+        )
     if not _response_ok(response):
-        return CheckResult("local_endpoint", "failed", "Локальный веб-интерфейс вернул ошибку", "restart_app")
+        return CheckResult(
+            "local_endpoint", "failed", "Локальный веб-интерфейс вернул ошибку", "restart_app"
+        )
     normalized = {str(key).casefold() for key in headers}
     if "x-content-type-options" not in normalized:
-        return CheckResult("local_endpoint", "warning", "Локальный веб-интерфейс доступен, но часть защитных заголовков отсутствует", None)
+        return CheckResult(
+            "local_endpoint",
+            "warning",
+            "Локальный веб-интерфейс доступен, но часть защитных заголовков отсутствует",
+            None,
+        )
     return CheckResult("local_endpoint", "ok", "Локальный веб-интерфейс доступен", None)
 
 
@@ -277,7 +308,9 @@ def _api_readiness_check(http: Any) -> CheckResult:
     payload = _response_payload(response)
     database = _readiness_checks(response).get("database")
     if not _response_ok(response) or payload.get("status") != "ready" or database != "ok":
-        return CheckResult("api_readiness", "failed", "API или база данных не готовы", "restart_app")
+        return CheckResult(
+            "api_readiness", "failed", "API или база данных не готовы", "restart_app"
+        )
     return CheckResult("api_readiness", "ok", "API и база данных готовы", None)
 
 
@@ -300,7 +333,9 @@ def _state_check(paths: HostPaths, code: str, message: str) -> CheckResult:
             try:
                 started_at = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
             except ValueError:
-                return CheckResult(code, "warning", "Не удалось определить возраст выполняемого обновления", None)
+                return CheckResult(
+                    code, "warning", "Не удалось определить возраст выполняемого обновления", None
+                )
             if started_at.tzinfo is None or started_at < datetime.now(UTC) - timedelta(hours=2):
                 return CheckResult(code, "warning", "Обновление выполняется слишком долго", None)
             return CheckResult(code, "warning", "Обновление выполняется", None)
@@ -318,7 +353,9 @@ def _state_check(paths: HostPaths, code: str, message: str) -> CheckResult:
         except ValueError:
             return CheckResult(code, "warning", "Время резервной копии не распознано", None)
         if completed_at.tzinfo is None:
-            return CheckResult(code, "warning", "Время резервной копии указано без часового пояса", None)
+            return CheckResult(
+                code, "warning", "Время резервной копии указано без часового пояса", None
+            )
         if completed_at < datetime.now(UTC) - timedelta(days=7):
             return CheckResult(code, "warning", "Резервная копия устарела", None)
     return CheckResult(code, "ok", message, None)
@@ -328,7 +365,9 @@ def _integration_check(http: Any) -> CheckResult:
     try:
         response = _http_get(http, "http://127.0.0.1:8080/api/health/ready", timeout=5)
     except Exception:
-        return CheckResult("integrations", "warning", "Проверка Tracker и Emergency недоступна", None)
+        return CheckResult(
+            "integrations", "warning", "Проверка Tracker и Emergency недоступна", None
+        )
     integration_state = _readiness_checks(response).get("integrations")
     return CheckResult(
         "integrations",
@@ -350,7 +389,9 @@ def _database_check(paths: HostPaths, runner: Runner, http: Any) -> CheckResult:
         expected_head = manifest.get("migration_head") if isinstance(manifest, Mapping) else None
     except (OSError, ValueError):
         expected_head = None
-    actual_head = migration.stdout.strip().split(maxsplit=1)[0] if migration.stdout.strip() else None
+    actual_head = (
+        migration.stdout.strip().split(maxsplit=1)[0] if migration.stdout.strip() else None
+    )
     revisions_match = (
         isinstance(expected_head, str)
         and bool(expected_head)
@@ -360,8 +401,12 @@ def _database_check(paths: HostPaths, runner: Runner, http: Any) -> CheckResult:
     )
     return CheckResult(
         "database_unavailable",
-        "ok" if _response_ok(response) and database == "ok" and migration.ok and revisions_match else "failed",
-        "База данных и миграции доступны" if _response_ok(response) and database == "ok" and migration.ok and revisions_match else "База данных или миграции недоступны",
+        "ok"
+        if _response_ok(response) and database == "ok" and migration.ok and revisions_match
+        else "failed",
+        "База данных и миграции доступны"
+        if _response_ok(response) and database == "ok" and migration.ok and revisions_match
+        else "База данных или миграции недоступны",
         None,
     )
 
@@ -369,15 +414,21 @@ def _database_check(paths: HostPaths, runner: Runner, http: Any) -> CheckResult:
 def _tuna_route_check(paths: HostPaths, http: Any) -> CheckResult:
     public_url = _public_url(paths)
     if not public_url or not public_url.startswith("https://"):
-        return CheckResult("tuna_route", "warning", "Публичный HTTPS-маршрут Tuna не настроен", None)
+        return CheckResult(
+            "tuna_route", "warning", "Публичный HTTPS-маршрут Tuna не настроен", None
+        )
     try:
         response = _http_get(http, public_url, timeout=10)
     except Exception:
-        return CheckResult("tuna_route", "failed", "Публичный HTTPS-маршрут Tuna недоступен", "restart_tuna")
+        return CheckResult(
+            "tuna_route", "failed", "Публичный HTTPS-маршрут Tuna недоступен", "restart_tuna"
+        )
     return CheckResult(
         "tuna_route",
         "ok" if _response_ok(response) else "failed",
-        "Публичный HTTPS-маршрут Tuna доступен" if _response_ok(response) else "Публичный HTTPS-маршрут Tuna вернул ошибку",
+        "Публичный HTTPS-маршрут Tuna доступен"
+        if _response_ok(response)
+        else "Публичный HTTPS-маршрут Tuna вернул ошибку",
         None if _response_ok(response) else "restart_tuna",
     )
 
@@ -385,13 +436,17 @@ def _tuna_route_check(paths: HostPaths, http: Any) -> CheckResult:
 def _tuna_certificate_check(paths: HostPaths, http: Any) -> CheckResult:
     public_url = _public_url(paths)
     if not public_url:
-        return CheckResult("tuna_certificate", "warning", "Срок сертификата Tuna не установлен", None)
+        return CheckResult(
+            "tuna_certificate", "warning", "Срок сертификата Tuna не установлен", None
+        )
     try:
         parsed = urlsplit(public_url)
         if parsed.scheme != "https" or not parsed.hostname:
             raise ValueError("not HTTPS")
         with (
-            socket.create_connection((parsed.hostname, parsed.port or 443), timeout=10) as connection,
+            socket.create_connection(
+                (parsed.hostname, parsed.port or 443), timeout=10
+            ) as connection,
             ssl.create_default_context().wrap_socket(
                 connection, server_hostname=parsed.hostname
             ) as secured,
@@ -401,8 +456,16 @@ def _tuna_certificate_check(paths: HostPaths, http: Any) -> CheckResult:
             raise ValueError("missing certificate expiry")
         expires = datetime.fromtimestamp(ssl.cert_time_to_seconds(expiry), tz=UTC)
     except (OSError, ssl.SSLError, ValueError):
-        return CheckResult("tuna_certificate", "warning", "Не удалось проверить срок сертификата Tuna", None)
-    status = "failed" if expires <= datetime.now(UTC) else "warning" if expires <= datetime.now(UTC) + timedelta(days=14) else "ok"
+        return CheckResult(
+            "tuna_certificate", "warning", "Не удалось проверить срок сертификата Tuna", None
+        )
+    status = (
+        "failed"
+        if expires <= datetime.now(UTC)
+        else "warning"
+        if expires <= datetime.now(UTC) + timedelta(days=14)
+        else "ok"
+    )
     return CheckResult("tuna_certificate", status, "Срок сертификата Tuna проверен", None)
 
 
@@ -410,9 +473,16 @@ def _artifact_check(paths: HostPaths, runner: Runner) -> CheckResult:
     result = execute(runner, ["du", "-sk", paths.var / "diagnostics"])
     amount = next((int(token) for token in result.stdout.split() if token.isdigit()), None)
     if not result.ok or amount is None:
-        return CheckResult("diagnostic_artifacts", "warning", "Не удалось измерить объём диагностических артефактов", None)
+        return CheckResult(
+            "diagnostic_artifacts",
+            "warning",
+            "Не удалось измерить объём диагностических артефактов",
+            None,
+        )
     status = "failed" if amount >= 1_048_576 else "warning" if amount >= 524_288 else "ok"
-    return CheckResult("diagnostic_artifacts", status, f"Диагностические артефакты: {amount} KiB", None)
+    return CheckResult(
+        "diagnostic_artifacts", status, f"Диагностические артефакты: {amount} KiB", None
+    )
 
 
 def _log_growth_check(paths: HostPaths, runner: Runner) -> CheckResult:
@@ -429,10 +499,13 @@ def _write_human_log(paths: HostPaths, report: DiagnosticReport) -> None:
 
     target = paths.root / "var/log/robopark/doctor.log"
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload = "\n".join(
-        [report.created_at]
-        + [f"[{check.status}] {check.code}: {check.message}" for check in report.checks]
-    )[:16_383] + "\n"
+    payload = (
+        "\n".join(
+            [report.created_at]
+            + [f"[{check.status}] {check.code}: {check.message}" for check in report.checks]
+        )[:16_383]
+        + "\n"
+    )
     descriptor, temporary_name = tempfile.mkstemp(dir=target.parent, prefix=".doctor-", text=True)
     temporary = Path(temporary_name)
     try:
@@ -457,14 +530,35 @@ def run_doctor(paths: HostPaths, runner: Runner, http: Any) -> DiagnosticReport:
         _platform_check(),
         _clock_check(runner),
         _command_check(runner, "dns", ["getent", "hosts", "github.com"], "DNS доступен"),
-        _command_check(runner, "outbound_https", ["curl", "--fail", "--silent", "--show-error", "--max-time", "10", "https://example.com"], "Исходящий HTTPS доступен"),
+        _command_check(
+            runner,
+            "outbound_https",
+            [
+                "curl",
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--max-time",
+                "10",
+                "https://example.com",
+            ],
+            "Исходящий HTTPS доступен",
+        ),
         _df_check(runner, ["df", "-Pk", paths.var], "resources", "Дисковое пространство"),
         _df_check(runner, ["df", "-Pi", paths.var], "inode_space", "Inode-пространство"),
         _memory_check(runner),
         _load_check(runner),
         _temperature_check(runner),
-        _command_check(runner, "docker_daemon", ["systemctl", "is-active", "docker.service"], "Docker daemon доступен", _SERVICE_REPAIRS["docker"]),
-        _command_check(runner, "compose", ["docker", "compose", "version"], "Docker Compose доступен"),
+        _command_check(
+            runner,
+            "docker_daemon",
+            ["systemctl", "is-active", "docker.service"],
+            "Docker daemon доступен",
+            _SERVICE_REPAIRS["docker"],
+        ),
+        _command_check(
+            runner, "compose", ["docker", "compose", "version"], "Docker Compose доступен"
+        ),
         _container_check(paths, runner),
         _release_check(paths),
         _configuration_check(paths),
@@ -472,7 +566,13 @@ def run_doctor(paths: HostPaths, runner: Runner, http: Any) -> DiagnosticReport:
         _endpoint_check(http),
         _api_readiness_check(http),
         _command_check(runner, "tuna_binary", ["tuna", "help"], "Tuna доступна"),
-        _command_check(runner, "tuna_inactive", ["systemctl", "is-active", "robopark-tuna.service"], "Tuna запущен", _SERVICE_REPAIRS["tuna"]),
+        _command_check(
+            runner,
+            "tuna_inactive",
+            ["systemctl", "is-active", "robopark-tuna.service"],
+            "Tuna запущен",
+            _SERVICE_REPAIRS["tuna"],
+        ),
         _tuna_route_check(paths, http),
         _tuna_certificate_check(paths, http),
         _state_check(paths, "updater", "Состояние обновлений проверено"),
@@ -484,6 +584,9 @@ def run_doctor(paths: HostPaths, runner: Runner, http: Any) -> DiagnosticReport:
     report = DiagnosticReport(checks)
     atomic_write_json(paths.var / "diagnostics" / "latest.json", report.as_dict())
     _write_human_log(paths, report)
+    from .commands import publish_health
+
+    publish_health(paths, report)
     return report
 
 
@@ -495,7 +598,18 @@ def _release_metadata(paths: HostPaths) -> dict[str, str | None]:
         payload = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"version": None, "git_sha": None}
-    return {"version": str(payload.get("app_version")) if payload.get("app_version") else None, "git_sha": str(payload.get("git_sha")) if payload.get("git_sha") else None}
+    if not isinstance(payload, dict):
+        return {"version": None, "git_sha": None}
+    version = payload.get("app_version")
+    git_sha = payload.get("git_sha")
+    return {
+        "version": version
+        if isinstance(version, str) and re.fullmatch(r"\d{1,9}(?:\.\d{1,9}){0,2}", version)
+        else None,
+        "git_sha": git_sha
+        if isinstance(git_sha, str) and re.fullmatch(r"[a-fA-F0-9]{40}", git_sha)
+        else None,
+    }
 
 
 def _public_url(paths: HostPaths) -> str | None:

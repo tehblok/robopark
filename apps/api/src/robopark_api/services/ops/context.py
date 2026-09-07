@@ -74,6 +74,9 @@ def http_health_check(url: str = "http://127.0.0.1:8000/health") -> bool:
 
 def build_ops_context(settings: Settings | None = None) -> OpsContext:
     settings = settings or get_settings()
+    from robopark_api.services.ops.host_bridge import host_root
+
+    host = host_root(settings) if settings.ops_host_root else None
     db_path = sqlite_path_from_url(settings.database_url)
     return OpsContext(
         ops_dir=resolved_ops_dir(settings),
@@ -83,6 +86,8 @@ def build_ops_context(settings: Settings | None = None) -> OpsContext:
         apply_root=resolved_apply_root(settings),
         app_version=APP_VERSION,
         release_public_key=_release_public_key(settings),
+        use_host_updater=host is not None,
+        host_ops_dir=host,
         before_db_replace=dispose_db_engines,
         health_check=http_health_check,
     )

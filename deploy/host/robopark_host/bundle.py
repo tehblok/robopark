@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import zipfile
 from contextlib import suppress
@@ -28,19 +29,32 @@ def _journal_entries(output: str, unit: str) -> list[dict[str, str]]:
             continue
         if not isinstance(event, dict):
             continue
+        timestamp = event.get("__REALTIME_TIMESTAMP", "")
+        priority = event.get("PRIORITY", "")
+        event_id = event.get("MESSAGE_ID", "")
+        if not isinstance(timestamp, str) or not re.fullmatch(r"[0-9]{1,20}", timestamp):
+            continue
+        if priority not in tuple(str(n) for n in range(8)):
+            continue
+        if not isinstance(event_id, str) or not re.fullmatch(
+            r"(?:[a-f0-9]{32}|robopark\.[a-z.]{1,40})", event_id
+        ):
+            event_id = ""
         entries.append(
             {
-                "timestamp": str(event.get("__REALTIME_TIMESTAMP", "")),
-                "priority": str(event.get("PRIORITY", "")),
-                "unit": str(event.get("_SYSTEMD_UNIT", unit)),
-                "event_id": str(event.get("MESSAGE_ID", "")),
+                "timestamp": timestamp,
+                "priority": priority,
+                "unit": unit,
+                "event_id": event_id,
             }
         )
     return entries
 
 
 def _write_json(archive: zipfile.ZipFile, name: str, value: Any) -> None:
-    archive.writestr(name, json.dumps(redact(value), ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+    archive.writestr(
+        name, json.dumps(redact(value), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    )
 
 
 def create_diagnostic_bundle(
@@ -50,7 +64,9 @@ def create_diagnostic_bundle(
 
     target = Path(destination)
     target.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(dir=target.parent, prefix=".diagnostics-", suffix=".zip")
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=target.parent, prefix=".diagnostics-", suffix=".zip"
+    )
     os.close(descriptor)
     temporary = Path(temporary_name)
     try:

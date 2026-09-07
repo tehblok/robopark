@@ -4,7 +4,7 @@ install_services() {
     python3 -I "$INSTALLER_DIR/lib/install-services.py" "$ROBOPARK_ROOT" || die unit_install_failed
     systemctl daemon-reload
     systemctl enable docker.service robopark.service robopark-tuna.service robopark-updater.service \
-        robopark-update-check.timer robopark-doctor.timer robopark-watchdog.timer
+        robopark-update-check.timer robopark-doctor.timer robopark-watchdog.timer robopark-commands.path
     systemctl start robopark.service
     ready_attempt=0
     while ! curl -fsS --connect-timeout 1 --max-time 2 http://127.0.0.1:8080/api/health/ready >/dev/null 2>&1; do
@@ -13,5 +13,5 @@ install_services() {
         sleep 2
     done
     systemctl start robopark-tuna.service
-    systemctl start robopark-updater.service robopark-update-check.timer robopark-doctor.timer robopark-watchdog.timer
+    systemctl start robopark-updater.service robopark-update-check.timer robopark-doctor.timer robopark-watchdog.timer robopark-commands.path
 }
