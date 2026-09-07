@@ -263,7 +263,9 @@ def _prepare(paths, journal):
     current = paths.current.resolve(strict=True)
     if not paths.current.is_symlink() or current.parent != paths.releases.resolve():
         raise ReleaseError("snapshot_invalid")
-    release = verify_directory(current, (paths.etc / "release-public-key.pem").read_bytes())
+    from .trust import directory_key
+
+    release = verify_directory(current, directory_key(paths, current))
     _validate_database(candidate / "robopark.db", release["migration_head"])
     owner = (paths.var / "data").stat()
     for item in [candidate, *candidate.rglob("*")]:

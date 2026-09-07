@@ -261,3 +261,57 @@ def test_same_key_rotation_is_rejected_even_with_noncanonical_anchor_encoding(ho
     )
     with pytest.raises(ValueError):
         verify_archive(artifact.read_bytes(), anchor.replace(b"\n", b"\r\n"))
+
+
+def test_bridge_activation_between_preflight_and_lock_rejects_old_key_candidate(host, monkeypatch):
+    from contextlib import contextmanager
+
+    from robopark_host import updater
+
+    request, _, public = bridge(host)
+    assert apply_release(request, host.paths, host.runner).state == "awaiting_reconciliation"
+    current = host.paths.current.resolve()
+    old_future = host.request(host.package("3.0.0"))
+    original = updater.exclusive_lock
+
+    @contextmanager
+    def interleave(path, *args, **kwargs):
+        monkeypatch.setattr(updater, "exclusive_lock", original)
+        assert reconcile_after_exit(host.paths, host.runner).state == "current_healthy"
+        assert (host.paths.etc / "release-public-key.pem").read_bytes() == public
+        with original(path, *args, **kwargs):
+            yield
+
+    monkeypatch.setattr(updater, "exclusive_lock", interleave)
+    result = apply_release(old_future, host.paths, host.runner)
+    assert result.state == "rejected"
+    assert host.paths.current.resolve() == current
+
+
+def test_manual_restore_verifies_bridge_through_exact_retained_pin(host):
+    import hashlib
+    from uuid import uuid4
+
+    from robopark_api.services.ops.archives import build_archive
+    from robopark_host.restore import run_restore
+    from test_manual_restore import database
+
+    request, _, public = bridge(host)
+    assert finish(host, request).state == "current_healthy"
+    source = host.paths.root / "manual-snapshot"
+    database(source / "data/robopark.db", "restored", "new")
+    blob = build_archive(kind="snapshot", source_root=source, app_version="2.0.0")
+    identity = str(uuid4())
+    artifact = "restore-" + identity + ".zip"
+    (host.paths.ops / "artifacts" / artifact).write_bytes(blob)
+    request = {
+        "job_id": identity,
+        "kind": "restore",
+        "actor_user_id": 7,
+        "created_at": "2026-09-07T00:00:00+00:00",
+        "artifact": artifact,
+        "sha256": hashlib.sha256(blob).hexdigest(),
+    }
+    result = run_restore(host.paths, request, host.runner)
+    assert result["state"] == "succeeded", result
+    assert (host.paths.etc / "release-public-key.pem").read_bytes() == public

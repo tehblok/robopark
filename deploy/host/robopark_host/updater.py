@@ -559,13 +559,12 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
             # The completed bridge used the preceding key. Its exact retained
             # identity can acknowledge this job only; it cannot admit a new job.
             release = verify_archive(raw, current_key)
-            if current_manifest == release.manifest and previous.name == completed["candidate"]:
-                return UpdateResult("current_healthy")
-            raise ReleaseError("request_replayed")
-        release = verify_archive(raw, key)
-        check_compatibility(release.manifest, current_manifest)
-        previous_config = _configuration_target(paths)
-        _disk_preflight(paths, release)
+            # This preliminary historical check never acknowledges the job:
+            # current identity and authority must still be checked under ownership.
+        else:
+            release = verify_archive(raw, key)
+            check_compatibility(release.manifest, current_manifest)
+            _disk_preflight(paths, release)
     except ReleaseError as exc:
         return UpdateResult("rejected", str(exc))
     except OSError:
@@ -580,6 +579,26 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
             return UpdateResult("rejected", "update_in_progress")
         if paths.current.resolve() != previous:
             return UpdateResult("rejected", "current_changed")
+        try:
+            # A bridge can promote trust without changing this already-switched
+            # current link while the preliminary checks wait for host.lock.
+            # Only these fresh, owned checks can authorize admission or replay.
+            key = admission_key(paths)
+            current_key = directory_key(paths, previous)
+            current_manifest = verify_directory(previous, current_key)
+            if old and old["job_id"] == request.job_id and old["phase"] == "succeeded":
+                release = verify_archive(raw, current_key)
+                if current_manifest == release.manifest and previous.name == old["candidate"]:
+                    return UpdateResult("current_healthy")
+                raise ReleaseError("request_replayed")
+            release = verify_archive(raw, key)
+            check_compatibility(release.manifest, current_manifest)
+            previous_config = _configuration_target(paths)
+            _disk_preflight(paths, release)
+        except ReleaseError as exc:
+            return UpdateResult("rejected", str(exc))
+        except OSError:
+            return UpdateResult("rejected", "preflight_failed")
         journal = {
             "schema": 1,
             "job_id": request.job_id,
