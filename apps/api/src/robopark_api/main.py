@@ -40,6 +40,7 @@ from robopark_api.services.emergency_config import ensure_default_section_roles
 from robopark_api.services.emergency_keepalive import run_keepalive_loop
 from robopark_api.services.live_merge import JobLease, default_live_merge_root, live_merge_enabled
 from robopark_api.services.ops.context import build_ops_context, resolved_ops_dir
+from robopark_api.services.ops.maintenance import host_maintenance_active
 from robopark_api.services.ops.reconcile import reconcile_pending_rebuild
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
 from robopark_api.services.session_cleanup import run_session_cleanup_loop
@@ -47,20 +48,26 @@ from robopark_api.services.session_cleanup import run_session_cleanup_loop
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    # Attach the same settings to request and background DB connections.
+    bind = getattr(SessionLocal, "kw", {}).get("bind")
+    if bind is not None:
+        bind._robopark_ops_settings = settings
 
-    @asynccontextmanager
-    async def lifespan(_app: FastAPI):
+    def initialize_data():
         with SessionLocal() as db:
             ensure_rbac_catalog(db)
             ensure_default_section_roles(db)
             ensure_seed_user(db, settings)
             ensure_dev_seed(db, settings)
-            # Databases from before the encryption feature can still hold
-            # Tracker token / Emergency cookie as plaintext. Re-seal them now
-            # so ``SECRET_KEY`` actually protects an existing install, not
-            # only fresh writes from the admin UI.
+            # Re-seal pre-encryption values only once host writes are allowed.
             settings_svc.migrate_plaintext_secrets(db)
             settings_svc.migrate_registration_password_from_env(db)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        deferred = host_maintenance_active(settings)
+        if not deferred:
+            initialize_data()
         try:
             ctx = build_ops_context(settings)
             if ctx.use_host_updater:
@@ -80,23 +87,42 @@ def create_app() -> FastAPI:
             logging.getLogger(__name__).exception("ops rebuild reconcile failed on startup")
         stop_event = asyncio.Event()
         job_lease = JobLease(default_live_merge_root(), "lifespan-jobs")
-        run_background_jobs = (not live_merge_enabled()) or job_lease.try_acquire()
         tasks = []
-        if run_background_jobs:
-            tasks = [
-                asyncio.create_task(run_keepalive_loop(stop_event)),
-                asyncio.create_task(run_blocker_history_loop(stop_event)),
-                asyncio.create_task(
-                    run_session_cleanup_loop(
-                        stop_event,
-                        interval_seconds=settings.session_cleanup_interval_seconds,
-                    )
-                ),
-            ]
+
+        async def start_writers():
+            # Candidate readiness is read-only. Start seeding and workers only
+            # after root commits the release and publishes writes_resumed.
+            while host_maintenance_active(settings):
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(stop_event.wait(), timeout=0.5)
+                if stop_event.is_set():
+                    return
+            if deferred:
+                initialize_data()
+            run_background_jobs = (not live_merge_enabled()) or job_lease.try_acquire()
+            if not run_background_jobs:
+                return
+            tasks.extend(
+                [
+                    asyncio.create_task(run_keepalive_loop(stop_event)),
+                    asyncio.create_task(run_blocker_history_loop(stop_event)),
+                    asyncio.create_task(
+                        run_session_cleanup_loop(
+                            stop_event,
+                            interval_seconds=settings.session_cleanup_interval_seconds,
+                        )
+                    ),
+                ]
+            )
+
+        startup = asyncio.create_task(start_writers())
         try:
             yield
         finally:
             stop_event.set()
+            startup.cancel()
+            with suppress(asyncio.CancelledError):
+                await startup
             for task in tasks:
                 task.cancel()
             # Await each task separately: a single `await` chain would skip the

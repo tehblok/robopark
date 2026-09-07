@@ -13,6 +13,7 @@ from robopark_api.db import release_request_session
 from robopark_api.services import emergency_client, reports
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.live_merge import get_live_merge_store
+from robopark_api.services.ops.maintenance import host_maintenance_active
 
 PAYLOAD_CACHE_TTL_SECONDS = 2.5
 _MERGE_NS = "emergency.robot"
@@ -119,10 +120,14 @@ def get_robot_payload(*, db: Session, vin: str) -> dict[str, Any]:
                 payload = merge.merge_load(_MERGE_NS, vin, PAYLOAD_CACHE_TTL_SECONDS, load)
             else:
                 payload = load()
+            if host_maintenance_active():
+                return payload
             settings_svc.set_emergency_cookie_valid(db, True)
             settings_svc.touch_keepalive_ring(db, vin)
             reports.resolve_open_emergency_cookie_reports(db)
         except emergency_client.EmergencyAuthError:
+            if host_maintenance_active():
+                raise
             invalidate_vin(vin)
             settings_svc.set_emergency_cookie_valid(db, False)
             reports.ensure_open_emergency_cookie_report(db, author=None)

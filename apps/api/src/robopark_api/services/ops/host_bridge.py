@@ -33,6 +33,7 @@ from robopark_api.services.ops.jobs import (
     new_job,
     require_idle,
 )
+from robopark_api.services.ops.maintenance import host_marker_active
 
 
 class BridgeError(ValueError):
@@ -183,6 +184,16 @@ def inspect_update(settings, ops, root, blob, actor):
     return UpdateInspectionOut(**{k: record[k] for k in UpdateInspectionOut.model_fields})
 
 
+def _definitely_absent(path):
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        pass
+    return False
+
+
 def _dispatch(ops, root, job):
     request = job.extra["host_request"]
     target = root / "inbox/approved.json"
@@ -191,29 +202,39 @@ def _dispatch(ops, root, job):
         if existing != request:
             raise JobConflict("host_work_in_progress")
         return
-    claim = read_json(root / "public/command-claim.json", 4096)
-    if claim.get("job_id") == job.id:
+    claim_path = root / "public/command-claim.json"
+    claim = read_json(claim_path, 4096)
+    if claim.get("job_id") == job.id or (not claim and not _definitely_absent(claim_path)):
         return
-    # Persist ownership BEFORE publication. Retry may only publish this exact request.
     job.extra["host_dispatch"] = "dispatched"
     _save_job_unlocked(ops, job)
-    fd, name = tempfile.mkstemp(prefix=".approved-", dir=target.parent)
+    temporary = None
     try:
+        fd, name = tempfile.mkstemp(prefix=".approved-", dir=target.parent)
+        temporary = Path(name)
         with os.fdopen(fd, "w") as stream:
             json.dump(request, stream, ensure_ascii=False, sort_keys=True)
             stream.flush()
             os.fsync(stream.fileno())
-        try:
-            os.link(name, target)  # no clobber: approved.json is the single slot
-            _sync(target.parent)
-        except FileExistsError as exc:
-            if read_json(target, 4096) != request:
-                raise JobConflict("host_work_in_progress") from exc
-        except OSError:
-            # Durable reservation remains retryable, never failed/aborted.
-            pass
+        os.link(name, target)
+        _sync(target.parent)
+    except FileExistsError as exc:
+        if read_json(target, 4096) != request:
+            raise JobConflict("host_work_in_progress") from exc
+    except OSError:
+        # Root publishes its durable claim before unlinking the slot. Only
+        # definite absence of both permits generic work to become retryable.
+        # Update ownership remains irreversible, as required by Task 6.
+        if (
+            job.kind in {"diagnostics", "repair"}
+            and _definitely_absent(target)
+            and _definitely_absent(claim_path)
+        ):
+            job.extra["host_dispatch"] = "pending"
+            _save_job_unlocked(ops, job)
     finally:
-        Path(name).unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def approve_update(settings, ops, root, identity, actor, exempt):
@@ -260,9 +281,8 @@ def approve_update(settings, ops, root, identity, actor, exempt):
 def require_host_idle(root):
     if (root / "inbox/approved.json").exists():
         raise JobConflict("host_work_in_progress")
-    maintenance = read_json(root / "public/maintenance.json")
     claim = read_json(root / "public/command-claim.json")
-    if maintenance.get("enabled") is True or claim.get("active") is True:
+    if host_marker_active(root) or claim.get("active") is True:
         raise JobConflict("host_work_in_progress")
 
 
@@ -283,6 +303,15 @@ def enqueue_operation(ops, root, kind, actor, exempt):
     if kind not in {"diagnostics", "repair"}:
         raise BridgeError("invalid_command")
     with _locked(ops):
+        current = load_job(ops)
+        if (
+            current
+            and current.state in ACTIVE_STATES
+            and current.kind == kind
+            and current.extra.get("host_request", {}).get("actor_user_id") == actor
+        ):
+            _dispatch(ops, root, current)
+            return current
         require_idle(ops)
         require_host_idle(root)
         job = _new_host_job(kind, actor, exempt)
@@ -301,6 +330,8 @@ def reconcile_host_job(ops, root):
             root / ("public/rebuild.result" if update else "public/command-result.json")
         )
         if result.get("job_id") != job.id:
+            if job.kind in {"diagnostics", "repair"} and not host_marker_active(root):
+                _dispatch(ops, root, job)
             return job
         if update:
             if type(result.get("ok")) is not bool:
@@ -315,7 +346,7 @@ def reconcile_host_job(ops, root):
             ):
                 return job
             ok = result["state"] == "succeeded"
-        if read_json(root / "public/maintenance.json").get("enabled") is True:
+        if host_marker_active(root):
             return job
         if not update:
             job.extra["host_result"] = public_result(result).model_dump(mode="json")

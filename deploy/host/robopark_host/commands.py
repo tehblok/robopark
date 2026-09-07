@@ -28,7 +28,7 @@ def _read(path, limit=4096):
         if not isinstance(value, dict):
             raise ValueError()
         return value
-    except (OSError, ValueError, UnicodeError) as exc:
+    except (OSError, ValueError, UnicodeError, RecursionError) as exc:
         raise ReleaseError("invalid_command") from exc
 
 
@@ -130,6 +130,52 @@ def _finish(paths, request, result):
     (paths.state / "command-request.json").unlink(missing_ok=True)
 
 
+def _allow_attempt(paths, request):
+    counter = paths.state / "command-attempts.json"
+    try:
+        saved = _read(counter)
+    except ReleaseError:
+        saved = {}
+    attempts = saved.get("attempts", 0) if saved.get("job_id") == request["job_id"] else 0
+    if type(attempts) is not int or attempts < 0:
+        attempts = 3
+    if attempts >= 3:
+        # No more automatic retries for this command. Keep interrupted updates
+        # in maintenance until the root operator explicitly recovers them.
+        if request["kind"] == "update":
+            from .updater import _maintenance, _publish_status
+
+            _maintenance(paths, True)
+            _publish_status(
+                paths,
+                {
+                    "state": "maintenance",
+                    "job_id": request["job_id"],
+                    "error": "manual_recovery_required",
+                },
+            )
+        else:
+            _finish(
+                paths,
+                request,
+                {
+                    "job_id": request["job_id"],
+                    "kind": request["kind"],
+                    "actor_user_id": request["actor_user_id"],
+                    "state": "failed",
+                    "artifact": None,
+                    "before": [],
+                    "after": [],
+                    "performed": [],
+                    "failed": [],
+                    "error": "command_interrupted",
+                },
+            )
+        return False
+    atomic_write_json(counter, {"job_id": request["job_id"], "attempts": attempts + 1})
+    return True
+
+
 def consume_commands(paths, runner, http, *, update_runner=None):
     """All privileged work is serialized; API never chooses argv or output paths."""
     if paths.root == Path("/") and os.geteuid() != 0:
@@ -183,6 +229,8 @@ def consume_commands(paths, runner, http, *, update_runner=None):
                     pending.unlink(missing_ok=True)
                 else:
                     _finish(paths, request, saved["result"])
+                return 0
+            if not _allow_attempt(paths, request):
                 return 0
             if request["kind"] != "update":
                 result = {

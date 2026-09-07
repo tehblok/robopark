@@ -155,6 +155,9 @@ class LiveMergeStore:
 
     @contextmanager
     def _exclusive(self, namespace: str, key: str, *, timeout: float) -> Iterator[None]:
+        from robopark_api.services.ops.maintenance import require_application_writes
+
+        require_application_writes()
         lock_path, _, _, _ = self._paths(namespace, key)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + max(timeout, 0.0)
@@ -168,17 +171,22 @@ class LiveMergeStore:
                         raise LiveMergeTimeout(key) from None
                     time.sleep(_LOCK_RETRY_SEC)
             try:
+                require_application_writes()
                 yield
             finally:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
     def _atomic_write(self, path: Path, payload: dict[str, Any]) -> None:
+        from robopark_api.services.ops.maintenance import require_application_writes
+
+        require_application_writes()
         path.parent.mkdir(parents=True, exist_ok=True)
         encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(encoded)
+            require_application_writes()
             Path(tmp).replace(path)
         except Exception:
             Path(tmp).unlink(missing_ok=True)
@@ -344,12 +352,18 @@ class LiveMergeStore:
         return value
 
     def invalidate(self, namespace: str, key: str) -> None:
+        from robopark_api.services.ops.maintenance import require_application_writes
+
+        require_application_writes()
         _, result, inflight, error = self._paths(namespace, key)
         result.unlink(missing_ok=True)
         inflight.unlink(missing_ok=True)
         error.unlink(missing_ok=True)
 
     def invalidate_prefix(self, namespace: str, prefix: str) -> None:
+        from robopark_api.services.ops.maintenance import require_application_writes
+
+        require_application_writes()
         folder = self.namespace_dir(namespace)
         if not folder.is_dir():
             return
@@ -364,6 +378,9 @@ class LiveMergeStore:
                 path.with_name(path.stem + ".error").unlink(missing_ok=True)
 
     def clear_namespace(self, namespace: str) -> None:
+        from robopark_api.services.ops.maintenance import require_application_writes
+
+        require_application_writes()
         folder = self.namespace_dir(namespace)
         if not folder.is_dir():
             return

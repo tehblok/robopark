@@ -9,6 +9,7 @@ from robopark_api.db import get_db
 from robopark_api.models import AccessStatus, AuthSession, Park, Role, User, UserPark
 from robopark_api.security import hash_session_token
 from robopark_api.services import rbac
+from robopark_api.services.ops.maintenance import host_maintenance_active
 
 #: Paths allowed while ``must_change_password`` is set (SPA + API).
 _MUST_CHANGE_PASSWORD_ALLOW = frozenset(
@@ -32,6 +33,8 @@ def _aware(value: datetime) -> datetime:
 def _touch_session(
     db: Session, auth_session: AuthSession, settings: Settings, now: datetime
 ) -> None:
+    if host_maintenance_active(settings):
+        return
     next_idle = now + timedelta(seconds=settings.session_idle_seconds)
     remaining = (_aware(auth_session.expires_at) - now).total_seconds()
     if remaining >= settings.session_idle_seconds - settings.session_slide_min_interval_seconds:

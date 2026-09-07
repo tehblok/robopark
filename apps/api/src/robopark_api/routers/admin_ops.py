@@ -142,10 +142,7 @@ def maintenance_status(
     if settings.ops_host_root:
         try:
             root = host_bridge.host_root(settings)
-            active = (
-                active
-                or host_bridge.read_json(root / "public/maintenance.json").get("enabled") is True
-            )
+            active = active or host_bridge.host_marker_active(root)
         except host_bridge.BridgeError:
             active = True
     raw = request.cookies.get(settings.session_cookie_name)
