@@ -58,7 +58,7 @@ class InstallerScenarios(unittest.TestCase):
         self.config = self.base / 'answers.env'
         self.config.write_text('TUNA_TOKEN=tt_fixture_secret\nTUNA_SUBDOMAIN=park\nTUNA_LOCATION=ru\nSEED_USERNAME=royal\nSEED_PASSWORD=Strong!Fixture123\nGITHUB_REPOSITORY=example/robopark\nGITHUB_TOKEN=github_fixture_secret\n')
         self.config.chmod(0o600)
-        self.env = {'TMPDIR': str(self.base), 'ROBOPARK_TESTING': '1', 'ROBOPARK_ROOT': str(self.root), 'ARCH': 'aarch64', 'FREE_GIB': '12', 'PATH': str(REPO / 'tests/host/fake-bin') + ':' + os.environ['PATH']}
+        self.env = {'TMPDIR': str(self.base), 'ROBOPARK_TESTING': '1', 'ROBOPARK_ROOT': str(self.root), 'ARCH': 'aarch64', 'FREE_GIB': '12', 'PATH': str(REPO / 'tests/host/fake-bin') + ':' + str(Path(sys.executable).parent) + ':' + os.environ['PATH']}
         self.env.pop('PYTHONPATH', None)
 
     def write_release(self, version='1.0.0'):
@@ -202,6 +202,16 @@ class InstallerScenarios(unittest.TestCase):
         self.run_installer(success=False, BUILD_FAIL='1')
         result = self.run_start()
         self.assertIn('Найдена незавершённая установка', result.stdout)
+        self.assertEqual(self.state()['phase'], 'complete')
+
+    def test_newer_installer_resumes_before_initial_runtime_was_published(self):
+        self.run_installer(success=False, BUILD_FAIL='1')
+        self.assertFalse((self.root / 'var/lib/robopark/ops/state/signing-trust.json').exists())
+        self.write_release('1.0.1')
+
+        self.run_installer('--resume')
+
+        self.assertEqual((self.root / 'opt/robopark/current').resolve().name, '1.0.1')
         self.assertEqual(self.state()['phase'], 'complete')
 
     def test_resume_preserves_installed_runtime_and_does_not_rebuild(self):

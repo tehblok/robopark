@@ -160,7 +160,7 @@ def historical_resume(root, target, key_data, metadata):
     return True
 
 
-def install(root, bundle):
+def install(root, bundle, resume_mode=None):
     root, bundle = Path(root), Path(bundle).resolve()
     verifier = load_bootstrap_verifier(bundle)
     inspect_archive, unpack_archive = verifier.inspect_archive, verifier.unpack_archive
@@ -198,7 +198,18 @@ def install(root, bundle):
     if not resumed_trust and target_key.exists() and target_key.read_bytes() != key_data:
         raise ValueError('key_rotation_requires_signed_update')
     current = opt / 'current'
-    if current.is_symlink() and current.resolve() != target.resolve():
+    # A failed first bootstrap may already have published the signed release
+    # link but cannot use OTA because runtime and signing trust do not exist yet.
+    # Permit only an explicit resume with no activated trust state. Completed
+    # installations still have to move between versions through the updater.
+    bootstrap_recovery = (
+        resume_mode == '--resume-incomplete'
+        and current.is_symlink()
+        and current.resolve() != target.resolve()
+        and not trust_state.exists()
+        and not trust_state.is_symlink()
+    )
+    if current.is_symlink() and current.resolve() != target.resolve() and not bootstrap_recovery:
         raise ValueError('existing_release_requires_updater')
     # Only authenticated metadata can cause a release directory to be created.
     releases.mkdir(parents=True, exist_ok=True, mode=0o755)
@@ -236,7 +247,7 @@ def install(root, bundle):
             if staging.exists():
                 shutil.rmtree(staging)
     current = opt / 'current'
-    if current.is_symlink() and current.resolve() != target.resolve():
+    if current.is_symlink() and current.resolve() != target.resolve() and not bootstrap_recovery:
         # Re-running an old bootstrap is not an OTA or downgrade authorization.
         raise ValueError('existing_release_requires_updater')
     host_tools = target / 'deploy/host'
@@ -251,7 +262,11 @@ def install(root, bundle):
 if __name__ == '__main__':
     try:
         install(*sys.argv[1:])
+    except ValueError as error:
+        reason = str(error) if re.fullmatch(r'[a-z0-9_]+', str(error)) else 'release_verification_failed'
+        print(f'Release installation failed: {reason}', file=sys.stderr)
+        sys.exit(1)
     except Exception:
         # An untrusted archive must never control operator log text.
-        print('Релиз не прошёл проверку или существующая установка несовместима.', file=sys.stderr)
+        print('Release installation failed: release_verification_failed', file=sys.stderr)
         sys.exit(1)
