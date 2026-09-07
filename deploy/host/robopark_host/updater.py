@@ -762,6 +762,15 @@ def _handle_failure(paths, journal, runner, error):
         ):
             _maintenance(paths, True)
             rollback_release(paths, journal, runner, phase)
+            # The restored app is locally ready; publication failure cannot undo it.
+            publication_degraded = False
+            try:
+                runner.run(["systemctl", "restart", "robopark-tuna.service"], timeout=90)
+            except Exception:
+                publication_degraded = True
+            if not _wait_public_ready(paths, runner, timeout=PUBLIC_READY_TIMEOUT):
+                publication_degraded = True
+            phase("rollback_healthy", publication_degraded=publication_degraded)
             phase("rollback_resuming", writes_resumed=True)
             _maintenance(paths, False)
             phase("rolled_back")
@@ -1017,7 +1026,7 @@ def _complete(paths, journal, runner):
     publication_degraded = False
     if (candidate / "deploy/systemd/robopark-tuna.service").is_file():
         try:
-            runner.run(["systemctl", "try-restart", "robopark-tuna.service"], timeout=90)
+            runner.run(["systemctl", "restart", "robopark-tuna.service"], timeout=90)
         except Exception:
             # Publication is independent of core data readiness. Restore the old
             # Tuna unit when available, but never roll back database writes here.
@@ -1031,7 +1040,7 @@ def _complete(paths, journal, runner):
                 )
                 try:
                     runner.run(["systemctl", "daemon-reload"], timeout=60)
-                    runner.run(["systemctl", "try-restart", "robopark-tuna.service"], timeout=90)
+                    runner.run(["systemctl", "restart", "robopark-tuna.service"], timeout=90)
                 except Exception:
                     pass
     if not _wait_public_ready(paths, runner, timeout=PUBLIC_READY_TIMEOUT):

@@ -18,6 +18,7 @@ from .checks import CommandResult
 from .doctor import run_doctor, run_status
 from .paths import HostPaths, paths_from_environment
 from .repair import DEFAULT_REPAIRS, run_repairs
+from .state import HostBusy, host_operation
 from .watchdog import run_watchdog
 
 Handler = Callable[[HostPaths], int]
@@ -129,6 +130,15 @@ def _status_handler(paths: HostPaths) -> int:
 
 
 def _repair_handler(paths: HostPaths) -> int:
+    try:
+        with host_operation(paths):
+            return _repair_owned(paths)
+    except HostBusy:
+        _print({"state": "busy", "error": "host_busy"})
+        return 75
+
+
+def _repair_owned(paths: HostPaths) -> int:
     report = run_doctor(paths, _system_runner, _Http())
     result = run_repairs(report, DEFAULT_REPAIRS, _system_runner)
     post_check = run_doctor(paths, _system_runner, _Http())
@@ -145,7 +155,13 @@ def _repair_handler(paths: HostPaths) -> int:
 
 def _watchdog_handler(paths: HostPaths) -> int:
     result = run_watchdog(paths, _system_runner, _Http())
-    _print({"consecutive_failures": result.consecutive_failures, "restarted": result.restarted})
+    _print(
+        {
+            "consecutive_failures": result.consecutive_failures,
+            "restarted": result.restarted,
+            "busy": result.busy,
+        }
+    )
     return 0
 
 

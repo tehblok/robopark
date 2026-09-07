@@ -465,6 +465,17 @@ runpy.run_path(helper, run_name='__main__')
             self.run_installer(success=False)
         self.assertFalse(self.commands('apt-get'))
 
+    def test_shared_host_lock_blocks_install_before_mutation(self):
+        ops = self.root / 'var/lib/robopark/ops'
+        ops.mkdir(parents=True)
+        with (ops / 'host.lock').open('w') as stream:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.run_installer(success=False)
+        self.assertFalse(self.commands('apt-get'))
+
+    def test_installer_releases_host_owner_before_synchronous_consumer_start(self):
+        self.run_installer(CHECK_HOST_LOCK_HANDOFF='1')
+
     def test_large_profile_requires_sufficient_memory(self):
         (self.root / 'proc').mkdir()
         (self.root / 'proc/meminfo').write_text('MemTotal:        8388608 kB\n')

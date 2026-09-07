@@ -5,6 +5,7 @@ The dependency fixture is a filesystem replacement probe, not a buildable releas
 real Docker dependency resolution remains an explicit target acceptance gate.
 """
 
+import configparser
 import hashlib
 import importlib
 import json
@@ -58,6 +59,8 @@ class InstalledHost:
         self.fail = None
         self.launches = []
         self.calls = []
+        self.app_active = True
+        self.tuna_active = True
         self.command_error = ReleaseError
         self.secrets = SECRETS
         self.check_multiworker = False
@@ -326,10 +329,29 @@ class InstalledHost:
                 if code:
                     raise self.command_error("command_failed")
             return b""
+        if argv[0] == "systemctl" and len(argv) > 2:
+            action, unit = argv[1], argv[-1]
+            if unit == "robopark.service":
+                if action in ("stop", "restart"):
+                    # Tuna Requires=app: explicit stop also stops the reverse dependent.
+                    self.app_active = False
+                    unit_config = configparser.ConfigParser(interpolation=None)
+                    unit_config.read(self.paths.root / "etc/systemd/system/robopark-tuna.service")
+                    if (
+                        "robopark.service"
+                        in unit_config.get("Unit", "Requires", fallback="").split()
+                    ):
+                        self.tuna_active = False
+                if action in ("start", "restart"):
+                    self.app_active = True
+            elif unit == "robopark-tuna.service" and action in ("start", "restart", "try-restart"):
+                if action != "try-restart" or self.tuna_active:
+                    assert self.app_active, "Tuna started before application readiness"
+                    self.tuna_active = self.fail != "tuna"
         if argv[0] == "curl":
             return (
                 b'{"status":"degraded"}\n503'
-                if self.fail in ("public_health", "tuna")
+                if self.fail in ("public_health", "tuna") or not self.tuna_active
                 else b'{"status":"ready"}\n200'
             )
         if argv[:2] == ["systemctl", "stop"] and self.check_multiworker:
@@ -372,17 +394,29 @@ class InstalledHost:
             isolated = json.loads(Path(config).read_text())
             assert str(self.paths.var / "data") not in json.dumps(isolated)
             return self.fail != "smoke"
-        return self.fail != "both_health" and not (
-            self.fail == "local_health" and self.version() == "0.1.1"
+        return (
+            self.app_active
+            and self.fail != "both_health"
+            and not (self.fail == "local_health" and self.version() == "0.1.1")
         )
 
     def get(self, url, *, timeout):
-        if self.fail in ("tuna", "public_health") and url.startswith("https:"):
+        if (self.fail in ("tuna", "public_health") or not self.tuna_active) and url.startswith(
+            "https:"
+        ):
             raise OSError("tt_fixture_secret")
         return ReadyHttp().get(url, timeout=timeout)
 
     def diagnostic_command(self, command, *, timeout, max_output):
         argv = list(map(str, command))
+        if argv[:2] == ["systemctl", "is-active"] and argv[-1] == "robopark-tuna.service":
+            return CommandResult(returncode=0 if self.tuna_active else 3)
+        if argv[0] == "systemctl" and argv[1] in ("start", "restart", "daemon-reload"):
+            try:
+                self.run(argv, timeout=timeout)
+                return CommandResult()
+            except Exception:
+                return CommandResult(returncode=1)
         if argv[0] == "journalctl":
             return CommandResult(
                 stdout=json.dumps(

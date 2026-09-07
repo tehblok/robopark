@@ -30,6 +30,12 @@ preflight
 mkdir -p "$ROBOPARK_VAR/ops/state"
 exec 9>"$ROBOPARK_VAR/ops/install.lock"
 flock -n 9 || die installer_locked
+[ ! -L "$ROBOPARK_VAR/ops/host.lock" ] || die unsafe_host_lock
+exec 8>"$ROBOPARK_VAR/ops/host.lock"
+flock -n 8 || die host_busy
+for pending in "$ROBOPARK_VAR/ops/state/maintenance.json" "$ROBOPARK_VAR/ops/public/maintenance.json" "$ROBOPARK_VAR/ops/state/command-request.json" "$ROBOPARK_VAR/ops/inbox/approved.json"; do
+    [ ! -e "$pending" ] && [ ! -L "$pending" ] || die host_busy
+done
 CURRENT_PHASE=packages
 trap 'cleanup' EXIT
 trap 'exit 130' INT
@@ -44,4 +50,9 @@ run_phase release install_release
 run_phase services install_services
 CURRENT_PHASE=complete
 write_state complete complete
+# No host/configuration mutations after ownership is released. A synchronous
+# consumer start may now acquire host.lock without waiting for its parent.
+exec 8>&-
+exec 9>&-
+start_host_automation
 printf '%s\n' 'Robopark установлен, API готов, автозапуск и Tuna включены.'
