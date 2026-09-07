@@ -61,3 +61,14 @@ def test_record_host_backup_is_read_by_real_public_projection(host_paths):
     public = json.loads((host_paths.ops / "public/system-health.json").read_text())
     assert public["last_backup"]["status"] == "success"
     assert _state_check(host_paths, "backup", "checked").status == "ok"
+
+
+def test_malformed_operational_fields_fail_closed_without_crashing_doctor(host_paths):
+    from robopark_host.operational_state import update_state
+
+    atomic_write_json(host_paths.ops / "public/host-status.json", {"state": []})
+    assert update_state(host_paths)["state"] == "unknown"
+    assert _state_check(host_paths, "updater", "checked").status != "ok"
+    (host_paths.ops / "public/host-status.json").unlink()
+    atomic_write_json(host_paths.state / "updater-journal.json", {"phase": []})
+    assert _state_check(host_paths, "updater", "checked").status != "ok"

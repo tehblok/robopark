@@ -2,6 +2,7 @@ import { ApiError } from '../api'
 import { ru } from './ru'
 
 const opsErrors: Record<string, string> = {
+  artifact_storage_full: 'Недостаточно места для нового архива. Дождитесь очистки или проверьте диагностику хоста.',
   confirm_required: 'Введите фразу подтверждения точно, без лишних пробелов.',
   github_release_unavailable: 'Релиз больше недоступен. Список обновлений проверяется заново.',
   github_approval_actor_mismatch: 'Этот релиз уже подтверждён другим владельцем. Дождитесь завершения операции.',

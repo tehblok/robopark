@@ -540,6 +540,9 @@ def download_approved_release(release, paths, http):
     """Caller holds host.lock. Consume immutable availability after full verification."""
     partial = None
     try:
+        from .retention import require_capacity
+
+        require_capacity(paths, release.size + 65536)
         config = GithubConfig.from_paths(paths)
         require(config.enabled and release.repository == config.repository)
         require(current_available(paths, release.release_id) == release)

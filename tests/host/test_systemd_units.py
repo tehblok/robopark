@@ -69,7 +69,7 @@ def test_privileged_units_use_trusted_launcher_and_sandbox(name, command):
     "name,key,value",
     [
         ("update-check", "OnUnitActiveSec", "6h"),
-        ("doctor", "OnCalendar", "daily"),
+        ("doctor", "OnCalendar", "*:0/15"),
         ("watchdog", "OnUnitActiveSec", "2min"),
     ],
 )
