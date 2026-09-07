@@ -26,10 +26,27 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 UTC = timezone.utc  # noqa: UP017 -- packaging also runs with system Python 3.10
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPOSITORY_ROOT / "apps/api/src"))
-from robopark_api.services.ops.archives import KIND_RELEASE, build_archive  # noqa: E402
 
-VERIFIER = runpy.run_path(str(Path(__file__).with_name("verify-artifact.py")))
+
+def safe_source_path(path, boundary):
+    """Reject symlinks in every component below the trusted repository boundary."""
+    path, boundary = Path(path).absolute(), Path(boundary).absolute()
+    if not path.is_relative_to(boundary):
+        raise ValueError("unsafe_source")
+    current = boundary
+    if current.is_symlink():
+        raise ValueError("unsafe_source")
+    for component in path.relative_to(boundary).parts:
+        current = current / component
+        if current.is_symlink():
+            raise ValueError("unsafe_source")
+    if not path.resolve().is_relative_to(boundary.resolve()):
+        raise ValueError("unsafe_source")
+
+
+verifier_source = Path(__file__).with_name("verify-artifact.py")
+safe_source_path(verifier_source, REPOSITORY_ROOT)
+VERIFIER = runpy.run_path(str(verifier_source))
 EXCLUDED_DIRS = {
     ".git",
     ".release-secrets",
@@ -94,23 +111,24 @@ def excluded(relative):
     )
 
 
-def source_files(root, repository=False):
+def read_source(path, boundary, limit=512 * 1024 * 1024):
+    safe_source_path(path, boundary)
+    data = VERIFIER["read_regular"](path, limit)
+    if re.search(rb"(?m)^-----BEGIN [A-Z ]*PRIVATE KEY-----\r?$", data):
+        raise ValueError("private_key_in_source")
+    return data
+
+
+def source_files(root, repository=False, trusted_root=None):
     root = Path(root)
+    boundary = root if trusted_root is None else Path(trusted_root)
+    safe_source_path(root, boundary)
     if root.is_symlink() or not root.is_dir():
         raise ValueError("unsafe_source")
     roots = (
         [root / p for p in ("apps/api", "apps/web", "deploy", "scripts")] if repository else [root]
     )
     files = {}
-
-    def safe_source(path):
-        current = path
-        while current != root:
-            if current.is_symlink():
-                raise ValueError("unsafe_source")
-            current = current.parent
-        if not path.resolve().is_relative_to(root.resolve()):
-            raise ValueError("unsafe_source")
 
     def visit(directory):
         for entry in sorted(directory.iterdir()):
@@ -135,19 +153,12 @@ def source_files(root, repository=False):
                 raise ValueError("unsafe_source")
 
     def add(path):
-        safe_source(path)
-        if not stat.S_ISREG(path.lstat().st_mode):
-            raise ValueError("unsafe_source")
         name = path.relative_to(root).as_posix()
         VERIFIER["safe_name"](name)
-        data = path.read_bytes()
-        # Reject disguised PEM/OpenSSH private keys as well as filename patterns.
-        if re.search(rb"(?m)^-----BEGIN [A-Z ]*PRIVATE KEY-----\r?$", data):
-            raise ValueError("private_key_in_source")
-        files[name] = data
+        files[name] = read_source(path, boundary)
 
     for directory in roots:
-        safe_source(directory)
+        safe_source_path(directory, boundary)
         if directory.is_symlink() or not directory.is_dir():
             raise ValueError("unsafe_source")
         visit(directory)
@@ -180,8 +191,11 @@ def validate_output(output, forbidden):
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise ValueError("unsafe_output")
         resolved = path.resolve()
-        if any(resolved == p.resolve() or resolved.is_relative_to(p.resolve()) for p in forbidden):
-            raise ValueError("output_inside_source")
+        for protected in forbidden:
+            if resolved == protected.resolve() or resolved.is_relative_to(protected.resolve()):
+                raise ValueError("output_overlaps_input")
+            if path.exists() and protected.exists() and path.samefile(protected):
+                raise ValueError("output_overlaps_input")
     return output
 
 
@@ -228,9 +242,23 @@ def write_artifacts(output, raw, key, manifest, kind):
 def build_release(args):
     root = args.root.absolute()
     forbidden = [root / p for p in ("apps", "deploy", "scripts")] if args.repository else [root]
-    output = validate_output(args.output, forbidden)
+    output = validate_output(args.output, [*forbidden, args.signing_key])
     key, private = signing_key(args.signing_key)
     files = source_files(root, args.repository)
+    # Release construction imports only checked repository code. Installer
+    # construction never needs to import API source modules at all.
+    api = REPOSITORY_ROOT / "apps/api/src"
+    for relative in (
+        "robopark_api/__init__.py",
+        "robopark_api/services/__init__.py",
+        "robopark_api/services/ops/__init__.py",
+        "robopark_api/services/ops/archives.py",
+        "robopark_api/services/ops/release_signing.py",
+    ):
+        safe_source_path(api / relative, REPOSITORY_ROOT)
+    sys.path.insert(0, str(api))
+    from robopark_api.services.ops.archives import KIND_RELEASE, build_archive
+
     stamp = epoch()
     with tempfile.TemporaryDirectory(prefix="robopark-stage-") as temp:
         stage = Path(temp)
@@ -270,7 +298,9 @@ def build_release(args):
 def build_installer(args):
     root = REPOSITORY_ROOT
     output = validate_output(
-        args.output, [root / "deploy", root / "scripts", root / "apps", args.release]
+        args.output,
+        [root / "deploy", root / "scripts", root / "apps", args.signing_key, args.public_key]
+        + [Path(str(args.release) + suffix) for suffix in ("", ".sig", ".sha256", ".json")],
     )
     trusted = VERIFIER["read_regular"](args.public_key, 16384)
     manifest = VERIFIER["verify_artifact"](args.release, trusted)
@@ -282,7 +312,7 @@ def build_installer(args):
         != trusted
     ):
         raise ValueError("signing_key_mismatch")
-    files = source_files(root / "deploy/installer")
+    files = source_files(root / "deploy/installer", trusted_root=root)
     files["payload/robopark-release.zip"] = VERIFIER["read_regular"](
         args.release, VERIFIER["MAX_ARCHIVE"]
     )
@@ -291,10 +321,7 @@ def build_installer(args):
         files["verifier/" + package + "/__init__.py"] = b""
     for name in ("archives.py", "release_signing.py"):
         source = root / "apps/api/src/robopark_api/services/ops" / name
-        files["verifier/robopark_api/services/ops/" + name] = VERIFIER["read_regular"](
-            source, 1024 * 1024
-        )
-    files["README-RU.txt"] = (root / "deploy/installer/README-RU.txt").read_bytes()
+        files["verifier/robopark_api/services/ops/" + name] = read_source(source, root, 1024 * 1024)
     result = io.BytesIO()
     stamp = epoch()
     with gzip.GzipFile(  # noqa: SIM117 -- Python 3.9 parser compatibility
