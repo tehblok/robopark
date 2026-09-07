@@ -353,7 +353,8 @@ def test_pack_release_wrapper_propagates_reviewed_migration_metadata(
     with zipfile.ZipFile(output) as archive:
         manifest = json.loads(archive.read("manifest.json"))
     assert manifest["migration_compatibility"] == {
-        "from_heads": ["0017_driver_work_reports"], "reversible": True
+        "from_heads": ["0017_driver_work_reports"],
+        "reversible": True,
     }
 
 
