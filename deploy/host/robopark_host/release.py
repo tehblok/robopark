@@ -196,6 +196,10 @@ def verify_manifest(raw, signature, public_key):
         or manifest["format"] != 2
     ):
         raise ReleaseError("unsupported_format")
+    try:
+        validate_policy_metadata(manifest)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ReleaseError("invalid_manifest") from exc
     version(manifest["app_version"])
     version(
         "0.0.0" if manifest["min_installer_version"] == "0" else manifest["min_installer_version"]
@@ -376,3 +380,27 @@ def check_compatibility(candidate, current):
             or current["migration_head"] not in migration["from_heads"]
         ):
             raise ReleaseError("migration_incompatible")
+
+
+def validate_policy_metadata(manifest):
+    """Strict signed policy fields; empty compatibility remains valid for old releases."""
+    migration = manifest["migration_compatibility"]
+    if not isinstance(migration, dict):
+        raise ValueError("invalid_release_policy")
+    if migration:
+        if (
+            set(migration) != {"from_heads", "reversible"}
+            or type(migration["reversible"]) is not bool
+        ):
+            raise ValueError("invalid_release_policy")
+        heads = migration["from_heads"]
+        if (
+            not isinstance(heads, list)
+            or len(heads) > 64
+            or not all(
+                isinstance(head, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", head)
+                for head in heads
+            )
+            or len(set(heads)) != len(heads)
+        ):
+            raise ValueError("invalid_release_policy")

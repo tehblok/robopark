@@ -137,6 +137,12 @@ def _validate_release_manifest(manifest: object) -> tuple[dict[str, str], str, s
         raise ArchiveError("invalid_manifest")
     if manifest.get("kind") != KIND_RELEASE or manifest.get("format") != RELEASE_FORMAT_VERSION:
         raise ArchiveError("unsupported_format")
+    from .release_signing import validate_policy_metadata
+
+    try:
+        validate_policy_metadata(manifest)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ArchiveError("invalid_manifest") from exc
     app_version = manifest.get("app_version")
     git_sha = manifest.get("git_sha")
     migration_head = manifest.get("migration_head")

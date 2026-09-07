@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import gzip
 import hashlib
@@ -239,12 +240,98 @@ def write_artifacts(output, raw, key, manifest, kind):
                 os.unlink(temporary)
 
 
+def release_metadata(args, files):
+    """Read reviewed data and compute the sole Alembic head without executing code."""
+    path = getattr(args, "metadata", None) or args.root / "deploy/release-metadata.json"
+    raw = VERIFIER["read_regular"](path, 16384)
+    value = json.loads(raw, object_pairs_hook=VERIFIER["unique_object"])
+    required = {"migration_head", "migration_compatibility"}
+    allowed = required | {
+        "update_notes",
+        "min_installer_version",
+        "required_capabilities",
+    }
+    if not isinstance(value, dict) or not required <= set(value) <= allowed:
+        raise ValueError("invalid_release_metadata")
+    compatibility = value["migration_compatibility"]
+    if not isinstance(compatibility, dict) or set(compatibility) != {"from_heads", "reversible"}:
+        raise ValueError("invalid_release_metadata")
+    revisions = {}
+    for name, content in files.items():
+        if not name.startswith("apps/api/alembic/versions/") or not name.endswith(".py"):
+            continue
+        constants = {}
+        for node in ast.parse(content).body:
+            targets = (
+                node.targets
+                if isinstance(node, ast.Assign)
+                else [node.target]
+                if isinstance(node, ast.AnnAssign)
+                else []
+            )
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id in {"revision", "down_revision"}:
+                    constants[target.id] = ast.literal_eval(node.value)
+        if not constants:
+            continue
+        revision = constants.get("revision")
+        parent = constants.get("down_revision")
+        if (
+            not isinstance(revision, str)
+            or revision in revisions
+            or "down_revision" not in constants
+        ):
+            raise ValueError("invalid_migration_graph")
+        parents = (
+            []
+            if parent is None
+            else [parent]
+            if isinstance(parent, str)
+            else list(parent)
+            if isinstance(parent, (tuple, list))
+            else None
+        )
+        if parents is None or not all(isinstance(item, str) for item in parents):
+            raise ValueError("invalid_migration_graph")
+        revisions[revision] = parents
+    referenced = {parent for parents in revisions.values() for parent in parents}
+    heads = set(revisions) - referenced
+    if not referenced <= set(revisions) or len(heads) != 1 or value["migration_head"] not in heads:
+        raise ValueError("migration_head_mismatch")
+    if getattr(args, "migration_head", None) not in (None, value["migration_head"]):
+        raise ValueError("migration_head_mismatch")
+    # Reject disconnected/cyclic ancestry even if it accidentally has one head.
+    visited, visiting = set(), set()
+
+    def visit(revision):
+        if revision in visiting:
+            raise ValueError("invalid_migration_graph")
+        if revision in visited:
+            return
+        visiting.add(revision)
+        for parent in revisions[revision]:
+            visit(parent)
+        visiting.remove(revision)
+        visited.add(revision)
+
+    visit(next(iter(heads)))
+    if not isinstance(compatibility["from_heads"], list) or not all(
+        isinstance(head, str) and head in revisions for head in compatibility["from_heads"]
+    ):
+        raise ValueError("invalid_migration_sources")
+    if visited != set(revisions):
+        raise ValueError("invalid_migration_graph")
+    return value
+
+
 def build_release(args):
     root = args.root.absolute()
     forbidden = [root / p for p in ("apps", "deploy", "scripts")] if args.repository else [root]
-    output = validate_output(args.output, [*forbidden, args.signing_key])
+    metadata_path = getattr(args, "metadata", None) or root / "deploy/release-metadata.json"
+    output = validate_output(args.output, [*forbidden, args.signing_key, metadata_path])
     key, private = signing_key(args.signing_key)
     files = source_files(root, args.repository)
+    metadata = release_metadata(args, files)
     # Release construction imports only checked repository code. Installer
     # construction never needs to import API source modules at all.
     api = REPOSITORY_ROOT / "apps/api/src"
@@ -272,7 +359,7 @@ def build_release(args):
             app_version=args.version,
             release_meta={
                 "git_sha": args.git_sha,
-                "migration_head": args.migration_head,
+                **metadata,
                 "created_at": datetime.fromtimestamp(stamp, UTC).isoformat().replace("+00:00", "Z"),
             },
             signing_key=private,
@@ -348,6 +435,11 @@ def main():
     parser.add_argument("--version")
     parser.add_argument("--git-sha")
     parser.add_argument("--migration-head")
+    parser.add_argument(
+        "--metadata",
+        type=Path,
+        help="reviewed release metadata JSON; defaults to deploy/release-metadata.json",
+    )
     parser.add_argument("--signing-key", type=Path, required=True)
     parser.add_argument("--release", type=Path)
     parser.add_argument("--public-key", type=Path)
@@ -355,10 +447,8 @@ def main():
     if args.installer:
         if args.release is None or args.public_key is None:
             parser.error("--release and --public-key are required")
-    elif any(
-        getattr(args, field) is None for field in ("root", "version", "git_sha", "migration_head")
-    ):
-        parser.error("--root, --version, --git-sha and --migration-head are required")
+    elif any(getattr(args, field) is None for field in ("root", "version", "git_sha")):
+        parser.error("--root, --version and --git-sha are required")
     try:
         build_installer(args) if args.installer else build_release(args)
     except Exception:

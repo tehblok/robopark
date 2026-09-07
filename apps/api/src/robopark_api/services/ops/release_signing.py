@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -38,3 +39,27 @@ def verify_manifest_signature(manifest: dict, signature: bytes, public_key: byte
         key.verify(signature, canonical_manifest_bytes(manifest))
     except (ValueError, TypeError, AttributeError, InvalidSignature) as exc:
         raise ArchiveError("signature_invalid") from exc
+
+
+def validate_policy_metadata(manifest):
+    """Strict signed policy fields; empty compatibility remains valid for old releases."""
+    migration = manifest["migration_compatibility"]
+    if not isinstance(migration, dict):
+        raise ValueError("invalid_release_policy")
+    if migration:
+        if (
+            set(migration) != {"from_heads", "reversible"}
+            or type(migration["reversible"]) is not bool
+        ):
+            raise ValueError("invalid_release_policy")
+        heads = migration["from_heads"]
+        if (
+            not isinstance(heads, list)
+            or len(heads) > 64
+            or not all(
+                isinstance(head, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", head)
+                for head in heads
+            )
+            or len(set(heads)) != len(heads)
+        ):
+            raise ValueError("invalid_release_policy")

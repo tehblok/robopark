@@ -15,7 +15,6 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed448 import Ed448PrivateKey
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
 from robopark_api.services.ops.archives import (
     KIND_RELEASE,
     ArchiveError,
@@ -50,6 +49,22 @@ def release_tree(tmp_path: Path) -> Path:
     root = tmp_path / "release"
     (root / "apps" / "api").mkdir(parents=True)
     (root / "apps" / "api" / "main.py").write_text("VERSION = '1.2.3'\n", encoding="utf-8")
+    return root
+
+
+def metadata_tree(root: Path, head="0017_driver_work_reports") -> Path:
+    versions = root / "apps/api/alembic/versions"
+    versions.mkdir(parents=True, exist_ok=True)
+    (versions / "initial.py").write_text(f"revision = {head!r}\ndown_revision = None\n")
+    (root / "deploy").mkdir(exist_ok=True)
+    (root / "deploy/release-metadata.json").write_text(
+        json.dumps(
+            {
+                "migration_head": head,
+                "migration_compatibility": {"from_heads": [], "reversible": False},
+            }
+        )
+    )
     return root
 
 
@@ -250,7 +265,7 @@ def test_release_pack_creates_a_signed_archive(tmp_path: Path, ed25519_keys: tup
             sys.executable,
             script,
             "--root",
-            release_tree(tmp_path),
+            metadata_tree(release_tree(tmp_path)),
             "--output",
             output,
             "--version",
@@ -304,10 +319,10 @@ def test_release_pack_refuses_to_invent_a_base_migration_head(
     )
 
     assert packed.returncode != 0
-    assert "migration" in packed.stderr
+    assert not (tmp_path / "release.zip").exists()
 
 
-def test_pack_release_wrapper_propagates_the_explicit_migration_head(
+def test_pack_release_wrapper_propagates_reviewed_migration_metadata(
     tmp_path: Path, ed25519_keys: tuple[bytes, bytes]
 ):
     private, public = ed25519_keys
@@ -319,7 +334,6 @@ def test_pack_release_wrapper_propagates_the_explicit_migration_head(
     env = {
         **os.environ,
         "ROBOPARK_SIGNING_KEY_FILE": str(key_path),
-        "ROBOPARK_MIGRATION_HEAD": "0017_driver_work_reports",
         "ROBOPARK_RELEASE_VERSION": "1.2.3",
     }
 
@@ -357,7 +371,6 @@ def test_pack_release_keeps_api_ops_code_and_excludes_runtime_state(
     env = {
         **os.environ,
         "ROBOPARK_SIGNING_KEY_FILE": str(key_path),
-        "ROBOPARK_MIGRATION_HEAD": "0017_driver_work_reports",
         "ROBOPARK_RELEASE_VERSION": "1.2.3",
     }
 
@@ -408,6 +421,7 @@ def test_pack_extracted_release_resolves_sha_without_git(
     (root / "apps/web").mkdir(parents=True)
     (root / "apps/web/package.json").write_text("{}")
     (root / "deploy").mkdir()
+    metadata_tree(root, "initial")
     (root / "apps/api/data").mkdir()
     (root / "apps/api/data/emergency_sections.json").write_text("{}")
     for runtime in ("robopark.db", "robopark.db-wal", "robopark.db-shm"):
@@ -427,7 +441,6 @@ def test_pack_extracted_release_resolves_sha_without_git(
     env = {
         **os.environ,
         "ROBOPARK_SIGNING_KEY_FILE": str(key),
-        "ROBOPARK_MIGRATION_HEAD": "initial",
         "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"],
     }
     env.pop("ROBOPARK_RELEASE_GIT_SHA", None)

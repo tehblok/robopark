@@ -44,6 +44,19 @@ def packaging(tmp_path):
     source = tmp_path / "source"
     (source / "apps/api").mkdir(parents=True)
     (source / "apps/api/main.py").write_text('print("release")\n')
+    (source / "apps/api/alembic/versions").mkdir(parents=True)
+    (source / "apps/api/alembic/versions/initial.py").write_text(
+        "revision = 'initial'\ndown_revision = None\n"
+    )
+    (source / "deploy").mkdir()
+    (source / "deploy/release-metadata.json").write_text(
+        json.dumps(
+            {
+                "migration_head": "initial",
+                "migration_compatibility": {"from_heads": [], "reversible": False},
+            }
+        )
+    )
     env = {
         **os.environ,
         "SOURCE_DATE_EPOCH": "1700000000",
@@ -389,7 +402,7 @@ def test_repository_packer_refuses_symlinked_source_parent(packaging, tmp_path):
     (external / "api/private.txt").write_text("outside")
     shutil.rmtree(source / "apps")
     (source / "apps").symlink_to(external, target_is_directory=True)
-    (source / "deploy").mkdir()
+    (source / "deploy").mkdir(exist_ok=True)
     (source / "scripts").mkdir()
     output = tmp_path / "release.zip"
     result = run(
