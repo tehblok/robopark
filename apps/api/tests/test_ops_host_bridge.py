@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from conftest import login_as, role_id_for
 from robopark_api.models import AuditLog, User
 from robopark_api.security import hash_password
@@ -267,7 +266,7 @@ def test_host_maintenance_blocks_even_when_api_job_state_is_missing(client, seed
     (installed / "public/maintenance.json").write_text(
         '{"enabled":true,"reason":"update","token":"LEAK"}'
     )
-    assert client.get("/auth/me").status_code == 503
+    assert client.get("/auth/me").status_code == 200
     assert client.get("/ops/maintenance").json()["active"] is True
     assert "LEAK" not in client.get("/ops/maintenance").text
     assert client.get("/health/ready").status_code == 200
@@ -472,3 +471,41 @@ def test_new_explicit_github_approval_can_retry_failed_network_download(
     assert (
         json.loads((installed / "inbox/approved.json").read_text())["job_id"] == second.json()["id"]
     )
+
+
+def test_royal_reload_bootstrap_is_read_only_during_host_maintenance(
+    client, seed_royal, installed, db_session
+):
+    from datetime import UTC, datetime, timedelta
+
+    from robopark_api.models import AuthSession
+    from sqlalchemy import event
+
+    login_as(client, "royal", "secret")
+    session = db_session.query(AuthSession).one()
+    session.expires_at = datetime.now(UTC) + timedelta(minutes=2)
+    db_session.commit()
+    before = session.expires_at
+    (installed / "public/maintenance.json").write_text('{"enabled":true}')
+    writes = []
+    engine = db_session.get_bind()
+
+    def track(c, cur, statement, params, ctx, many):
+        if statement.split()[0].upper() in {"INSERT", "UPDATE", "DELETE"}:
+            writes.append(statement)
+
+    event.listen(engine, "before_cursor_execute", track)
+    try:
+        for _ in range(2):  # fresh-page identity bootstrap and reconnect
+            response = client.get("/auth/me")
+            assert response.status_code == 200, response.text
+            assert response.json()["role"] == "royal"
+            assert client.get("/admin/ops/job").status_code == 200
+        assert client.post("/auth/logout").status_code == 503
+        assert client.post("/parks", json={"name": "blocked", "tag": "blocked"}).status_code == 503
+    finally:
+        event.remove(engine, "before_cursor_execute", track)
+    db_session.expire_all()
+    assert db_session.query(AuthSession).one().expires_at == before
+    assert not writes
+

@@ -56,6 +56,9 @@ class MaintenanceGateMiddleware:
         cookie_name = getattr(state, "session_cookie_name", "robopark_session")
         host_active = settings is not None and host_maintenance_active(settings)
         safe_poll = method in {"GET", "HEAD"} and path in {
+            # Identity bootstrap is read-only; require_user skips session sliding
+            # while the host marker is active. This never exempts Royal writes.
+            "/auth/me",
             "/health",
             "/health/ready",
             "/ops/maintenance",

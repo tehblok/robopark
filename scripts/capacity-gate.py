@@ -262,7 +262,7 @@ async def run_load(config, *, transport=None):
                         sample = await request(
                             "PATCH",
                             f"/api/parks/{isolated_park_id}",
-                            {"name": "capacity-isolated-load"},
+                            {"name": f"{tag}-{index:x}-{sequence:x}"},
                         )
                     else:
                         sample = await request("GET", READ_PATHS[sequence % len(READ_PATHS)])

@@ -278,3 +278,27 @@ describe('AuthProvider session boundaries', () => {
     expectProtectedStateRetained()
   })
 })
+
+it('reconnects a Royal page using only read-only identity requests during host maintenance', async () => {
+  const royal = { ...oldAccount, username: 'royal', role: 'royal' as const }
+  const requests: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (input: string, init: RequestInit) => {
+    requests.push(input)
+    expect(init.method ?? 'GET').toBe('GET')
+    expect(init.credentials).toBe('include')
+    if (input.endsWith('/auth/me')) return Response.json(royal)
+    if (input.endsWith('/ops/maintenance')) return Response.json({ active: true, kind: 'update', operator: true })
+    throw new Error(`Unexpected request ${input}`)
+  }))
+  try {
+    const first = render(<AuthProvider><AuthProbe /></AuthProvider>)
+    expect(await screen.findByText('royal')).toBeInTheDocument()
+    first.unmount()
+    const reopened = render(<AuthProvider><AuthProbe /></AuthProvider>)
+    expect(await screen.findByText('royal')).toBeInTheDocument()
+    expect(requests.filter(path => path.endsWith('/auth/me'))).toHaveLength(2)
+    reopened.unmount()
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})

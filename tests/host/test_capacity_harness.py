@@ -321,3 +321,61 @@ def test_invalid_create_response_never_schedules_cleanup(tmp_path, monkeypatch, 
     with pytest.raises(ValueError, match="isolated_setup_failed"):
         asyncio.run(api["run_load"](config, transport=httpx.MockTransport(respond)))
     assert commands == ["POST"]
+
+
+def test_measured_mutations_emit_real_sql_updates(tmp_path, monkeypatch):
+    # Exercise the real ORM endpoint, not just HTTP verbs. The old constant name
+    # emits one UPDATE in warmup and silently turns the measured run into reads.
+    from robopark_api.models import Base, Park
+    from robopark_api.routers.parks import update_park
+    from robopark_api.schemas import ParkUpdate
+    from robopark_api.services import rbac  # initialize deps without circular import
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import Session
+
+    assert rbac.RoleSlug.ROYAL
+    monkeypatch.setenv("ALLOW_ISOLATED_WRITES", "true")
+    api = module()
+    config = api["load_config"](
+        config_file(
+            tmp_path,
+            users=3,
+            duration_seconds=0.15,
+            warmup_seconds=0.03,
+            think_seconds=0,
+            writes=True,
+            isolated_test_data=True,
+        )
+    )
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    updates = []
+    names = []
+    event.listen(
+        engine,
+        "before_cursor_execute",
+        lambda c, cur, sql, p, ctx, many: (
+            updates.append(sql) if sql.startswith("UPDATE parks SET name=") else None
+        ),
+    )
+    with Session(engine) as db:
+        db.add(Park(id=731, name="new", tag="fixture", is_active=False))
+        db.commit()
+
+        def respond(request):
+            if request.method == "POST":
+                return httpx.Response(201, json={"id": 731})
+            if request.method == "PATCH":
+                assert request.url.path == "/api/parks/731"
+                payload = ParkUpdate(**json.loads(request.content))
+                if payload.name is not None:
+                    names.append(payload.name)
+                update_park(731, payload, db, None)
+            return httpx.Response(200, json={})
+
+        asyncio.run(api["run_load"](config, transport=httpx.MockTransport(respond)))
+    engine.dispose()
+    assert len(names) >= 3
+    assert len(updates) == len(names)
+    assert len(set(names)) == len(names)
+    assert all(len(name) <= 120 for name in names)
