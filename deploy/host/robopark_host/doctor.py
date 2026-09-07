@@ -6,6 +6,8 @@ import json
 import os
 import platform
 import re
+import socket
+import ssl
 import stat
 import tempfile
 from collections.abc import Mapping
@@ -13,6 +15,7 @@ from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .checks import CheckResult, DiagnosticReport, Runner, execute
 from .compose import EXPECTED_SERVICES, compose_command, parse_compose_services
@@ -90,8 +93,16 @@ def _memory_check(runner: Runner) -> CheckResult:
         available = int(lines[0][-1])
     except ValueError:
         return CheckResult("memory_load_swap", "warning", "Не удалось измерить память и swap", None)
-    status = "failed" if available < 128 else "warning" if available < 512 else "ok"
-    return CheckResult(status=status, code="memory_load_swap", message=f"Доступно памяти: {available} MiB")
+    swap = [line.split() for line in result.stdout.splitlines() if line.startswith("Swap:")]
+    if not swap or len(swap[0]) < 4:
+        return CheckResult("memory_load_swap", "warning", "Не удалось измерить swap", None)
+    try:
+        swap_total, swap_used = int(swap[0][1]), int(swap[0][2])
+    except ValueError:
+        return CheckResult("memory_load_swap", "warning", "Не удалось измерить swap", None)
+    exhausted_swap = swap_total > 0 and swap_used / swap_total >= 0.95
+    status = "failed" if available < 128 or exhausted_swap else "warning" if available < 512 else "ok"
+    return CheckResult(status=status, code="memory_load_swap", message=f"Доступно памяти: {available} MiB; swap: {swap_used}/{swap_total} MiB")
 
 
 def _load_check(runner: Runner) -> CheckResult:
@@ -179,7 +190,9 @@ def _release_check(paths: HostPaths) -> CheckResult:
         not isinstance(payload, Mapping)
         or not isinstance(payload.get("app_version"), str)
         or not payload["app_version"]
-        or not isinstance(payload.get("format_version"), int)
+        or not isinstance(payload.get("format"), int)
+        or not isinstance(payload.get("migration_head"), str)
+        or not payload["migration_head"]
     ):
         return CheckResult("release_layout", "failed", "Манифест текущего релиза неполный", None)
     return CheckResult("release_layout", "ok", "Текущий релиз и манифест согласованы", None)
@@ -275,10 +288,21 @@ def _state_check(paths: HostPaths, code: str, message: str) -> CheckResult:
         return CheckResult(code, "failed", "Состояние Robopark повреждено", None)
     if code == "updater":
         outcome = str(state.get("status", state.get("state", ""))).casefold()
-        if outcome in {"failed", "stuck", "running", "manual_recovery_required"}:
-            return CheckResult(code, "failed" if outcome != "running" else "warning", "Обновление требует внимания", None)
+        if outcome in {"failed", "stuck", "manual_recovery_required"}:
+            return CheckResult(code, "failed", "Обновление требует внимания", None)
+        if outcome == "running":
+            started = state.get("started_at")
+            try:
+                started_at = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+            except ValueError:
+                return CheckResult(code, "warning", "Не удалось определить возраст выполняемого обновления", None)
+            if started_at.tzinfo is None or started_at < datetime.now(UTC) - timedelta(hours=2):
+                return CheckResult(code, "warning", "Обновление выполняется слишком долго", None)
+            return CheckResult(code, "warning", "Обновление выполняется", None)
         if outcome not in {"success", "ready", "idle", "completed"}:
             return CheckResult(code, "warning", "Нет подтверждённого состояния обновления", None)
+        if not isinstance(state.get("source"), str) or not state.get("source"):
+            return CheckResult(code, "warning", "Не указан источник последнего обновления", None)
     if code == "backup" and (
         state.get("status") not in {"success", "completed", "ok"} or not state.get("completed_at")
     ):
@@ -288,6 +312,8 @@ def _state_check(paths: HostPaths, code: str, message: str) -> CheckResult:
             completed_at = datetime.fromisoformat(str(state["completed_at"]).replace("Z", "+00:00"))
         except ValueError:
             return CheckResult(code, "warning", "Время резервной копии не распознано", None)
+        if completed_at.tzinfo is None:
+            return CheckResult(code, "warning", "Время резервной копии указано без часового пояса", None)
         if completed_at < datetime.now(UTC) - timedelta(days=7):
             return CheckResult(code, "warning", "Резервная копия устарела", None)
     return CheckResult(code, "ok", message, None)
@@ -314,10 +340,17 @@ def _database_check(paths: HostPaths, runner: Runner, http: Any) -> CheckResult:
         return CheckResult("database_unavailable", "failed", "База данных недоступна", None)
     database = _response_payload(response).get("checks", {}).get("database")
     migration = execute(runner, compose_command(paths, ["exec", "-T", "api", "alembic", "current"]))
+    try:
+        expected_head = json.loads((paths.current / "manifest.json").read_text(encoding="utf-8"))[
+            "migration_head"
+        ]
+    except (OSError, ValueError, KeyError):
+        expected_head = None
+    actual_head = migration.stdout.strip().split(maxsplit=1)[0] if migration.stdout.strip() else None
     return CheckResult(
         "database_unavailable",
-        "ok" if _response_ok(response) and database == "ok" and migration.ok else "failed",
-        "База данных и миграции доступны" if _response_ok(response) and database == "ok" and migration.ok else "База данных или миграции недоступны",
+        "ok" if _response_ok(response) and database == "ok" and migration.ok and actual_head == expected_head else "failed",
+        "База данных и миграции доступны" if _response_ok(response) and database == "ok" and migration.ok and actual_head == expected_head else "База данных или миграции недоступны",
         None,
     )
 
@@ -343,10 +376,20 @@ def _tuna_certificate_check(paths: HostPaths, http: Any) -> CheckResult:
     if not public_url:
         return CheckResult("tuna_certificate", "warning", "Срок сертификата Tuna не установлен", None)
     try:
-        response = _http_get(http, public_url, timeout=10)
-        expires_at = getattr(response, "certificate_expires", None)
-        expires = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
-    except (Exception, ValueError):
+        parsed = urlsplit(public_url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ValueError("not HTTPS")
+        with (
+            socket.create_connection((parsed.hostname, parsed.port or 443), timeout=10) as connection,
+            ssl.create_default_context().wrap_socket(
+                connection, server_hostname=parsed.hostname
+            ) as secured,
+        ):
+            expiry = secured.getpeercert().get("notAfter")
+        if not expiry:
+            raise ValueError("missing certificate expiry")
+        expires = datetime.fromtimestamp(ssl.cert_time_to_seconds(expiry), tz=UTC)
+    except (OSError, ssl.SSLError, ValueError):
         return CheckResult("tuna_certificate", "warning", "Не удалось проверить срок сертификата Tuna", None)
     status = "failed" if expires <= datetime.now(UTC) else "warning" if expires <= datetime.now(UTC) + timedelta(days=14) else "ok"
     return CheckResult("tuna_certificate", status, "Срок сертификата Tuna проверен", None)
@@ -441,7 +484,7 @@ def _release_metadata(paths: HostPaths) -> dict[str, str | None]:
         payload = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"version": None, "git_sha": None}
-    return {"version": str(payload.get("version")) if payload.get("version") else None, "git_sha": str(payload.get("git_sha")) if payload.get("git_sha") else None}
+    return {"version": str(payload.get("app_version")) if payload.get("app_version") else None, "git_sha": str(payload.get("git_sha")) if payload.get("git_sha") else None}
 
 
 def _public_url(paths: HostPaths) -> str | None:
