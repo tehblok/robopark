@@ -315,3 +315,32 @@ def test_manual_restore_verifies_bridge_through_exact_retained_pin(host):
     result = run_restore(host.paths, request, host.runner)
     assert result["state"] == "succeeded", result
     assert (host.paths.etc / "release-public-key.pem").read_bytes() == public
+
+
+def test_api_old_inspection_is_invalidated_when_bridge_projection_changes(host):
+    from types import SimpleNamespace
+
+    from robopark_api.services.ops import host_bridge
+
+    # Simulate the API's old bind-mounted PEM while root atomically replaces it.
+    anchor = host.paths.root / "api-anchor.pem"
+    anchor.write_bytes((host.paths.etc / "release-public-key.pem").read_bytes())
+    settings = SimpleNamespace(
+        ops_release_public_key_path=str(anchor), ops_max_upload_bytes=512 * 1024**2
+    )
+    ops = host.paths.var / "api-ops"
+    old_future = host.package("3.0.0").read_bytes()
+    inspected = host_bridge.inspect_update(settings, ops, host.paths.ops, old_future, 7)
+    request, private, _ = bridge(host)
+    finish(host, request)
+    with pytest.raises(ValueError, match="signature_invalid"):
+        host_bridge.approve_update(settings, ops, host.paths.ops, inspected.inspection_id, 7, None)
+    assert not (host.paths.ops / "inbox/approved.json").exists()
+    host.private = private
+    new_future = host.package("3.0.0").read_bytes()
+    inspected = host_bridge.inspect_update(settings, ops, host.paths.ops, new_future, 7)
+    (host.paths.ops / "inbox").mkdir(exist_ok=True)
+    job = host_bridge.approve_update(
+        settings, ops, host.paths.ops, inspected.inspection_id, 7, None
+    )
+    assert job.kind == "update" and job.phase == "awaiting_host"
