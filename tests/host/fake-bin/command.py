@@ -16,7 +16,10 @@ elif name == 'id':
     print('0')
 elif name == 'df':
     print('Filesystem 1024-blocks Used Available Capacity Mounted on')
-    print('fake 20000000 0 %s 0%% /' % (int(os.environ.get('FREE_GIB', '12')) * 1024**2))
+    top = Path(args[-1]).relative_to(root).parts
+    mount = top[0].upper() if top else 'ROOT'
+    free = os.environ.get('FREE_' + mount + '_GIB', os.environ.get('FREE_GIB', '12'))
+    print('fake 20000000 0 %s 0%% /' % (int(free) * 1024**2))
 elif name == 'dpkg':
     if args == ['--audit'] and os.environ.get('DPKG_INTERRUPTED') == '1':
         print('package is unpacked but not configured')
@@ -43,6 +46,19 @@ elif name == 'flock':
         fcntl.flock(int(args[-1]), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         sys.exit(1)
+elif name == 'sync':
+    if os.environ.get('SYNC_FAIL') == '1':
+        sys.exit(1)
+    descriptor = os.open(args[-1], os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+elif name == 'chown':
+    if os.geteuid() == 0:
+        owner, group = map(int, args[0].split(':'))
+        for path in args[1:]:
+            os.chown(path, owner, group)
 elif name in ('sleep', 'systemctl', 'docker'):
     pass
 else:

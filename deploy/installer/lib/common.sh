@@ -9,7 +9,11 @@ write_state() {
     printf '{"phase":"%s","status":"%s","packages_complete":%s}\n' \
         "$1" "$2" "$PACKAGES_COMPLETE" >"$state_tmp"
     chmod 600 "$state_tmp"
-    mv -f "$state_tmp" "$ROBOPARK_VAR/ops/state/install.json"
+    # GNU sync -f flushes the containing filesystem without requiring Python
+    # before the package phase has installed it.
+    sync -f "$state_tmp" || return 1
+    mv -f "$state_tmp" "$ROBOPARK_VAR/ops/state/install.json" || return 1
+    sync -f "$ROBOPARK_VAR/ops/state"
 }
 
 phase_done() {

@@ -6,7 +6,7 @@ set -eu
 umask 077
 unset TUNA_TOKEN SEED_PASSWORD SECRET_KEY GITHUB_TOKEN OPERATOR_SHARED_PASSWORD
 INSTALLER_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-for module in common preflight packages configure install-release; do
+for module in common preflight packages layout configure install-release; do
     . "$INSTALLER_DIR/lib/$module.sh"
 done
 MODE=interactive
@@ -38,6 +38,7 @@ if ! phase_done packages; then
     run_phase packages install_packages
 fi
 # Always validate configuration and links, including on an already-complete rerun.
+run_phase layout prepare_layout
 run_phase configure configure_host
 run_phase release install_release
 CURRENT_PHASE=complete
