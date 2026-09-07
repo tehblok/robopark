@@ -178,7 +178,10 @@ def post_abort(
 ) -> OpsJobOut:
     """Force-clear a stuck running ops job and lift maintenance."""
     ops_dir = resolved_ops_dir(settings)
-    job = abort_job(ops_dir)
+    try:
+        job = abort_job(ops_dir)
+    except JobConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no_active_job")
     audit.record(

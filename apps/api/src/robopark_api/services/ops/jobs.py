@@ -136,7 +136,14 @@ def _save_job_unlocked(ops_dir: Path, job: OpsJob) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(encoded)
+            fh.flush()
+            os.fsync(fh.fileno())
         Path(tmp).replace(paths["job"])
+        directory = os.open(paths["root"], os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     except Exception:
         Path(tmp).unlink(missing_ok=True)
         raise
@@ -197,38 +204,80 @@ def expire_stale_job(ops_dir: Path, *, ttl_seconds: int | None = None) -> OpsJob
         ttl = get_settings().ops_job_ttl_seconds
     if not ttl or ttl <= 0:
         return None
-    job = load_job(ops_dir)
-    if job is None or job.state not in ACTIVE_STATES:
-        return None
-    try:
-        created = datetime.fromisoformat(job.created_at)
-    except ValueError:
-        return None
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=UTC)
-    age = (datetime.now(UTC) - created).total_seconds()
-    if age < ttl:
-        return None
-    job.state = STATE_FAILED
-    job.phase = "failed"
-    job.error = "job_expired"
-    job.log = (job.log + "\n" if job.log else "") + "Задание истекло по таймауту."
-    save_job(ops_dir, job)
-    paths = ops_paths(ops_dir)
-    paths["rebuild_requested"].unlink(missing_ok=True)
-    return job
+    paths = ensure_ops_dir(ops_dir)
+    with paths["lock"].open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        job = load_job(ops_dir)
+        if job is None or job.state not in ACTIVE_STATES or host_has_job(job):
+            return None
+        try:
+            created = datetime.fromisoformat(job.created_at)
+        except ValueError:
+            return None
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        age = (datetime.now(UTC) - created).total_seconds()
+        if age < ttl:
+            return None
+        job.state = STATE_FAILED
+        job.phase = "failed"
+        job.error = "job_expired"
+        job.log = (job.log + "\n" if job.log else "") + "Задание истекло по таймауту."
+        _save_job_unlocked(ops_dir, job)
+        paths["rebuild_requested"].unlink(missing_ok=True)
+        return job
+
+
+def host_has_job(job: OpsJob) -> bool:
+    """Dispatch is irreversible in the API, even before a host claim is observed."""
+    return job.extra.get("host_updater") is True and job.extra.get("host_dispatch") in {
+        "dispatched",
+        "claimed",
+    }
+
+
+def publish_host_approval(ops_dir: Path, job: OpsJob, prepared: Path, approval: Path) -> None:
+    """Reserve host ownership durably before making the approval visible.
+
+    A crash between the two commits leaves an active dispatched reservation.
+    Task 7 must reconcile it with the host result/claim; it cannot abort or expire it.
+    The exact request is retained in job.extra for controlled dispatch recovery.
+    """
+    paths = ensure_ops_dir(ops_dir)
+    with paths["lock"].open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        current = load_job(ops_dir)
+        if current is None or current.id != job.id or current.state not in ACTIVE_STATES:
+            raise JobAborted("aborted")
+        job.extra["host_dispatch"] = "dispatched"
+        _save_job_unlocked(ops_dir, job)
+        try:
+            os.replace(prepared, approval)
+            directory = os.open(approval.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError:
+            # Publication may have happened. Never turn this into failed/idle:
+            # only a matching host result can relinquish the reservation.
+            return
 
 
 def abort_job(ops_dir: Path, *, error: str = "aborted") -> OpsJob | None:
-    """Royal force-clear of a stuck running/queued job. Returns None if idle."""
-    job = load_job(ops_dir)
-    if job is None or job.state not in ACTIVE_STATES:
-        return None
-    job.state = STATE_FAILED
-    job.phase = "failed"
-    job.error = error
-    job.log = (job.log + "\n" if job.log else "") + "Задание прервано."
-    save_job(ops_dir, job)
-    paths = ops_paths(ops_dir)
-    paths["rebuild_requested"].unlink(missing_ok=True)
-    return job
+    """Abort API-owned work; host dispatch requires host-side reconciliation."""
+    paths = ensure_ops_dir(ops_dir)
+    with paths["lock"].open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        job = load_job(ops_dir)
+        if job is None or job.state not in ACTIVE_STATES:
+            return None
+        if host_has_job(job):
+            raise JobConflict("host_update_dispatched")
+        job.state = STATE_FAILED
+        job.phase = "failed"
+        job.error = error
+        job.log = (job.log + "\n" if job.log else "") + "Задание прервано."
+        _save_job_unlocked(ops_dir, job)
+        paths["rebuild_requested"].unlink(missing_ok=True)
+        return job

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import shutil
@@ -40,7 +39,9 @@ from robopark_api.services.ops.jobs import (
     append_log,
     begin_exclusive,
     ensure_ops_dir,
+    host_has_job,
     load_job,
+    publish_host_approval,
     save_job,
 )
 from robopark_api.services.ops.snapshot import (
@@ -98,11 +99,19 @@ def _aborted_job(ctx: OpsContext, job: OpsJob) -> OpsJob:
 
 def fail_job(ctx: OpsContext, job: OpsJob, token: str, log: str = "") -> OpsJob:
     try:
+        disk = load_job(ctx.ops_dir)
+        if (
+            disk is not None
+            and disk.id == job.id
+            and (disk.state == STATE_FAILED or host_has_job(disk))
+        ):
+            return disk
+        if host_has_job(job):
+            # Even cleanup errors after approval cannot release host ownership
+            # or expose external exception details in the public API job log.
+            return job
         if log:
             append_log(ctx.ops_dir, job, log)
-        disk = load_job(ctx.ops_dir)
-        if disk is not None and disk.id == job.id and disk.state == STATE_FAILED:
-            return disk
         job.state = STATE_FAILED
         job.error = token
         job.phase = "failed"
@@ -319,6 +328,7 @@ def _queue_host_update(ctx: OpsContext, job: OpsJob, archive: bytes) -> OpsJob:
         "created_at": job.created_at,
     }
     job.extra["host_updater"] = True
+    job.extra["host_request"] = request
     inbox = host_ops / "inbox"
     inbox.mkdir(mode=0o700, exist_ok=True)
     job.phase = PHASE_AWAITING_REBUILD
@@ -332,17 +342,7 @@ def _queue_host_update(ctx: OpsContext, job: OpsJob, archive: bytes) -> OpsJob:
             os.fsync(stream.fileno())
         # Aborted jobs may never leave behind a new approval.
         save_job(ctx.ops_dir, job)
-        with paths["lock"].open("a+") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            current = load_job(ctx.ops_dir)
-            if current is None or current.id != job.id or current.state == STATE_FAILED:
-                raise JobAborted("aborted")
-            os.replace(name, inbox / "approved.json")
-        directory = os.open(inbox, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        publish_host_approval(ctx.ops_dir, job, Path(name), inbox / "approved.json")
     finally:
         Path(name).unlink(missing_ok=True)
     return job

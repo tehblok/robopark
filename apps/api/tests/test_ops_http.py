@@ -106,3 +106,20 @@ def test_release_tests_fail_leaves_apply_root_empty(
     assert updated.json()["error"] == "tests_failed"
     apply = Path(test_settings.ops_apply_root)
     assert not (apply / "apps").exists()
+
+
+def test_host_dispatch_abort_is_409_and_preserves_maintenance(client, seed_royal, test_settings):
+    from robopark_api.services.ops.jobs import is_maintenance_active, load_job
+
+    login_as(client, "royal", "secret")
+    ops = Path(test_settings.ops_dir)
+    job = new_job("update", exempt_token_hash="not-this-session")
+    job.state = STATE_RUNNING
+    job.phase = "awaiting_rebuild"
+    job.extra = {"host_updater": True, "host_dispatch": "dispatched"}
+    save_job(ops, job)
+    response = client.post("/admin/ops/abort")
+    assert response.status_code == 409
+    assert response.json()["detail"] == "host_update_dispatched"
+    assert load_job(ops).state == STATE_RUNNING
+    assert is_maintenance_active(ops)

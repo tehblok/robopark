@@ -14,6 +14,7 @@ import re
 import selectors
 import shutil
 import signal
+import stat
 import subprocess
 import time
 from contextlib import suppress
@@ -21,6 +22,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from .paths import HostPaths
@@ -42,6 +44,18 @@ from .rollback import (
     sync_directory,
 )
 from .state import atomic_write_json, exclusive_lock
+
+PRE_MAINTENANCE_PHASES = {
+    "verified",
+    "unpacking",
+    "unpacked",
+    "building",
+    "built",
+    "testing",
+    "tested",
+    "smoking",
+    "smoked",
+}
 
 PHASES = {
     "verified",
@@ -122,6 +136,7 @@ SAFE_ERRORS = {
     "build_failed",
     "tests_failed",
     "migration_failed",
+    "migration_head_mismatch",
     "update_failed",
     "interrupted",
 }
@@ -153,6 +168,7 @@ class SystemRunner:
             stdin=subprocess.DEVNULL,
             start_new_session=True,
         )
+        completed = False
         try:
             deadline = time.monotonic() + timeout
             if capture:
@@ -176,11 +192,24 @@ class SystemRunner:
                 raise ReleaseError("command_timeout") from exc
             if code:
                 raise ReleaseError("command_failed")
+            completed = True
             return bytes(output)
         finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
+            if not completed:
+                # The group can outlive its leader (and retain stdout). Reaping
+                # the leader is therefore never evidence that cleanup is done.
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGTERM)
+                # Give all group members a short grace, even when the leader
+                # has already been reaped; waiting on the leader cannot do that.
+                time.sleep(0.2)
+                # Reap a dead leader before signalling a now-empty group (macOS
+                # reports EPERM for a group containing only an unreaped zombie).
+                process.poll()
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=0.2)
             if process.stdout:
                 process.stdout.close()
 
@@ -451,7 +480,7 @@ def _render_configs(paths, journal, runner, stage):
     return work, root / (journal["job_id"] + "-smoke.json")
 
 
-def _cleanup_staging(paths, journal, runner):
+def _cleanup_staging(paths, journal, runner, *, discard_displaced=True):
     for target in ("api", "web"):
         commands = [
             ["docker", "rm", "--force", "robopark-tests-" + journal["job_id"] + "-" + target],
@@ -478,7 +507,7 @@ def _cleanup_staging(paths, journal, runner):
             shutil.rmtree(root)
     smoke.unlink(missing_ok=True)
     displaced = paths.var / (".displaced-" + journal["job_id"])
-    if displaced.is_dir() and not displaced.is_symlink():
+    if discard_displaced and displaced.is_dir() and not displaced.is_symlink():
         shutil.rmtree(displaced)
 
 
@@ -701,6 +730,7 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
                 ],
                 timeout=900,
             )
+            _verify_database_head(paths, runner, release.manifest["migration_head"])
             phase("migrated")
             phase("starting")
             runner.run(["systemctl", "restart", "robopark.service"], timeout=900)
@@ -757,6 +787,22 @@ def _handle_failure(paths, journal, runner, error):
         _maintenance(paths, True)
         phase("manual_recovery_required", error="manual_recovery_required")
         return _finish(paths, journal, "maintenance", "manual_recovery_required")
+
+
+def _discard_unstarted_update(paths, journal, runner):
+    """No production operation occurred; discard only this job's candidate work."""
+    _phase(paths, journal, "failed", error=journal["error"] or "interrupted")
+    try:
+        _cleanup_staging(paths, journal, runner, discard_displaced=False)
+        config = paths.state / "compose" / (journal["job_id"] + "-production.json")
+        if config.resolve() == (paths.state / "current-compose.json").resolve():
+            raise ReleaseError("unsafe_config_path")
+        config.unlink(missing_ok=True)
+    except Exception:
+        # Failed staging cleanup must not turn into a production restart or
+        # manufacture maintenance. Keep the durable failed journal for retry.
+        return _finish(paths, journal, "previous_restored", "manual_recovery_required")
+    return _finish(paths, journal, "previous_restored", journal["error"])
 
 
 def _failed_housekeeping(paths, journal, runner):
@@ -839,10 +885,133 @@ def _load_journal(paths):
         raise ReleaseError("manual_recovery_required") from exc
 
 
+DATABASE_HEAD_QUERY = """import json, os
+from sqlalchemy import create_engine, text
+engine = create_engine(os.environ['DATABASE_URL'])
+with engine.connect() as connection:
+    heads = [row[0] for row in connection.execute(text('SELECT version_num FROM alembic_version'))]
+print(json.dumps(heads))
+"""
+PUBLIC_READY_TIMEOUT = 60
+
+
+def _verify_database_head(paths, runner, expected):
+    try:
+        output = runner.run(
+            compose("robopark", paths.state / "current-compose.json")
+            + [
+                "run",
+                "--rm",
+                "--no-deps",
+                "--entrypoint",
+                "python",
+                "api",
+                "-c",
+                DATABASE_HEAD_QUERY,
+            ],
+            timeout=30,
+            capture=True,
+        )
+        if len(output) > 4096 or json.loads(output) != [expected]:
+            raise ValueError()
+    except (ReleaseError, OSError, ValueError, TypeError) as exc:
+        raise ReleaseError("migration_head_mismatch") from exc
+
+
+def _public_origin(paths):
+    """Read only the configured origin from a trusted host file; never source env."""
+    owner = 0 if paths.root == Path("/") else os.geteuid()
+    directory = paths.etc.lstat()
+    if (
+        not stat.S_ISDIR(directory.st_mode)
+        or directory.st_uid != owner
+        or directory.st_mode & 0o022
+    ):
+        raise ValueError("invalid_public_origin")
+    descriptor = os.open(paths.etc / "host.env", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != owner
+            or metadata.st_mode & 0o022
+            or metadata.st_size > 65536
+        ):
+            raise ValueError("invalid_public_origin")
+        raw = stream.read(65537)
+        if len(raw) > 65536:
+            raise ValueError("invalid_public_origin")
+    origins = {}
+    for line in raw.decode("utf-8").splitlines():
+        key, separator, value = line.strip().partition("=")
+        if separator and key in {"PUBLIC_ORIGIN", "CORS_ORIGINS"}:
+            if key in origins:
+                raise ValueError("invalid_public_origin")
+            value = value.strip()
+            if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]:
+                value = value[1:-1]
+            origins[key] = value
+    origin = origins.get("PUBLIC_ORIGIN", origins.get("CORS_ORIGINS", ""))
+    parsed = urlsplit(origin)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]+)?", parsed.netloc)
+        or parsed.port == 0
+    ):
+        raise ValueError("invalid_public_origin")
+    return origin.rstrip("/")
+
+
+def _wait_public_ready(paths, runner, *, timeout):
+    try:
+        url = _public_origin(paths) + "/api/health/ready"
+    except (OSError, ValueError, UnicodeError):
+        return False
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            output = runner.run(
+                [
+                    "curl",
+                    "--disable",
+                    "--silent",
+                    "--fail",
+                    "--proto",
+                    "=https",
+                    "--proto-redir",
+                    "=https",
+                    "--connect-timeout",
+                    "3",
+                    "--max-time",
+                    "5",
+                    "--max-filesize",
+                    "4096",
+                    "--write-out",
+                    "\\n%{http_code}",
+                    url,
+                ],
+                timeout=min(6, max(0.001, deadline - time.monotonic())),
+                capture=True,
+            )
+            body, _, status = output.rpartition(b"\n")
+            if len(body) <= 4096 and status == b"200" and json.loads(body).get("status") == "ready":
+                return True
+        except (ReleaseError, OSError, ValueError, AttributeError):
+            pass
+        time.sleep(min(1, max(0, deadline - time.monotonic())))
+    return False
+
+
 def _complete(paths, journal, runner):
     phase = partial(_phase, paths, journal)
     candidate = paths.releases / journal["candidate"]
-    verify_directory(candidate, (paths.etc / "release-public-key.pem").read_bytes())
+    manifest = verify_directory(candidate, (paths.etc / "release-public-key.pem").read_bytes())
     phase("reconciling")
     runner.run(["systemctl", "daemon-reload"], timeout=60)
     runner.run(["systemctl", "restart", "robopark.service"], timeout=900)
@@ -850,6 +1019,7 @@ def _complete(paths, journal, runner):
         project="robopark", config=paths.state / "current-compose.json", timeout=180
     ):
         return _handle_failure(paths, journal, runner, "cutover_unhealthy")
+    _verify_database_head(paths, runner, manifest["migration_head"])
     phase("publication")
     for unit in ("robopark-update-check.timer", "robopark-doctor.timer", "robopark-watchdog.timer"):
         if (candidate / "deploy/systemd" / unit).is_file():
@@ -874,6 +1044,8 @@ def _complete(paths, journal, runner):
                     runner.run(["systemctl", "try-restart", "robopark-tuna.service"], timeout=90)
                 except Exception:
                     pass
+    if not _wait_public_ready(paths, runner, timeout=PUBLIC_READY_TIMEOUT):
+        publication_degraded = True
     phase("publication_checked", publication_degraded=publication_degraded)
     # Persist the irreversible boundary BEFORE opening writes. Recovery must never
     # restore an old snapshot after this record, even if the unlink was interrupted.
@@ -908,6 +1080,20 @@ def recover_interrupted_update(paths: HostPaths, runner: Runner) -> RecoveryResu
             journal = _load_journal(paths)
             if journal is None:
                 return UpdateResult("idle")
+            if (
+                journal["phase"] in PRE_MAINTENANCE_PHASES | {"failed"}
+                and not any(
+                    journal[key]
+                    for key in (
+                        "cutover_started",
+                        "snapshot_done",
+                        "migration_started",
+                        "writes_resumed",
+                    )
+                )
+                and not (paths.state / "maintenance.json").exists()
+            ):
+                return _discard_unstarted_update(paths, journal, runner)
             if journal["phase"] in {"succeeded", "resuming"}:
                 # New writes may already exist; finish only housekeeping, no rollback.
                 _maintenance(paths, False)

@@ -25,6 +25,8 @@ class FakeRunner:
         self.commands = []
         self.health = True
         self.previous_health = True
+        self.database_heads = ["new"]
+        self.public_health = True
         self.fail_on = None
         self.observations = []
 
@@ -55,6 +57,12 @@ class FakeRunner:
                     }
                 }
             ).encode()
+        if argv[0] == "curl":
+            return (
+                b'{"status":"ready"}\n200' if self.public_health else b'{"status":"degraded"}\n503'
+            )
+        if any("SELECT version_num FROM alembic_version" in str(arg) for arg in argv):
+            return json.dumps(self.database_heads).encode()
         if "upgrade" in argv:
             assert (self.paths.state / "maintenance.json").exists()
             (self.paths.var / "data/robopark.db").write_text("migrated")
@@ -145,7 +153,9 @@ def host(host_paths):
             serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
         )
     )
-    (host_paths.etc / "host.env").write_text("SECRET_KEY=never-log-this\nTUNA_TOKEN=also-secret\n")
+    (host_paths.etc / "host.env").write_text(
+        "SECRET_KEY=never-log-this\nTUNA_TOKEN=also-secret\nCORS_ORIGINS=https://robopark.example.tuna.am\n"
+    )
     old = host.package("1.0.0", meta={"migration_head": "old", "migration_compatibility": {}})
     previous = host_paths.releases / "1.0.0"
     previous.mkdir()
@@ -739,3 +749,220 @@ def test_test_image_cleanup_still_runs_when_auto_removed_container_is_absent(hos
     assert result.state == "current_healthy"
     removed = [c for c in host.runner.commands if c[:3] == ["docker", "image", "rm"]]
     assert len(removed) == 2
+
+
+@pytest.mark.parametrize("parent_exits", [True, False])
+def test_timeout_kills_descendants_even_after_parent_exit(host, parent_exits):
+    import time
+
+    marker = host.paths.root / "delayed-child-marker"
+    script = (
+        "import os,signal,time,pathlib\n"
+        "pid=os.fork()\n"
+        "if pid == 0:\n"
+        " signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        " os.write(1,b'ready\\n')\n"
+        " time.sleep(1)\n"
+        f" pathlib.Path({str(marker)!r}).write_text('escaped')\n"
+        " os._exit(0)\n" + ("os._exit(0)\n" if parent_exits else "time.sleep(5)\n")
+    )
+    began = time.monotonic()
+    with pytest.raises(ReleaseError, match="command_timeout"):
+        SystemRunner().run([sys.executable, "-c", script], timeout=0.15, capture=True)
+    assert time.monotonic() - began < 1
+    time.sleep(1.1)
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("heads", [["old"], ["new", "unexpected"], []])
+def test_migration_must_reach_exact_signed_head(host, heads):
+    host.runner.database_heads = heads
+    result = apply_release(host.request(), host.paths, host.runner)
+    assert result.error == "migration_head_mismatch"
+    assert result.state == "previous_restored"
+    assert host.paths.current.resolve().name == "1.0.0"
+    assert (host.paths.var / "data/robopark.db").read_text() == "original"
+
+
+def test_reconciliation_rechecks_actual_head_before_resuming_writes(host):
+    apply_release(host.request(), host.paths, host.runner)
+    host.runner.database_heads = ["unexpected"]
+    result = reconcile_after_exit(host.paths, host.runner)
+    assert result.error == "migration_head_mismatch"
+    assert host.paths.current.resolve().name == "1.0.0"
+    assert (host.paths.var / "data/robopark.db").read_text() == "original"
+
+
+def test_successful_tuna_restart_with_unreachable_public_route_is_degraded(host, monkeypatch):
+    import robopark_host.updater as updater
+
+    monkeypatch.setattr(updater, "PUBLIC_READY_TIMEOUT", 0.02, raising=False)
+    host.runner.public_health = False
+    apply_release(host.request(), host.paths, host.runner)
+    result = reconcile_after_exit(host.paths, host.runner)
+    assert result.state == "current_healthy"
+    assert (host.paths.var / "data/robopark.db").read_text() == "migrated"
+    assert (
+        json.loads((host.paths.ops / "public/host-status.json").read_text())["publication"]
+        == "degraded"
+    )
+    probes = [argv for argv in host.runner.commands if argv[0] == "curl"]
+    assert probes and probes[0][-1] == "https://robopark.example.tuna.am/api/health/ready"
+    assert "also-secret" not in json.dumps(host.runner.commands)
+
+
+def test_database_head_probe_reads_actual_database_without_modifying_it(host):
+    import sqlite3
+
+    from robopark_host.updater import _verify_database_head
+
+    database = host.paths.root / "actual-head.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE alembic_version(version_num TEXT NOT NULL)")
+        connection.execute("INSERT INTO alembic_version VALUES ('actual-revision')")
+    before = database.read_bytes()
+
+    class LocalDatabaseRunner:
+        def run(self, argv, *, timeout, capture):
+            assert argv[:4] == ["docker", "compose", "-p", "robopark"]
+            assert argv[6:13] == ["run", "--rm", "--no-deps", "--entrypoint", "python", "api", "-c"]
+            return SystemRunner().run(
+                [sys.executable, "-c", argv[-1]],
+                timeout=timeout,
+                capture=capture,
+                env={"DATABASE_URL": f"sqlite:///{database}"},
+            )
+
+    runner = LocalDatabaseRunner()
+    _verify_database_head(host.paths, runner, "actual-revision")
+    with pytest.raises(ReleaseError, match="migration_head_mismatch"):
+        _verify_database_head(host.paths, runner, "signed-but-not-applied")
+    assert database.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://example.tuna.am",
+        "https://a.tuna.am,https://b.tuna.am",
+        "https://user:token@example.tuna.am",
+        "https://example.tuna.am/path",
+        "https://example.tuna.am?token=hidden",
+        "https://example.tuna.am#fragment",
+        "https://example.tuna.am:bad",
+        "",
+        "https://example.tuna.am\\t.evil",
+    ],
+)
+def test_public_origin_rejects_ambiguous_or_sensitive_values(host, origin):
+    from robopark_host.updater import _wait_public_ready
+
+    (host.paths.etc / "host.env").write_text(f"CORS_ORIGINS={origin}\nTUNA_TOKEN=secret\n")
+    assert not _wait_public_ready(host.paths, host.runner, timeout=0.01)
+    assert not host.runner.commands
+
+
+def test_public_origin_requires_trusted_regular_file_and_directory(host):
+    from robopark_host.updater import _wait_public_ready
+
+    config = host.paths.etc / "host.env"
+    config.chmod(0o666)
+    assert not _wait_public_ready(host.paths, host.runner, timeout=0.01)
+    config.chmod(0o600)
+    host.paths.etc.chmod(0o777)
+    assert not _wait_public_ready(host.paths, host.runner, timeout=0.01)
+    host.paths.etc.chmod(0o755)
+    other = host.paths.etc / "other.env"
+    config.rename(other)
+    config.symlink_to(other)
+    assert not _wait_public_ready(host.paths, host.runner, timeout=0.01)
+    assert not host.runner.commands
+
+
+def test_public_origin_override_and_https_probe_contract(host):
+    from robopark_host.updater import _wait_public_ready
+
+    (host.paths.etc / "host.env").write_text(
+        "PUBLIC_ORIGIN=https://custom.example/\nCORS_ORIGINS=https://fallback.tuna.am\nTUNA_TOKEN=secret\n"
+    )
+    assert _wait_public_ready(host.paths, host.runner, timeout=0.1)
+    argv = host.runner.commands[-1]
+    assert argv[:2] == ["curl", "--disable"]
+    assert argv[-1] == "https://custom.example/api/health/ready"
+    assert argv[argv.index("--proto") + 1] == "=https"
+    assert "--insecure" not in argv and "--location" not in argv
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        b'{"status":"ready"}\n302',
+        b"wrong-site\n200",
+        b'{"status":"degraded"}\n200',
+        b"[]\n200",
+        b'{"status":"ready"}\n503',
+    ],
+)
+def test_public_probe_retries_with_bounded_budget_and_rejects_wrong_response(host, response):
+    import time
+
+    from robopark_host.updater import _wait_public_ready
+
+    class ResponseRunner:
+        calls = 0
+
+        def run(self, argv, *, timeout, capture):
+            self.calls += 1
+            assert 0 < timeout <= 0.02
+            return response
+
+    runner = ResponseRunner()
+    began = time.monotonic()
+    assert not _wait_public_ready(host.paths, runner, timeout=0.02)
+    assert 0.01 < time.monotonic() - began < 0.5
+    assert runner.calls >= 1
+
+
+def test_public_origin_rejects_file_owned_by_another_user(host, monkeypatch):
+    from types import SimpleNamespace
+
+    import robopark_host.updater as updater
+
+    actual = os.fstat
+
+    def foreign_owner(descriptor):
+        metadata = actual(descriptor)
+        return SimpleNamespace(
+            st_mode=metadata.st_mode, st_uid=metadata.st_uid + 1, st_size=metadata.st_size
+        )
+
+    monkeypatch.setattr(updater.os, "fstat", foreign_owner)
+    assert not updater._wait_public_ready(host.paths, host.runner, timeout=0.01)
+    assert not host.runner.commands
+
+
+def test_public_probe_retries_transient_failure_within_budget(host, monkeypatch):
+    import robopark_host.updater as updater
+
+    elapsed = 0.0
+
+    def advance(duration):
+        nonlocal elapsed
+        elapsed += duration
+
+    monkeypatch.setattr(updater.time, "monotonic", lambda: elapsed)
+    monkeypatch.setattr(updater.time, "sleep", advance)
+
+    class ResponseRunner:
+        calls = 0
+
+        def run(self, argv, *, timeout, capture):
+            self.calls += 1
+            if self.calls == 1:
+                raise ReleaseError("command_timeout")
+            return b'{"status":"ready"}\n200'
+
+    runner = ResponseRunner()
+    assert updater._wait_public_ready(host.paths, runner, timeout=3)
+    assert runner.calls == 2
+    assert elapsed == 1
