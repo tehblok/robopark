@@ -38,9 +38,10 @@ def test_tracker_action_comment(client, db_session, seed_park_with_tracker, monk
             "status": "Open",
             "status_key": "open",
             "queue": "ROBOPARK",
-            "resolution": "",
-            "tags": ["Alpha"],
-        },
+                "resolution": "",
+                "tags": ["Alpha"],
+                "assignee": {"login": "mech1", "display": "Mechanic"},
+            },
     )
     monkeypatch.setattr(tracker_client, "add_comment", lambda **_kwargs: {"id": "1", "text": "ok"})
 
@@ -51,6 +52,26 @@ def test_tracker_action_comment(client, db_session, seed_park_with_tracker, monk
     response = client.post("/tracker/issues/ROBOPARK-1/comment", json={"text": "hello"})
     assert response.status_code == 200
     assert response.json()["action"] == "comment"
+
+
+def test_mechanic_can_only_assign_a_free_issue_to_self(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    seed_mechanic.tracker_login = "mech.login"
+    db_session.commit()
+    issue = {"key": "ROBOPARK-9", "summary": "[447]", "status": "Open",
+             "status_key": "open", "queue": "ROBOPARK", "tags": ["Alpha"]}
+    from robopark_api.services import tracker_client
+    monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: dict(issue))
+    assigned = []
+    monkeypatch.setattr(tracker_client, "assign_issue", lambda **kwargs: assigned.append(kwargs["assignee"]))
+    login_as(client, "mech1", "secret")
+
+    assert client.post("/tracker/issues/ROBOPARK-9/assign", json={"assignee": "other"}).status_code == 403
+    ok = client.post("/tracker/issues/ROBOPARK-9/assign", json={"assignee": "mech.login"})
+    assert ok.status_code == 200
+    assert assigned == ["mech.login"]
 
 
 def test_tracker_action_attach(client, db_session, seed_park_with_tracker, monkeypatch):
@@ -70,9 +91,10 @@ def test_tracker_action_attach(client, db_session, seed_park_with_tracker, monke
             "status": "Open",
             "status_key": "open",
             "queue": "ROBOPARK",
-            "resolution": "",
-            "tags": ["Alpha"],
-        },
+                "resolution": "",
+                "tags": ["Alpha"],
+                "assignee": {"login": "mech1", "display": "Mechanic"},
+            },
     )
     monkeypatch.setattr(
         tracker_client,
@@ -117,9 +139,10 @@ def test_tracker_action_attach_rejects_non_image(
             "status": "Open",
             "status_key": "open",
             "queue": "ROBOPARK",
-            "resolution": "",
-            "tags": ["Alpha"],
-        },
+                "resolution": "",
+                "tags": ["Alpha"],
+                "assignee": {"login": "mech1", "display": "Mechanic"},
+            },
     )
 
     assert (
@@ -192,6 +215,7 @@ def test_mechanic_can_attach_when_write_disabled(
             "queue": "ROBOPARK",
             "resolution": "",
             "tags": ["Alpha"],
+            "assignee": {"login": "mech1", "display": "Mechanic"},
         },
     )
     monkeypatch.setattr(
@@ -238,6 +262,7 @@ def test_attachment_is_denied_without_tracker_attach_permission(
             "queue": "ROBOPARK",
             "resolution": "",
             "tags": ["Alpha"],
+            "assignee": {"login": "mech1", "display": "Mechanic"},
         },
     )
     login_as(client, "mech1", "secret")
@@ -274,6 +299,7 @@ def test_mechanic_comment_blocked_when_write_disabled(
             "queue": "ROBOPARK",
             "resolution": "",
             "tags": ["Alpha"],
+            "assignee": {"login": "mech1", "display": "Mechanic"},
         },
     )
 
@@ -294,6 +320,7 @@ def _mock_close_tracker(monkeypatch, *, key: str = "ROBOPARK-1"):
         "queue": "ROBOPARK",
         "resolution": "",
         "tags": ["Alpha"],
+        "assignee": {"login": "mech1", "display": "Mechanic"},
     }
     monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: issue)
     monkeypatch.setattr(

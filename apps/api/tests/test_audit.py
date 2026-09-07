@@ -24,6 +24,7 @@ def _issue(**overrides) -> dict:
         "queue": "ROBOPARK",
         "resolution": "",
         "tags": ["Alpha"],
+        "assignee": {"login": "mech1", "display": "Mechanic"},
     }
     issue.update(overrides)
     return issue

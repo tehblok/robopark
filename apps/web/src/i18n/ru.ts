@@ -152,6 +152,9 @@ export const ru = {
       tracker_queue_required_for_untagged:
         'Для неразмеченных укажите очередь (например SDCFLEETOPS).',
       tracker_write_disabled: 'Запись в Startrek отключена политикой.',
+      tracker_issue_claim_required: 'Сначала возьмите задачу в работу.',
+      tracker_issue_already_claimed: 'Задача уже находится в работе у другого механика.',
+      mechanic_can_only_claim_self: 'Механик может взять задачу только на себя.',
       tracker_upstream_error: 'Ошибка интеграции со Startrek.',
       emergency_upstream_error: 'Ошибка интеграции проверки робота.',
       invalid_robot_number: 'Некорректный номер или VIN робота.',

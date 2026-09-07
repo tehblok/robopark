@@ -18,17 +18,18 @@ def tracker_setup(client, db_session, seed_mechanic, monkeypatch):
         "status_key": "open",
         "queue": "ROBOPARK",
         "tags": ["Alpha"],
+        "assignee": {"login": "mech1", "display": "Mechanic"},
     }
     monkeypatch.setattr(tracker_client, "get_issue", lambda **kw: dict(issue))
     login_as(client, "mech1", "secret")
     return issue
 
 
-def headers(key="submission-one"):
+def headers(key="submission-one", assignee="mech1"):
     return {
         "Idempotency-Key": key,
         "X-Tracker-State": quote(
-            json.dumps({"status": "Open", "status_key": "open", "assignee": ""})
+            json.dumps({"status": "Open", "status_key": "open", "assignee": assignee})
         ),
     }
 
@@ -158,6 +159,7 @@ def test_concurrent_reservation_has_only_one_writer(
             "status_key": "open",
             "queue": "ROBOPARK",
             "tags": ["Alpha"],
+            "assignee": {"login": "mech1"},
         }
 
     monkeypatch.setattr(tracker_client, "get_issue", issue)
@@ -296,6 +298,8 @@ def test_two_actors_assigning_same_snapshot_are_serialized_and_second_must_revie
     from robopark_api.routers.tracker_actions import router
 
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    seed_mechanic.tracker_login = "alice"
+    db_session.commit()
     issue = {
         "key": "ROBOPARK-1",
         "status": "Open",
@@ -327,8 +331,8 @@ def test_two_actors_assigning_same_snapshot_are_serialized_and_second_must_revie
 
     app.dependency_overrides[get_db] = database
     app.dependency_overrides[require_user] = actor
-    first_headers = {**headers("first-request"), "X-Actor": str(seed_mechanic.id)}
-    second_headers = {**headers("second-request"), "X-Actor": str(seed_royal.id)}
+    first_headers = {**headers("first-request", ""), "X-Actor": str(seed_mechanic.id)}
+    second_headers = {**headers("second-request", ""), "X-Actor": str(seed_royal.id)}
     with (
         TestClient(app) as first,
         TestClient(app) as second,

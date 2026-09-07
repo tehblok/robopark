@@ -93,23 +93,21 @@ def test_sla_calendar_hours_boundaries_and_unknown_dates():
     from robopark_api.services.operations import calculate_sla
 
     rows = [
-        issue("oldest", age=20),
-        issue("overdue", age=10.01),
-        issue("boundary", age=10),
-        issue("warning", age=8),
-        issue("safe", age=7.99),
-        issue("future", age=-1),
-        {**issue("invalid"), "created": "nonsense"},
-        {**issue("missing"), "created": None},
+        issue("oldest", status="queued", age=20),
+        issue("overdue", status="queued", age=10.01),
+        issue("boundary", status="queued", age=10),
+        issue("warning", status="queued", age=8),
+        issue("safe", status="queued", age=7.99),
+        issue("future", status="queued", age=-1),
+        {**issue("invalid", status="queued"), "created": "nonsense"},
+        {**issue("missing", status="queued"), "created": None},
     ]
     result = calculate_sla(rows, target_hours=10, now=NOW)
     assert result.evaluated_count == 5
     assert result.unknown_count == 3
-    assert result.at_risk_count == 2
-    assert result.overdue_count == 2
-    assert [row.key for row in result.overdue] == ["oldest", "overdue"]
-    assert result.overdue[0].age_hours == 20
-    assert result.overdue[0].overdue_hours == 10
+    assert result.at_risk_count == 1
+    assert result.overdue_count == 0
+    assert result.overdue == []
 
 
 def test_no_sla_target_is_unknown_not_zero():
@@ -124,11 +122,26 @@ def test_no_sla_target_is_unknown_not_zero():
     assert result.overdue == []
 
 
+def test_sla_counts_only_queued_working_hours_in_moscow():
+    from robopark_api.services.operations import calculate_sla
+
+    now = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)  # 15:00 Moscow
+    queued = issue("queued", status="queued")
+    queued["created"] = "2026-09-02T17:00:00+00:00"  # 20:00 Moscow: 1h + 6h
+    diagnostics = {**queued, "key": "diagnostics", "status": "diagnostics", "status_key": "diagnostics"}
+
+    result = calculate_sla([queued, diagnostics], target_hours=4, now=now)
+    assert result.evaluated_count == 1
+    assert result.unknown_count == 1
+    assert result.overdue_count == 1
+    assert result.overdue[0].age_hours == 7
+
+
 def test_sla_bounded_list_retains_exact_total():
     from robopark_api.services.operations import calculate_sla
 
     result = calculate_sla(
-        [issue(str(i), age=300 - i) for i in range(210)], target_hours=10, now=NOW
+        [issue(str(i), status="queued", age=300 - i) for i in range(210)], target_hours=10, now=NOW
     )
     assert result.overdue_count == 210
     assert len(result.overdue) == 200
@@ -179,7 +192,7 @@ def test_leadership_filter_counts_before_render_cap(
     assert len(data["tasks"]) == 200
     assert data["tasks"][0]["key"] == "0"
     assert data["workload"][0]["open_count"] == 211
-    assert data["workload"][0]["overdue_count"] is None
+    assert data["workload"][0]["overdue_count"] == 1
 
 
 @pytest.mark.parametrize("role,filter_value", [("driver", "queued"), ("mechanic", "new")])
@@ -319,14 +332,14 @@ def test_sla_policy_roundtrip_clear_and_audit(client, db_session, seed_park_with
     account(db_session, seed_park_with_tracker, "admin")
     login_as(client, "subject", "secret")
     url = f"/operations/sla-policy?park_id={seed_park_with_tracker.id}"
-    assert client.get(url).json() == {"park_id": seed_park_with_tracker.id, "target_hours": None}
+    assert client.get(url).json() == {"park_id": seed_park_with_tracker.id, "target_hours": 4}
     response = client.put(url, json={"target_hours": 24})
     assert response.status_code == 200
     assert client.get(url).json()["target_hours"] == 24
     row = db_session.get(PlatformSetting, f"operations.sla.park.{seed_park_with_tracker.id}")
     assert row.value == "24"
     assert client.put(url, json={"target_hours": None}).status_code == 200
-    assert client.get(url).json()["target_hours"] is None
+    assert client.get(url).json()["target_hours"] == 4
     edits = db_session.scalars(
         select(AuditLog).where(AuditLog.action == "operations.sla_policy.updated")
     ).all()
@@ -489,7 +502,11 @@ def test_mechanic_work_detail_is_not_limited_to_overview_statuses(
     client, db_session, seed_park_with_tracker, source, monkeypatch
 ):
     account(db_session, seed_park_with_tracker, "mechanic")
-    monkeypatch.setattr(tracker_client, "get_issue", lambda **kwargs: issue(status="new"))
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **kwargs: issue(status="new", login="subject"),
+    )
     login_as(client, "subject", "secret")
     assert client.get("/tracker/issues/ROBOPARK-1").status_code == 200
 
@@ -508,7 +525,7 @@ def test_workload_uses_assignee_identity_and_marks_unassigned():
     ]
     loads = {row.login: row for row in calculate_workload(rows, target_hours=10, now=NOW)}
     assert loads["operator.one"].open_count == 2
-    assert loads["operator.one"].overdue_count == 1
+    assert loads["operator.one"].overdue_count == 0
     assert loads["operator.one"].oldest_hours == 20
     assert loads[None].display == "Без ответственного"
     assert loads["invalid"].oldest_hours is None

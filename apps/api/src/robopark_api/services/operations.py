@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -33,6 +34,9 @@ from robopark_api.services.tracker_filters import (
 from robopark_api.services.tracker_policy import is_issue_status_visible, issue_tags
 
 TASK_LIMIT = 200
+SLA_TIMEZONE = ZoneInfo("Europe/Moscow")
+SLA_DAY_START = time(9, 0)
+SLA_DAY_END = time(21, 0)
 STATUS_LABELS = {
     "all": "Все",
     "new": "Новые",
@@ -67,6 +71,35 @@ def age_hours(item: dict, now: datetime) -> float | None:
     return hours if hours >= 0 else None
 
 
+def queued_working_hours(item: dict, now: datetime) -> float | None:
+    """Working hours since creation for tasks currently in the queued stage."""
+    if issue_status_bucket(item) != "queued":
+        return None
+    raw = item.get("created")
+    if not raw:
+        return None
+    try:
+        created = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if created.tzinfo is None:
+        return None
+    start = created.astimezone(SLA_TIMEZONE)
+    end = as_utc(now).astimezone(SLA_TIMEZONE)
+    if end < start:
+        return None
+    total = 0.0
+    day = start.date()
+    while day <= end.date():
+        window_start = datetime.combine(day, SLA_DAY_START, SLA_TIMEZONE)
+        window_end = datetime.combine(day, SLA_DAY_END, SLA_TIMEZONE)
+        left, right = max(start, window_start), min(end, window_end)
+        if right > left:
+            total += (right - left).total_seconds() / 3600
+        day += timedelta(days=1)
+    return total
+
+
 def calculate_sla(items: list[dict], *, target_hours: int | None, now: datetime) -> SlaOut:
     if target_hours is None:
         return SlaOut(
@@ -82,7 +115,7 @@ def calculate_sla(items: list[dict], *, target_hours: int | None, now: datetime)
     at_risk = 0
     overdue: list[tuple[dict, float]] = []
     for item in items:
-        age = age_hours(item, now)
+        age = queued_working_hours(item, now)
         if age is None:
             continue
         evaluated += 1
@@ -122,12 +155,15 @@ def calculate_workload(
     for (login, fallback), group in grouped.items():
         display = str((group[0].get("assignee") or {}).get("display") or login or fallback)
         ages = [age for item in group if (age := age_hours(item, now)) is not None]
+        sla_ages = [
+            age for item in group if (age := queued_working_hours(item, now)) is not None
+        ]
         result.append(
             WorkloadOut(
                 login=login,
                 display=display,
                 open_count=len(group),
-                overdue_count=sum(age > target_hours for age in ages)
+                overdue_count=sum(age > target_hours for age in sla_ages)
                 if target_hours is not None
                 else None,
                 oldest_hours=max(ages) if ages else None,
@@ -181,12 +217,12 @@ def sla_policy_key(park_id: int) -> str:
 def get_sla_target(db: Session, park_id: int) -> int | None:
     row = platform_settings.get_setting(db, sla_policy_key(park_id))
     if row is None:
-        return None
+        return 4
     try:
         value = json.loads(row.value)
     except (ValueError, TypeError):
-        return None
-    return value if type(value) is int and 1 <= value <= 8760 else None
+        return 4
+    return value if type(value) is int and 1 <= value <= 8760 else 4
 
 
 def require_operations_park(db: Session, user: User, park_id: int) -> Park:

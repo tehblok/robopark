@@ -183,8 +183,8 @@ def test_age_bands_sla_and_workload_are_historical_means_with_real_keys(
     bands = {row["key"]: row for row in data["backlog_age_bands"]}
     assert bands["under_24h"]["value"] == 0.5
     assert bands["24_to_72h"]["value"] == 1
-    assert data["sla_trend"]["value"] == pytest.approx(200 / 3)
-    assert data["sla_trend"]["sample_count"] == 3
+    assert data["sla_trend"]["value"] == 0
+    assert data["sla_trend"]["sample_count"] == 2
     assert data["drilldown_task_keys"] == ["ROBOPARK-1", "ROBOPARK-2"]
     workload = {row["key"]: row for row in data["workload"]}
     assert workload["diagnostics"]["value"] == 0.5
@@ -388,7 +388,7 @@ def test_analytics_authorization_ignores_relocation_and_display_hints_in_every_m
                 assert point["sample_count"] == 0
                 assert point["value"] is None or point["value"] == 0
     else:
-        assert data["sla_trend"]["value"] == 100
+        assert data["sla_trend"]["value"] is None
         assert next(row for row in data["workload"] if row["key"] == "moving")["value"] == 1
         duration = next(row for row in data["stage_durations"] if row["key"] == "moving")
         assert duration["value"] == 2

@@ -8,7 +8,7 @@ import { resourceStore, useCachedResource } from '../../lib/resource'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { PageLayout } from '../../design-system/layout/PageLayout'
 import { classifyApiError, type DomainError } from '../../shared/api/classifyApiError'
-import { ANALYTICS_LABELS, analyticsDate, analyticsParks, analyticsRequestIdentity, analyticsSearch, analyticsValue, parseAnalyticsQuery, trendSegments, type AnalyticsApiClient, type AnalyticsCoverage, type AnalyticsMetric, type AnalyticsQuery, type AnalyticsSeries, type HistoricalAnalytics } from './analyticsModel'
+import { ANALYTICS_LABELS, analyticsDate, analyticsParks, analyticsRequestIdentity, analyticsSearch, analyticsValue, buildOperationalInsights, parseAnalyticsQuery, trendSegments, type AnalyticsApiClient, type AnalyticsCoverage, type AnalyticsMetric, type AnalyticsQuery, type AnalyticsSeries, type HistoricalAnalytics } from './analyticsModel'
 import { limitOperationsRequest } from '../shift/operationsRequestLimit'
 import './analytics.css'
 
@@ -82,8 +82,17 @@ function Comparison({ data, parks }: { data: HistoricalAnalytics[]; parks: Park[
   </section>
 }
 
-function AnalyticsOwner({ apiClient, parks, days, bucket, resourceKey, onAuthorizationFailure }: {
-  apiClient: AnalyticsApiClient; parks: Park[]; days: number; bucket: AnalyticsQuery['bucket']; resourceKey: string; onAuthorizationFailure: (failure: DomainError) => void
+function OperationalAnalysis({ data, parks }: { data: HistoricalAnalytics[]; parks: Park[] }) {
+  const insights = buildOperationalInsights(data, parks)
+  return <section className="rp-analytics-analysis" aria-labelledby="operational-analysis-title">
+    <h2 id="operational-analysis-title">Анализ текущей ситуации</h2>
+    <p className="rp-analytics-note">Автоматическая оценка истории очереди, возраста задач, SLA и нагрузки по этапам.</p>
+    {insights.length ? <ul>{insights.map((item, index) => <li className={`rp-analytics-insight rp-analytics-insight--${item.severity}`} key={`${item.parkId}-${index}`}>{item.text}</li>)}</ul> : <p>Критичных отклонений по доступным данным не обнаружено.</p>}
+  </section>
+}
+
+function AnalyticsOwner({ apiClient, parks, days, bucket, resourceKey, onAuthorizationFailure, showAnalysis }: {
+  apiClient: AnalyticsApiClient; parks: Park[]; days: number; bucket: AnalyticsQuery['bucket']; resourceKey: string; onAuthorizationFailure: (failure: DomainError) => void; showAnalysis: boolean
 }) {
   const activeLoads = useRef(0)
   const ownerGeneration = useRef(Symbol('analytics-owner'))
@@ -145,7 +154,7 @@ function AnalyticsOwner({ apiClient, parks, days, bucket, resourceKey, onAuthori
   const retainData = failure && ['offline', 'timeout', 'server'].includes(failure.kind)
   if (failure && !(data && retainData)) return <ErrorState title={failure.title} description={failure.description} requestId={failure.requestId} onRetry={failure.retryable ? () => void resource.refresh() : undefined} />
   if (!data) return <LoadingState label="Загружаем историю процесса" variant="page" />
-  return <>{failure ? <div className="rp-analytics-warning" role="alert"><strong>{failure.title}</strong><p>{failure.description}</p>{failure.retryable ? <Button variant="secondary" busy={resource.isRevalidating} onClick={() => void resource.refresh()}>Повторить</Button> : null}</div> : null}<Comparison data={data} parks={parks} /><div className="rp-analytics-parks">{data.map((result, index) => <ParkHistory key={result.park_id} data={result} park={parks[index]} />)}</div></>
+  return <>{failure ? <div className="rp-analytics-warning" role="alert"><strong>{failure.title}</strong><p>{failure.description}</p>{failure.retryable ? <Button variant="secondary" busy={resource.isRevalidating} onClick={() => void resource.refresh()}>Повторить</Button> : null}</div> : null}{showAnalysis ? <OperationalAnalysis data={data} parks={parks} /> : null}<Comparison data={data} parks={parks} /><div className="rp-analytics-parks">{data.map((result, index) => <ParkHistory key={result.park_id} data={result} park={parks[index]} />)}</div></>
 }
 
 function AnalyticsSession({ apiClient, user }: { apiClient: AnalyticsApiClient; user: User }) {
@@ -187,7 +196,7 @@ function AnalyticsSession({ apiClient, user }: { apiClient: AnalyticsApiClient; 
     {!canRead ? <ErrorState title="Нет доступа" description="Нужны разрешения на аналитику и чтение Tracker." /> : contextFailure ? <ErrorState title={contextFailure.title} description={contextFailure.description} />
       : loading ? <LoadingState label="Загружаем доступные парки" /> : allParks && !available.length ? <EmptyState title="Нет доступных парков" description="История появится после назначения доступа к активному парку." icon="parks" /> : !allParks && !selectedPark ? <EmptyState title="Парк не выбран" description="Выберите парк для просмотра истории процесса." icon="parks" />
         : selectedPark && !available.some(park => park.id === selectedPark.id) ? <ErrorState title="Нет доступа" description="Выбранный парк недоступен." />
-          : <AnalyticsOwner key={identity} resourceKey={`analytics:${user.id}:${identity}`} apiClient={apiClient} parks={requestedParks} days={query.days} bucket={query.bucket} onAuthorizationFailure={onAuthorizationFailure} />}
+          : <AnalyticsOwner key={identity} resourceKey={`analytics:${user.id}:${identity}`} apiClient={apiClient} parks={requestedParks} days={query.days} bucket={query.bucket} onAuthorizationFailure={onAuthorizationFailure} showAnalysis={user.role === 'admin' || user.role === 'royal'} />}
   </PageLayout>
 }
 

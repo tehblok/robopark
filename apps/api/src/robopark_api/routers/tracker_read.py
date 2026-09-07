@@ -29,6 +29,7 @@ from robopark_api.services import rbac, tracker_cache, tracker_client, tracker_f
 from robopark_api.services import tracker_signatures as sig_svc
 from robopark_api.services.rbac import RoleSlug
 from robopark_api.services.tracker_assignees import list_assignee_candidates
+from robopark_api.services.tracker_claims import mechanic_owns_issue
 from robopark_api.services.tracker_policy import (
     allowed_park_tags_for_user,
     allowed_queues_for_user,
@@ -53,6 +54,14 @@ def _ensure_tracker_user(user: User, db: Session) -> None:
     if rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_WRITE):
         return
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+
+def _enforce_mechanic_claim(user: User, issue: dict) -> None:
+    if not mechanic_owns_issue(user, issue):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="tracker_issue_claim_required",
+        )
 
 
 def _person_out(raw: object) -> TrackerPersonOut | None:
@@ -406,6 +415,7 @@ def get_issue(
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     enforce_issue_scope(db, user, issue)
+    _enforce_mechanic_claim(user, issue)
     return _detail_out(issue, db=db, user=user)
 
 
@@ -427,6 +437,7 @@ def get_comments(
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     enforce_issue_scope(db, user, issue)
+    _enforce_mechanic_claim(user, issue)
 
     try:
         comments = tracker_cache.list_comments(token=token, key=key)
@@ -469,6 +480,7 @@ def get_transitions(
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     enforce_issue_scope(db, user, issue)
+    _enforce_mechanic_claim(user, issue)
 
     try:
         transitions = tracker_cache.list_transitions(token=token, key=key)

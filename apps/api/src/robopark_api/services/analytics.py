@@ -17,7 +17,7 @@ from robopark_api.analytics_schemas import (
 )
 from robopark_api.models import AnalyticsObservation, AnalyticsSnapshot, ParkBlockerHistory
 from robopark_api.services.blocker_history import align_bucket_start
-from robopark_api.services.operations import STATUS_LABELS, as_utc
+from robopark_api.services.operations import STATUS_LABELS, as_utc, queued_working_hours
 
 STEP = timedelta(hours=2)
 STAGES = [key for key in STATUS_LABELS if key != "all"]
@@ -175,10 +175,21 @@ def build_analytics(
         ages["unknown"][time] = Sample(
             len(unknown), tuple(row.issue_key for row in unknown), len(unknown)
         )
-        evaluated = [
-            row for row in rows if row.age_hours is not None and snapshot.target_hours is not None
-        ]
-        overdue = [row for row in evaluated if row.age_hours > snapshot.target_hours]
+        evaluated = []
+        overdue = []
+        for row in rows:
+            if row.status_bucket != "queued" or row.age_hours is None or snapshot.target_hours is None:
+                continue
+            created = observed_at - timedelta(hours=row.age_hours)
+            sla_age = queued_working_hours(
+                {"status_key": "queued", "status": "queued", "created": created.isoformat()},
+                observed_at,
+            )
+            if sla_age is None:
+                continue
+            evaluated.append(row)
+            if sla_age > snapshot.target_hours:
+                overdue.append(row)
         sla[time] = Sample(
             len(overdue) if evaluated else None,
             tuple(row.issue_key for row in overdue),

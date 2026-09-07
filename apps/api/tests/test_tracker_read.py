@@ -238,7 +238,10 @@ def test_mechanic_issue_capabilities_respect_write_policy_but_keep_attachment(
     monkeypatch.setattr(
         tracker_client,
         "get_issue",
-        lambda **_kwargs: _scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"),
+        lambda **_kwargs: {
+            **_scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"),
+            "assignee": {"login": "mech1", "display": "Mechanic"},
+        },
     )
     login_as(client, "mech1", "secret")
 
@@ -484,9 +487,10 @@ def test_mechanic_comments_filtered_to_platform_and_staff(
             "status": "Open",
             "status_key": "open",
             "queue": "ROBOPARK",
-            "resolution": "",
-            "tags": ["Alpha"],
-        },
+                "resolution": "",
+                "tags": ["Alpha"],
+                "assignee": {"login": "mech1", "display": "Mechanic"},
+            },
     )
     monkeypatch.setattr(
         tracker_client,
@@ -513,6 +517,30 @@ def test_mechanic_comments_filtered_to_platform_and_staff(
     assert response.status_code == 200
     payload = response.json()
     assert [item["id"] for item in payload] == ["1", "2"]
+
+
+def test_mechanic_must_claim_issue_before_reading_detail(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    seed_mechanic.tracker_login = "mech.login"
+    db_session.commit()
+    issue = {
+        "key": "ROBOPARK-1", "summary": "blocker [447]", "status": "Open",
+        "status_key": "open", "queue": "ROBOPARK", "tags": ["Alpha"],
+    }
+    from robopark_api.services import tracker_client
+    monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: dict(issue))
+    login_as(client, "mech1", "secret")
+
+    denied = client.get("/tracker/issues/ROBOPARK-1")
+    assert denied.status_code == 409
+    assert denied.json()["detail"] == "tracker_issue_claim_required"
+
+    issue["assignee"] = {"login": "mech.login", "display": "Mechanic"}
+    from robopark_api.services import tracker_cache
+    tracker_cache.invalidate_issue("ROBOPARK-1")
+    assert client.get("/tracker/issues/ROBOPARK-1").status_code == 200
 
 
 def test_tracker_robot_search_royal(

@@ -6,6 +6,12 @@
 }
 .rp-analytics-parks { gap: var(--rp-space-8); }
 .rp-analytics-comparison { display: grid; gap: var(--rp-space-3); min-width: 0; }
+.rp-analytics-analysis { display: grid; gap: var(--rp-space-3); padding: var(--rp-density-panel-padding); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-panel); background: var(--rp-surface); }
+.rp-analytics-analysis h2, .rp-analytics-analysis p { margin: 0; }
+.rp-analytics-analysis ul { display: grid; gap: var(--rp-space-2); list-style: none; margin: 0; padding: 0; }
+.rp-analytics-insight { padding: var(--rp-space-3); border-left: 4px solid var(--rp-info); background: var(--rp-surface-muted); border-radius: var(--rp-radius-control); }
+.rp-analytics-insight--critical { border-left-color: var(--rp-danger); }
+.rp-analytics-insight--warning { border-left-color: var(--rp-warning); }
 .rp-analytics-comparison h2, .rp-analytics-comparison p { margin: 0; }
 .rp-analytics-comparison td > span { display: block; }
 .rp-analytics-comparison table { min-width: 32rem; }

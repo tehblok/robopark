@@ -135,26 +135,56 @@ function WorkIssueRows({
   items,
   selected,
   onOpen,
+  user,
+  apiClient,
+  onClaimed,
 }: {
   items: readonly TrackerIssue[]
   selected?: string
   onOpen: (key: string) => void
+  user?: User
+  apiClient?: IssueWorkbenchApiClient
+  onClaimed?: () => void
 }) {
+  const mechanicLogin = (user?.tracker_login || user?.username || '').trim()
   return <div className="rp-work-entities">
-    {items.map((item) => <EntityRow
-      actions={<Button
-        aria-current={item.key === selected ? 'page' : undefined}
-        aria-label={`Открыть задачу ${item.key}: ${item.summary}`}
-        onClick={() => onOpen(item.key)}
-        variant="secondary"
-      >Открыть</Button>}
-      key={item.key}
-      meta={issueMeta(item)}
-      status={<StatusBadge tone={issueStatusTone(item)}>{item.status}</StatusBadge>}
-      statusLabel={`Статус задачи ${item.key}`}
-      title={<><strong>{item.key}</strong><span> · {item.summary}</span></>}
-    />)}
+    {items.map((item) => <ClaimableIssueRow
+      apiClient={apiClient} item={item} key={item.key} mechanicLogin={mechanicLogin}
+      onClaimed={onClaimed} onOpen={onOpen} selected={selected}
+      requireClaim={user?.role === 'mechanic'} />)}
   </div>
+}
+
+function ClaimableIssueRow({ item, selected, onOpen, requireClaim, mechanicLogin, apiClient, onClaimed }: {
+  item: TrackerIssue; selected?: string; onOpen: (key: string) => void; requireClaim: boolean
+  mechanicLogin: string; apiClient?: IssueWorkbenchApiClient; onClaimed?: () => void
+}) {
+  const [claiming, setClaiming] = useState(false)
+  const [claimError, setClaimError] = useState('')
+  const assigned = item.assignee?.login?.trim() ?? ''
+  const mine = Boolean(mechanicLogin && assigned.toLocaleLowerCase() === mechanicLogin.toLocaleLowerCase())
+  const claim = async () => {
+    if (!apiClient || !mechanicLogin || claiming) return
+    setClaiming(true); setClaimError('')
+    try {
+      await apiClient.trackerAssign(item.key, mechanicLogin)
+      onClaimed?.()
+      onOpen(item.key)
+    } catch (error) {
+      setClaimError(classifyApiError(error, 'Не удалось взять задачу в работу.').description)
+    } finally { setClaiming(false) }
+  }
+  const action = !requireClaim || mine
+    ? <Button aria-current={item.key === selected ? 'page' : undefined} aria-label={`Открыть задачу ${item.key}: ${item.summary}`} onClick={() => onOpen(item.key)} variant="secondary">Открыть</Button>
+    : assigned
+      ? <Button disabled title={`Задача уже у ${item.assignee?.display || assigned}`} variant="secondary">В работе</Button>
+      : <Button busy={claiming} disabled={!mechanicLogin} onClick={() => void claim()}>Взять в работу</Button>
+  return <EntityRow
+    actions={<>{action}{claimError ? <span role="alert">{claimError}</span> : null}</>}
+    meta={issueMeta(item)} status={<StatusBadge tone={issueStatusTone(item)}>{item.status}</StatusBadge>}
+    statusLabel={`Статус задачи ${item.key}`}
+    title={<><strong>{item.key}</strong><span> · {item.summary}</span></>}
+  />
 }
 
 function RelatedTaskGroup({
@@ -674,10 +704,25 @@ function IssueWorkbenchOwner({
               ) : list.data ? (
                 <div className="rp-work-list-scroll" ref={listScrollRef}>
                   <p className="rp-work-list-count">Показано {list.data.items.length}{list.data.total > list.data.items.length ? ` из ${list.data.total}` : ''}</p>
+                  {user.role === 'mechanic' && list.data.items.some(item => item.assignee?.login?.toLocaleLowerCase() === (user.tracker_login || user.username).toLocaleLowerCase()) ? <>
+                    <h3>Мои задачи в работе</h3>
+                    <WorkIssueRows
+                      apiClient={apiClient}
+                      items={oldestFirst(list.data.items).filter(item => item.assignee?.login?.toLocaleLowerCase() === (user.tracker_login || user.username).toLocaleLowerCase())}
+                      onClaimed={() => void list.refresh()}
+                      onOpen={saveAndOpenIssue}
+                      selected={issueKey}
+                      user={user}
+                    />
+                    <h3>Очередь парка</h3>
+                  </> : null}
                   <WorkIssueRows
+                    apiClient={apiClient}
                     items={oldestFirst(list.data.items)}
+                    onClaimed={() => void list.refresh()}
                     onOpen={saveAndOpenIssue}
                     selected={issueKey}
+                    user={user}
                   />
                 </div>
               ) : null}

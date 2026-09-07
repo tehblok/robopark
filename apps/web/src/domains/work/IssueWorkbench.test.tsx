@@ -115,6 +115,18 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+it('requires a mechanic to claim a task before opening it', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: 'mech.login' }
+  const unassigned = { ...issue, assignee: null }
+  const client = apiClient({ trackerIssues: vi.fn(async () => page([unassigned])) })
+  renderWorkbench({ client, selectedIssue: '', currentUser: mechanic })
+
+  const take = await screen.findByRole('button', { name: 'Взять в работу' })
+  expect(screen.queryByRole('button', { name: /Открыть задачу/ })).not.toBeInTheDocument()
+  fireEvent.click(take)
+  await waitFor(() => expect(client.trackerAssign).toHaveBeenCalledWith(issue.key, 'mech.login'))
+})
+
 function Harness({ children }: { children: ReactNode }) {
   return <MemoryRouter>{children}</MemoryRouter>
 }

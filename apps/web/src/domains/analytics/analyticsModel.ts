@@ -29,6 +29,7 @@ export type HistoricalAnalytics = {
 }
 export type AnalyticsApiClient = { analytics: (parkId: number, days: number, bucket: AnalyticsBucket) => Promise<HistoricalAnalytics> }
 export type AnalyticsQuery = { days: number; bucket: AnalyticsBucket; compare: number | null }
+export type OperationalInsight = { severity: 'critical' | 'warning' | 'info'; text: string; parkId: number }
 
 export const ANALYTICS_LABELS: Record<string, string> = {
   arrived: 'Поступило за период', departed: 'Выбыло за период', backlog: 'Среднее незавершённых',
@@ -71,6 +72,27 @@ export function analyticsValue(metric: AnalyticsMetric): string {
 }
 export function analyticsDate(value: string): string {
   return new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(value))
+}
+
+export function buildOperationalInsights(data: HistoricalAnalytics[], parks: Park[]): OperationalInsight[] {
+  const names = new Map(parks.map(park => [park.id, park.name]))
+  const insights: OperationalInsight[] = []
+  for (const result of data) {
+    const name = names.get(result.park_id) ?? `Парк ${result.park_id}`
+    const over72 = result.backlog_age_bands.find(item => item.key === 'over_72h')?.value ?? 0
+    const overdue = result.sla_trend.value ?? 0
+    const backlog = result.series.backlog
+    const known = (backlog?.points ?? []).filter(point => point.value !== null)
+    const growth = known.length > 1 ? (known.at(-1)?.value ?? 0) - (known.at(-2)?.value ?? 0) : 0
+    const arrived = result.series.arrived?.value ?? 0
+    const departed = result.series.departed?.value ?? 0
+    if (overdue >= 40 || over72 >= 3) insights.push({ severity: 'critical', parkId: result.park_id, text: `${name}: ${Math.round(overdue)}% просроченных наблюдений, старых задач 72+ ч — ${Math.round(over72)}. Разберите самые старые задачи и снимите внешние блокировки.` })
+    if (growth > 0 || arrived > departed) insights.push({ severity: 'warning', parkId: result.park_id, text: `${name}: очередь растёт — поступило ${Math.round(arrived)}, выбыло ${Math.round(departed)}. Перераспределите исполнителей на этап с максимальной нагрузкой.` })
+    const bottleneck = [...result.workload].filter(item => item.value !== null).sort((a, b) => (b.value ?? 0) - (a.value ?? 0))[0]
+    if (bottleneck && (bottleneck.value ?? 0) > 0) insights.push({ severity: 'info', parkId: result.park_id, text: `${name}: наибольшее накопление — «${ANALYTICS_LABELS[bottleneck.key] ?? bottleneck.key}», в среднем ${bottleneck.value?.toFixed(1)} задачи. Проверьте общую причину задержки.` })
+  }
+  const rank = { critical: 0, warning: 1, info: 2 }
+  return insights.sort((a, b) => rank[a.severity] - rank[b.severity] || a.parkId - b.parkId)
 }
 
 /** Separate polylines keep missing observations visibly missing. */

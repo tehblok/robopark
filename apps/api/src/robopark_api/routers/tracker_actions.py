@@ -23,6 +23,7 @@ from robopark_api.services import tracker_signatures as sig_svc
 from robopark_api.services import tracker_submissions as submissions
 from robopark_api.services.login_throttle import client_ip
 from robopark_api.services.rbac import RoleSlug
+from robopark_api.services.tracker_claims import assignee_login, mechanic_login, mechanic_owns_issue
 from robopark_api.services.tracker_policy import ensure_action_allowed, issue_tags
 
 router = APIRouter(prefix="/tracker", tags=["tracker-actions"])
@@ -70,6 +71,8 @@ def _authorize(db: Session, user: User, issue: dict, action: str, request: Reque
     """Check the policy and audit a denial before propagating it."""
     try:
         ensure_action_allowed(db, user, issue, action)
+        if action != "assign" and not mechanic_owns_issue(user, issue):
+            raise HTTPException(status_code=409, detail="tracker_issue_claim_required")
     except HTTPException as exc:
         audit.record(
             db,
@@ -295,6 +298,13 @@ def assign_issue(
     token = _require_token(db)
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "assign", request)
+    if user.role == RoleSlug.MECHANIC:
+        own_login = mechanic_login(user)
+        if payload.assignee.casefold() != own_login.casefold():
+            raise HTTPException(status_code=403, detail="mechanic_can_only_claim_self")
+        current = assignee_login(issue)
+        if current and current.casefold() != own_login.casefold():
+            raise HTTPException(status_code=409, detail="tracker_issue_already_claimed")
 
     submission, saved = submissions.begin(
         db, user, key, "assign", request, payload.model_dump(), token
