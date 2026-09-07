@@ -32,7 +32,6 @@ copy_tree() {
     --exclude '**/tuna.env' \
     --exclude '**/.env' \
     --exclude 'data/ops/' \
-    --exclude '**/ops/' \
     "$src/" "$dest/"
 }
 
