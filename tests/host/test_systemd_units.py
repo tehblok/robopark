@@ -82,6 +82,8 @@ def test_timers_are_bounded_and_persistent(name, key, value):
 def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
     from robopark_host.runtime import bootstrap_compose
 
+    host_paths.etc.mkdir(parents=True)
+    (host_paths.etc / "host.env").write_text("UVICORN_WORKERS=2\n")
     release = host_paths.releases / "1.0.0"
     (release / "deploy").mkdir(parents=True)
     (release / "deploy/docker-compose.yml").write_text("services: {}")
@@ -217,6 +219,8 @@ def test_api_gate_image_uses_repository_context_and_canonical_entrypoint():
 def test_bootstrap_rejects_unresolved_images_without_publishing_state(host_paths):
     from robopark_host.runtime import bootstrap_compose
 
+    host_paths.etc.mkdir(parents=True)
+    (host_paths.etc / "host.env").write_text("UVICORN_WORKERS=2\n")
     release = host_paths.releases / "1.0.0"
     (release / "deploy").mkdir(parents=True)
     (release / "manifest.json").write_text("{}")

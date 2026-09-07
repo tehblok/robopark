@@ -4,6 +4,8 @@ After=network-online.target robopark.service
 StartLimitIntervalSec=0
 
 [Service]
+LimitNOFILE=65536
+TasksMax=4096
 Type=oneshot
 Restart=on-failure
 RestartSec=5

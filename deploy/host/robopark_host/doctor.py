@@ -158,8 +158,12 @@ def _configuration_check(paths: HostPaths) -> CheckResult:
                 invalid.append(filename)
         except OSError:
             invalid.append(filename)
-    origin = configuration.get("host.env", {}).get("PUBLIC_SITE_ORIGIN")
+    origin = configuration.get("host.env", {}).get("PUBLIC_SITE_ORIGIN") or configuration.get(
+        "host.env", {}
+    ).get("CORS_ORIGINS")
     public_url = configuration.get("tuna.env", {}).get("PUBLIC_URL")
+    origin = origin.strip("\"'") if origin else None
+    public_url = public_url.strip("\"'") if public_url else None
     if origin and public_url and origin.rstrip("/") != public_url.rstrip("/"):
         invalid.append("public_url")
     if invalid:
@@ -186,18 +190,21 @@ def _release_check(paths: HostPaths) -> CheckResult:
             "release_layout", "failed", "Текущий релиз находится вне каталога релизов", None
         )
     manifest = target / "manifest.json"
-    if not paths.previous.is_symlink() or not manifest.is_file():
+    if not manifest.is_file():
         return CheckResult("release_layout", "failed", "У текущего релиза нет манифеста", None)
-    try:
-        previous_target = paths.previous.resolve(strict=True)
-    except OSError:
-        return CheckResult(
-            "release_layout", "failed", "Ссылка на предыдущий релиз повреждена", None
-        )
-    if paths.releases not in previous_target.parents:
-        return CheckResult(
-            "release_layout", "failed", "Предыдущий релиз находится вне каталога релизов", None
-        )
+    if paths.previous.exists() or paths.previous.is_symlink():
+        try:
+            if not paths.previous.is_symlink():
+                raise OSError()
+            previous_target = paths.previous.resolve(strict=True)
+        except OSError:
+            return CheckResult(
+                "release_layout", "failed", "Ссылка на предыдущий релиз повреждена", None
+            )
+        if paths.releases not in previous_target.parents:
+            return CheckResult(
+                "release_layout", "failed", "Предыдущий релиз находится вне каталога релизов", None
+            )
     try:
         payload = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -613,6 +620,14 @@ def _release_metadata(paths: HostPaths) -> dict[str, str | None]:
 
 
 def _public_url(paths: HostPaths) -> str | None:
+    # The installer stores the canonical origin in host.env. Reuse the updater's
+    # strict root-owned-file parser; retain PUBLIC_URL only for legacy layouts.
+    try:
+        from .updater import _public_origin
+
+        return _public_origin(paths)
+    except (OSError, ValueError, UnicodeError):
+        pass
     target = paths.etc / "tuna.env"
     if not target.is_file():
         return None

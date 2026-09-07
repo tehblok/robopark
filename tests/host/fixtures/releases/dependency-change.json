@@ -1,0 +1,9 @@
+{
+  "apps/api/pyproject.toml": "[project]\nname = 'e2e-fixture'\nversion = '0.1.1'\ndependencies = ['httpx==0.28.1', 'idna==3.19']\n",
+  "apps/api/uv.lock": "version = 1\n[[package]]\nname = 'idna'\nversion = '3.19'\nsource = { registry = 'https://pypi.org/simple' }\n",
+  "apps/web/package.json": "{\"name\":\"e2e-fixture\",\"version\":\"0.1.1\",\"dependencies\":{\"react\":\"19.2.8\"}}\n",
+  "apps/web/package-lock.json": "{\"name\":\"e2e-fixture\",\"version\":\"0.1.1\",\"lockfileVersion\":3,\"packages\":{\"\":{\"dependencies\":{\"react\":\"19.2.8\"}}}}\n",
+  "apps/api/Dockerfile": "FROM python:3.12-slim\nLABEL e2e.release=0.1.1\n",
+  "apps/web/Dockerfile": "FROM node:24 AS build\nLABEL e2e.release=0.1.1\n",
+  "apps/api/alembic/versions/e2e.py": "revision = 'next'\ndown_revision = 'initial'\n# Simulated external migration changes the fake database.\n"
+}

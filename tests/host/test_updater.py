@@ -34,6 +34,8 @@ class FakeRunner:
         self.commands.append(list(map(str, argv)))
         if self.fail_on and self.fail_on in argv:
             raise RuntimeError("SECRET_KEY=never-log-this")
+        if argv[:3] == ["docker", "image", "inspect"]:
+            return ("sha256:" + ("3" if "api" in argv[-1] else "4") * 64).encode()
         if "--format" in argv:
             return json.dumps(
                 {
@@ -438,7 +440,7 @@ def test_production_config_migrates_legacy_mounts_to_host_owned_data(host):
 
     def legacy(argv, **kwargs):
         data = original(argv, **kwargs)
-        if "--format" in argv:
+        if "--format" in argv and "config" in argv:
             config = json.loads(data)
             config["services"]["api"]["volumes"] = [
                 {"type": "volume", "source": "robopark_data", "target": "/data"},
@@ -454,13 +456,25 @@ def test_production_config_migrates_legacy_mounts_to_host_owned_data(host):
         (host.paths.state / "compose" / (request.job_id + "-production.json")).read_text()
     )
     assert config["services"]["api"]["volumes"] == [
+        {
+            "type": "bind",
+            "source": str(host.paths.etc / "release-public-key.pem"),
+            "target": "/etc/robopark/release-public-key.pem",
+            "read_only": True,
+        },
         {"type": "bind", "source": str(host.paths.var / "data"), "target": "/data"},
         {"type": "bind", "source": str(host.paths.var / "api-ops"), "target": "/ops"},
-        {"type": "bind", "source": str(host.paths.ops / "inbox"), "target": "/host-ops/inbox"},
+        {
+            "type": "bind",
+            "source": str(host.paths.ops / "inbox"),
+            "target": "/host-ops/inbox",
+            "read_only": False,
+        },
         {
             "type": "bind",
             "source": str(host.paths.ops / "artifacts"),
             "target": "/host-ops/artifacts",
+            "read_only": False,
         },
         {
             "type": "bind",

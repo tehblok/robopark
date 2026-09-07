@@ -1,0 +1,7 @@
+{
+  "deploy/systemd/robopark.service": "\n# E2E candidate service revision 0.1.1\n",
+  "deploy/systemd/robopark-tuna.service": "\n# E2E candidate ingress revision 0.1.1\n",
+  "deploy/tuna-http.sh": "\n# E2E candidate script revision 0.1.1\n",
+  "deploy/host/robopark_host/cli.py": "\n# E2E candidate host utility revision 0.1.1\n",
+  "scripts/verify.sh": "\n# E2E candidate verification entry revision 0.1.1\n"
+}

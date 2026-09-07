@@ -7,6 +7,8 @@ StartLimitIntervalSec=300
 StartLimitBurst=3
 
 [Service]
+LimitNOFILE=65536
+TasksMax=4096
 Type=simple
 EnvironmentFile=/etc/robopark/tuna.env
 ExecStart=/bin/sh /opt/robopark/current/deploy/tuna-http.sh

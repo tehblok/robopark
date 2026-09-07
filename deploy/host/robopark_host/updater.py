@@ -43,6 +43,7 @@ from .rollback import (
     snapshot,
     sync_directory,
 )
+from .runtime import pin_images, production_config
 from .state import atomic_write_json, exclusive_lock
 
 PRE_MAINTENANCE_PHASES = {
@@ -407,28 +408,8 @@ def _render_configs(paths, journal, runner, stage):
             build["context"] = str(
                 paths.releases / journal["candidate"] / context.relative_to(stage)
             )
-    # Retired container updater must never be launched by the host updater.
-    production["services"].pop("ops-agent", None)
-    api = production["services"]["api"]
-    api["env_file"] = [str(paths.etc / "host.env")]
-    api["volumes"] = [
-        {"type": "bind", "source": str(paths.var / "data"), "target": "/data"},
-        {"type": "bind", "source": str(paths.var / "api-ops"), "target": "/ops"},
-        {"type": "bind", "source": str(paths.ops / "inbox"), "target": "/host-ops/inbox"},
-        {"type": "bind", "source": str(paths.ops / "artifacts"), "target": "/host-ops/artifacts"},
-        {
-            "type": "bind",
-            "source": str(paths.ops / "public"),
-            "target": "/host-ops/public",
-            "read_only": True,
-        },
-    ]
-    api.setdefault("environment", {}).update(
-        {
-            "DATABASE_URL": "sqlite:////data/robopark.db",
-            "OPS_DIR": "/ops",
-            "REPORT_ATTACHMENTS_DIR": "/data/report-attachments",
-        }
+    production = production_config(
+        production, paths, paths.releases / journal["candidate"], journal["job_id"]
     )
     smoke = copy.deepcopy(production)
     smoke.pop("volumes", None)
@@ -646,6 +627,10 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
                 ],
                 timeout=1800,
             )
+            production_path = paths.state / "compose" / (request.job_id + "-production.json")
+            production = json.loads(production_path.read_text())
+            pin_images(production, lambda argv: runner.run(argv, timeout=30, capture=True))
+            atomic_write_json(production_path, production)
             phase("built")
             phase("testing")
             test_tree = work / "tests"
