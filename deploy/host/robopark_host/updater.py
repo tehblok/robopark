@@ -520,7 +520,7 @@ def _retention(paths, journal):
     receipts.mkdir(exist_ok=True)
     for receipt in receipts.glob("*.json"):
         name = receipt.stem
-        if name in keep or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        if name in keep or not re.fullmatch(r"[A-Za-z0-9._+-]+", name):
             continue
         target = paths.releases / name
         if target.is_dir() and not target.is_symlink():
@@ -853,7 +853,7 @@ def _load_journal(paths):
             if journal[key] is None and key == "original_previous":
                 continue
             if not isinstance(journal[key], str) or not re.fullmatch(
-                r"[A-Za-z0-9][A-Za-z0-9._-]{0,150}", journal[key]
+                r"[A-Za-z0-9][A-Za-z0-9._+-]{0,150}", journal[key]
             ):
                 raise ValueError()
         safe_member(journal["previous_config"])

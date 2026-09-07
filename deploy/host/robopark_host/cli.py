@@ -166,6 +166,12 @@ def _consume_handler(paths: HostPaths) -> int:
     return consume_commands(paths, _system_runner, _Http())
 
 
+def _check_update_handler(paths: HostPaths) -> int:
+    from .github_releases import run_check
+
+    return run_check(paths)
+
+
 COMMAND_HANDLERS: dict[str, Handler] = {
     "consume": _consume_handler,
     "bootstrap-compose": _bootstrap_handler,
@@ -173,7 +179,7 @@ COMMAND_HANDLERS: dict[str, Handler] = {
     "doctor": _doctor_handler,
     "repair": _repair_handler,
     "update": _foundation_handler,
-    "check-update": _foundation_handler,
+    "check-update": _check_update_handler,
     "watchdog": _watchdog_handler,
 }
 

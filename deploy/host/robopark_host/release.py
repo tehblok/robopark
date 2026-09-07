@@ -61,11 +61,33 @@ def timestamp(value):
     return stamp
 
 
+SEMVER_PATTERN = (
+    r"(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})"
+    r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+)
+
+
 def version(value):
-    if not isinstance(value, str) or not re.fullmatch(r"\d{1,9}(?:\.\d{1,9}){0,2}", value):
+    """Strict bounded SemVer 2 precedence; build metadata has no ordering weight."""
+    match = (
+        re.fullmatch(SEMVER_PATTERN, value)
+        if isinstance(value, str) and len(value) <= 100
+        else None
+    )
+    if not match:
         raise ReleaseError("invalid_version")
-    parts = tuple(map(int, value.split(".")))
-    return parts + (0,) * (3 - len(parts))
+    prerelease = match[4]
+    identifiers = []
+    if prerelease:
+        for part in prerelease.split("."):
+            if part.isdigit():
+                if len(part) > 1 and part.startswith("0"):
+                    raise ReleaseError("invalid_version")
+                identifiers.append((0, int(part)))
+            else:
+                identifiers.append((1, part))
+    return tuple(map(int, match.group(1, 2, 3))) + (not prerelease, tuple(identifiers))
 
 
 @dataclass(frozen=True)
@@ -116,10 +138,16 @@ class UpdateRequest:
     def read_artifact(self, paths):
         # Revalidate even callers constructing the frozen dataclass directly.
         self.from_dict(vars(self))
-        root = paths.ops / "artifacts"
+        private = bool(re.fullmatch(r"github-release-[1-9][0-9]{0,18}\.zip", self.artifact))
+        root = paths.state / "github-artifacts" if private else paths.ops / "artifacts"
+        expected = (
+            paths.state.resolve() / "github-artifacts"
+            if private
+            else paths.ops.resolve() / "artifacts"
+        )
         target = root / self.artifact
         try:
-            if root.is_symlink() or root.resolve() != paths.ops.resolve() / "artifacts":
+            if root.is_symlink() or root.resolve() != expected:
                 raise ValueError()
             fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             with os.fdopen(fd, "rb") as stream:
@@ -129,6 +157,10 @@ class UpdateRequest:
                 raw = stream.read(MAX_ARCHIVE + 1)
                 if len(raw) > MAX_ARCHIVE:
                     raise ValueError()
+                if private:
+                    from .github_releases import verify_downloaded_artifact
+
+                    verify_downloaded_artifact(raw, paths, self)
                 return raw
         except (OSError, ValueError) as exc:
             raise ReleaseError("unsafe_artifact") from exc
@@ -165,7 +197,9 @@ def verify_manifest(raw, signature, public_key):
     ):
         raise ReleaseError("unsupported_format")
     version(manifest["app_version"])
-    version(manifest["min_installer_version"])
+    version(
+        "0.0.0" if manifest["min_installer_version"] == "0" else manifest["min_installer_version"]
+    )
     if not isinstance(manifest["git_sha"], str) or not re.fullmatch(
         r"[a-fA-F0-9]{40}", manifest["git_sha"]
     ):
@@ -327,7 +361,9 @@ def check_compatibility(candidate, current):
         raise ReleaseError("quality_gate_inputs_missing")
     if version(candidate["app_version"]) <= version(current["app_version"]):
         raise ReleaseError("downgrade_rejected")
-    if version(candidate["min_installer_version"]) > version(INSTALLER_VERSION):
+    if version(
+        "0.0.0" if candidate["min_installer_version"] == "0" else candidate["min_installer_version"]
+    ) > version(INSTALLER_VERSION):
         raise ReleaseError("installer_incompatible")
     if set(candidate["required_capabilities"]) - CAPABILITIES:
         raise ReleaseError("capability_missing")

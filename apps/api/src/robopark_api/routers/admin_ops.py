@@ -23,6 +23,8 @@ from robopark_api.db import get_db
 from robopark_api.deps import require_royal
 from robopark_api.models import User
 from robopark_api.ops_schemas import (
+    AvailableUpdateOut,
+    GithubApprovalIn,
     HostResultOut,
     SystemHealthOut,
     UpdateApprovalIn,
@@ -479,3 +481,35 @@ def download_diagnostic_artifact(
     if path is None:
         raise HTTPException(status_code=404, detail="artifact_missing")
     return FileResponse(path, filename=path.name, media_type="application/zip")
+
+
+@router.get("/admin/ops/available-update", response_model=AvailableUpdateOut)
+def get_available_update(
+    royal: User = Depends(require_royal), settings: Settings = Depends(get_settings)
+):
+    return host_bridge.available_update(_bridge_root(settings))
+
+
+@router.post("/admin/ops/github-update/approve", response_model=OpsJobOut)
+def approve_github_update(
+    payload: GithubApprovalIn,
+    request: Request,
+    royal: User = Depends(require_royal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    root = _bridge_root(settings)
+
+    def approve():
+        if payload.confirm != UPDATE_PHRASE:
+            raise host_bridge.BridgeError("confirm_required")
+        host_bridge.reconcile_host_job(resolved_ops_dir(settings), root)
+        return host_bridge.approve_github_update(
+            resolved_ops_dir(settings),
+            root,
+            payload.release_id,
+            royal.id,
+            _token_hash(request, settings),
+        )
+
+    return _job_out(_host_action(db, royal, "admin.ops.github-update.approve", approve))
