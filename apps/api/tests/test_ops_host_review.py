@@ -268,7 +268,8 @@ def test_delayed_restore_does_not_replace_data_during_cutover(installed, tmp_pat
         enable(installed)
     result = runner.execute_job(ctx, job, archive=archive, confirm=runner.RESTORE_PHRASE)
     assert result.state == "failed"
-    assert result.error == "maintenance"
+    # Installed restore now fails before the process-local replacement callback.
+    assert result.error == ("maintenance" if delayed_start else "host_restore_required")
     assert database.read_bytes() == b"current-data"
 
 

@@ -343,6 +343,8 @@ class InstalledHost:
                     ):
                         self.tuna_active = False
                 if action in ("start", "restart"):
+                    if self.command("restore-check"):
+                        raise self.command_error("command_failed")
                     self.app_active = True
             elif unit == "robopark-tuna.service" and action in ("start", "restart", "try-restart"):
                 if action != "try-restart" or self.tuna_active:
@@ -394,6 +396,10 @@ class InstalledHost:
             isolated = json.loads(Path(config).read_text())
             assert str(self.paths.var / "data") not in json.dumps(isolated)
             return self.fail != "smoke"
+        if self.fail == "restore_health":
+            with sqlite3.connect(self.paths.var / "data/robopark.db") as connection:
+                if connection.execute("SELECT value FROM probe").fetchone()[0] == "snapshot":
+                    return False
         return (
             self.app_active
             and self.fail != "both_health"

@@ -182,6 +182,12 @@ def _consume_handler(paths: HostPaths) -> int:
     return consume_commands(paths, _system_runner, _Http())
 
 
+def _restore_check_handler(paths: HostPaths) -> int:
+    from .restore import check_app_start
+
+    return 0 if check_app_start(paths) else 1
+
+
 def _check_update_handler(paths: HostPaths) -> int:
     from .github_releases import run_check
 
@@ -190,6 +196,8 @@ def _check_update_handler(paths: HostPaths) -> int:
 
 COMMAND_HANDLERS: dict[str, Handler] = {
     "consume": _consume_handler,
+    "restore-check": _restore_check_handler,
+    "restore": _foundation_handler,
     "bootstrap-compose": _bootstrap_handler,
     "status": _status_handler,
     "doctor": _doctor_handler,
@@ -205,6 +213,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     for command in COMMAND_HANDLERS:
         child = commands.add_parser(command)
+        if command == "restore":
+            child.add_argument("--recover", action="store_true", required=True)
         if command == "update":
             child.add_argument("--request", type=Path)
             mode = child.add_mutually_exclusive_group()
@@ -229,6 +239,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     arguments = build_parser().parse_args(values)
     paths = paths_from_environment()
+    if arguments.command == "restore":
+        from .restore import recover_restore
+        from .updater import SystemRunner
+
+        return recover_restore(paths, SystemRunner())
     if arguments.command == "update":
         from .launcher import launch_update
         from .release import ReleaseError, UpdateRequest
