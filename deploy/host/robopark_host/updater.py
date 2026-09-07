@@ -25,6 +25,9 @@ from typing import Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
 
+from .image_retention import cleanup as cleanup_images
+from .image_retention import record as record_images
+from .image_retention import require_record_capacity
 from .operational_state import record_backup
 from .paths import HostPaths
 from .release import (
@@ -605,6 +608,7 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
             phase("unpacking")
             release.unpack(stage)
             phase("unpacked")
+            require_record_capacity(paths)
             phase("building")
             work, smoke_config = _render_configs(paths, journal, runner, stage)
             prefix = compose("robopark-candidate-" + request.job_id, smoke_config)
@@ -641,6 +645,7 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
             production_path = paths.state / "compose" / (request.job_id + "-production.json")
             production = json.loads(production_path.read_text())
             pin_images(production, lambda argv: runner.run(argv, timeout=30, capture=True))
+            record_images(paths, candidate, request.job_id, production)
             atomic_write_json(production_path, production)
             phase("built")
             phase("testing")
@@ -829,6 +834,7 @@ def _failed_housekeeping(paths, journal, runner):
     ):
         shutil.rmtree(failed_candidate)
     _retention(paths, journal)
+    cleanup_images(paths, runner)
     return _finish(paths, journal, "previous_restored", journal["error"])
 
 
@@ -1085,6 +1091,7 @@ def _success_housekeeping(paths, journal, runner):
     _phase(paths, journal, "succeeded")
     _cleanup_staging(paths, journal, runner)
     _retention(paths, journal)
+    cleanup_images(paths, runner)
     return _finish(paths, journal, "current_healthy")
 
 

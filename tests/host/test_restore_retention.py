@@ -158,3 +158,13 @@ def test_interrupted_atomic_receipt_temporary_does_not_strand_restore(host_paths
     identity, _, _ = material(host_paths)
     (host_paths.state / "restore-owned" / ("." + identity + ".json.tmp12345")).write_text("partial")
     assert not artifact_usage(host_paths)["blocked"]
+
+
+def test_successful_scheduled_cleanup_clears_prior_restore_cleanup_failure(host_paths):
+    from robopark_host.doctor import _artifact_check
+
+    material(host_paths)
+    (host_paths.state / "restore-retention.json").write_text('{"blocked":true}')
+    assert _artifact_check(host_paths, None).status == "failed"
+    assert not retain_artifacts(host_paths)["blocked"]
+    assert _artifact_check(host_paths, None).status == "ok"

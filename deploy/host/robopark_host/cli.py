@@ -121,6 +121,10 @@ def _doctor_handler(paths: HostPaths) -> int:
     from .retention import retain_artifacts
 
     retain_artifacts(paths)
+    from .image_retention import scheduled
+    from .updater import SystemRunner
+
+    scheduled(paths, SystemRunner())
     report = run_doctor(paths, _system_runner, _Http())
     _print(report.as_dict())
     return 2 if report.failed else 0
