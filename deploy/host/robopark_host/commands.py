@@ -143,12 +143,22 @@ def _finish(paths, request, result):
 
 def _allow_attempt(paths, request):
     counter = paths.state / "command-attempts.json"
+    invalid_restore_counter = False
     try:
         saved = _read(counter)
+        invalid_restore_counter = request["kind"] == "restore" and (
+            set(saved) != {"job_id", "attempts"}
+            or not isinstance(saved["job_id"], str)
+            or type(saved["attempts"]) is not int
+            or not 0 <= saved["attempts"] <= 3
+        )
     except ReleaseError:
         saved = {}
+        invalid_restore_counter = request["kind"] == "restore" and (
+            counter.exists() or counter.is_symlink()
+        )
     attempts = saved.get("attempts", 0) if saved.get("job_id") == request["job_id"] else 0
-    if type(attempts) is not int or attempts < 0:
+    if invalid_restore_counter or type(attempts) is not int or attempts < 0:
         attempts = 3
     if attempts >= 3:
         # No more automatic retries for this command. Keep interrupted updates

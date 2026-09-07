@@ -69,7 +69,7 @@ curl -fsS http://127.0.0.1:8080/api/health/ready
 
 Короткое имя `robopark` в тексте означает host utility; installer не создаёт глобальный alias. Полная команда: `sudo python3 -I /opt/robopark/host-tools/robopark status` (или `doctor`, `repair`). Readiness должен вернуть `status=ready` и `checks.database=ok`. В браузере откройте ваш стабильный HTTPS-адрес, выполните Royal login и проверьте раздел системного состояния. Web слушает только `127.0.0.1:8080`; API, SQLite и Docker socket не публикуются наружу.
 
-В согласованное окно выполните `sudo reboot`, дождитесь SSH/консоли и повторите команды выше, проверку HTTPS и Royal login. `robopark-updater.service` выполняет восстановление незавершённой операции при загрузке; app требует Docker, Tuna требует app и снова проверяет API перед открытием туннеля. Состояние oneshot-служб и таймеров различается: inactive у завершённой диагностической oneshot не означает поломку, проверяйте последний результат и активный timer.
+В согласованное окно выполните `sudo reboot`, дождитесь SSH/консоли и повторите команды выше, проверку HTTPS и Royal login. `robopark.service` перед запуском app выполняет root `restore --boot-recover`; затем `robopark-updater.service` восстанавливает незавершённый OTA. App требует Docker, Tuna требует app и снова проверяет API перед открытием туннеля. Состояние oneshot-служб и таймеров различается: inactive у завершённой диагностической oneshot не означает поломку, проверяйте последний результат и активный timer.
 
 ```sh
 sudo python3 -I /opt/robopark/host-tools/robopark repair
@@ -93,7 +93,7 @@ OTA проверяет подпись и совместимость, место,
 
 Установщик, root updater/restore, repair и watchdog используют один `ops/host.lock`. Standalone repair возвращает `host_busy` и код 75, если lock занят, есть root maintenance или незавершённый claim; watchdog пропускает такой цикл без увеличения счётчика ошибок. Не удаляйте lock/claim/maintenance-файлы для обхода busy. Установщик отказывает до изменения пакетов/конфигурации и освобождает host.lock перед синхронным запуском root consumer.
 
-Root consumer сначала берёт `command-consumer.lock`, затем `host.lock`. Для OTA он сохраняет private claim, отпускает host.lock и последовательно передаёт работу worker и successor; незавершённый claim закрывает этот промежуток для standalone repair/watchdog/installer. Restore выполняется под host.lock consumer целиком. Внутренние helpers повторно lock не берут, а `restore-check` в ExecStartPre только читает journal, поэтому запуск app внутри транзакции не блокируется на собственном lock.
+Root consumer сначала берёт `command-consumer.lock`, затем `host.lock`. Для OTA он сохраняет private claim, отпускает host.lock и последовательно передаёт работу worker и successor; незавершённый claim закрывает этот промежуток для standalone repair/watchdog/installer. Restore выполняется под host.lock consumer целиком. Внутренние helpers повторно lock не берут. `restore --boot-recover` в ExecStartPre берёт lock без ожидания; при штатном restart внутри root restore он разрешает передачу управления только в сохранённой фазе запуска app. Незавершённый claim до первого journal при занятом lock возвращает 75, поэтому ожидания собственного lock и повторного запуска restore нет.
 
 Правила подготовки metadata и смены ключа через подписанный bridge описаны в
 [RELEASE-SIGNING-RU.md](RELEASE-SIGNING-RU.md).
@@ -117,13 +117,18 @@ Installed restore принимает подтверждение «ВОССТАН
 
 Переносятся данные и attachments. Конфигурация `/etc/robopark`, ключи, пароли, приложение и API jobs сохраняются; config-файлы из ZIP не применяются. Архив со сторонними executable-файлами или SQLite WAL/SHM отклоняется. Legacy local mode сохраняет прежнее отдельное поведение. Убедитесь, что сохранённый SECRET_KEY соответствует зашифрованным данным в backup.
 
-После прерывания ручного restore root consumer использует `ops/state/restore-journal.json`; при загрузке `restore-check` не позволяет app открыть каталог между переименованиями. После трёх неудачных автоматических попыток и устранения причины выполните явный root retry:
+После прерывания ручного restore ExecStartPre установленной и включённой `robopark.service` автоматически выполняет `restore --boot-recover` до обычного запуска app. Он читает root-private `ops/state/command-request.json` даже после удаления inbox, включая прерывание до первого `restore-journal.json`, и продолжает только уже утверждённую транзакцию. Повторная перезагрузка не запускает завершённое восстановление заново.
+
+Boot recovery держит host.lock и maintenance, восстанавливает каталог данных и проверяет локальный readiness через текущую pinned Compose-конфигурацию. Он не вызывает рекурсивный systemctl restart app/Tuna из ExecStartPre: после recovery systemd принимает здоровые контейнеры и штатно запускает Tuna после app. Результат recovery сохраняет `publication=degraded`, поскольку в момент завершения транзакции публичный туннель ещё не подтверждён; актуальную публикацию проверяйте через doctor/HTTPS.
+
+Счётчик `ops/state/command-attempts.json` допускает всего три автоматические попытки вместе с исходной попыткой consumer и сохраняется между перезагрузками. После исчерпания попыток — `manual_recovery_required`: app не запускается, maintenance и private claim остаются. Повреждённый journal/счётчик не сбрасывается автоматически. После устранения причины выполните явный root retry:
 
 ```sh
+sudo systemctl reset-failed robopark.service robopark-tuna.service
 sudo python3 -I /opt/robopark/host-tools/robopark restore --recover
 ```
 
-Команда принимает только уже утверждённую транзакцию из private journal и возвращает 75, если host.lock занят. Пока readiness не восстановлен, maintenance и предыдущие данные сохраняются. Не редактируйте journal и не удаляйте маркер вручную.
+Команда принимает только уже утверждённую транзакцию из private claim/journal, обходит исчерпанный автоматический лимит и возвращает 75, если host.lock занят. Пока readiness не восстановлен, maintenance и предыдущие данные сохраняются. Не редактируйте journal и не удаляйте маркер вручную.
 
 ## Журналы и безопасная эскалация
 
