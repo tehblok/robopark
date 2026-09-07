@@ -8,6 +8,7 @@ out="${1:-"$root/robopark-release.zip"}"
 version="${ROBOPARK_RELEASE_VERSION:-0.1.0}"
 git_sha="$(git -C "$root" rev-parse HEAD)"
 : "${ROBOPARK_SIGNING_KEY_FILE:?set ROBOPARK_SIGNING_KEY_FILE to the Ed25519 PEM key}"
+: "${ROBOPARK_MIGRATION_HEAD:?set ROBOPARK_MIGRATION_HEAD to the Alembic migration head}"
 test -r "$ROBOPARK_SIGNING_KEY_FILE"
 stage="$(mktemp -d "${TMPDIR:-/tmp}/robopark-release.XXXX")"
 cleanup() { rm -rf "$stage"; }
@@ -46,4 +47,5 @@ fi
 
 python3 "$root/scripts/release_pack.py" \
   --root "$stage" --output "$out" --version "$version" \
-  --git-sha "$git_sha" --signing-key "$ROBOPARK_SIGNING_KEY_FILE"
+  --git-sha "$git_sha" --migration-head "$ROBOPARK_MIGRATION_HEAD" \
+  --signing-key "$ROBOPARK_SIGNING_KEY_FILE"

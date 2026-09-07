@@ -87,15 +87,16 @@ def sha256_file(path: Path) -> str:
 
 
 def _normalize_member(name: str) -> str:
-    raw = name.replace("\\", "/").strip()
-    if not raw or raw.endswith("/"):
+    if not isinstance(name, str) or not name or name != name.strip() or "\\" in name:
         raise ArchiveError("unsafe_path")
-    if raw in {MANIFEST_NAME, MANIFEST_SIGNATURE_NAME}:
-        return raw
-    path = Path(raw)
-    if path.is_absolute() or ".." in path.parts:
+    if name in {MANIFEST_NAME, MANIFEST_SIGNATURE_NAME}:
+        return name
+    if name.startswith("/") or "\x00" in name or name.endswith("/"):
         raise ArchiveError("unsafe_path")
-    return path.as_posix()
+    parts = name.split("/")
+    if any(part in {"", ".", ".."} or part != part.strip() for part in parts):
+        raise ArchiveError("unsafe_path")
+    return name
 
 
 def _iter_files(root: Path) -> Iterable[Path]:
