@@ -53,7 +53,10 @@ def _directory(paths, path):
 @contextmanager
 def _lock(directory, name):
     descriptor = os.open(
-        name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory
+        name,
+        os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK,
+        0o600,
+        dir_fd=directory,
     )
     try:
         info = os.fstat(descriptor)
@@ -76,7 +79,11 @@ def _lock(directory, name):
 
 def _locations(paths):
     return [
-        (paths.ops / "artifacts", rf"(?:update-{UUID}\.zip|\.bridge-[a-z0-9_]{{8}})", "upload"),
+        (
+            paths.ops / "artifacts",
+            rf"(?:(?:update|restore)-{UUID}\.zip|\.bridge-[a-z0-9_]{{8}})",
+            "upload",
+        ),
         (
             paths.var / "api-ops/inspections",
             rf"(?:{UUID}\.json|\.bridge-[a-z0-9_]{{8}})",
@@ -123,10 +130,15 @@ def artifact_usage(paths):
     try:
         with ExitStack() as stack:
             entries = _entries(paths, stack)
-            total = sum(item[3].st_size for item in entries)
+            from .restore_retention import entries as restore_entries
+
+            restores = restore_entries(paths, stack)
+            total = sum(item[3].st_size for item in entries) + sum(
+                item["bytes"] for item in restores
+            )
             return {
                 "bytes": total,
-                "files": len(entries),
+                "files": len(entries) + sum(item["files"] for item in restores),
                 "pressure": total >= MAX_BYTES,
                 "blocked": False,
             }
@@ -187,8 +199,14 @@ def command_retired(paths, identity):
 
 
 def _protected(paths):
+    from .restore import _load
+
     names = set()
     identities = set()
+    journal = _load(paths)
+    if journal:
+        identities.add(journal["request"]["job_id"])
+        names.add(journal["request"]["artifact"])
     for path in (
         paths.ops / "inbox/approved.json",
         paths.state / "command-request.json",
@@ -200,6 +218,10 @@ def _protected(paths):
         raw = read_object(path)
         if path.exists() and not raw:
             raise RetentionBlocked("invalid_active_state")
+        if path.name in {"approved.json", "command-request.json"} and raw.get("kind") == "restore":
+            from .commands import _validate
+
+            _validate(raw, fresh=False)
         for key in ("artifact", "artifact_name"):
             if isinstance(raw.get(key), str):
                 names.add(raw[key])
@@ -276,7 +298,10 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
                 api = None
             if api is not None:
                 stack.enter_context(_lock(api, "begin.lock"))
-            for marker in (paths.state / "maintenance.json", paths.ops / "public/maintenance.json"):
+            for marker in (
+                paths.state / "maintenance.json",
+                paths.ops / "public/maintenance.json",
+            ):
                 if marker.exists() and read_object(marker).get("enabled") is not False:
                     raise RetentionBlocked("maintenance")
             names, identities = _protected(paths)
@@ -286,6 +311,15 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
                 raise RetentionBlocked("replay_store_full")
             entries = sorted(_entries(paths, stack), key=lambda item: item[3].st_mtime)
             total = sum(item[3].st_size for item in entries)
+            from .restore_retention import entries as restore_entries
+            from .restore_retention import prune
+
+            restores = restore_entries(paths, stack)
+            restore_bytes, restored_deleted = prune(
+                restores, identities, now=now, max_bytes=max_bytes - total
+            )
+            result["deleted"] += restored_deleted
+            total += restore_bytes
             receipt_total = sum(item[3].st_size for item in entries if item[2] == "receipt")
             removals = []
             receipts = []
@@ -328,7 +362,8 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
             if receipts:
                 atomic_write_json(paths.state / "retired-commands-required.json", {"format": 1})
                 atomic_write_json(
-                    paths.state / "retired-commands.json", {"format": 1, "bits": bits.hex()}
+                    paths.state / "retired-commands.json",
+                    {"format": 1, "bits": bits.hex()},
                 )
             for entry in removals + receipts:
                 _remove(entry)

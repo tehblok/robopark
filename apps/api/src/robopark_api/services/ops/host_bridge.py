@@ -348,6 +348,7 @@ def enqueue_restore(ops, root, blob, actor, exempt):
     """Approval references immutable bytes; only root may stop writers/replace data."""
     inspect_archive(blob, expected_kind=KIND_SNAPSHOT)
     with _locked(ops):
+        _admit_upload(root, len(blob))
         require_idle(ops)
         require_host_idle(root)
         job = _new_host_job("restore", actor, exempt)

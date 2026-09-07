@@ -81,7 +81,9 @@ def approve(host, *, head="initial", corrupt=False, extra=None, manifest_changes
     return host.command("consume")
 
 
-def test_manual_restore_replaces_all_data_and_restarts_writers_under_root_barrier(e2e_host):
+def test_manual_restore_replaces_all_data_and_restarts_writers_under_root_barrier(
+    e2e_host,
+):
     host = e2e_host
     secrets = (host.paths.etc / "host.env").read_bytes()
     assert approve(host) == 0
@@ -175,7 +177,10 @@ def test_boot_refuses_app_start_in_each_directory_rename_window(e2e_host, monkey
         if selected == host.paths.var / "data" and not tripped:
             assert host.maintenance() and (host.paths.state / "maintenance.json").exists()
             assert not host.app_active
-            with (host.paths.ops / "host.lock").open("a") as lock, pytest.raises(BlockingIOError):
+            with (
+                (host.paths.ops / "host.lock").open("a") as lock,
+                pytest.raises(BlockingIOError),
+            ):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             original(source, destination)
             tripped = True
@@ -312,3 +317,30 @@ def test_snapshot_validation_never_creates_wal_or_shm_files(tmp_path):
     _validate_database(path, "initial")
     assert path.read_bytes() == before
     assert sorted(p.name for p in tmp_path.iterdir()) == ["robopark.db"]
+
+
+def test_two_terminal_restores_prune_only_obsolete_material(e2e_host):
+    import shutil
+    import time
+
+    from robopark_host.retention import artifact_usage, retain_artifacts
+
+    host = e2e_host
+    assert approve(host) == 0
+    previous = json.loads((host.paths.state / "restore-journal.json").read_text())["request"][
+        "job_id"
+    ]
+    shutil.rmtree(host.installer.base / "manual-snapshot")
+    assert approve(host) == 0
+    latest = json.loads((host.paths.state / "restore-journal.json").read_text())["request"][
+        "job_id"
+    ]
+    before = artifact_usage(host.paths)["bytes"]
+    result = retain_artifacts(host.paths, now=time.time() + 30 * 86400, max_bytes=0)
+    assert not result["blocked"]
+    for identity, exists in [(previous, False), (latest, True)]:
+        assert (host.paths.state / "restores" / identity).exists() is exists
+        assert (host.paths.var / (".manual-displaced-" + identity)).exists() is exists
+        assert (host.paths.ops / "artifacts" / ("restore-" + identity + ".zip")).exists() is exists
+    assert artifact_usage(host.paths)["bytes"] < before
+    assert value(host) == "snapshot" and not host.maintenance()

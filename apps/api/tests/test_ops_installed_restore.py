@@ -60,3 +60,24 @@ def test_installed_restore_queues_root_approval_without_replacing_worker_databas
     assert (host / "artifacts" / request["artifact"]).read_bytes() == archive
     assert client.get("/auth/me").status_code == 200
     assert client.post("/admin/ops/abort").status_code == 409
+
+
+def test_restore_admission_reserves_storage_before_creating_job(tmp_path, monkeypatch):
+    import pytest
+    from robopark_api.services.ops import host_bridge
+    from robopark_api.services.ops.jobs import JobConflict
+
+    host = tmp_path / "host"
+    for name in ("inbox", "artifacts", "public"):
+        (host / name).mkdir(parents=True)
+    (host / "artifacts/occupied.zip").write_bytes(b"existing")
+    source = tmp_path / "snapshot/data"
+    source.mkdir(parents=True)
+    (source / "robopark.db").write_bytes(b"snapshot")
+    blob = build_archive(kind="snapshot", source_root=source.parent, app_version="0.1.0")
+    monkeypatch.setattr(host_bridge, "MAX_UPLOAD_STORAGE", len(blob))
+    with pytest.raises(JobConflict, match="artifact_storage_full"):
+        host_bridge.enqueue_restore(tmp_path / "ops", host, blob, 1, "session")
+    assert not (tmp_path / "ops/job.json").exists()
+    assert not (host / "inbox/approved.json").exists()
+    assert len(list((host / "artifacts").iterdir())) == 1
