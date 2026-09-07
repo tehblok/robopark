@@ -12,11 +12,13 @@ import json
 import multiprocessing
 import os
 import runpy
+import shlex
 import shutil
 import sqlite3
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -285,14 +287,23 @@ class InstalledHost:
         return self.command("consume")
 
     def reboot(self):
-        # Boot recovery executes the real updater/consumer dispatch before app/Tuna.
-        self.command("update", "--recover")
-        self.command("consume")
-        self.run(["systemctl", "restart", "robopark.service"], timeout=900)
-        assert self.wait_ready(
-            project="robopark", config=self.paths.state / "current-compose.json", timeout=180
-        )
+        # Execute installed unit entrypoints, without inventing a boot consumer.
+        self.app_active = self.tuna_active = False
+        with suppress(self.command_error):
+            self.run(["systemctl", "start", "robopark.service"], timeout=3600)
+        # After orders startup but does not require app success. The updater is
+        # enabled independently and still runs after a failed ExecStartPre.
+        unit = configparser.ConfigParser(interpolation=None)
+        unit.read(self.paths.root / "etc/systemd/system/robopark-updater.service")
+        self.command(*shlex.split(unit["Service"]["ExecStart"])[3:])
+        if not self.wait_ready(
+            project="robopark",
+            config=self.paths.state / "current-compose.json",
+            timeout=180,
+        ):
+            return False
         self.run(["systemctl", "start", "robopark-tuna.service"], timeout=90)
+        return True
 
     def make_github(self):
         name = "robopark-release-0.1.1.zip"
@@ -373,13 +384,25 @@ class InstalledHost:
                     ):
                         self.tuna_active = False
                 if action in ("start", "restart"):
-                    if self.command("restore-check"):
+                    app_unit = configparser.ConfigParser(interpolation=None)
+                    app_unit.read(self.paths.root / "etc/systemd/system/robopark.service")
+                    command = shlex.split(app_unit["Service"]["ExecStartPre"])[3:]
+                    if self.command(*command):
                         raise self.command_error("command_failed")
                     self.app_active = True
             elif unit == "robopark-tuna.service" and action in ("start", "restart", "try-restart"):
                 if action != "try-restart" or self.tuna_active:
                     assert self.app_active, "Tuna started before application readiness"
                     self.tuna_active = self.fail != "tuna"
+        if (
+            argv[:2] == ["docker", "compose"]
+            and "-p" in argv
+            and argv[argv.index("-p") + 1] == "robopark"
+        ):
+            if "stop" in argv:
+                self.app_active = False
+            elif "up" in argv:
+                self.app_active = True
         if argv[0] == "curl":
             return (
                 b'{"status":"degraded"}\n503'

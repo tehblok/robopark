@@ -101,10 +101,22 @@ def _load(paths):
         raise ReleaseError("manual_recovery_required") from exc
 
 
+def _claimed_restore(paths):
+    from .commands import _read, _validate
+
+    pending = paths.state / "command-request.json"
+    if not pending.exists() and not pending.is_symlink():
+        return None
+    request = _validate(_read(pending), fresh=False)
+    return request if request["kind"] == "restore" else None
+
+
 def active_restore(paths):
     try:
         journal = _load(paths)
-        return journal is not None and journal["phase"] not in TERMINAL
+        return bool(_claimed_restore(paths)) or (
+            journal is not None and journal["phase"] not in TERMINAL
+        )
     except ReleaseError:
         return True
 
@@ -440,28 +452,121 @@ def run_restore(paths, request, runner):
             return _result(journal)
 
 
-def recover_restore(paths, runner):
-    """Explicit root retry after automatic attempts are exhausted; never accepts input."""
-    from .commands import _finish, _read
+class _BootRunner:
+    """ExecStartPre cannot recursively activate the app or its Tuna dependent.
+
+    Start the same pinned Compose services directly while systemd is still running
+    ExecStartPre. Local readiness is checked under maintenance; systemd subsequently
+    adopts the healthy containers in ExecStart and starts Tuna through its normal
+    After/Requires ordering. Publication is conservatively degraded until that start.
+    """
+
+    def __init__(self, paths, runner):
+        from .updater import compose
+
+        self.runner = runner
+        self.command = compose("robopark", paths.state / "current-compose.json")
+
+    def run(self, argv, *, timeout):
+        if argv == ["systemctl", "stop", "robopark.service"]:
+            return self.runner.run(
+                self.command + ["stop", "--timeout", "30", "api", "web"],
+                timeout=timeout,
+            )
+        if argv == ["systemctl", "restart", "robopark.service"]:
+            try:
+                return self.runner.run(
+                    self.command
+                    + ["up", "-d", "--no-build", "--wait", "--wait-timeout", "180", "api", "web"],
+                    timeout=timeout,
+                )
+            except Exception:
+                self.run(["systemctl", "stop", "robopark.service"], timeout=120)
+                raise
+        # A synchronous Tuna start would wait for this very ExecStartPre to finish.
+        raise ReleaseError("publication_pending")
+
+    def wait_ready(self, **kwargs):
+        ready = self.runner.wait_ready(**kwargs)
+        if not ready:
+            self.run(["systemctl", "stop", "robopark.service"], timeout=120)
+        return ready
+
+
+def _recover_owned(paths, runner, *, automatic):
+    from .commands import _allow_attempt, _finish, _public, _read
+    from .updater import _maintenance
+
+    journal = _load(paths)
+    request = _claimed_restore(paths)
+    if request is None:
+        if journal is None or journal["phase"] in TERMINAL:
+            return 0
+        request = journal["request"]
+    if journal and journal["request"] != request and journal["phase"] not in TERMINAL:
+        return 75
+    pending = paths.state / "command-request.json"
+    if pending.exists() and _read(pending) != request:
+        return 75
+    if journal and journal["request"] == request and journal["phase"] in TERMINAL:
+        _finish(paths, request, _result(journal))
+        return 0
+    if automatic:
+        runner = _BootRunner(paths, runner)
+    # The shared durable counter includes the original consumer attempt. An
+    # interrupted process cannot obtain three fresh attempts on every reboot.
+    for _ in range(3 if automatic else 1):
+        if automatic and not _allow_attempt(paths, request):
+            break
+        _maintenance(paths, True)
+        result = run_restore(paths, request, runner)
+        if result["state"] != "maintenance":
+            _maintenance(paths, False)
+            _finish(paths, request, result)
+            return 0
+    if automatic:
+        journal = _load(paths)
+        if journal is None or journal["request"] != request:
+            journal = {
+                "schema": 1,
+                "request": request,
+                "snapshot_done": False,
+                "writes_resumed": False,
+                "publication_degraded": True,
+            }
+        _phase(paths, journal, "manual_recovery_required", error="manual_recovery_required")
+        atomic_write_json(_public(paths) / "command-result.json", _result(journal), mode=0o644)
+    _maintenance(paths, True)
+    return 1
+
+
+def recover_restore(paths, runner, *, automatic=False):
+    """Recover a private claim; boot retries are bounded, explicit root retry is not."""
     from .state import exclusive_lock
     from .updater import _maintenance
 
     if paths.root == Path("/") and os.geteuid() != 0:
         return 1
+    if automatic and not active_restore(paths):
+        return 0
     try:
         with exclusive_lock(paths.ops / "host.lock", blocking=False):
-            journal = _load(paths)
-            if journal is None or journal["phase"] in TERMINAL:
-                return 0
-            pending = paths.state / "command-request.json"
-            if pending.exists() and _read(pending) != journal["request"]:
-                return 75
-            result = run_restore(paths, journal["request"], runner)
-            if result["state"] == "maintenance":
-                return 1
-            _finish(paths, journal["request"], result)
-            return 0
+            return _recover_owned(paths, runner, automatic=automatic)
     except BlockingIOError:
+        # A normal root restore owns host.lock while synchronously restarting the
+        # app. Only its durable startup phases permit this ExecStartPre handoff.
+        if automatic:
+            try:
+                journal = _load(paths)
+                if (
+                    journal
+                    and journal["phase"] not in TERMINAL
+                    and check_app_start(paths)
+                    and _claimed_restore(paths) in (None, journal["request"])
+                ):
+                    return 0
+            except ReleaseError:
+                pass
         return 75
     except Exception:
         _maintenance(paths, True)

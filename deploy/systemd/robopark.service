@@ -12,10 +12,10 @@ TasksMax=4096
 Type=oneshot
 RemainAfterExit=yes
 Environment=HOST_ENV_FILE=/etc/robopark/host.env
-ExecStartPre=/usr/bin/python3 -I /opt/robopark/host-tools/robopark restore-check
+ExecStartPre=/usr/bin/python3 -I /opt/robopark/host-tools/robopark restore --boot-recover
 ExecStart=/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json up -d --no-build --wait --wait-timeout 180 api web
 ExecStop=/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json stop --timeout 30 api web
-TimeoutStartSec=240
+TimeoutStartSec=3600
 TimeoutStopSec=90
 NoNewPrivileges=true
 PrivateTmp=true

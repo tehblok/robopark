@@ -193,10 +193,8 @@ def test_boot_refuses_app_start_in_each_directory_rename_window(e2e_host, monkey
     monkeypatch.setattr(os, "replace", original)
     assert tripped
     assert host.command("restore-check") == 1
-    with pytest.raises(host.command_error):
-        host.run(["systemctl", "start", "robopark.service"], timeout=60)
     assert not host.app_active
-    host.reboot()
+    assert host.reboot()
     assert value(host) == "live" and not host.maintenance()
 
 
@@ -344,3 +342,188 @@ def test_two_terminal_restores_prune_only_obsolete_material(e2e_host):
         assert (host.paths.ops / "artifacts" / ("restore-" + identity + ".zip")).exists() is exists
     assert artifact_usage(host.paths)["bytes"] < before
     assert value(host) == "snapshot" and not host.maintenance()
+
+
+def test_boot_entrypoint_runs_before_app_without_a_systemd_ordering_cycle():
+    import configparser
+
+    unit = configparser.ConfigParser(interpolation=None)
+    unit.read(Path(__file__).resolve().parents[2] / "deploy/systemd/robopark.service")
+    assert unit["Service"]["ExecStartPre"].endswith("robopark restore --boot-recover")
+    assert unit["Service"].get("User", "root") == "root"
+    assert int(unit["Service"]["TimeoutStartSec"]) >= 1800
+    assert unit["Install"]["WantedBy"] == "multi-user.target"
+
+
+def test_boot_recovers_private_claim_before_first_restore_journal(e2e_host, monkeypatch):
+    from e2e_support import PowerLoss
+
+    host = e2e_host
+    original = Path.unlink
+
+    def interrupt(path, *args, **kwargs):
+        original(path, *args, **kwargs)
+        if path == host.paths.ops / "inbox/approved.json":
+            raise PowerLoss()
+
+    monkeypatch.setattr(Path, "unlink", interrupt)
+    with pytest.raises(PowerLoss):
+        approve(host)
+    monkeypatch.setattr(Path, "unlink", original)
+    assert not (host.paths.ops / "inbox/approved.json").exists()
+    assert not (host.paths.state / "restore-journal.json").exists()
+    import fcntl
+
+    with (host.paths.ops / "host.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        before = list(host.calls)
+        assert host.command("restore", "--boot-recover") == 75
+        assert host.calls == before
+    assert host.reboot()
+    assert value(host) == "snapshot"
+    assert not host.maintenance()
+    assert not (host.paths.state / "command-request.json").exists()
+    assert host.app_active and host.tuna_active
+    receipt = (host.paths.ops / "public/command-result.json").read_bytes()
+    database(host.paths.var / "data/robopark.db", "accepted later write")
+    assert host.reboot()
+    assert value(host) == "accepted later write"
+    assert (host.paths.ops / "public/command-result.json").read_bytes() == receipt
+
+
+def test_boot_exhaustion_is_durable_and_requires_explicit_operator_recovery(e2e_host):
+    host = e2e_host
+    host.fail = "both_health"
+    assert approve(host) == 1
+    assert not host.reboot()
+    counter = json.loads((host.paths.state / "command-attempts.json").read_text())
+    assert counter["attempts"] == 3
+    journal = json.loads((host.paths.state / "restore-journal.json").read_text())
+    assert journal["phase"] == journal["error"] == "manual_recovery_required"
+    assert host.maintenance()
+    assert (host.paths.state / "command-request.json").exists()
+    before = list(host.calls)
+    assert not host.reboot()
+    assert not any(call[0] == "docker" for call in host.calls[len(before) :])
+    assert json.loads((host.paths.state / "command-attempts.json").read_text()) == counter
+    host.fail = None
+    assert host.command("restore", "--recover") == 0
+    assert host.reboot()
+    assert value(host) == "live" and not host.maintenance()
+
+
+def test_boot_compose_recovery_owns_host_lock_and_never_recursively_starts_units(
+    e2e_host, monkeypatch
+):
+    import fcntl
+
+    from e2e_support import PowerLoss
+
+    host = e2e_host
+    original = os.replace
+
+    def interrupt(source, destination):
+        original(source, destination)
+        if (
+            Path(destination).name == "restore-journal.json"
+            and json.loads(Path(destination).read_text())["phase"] == "replaced"
+        ):
+            raise PowerLoss()
+
+    monkeypatch.setattr(os, "replace", interrupt)
+    with pytest.raises(PowerLoss):
+        approve(host)
+    monkeypatch.setattr(os, "replace", original)
+    actual_run = host.run
+    observed = []
+
+    def check(argv, **kwargs):
+        assert argv[0] != "systemctl", "boot recovery recursively activated a waiting unit"
+        assert host.maintenance()
+        with (
+            (host.paths.ops / "host.lock").open("a") as lock,
+            pytest.raises(BlockingIOError),
+        ):
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        observed.append(argv)
+        return actual_run(argv, **kwargs)
+
+    monkeypatch.setattr(host, "run", check)
+    assert host.command("restore", "--boot-recover") == 0
+    assert observed and all(call[:2] == ["docker", "compose"] for call in observed)
+    assert value(host) == "live" and not host.maintenance()
+    result = json.loads((host.paths.ops / "public/command-result.json").read_text())
+    assert result["publication"] == "degraded"
+    for name in ("restore-journal.json", "command-attempts.json"):
+        target = host.paths.state / name
+        assert target.stat().st_mode & 0o777 == 0o600
+        assert target.stat().st_uid == os.geteuid()
+
+
+def test_boot_does_not_reset_a_corrupt_private_retry_counter(e2e_host):
+    host = e2e_host
+    host.fail = "both_health"
+    assert approve(host) == 1
+    counter = host.paths.state / "command-attempts.json"
+    counter.write_text("corrupt")
+    host.fail = None
+    before = list(host.calls)
+    assert host.command("restore", "--boot-recover") == 1
+    assert host.calls == before
+    assert counter.read_text() == "corrupt"
+    assert host.maintenance()
+    assert not host.reboot()
+    assert counter.read_text() == "corrupt"
+    assert host.maintenance()
+
+
+def test_boot_stops_partial_containers_when_compose_wait_raises(e2e_host, monkeypatch):
+    host = e2e_host
+    host.fail = "both_health"
+    assert approve(host) == 1
+    host.fail = None
+    actual_run = host.run
+
+    def failing_up(argv, **kwargs):
+        result = actual_run(argv, **kwargs)
+        if argv[:2] == ["docker", "compose"] and "up" in argv:
+            raise host.command_error("command_failed")
+        return result
+
+    monkeypatch.setattr(host, "run", failing_up)
+    assert host.command("restore", "--boot-recover") == 1
+    assert not host.app_active
+    assert host.maintenance()
+    assert host.calls[-1][-5:] == ["stop", "--timeout", "30", "api", "web"]
+
+
+def test_exhausted_new_claim_never_relabels_an_older_terminal_journal(host_paths):
+    from robopark_host.restore import recover_restore
+    from robopark_host.state import atomic_write_json
+    from test_host_commands import request
+
+    new = request(host_paths, "restore", artifact="placeholder", sha256="a" * 64)
+    new["artifact"] = "restore-" + new["job_id"] + ".zip"
+    old = {**new, "job_id": str(uuid4())}
+    old["artifact"] = "restore-" + old["job_id"] + ".zip"
+    atomic_write_json(host_paths.state / "command-request.json", new)
+    atomic_write_json(
+        host_paths.state / "command-attempts.json", {"job_id": new["job_id"], "attempts": 3}
+    )
+    atomic_write_json(
+        host_paths.state / "restore-journal.json",
+        {
+            "schema": 1,
+            "request": old,
+            "phase": "succeeded",
+            "snapshot_done": True,
+            "writes_resumed": True,
+            "error": None,
+            "publication_degraded": False,
+        },
+    )
+    assert recover_restore(host_paths, None, automatic=True) == 1
+    saved = json.loads((host_paths.state / "restore-journal.json").read_text())
+    assert saved["request"] == new
+    assert saved["phase"] == "manual_recovery_required"
+    assert not saved["snapshot_done"] and not saved["writes_resumed"]

@@ -221,7 +221,9 @@ def build_parser() -> argparse.ArgumentParser:
     for command in COMMAND_HANDLERS:
         child = commands.add_parser(command)
         if command == "restore":
-            child.add_argument("--recover", action="store_true", required=True)
+            mode = child.add_mutually_exclusive_group(required=True)
+            mode.add_argument("--recover", action="store_true")
+            mode.add_argument("--boot-recover", action="store_true")
         if command == "update":
             child.add_argument("--request", type=Path)
             mode = child.add_mutually_exclusive_group()
@@ -250,7 +252,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .restore import recover_restore
         from .updater import SystemRunner
 
-        return recover_restore(paths, SystemRunner())
+        return recover_restore(paths, SystemRunner(), automatic=arguments.boot_recover)
     if arguments.command == "update":
         from .launcher import launch_update
         from .release import ReleaseError, UpdateRequest
