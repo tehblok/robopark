@@ -1,8 +1,32 @@
 import { ApiError } from '../api'
 import { ru } from './ru'
 
+const opsErrors: Record<string, string> = {
+  confirm_required: 'Введите фразу подтверждения точно, без лишних пробелов.',
+  github_release_unavailable: 'Релиз больше недоступен. Список обновлений проверяется заново.',
+  github_approval_actor_mismatch: 'Этот релиз уже подтверждён другим владельцем. Дождитесь завершения операции.',
+  host_work_in_progress: 'Другая операция уже выполняется.',
+  job_in_progress: 'Другая операция уже выполняется.',
+  host_operation_failed: 'Хост не смог завершить операцию. Соберите диагностику для проверки.',
+  host_bridge_unavailable: 'Служба управления хостом недоступна.',
+  inspection_not_found: 'Проверка архива устарела. Выберите ZIP заново.',
+  inspection_already_approved: 'Этот архив уже передан на установку.',
+  artifact_missing: 'Архив ещё не готов или уже удалён.',
+  artifact_changed: 'Архив изменился после проверки. Выберите ZIP заново.',
+  archive_too_large: 'Архив превышает допустимый размер.',
+  ops_job_conflict: 'Другая операция уже выполняется.',
+  host_operation_not_abortable: 'Операция уже передана хосту и не может быть отменена.',
+  release_not_available: 'Релиз больше недоступен. Список обновлений проверяется заново.',
+  release_not_found: 'Релиз не найден. Список обновлений проверяется заново.',
+  discovery_stale: 'Сведения об обновлениях устарели. Ожидаем проверку хоста.',
+  updater_disabled: 'Проверка обновлений отключена на хосте.',
+  invalid_confirmation: 'Введите фразу подтверждения точно, без лишних пробелов.',
+  update_rolled_back: 'Обновление не прошло проверку. Восстановлена предыдущая версия.',
+}
+
 export function mapApiError(error: unknown, fallback = ''): string {
   if (error instanceof ApiError) {
+    if (error.detail && opsErrors[error.detail]) return opsErrors[error.detail]
     if (error.detail && ru.errors.details[error.detail]) {
       return ru.errors.details[error.detail]
     }

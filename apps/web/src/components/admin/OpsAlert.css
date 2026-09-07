@@ -1,0 +1,14 @@
+.ops-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--rp-space-2);
+  border: 1px solid currentColor;
+  border-radius: var(--rp-radius-control);
+  padding: var(--rp-space-3);
+  margin-block: var(--rp-space-3);
+  color: var(--rp-warning);
+  background: var(--rp-warning-surface);
+}
+.ops-alert svg { flex-shrink: 0; }
+.ops-alert[data-tone='error'] { color: var(--rp-critical); background: var(--rp-critical-surface); }
+.ops-alert[data-tone='info'] { color: var(--rp-info); background: var(--rp-info-surface); }

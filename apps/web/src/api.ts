@@ -415,6 +415,40 @@ export type ReportCreatePayload = {
   tracker_url?: string | null
 }
 
+export type HostCheck = {
+  code: string
+  status: 'ok' | 'warning' | 'failed'
+  message: string
+  repair?: string | null
+}
+
+export type SystemHealth = {
+  version: string | null
+  git_sha: string | null
+  generated_at: string | null
+  overall: 'ok' | 'degraded' | 'unknown'
+  checks: HostCheck[]
+  update: {
+    state: 'idle' | 'updating' | 'current_healthy' | 'rolled_back' | 'maintenance' | 'unknown'
+    publication: 'degraded' | null
+  }
+  last_backup: { status: 'success' | 'failed' | 'unknown'; completed_at: string | null }
+}
+
+export type AvailableUpdate = {
+  state: 'available' | 'up_to_date' | 'discovery_stale' | 'disabled' | 'approved'
+  checked_at: string | null
+  release: { release_id: number; version: string; git_sha: string; size: number; sha256: string } | null
+}
+
+export type UpdateInspection = {
+  inspection_id: string
+  version: string
+  git_sha: string
+  migration_head: string
+  notes: string
+}
+
 export type OpsJob = {
   id: string
   kind: 'snapshot' | 'restore' | 'update' | string
@@ -428,6 +462,7 @@ export type OpsJob = {
   updated_at: string
   restore_phrase: string
   update_phrase: string
+  host_result?: { before: HostCheck[]; after: HostCheck[]; performed: string[]; failed: string[] } | null
 }
 
 export type OpsMaintenance = {
@@ -955,6 +990,20 @@ export const api = {
         ? '/reports/badge'
         : `/reports/badge?park_id=${parkId}`,
     ),
+  opsSystemHealth: () => request<SystemHealth>('/admin/ops/system-health'),
+  opsAvailableUpdate: () => request<AvailableUpdate>('/admin/ops/available-update'),
+  opsInspectUpdate: (file: File) => {
+    const form = new FormData()
+    form.append('archive', file, file.name)
+    return requestForm<UpdateInspection>('/admin/ops/update/inspect', form)
+  },
+  opsApproveUpdate: (inspection_id: string, confirm: 'ОБНОВИТЬ') =>
+    request<OpsJob>('/admin/ops/update/approve', { method: 'POST', body: JSON.stringify({ inspection_id, confirm }) }),
+  opsApproveGithubUpdate: (release_id: number, confirm: 'ОБНОВИТЬ') =>
+    request<OpsJob>('/admin/ops/github-update/approve', { method: 'POST', body: JSON.stringify({ release_id, confirm }) }),
+  opsDiagnostics: () => request<OpsJob>('/admin/ops/diagnostics', { method: 'POST' }),
+  opsRepair: () => request<OpsJob>('/admin/ops/repair', { method: 'POST' }),
+  opsDiagnosticArtifact: () => requestBlob('/admin/ops/diagnostic-artifact'),
   opsMaintenance: () => request<OpsMaintenance>('/ops/maintenance'),
   opsJob: () => request<OpsJob>('/admin/ops/job'),
   opsAbort: () => request<OpsJob>('/admin/ops/abort', { method: 'POST' }),

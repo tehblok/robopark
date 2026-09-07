@@ -1,0 +1,8 @@
+.ops-health-summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--rp-space-3); }
+.ops-checks { list-style: none; padding: 0; margin: 1rem 0; }
+.ops-checks li { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: var(--rp-space-3); padding: .6rem 0; border-bottom: 1px solid var(--rp-border); }
+.ops-release-details { display: grid; gap: .5rem; overflow-wrap: anywhere; }
+.ops-release-details p { margin: 0; }
+.ops-stack .alert svg { flex-shrink: 0; }
+.ops-stack input[type="file"] { max-width: 100%; }
+.ops-stack .form-actions { flex-wrap: wrap; }

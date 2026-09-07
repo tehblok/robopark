@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { type FormEvent, type ReactNode, useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   api,
@@ -11,7 +11,8 @@ import {
 } from '../api'
 import { Alert, Badge, PageShell, Panel } from '../components/PageShell'
 import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
-import { TabPanel, Tabs, Toggle } from '../components/ui/Tabs'
+import { Toggle } from '../components/ui/Tabs'
+import { TabPanel as DesignTabPanel, Tabs } from '../design-system/navigation/Tabs'
 import { PasswordField } from '../components/ui/PasswordField'
 import { AdminOpsPanel } from '../components/admin/AdminOpsPanel'
 import { useAuth } from '../auth-context'
@@ -22,6 +23,12 @@ import { useParkScope } from '../app/park/parkScope'
 import { SlaPolicyEditor } from '../domains/insights/SlaPolicyEditor'
 
 type TabId = 'integrations' | 'parks' | 'ops'
+
+// Keep inactive settings unmounted so host polling starts only in its own tab.
+function TabPanel({ id, active, children }: { id: TabId; active: boolean; children: ReactNode }) {
+  if (!active) return null
+  return <DesignTabPanel id={`admin-panel-${id}`} labelledBy={`tab-${id}`} active>{children}</DesignTabPanel>
+}
 
 type AdminBootstrap = {
   parks: Park[]
@@ -258,6 +265,8 @@ export function Admin() {
       {success && <Alert tone="success">{success}</Alert>}
 
       <Tabs
+        ariaLabel="Разделы настроек"
+        panelIdFor={id => `admin-panel-${id}`}
         items={[
           ...(canIntegrations ? [{ id: 'integrations', label: 'Интеграции' }] : []),
           ...(canParks ? [{ id: 'parks', label: 'Парки', count: parkRequests.length }] : []),
@@ -268,7 +277,7 @@ export function Admin() {
       />
 
       {/* --- Integrations ------------------------------------------------- */}
-      {canIntegrations && <TabPanel active={tab === 'integrations'}>
+      {canIntegrations && <TabPanel id="integrations" active={tab === 'integrations'}>
         {user?.role === 'royal' && (
           <Panel
             hint="Если пароль не задан, регистрация на /register закрыта."
@@ -450,7 +459,7 @@ export function Admin() {
       </TabPanel>}
 
       {canParks && (
-      <TabPanel active={tab === 'parks'}>
+      <TabPanel id="parks" active={tab === 'parks'}>
         {user && parkId != null && <SlaPolicyEditor parkId={parkId} user={user} />}
         {parkRequests.length > 0 && (
         <Panel
@@ -670,7 +679,7 @@ export function Admin() {
       )}
 
       {user?.role === 'royal' && (
-        <TabPanel active={tab === 'ops'}>
+        <TabPanel id="ops" active={tab === 'ops'}>
           <Panel hint={ru.ops.hint} title={ru.ops.title}>
             <AdminOpsPanel />
           </Panel>
