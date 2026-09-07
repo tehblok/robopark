@@ -687,7 +687,7 @@ def test_public_bridge_remains_readable_under_private_systemd_umask(host):
 def test_changed_tuna_unit_is_restarted_after_local_readiness(host):
     apply_release(host.request(), host.paths, host.runner)
     reconcile_after_exit(host.paths, host.runner)
-    assert ["systemctl", "try-restart", "robopark-tuna.service"] in host.runner.commands
+    assert ["systemctl", "restart", "robopark-tuna.service"] in host.runner.commands
 
 
 def test_tuna_failure_marks_publication_degraded_without_database_rollback(host):

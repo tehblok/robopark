@@ -44,7 +44,7 @@ def atomic_write_json(path: Path, payload: Dict, mode: int = 0o600) -> None:
 
 
 @contextmanager
-def exclusive_lock(path: Path) -> Generator[None, None, None]:
+def exclusive_lock(path: Path, *, blocking: bool = True) -> Generator[None, None, None]:
     """Hold an advisory exclusive lock for the duration of the context."""
 
     target = Path(path)
@@ -52,8 +52,40 @@ def exclusive_lock(path: Path) -> Generator[None, None, None]:
     descriptor = os.open(str(target), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         os.fchmod(descriptor, 0o600)
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         yield
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
+
+
+class HostBusy(Exception):
+    """Another owner or an unfinished transaction forbids standalone mutations."""
+
+
+def operation_pending(paths):
+    return any(
+        path.exists() or path.is_symlink()
+        for path in (
+            paths.state / "maintenance.json",
+            paths.ops / "public/maintenance.json",
+            paths.state / "command-request.json",
+            paths.ops / "inbox/approved.json",
+        )
+    )
+
+
+@contextmanager
+def host_operation(paths):
+    """Standalone ownership; internal helpers run under their caller's host.lock.
+
+    A durable command claim closes the gap while a consumer hands host.lock to
+    its worker. Maintenance keeps interrupted transactions exclusive after reboot.
+    """
+    try:
+        with exclusive_lock(paths.ops / "host.lock", blocking=False):
+            if operation_pending(paths):
+                raise HostBusy("host_busy")
+            yield
+    except BlockingIOError as exc:
+        raise HostBusy("host_busy") from exc

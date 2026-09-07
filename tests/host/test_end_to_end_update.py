@@ -252,3 +252,40 @@ def test_strict_host_maintenance_blocks_four_process_database_writers(e2e_host):
     host.approve()
     assert host.writer_outcomes == ["maintenance"] * 4
     assert host.result()["ok"] is True, host.result()
+
+
+@pytest.mark.parametrize("failure", [None, "local_health"])
+def test_cutover_restarts_inactive_tuna_after_requires_stop(e2e_host, failure):
+    host = e2e_host
+    host.fail = failure
+    host.approve()
+    assert host.version() == ("0.1.1" if failure is None else "0.1.0")
+    assert not host.maintenance()
+    assert host.app_active
+    assert host.tuna_active, "Requires stop propagation left ingress inactive"
+
+
+def test_failed_rollback_publication_preserves_restored_data_and_is_repairable(
+    e2e_host, monkeypatch
+):
+    host = e2e_host
+    host.fail = "local_health"
+    original = host.run
+
+    def outage(argv, **kwargs):
+        if list(argv)[:3] == ["systemctl", "restart", "robopark-tuna.service"]:
+            raise host.command_error("command_failed")
+        return original(argv, **kwargs)
+
+    monkeypatch.setattr(host, "run", outage)
+    host.approve()
+    assert host.version() == "0.1.0" and host.data() == "original"
+    assert not host.maintenance()
+    assert (
+        json.loads((host.paths.ops / "public/host-status.json").read_text())["publication"]
+        == "degraded"
+    )
+    host.fail = None
+    monkeypatch.setattr(host, "run", original)
+    assert host.command("repair") == 0
+    assert host.tuna_active

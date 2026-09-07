@@ -340,6 +340,7 @@ def test_installer_enables_and_starts_approved_command_trigger(tmp_path):
         systemctl() { printf '%s\\n' "$*" >> "$TASK_LOG"; }
         die() { exit 1; }
         install_services
+        start_host_automation
     """,
             "installer-test",
             str(script),

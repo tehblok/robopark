@@ -10,6 +10,17 @@ args = sys.argv[2:]
 root = Path(os.environ['ROBOPARK_ROOT'])
 with (root / 'commands.jsonl').open('a') as stream:
     stream.write(json.dumps({'name': name, 'args': args, 'env': dict(os.environ)}) + '\n')
+if os.environ.get('CHECK_HOST_LOCK_HANDOFF') == '1' and (
+    name == 'apt-get' or name == 'systemctl' and args[:2] == ['start', 'robopark-updater.service']
+):
+    with (root / 'var/lib/robopark/ops/host.lock').open('a') as stream:
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            owned = False
+        except BlockingIOError:
+            owned = True
+        if owned != (name == 'apt-get'):
+            sys.exit('host lock was not held during mutation or retained during handoff')
 if name == 'uname':
     print(os.environ.get('ARCH', 'aarch64'))
 elif name == 'id':

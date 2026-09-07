@@ -9,7 +9,7 @@ from typing import Any
 from .checks import Runner, execute
 from .paths import HostPaths
 from .repair import DEFAULT_REPAIRS
-from .state import atomic_write_json
+from .state import HostBusy, atomic_write_json, host_operation
 
 FAILURE_THRESHOLD = 3
 
@@ -18,6 +18,7 @@ FAILURE_THRESHOLD = 3
 class WatchdogResult:
     consecutive_failures: int
     restarted: str | None
+    busy: bool = False
 
 
 def _ready(http: Any) -> bool:
@@ -46,6 +47,14 @@ def _previous_failures(paths: HostPaths) -> int:
 def run_watchdog(paths: HostPaths, runner: Runner, http: Any) -> WatchdogResult:
     """Restart Robopark once at the third consecutive local readiness failure."""
 
+    try:
+        with host_operation(paths):
+            return _watchdog_owned(paths, runner, http)
+    except HostBusy:
+        return WatchdogResult(_previous_failures(paths), None, busy=True)
+
+
+def _watchdog_owned(paths, runner, http):
     if _ready(http):
         atomic_write_json(paths.state / "watchdog.json", {"consecutive_failures": 0})
         return WatchdogResult(0, None)

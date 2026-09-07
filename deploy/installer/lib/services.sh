@@ -13,5 +13,8 @@ install_services() {
         sleep 2
     done
     systemctl start robopark-tuna.service
+}
+
+start_host_automation() {
     systemctl start robopark-updater.service robopark-update-check.timer robopark-doctor.timer robopark-watchdog.timer robopark-commands.path
 }
