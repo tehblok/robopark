@@ -198,6 +198,12 @@ class InstallerScenarios(unittest.TestCase):
         self.assertFalse((self.root / 'var/lib/robopark/ops/state/current-compose.json').exists())
         self.assertFalse(any(call['args'] == ['start', 'robopark.service'] for call in self.commands('systemctl')))
 
+    def test_start_automatically_resumes_an_incomplete_install(self):
+        self.run_installer(success=False, BUILD_FAIL='1')
+        result = self.run_start()
+        self.assertIn('Найдена незавершённая установка', result.stdout)
+        self.assertEqual(self.state()['phase'], 'complete')
+
     def test_resume_preserves_installed_runtime_and_does_not_rebuild(self):
         self.run_installer()
         config = self.root / 'var/lib/robopark/ops/state/current-compose.json'

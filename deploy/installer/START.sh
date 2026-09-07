@@ -9,6 +9,7 @@ INSTALLER_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=${ROBOPARK_ROOT:-/}
 INSTALLED_HOST="${ROOT%/}/opt/robopark/host-tools/robopark"
 PRESET="$INSTALLER_DIR/.robopark-preset.env"
+INSTALL_STATE="${ROOT%/}/var/lib/robopark/ops/state/install.json"
 
 usage() {
     cat <<'EOF'
@@ -35,7 +36,10 @@ fi
 is_installed() { [ -x "$INSTALLED_HOST" ]; }
 
 if [ -z "$ACTION" ]; then
-    if ! is_installed; then
+    if [ -f "$INSTALL_STATE" ] && ! grep -q '"status":"complete"' "$INSTALL_STATE"; then
+        printf '%s\n' 'Найдена незавершённая установка — автоматически продолжаю её.'
+        ACTION=reinstall
+    elif ! is_installed; then
         ACTION=install
     elif [ -t 0 ]; then
         printf '%s\n' 'Robopark уже установлен. Выберите действие:'
@@ -61,8 +65,7 @@ run_install() {
         chmod 600 "$PRESET"
         set -- --defaults "$PRESET"
     fi
-    state="${ROOT%/}/var/lib/robopark/ops/state/install.json"
-    if [ -f "$state" ] && ! grep -q '"status":"complete"' "$state"; then
+    if [ -f "$INSTALL_STATE" ] && ! grep -q '"status":"complete"' "$INSTALL_STATE"; then
         set -- --resume "$@"
     fi
     if ! "$INSTALLER_DIR/install.sh" "$@"; then
