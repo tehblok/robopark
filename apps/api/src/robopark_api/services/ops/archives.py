@@ -113,7 +113,8 @@ def _release_manifest(
     if not isinstance(release_meta, dict):
         raise ArchiveError("invalid_manifest")
     if set(release_meta) - (
-        {"git_sha", "migration_head", "created_at"} | set(_RELEASE_METADATA_DEFAULTS)
+        {"git_sha", "migration_head", "created_at", "signing_key_rotation"}
+        | set(_RELEASE_METADATA_DEFAULTS)
     ):
         raise ArchiveError("invalid_manifest")
     metadata = {
@@ -133,7 +134,10 @@ def _release_manifest(
 
 
 def _validate_release_manifest(manifest: object) -> tuple[dict[str, str], str, str]:
-    if not isinstance(manifest, dict) or set(manifest) != _RELEASE_MANIFEST_KEYS:
+    if not isinstance(manifest, dict) or set(manifest) not in (
+        _RELEASE_MANIFEST_KEYS,
+        _RELEASE_MANIFEST_KEYS | {"signing_key_rotation"},
+    ):
         raise ArchiveError("invalid_manifest")
     if manifest.get("kind") != KIND_RELEASE or manifest.get("format") != RELEASE_FORMAT_VERSION:
         raise ArchiveError("unsupported_format")

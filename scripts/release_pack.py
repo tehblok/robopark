@@ -250,6 +250,7 @@ def release_metadata(args, files):
         "update_notes",
         "min_installer_version",
         "required_capabilities",
+        "signing_key_rotation",
     }
     if not isinstance(value, dict) or not required <= set(value) <= allowed:
         raise ValueError("invalid_release_metadata")

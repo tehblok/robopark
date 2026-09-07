@@ -188,7 +188,10 @@ def verify_manifest(raw, signature, public_key):
         key.verify(signature, canonical)
     except (InvalidSignature, TypeError, ValueError, UnicodeError) as exc:
         raise ReleaseError("signature_invalid") from exc
-    if not isinstance(manifest, dict) or set(manifest) != MANIFEST_KEYS:
+    if not isinstance(manifest, dict) or set(manifest) not in (
+        MANIFEST_KEYS,
+        MANIFEST_KEYS | {"signing_key_rotation"},
+    ):
         raise ReleaseError("invalid_manifest")
     if (
         manifest["kind"] != "release"
@@ -200,6 +203,12 @@ def verify_manifest(raw, signature, public_key):
         validate_policy_metadata(manifest)
     except (ValueError, TypeError, KeyError) as exc:
         raise ReleaseError("invalid_manifest") from exc
+    if manifest.get("signing_key_rotation", {}).get(
+        "next_public_key", ""
+    ).encode() == key.public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    ):
+        raise ReleaseError("signature_invalid")
     version(manifest["app_version"])
     version(
         "0.0.0" if manifest["min_installer_version"] == "0" else manifest["min_installer_version"]
@@ -404,3 +413,24 @@ def validate_policy_metadata(manifest):
             or len(set(heads)) != len(heads)
         ):
             raise ValueError("invalid_release_policy")
+    if "signing_key_rotation" in manifest:
+        rotation = manifest["signing_key_rotation"]
+        if not isinstance(rotation, dict) or set(rotation) != {
+            "next_public_key",
+            "activation_version",
+        }:
+            raise ValueError("invalid_key_rotation")
+        if rotation["activation_version"] != manifest["app_version"]:
+            raise ValueError("invalid_key_rotation")
+        pem = rotation["next_public_key"]
+        if not isinstance(pem, str) or len(pem) > 256:
+            raise ValueError("invalid_key_rotation")
+        key = serialization.load_pem_public_key(pem.encode("ascii"))
+        if (
+            not isinstance(key, Ed25519PublicKey)
+            or key.public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+            ).decode("ascii")
+            != pem
+        ):
+            raise ValueError("invalid_key_rotation")

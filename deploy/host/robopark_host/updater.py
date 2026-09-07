@@ -45,6 +45,8 @@ from .rollback import (
 )
 from .runtime import pin_images, production_config
 from .state import atomic_write_json, exclusive_lock
+from .trust import activate as activate_trust
+from .trust import admission_key, directory_key
 
 PRE_MAINTENANCE_PHASES = {
     "verified",
@@ -543,19 +545,23 @@ def _retention(paths, journal):
 def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> UpdateResult:
     try:
         raw = request.read_artifact(paths)
-        key = (paths.etc / "release-public-key.pem").read_bytes()
-        release = verify_archive(raw, key)
+        key = admission_key(paths)
         previous = _release_target(paths, paths.current)
-        current_manifest = verify_directory(previous, key)
+        current_key = directory_key(paths, previous)
+        current_manifest = verify_directory(previous, current_key)
         completed = _load_journal(paths)
         if (
             completed
             and completed["job_id"] == request.job_id
             and completed["phase"] == "succeeded"
         ):
+            # The completed bridge used the preceding key. Its exact retained
+            # identity can acknowledge this job only; it cannot admit a new job.
+            release = verify_archive(raw, current_key)
             if current_manifest == release.manifest and previous.name == completed["candidate"]:
                 return UpdateResult("current_healthy")
             raise ReleaseError("request_replayed")
+        release = verify_archive(raw, key)
         check_compatibility(release.manifest, current_manifest)
         previous_config = _configuration_target(paths)
         _disk_preflight(paths, release)
@@ -1009,7 +1015,7 @@ def _wait_public_ready(paths, runner, *, timeout):
 def _complete(paths, journal, runner):
     phase = partial(_phase, paths, journal)
     candidate = paths.releases / journal["candidate"]
-    manifest = verify_directory(candidate, (paths.etc / "release-public-key.pem").read_bytes())
+    manifest = verify_directory(candidate, directory_key(paths, candidate))
     phase("reconciling")
     runner.run(["systemctl", "daemon-reload"], timeout=60)
     runner.run(["systemctl", "restart", "robopark.service"], timeout=900)
@@ -1052,6 +1058,7 @@ def _complete(paths, journal, runner):
     phase("publication_checked", publication_degraded=publication_degraded)
     # Persist the irreversible boundary BEFORE opening writes. Recovery must never
     # restore an old snapshot after this record, even if the unlink was interrupted.
+    activate_trust(paths, journal)
     phase("resuming", writes_resumed=True)
     _maintenance(paths, False)
     result = _success_housekeeping(paths, journal, runner)
@@ -1124,7 +1131,7 @@ def recover_interrupted_update(paths: HostPaths, runner: Runner) -> RecoveryResu
             }:
                 try:
                     candidate = paths.releases / journal["candidate"]
-                    verify_directory(candidate, (paths.etc / "release-public-key.pem").read_bytes())
+                    verify_directory(candidate, directory_key(paths, candidate))
                     if paths.current.resolve() != candidate:
                         raise ReleaseError("manual_recovery_required")
                     # Replay activation after a partial unit copy, before accepting health.

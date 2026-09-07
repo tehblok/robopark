@@ -65,6 +65,12 @@ def require_semver(value):
                 for part in match[4].split(".")
             )
         )
+    prerelease = (
+        tuple((0, int(part)) if part.isdigit() else (1, part) for part in match[4].split("."))
+        if match[4]
+        else ()
+    )
+    return tuple(map(int, match.group(1, 2, 3))) + (not match[4], prerelease)
 
 
 def require(condition):
@@ -124,7 +130,10 @@ def verify_release(raw, key):
         require(archive.getinfo("manifest.json").file_size <= MAX_MANIFEST)
         require(archive.getinfo("manifest.sig").file_size == 64)
         manifest = json.loads(archive.read("manifest.json"), object_pairs_hook=unique_object)
-        require(isinstance(manifest, dict) and set(manifest) == MANIFEST_KEYS)
+        require(
+            isinstance(manifest, dict)
+            and set(manifest) in (MANIFEST_KEYS, MANIFEST_KEYS | {"signing_key_rotation"})
+        )
         key.verify(
             archive.read("manifest.sig"),
             json.dumps(
@@ -137,6 +146,12 @@ def verify_release(raw, key):
             and manifest["format"] == 2
         )
         validate_policy_metadata(manifest)
+        require(
+            manifest.get("signing_key_rotation", {}).get("next_public_key", "").encode()
+            != key.public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+        )
         require_semver(manifest["app_version"])
         require_semver(
             "0.0.0"
@@ -239,9 +254,22 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--public-key", type=Path, required=True)
     parser.add_argument("artifact", type=Path)
+    parser.add_argument(
+        "--trust-transition",
+        type=Path,
+        help="previous bridge ZIP plus sidecars, signed by the supplied trusted key",
+    )
     args = parser.parse_args()
     try:
-        verify_artifact(args.artifact, read_regular(args.public_key, 16384))
+        trusted = read_regular(args.public_key, 16384)
+        bridge = None
+        if args.trust_transition:
+            bridge = verify_artifact(args.trust_transition, trusted)
+            require("signing_key_rotation" in bridge)
+            trusted = bridge["signing_key_rotation"]["next_public_key"].encode("ascii")
+        manifest = verify_artifact(args.artifact, trusted)
+        if bridge:
+            require(require_semver(manifest["app_version"]) > require_semver(bridge["app_version"]))
     except Exception:
         print("Artifact verification failed.", file=sys.stderr)
         return 1
@@ -271,6 +299,27 @@ def validate_policy_metadata(manifest):
             or len(set(heads)) != len(heads)
         ):
             raise ValueError("invalid_release_policy")
+    if "signing_key_rotation" in manifest:
+        rotation = manifest["signing_key_rotation"]
+        if not isinstance(rotation, dict) or set(rotation) != {
+            "next_public_key",
+            "activation_version",
+        }:
+            raise ValueError("invalid_key_rotation")
+        if rotation["activation_version"] != manifest["app_version"]:
+            raise ValueError("invalid_key_rotation")
+        pem = rotation["next_public_key"]
+        if not isinstance(pem, str) or len(pem) > 256:
+            raise ValueError("invalid_key_rotation")
+        key = serialization.load_pem_public_key(pem.encode("ascii"))
+        if (
+            not isinstance(key, Ed25519PublicKey)
+            or key.public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+            ).decode("ascii")
+            != pem
+        ):
+            raise ValueError("invalid_key_rotation")
 
 
 if __name__ == "__main__":
