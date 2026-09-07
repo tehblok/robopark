@@ -164,6 +164,24 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
     bootstrap_compose(host_paths, lambda _: pytest.fail("existing runtime must not be rebuilt"))
     assert target.read_bytes() == before
 
+    next_release = host_paths.releases / "1.0.1"
+    (next_release / "deploy").mkdir(parents=True)
+    (next_release / "deploy/docker-compose.yml").write_text("services: {}")
+    (next_release / "manifest.json").write_text('{"git_sha":"' + "b" * 40 + '"}')
+    host_paths.current.unlink()
+    host_paths.current.symlink_to(next_release)
+    calls.clear()
+    built = False
+
+    bootstrap_compose(host_paths, run)
+
+    build_calls = [command for command in calls if "build" in command]
+    assert [command[-2:] for command in build_calls] == [
+        ["build", "api"],
+        ["build", "web"],
+    ]
+    assert json.loads(target.read_text())["x-robopark-release"] == str(next_release.resolve())
+
 
 def test_runtime_runner_streams_and_retains_failed_docker_build_output(tmp_path, capsys):
     from robopark_host import runtime

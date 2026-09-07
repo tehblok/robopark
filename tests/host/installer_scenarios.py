@@ -214,6 +214,20 @@ class InstallerScenarios(unittest.TestCase):
         self.assertEqual((self.root / 'opt/robopark/current').resolve().name, '1.0.1')
         self.assertEqual(self.state()['phase'], 'complete')
 
+    def test_newer_installer_rebuilds_images_after_initial_service_failure(self):
+        self.run_installer(success=False, API_UNREADY='1')
+        config = self.root / 'var/lib/robopark/ops/state/current-compose.json'
+        self.assertEqual(json.loads(config.read_text())['x-robopark-release'].split('/')[-1], '1.0.0')
+        builds_before = len([call for call in self.commands('docker') if 'build' in call['args']])
+        self.write_release('1.0.1')
+
+        self.run_installer('--resume')
+
+        self.assertEqual(json.loads(config.read_text())['x-robopark-release'].split('/')[-1], '1.0.1')
+        builds_after = len([call for call in self.commands('docker') if 'build' in call['args']])
+        self.assertEqual(builds_after - builds_before, 2)
+        self.assertEqual(self.state()['phase'], 'complete')
+
     def test_resume_preserves_installed_runtime_and_does_not_rebuild(self):
         self.run_installer()
         config = self.root / 'var/lib/robopark/ops/state/current-compose.json'

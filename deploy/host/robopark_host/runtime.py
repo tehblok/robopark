@@ -195,6 +195,9 @@ def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
             return _run(command, build_log=runtime_log)
 
         run = logged_run
+    release = paths.current.resolve(strict=True)
+    if not release.is_relative_to(paths.releases.resolve()) or not release.is_dir():
+        raise ValueError("invalid_release")
     target = paths.state / "current-compose.json"
     if target.is_symlink():
         resolved = target.resolve(strict=True)
@@ -203,12 +206,19 @@ def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
         metadata = resolved.stat()
         if metadata.st_mode & 0o777 != 0o600 or metadata.st_uid != os.geteuid():
             raise ValueError("invalid_runtime_config")
-        return
+        if metadata.st_size > 1024 * 1024:
+            raise ValueError("invalid_runtime_config")
+        try:
+            active_config = json.loads(resolved.read_text())
+        except (OSError, UnicodeError, ValueError) as error:
+            raise ValueError("invalid_runtime_config") from error
+        if not isinstance(active_config, dict):
+            raise ValueError("invalid_runtime_config")
+        if active_config.get("x-robopark-release") == str(release):
+            return
     if target.exists():
-        raise ValueError("invalid_runtime_config")
-    release = paths.current.resolve(strict=True)
-    if not release.is_relative_to(paths.releases.resolve()) or not release.is_dir():
-        raise ValueError("invalid_release")
+        if not target.is_symlink():
+            raise ValueError("invalid_runtime_config")
     source = release / "deploy/docker-compose.yml"
     command = ["docker", "compose", "--project-name", "robopark", "--file", str(source)]
     previous_env = os.environ.get("HOST_ENV_FILE")
