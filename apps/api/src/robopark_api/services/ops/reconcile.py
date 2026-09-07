@@ -27,6 +27,7 @@ def reconcile_pending_rebuild(
     database_url: str,
     config_files: dict[str, Path],
     data_dir: Path | None,
+    host_ops_dir: Path | None = None,
 ) -> None:
     paths = ensure_ops_dir(ops_dir)
     job = load_job(ops_dir)
@@ -35,7 +36,12 @@ def reconcile_pending_rebuild(
     if job.state != STATE_RUNNING or job.phase != PHASE_AWAITING_REBUILD:
         return
 
-    result_path = paths["rebuild_result"]
+    host_updater = job.extra.get("host_updater") is True
+    result_path = (
+        (host_ops_dir or paths["root"]) / "public/rebuild.result"
+        if host_updater
+        else paths["rebuild_result"]
+    )
     if not result_path.is_file():
         # Agent not finished yet — keep maintenance.
         return
@@ -46,8 +52,9 @@ def reconcile_pending_rebuild(
         logger.warning("Invalid rebuild.result: %s", exc)
         return
 
-    result_path.unlink(missing_ok=True)
-    paths["rebuild_requested"].unlink(missing_ok=True)
+    if not host_updater:
+        result_path.unlink(missing_ok=True)
+        paths["rebuild_requested"].unlink(missing_ok=True)
 
     job_id = str(payload.get("job_id") or "")
     if job_id and job_id != job.id:
@@ -55,7 +62,13 @@ def reconcile_pending_rebuild(
         return
 
     if payload.get("ok"):
-        append_log(ops_dir, job, "ops-agent: контейнеры пересобраны.")
+        append_log(
+            ops_dir,
+            job,
+            "Host updater: обновление завершено."
+            if host_updater
+            else "ops-agent: контейнеры пересобраны.",
+        )
         job.state = STATE_SUCCEEDED
         job.phase = "applied"
         job.error = None
@@ -64,10 +77,16 @@ def reconcile_pending_rebuild(
         return
 
     error = str(payload.get("error") or "cutover_unhealthy")
-    append_log(ops_dir, job, f"ops-agent: сбой выкладки ({error}), откат снимка…")
+    append_log(
+        ops_dir,
+        job,
+        f"Host updater: обновление не выполнено ({error})."
+        if host_updater
+        else f"ops-agent: сбой выкладки ({error}), откат снимка…",
+    )
     rollback = paths["rollbacks"] / job.id
     try:
-        if rollback.is_dir():
+        if not job.extra.get("host_updater") and rollback.is_dir():
             restore_snapshot_tree(
                 rollback,
                 database_path=sqlite_path_from_url(database_url),

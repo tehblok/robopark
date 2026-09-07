@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
 from robopark_api.services.ops import runner as runner_mod
 from robopark_api.services.ops.archives import KIND_RELEASE, KIND_SNAPSHOT, build_archive
 from robopark_api.services.ops.jobs import (
@@ -304,3 +303,169 @@ def test_abort_during_awaiting_rebuild_does_not_leave_rebuild_requested(
     assert job.state == STATE_FAILED
     assert job.error == "aborted"
     assert not (ctx.ops_dir / "rebuild.requested").exists()
+
+
+def test_host_update_delegates_verified_artifact_without_container_snapshot_or_tests(tmp_path):
+    import json
+
+    db = tmp_path / "data" / "robopark.db"
+    _tiny_db(db)
+
+    def no_container_tests(_staging):
+        raise AssertionError("host must own candidate testing")
+
+    ctx = _ctx(
+        tmp_path, db, None, test_runner=no_container_tests, use_host_updater=True, actor_user_id=17
+    )
+    job = start_and_run(
+        ctx,
+        "update",
+        exempt_token_hash="x",
+        archive=_release_zip(tmp_path, tests_ok=True),
+        confirm=UPDATE_PHRASE,
+    )
+    assert job.phase == "awaiting_rebuild"
+    request = json.loads((ctx.ops_dir / "inbox/approved.json").read_text())
+    assert set(request) == {"job_id", "kind", "artifact", "actor_user_id", "created_at"}
+    assert request["job_id"] == job.id
+    assert request["kind"] == "update"
+    assert request["actor_user_id"] == 17
+    assert (ctx.ops_dir / "artifacts" / request["artifact"]).is_file()
+    assert not (ctx.ops_dir / "staging/release").exists()
+    assert not (ctx.ops_dir / "rollbacks" / job.id).exists()
+
+
+def test_host_update_requires_authenticated_actor(tmp_path):
+    db = tmp_path / "data" / "robopark.db"
+    _tiny_db(db)
+    ctx = _ctx(tmp_path, db, None, use_host_updater=True)
+    job = start_and_run(
+        ctx,
+        "update",
+        exempt_token_hash="x",
+        archive=_release_zip(tmp_path, tests_ok=True),
+        confirm=UPDATE_PHRASE,
+    )
+    assert job.error == "actor_required"
+    assert not (ctx.ops_dir / "inbox/approved.json").exists()
+
+
+def test_host_failure_reconciliation_never_restores_data_a_second_time(tmp_path):
+    import json
+
+    from robopark_api.services.ops.reconcile import reconcile_pending_rebuild
+
+    db = tmp_path / "data" / "robopark.db"
+    _tiny_db(db)
+    ctx = _ctx(tmp_path, db, None, use_host_updater=True, actor_user_id=17)
+    job = start_and_run(
+        ctx,
+        "update",
+        exempt_token_hash="x",
+        archive=_release_zip(tmp_path, tests_ok=True),
+        confirm=UPDATE_PHRASE,
+    )
+    # This is the host rollback directory, not the old container snapshot schema.
+    snapshot = ctx.ops_dir / "rollbacks" / job.id / "data"
+    snapshot.mkdir(parents=True)
+    (snapshot / "robopark.db").write_bytes(b"old-snapshot")
+    db.write_bytes(b"new-write-after-host-rollback")
+    (ctx.ops_dir / "public").mkdir()
+    (ctx.ops_dir / "public/rebuild.result").write_text(
+        json.dumps({"job_id": job.id, "ok": False, "error": "cutover_unhealthy"})
+    )
+    reconcile_pending_rebuild(
+        ctx.ops_dir,
+        database_url=ctx.database_url,
+        config_files=ctx.config_files,
+        data_dir=ctx.data_dir,
+    )
+    assert db.read_bytes() == b"new-write-after-host-rollback"
+    assert load_job(ctx.ops_dir).error == "cutover_unhealthy"
+
+
+def test_host_reconciliation_reads_public_result_without_unlinking_root_owned_file(tmp_path):
+    import json
+
+    from robopark_api.services.ops.reconcile import reconcile_pending_rebuild
+
+    db = tmp_path / "data/robopark.db"
+    _tiny_db(db)
+    ctx = _ctx(tmp_path, db, None, use_host_updater=True, actor_user_id=17)
+    job = start_and_run(
+        ctx,
+        "update",
+        exempt_token_hash="x",
+        archive=_release_zip(tmp_path, tests_ok=True),
+        confirm=UPDATE_PHRASE,
+    )
+    public = ctx.ops_dir / "public/rebuild.result"
+    public.parent.mkdir()
+    public.write_text(json.dumps({"job_id": job.id, "ok": True, "error": None}))
+    public.chmod(0o444)
+    reconcile_pending_rebuild(
+        ctx.ops_dir,
+        database_url=ctx.database_url,
+        config_files=ctx.config_files,
+        data_dir=ctx.data_dir,
+    )
+    assert load_job(ctx.ops_dir).state == STATE_SUCCEEDED
+    assert public.exists()
+
+
+def test_host_approval_and_result_use_separate_mount_from_api_jobs(tmp_path):
+    import json
+
+    from robopark_api.services.ops.reconcile import reconcile_pending_rebuild
+
+    db = tmp_path / "data/robopark.db"
+    _tiny_db(db)
+    host_ops = tmp_path / "host-ops"
+    ctx = _ctx(tmp_path, db, None, use_host_updater=True, actor_user_id=17, host_ops_dir=host_ops)
+    job = start_and_run(
+        ctx,
+        "update",
+        exempt_token_hash="x",
+        archive=_release_zip(tmp_path, tests_ok=True),
+        confirm=UPDATE_PHRASE,
+    )
+    assert (ctx.ops_dir / "job.json").is_file()
+    assert not (ctx.ops_dir / "inbox/approved.json").exists()
+    approval = json.loads((host_ops / "inbox/approved.json").read_text())
+    assert (host_ops / "artifacts" / approval["artifact"]).is_file()
+    assert not (host_ops / "staging").exists()
+    assert not (host_ops / "rollbacks").exists()
+    public = host_ops / "public/rebuild.result"
+    public.parent.mkdir()
+    public.write_text(json.dumps({"job_id": job.id, "ok": True, "error": None}))
+    reconcile_pending_rebuild(
+        ctx.ops_dir,
+        database_url=ctx.database_url,
+        config_files=ctx.config_files,
+        data_dir=ctx.data_dir,
+        host_ops_dir=host_ops,
+    )
+    assert load_job(ctx.ops_dir).state == STATE_SUCCEEDED
+
+
+def test_abort_while_host_approval_is_queued_leaves_no_approval(tmp_path, monkeypatch):
+    db = tmp_path / "data/robopark.db"
+    _tiny_db(db)
+    ctx = _ctx(tmp_path, db, None, use_host_updater=True, actor_user_id=17)
+    original = runner_mod.save_job
+
+    def abort(ops_dir, job):
+        original(ops_dir, job)
+        if job.phase == PHASE_AWAITING_REBUILD:
+            abort_job(ops_dir)
+
+    monkeypatch.setattr(runner_mod, "save_job", abort)
+    job = start_and_run(
+        ctx,
+        "update",
+        exempt_token_hash="x",
+        archive=_release_zip(tmp_path, tests_ok=True),
+        confirm=UPDATE_PHRASE,
+    )
+    assert job.error == "aborted"
+    assert not (ctx.ops_dir / "inbox/approved.json").exists()
