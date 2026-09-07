@@ -571,7 +571,9 @@ def download_approved_release(release, paths, http):
             os.fsync(stream.fileno())
         require(total == release.size and digest.hexdigest() == release.sha256)
         raw = _read(partial, MAX_ARCHIVE, private=True)
-        trusted = _read(paths.etc / "release-public-key.pem", 16384)
+        from .trust import admission_key
+
+        trusted = admission_key(paths)
         key = serialization.load_pem_public_key(trusted)
         require(isinstance(key, Ed25519PublicKey) and len(signature) == 64)
         key.verify(signature, raw)
@@ -648,7 +650,9 @@ def verify_downloaded_artifact(raw, paths, request):
         )
         require(type(metadata["size"]) is int and metadata["size"] == len(raw))
         require(metadata["sha256"] == hashlib.sha256(raw).hexdigest())
-        trusted = _read(paths.etc / "release-public-key.pem", 16384)
+        from .trust import admission_key
+
+        trusted = admission_key(paths)
         key = serialization.load_pem_public_key(trusted)
         require(isinstance(key, Ed25519PublicKey))
         key.verify(_read(target.with_suffix(".zip.sig"), 64, private=True), raw)

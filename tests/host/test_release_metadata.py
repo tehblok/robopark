@@ -106,3 +106,32 @@ def test_invalid_metadata_never_publishes(packaging, tmp_path, metadata):
     result, output = metadata_pack(packaging, tmp_path, metadata)
     assert result.returncode != 0
     assert not output.exists()
+
+
+def test_offline_rotation_proof_accepts_new_key_only_after_bridge(packaging, tmp_path):
+    from test_key_rotation import new_key
+
+    private, public = new_key()
+    metadata = {
+        "migration_head": "new",
+        "migration_compatibility": {"from_heads": ["old"], "reversible": True},
+        "signing_key_rotation": {"next_public_key": public.decode(), "activation_version": "1.2.3"},
+    }
+    result, bridge = metadata_pack(packaging, tmp_path / "bridge", metadata)
+    assert result.returncode == 0, result.stderr
+    packaging[1].write_bytes(private)
+    del metadata["signing_key_rotation"]
+    result, successor = metadata_pack(packaging, tmp_path / "next", metadata, version="2.0.0")
+    assert result.returncode == 0, result.stderr
+    command = [
+        sys.executable,
+        ROOT / "scripts/verify-artifact.py",
+        "--public-key",
+        packaging[2],
+        "--trust-transition",
+        bridge,
+    ]
+    assert run(*command, successor).returncode == 0
+    result, premature = metadata_pack(packaging, tmp_path / "premature", metadata)
+    assert result.returncode == 0
+    assert run(*command, premature).returncode != 0

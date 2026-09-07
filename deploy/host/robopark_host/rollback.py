@@ -135,10 +135,14 @@ def restore_data(paths, journal):
 def rollback_release(paths, journal, runner, phase):
     """Idempotent even if power is lost halfway through a snapshot restore."""
     previous = paths.releases / journal["previous"]
-    verify_directory(previous, (paths.etc / "release-public-key.pem").read_bytes())
+    from .trust import directory_key
+    from .trust import restore as restore_trust
+
+    verify_directory(previous, directory_key(paths, previous))
     if journal["writes_resumed"]:
         raise ReleaseError("manual_recovery_required")
     phase("rolling_back")
+    restore_trust(paths, journal)
     runner.run(["systemctl", "stop", "robopark.service"], timeout=120)
     if journal["migration_started"]:
         restore_data(paths, journal)

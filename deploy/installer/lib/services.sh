@@ -12,6 +12,7 @@ install_services() {
         [ "$ready_attempt" -lt 30 ] || die application_not_ready
         sleep 2
     done
+    python3 -I "$INSTALLER_DIR/lib/install-trust.py" "$ROBOPARK_ROOT" || die signing_trust_failed
     systemctl start robopark-tuna.service
     systemctl start robopark-updater.service robopark-update-check.timer robopark-doctor.timer robopark-watchdog.timer robopark-commands.path
 }

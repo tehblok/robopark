@@ -37,6 +37,11 @@ def verify_manifest_signature(manifest: dict, signature: bytes, public_key: byte
         if not isinstance(key, Ed25519PublicKey):
             raise TypeError("Ed25519 public key required")
         key.verify(signature, canonical_manifest_bytes(manifest))
+        rotation = manifest.get("signing_key_rotation")
+        if rotation and rotation["next_public_key"].encode() == key.public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        ):
+            raise ValueError("same_key_rotation")
     except (ValueError, TypeError, AttributeError, InvalidSignature) as exc:
         raise ArchiveError("signature_invalid") from exc
 
@@ -63,3 +68,48 @@ def validate_policy_metadata(manifest):
             or len(set(heads)) != len(heads)
         ):
             raise ValueError("invalid_release_policy")
+    if "signing_key_rotation" in manifest:
+        rotation = manifest["signing_key_rotation"]
+        if not isinstance(rotation, dict) or set(rotation) != {
+            "next_public_key",
+            "activation_version",
+        }:
+            raise ValueError("invalid_key_rotation")
+        if rotation["activation_version"] != manifest["app_version"]:
+            raise ValueError("invalid_key_rotation")
+        pem = rotation["next_public_key"]
+        if not isinstance(pem, str) or len(pem) > 256:
+            raise ValueError("invalid_key_rotation")
+        key = serialization.load_pem_public_key(pem.encode("ascii"))
+        if (
+            not isinstance(key, Ed25519PublicKey)
+            or key.public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+            ).decode("ascii")
+            != pem
+        ):
+            raise ValueError("invalid_key_rotation")
+
+
+def projected_admission_key(anchor, projection):
+    """Verify the bridge proof when an API still has the old bind-mounted PEM."""
+    if (
+        not isinstance(projection, dict)
+        or set(projection) != {"format", "active_key", "certificate"}
+        or projection["format"] != 1
+    ):
+        raise ValueError("invalid_key_projection")
+    active = projection["active_key"].encode("ascii")
+    if active == anchor:
+        return anchor
+    certificate = projection["certificate"]
+    if not isinstance(certificate, dict) or set(certificate) != {"manifest", "signature"}:
+        raise ValueError("invalid_key_projection")
+    from .archives import _validate_release_manifest
+
+    manifest = certificate["manifest"]
+    _validate_release_manifest(manifest)
+    verify_manifest_signature(manifest, bytes.fromhex(certificate["signature"]), anchor)
+    if manifest.get("signing_key_rotation", {}).get("next_public_key") != projection["active_key"]:
+        raise ValueError("invalid_key_projection")
+    return active
