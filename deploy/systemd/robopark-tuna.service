@@ -1,0 +1,30 @@
+[Unit]
+Description=Robopark Tuna HTTPS ingress
+Wants=network-online.target
+Requires=robopark.service
+After=network-online.target robopark.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/robopark/tuna.env
+ExecStart=/bin/sh /opt/robopark/current/deploy/tuna-http.sh
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=150
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

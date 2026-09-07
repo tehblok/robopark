@@ -1,0 +1,11 @@
+[Unit]
+Description=Robopark doctor schedule
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30min
+Persistent=true
+Unit=robopark-doctor.service
+
+[Install]
+WantedBy=timers.target

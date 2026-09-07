@@ -34,7 +34,7 @@ run_docker() {
   }
   sh -n deploy/ops-agent.sh
   HOST_ENV_FILE=./host.env.example \
-    docker compose -f deploy/docker-compose.yml config --quiet
+    docker compose --project-name robopark -f deploy/docker-compose.yml config --quiet
   docker build -t robopark-api:verify apps/api
   docker build -t robopark-web:verify apps/web
   docker run --rm --entrypoint python robopark-api:verify -c \

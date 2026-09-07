@@ -1,0 +1,237 @@
+"""Boot ordering, sandbox and immutable Compose runtime contract."""
+
+import configparser
+import json
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def unit(name):
+    path = REPO / "deploy/systemd" / name
+    assert path.exists(), f"missing boot unit {name}"
+    parsed = configparser.ConfigParser(interpolation=None, strict=False)
+    parsed.read(path)
+    return parsed
+
+
+def test_tuna_requires_ready_application_and_bounded_restart():
+    tuna = unit("robopark-tuna.service")
+    assert "robopark.service" in tuna["Unit"]["Requires"].split()
+    assert {"network-online.target", "robopark.service"} <= set(
+        tuna["Unit"]["After"].split()
+    )
+    assert tuna["Service"]["Restart"] == "on-failure"
+    assert int(tuna["Service"]["TimeoutStartSec"]) <= 180
+    assert int(tuna["Unit"]["StartLimitBurst"]) <= 5
+
+
+def test_boot_never_builds_or_uses_a_mutable_compose_config():
+    app = unit("robopark.service")["Service"]
+    for directive in ("ExecStart", "ExecStop"):
+        command = app[directive].split()
+        assert command[command.index("--project-name") + 1] == "robopark"
+        assert (
+            command[command.index("--file") + 1]
+            == "/var/lib/robopark/ops/state/current-compose.json"
+        )
+    assert "--no-build" in app["ExecStart"].split()
+    assert "--wait" in app["ExecStart"].split()
+
+
+@pytest.mark.parametrize(
+    "name,command",
+    [
+        ("updater", "update"),
+        ("update-check", "check-update"),
+        ("doctor", "doctor"),
+        ("watchdog", "watchdog"),
+    ],
+)
+def test_privileged_units_use_trusted_launcher_and_sandbox(name, command):
+    service = unit(f"robopark-{name}.service")["Service"]
+    assert (
+        service["ExecStart"]
+        == f"/usr/bin/python3 -I /opt/robopark/host-tools/robopark {command}"
+    )
+    assert service["NoNewPrivileges"] == "true"
+    assert service["PrivateTmp"] == "true"
+    assert service["ProtectSystem"] == "strict"
+    assert service["ProtectHome"] == "true"
+    assert int(service["TimeoutStartSec"]) <= 1800
+
+
+@pytest.mark.parametrize(
+    "name,key,value",
+    [
+        ("update-check", "OnUnitActiveSec", "6h"),
+        ("doctor", "OnCalendar", "daily"),
+        ("watchdog", "OnUnitActiveSec", "2min"),
+    ],
+)
+def test_timers_are_bounded_and_persistent(name, key, value):
+    timer = unit(f"robopark-{name}.timer")["Timer"]
+    assert timer[key] == value
+    assert timer["Persistent"] == "true"
+
+
+def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
+    from robopark_host.runtime import bootstrap_compose
+
+    release = host_paths.releases / "1.0.0"
+    (release / "deploy").mkdir(parents=True)
+    (release / "deploy/docker-compose.yml").write_text("services: {}")
+    (release / "manifest.json").write_text('{"git_sha":"' + "a" * 40 + '"}')
+    host_paths.current.symlink_to(release)
+    calls = []
+    built = False
+
+    def run(command):
+        nonlocal built
+        calls.append(command)
+        if "config" in command:
+            return json.dumps(
+                {
+                    "services": {
+                        "api": {
+                            "build": {"context": str(release / "apps/api")},
+                            "environment": {"UVICORN_WORKERS": "2"},
+                            "volumes": ["..:/host-repo"],
+                        },
+                        "web": {
+                            "build": {"context": str(release / "apps/web")},
+                            "ports": [
+                                {
+                                    "host_ip": "127.0.0.1",
+                                    "published": "8080",
+                                    "target": 80,
+                                }
+                            ],
+                        },
+                        "ops-agent": {},
+                    }
+                }
+            )
+        if "build" in command:
+            built = True
+            return ""
+        if command[:3] == ["docker", "image", "inspect"]:
+            assert built, "must build before resolving image identity"
+            return "sha256:" + ("1" if "api" in command[-1] else "2") * 64
+        raise AssertionError(command)
+
+    bootstrap_compose(host_paths, run)
+    target = host_paths.state / "current-compose.json"
+    document = json.loads(target.read_text())
+    assert document["x-robopark-release"] == str(release.resolve())
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert set(document["services"]) == {"api", "web"}
+    api = document["services"]["api"]
+    assert api["image"] == "sha256:" + "1" * 64
+    assert document["services"]["web"]["image"] == "sha256:" + "2" * 64
+    assert "build" not in api
+    assert "UVICORN_WORKERS" not in api["environment"]
+    mounts = {v["target"]: v for v in api["volumes"]}
+    assert mounts["/ops"]["source"] == str(host_paths.var / "api-ops")
+    assert mounts["/data"]["source"] == str(host_paths.var / "data")
+    assert mounts["/host-ops/public"]["read_only"] is True
+    assert set(mounts) == {
+        "/ops",
+        "/data",
+        "/host-ops/inbox",
+        "/host-ops/artifacts",
+        "/host-ops/public",
+    }
+    for command in calls:
+        if command[:2] == ["docker", "compose"]:
+            assert command[command.index("--project-name") + 1] == "robopark"
+            assert "--file" in command
+    before = target.read_bytes()
+    bootstrap_compose(
+        host_paths, lambda _: pytest.fail("existing runtime must not be rebuilt")
+    )
+    assert target.read_bytes() == before
+
+
+def test_tuna_script_never_starts_tunnel_until_readiness(tmp_path):
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    log = tmp_path / "commands"
+    for name, code in {
+        "curl": 'echo "$*" >> "$TEST_LOG"; exit "${UNREADY:-0}"',
+        "sleep": ":",
+        "tuna": 'echo STARTED >> "$TEST_LOG"',
+    }.items():
+        path = fake / name
+        path.write_text("#!/bin/sh\n" + code + "\n")
+        path.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": str(fake) + ":" + os.environ["PATH"],
+        "TEST_LOG": str(log),
+        "UNREADY": "1",
+    }
+    result = subprocess.run(
+        ["sh", str(REPO / "deploy/tuna-http.sh")],
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "STARTED" not in log.read_text()
+    assert "/api/health/ready" in log.read_text()
+    result = subprocess.run(
+        ["sh", str(REPO / "deploy/tuna-http.sh")],
+        env={**env, "UNREADY": "0"},
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert log.read_text().endswith("STARTED\n")
+
+
+def test_api_gate_image_uses_repository_context_and_canonical_entrypoint():
+    path = REPO / "deploy/Dockerfile.api-tests"
+    assert path.exists(), "missing isolated API verification target"
+    lines = path.read_text().splitlines()
+    assert any(
+        line.startswith("FROM python:3.12-slim@sha256:") and line.endswith(" AS test")
+        for line in lines
+    )
+    assert "WORKDIR /repo" in lines
+    assert "COPY . ." in lines
+    assert 'CMD ["sh", "scripts/verify.sh", "api"]' in lines
+    assert "RUN uv sync --directory apps/api --frozen --extra dev" in lines
+    assert "AS build" in (REPO / "apps/web/Dockerfile").read_text()
+
+
+def test_bootstrap_rejects_unresolved_images_without_publishing_state(host_paths):
+    from robopark_host.runtime import bootstrap_compose
+
+    release = host_paths.releases / "1.0.0"
+    (release / "deploy").mkdir(parents=True)
+    (release / "manifest.json").write_text("{}")
+    host_paths.current.symlink_to(release)
+
+    def run(command):
+        if "config" in command:
+            return json.dumps(
+                {
+                    "services": {
+                        "api": {"build": {}, "environment": {}},
+                        "web": {"build": {}},
+                    }
+                }
+            )
+        if command[:3] == ["docker", "image", "inspect"]:
+            return "robopark-api:latest"
+        return ""
+
+    with pytest.raises(ValueError, match="invalid_image_id"):
+        bootstrap_compose(host_paths, run)
+    assert not (host_paths.state / "current-compose.json").exists()
+    assert not (host_paths.state / "bootstrap-compose.json").exists()

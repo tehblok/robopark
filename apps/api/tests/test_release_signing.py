@@ -197,7 +197,9 @@ def test_release_rejects_duplicate_and_symbolic_link_members(
         with pytest.warns(UserWarning, match="Duplicate name"):
             zf.writestr("apps/api/main.py", b"duplicate")
     with pytest.raises(ArchiveError, match="duplicate_member"):
-        inspect_archive(duplicate.getvalue(), expected_kind=KIND_RELEASE, public_key=ed25519_keys[1])
+        inspect_archive(
+            duplicate.getvalue(), expected_kind=KIND_RELEASE, public_key=ed25519_keys[1]
+        )
 
     symlink = io.BytesIO()
     with zipfile.ZipFile(symlink, "w") as zf:
@@ -266,7 +268,10 @@ def test_release_pack_creates_a_signed_archive(tmp_path: Path, ed25519_keys: tup
     )
 
     assert packed.returncode == 0, packed.stderr
-    assert inspect_archive(output.read_bytes(), expected_kind=KIND_RELEASE, public_key=public).git_sha == "a" * 40
+    assert (
+        inspect_archive(output.read_bytes(), expected_kind=KIND_RELEASE, public_key=public).git_sha
+        == "a" * 40
+    )
 
 
 def test_release_pack_refuses_to_invent_a_base_migration_head(
@@ -377,3 +382,69 @@ def test_pack_release_keeps_api_ops_code_and_excludes_runtime_state(
     assert "apps/api/src/robopark_api/services/ops/archives.py" in names
     assert "apps/api/data/ops/task1-pack-state.json" not in names
     assert "apps/api/.env" not in names
+
+
+@pytest.mark.parametrize(
+    ("explicit_sha", "retained_sha", "expected_sha"),
+    [
+        (None, "b" * 40, "b" * 40),
+        ("c" * 40, "b" * 40, "c" * 40),
+        ("bad", "b" * 40, None),
+        (None, "bad", None),
+    ],
+)
+def test_pack_extracted_release_resolves_sha_without_git(
+    tmp_path: Path, ed25519_keys: tuple[bytes, bytes], explicit_sha, retained_sha, expected_sha
+):
+    import shutil
+
+    private, public = ed25519_keys
+    repository = Path(__file__).parents[3]
+    root = tmp_path / "extracted"
+    for directory in ("apps/api/src", "scripts"):
+        shutil.copytree(
+            repository / directory, root / directory, ignore=shutil.ignore_patterns("__pycache__")
+        )
+    (root / "apps/web").mkdir(parents=True)
+    (root / "apps/web/package.json").write_text("{}")
+    (root / "deploy").mkdir()
+    (root / "manifest.json").write_text(json.dumps({"git_sha": retained_sha}))
+    (root / "VERSION").write_text("1.2.3\n")
+    (root / ".dockerignore").write_text(".env\n.release-secrets\n")
+    (root / ".env").write_text("TEST_ONLY_SECRET=never-package\n")
+    key = tmp_path / "key.pem"
+    key.write_bytes(private)
+    key.chmod(0o600)
+    output = tmp_path / "release.zip"
+    env = {
+        **os.environ,
+        "ROBOPARK_SIGNING_KEY_FILE": str(key),
+        "ROBOPARK_MIGRATION_HEAD": "initial",
+        "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"],
+    }
+    env.pop("ROBOPARK_RELEASE_GIT_SHA", None)
+    if explicit_sha is not None:
+        env["ROBOPARK_RELEASE_GIT_SHA"] = explicit_sha
+    result = subprocess.run(
+        [str(root / "scripts/pack-release.sh"), str(output)],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if expected_sha is None:
+        assert result.returncode != 0
+        assert not output.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        with zipfile.ZipFile(output) as archive:
+            assert archive.read("VERSION") == b"1.2.3\n"
+            assert archive.read(".dockerignore") == b".env\n.release-secrets\n"
+            assert ".env" not in archive.namelist()
+        assert (
+            inspect_archive(
+                output.read_bytes(), expected_kind=KIND_RELEASE, public_key=public
+            ).git_sha
+            == expected_sha
+        )

@@ -1,0 +1,12 @@
+[Unit]
+Description=Robopark update-check schedule
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+RandomizedDelaySec=15min
+Persistent=true
+Unit=robopark-update-check.service
+
+[Install]
+WantedBy=timers.target

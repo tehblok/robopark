@@ -21,4 +21,17 @@ prepare_layout() {
         chown 10001:10001 "$host_directory"
         chmod 700 "$host_directory"
     done
+    for data_name in data api-ops; do
+        host_directory=$ROBOPARK_VAR/$data_name
+        [ ! -L "$host_directory" ] || die symlinked_host_directory
+        mkdir -p "$host_directory"
+        chown 10001:10001 "$host_directory"
+        chmod 700 "$host_directory"
+    done
+    host_directory=$ROBOPARK_VAR/ops/public
+    [ ! -L "$host_directory" ] || die symlinked_host_directory
+    mkdir -p "$host_directory"
+    chown 0:0 "$host_directory"
+    chmod 755 "$host_directory"
+
 }

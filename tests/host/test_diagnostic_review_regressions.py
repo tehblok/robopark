@@ -110,7 +110,7 @@ def test_doctor_fails_missing_or_nonrunning_compose_services_and_uses_explicit_r
     assert report.by_code("containers").status == "failed"
     compose_command = next(command for command in runner.commands if "ps" in command)
     assert "--project-name" in compose_command
-    assert str(host_paths.current / "deploy" / "docker-compose.yml") in compose_command
+    assert str(host_paths.state / "current-compose.json") in compose_command
 
 
 def test_doctor_grades_clock_and_full_resource_measurements_as_failed(host_paths):

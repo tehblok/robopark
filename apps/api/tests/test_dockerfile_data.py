@@ -223,7 +223,7 @@ def test_verification_script_default_runs_all_targets_in_order(tmp_path: Path):
         "npm\ttest",
         "npm\trun\tcheck-nav",
         "sh\t-n\tdeploy/ops-agent.sh",
-        "docker\tHOST_ENV_FILE=./host.env.example\tcompose\t-f\tdeploy/docker-compose.yml\tconfig\t--quiet",
+        "docker\tHOST_ENV_FILE=./host.env.example\tcompose\t--project-name\trobopark\t-f\tdeploy/docker-compose.yml\tconfig\t--quiet",
         "docker\tHOST_ENV_FILE=\tbuild\t-t\trobopark-api:verify\tapps/api",
         "docker\tHOST_ENV_FILE=\tbuild\t-t\trobopark-web:verify\tapps/web",
         "docker\tHOST_ENV_FILE=\trun\t--rm\t--entrypoint\tpython\trobopark-api:verify\t-c\t"
@@ -254,7 +254,7 @@ def test_verification_script_docker_target_runs_only_docker_commands(tmp_path: P
     assert result.returncode == 0, result.stderr
     assert commands == [
         "sh\t-n\tdeploy/ops-agent.sh",
-        "docker\tHOST_ENV_FILE=./host.env.example\tcompose\t-f\tdeploy/docker-compose.yml\tconfig\t--quiet",
+        "docker\tHOST_ENV_FILE=./host.env.example\tcompose\t--project-name\trobopark\t-f\tdeploy/docker-compose.yml\tconfig\t--quiet",
         "docker\tHOST_ENV_FILE=\tbuild\t-t\trobopark-api:verify\tapps/api",
         "docker\tHOST_ENV_FILE=\tbuild\t-t\trobopark-web:verify\tapps/web",
         "docker\tHOST_ENV_FILE=\trun\t--rm\t--entrypoint\tpython\trobopark-api:verify\t-c\t"
