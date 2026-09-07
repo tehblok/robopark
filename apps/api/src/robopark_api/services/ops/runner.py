@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import fcntl
+import json
 import os
 import shutil
 import subprocess
@@ -80,6 +82,9 @@ class OpsContext:
     before_db_replace: Callable[[], None] | None = None
     use_ops_agent: bool | None = None
     release_public_key: bytes | None = None
+    use_host_updater: bool = False
+    actor_user_id: int | None = None
+    host_ops_dir: Path | None = None
 
 
 def begin_job(ctx: OpsContext, kind: str, *, exempt_token_hash: str) -> OpsJob:
@@ -283,6 +288,66 @@ def _ops_agent_available(ctx: OpsContext) -> bool:
     return (Path("/host-repo") / "deploy" / "docker-compose.yml").is_file()
 
 
+def _queue_host_update(ctx: OpsContext, job: OpsJob, archive: bytes) -> OpsJob:
+    """Publish only approval and signed bytes; privileged work belongs to the host."""
+    if type(ctx.actor_user_id) is not int or not 0 < ctx.actor_user_id < 2**63:
+        return fail_job(ctx, job, "actor_required")
+    paths = ensure_ops_dir(ctx.ops_dir)
+    host_ops = ctx.host_ops_dir or paths["root"]
+    artifacts = host_ops / "artifacts"
+    artifacts.mkdir(parents=True, mode=0o700, exist_ok=True)
+    artifact = artifacts / f"update-{job.id}.zip"
+    descriptor, temporary = tempfile.mkstemp(prefix=".upload-", dir=artifacts)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(archive)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, artifact)
+        directory = os.open(artifacts, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    request = {
+        "job_id": job.id,
+        "kind": "update",
+        "artifact": artifact.name,
+        "actor_user_id": ctx.actor_user_id,
+        "created_at": job.created_at,
+    }
+    job.extra["host_updater"] = True
+    inbox = host_ops / "inbox"
+    inbox.mkdir(mode=0o700, exist_ok=True)
+    job.phase = PHASE_AWAITING_REBUILD
+    job.restart_required = True
+    save_job(ctx.ops_dir, job)
+    descriptor, name = tempfile.mkstemp(prefix=".approved-", dir=inbox)
+    try:
+        with os.fdopen(descriptor, "w") as stream:
+            json.dump(request, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Aborted jobs may never leave behind a new approval.
+        save_job(ctx.ops_dir, job)
+        with paths["lock"].open("a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            current = load_job(ctx.ops_dir)
+            if current is None or current.id != job.id or current.state == STATE_FAILED:
+                raise JobAborted("aborted")
+            os.replace(name, inbox / "approved.json")
+        directory = os.open(inbox, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        Path(name).unlink(missing_ok=True)
+    return job
+
+
 def run_update(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) -> OpsJob:
     if confirm.strip() != UPDATE_PHRASE:
         return fail_job(ctx, job, "confirm_required")
@@ -293,6 +358,8 @@ def run_update(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) ->
         job.phase = "validating"
         save_job(ctx.ops_dir, job)
         inspect_archive(archive, expected_kind=KIND_RELEASE, public_key=ctx.release_public_key)
+        if ctx.use_host_updater:
+            return _queue_host_update(ctx, job, archive)
         if staging.exists():
             shutil.rmtree(staging)
         save_job(ctx.ops_dir, job)

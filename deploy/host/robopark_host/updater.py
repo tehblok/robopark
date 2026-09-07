@@ -1,0 +1,953 @@
+"""Journalled immutable-release update, with a small Docker/readiness boundary.
+
+Runner.run(argv, *, timeout, cwd=None, env=None, capture=False) returns bytes.
+Runner.wait_ready(*, project, config, timeout) checks core API and web readiness.
+Neither boundary may log secret values or include command output in exceptions.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import os
+import re
+import selectors
+import shutil
+import signal
+import subprocess
+import time
+from contextlib import suppress
+from dataclasses import dataclass
+from functools import partial
+from pathlib import Path
+from typing import Protocol
+from uuid import UUID
+
+from .paths import HostPaths
+from .release import (
+    ReleaseError,
+    UpdateRequest,
+    check_compatibility,
+    safe_member,
+    unique_object,
+    verify_archive,
+    verify_directory,
+)
+from .rollback import (
+    UNITS,
+    atomic_copy,
+    atomic_symlink,
+    rollback_release,
+    snapshot,
+    sync_directory,
+)
+from .state import atomic_write_json, exclusive_lock
+
+PHASES = {
+    "verified",
+    "unpacking",
+    "unpacked",
+    "building",
+    "built",
+    "testing",
+    "tested",
+    "smoking",
+    "smoked",
+    "maintenance",
+    "stopping",
+    "snapshotting",
+    "snapshotted",
+    "tools_staging",
+    "tools_staged",
+    "publishing",
+    "published",
+    "switching",
+    "switched",
+    "migrating",
+    "migrated",
+    "starting",
+    "started",
+    "activating",
+    "activated",
+    "health_check",
+    "healthy",
+    "reconciling",
+    "publication",
+    "publication_checked",
+    "resuming",
+    "succeeded",
+    "failed",
+    "rolling_back",
+    "rollback_healthy",
+    "rollback_resuming",
+    "rolled_back",
+    "manual_recovery_required",
+}
+
+
+SAFE_ERRORS = {
+    "command_failed",
+    "command_timeout",
+    "command_output_limit",
+    "unsafe_release_path",
+    "compose_config_missing",
+    "unsafe_config_path",
+    "insufficient_space",
+    "staging_filesystem_mismatch",
+    "compose_invalid",
+    "unsafe_build_context",
+    "unsafe_path",
+    "request_replayed",
+    "smoke_failed",
+    "cutover_unhealthy",
+    "manual_recovery_required",
+    "unsafe_data_path",
+    "invalid_version",
+    "invalid_request",
+    "unsafe_artifact",
+    "invalid_manifest",
+    "signature_invalid",
+    "unsupported_format",
+    "archive_too_large",
+    "duplicate_member",
+    "manifest_files_mismatch",
+    "checksum_mismatch",
+    "invalid_archive",
+    "release_missing",
+    "quality_gate_inputs_missing",
+    "downgrade_rejected",
+    "installer_incompatible",
+    "capability_missing",
+    "migration_incompatible",
+    "build_failed",
+    "tests_failed",
+    "migration_failed",
+    "update_failed",
+    "interrupted",
+}
+
+
+class Runner(Protocol):
+    def run(self, argv, *, timeout, cwd=None, env=None, capture=False) -> bytes: ...
+
+    def wait_ready(self, *, project, config, timeout) -> bool: ...
+
+
+class SystemRunner:
+    """Bound time and captured output; discard all other output, including stderr."""
+
+    def run(self, argv, *, timeout, cwd=None, env=None, capture=False):
+        environment = {
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "LANG": "C.UTF-8",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        environment.update(env or {})
+        output = bytearray()
+        process = subprocess.Popen(
+            list(map(str, argv)),
+            cwd=cwd,
+            env=environment,
+            stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            deadline = time.monotonic() + timeout
+            if capture:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(process.stdout, selectors.EVENT_READ)
+                    while selector.get_map():
+                        left = deadline - time.monotonic()
+                        if left <= 0:
+                            raise ReleaseError("command_timeout")
+                        for key, _ in selector.select(min(left, 0.1)):
+                            chunk = os.read(key.fileobj.fileno(), 65536)
+                            if not chunk:
+                                selector.unregister(key.fileobj)
+                            else:
+                                output.extend(chunk)
+                                if len(output) > 2 * 1024 * 1024:
+                                    raise ReleaseError("command_output_limit")
+            try:
+                code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired as exc:
+                raise ReleaseError("command_timeout") from exc
+            if code:
+                raise ReleaseError("command_failed")
+            return bytes(output)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            if process.stdout:
+                process.stdout.close()
+
+    def wait_ready(self, *, project, config, timeout):
+        deadline = time.monotonic() + timeout
+        prefix = compose(project, config)
+        while time.monotonic() < deadline:
+            try:
+                self.run(
+                    prefix
+                    + [
+                        "exec",
+                        "-T",
+                        "api",
+                        "python",
+                        "-c",
+                        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=4)",
+                    ],
+                    timeout=min(10, max(0.1, deadline - time.monotonic())),
+                )
+                self.run(
+                    prefix
+                    + ["exec", "-T", "web", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"],
+                    timeout=min(10, max(0.1, deadline - time.monotonic())),
+                )
+                self.run(
+                    prefix
+                    + [
+                        "exec",
+                        "-T",
+                        "web",
+                        "wget",
+                        "-q",
+                        "-O",
+                        "/dev/null",
+                        "http://127.0.0.1/login",
+                    ],
+                    timeout=min(10, max(0.1, deadline - time.monotonic())),
+                )
+                return True
+            except (ReleaseError, OSError):
+                time.sleep(min(1, max(0, deadline - time.monotonic())))
+        return False
+
+
+@dataclass(frozen=True)
+class UpdateResult:
+    state: str
+    error: str | None = None
+
+
+RecoveryResult = UpdateResult
+
+
+def compose(project, config):
+    return ["docker", "compose", "-p", project, "-f", str(config)]
+
+
+def _journal_path(paths):
+    return paths.state / "updater-journal.json"
+
+
+def _phase(paths, journal, phase, **changes):
+    journal.update(changes)
+    journal["phase"] = phase
+    atomic_write_json(_journal_path(paths), journal)
+    _publish_status(paths, {"state": "updating", "phase": phase, "job_id": journal["job_id"]})
+
+
+def _public_directory(paths):
+    directory = paths.ops / "public"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o755)
+    directory.chmod(0o755)
+    return directory
+
+
+def _publish_status(paths, payload):
+    _public_directory(paths)
+    atomic_write_json(paths.state / "host-status.json", payload)
+    atomic_write_json(paths.ops / "public/host-status.json", payload, mode=0o644)
+
+
+def _maintenance(paths, enabled):
+    _public_directory(paths)
+    for path in (paths.state / "maintenance.json", paths.ops / "public/maintenance.json"):
+        if enabled:
+            atomic_write_json(
+                path,
+                {"enabled": True, "reason": "update"},
+                mode=0o644 if path.parent.name == "public" else 0o600,
+            )
+        else:
+            path.unlink(missing_ok=True)
+            if path.parent.exists():
+                sync_directory(path.parent)
+
+
+def publish_result(paths, payload):
+    """The API reads public results without gaining write access to host state."""
+    _public_directory(paths)
+    atomic_write_json(paths.ops / "rebuild.result", payload)
+    atomic_write_json(paths.ops / "public/rebuild.result", payload, mode=0o644)
+
+
+def _finish(paths, journal, state, error=None):
+    result = {"job_id": journal["job_id"], "ok": state == "current_healthy", "error": error}
+    publish_result(paths, result)
+    status = {"state": state, "error": error, "job_id": journal["job_id"]}
+    if journal["publication_degraded"]:
+        status["publication"] = "degraded"
+    _publish_status(paths, status)
+    return UpdateResult(state, error)
+
+
+def _release_target(paths, link):
+    target = link.resolve(strict=True)
+    if not link.is_symlink() or target.parent != paths.releases.resolve() or target.is_symlink():
+        raise ReleaseError("unsafe_release_path")
+    return target
+
+
+def _configuration_target(paths):
+    link = paths.state / "current-compose.json"
+    if not link.is_symlink():
+        raise ReleaseError("compose_config_missing")
+    target = link.resolve(strict=True)
+    if not target.is_relative_to(paths.state.resolve()):
+        raise ReleaseError("unsafe_config_path")
+    return target.relative_to(paths.state.resolve()).as_posix()
+
+
+def _disk_preflight(paths, release):
+    # Account for immutable payload, test copy, build layers, and two data copies.
+    data_size = sum(p.stat().st_size for p in (paths.var / "data").rglob("*") if p.is_file())
+    unpacked = sum(f["size"] for f in release.manifest["files"].values())
+    required = unpacked * 3 + data_size * 2 + 2 * 1024**3
+    if (
+        shutil.disk_usage(paths.releases).free < required
+        or shutil.disk_usage(paths.var).free < data_size * 2 + 256 * 1024**2
+    ):
+        raise ReleaseError("insufficient_space")
+    if paths.releases.stat().st_dev != paths.releases.parent.stat().st_dev:
+        # Staging is always a direct child of releases, never /var or /tmp.
+        raise ReleaseError("staging_filesystem_mismatch")
+
+
+def _render_configs(paths, journal, runner, stage):
+    work = paths.ops / "staging" / journal["job_id"]
+    work.mkdir(parents=True, mode=0o700)
+    environment_file = work / "test.env"
+    environment_file.write_text("SECRET_KEY=isolated-test-key\nDEV_SEED=false\n")
+    environment_file.chmod(0o600)
+    project = "robopark-candidate-" + journal["job_id"]
+    raw = runner.run(
+        compose(project, stage / "deploy/docker-compose.yml")
+        + [
+            "--env-file",
+            str(environment_file),
+            "config",
+            "--no-env-resolution",
+            "--format",
+            "json",
+        ],
+        timeout=60,
+        capture=True,
+        env={
+            "HOST_ENV_FILE": str(paths.etc / "host.env"),
+            "ROBOPARK_DATA_DIR": str(paths.var / "data"),
+        },
+    )
+    try:
+        config = json.loads(raw, object_pairs_hook=unique_object)
+        if not isinstance(config.get("services"), dict) or not {"api", "web"} <= set(
+            config["services"]
+        ):
+            raise ValueError()
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ReleaseError("compose_invalid") from exc
+    production = copy.deepcopy(config)
+    production.pop("name", None)
+    for name, service in production["services"].items():
+        if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
+            raise ReleaseError("compose_invalid")
+        if "build" in service:
+            service["image"] = "robopark-" + name + ":" + journal["job_id"]
+            build = service["build"]
+            if isinstance(build, str):
+                build = {"context": build}
+                service["build"] = build
+            context = Path(build.get("context", "."))
+            if not context.is_absolute():
+                context = (stage / "deploy" / context).resolve()
+            if not context.is_relative_to(stage):
+                raise ReleaseError("unsafe_build_context")
+            build["context"] = str(
+                paths.releases / journal["candidate"] / context.relative_to(stage)
+            )
+    # Retired container updater must never be launched by the host updater.
+    production["services"].pop("ops-agent", None)
+    api = production["services"]["api"]
+    api["env_file"] = [str(paths.etc / "host.env")]
+    api["volumes"] = [
+        {"type": "bind", "source": str(paths.var / "data"), "target": "/data"},
+        {"type": "bind", "source": str(paths.var / "api-ops"), "target": "/ops"},
+        {"type": "bind", "source": str(paths.ops / "inbox"), "target": "/host-ops/inbox"},
+        {"type": "bind", "source": str(paths.ops / "artifacts"), "target": "/host-ops/artifacts"},
+        {
+            "type": "bind",
+            "source": str(paths.ops / "public"),
+            "target": "/host-ops/public",
+            "read_only": True,
+        },
+    ]
+    api.setdefault("environment", {}).update(
+        {
+            "DATABASE_URL": "sqlite:////data/robopark.db",
+            "OPS_DIR": "/ops",
+            "REPORT_ATTACHMENTS_DIR": "/data/report-attachments",
+        }
+    )
+    smoke = copy.deepcopy(production)
+    smoke.pop("volumes", None)
+    smoke.pop("networks", None)
+    smoke.pop("secrets", None)
+    smoke.pop("configs", None)
+    smoke["services"] = {key: smoke["services"][key] for key in ("api", "web")}
+    for service in smoke["services"].values():
+        for field in (
+            "container_name",
+            "network_mode",
+            "networks",
+            "devices",
+            "privileged",
+            "pid",
+            "ipc",
+            "secrets",
+            "configs",
+            "volumes",
+            "ports",
+            "depends_on",
+            "env_file",
+        ):
+            service.pop(field, None)
+        if "build" in service:
+            context = Path(service["build"]["context"])
+            service["build"]["context"] = str(
+                stage / context.relative_to(paths.releases / journal["candidate"])
+            )
+        service["restart"] = "no"
+    smoke["volumes"] = {"candidate_data": {}}
+    smoke["services"]["api"]["volumes"] = [
+        {"type": "volume", "source": "candidate_data", "target": "/data"}
+    ]
+    smoke["services"]["api"]["env_file"] = [str(environment_file)]
+    smoke["services"]["api"]["environment"] = {
+        "DATABASE_URL": "sqlite:////data/robopark.db",
+        "REPORT_ATTACHMENTS_DIR": "/data/attachments",
+        "OPS_DIR": "/data/ops",
+        "DEV_SEED": "false",
+    }
+    smoke["services"]["web"]["environment"] = {}
+    smoke["services"]["web"]["ports"] = [
+        {"target": 80, "published": "0", "host_ip": "127.0.0.1", "protocol": "tcp"}
+    ]
+    root = paths.state / "compose"
+    atomic_write_json(root / (journal["job_id"] + "-production.json"), production)
+    atomic_write_json(root / (journal["job_id"] + "-smoke.json"), smoke)
+    return work, root / (journal["job_id"] + "-smoke.json")
+
+
+def _cleanup_staging(paths, journal, runner):
+    for target in ("api", "web"):
+        commands = [
+            ["docker", "rm", "--force", "robopark-tests-" + journal["job_id"] + "-" + target],
+            ["docker", "image", "rm", "robopark-" + target + "-tests:" + journal["job_id"]],
+        ]
+        for command in commands:
+            # Already removed resources are normal after --rm or interrupted cleanup.
+            with suppress(ReleaseError):
+                runner.run(command, timeout=60)
+    smoke = paths.state / "compose" / (journal["job_id"] + "-smoke.json")
+    if smoke.exists():
+        runner.run(
+            compose("robopark-candidate-" + journal["job_id"], smoke)
+            + ["down", "--remove-orphans", "--volumes"],
+            timeout=120,
+        )
+    for root in (
+        paths.releases / (".staging-" + journal["job_id"]),
+        paths.ops / "staging" / journal["job_id"],
+    ):
+        if root.is_symlink():
+            raise ReleaseError("unsafe_path")
+        if root.exists():
+            shutil.rmtree(root)
+    smoke.unlink(missing_ok=True)
+    displaced = paths.var / (".displaced-" + journal["job_id"])
+    if displaced.is_dir() and not displaced.is_symlink():
+        shutil.rmtree(displaced)
+
+
+def _retention(paths, journal):
+    keep = {_release_target(paths, paths.current).name}
+    if paths.previous.is_symlink():
+        keep.add(_release_target(paths, paths.previous).name)
+    # Only delete targets with root-owned success receipts. Never sweep unknown directories.
+    receipts = paths.state / "successful-releases"
+    receipts.mkdir(exist_ok=True)
+    for receipt in receipts.glob("*.json"):
+        name = receipt.stem
+        if name in keep or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+            continue
+        target = paths.releases / name
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        receipt.unlink()
+    keep_configs = {
+        paths.state / journal["previous_config"],
+        (paths.state / "current-compose.json").resolve(),
+    }
+    keep_snapshots = {journal["job_id"]}
+    for name in keep:
+        try:
+            identifier = str(UUID(name[-36:]))
+        except ValueError:
+            continue
+        keep_configs.add(paths.state / "compose" / (identifier + "-production.json"))
+        if name == paths.current.resolve().name:
+            keep_snapshots.add(identifier)
+    for config in (paths.state / "compose").glob("*.json"):
+        if config not in keep_configs and not config.is_symlink():
+            config.unlink()
+    # Keep the active rollback plus material belonging to the retained releases.
+    rollback_root = paths.ops / "rollbacks"
+    if not rollback_root.exists():
+        return
+    for directory in rollback_root.iterdir():
+        if (
+            directory.name not in keep_snapshots
+            and directory.is_dir()
+            and not directory.is_symlink()
+        ):
+            try:
+                UUID(directory.name)
+            except ValueError:
+                continue
+            shutil.rmtree(directory)
+
+
+def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> UpdateResult:
+    try:
+        raw = request.read_artifact(paths)
+        key = (paths.etc / "release-public-key.pem").read_bytes()
+        release = verify_archive(raw, key)
+        previous = _release_target(paths, paths.current)
+        current_manifest = verify_directory(previous, key)
+        completed = _load_journal(paths)
+        if (
+            completed
+            and completed["job_id"] == request.job_id
+            and completed["phase"] == "succeeded"
+        ):
+            if current_manifest == release.manifest and previous.name == completed["candidate"]:
+                return UpdateResult("current_healthy")
+            raise ReleaseError("request_replayed")
+        check_compatibility(release.manifest, current_manifest)
+        previous_config = _configuration_target(paths)
+        _disk_preflight(paths, release)
+    except ReleaseError as exc:
+        return UpdateResult("rejected", str(exc))
+    except OSError:
+        return UpdateResult("rejected", "preflight_failed")
+    with exclusive_lock(paths.ops / "host.lock"):
+        old = _load_journal(paths)
+        if old and old["phase"] not in {"succeeded", "rolled_back", "failed"}:
+            return UpdateResult("rejected", "update_in_progress")
+        if paths.current.resolve() != previous:
+            return UpdateResult("rejected", "current_changed")
+        journal = {
+            "schema": 1,
+            "job_id": request.job_id,
+            "actor_user_id": request.actor_user_id,
+            "candidate": release.manifest["app_version"] + "-" + request.job_id,
+            "previous": previous.name,
+            "previous_config": previous_config,
+            "original_previous": _release_target(paths, paths.previous).name
+            if paths.previous.is_symlink()
+            else None,
+            "phase": "verified",
+            "migration_started": False,
+            "writes_resumed": False,
+            "snapshot_done": False,
+            "cutover_started": False,
+            "publication_degraded": False,
+            "error": None,
+        }
+        stage = paths.releases / (".staging-" + request.job_id)
+        candidate = paths.releases / journal["candidate"]
+        phase = partial(_phase, paths, journal)
+        try:
+            phase("unpacking")
+            release.unpack(stage)
+            phase("unpacked")
+            phase("building")
+            work, smoke_config = _render_configs(paths, journal, runner, stage)
+            prefix = compose("robopark-candidate-" + request.job_id, smoke_config)
+            runner.run(prefix + ["config", "--quiet"], timeout=60)
+            runner.run(prefix + ["build", "--pull"], timeout=1800)
+            runner.run(
+                [
+                    "docker",
+                    "build",
+                    "--target",
+                    "test",
+                    "-f",
+                    str(stage / "deploy/Dockerfile.api-tests"),
+                    "-t",
+                    "robopark-api-tests:" + request.job_id,
+                    str(stage),
+                ],
+                timeout=1800,
+            )
+            runner.run(
+                [
+                    "docker",
+                    "build",
+                    "--target",
+                    "build",
+                    "-f",
+                    str(stage / "apps/web/Dockerfile"),
+                    "-t",
+                    "robopark-web-tests:" + request.job_id,
+                    str(stage / "apps/web"),
+                ],
+                timeout=1800,
+            )
+            phase("built")
+            phase("testing")
+            test_tree = work / "tests"
+            shutil.copytree(stage, test_tree)
+            for target in ("api", "web"):
+                runner.run(
+                    [
+                        "docker",
+                        "run",
+                        "--rm",
+                        "--name",
+                        "robopark-tests-" + request.job_id + "-" + target,
+                        "--mount",
+                        "type=bind,source=" + str(test_tree) + ",target=/verify",
+                        "--workdir",
+                        "/verify",
+                        "--user",
+                        "0:0",
+                        "--entrypoint",
+                        "sh",
+                        "--env",
+                        "DATABASE_URL=sqlite:////tmp/pytest.db",
+                        "--env",
+                        "DEV_SEED=false",
+                        "robopark-" + target + "-tests:" + request.job_id,
+                        "/verify/scripts/verify.sh",
+                        target,
+                    ],
+                    timeout=1800,
+                )
+            phase("tested")
+            phase("smoking")
+            runner.run(prefix + ["up", "-d", "--no-build"], timeout=180)
+            if not runner.wait_ready(
+                project="robopark-candidate-" + request.job_id, config=smoke_config, timeout=180
+            ):
+                raise ReleaseError("smoke_failed")
+            runner.run(prefix + ["down", "--volumes", "--remove-orphans"], timeout=120)
+            phase("smoked")
+            verify_directory(stage, key)
+            phase("maintenance")
+            _maintenance(paths, True)
+            phase("stopping")
+            runner.run(["systemctl", "stop", "robopark.service"], timeout=120)
+            phase("snapshotting")
+            snapshot(paths, journal)
+            phase("snapshotted", snapshot_done=True)
+            phase("tools_staging")
+            runner.run(
+                ["python3", "-B", str(stage / "deploy/host/robopark"), "--self-test"],
+                cwd=stage / "deploy/host",
+                timeout=60,
+            )
+            verify_directory(stage, key)
+            phase("tools_staged")
+            phase("publishing")
+            os.replace(stage, candidate)
+            sync_directory(paths.releases)
+            phase("published")
+            phase("switching", cutover_started=True)
+            atomic_symlink(previous, paths.previous)
+            atomic_symlink(candidate, paths.current)
+            atomic_symlink(
+                paths.state / "compose" / (request.job_id + "-production.json"),
+                paths.state / "current-compose.json",
+            )
+            phase("switched")
+            phase("migrating", migration_started=True)
+            runner.run(
+                compose("robopark", paths.state / "current-compose.json")
+                + [
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "--entrypoint",
+                    "python",
+                    "api",
+                    "-m",
+                    "alembic",
+                    "upgrade",
+                    "head",
+                ],
+                timeout=900,
+            )
+            phase("migrated")
+            phase("starting")
+            runner.run(["systemctl", "restart", "robopark.service"], timeout=900)
+            phase("started")
+            phase("activating")
+            for unit in UNITS:
+                source = candidate / "deploy/systemd" / unit
+                if source.is_file():
+                    atomic_copy(source, paths.root / "etc/systemd/system" / unit, 0o644)
+            atomic_symlink(candidate / "deploy/host", paths.opt / "host-tools")
+            phase("activated")
+            phase("health_check")
+            if not runner.wait_ready(
+                project="robopark", config=paths.state / "current-compose.json", timeout=180
+            ):
+                raise ReleaseError("cutover_unhealthy")
+            phase("healthy")
+            return UpdateResult("awaiting_reconciliation")
+        except Exception as exc:
+            error = _failure_token(journal["phase"], exc)
+            return _handle_failure(paths, journal, runner, error)
+
+
+def _failure_token(phase, exc):
+    if isinstance(exc, ReleaseError) and str(exc) in SAFE_ERRORS:
+        return str(exc)
+    return {
+        "building": "build_failed",
+        "testing": "tests_failed",
+        "smoking": "smoke_failed",
+        "migrating": "migration_failed",
+        "health_check": "cutover_unhealthy",
+    }.get(phase, "update_failed")
+
+
+def _handle_failure(paths, journal, runner, error):
+    phase = partial(_phase, paths, journal)
+    try:
+        phase(journal["phase"], error=error)
+        if (
+            journal["cutover_started"]
+            or journal["snapshot_done"]
+            or (paths.state / "maintenance.json").exists()
+        ):
+            _maintenance(paths, True)
+            rollback_release(paths, journal, runner, phase)
+            phase("rollback_resuming", writes_resumed=True)
+            _maintenance(paths, False)
+            phase("rolled_back")
+        else:
+            phase("failed")
+        return _failed_housekeeping(paths, journal, runner)
+    except Exception:
+        _maintenance(paths, True)
+        phase("manual_recovery_required", error="manual_recovery_required")
+        return _finish(paths, journal, "maintenance", "manual_recovery_required")
+
+
+def _failed_housekeeping(paths, journal, runner):
+    _cleanup_staging(paths, journal, runner)
+    failed_candidate = paths.releases / journal["candidate"]
+    if (
+        failed_candidate.exists()
+        and not failed_candidate.is_symlink()
+        and failed_candidate != paths.current.resolve()
+        and failed_candidate != paths.previous.resolve()
+    ):
+        shutil.rmtree(failed_candidate)
+    _retention(paths, journal)
+    return _finish(paths, journal, "previous_restored", journal["error"])
+
+
+def _load_journal(paths):
+    path = _journal_path(paths)
+    if not path.exists():
+        return None
+    try:
+        if path.is_symlink() or path.stat().st_size > 16384:
+            raise ValueError()
+        journal = json.loads(path.read_bytes(), object_pairs_hook=unique_object)
+        fields = {
+            "schema",
+            "job_id",
+            "actor_user_id",
+            "candidate",
+            "previous",
+            "previous_config",
+            "original_previous",
+            "phase",
+            "migration_started",
+            "writes_resumed",
+            "snapshot_done",
+            "cutover_started",
+            "publication_degraded",
+            "error",
+        }
+        if (
+            set(journal) != fields
+            or journal["schema"] != 1
+            or str(UUID(journal["job_id"])) != journal["job_id"]
+        ):
+            raise ValueError()
+        for key in ("candidate", "previous", "original_previous"):
+            if journal[key] is None and key == "original_previous":
+                continue
+            if not isinstance(journal[key], str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._-]{0,150}", journal[key]
+            ):
+                raise ValueError()
+        safe_member(journal["previous_config"])
+        if (
+            not (paths.state / journal["previous_config"])
+            .resolve()
+            .is_relative_to(paths.state.resolve())
+        ):
+            raise ValueError()
+        for key in (
+            "migration_started",
+            "writes_resumed",
+            "snapshot_done",
+            "cutover_started",
+            "publication_degraded",
+        ):
+            if type(journal[key]) is not bool:
+                raise ValueError()
+        if type(journal["actor_user_id"]) is not int or not 0 < journal["actor_user_id"] < 2**63:
+            raise ValueError()
+        if not isinstance(journal["phase"], str) or journal["phase"] not in PHASES:
+            raise ValueError()
+        if journal["error"] is not None and (
+            not isinstance(journal["error"], str) or journal["error"] not in SAFE_ERRORS
+        ):
+            raise ValueError()
+        return journal
+    except (OSError, ValueError, TypeError, UnicodeError, KeyError) as exc:
+        raise ReleaseError("manual_recovery_required") from exc
+
+
+def _complete(paths, journal, runner):
+    phase = partial(_phase, paths, journal)
+    candidate = paths.releases / journal["candidate"]
+    verify_directory(candidate, (paths.etc / "release-public-key.pem").read_bytes())
+    phase("reconciling")
+    runner.run(["systemctl", "daemon-reload"], timeout=60)
+    runner.run(["systemctl", "restart", "robopark.service"], timeout=900)
+    if not runner.wait_ready(
+        project="robopark", config=paths.state / "current-compose.json", timeout=180
+    ):
+        return _handle_failure(paths, journal, runner, "cutover_unhealthy")
+    phase("publication")
+    for unit in ("robopark-update-check.timer", "robopark-doctor.timer", "robopark-watchdog.timer"):
+        if (candidate / "deploy/systemd" / unit).is_file():
+            runner.run(["systemctl", "try-restart", unit], timeout=60)
+    publication_degraded = False
+    if (candidate / "deploy/systemd/robopark-tuna.service").is_file():
+        try:
+            runner.run(["systemctl", "try-restart", "robopark-tuna.service"], timeout=90)
+        except Exception:
+            # Publication is independent of core data readiness. Restore the old
+            # Tuna unit when available, but never roll back database writes here.
+            publication_degraded = True
+            previous_unit = (
+                paths.ops / "rollbacks" / journal["job_id"] / "units/robopark-tuna.service"
+            )
+            if previous_unit.is_file():
+                atomic_copy(
+                    previous_unit, paths.root / "etc/systemd/system/robopark-tuna.service", 0o644
+                )
+                try:
+                    runner.run(["systemctl", "daemon-reload"], timeout=60)
+                    runner.run(["systemctl", "try-restart", "robopark-tuna.service"], timeout=90)
+                except Exception:
+                    pass
+    phase("publication_checked", publication_degraded=publication_degraded)
+    # Persist the irreversible boundary BEFORE opening writes. Recovery must never
+    # restore an old snapshot after this record, even if the unlink was interrupted.
+    phase("resuming", writes_resumed=True)
+    _maintenance(paths, False)
+    result = _success_housekeeping(paths, journal, runner)
+    runner.run(["systemctl", "try-restart", "--no-block", "robopark-updater.service"], timeout=60)
+    return result
+
+
+def _success_housekeeping(paths, journal, runner):
+    atomic_write_json(
+        paths.state / "successful-releases" / (journal["previous"] + ".json"), {"successful": True}
+    )
+    atomic_write_json(
+        paths.state / "successful-releases" / (journal["candidate"] + ".json"), {"successful": True}
+    )
+    _phase(paths, journal, "succeeded")
+    _cleanup_staging(paths, journal, runner)
+    _retention(paths, journal)
+    return _finish(paths, journal, "current_healthy")
+
+
+def reconcile_after_exit(paths: HostPaths, runner: Runner) -> RecoveryResult:
+    """Called only by the stable parent launcher after the old worker exits."""
+    return recover_interrupted_update(paths, runner)
+
+
+def recover_interrupted_update(paths: HostPaths, runner: Runner) -> RecoveryResult:
+    with exclusive_lock(paths.ops / "host.lock"):
+        try:
+            journal = _load_journal(paths)
+            if journal is None:
+                return UpdateResult("idle")
+            if journal["phase"] in {"succeeded", "resuming"}:
+                # New writes may already exist; finish only housekeeping, no rollback.
+                _maintenance(paths, False)
+                return _success_housekeeping(paths, journal, runner)
+            if journal["phase"] in {"rolled_back", "rollback_resuming", "failed"}:
+                _maintenance(paths, False)
+                return _failed_housekeeping(paths, journal, runner)
+            if journal["writes_resumed"]:
+                raise ReleaseError("manual_recovery_required")
+            _maintenance(paths, True)
+            if journal["phase"] in {
+                "started",
+                "activating",
+                "activated",
+                "health_check",
+                "healthy",
+                "reconciling",
+                "publication",
+                "publication_checked",
+            }:
+                try:
+                    candidate = paths.releases / journal["candidate"]
+                    verify_directory(candidate, (paths.etc / "release-public-key.pem").read_bytes())
+                    if paths.current.resolve() != candidate:
+                        raise ReleaseError("manual_recovery_required")
+                    # Replay activation after a partial unit copy, before accepting health.
+                    for unit in UNITS:
+                        source = candidate / "deploy/systemd" / unit
+                        if source.is_file():
+                            atomic_copy(source, paths.root / "etc/systemd/system" / unit, 0o644)
+                    atomic_symlink(candidate / "deploy/host", paths.opt / "host-tools")
+                    return _complete(paths, journal, runner)
+                except Exception as exc:
+                    if journal["writes_resumed"]:
+                        raise ReleaseError("manual_recovery_required") from exc
+                    return _handle_failure(
+                        paths, journal, runner, _failure_token(journal["phase"], exc)
+                    )
+            return _handle_failure(paths, journal, runner, journal["error"] or "interrupted")
+        except Exception:
+            _maintenance(paths, True)
+            _publish_status(paths, {"state": "maintenance", "error": "manual_recovery_required"})
+            return UpdateResult("maintenance", "manual_recovery_required")
