@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
+from .operational_state import backup_state, public_version, update_state
 from .bundle import create_diagnostic_bundle
 from .doctor import run_doctor
 from .release import UTC, ReleaseError, UpdateRequest, timestamp, unique_object
@@ -103,7 +104,7 @@ def publish_health(paths, report):
         return value if isinstance(value, str) and re.fullmatch(pattern, value) else None
 
     value = {
-        "version": identifier("app_version", r"\d{1,9}(?:\.\d{1,9}){0,2}"),
+        "version": public_version(manifest.get("app_version")),
         "git_sha": identifier("git_sha", r"[a-fA-F0-9]{40}"),
         "generated_at": report.created_at,
         "overall": "degraded" if any(c.status != "ok" for c in report.checks) else "ok",
@@ -111,16 +112,8 @@ def publish_health(paths, report):
         "update": {"state": "unknown"},
         "last_backup": {"status": "unknown"},
     }
-    try:
-        backup = _read(paths.state / "last-backup.json")
-        completed_at = timestamp(backup.get("completed_at")).astimezone(UTC).isoformat()
-        if backup.get("status") in ("success", "failed"):
-            value["last_backup"] = {
-                "status": backup["status"],
-                "completed_at": completed_at,
-            }
-    except (ReleaseError, ValueError, TypeError):
-        pass
+    value["last_backup"] = backup_state(paths)
+    value["update"] = update_state(paths)
     atomic_write_json(_public(paths) / "system-health.json", value, mode=0o644)
 
 

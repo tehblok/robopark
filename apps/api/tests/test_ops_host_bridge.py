@@ -509,3 +509,25 @@ def test_royal_reload_bootstrap_is_read_only_during_host_maintenance(
     assert db_session.query(AuthSession).one().expires_at == before
     assert not writes
 
+
+def test_public_health_displays_rc_and_real_rollback_state(client, seed_royal, installed):
+    login_as(client, "royal", "secret")
+    (installed / "public/system-health.json").write_text('{"version":"1.2.3-rc.2"}')
+    (installed / "public/host-status.json").write_text('{"state":"previous_restored"}')
+    result = client.get("/admin/ops/system-health").json()
+    assert result["version"] == "1.2.3-rc.2"
+    assert result["update"]["state"] == "rolled_back"
+
+
+def test_real_snapshot_publishes_backup_receipt(client, seed_royal, test_settings):
+    login_as(client, "royal", "secret")
+    response = client.post("/admin/ops/snapshot")
+    assert response.status_code == 200
+    result = client.get("/admin/ops/job").json()
+    assert result["state"] == "succeeded", result
+    receipt = Path(test_settings.ops_dir) / "last-backup.json"
+    assert receipt.exists()
+    payload = json.loads(receipt.read_text())
+    assert set(payload) == {"status", "completed_at"}
+    assert payload["status"] == "success"
+

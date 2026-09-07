@@ -126,8 +126,13 @@ def _timestamp(value):
 def system_health(root):
     value = read_json(root / "public/system-health.json")
     health = SystemHealthOut()
-    if isinstance(value.get("version"), str) and re.fullmatch(
-        r"\d{1,9}(?:\.\d{1,9}){0,2}", value["version"]
+    if (
+        isinstance(value.get("version"), str)
+        and len(value["version"]) <= 128
+        and re.fullmatch(
+            r"[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+            value["version"],
+        )
     ):
         health.version = value["version"]
     if isinstance(value.get("git_sha"), str) and re.fullmatch(r"[a-fA-F0-9]{40}", value["git_sha"]):
@@ -139,6 +144,8 @@ def system_health(root):
     health.checks = public_checks(value.get("checks"))
     update = read_json(root / "public/host-status.json") or value.get("update", {})
     if isinstance(update, dict):
+        if update.get("state") == "previous_restored":
+            update = {**update, "state": "rolled_back"}
         if update.get("state") in (
             "idle",
             "updating",
