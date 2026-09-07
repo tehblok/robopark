@@ -39,3 +39,18 @@ All commands below ran from `apps/web` after the final production changes:
 - `git diff --check`: **PASS**.
 
 Browser execution required an automatically approved sandbox escalation because the default sandbox prohibits the local Vite listening socket. Browser tests use controlled API fixtures; actual host deployment/OTA execution is outside this frontend task. The API exposes rollback state but no detailed rollback reason, so the UI uses a safe general failure/rollback explanation and diagnostic action.
+
+## Review fix round 1 — isolate polling after dispatch
+
+- Reproduced the review race before changing production code: two failing regressions (one dispatch and two successive dispatches). A GET started before dispatch remained in flight; a new poll joined that promise and accepted its delayed `idle` result under the new generation, erasing `running` and re-enabling actions.
+- `accept` still advances the response generation and now explicitly invalidates `ops:job-request` through the existing resource store. This removes the pre-dispatch in-flight loader from coalescing. The earlier response is rejected by its captured generation; its eventual cleanup cannot evict the new loader. Ordinary polls within the accepted operation continue to coalesce.
+- The regressions verify visible running state and disabled actions after the old idle response, exactly one fresh post-dispatch GET, no request storm on repeated focus/visibility events, suspension while hidden, continuation after resume, and stop/reenabling only after actual completion. Both single and successive dispatches pass.
+- Added an actual Chromium request-race scenario: delay initial idle GET, dispatch diagnostics, obtain a separate new poll, release the stale response, then verify safe completion and diagnostic download gating.
+
+Round 1 final verification:
+
+- Focused UI/API/management/resource tests: **62 passed, 7 files**.
+- Full web suite: **1313 passed, 85 files**.
+- Chromium operations scenarios: **5 passed**, including the new delayed-GET/dispatch regression and all four viewport/theme accessibility scenarios.
+- TypeScript/Vite build, navigation (27 routes), both-theme token contrast, changed TS/TSX lint, and `git diff --check`: **PASS**. Existing Vite chunk advisory remains.
+- Requested Ruff check ran and reported **4 pre-existing I001 import-order errors**, exit 1: `apps/api/src/robopark_api/routers/admin_ops.py:3`, `apps/api/tests/test_ops_host_bridge.py:3`, and `apps/api/tests/test_ops_host_review.py:3,292`. These Python files are identical to the parent commit and were not changed in this frontend fix. No unrelated Ruff edits included.

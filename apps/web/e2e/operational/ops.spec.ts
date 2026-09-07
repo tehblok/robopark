@@ -42,3 +42,46 @@ for (const width of [320, 1440]) for (const theme of ['light', 'dark']) {
     await expect(trigger).toBeFocused()
   })
 }
+
+test('accepted diagnostics keeps polling when a delayed pre-dispatch idle GET completes', async ({ page }) => {
+  await page.clock.install()
+  let releaseIdle!: () => void
+  const idlePending = new Promise<void>(resolve => { releaseIdle = resolve })
+  let jobReads = 0
+  const runningJob = {
+    id: 'diagnostics-race', kind: 'diagnostics', state: 'running', phase: 'awaiting_host', log: '',
+    error: null, artifact_ready: false, restart_required: false,
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    restore_phrase: 'ВОССТАНОВИТЬ', update_phrase: 'ОБНОВИТЬ', host_result: null,
+  }
+  await installMockApi(page, { user: { ...userForRole('royal'), permissions: ['parks.manage'] }, routes: [
+    { method: 'GET', path: '/api/admin/ops/job', handler: async () => {
+      if (++jobReads === 1) {
+        await idlePending
+        return { json: { ...runningJob, id: '', state: 'idle' } }
+      }
+      return { json: jobReads === 2 ? runningJob : { ...runningJob, state: 'succeeded', artifact_ready: true } }
+    } },
+    { method: 'POST', path: '/api/admin/ops/diagnostics', handler: () => ({ json: runningJob }) },
+    { method: 'GET', path: '/api/admin/ops/system-health', handler: () => ({ json: {
+      version: '1.2.0', git_sha: 'a'.repeat(40), generated_at: new Date().toISOString(), overall: 'ok', checks: [],
+      update: { state: 'idle', publication: null }, last_backup: { status: 'unknown', completed_at: null },
+    } }) },
+    { method: 'GET', path: '/api/admin/ops/available-update', handler: () => ({ json: { state: 'disabled', checked_at: null, release: null } }) },
+  ] })
+  await page.goto('/admin/settings?tab=ops')
+  await expect.poll(() => jobReads).toBe(1)
+  const start = page.getByRole('button', { name: 'Собрать диагностику' })
+  await start.click()
+  await expect(page.getByText('Выполняется', { exact: true })).toBeVisible()
+  await page.clock.fastForward(2500)
+  await expect.poll(() => jobReads).toBe(2)
+  releaseIdle()
+  await expect(start).toBeDisabled()
+  await expect(page.getByText('Выполняется', { exact: true })).toBeVisible()
+  await page.clock.fastForward(2500)
+  await expect(page.getByText('Завершено', { exact: true })).toBeVisible()
+  await expect(start).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Скачать диагностику' })).toBeEnabled()
+  expect(jobReads).toBe(3)
+})

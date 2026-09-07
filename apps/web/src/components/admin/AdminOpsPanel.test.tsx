@@ -170,3 +170,55 @@ it.each([
   expect(await screen.findByText(label)).toBeVisible()
   expect(screen.queryByRole('button', { name: 'Обновить из GitHub' })).not.toBeInTheDocument()
 })
+
+it.each([1, 2])('keeps the accepted job after %i dispatches isolated from a pre-dispatch GET across hidden/resume', async (dispatchCount) => {
+  vi.useFakeTimers()
+  let resolveBeforeDispatch!: (value: unknown) => void
+  let resolveAfterDispatch!: (value: unknown) => void
+  const beforeDispatch = new Promise(resolve => { resolveBeforeDispatch = resolve })
+  const afterDispatch = new Promise(resolve => { resolveAfterDispatch = resolve })
+  let reads = 0
+  let dispatches = 0
+  const currentJob = { ...jobFixture('diagnostics'), id: `job-${dispatchCount}` }
+  const fetchMock = mockOpsServer({
+    '/admin/ops/job': () => ++reads === 1 ? beforeDispatch : reads === 2 ? afterDispatch : { ...currentJob, state: 'succeeded', artifact_ready: true },
+    '/admin/ops/diagnostics': () => ({ ...jobFixture('diagnostics', ++dispatches === dispatchCount ? 'running' : 'succeeded'), id: `job-${dispatches}` }),
+  })
+  render(<AdminOpsPanel />)
+  await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+  expect(callsFor(fetchMock, '/job')).toHaveLength(1)
+  const start = screen.getByRole('button', { name: 'Собрать диагностику' })
+  for (let dispatch = 0; dispatch < dispatchCount; dispatch++) {
+    await act(async () => { fireEvent.click(start) })
+  }
+  expect(screen.getByText('Выполняется')).toBeVisible()
+  expect(start).toBeDisabled()
+
+  // A timer now tries to read the accepted operation while the original idle
+  // GET is still in flight. Its old snapshot must never become the current job.
+  await act(async () => { await vi.advanceTimersByTimeAsync(2500) })
+  await act(async () => { resolveBeforeDispatch(jobFixture('', 'idle')) })
+  expect(screen.getByText('Выполняется')).toBeVisible()
+  expect(start).toBeDisabled()
+  expect(callsFor(fetchMock, '/job')).toHaveLength(2)
+
+  const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+  fireEvent(document, new Event('visibilitychange'))
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  expect(callsFor(fetchMock, '/job')).toHaveLength(2)
+  hidden.mockReturnValue(false)
+  await act(async () => {
+    fireEvent(document, new Event('visibilitychange'))
+    fireEvent(window, new Event('focus'))
+    fireEvent(window, new Event('focus'))
+  })
+  expect(callsFor(fetchMock, '/job')).toHaveLength(2)
+  await act(async () => { resolveAfterDispatch(currentJob) })
+  expect(start).toBeDisabled()
+  await act(async () => { await vi.advanceTimersByTimeAsync(2500) })
+  expect(callsFor(fetchMock, '/job')).toHaveLength(3)
+  expect(screen.getByText('Завершено')).toBeVisible()
+  expect(start).toBeEnabled()
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  expect(callsFor(fetchMock, '/job')).toHaveLength(3)
+})
