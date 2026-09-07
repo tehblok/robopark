@@ -279,6 +279,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .updater import SystemRunner, apply_release, recover_interrupted_update
 
         runner = SystemRunner()
+        runner.failure_log = paths.root / "var/log/robopark/ota-update.log"
         if arguments.reconcile or arguments.recover:
             result = recover_interrupted_update(paths, runner)
             return int(result.state == "maintenance")

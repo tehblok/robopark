@@ -396,7 +396,9 @@ def consume_commands(paths, runner, http, *, update_runner=None, github_http=Non
         from .launcher import launch_update
         from .updater import SystemRunner, recover_interrupted_update
 
-        update_runner = update_runner or SystemRunner()
+        if update_runner is None:
+            update_runner = SystemRunner()
+            update_runner.failure_log = paths.root / "var/log/robopark/ota-update.log"
         if resumed or not fresh:
             recover_interrupted_update(paths, update_runner)
         try:

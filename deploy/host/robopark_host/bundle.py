@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import tempfile
 import zipfile
 from contextlib import suppress
@@ -18,6 +19,11 @@ from .paths import HostPaths
 from .redaction import redact
 
 _UNITS = ("robopark.service", "robopark-tuna.service", "robopark-updater.service")
+_UPDATE_FIELDS = {
+    "journal": ("job_id", "phase", "error", "candidate"),
+    "result": ("job_id", "ok", "error"),
+    "status": ("job_id", "state", "phase", "error", "publication"),
+}
 
 
 def _journal_entries(output: str, unit: str) -> list[dict[str, str]]:
@@ -57,6 +63,21 @@ def _write_json(archive: zipfile.ZipFile, name: str, value: Any) -> None:
     )
 
 
+def _read_update_state(path: Path, fields: tuple[str, ...]) -> dict[str, Any]:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or not info.st_size <= 64 * 1024:
+                return {}
+            value = json.loads(stream.read(64 * 1024 + 1))
+        if not isinstance(value, dict):
+            return {}
+        return {key: value[key] for key in fields if key in value}
+    except (OSError, ValueError, UnicodeError):
+        return {}
+
+
 def create_diagnostic_bundle(
     paths: HostPaths, report: DiagnosticReport, runner: Runner, destination: Path
 ) -> Path:
@@ -76,6 +97,21 @@ def create_diagnostic_bundle(
             services = parse_compose_services(compose.stdout) if compose.ok else None
             _write_json(archive, "compose-services.json", safe_compose_services(services or []))
             _write_json(archive, "release-metadata.json", _release_metadata(paths))
+            _write_json(
+                archive,
+                "update-status.json",
+                {
+                    "journal": _read_update_state(
+                        paths.state / "updater-journal.json", _UPDATE_FIELDS["journal"]
+                    ),
+                    "result": _read_update_state(
+                        paths.ops / "public/rebuild.result", _UPDATE_FIELDS["result"]
+                    ),
+                    "status": _read_update_state(
+                        paths.ops / "public/host-status.json", _UPDATE_FIELDS["status"]
+                    ),
+                },
+            )
             for unit in _UNITS:
                 journal = execute(
                     runner,

@@ -85,6 +85,24 @@ run_install() {
     printf '%s\n' '========================================'
 }
 
+run_local_update() {
+    is_installed || { ACTION=install; run_install; return; }
+    started_at=$(date +%s)
+    printf '\n%s\n' '========================================'
+    printf '%s\n' 'Robopark: локальное OTA-обновление'
+    printf '%s\n' 'Проверяю подпись и готовлю изолированную сборку. Данные и настройки сохраняются.'
+    if ! python3 -I "$INSTALLER_DIR/lib/local-update.py" "$ROOT" "$INSTALLER_DIR"; then
+        printf '\n%s\n' 'ОБНОВЛЕНИЕ НЕ УСТАНОВЛЕНО: рабочая версия сохранена.' >&2
+        printf '%s\n' "Диагностика: ${ROOT%/}/var/log/robopark/ota-update.log" >&2
+        exit 1
+    fi
+    elapsed=$(($(date +%s) - started_at))
+    printf '\n%s\n' '========================================'
+    printf 'Локальное обновление завершено за %s сек.\n' "$elapsed"
+    printf '%s\n' 'База, пользователи, настройки интеграций и Tuna сохранены.'
+    printf '%s\n' '========================================'
+}
+
 diagnose() {
     is_installed || { printf '%s\n' 'Robopark ещё не установлен.' >&2; exit 1; }
     if ! python3 -I "$INSTALLED_HOST" doctor; then
@@ -122,7 +140,8 @@ remove_app() {
 }
 
 case "$ACTION" in
-    install|update|reinstall) run_install ;;
+    install|reinstall) run_install ;;
+    update) run_local_update ;;
     diagnose) diagnose ;;
     remove) [ "${2:-}" = --purge-data ] && remove_app 1 || remove_app 0 ;;
     *) usage; exit 2 ;;

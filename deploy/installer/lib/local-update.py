@@ -1,0 +1,223 @@
+"""Verify the embedded release and run its OTA worker over an existing install."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import time
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
+
+PHASE_LABELS = {
+    "unpacking": "Распаковываю проверенный релиз",
+    "building": "Собираю API и веб-интерфейс по очереди",
+    "testing": "Запускаю проверки кандидата",
+    "smoking": "Проверяю изолированный запуск",
+    "snapshotting": "Создаю снимок данных для отката",
+    "publishing": "Готовлю системные файлы",
+    "migrating": "Обновляю структуру базы",
+    "health_check": "Проверяю новую версию",
+    "reconciling": "Настраиваю службы после переключения",
+    "publication": "Проверяю публикацию через Tuna",
+    "succeeded": "Обновление подтверждено",
+    "rolled_back": "Предыдущая версия восстановлена",
+    "failed": "Кандидат отклонён",
+    "manual_recovery_required": "Требуется восстановление через диагностику",
+}
+
+SAFE_ERRORS = {
+    "archive_too_large",
+    "build_failed",
+    "compose_version_unsupported",
+    "cutover_unhealthy",
+    "docker_command_failed",
+    "docker_disk_full",
+    "docker_network_failed",
+    "docker_out_of_memory",
+    "frontend_arm_dependency_failed",
+    "frontend_typescript_failed",
+    "insufficient_space",
+    "migration_failed",
+    "signature_invalid",
+    "smoke_failed",
+    "tests_failed",
+    "update_failed",
+}
+
+
+def read_regular(path: Path, limit: int) -> bytes:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError("unsafe_file")
+        value = stream.read(limit + 1)
+    if len(value) > limit:
+        raise ValueError("unsafe_file")
+    return value
+
+
+def atomic_write(path: Path, value: bytes, mode: int = 0o600) -> None:
+    temporary = path.with_name("." + path.name + ".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def extract_host_tools(raw: bytes, target: Path) -> Path:
+    target.mkdir(parents=True, mode=0o700)
+    with zipfile.ZipFile(__import__("io").BytesIO(raw)) as archive:
+        for info in archive.infolist():
+            if not info.filename.startswith("deploy/host/"):
+                continue
+            relative = Path(info.filename).relative_to("deploy/host")
+            if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+                raise ValueError("unsafe_path")
+            destination = target / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write(destination, archive.read(info), 0o700 if relative.name == "robopark" else 0o600)
+    entrypoint = target / "robopark"
+    if not entrypoint.is_file():
+        raise ValueError("host_tools_missing")
+    return entrypoint
+
+
+def update_status(path: Path, job_id: str) -> tuple[str | None, str | None]:
+    try:
+        value = json.loads(read_regular(path, 64 * 1024))
+    except (OSError, ValueError, UnicodeError):
+        return None, None
+    if not isinstance(value, dict) or value.get("job_id") != job_id:
+        return None, None
+    phase = value.get("phase")
+    error = value.get("error")
+    return (
+        phase if isinstance(phase, str) and phase in PHASE_LABELS else None,
+        error if isinstance(error, str) and error in SAFE_ERRORS else None,
+    )
+
+
+def run_with_progress(
+    argv: list[str], environment: dict[str, str], status: Path, result: Path, job_id: str
+) -> int:
+    process = subprocess.Popen(argv, env=environment)
+    last_phase = None
+    delay = 0.05 if environment.get("ROBOPARK_TESTING") == "1" else 1.0
+    while process.poll() is None:
+        phase, _ = update_status(status, job_id)
+        if phase is not None and phase != last_phase:
+            print("  • " + PHASE_LABELS[phase], flush=True)
+            last_phase = phase
+        time.sleep(delay)
+    phase, error = update_status(status, job_id)
+    if error is None:
+        _, error = update_status(result, job_id)
+    if phase is not None and phase != last_phase:
+        print("  • " + PHASE_LABELS[phase], flush=True)
+    if process.returncode and error:
+        print("Код ошибки OTA: " + error, file=sys.stderr, flush=True)
+    return process.returncode
+
+
+def main(argv: list[str]) -> int:
+    testing = os.environ.get("ROBOPARK_TESTING") == "1"
+    if (os.geteuid() != 0 and not testing) or len(argv) != 3:
+        return 2
+    root = Path(argv[1]).resolve()
+    bundle = Path(argv[2]).resolve()
+    payload = bundle / "payload/robopark-release.zip"
+    installed_key = root / "etc/robopark/release-public-key.pem"
+    bundled_key = bundle / "keys/release-public-key.pem"
+    if read_regular(installed_key, 16_384) != read_regular(bundled_key, 16_384):
+        raise ValueError("signing_key_mismatch")
+
+    sys.path.insert(0, str(bundle / "verifier"))
+    from robopark_api.services.ops.archives import (
+        KIND_RELEASE,
+        MAX_ARCHIVE_BYTES,
+        inspect_archive,
+    )
+
+    raw = read_regular(payload, MAX_ARCHIVE_BYTES)
+    inspect_archive(raw, expected_kind=KIND_RELEASE, public_key=read_regular(installed_key, 16_384))
+    print("  • Подпись архива проверена", flush=True)
+
+    identity = str(uuid4())
+    ops = root / "var/lib/robopark/ops"
+    artifact = ops / "artifacts" / ("update-" + identity + ".zip")
+    request = ops / "state" / ("local-update-" + identity + ".json")
+    staging = ops / "staging" / ("local-updater-" + identity)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    request.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(artifact, raw)
+    atomic_write(
+        request,
+        json.dumps(
+            {
+                "job_id": identity,
+                "kind": "update",
+                "artifact": artifact.name,
+                "actor_user_id": 1,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+            sort_keys=True,
+        ).encode(),
+    )
+    entrypoint = extract_host_tools(raw, staging)
+    print("  • Исправленный механизм OTA подготовлен", flush=True)
+    environment = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "LANG": "C.UTF-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    if root != Path("/"):
+        environment.update(
+            ROBOPARK_TESTING="1",
+            ROBOPARK_ROOT=str(root),
+            PATH=os.environ["PATH"],
+            TMPDIR=os.environ.get("TMPDIR", "/tmp"),
+        )
+    try:
+        status = ops / "public/host-status.json"
+        result = ops / "public/rebuild.result"
+        print("  • Начинаю сборку; на ARM-хосте это может занять несколько минут", flush=True)
+        worker_code = run_with_progress(
+            ["python3", "-B", str(entrypoint), "update", "--request", str(request), "--worker"],
+            environment,
+            status,
+            result,
+            identity,
+        )
+        successor = root / "opt/robopark/host-tools/robopark"
+        reconciler_code = run_with_progress(
+            ["python3", "-B", str(successor.resolve()), "update", "--reconcile"],
+            environment,
+            status,
+            result,
+            identity,
+        )
+        return worker_code or reconciler_code
+    finally:
+        request.unlink(missing_ok=True)
+        if staging.is_dir() and not staging.is_symlink():
+            shutil.rmtree(staging)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv))
+    except Exception as error:  # noqa: BLE001 -- fail closed without leaking archive data
+        print("local_update_failed:" + type(error).__name__, file=sys.stderr)
+        raise SystemExit(1)

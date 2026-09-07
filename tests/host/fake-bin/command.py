@@ -45,7 +45,10 @@ elif name == 'curl':
     elif args[-1] == 'http://127.0.0.1:8080/api/health/ready':
         sys.exit(int(os.environ.get('API_UNREADY', '0')))
     elif args[-1].startswith('https://'):
-        sys.exit(int(os.environ.get('PUBLIC_HTTPS_UNREADY', '0')))
+        unavailable = int(os.environ.get('PUBLIC_HTTPS_UNREADY', '0'))
+        if not unavailable and '--write-out' in args:
+            sys.stdout.write('{"status":"ready"}\n200')
+        sys.exit(unavailable)
     else:
         sys.exit('curl must save repository key explicitly')
 elif name == 'gpg':
@@ -80,6 +83,8 @@ elif name == 'docker':
             sys.exit(1)
     if args[:2] == ['image', 'inspect']:
         print('sha256:' + ('1' if 'api' in args[-1] else '2') * 64)
+    elif any('SELECT version_num FROM alembic_version' in arg for arg in args):
+        print('["initial"]')
     elif 'config' in args:
         print(json.dumps({'services': {'api': {'build': {'context': 'api'}, 'environment': {}}, 'web': {'build': {'context': 'web'}}, 'ops-agent': {}}}))
     elif 'build' in args and os.environ.get('BUILD_FAIL') == '1':

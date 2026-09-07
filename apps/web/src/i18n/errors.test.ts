@@ -55,3 +55,15 @@ it.each([
 it('explains bounded archive storage admission', () => {
   expect(mapApiError(new ApiError(409, 'artifact_storage_full'))).toBe('Недостаточно места для нового архива. Дождитесь очистки или проверьте диагностику хоста.')
 })
+
+it.each([
+  ['build_failed', 'Сборка новой версии не завершилась. Рабочая версия сохранена.'],
+  ['tests_failed', 'Тесты пакета не прошли. Живая система не изменена.'],
+  ['migration_failed', 'Не удалось обновить структуру базы. Выполнен откат.'],
+  ['docker_disk_full', 'Для сборки не хватает места на диске. Освободите место и повторите обновление.'],
+  ['docker_network_failed', 'Docker не смог скачать зависимости. Проверьте интернет и повторите обновление.'],
+  ['docker_out_of_memory', 'Во время сборки закончилась память. Перезапустите хост и повторите обновление.'],
+  ['frontend_typescript_failed', 'Веб-интерфейс не прошёл проверку TypeScript. Рабочая версия сохранена.'],
+])('explains OTA failure %s', (detail, expected) => {
+  expect(mapApiError(new ApiError(400, detail), 'Ошибка')).toBe(expected)
+})

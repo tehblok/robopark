@@ -23,6 +23,16 @@ const opsErrors: Record<string, string> = {
   updater_disabled: 'Проверка обновлений отключена на хосте.',
   invalid_confirmation: 'Введите фразу подтверждения точно, без лишних пробелов.',
   update_rolled_back: 'Обновление не прошло проверку. Восстановлена предыдущая версия.',
+  build_failed: 'Сборка новой версии не завершилась. Рабочая версия сохранена.',
+  tests_failed: 'Тесты пакета не прошли. Живая система не изменена.',
+  migration_failed: 'Не удалось обновить структуру базы. Выполнен откат.',
+  compose_version_unsupported: 'Версия Docker Compose не поддерживается. Обновите Docker и повторите.',
+  docker_command_failed: 'Docker не завершил операцию. Запустите диагностику хоста.',
+  docker_disk_full: 'Для сборки не хватает места на диске. Освободите место и повторите обновление.',
+  docker_network_failed: 'Docker не смог скачать зависимости. Проверьте интернет и повторите обновление.',
+  docker_out_of_memory: 'Во время сборки закончилась память. Перезапустите хост и повторите обновление.',
+  frontend_typescript_failed: 'Веб-интерфейс не прошёл проверку TypeScript. Рабочая версия сохранена.',
+  frontend_arm_dependency_failed: 'Не удалось установить ARM-зависимости интерфейса. Проверьте сеть и повторите.',
 }
 
 export function mapApiError(error: unknown, fallback = ''): string {

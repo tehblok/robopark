@@ -274,6 +274,32 @@ def test_build_failure_keeps_current_code_config_and_data(host):
     assert "SECRET_KEY" not in public
 
 
+def test_generic_command_failure_is_reported_as_the_active_ota_phase(host):
+    original = host.runner.run
+
+    def fail_build(argv, **kwargs):
+        if "build" in argv:
+            raise ReleaseError("command_failed")
+        return original(argv, **kwargs)
+
+    host.runner.run = fail_build
+    result = apply_release(host.request(), host.paths, host.runner)
+
+    assert result.error == "build_failed"
+
+
+def test_production_images_are_built_sequentially_for_small_arm_hosts(host):
+    apply_release(host.request(), host.paths, host.runner)
+
+    builds = [
+        command
+        for command in host.runner.commands
+        if command[:2] == ["docker", "compose"] and "build" in command
+    ]
+    assert [command[-1] for command in builds] == ["api", "web"]
+    assert all(command[-3:-1] == ["build", "--pull"] for command in builds)
+
+
 def test_success_stages_isolated_compose_then_reconciles_after_worker_exit(host):
     request = host.request()
     result = apply_release(request, host.paths, host.runner)
@@ -345,6 +371,23 @@ def test_system_runner_bounds_output_and_timeout():
     with pytest.raises(ReleaseError, match="command_timeout"):
         runner.run([sys.executable, "-c", "import time; time.sleep(3)"], timeout=0.1)
     assert runner.run([sys.executable, "-c", "print('ok')"], timeout=5, capture=True) == b"ok\n"
+
+
+def test_system_runner_classifies_and_retains_root_only_failed_command_log(
+    host_paths, monkeypatch
+):
+    monkeypatch.setenv("ROBOPARK_TESTING", "1")
+    monkeypatch.setenv("ROBOPARK_ROOT", str(host_paths.root))
+    log = host_paths.root / "var/log/robopark/ota-update.log"
+
+    with pytest.raises(ReleaseError, match="docker_out_of_memory"):
+        SystemRunner(log).run(
+            [sys.executable, "-c", "import sys; print('build exhausted memory'); sys.exit(137)"],
+            timeout=5,
+        )
+
+    assert "build exhausted memory" in log.read_text()
+    assert log.stat().st_mode & 0o777 == 0o600
 
 
 def test_retention_keeps_two_successes_after_third_update(host):

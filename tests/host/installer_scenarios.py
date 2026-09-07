@@ -235,6 +235,47 @@ class InstallerScenarios(unittest.TestCase):
         self.run_installer('--resume', BUILD_FAIL='1')
         self.assertEqual(config.read_bytes(), before)
 
+    def test_start_update_uses_candidate_ota_and_preserves_existing_data_and_config(self):
+        self.run_installer()
+        data = self.root / 'var/lib/robopark/data/operator-state.txt'
+        data.write_text('keep-me')
+        host_env = self.root / 'etc/robopark/host.env'
+        before = host_env.read_bytes()
+        (self.source / 'VERSION').write_text('1.0.1\n')
+        for name in (
+            'apps/api/Dockerfile', 'apps/api/pyproject.toml', 'apps/api/uv.lock',
+            'apps/web/Dockerfile', 'apps/web/package.json', 'apps/web/package-lock.json',
+            'deploy/Dockerfile.api-tests', 'scripts/verify.sh',
+        ):
+            target = self.source / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(REPO / name, target)
+        self.write_release('1.0.1')
+
+        result = self.run_start('update')
+
+        self.assertIn('Локальное обновление завершено', result.stdout)
+        self.assertIn('Подпись архива проверена', result.stdout)
+        self.assertIn('Начинаю сборку', result.stdout)
+        self.assertEqual((self.root / 'opt/robopark/current/VERSION').read_text(), '1.0.1\n')
+        self.assertEqual(data.read_text(), 'keep-me')
+        self.assertEqual(host_env.read_bytes(), before)
+
+    def test_start_update_rejects_tampered_payload_without_changing_install(self):
+        self.run_installer()
+        current = (self.root / 'opt/robopark/current').resolve()
+        data = self.root / 'var/lib/robopark/data/operator-state.txt'
+        data.write_text('keep-me')
+        raw = bytearray(self.payload.read_bytes())
+        raw[-1] ^= 1
+        self.payload.write_bytes(raw)
+
+        result = self.run_start('update', success=False)
+
+        self.assertIn('ОБНОВЛЕНИЕ НЕ УСТАНОВЛЕНО', result.stderr)
+        self.assertEqual((self.root / 'opt/robopark/current').resolve(), current)
+        self.assertEqual(data.read_text(), 'keep-me')
+
     def test_clean_armbian_and_secret_boundary(self):
         self.run_installer()
         for filename in ('host.env', 'tuna.env', 'updater.env'):

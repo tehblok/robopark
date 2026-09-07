@@ -48,7 +48,7 @@ from .rollback import (
     snapshot,
     sync_directory,
 )
-from .runtime import pin_images, production_config
+from .runtime import explain_process_failure, pin_images, production_config
 from .state import atomic_write_json, exclusive_lock
 from .trust import activate as activate_trust
 from .trust import admission_key, directory_key
@@ -143,6 +143,13 @@ SAFE_ERRORS = {
     "migration_incompatible",
     "build_failed",
     "tests_failed",
+    "compose_version_unsupported",
+    "docker_disk_full",
+    "docker_network_failed",
+    "docker_out_of_memory",
+    "docker_command_failed",
+    "frontend_typescript_failed",
+    "frontend_arm_dependency_failed",
     "migration_failed",
     "migration_head_mismatch",
     "update_failed",
@@ -157,7 +164,31 @@ class Runner(Protocol):
 
 
 class SystemRunner:
-    """Bound time and captured output; discard all other output, including stderr."""
+    """Bound commands and retain a private diagnostic tail when they fail."""
+
+    def __init__(self, failure_log: Path | None = None) -> None:
+        self.failure_log = failure_log
+        self._failure_logged = False
+
+    def _failure_log(self, output: bytes) -> None:
+        if self.failure_log is None or self._failure_logged or not output:
+            return
+        directory = self.failure_log.parent
+        try:
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            temporary = directory / ("." + self.failure_log.name + ".tmp")
+            descriptor = os.open(
+                temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600
+            )
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(output[-2 * 1024 * 1024 :])
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.failure_log)
+            os.chmod(self.failure_log, 0o600)
+            self._failure_logged = True
+        except OSError:
+            pass
 
     def run(self, argv, *, timeout, cwd=None, env=None, capture=False):
         environment = {
@@ -165,41 +196,60 @@ class SystemRunner:
             "LANG": "C.UTF-8",
             "PYTHONDONTWRITEBYTECODE": "1",
         }
+        if os.environ.get("ROBOPARK_TESTING") == "1":
+            environment["PATH"] = os.environ["PATH"]
+            environment["ROBOPARK_TESTING"] = "1"
+            environment["ROBOPARK_ROOT"] = os.environ["ROBOPARK_ROOT"]
+            if "TMPDIR" in os.environ:
+                environment["TMPDIR"] = os.environ["TMPDIR"]
         environment.update(env or {})
         output = bytearray()
+        diagnostic = bytearray()
         process = subprocess.Popen(
             list(map(str, argv)),
             cwd=cwd,
             env=environment,
-            stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
         )
         completed = False
         try:
             deadline = time.monotonic() + timeout
-            if capture:
-                with selectors.DefaultSelector() as selector:
-                    selector.register(process.stdout, selectors.EVENT_READ)
-                    while selector.get_map():
-                        left = deadline - time.monotonic()
-                        if left <= 0:
-                            raise ReleaseError("command_timeout")
-                        for key, _ in selector.select(min(left, 0.1)):
-                            chunk = os.read(key.fileobj.fileno(), 65536)
-                            if not chunk:
-                                selector.unregister(key.fileobj)
-                            else:
-                                output.extend(chunk)
-                                if len(output) > 2 * 1024 * 1024:
-                                    raise ReleaseError("command_output_limit")
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, capture)
+                selector.register(process.stderr, selectors.EVENT_READ, False)
+                while selector.get_map():
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        self._failure_log(bytes(diagnostic))
+                        raise ReleaseError("command_timeout")
+                    for key, _ in selector.select(min(left, 0.1)):
+                        chunk = os.read(key.fileobj.fileno(), 65536)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            continue
+                        diagnostic.extend(chunk)
+                        if len(diagnostic) > 2 * 1024 * 1024:
+                            del diagnostic[: len(diagnostic) - 2 * 1024 * 1024]
+                        if key.data:
+                            output.extend(chunk)
+                            if len(output) > 2 * 1024 * 1024:
+                                raise ReleaseError("command_output_limit")
             try:
                 code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
             except subprocess.TimeoutExpired as exc:
+                self._failure_log(bytes(diagnostic))
                 raise ReleaseError("command_timeout") from exc
             if code:
-                raise ReleaseError("command_failed")
+                self._failure_log(bytes(diagnostic))
+                failure = subprocess.CalledProcessError(
+                    code,
+                    list(map(str, argv)),
+                    output=bytes(diagnostic).decode("utf-8", "replace"),
+                )
+                raise ReleaseError(explain_process_failure(failure))
             completed = True
             return bytes(output)
         finally:
@@ -220,6 +270,8 @@ class SystemRunner:
                 process.wait(timeout=0.2)
             if process.stdout:
                 process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
 
     def wait_ready(self, *, project, config, timeout):
         deadline = time.monotonic() + timeout
@@ -634,7 +686,10 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
             work, smoke_config = _render_configs(paths, journal, runner, stage)
             prefix = compose("robopark-candidate-" + request.job_id, smoke_config)
             runner.run(prefix + ["config", "--quiet"], timeout=60)
-            runner.run(prefix + ["build", "--pull"], timeout=1800)
+            # Compose otherwise builds independent services concurrently. That
+            # creates avoidable memory pressure on the supported 8 GiB ARM host.
+            runner.run(prefix + ["build", "--pull", "api"], timeout=1800)
+            runner.run(prefix + ["build", "--pull", "web"], timeout=1800)
             runner.run(
                 [
                     "docker",
@@ -785,6 +840,13 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
 
 
 def _failure_token(phase, exc):
+    if isinstance(exc, ReleaseError) and str(exc) == "command_failed":
+        return {
+            "building": "build_failed",
+            "testing": "tests_failed",
+            "migrating": "migration_failed",
+            "health_check": "cutover_unhealthy",
+        }.get(phase, "update_failed")
     if isinstance(exc, ReleaseError) and str(exc) in SAFE_ERRORS:
         return str(exc)
     return {

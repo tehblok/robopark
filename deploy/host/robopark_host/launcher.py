@@ -15,6 +15,12 @@ from .release import ReleaseError
 from .updater import SystemRunner
 
 
+def ota_runner(paths):
+    runner = SystemRunner()
+    runner.failure_log = paths.root / "var/log/robopark/ota-update.log"
+    return runner
+
+
 def launch_update(paths, request, runner):
     environment = {}
     if paths.root != Path("/"):
@@ -51,9 +57,9 @@ def main(argv=None):
     if not request.exists():
         from .updater import recover_interrupted_update
 
-        result = recover_interrupted_update(paths, SystemRunner())
+        result = recover_interrupted_update(paths, ota_runner(paths))
         return int(result.state == "maintenance")
-    return launch_update(paths, request, SystemRunner())
+    return launch_update(paths, request, ota_runner(paths))
 
 
 if __name__ == "__main__":

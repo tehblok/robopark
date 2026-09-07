@@ -70,10 +70,10 @@ def test_signed_successor_source_executes_reconciliation_and_boot_recovery(e2e_h
     "failure,error",
     [
         ("tamper", "signature_invalid"),
-        ("build", "command_failed"),
-        ("tests", "command_failed"),
+        ("build", "build_failed"),
+        ("tests", "tests_failed"),
         ("smoke", "smoke_failed"),
-        ("migration", "command_failed"),
+        ("migration", "migration_failed"),
         ("local_health", "cutover_unhealthy"),
         ("disk", "insufficient_space"),
     ],

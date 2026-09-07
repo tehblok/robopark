@@ -60,7 +60,12 @@ def test_privileged_units_use_trusted_launcher_and_sandbox(name, command):
     assert service["PrivateTmp"] == "true"
     assert service["ProtectSystem"] == "strict"
     assert service["ProtectHome"] == "true"
-    assert int(service["TimeoutStartSec"]) <= 1800
+    timeout = int(service["TimeoutStartSec"])
+    if name == "updater":
+        assert 14400 <= timeout <= 18000
+        assert "/var/log/robopark" in service["ReadWritePaths"].split()
+    else:
+        assert timeout <= 1800
 
 
 @pytest.mark.parametrize(

@@ -9,7 +9,7 @@ LimitNOFILE=65536
 TasksMax=4096
 Type=oneshot
 ExecStart=/usr/bin/python3 -I /opt/robopark/host-tools/robopark update
-TimeoutStartSec=1800
+TimeoutStartSec=18000
 TimeoutStopSec=30
 NoNewPrivileges=true
 PrivateTmp=true
@@ -22,7 +22,7 @@ RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 UMask=0077
-ReadWritePaths=/var/lib/robopark /opt/robopark /etc/robopark /etc/systemd/system
+ReadWritePaths=/var/lib/robopark /opt/robopark /etc/robopark /etc/systemd/system /var/log/robopark
 
 [Install]
 WantedBy=multi-user.target
