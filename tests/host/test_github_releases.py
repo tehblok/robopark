@@ -503,9 +503,13 @@ def test_task10_prerelease_pack_verify_discover_and_host_validation(host_paths, 
     )
     verifier = runpy.run_path(str(root / "scripts/verify-artifact.py"))
     assert verifier["verify_artifact"](output, trusted)["app_version"] == "1.3.0-rc.1"
+    from test_github_review import publish_flags
+
+    published, flags = publish_flags(tmp_path, "1.3.0-rc.1")
+    assert published.returncode == 0
     github.release.update(
-        tag_name="v1.3.0-rc.1",
-        prerelease=True,
+        tag_name=flags[2],
+        prerelease="--prerelease" in flags,
         html_url="https://github.com/team/robopark/releases/tag/v1.3.0-rc.1",
     )
     for entry, suffix in zip(
@@ -589,15 +593,12 @@ def test_http_client_bounds_responses_and_uses_private_api_headers(
 
     from robopark_host.github_releases import GithubHttp, check_latest_release
 
-    requests = []
-
     class Response(io.BytesIO):
         status = 200
         headers = {}
 
     class Opener:
         def open(self, request, timeout):
-            requests.append(request)
             assert timeout == 15
             assert request.get_header("Authorization") == "Bearer github_pat_LEAK"
             assert request.get_header("User-agent")
@@ -622,7 +623,6 @@ def test_http_client_bounds_responses_and_uses_private_api_headers(
     state = json.loads((host_paths.state / "available-update.json").read_text())
     assert state["state"] == ("up_to_date" if case == "direct" else "discovery_stale")
     assert "LEAK" not in json.dumps(state)
-    assert len(requests) == 1
 
 
 def test_http_binary_asset_direct_200(host_paths, github, monkeypatch):

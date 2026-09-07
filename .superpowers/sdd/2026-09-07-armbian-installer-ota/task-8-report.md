@@ -48,3 +48,23 @@ The worktree owns its own `apps/api/.venv`, installed by `uv sync --frozen --ext
 ## Operational boundaries
 
 Verification ran on macOS with temporary host roots, real signatures/archives/filesystem operations and fake external HTTP/Docker/systemd adapters. Live GitHub authentication/CDN redirects, actual Linux timer activation and Armbian installation remain deployment acceptance checks. Discovery examines at most the newest 100 releases and fails closed on unavailable metadata; it does not scan arbitrary URLs or additional pages. Downloads consume a release ID only after all signatures/hashes pass; a crash after durable consumption but before command publication intentionally requires a new release ID rather than replaying an ambiguous approval. Artifact/receipt retention is unchanged from the broader host operations lifecycle.
+
+## Review fix round 1
+
+Closed both Important findings and the private-state robustness note from `task-8-review.md`.
+
+- The Task10 publisher now derives `--prerelease` from the already validated SemVer version, verifies the tag still equals `v$version` at publication, and leaves stable publication without the prerelease flag. Tests execute the actual workflow shell with a local fake `gh`, validate stable/rc source-and-tag consistency, reject mismatched tags and assert the resulting publication flags. The original real pack → standalone verify → discovery → host verification test now derives the GitHub `prerelease` field from these actual workflow flags instead of setting it manually.
+- GitHub transport runs in a short-lived POSIX fork worker, supervised by a nonblocking byte pipe and parent-owned monotonic deadline. The parent enforces the remaining shared 120-second client budget (30 seconds for an individual API request), including time spent resolving, opening HTTPS, following redirects, parsing headers, and reading chunk framing. The parent checks time after each pipe read and worker completion; the worker also rejects late open/read/EOF completion. On timeout or generator closure, the parent terminates and joins the worker for at most 100 ms, then uses kill plus a further bounded 100 ms join if needed. No unbounded worker join or pipe-frame receive can hold the host lock. Socket timeouts remain capped by the remaining budget as an additional limit. Credentials remain in process memory; no token is passed on argv, persisted, logged or sent through the pipe.
+- Private history now requires the exact state-object shape, a boolean consumed flag and a validated release/asset descriptor (including repository, ID and type bounds). Malformed JSON objects/values are normalized to `discovery_stale`, clearing the prior public release. The private availability envelope uses the same release validator before approval.
+
+RED evidence: the publisher prerelease and tag-mismatch tests failed; null/list/scalar/invalid history shapes either escaped with AttributeError or kept misleading availability; a late EOF was incorrectly accepted; and all five blocking transport stages exceeded their short test deadline. These cases passed after the respective fixes. Additional tests exercise real `http.client.HTTPResponse` header/chunk `readline` paths with drip-fed input, shared budgets across requests, TERM-ignoring workers requiring KILL, expired ZIP partial cleanup, worker reaping and host-lock release.
+
+Round-1 validation uses the same Task8-owned Python 3.13 environment:
+
+- `tests/host/test_github_review.py`: **24 passed** (new review regressions).
+- Full `tests/host`: **420 passed**, including Task8, Task10 packaging/verifier and Task6/7 host regressions.
+- The same nine-file API/security selection listed above: **131 passed**, one existing Starlette/httpx deprecation warning.
+- Ruff check/format check on the three changed/new Python files: **passed**.
+- `git diff --check`: **passed**.
+
+The HTTP worker relies on POSIX fork, matching the Linux host target; its deadline/termination behavior was exercised on macOS with safe fake transports and real child processes. No test contacted GitHub or published a release. Live GitHub/CDN and Linux/Armbian acceptance boundaries remain unchanged.
