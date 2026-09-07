@@ -1,7 +1,7 @@
 import { RECENT_ROBOTS_V2_STORAGE_PREFIX } from '../../shared/auth/protectedBrowserStorage'
 
 const MAX_RECENT_ROBOTS = 6
-export const RECENT_ROBOT_TTL_MS = 2_592_000_000
+export const RECENT_ROBOT_TTL_MS = 48 * 60 * 60 * 1_000
 
 export type RecentRobot = {
   query: string

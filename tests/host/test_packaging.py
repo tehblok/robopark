@@ -270,6 +270,7 @@ def test_installer_is_reproducible_self_contained_and_does_not_embed_private_key
         names = archive.getnames()
         assert names == sorted(names)
         expected = {
+            "START.sh",
             "install.sh",
             "lib/install-release.py",
             "payload/robopark-release.zip",
@@ -296,7 +297,36 @@ def test_installer_is_reproducible_self_contained_and_does_not_embed_private_key
         extracted = tmp_path / "unpacked"
         archive.extractall(extracted, filter="data")
     assert run("sh", extracted / "install.sh", "--help").returncode == 0
+    assert run("sh", extracted / "START.sh", "--help").returncode == 0
     assert verify(packaging[2], outputs[0]).returncode == 0
+
+
+def test_personal_installer_embeds_root_only_preset(packaging, tmp_path):
+    release = tmp_path / "release.zip"
+    assert pack(packaging, release).returncode == 0
+    preset = tmp_path / "preset.env"
+    preset.write_text("TUNA_TOKEN=fixture-token\nTUNA_SUBDOMAIN=robopark\n")
+    preset.chmod(0o600)
+    output = tmp_path / "installer.tar.gz"
+    result = run(
+        "bash",
+        ROOT / "scripts/pack-installer.sh",
+        "--release",
+        release,
+        "--public-key",
+        packaging[2],
+        "--signing-key",
+        packaging[1],
+        "--preset",
+        preset,
+        output,
+        env=packaging[4],
+    )
+    assert result.returncode == 0, result.stderr
+    with tarfile.open(output) as archive:
+        member = archive.getmember(".robopark-preset.env")
+        assert member.mode == 0o600
+        assert archive.extractfile(member).read() == preset.read_bytes()
 
 
 def test_installer_rejects_unsigned_release(packaging, tmp_path):

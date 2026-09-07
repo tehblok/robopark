@@ -151,7 +151,16 @@ def _first_admin(db: Session) -> User | None:
     ).first()
 
 
-def ensure_open_emergency_cookie_report(db: Session, *, author: User | None) -> Report | None:
+def ensure_open_emergency_cookie_report(
+    db: Session,
+    *,
+    author: User | None,
+    expected_identity: str | None = None,
+) -> Report | None:
+    guarded = expected_identity is not None
+    if guarded and not settings_svc.claim_emergency_cookie_identity(db, expected_identity):
+        db.rollback()
+        return None
     existing = db.scalars(
         select(Report).where(
             Report.kind == KIND_EMERGENCY_COOKIE_STALE,
@@ -159,9 +168,13 @@ def ensure_open_emergency_cookie_report(db: Session, *, author: User | None) -> 
         )
     ).first()
     if existing is not None:
+        if guarded:
+            db.commit()
         return existing
     user = author or _first_admin(db)
     if user is None:
+        if guarded:
+            db.commit()
         return None
     valid = settings_svc.get_emergency_cookie_valid(db)
     updated = None
@@ -196,7 +209,15 @@ def ensure_open_emergency_cookie_report(db: Session, *, author: User | None) -> 
     return report
 
 
-def resolve_open_emergency_cookie_reports(db: Session) -> int:
+def resolve_open_emergency_cookie_reports(
+    db: Session,
+    *,
+    expected_identity: str | None = None,
+) -> int:
+    guarded = expected_identity is not None
+    if guarded and not settings_svc.claim_emergency_cookie_identity(db, expected_identity):
+        db.rollback()
+        return 0
     rows = list(
         db.scalars(
             select(Report).where(
@@ -209,7 +230,7 @@ def resolve_open_emergency_cookie_reports(db: Session) -> int:
     for report in rows:
         report.status = STATUS_DONE
         report.resolved_at = now
-    if rows:
+    if rows or guarded:
         db.commit()
     return len(rows)
 

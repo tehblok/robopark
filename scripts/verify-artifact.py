@@ -199,6 +199,7 @@ def verify_release(raw, key):
 
 def verify_installer(raw, key, trusted_key):
     required = {
+        "START.sh",
         "install.sh",
         "README-RU.txt",
         "keys/release-public-key.pem",
@@ -216,7 +217,7 @@ def verify_installer(raw, key, trusted_key):
         for member in archive:
             name = safe_name(member.name)
             require(member.isfile() and name not in files and len(files) < 20000)
-            require(name in required or (name.startswith("lib/") and len(name.split("/")) == 2))
+            require(name in required or name == ".robopark-preset.env" or (name.startswith("lib/") and len(name.split("/")) == 2))
             total += member.size
             require(0 <= member.size <= MAX_ARCHIVE and total <= MAX_EXPANDED)
             files[name] = archive.extractfile(member).read()

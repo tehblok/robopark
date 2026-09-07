@@ -7,12 +7,15 @@ from robopark_api.db import get_db
 from robopark_api.deps import require_admin, require_royal
 from robopark_api.models import User
 from robopark_api.schemas import (
+    EmergencyCookieCheck,
+    EmergencyCookieUpdate,
+    IntegrationSettingsOut,
     ScreenshotGuardSettingsIn,
     ScreenshotGuardSettingsOut,
     TrackerPolicySettingsIn,
     TrackerPolicySettingsOut,
 )
-from robopark_api.services import audit
+from robopark_api.services import audit, emergency_cache, emergency_client, emergency_vin
 from robopark_api.services import platform_settings as settings_svc
 
 router = APIRouter(
@@ -29,22 +32,8 @@ def _require_secret_key(exc: MissingSecretKeyError) -> HTTPException:
     )
 
 
-class IntegrationSettingsOut(BaseModel):
-    tracker_token_masked: str | None
-    tracker_token_updated_at: str | None
-    tracker_token_encrypted: bool = False
-    emergency_cookie_masked: str | None
-    emergency_cookie_updated_at: str | None
-    emergency_cookie_encrypted: bool = False
-    emergency_cookie_valid: bool | None
-
-
 class TrackerTokenUpdate(BaseModel):
     token: str = Field(min_length=1)
-
-
-class EmergencyCookieUpdate(BaseModel):
-    cookie: str = Field(min_length=1)
 
 
 class RegistrationPasswordSettingsOut(BaseModel):
@@ -76,6 +65,9 @@ def _to_out(db: Session) -> IntegrationSettingsOut:
         ),
         emergency_cookie_encrypted=bool(data.get("emergency_cookie_encrypted")),
         emergency_cookie_valid=data["emergency_cookie_valid"],
+        emergency_cookie_status=data["emergency_cookie_status"],
+        emergency_cookie_checked_at=data["emergency_cookie_checked_at"],
+        emergency_cookie_checked_robot=data["emergency_cookie_checked_robot"],
     )
 
 
@@ -114,20 +106,128 @@ def put_emergency_cookie(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> IntegrationSettingsOut:
+    vin = _normalize_probe_robot(payload.robot_number)
+    checked_robot = emergency_vin.short_robot_number(vin)
     try:
-        settings_svc.set_setting(db, settings_svc.EMERGENCY_COOKIE_KEY, payload.cookie)
-        settings_svc.set_emergency_cookie_valid(db, True)
+        emergency_client.fetch_robot_payload(cookie=payload.cookie, vin=vin)
+    except emergency_client.EmergencyAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="emergency_cookie_invalid",
+        ) from exc
+    except emergency_client.EmergencyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="emergency_upstream_unavailable",
+        ) from exc
+
+    try:
+        identity = settings_svc.activate_emergency_cookie(
+            db,
+            cookie=payload.cookie,
+            status="valid",
+            checked_robot=checked_robot,
+        )
     except MissingSecretKeyError as exc:
         raise _require_secret_key(exc) from exc
     from robopark_api.services import reports as reports_svc
 
-    reports_svc.resolve_open_emergency_cookie_reports(db)
+    emergency_cache.clear_cache()
+    reports_svc.resolve_open_emergency_cookie_reports(db, expected_identity=identity)
     audit.record(
         db,
         action=audit.ACTION_EMERGENCY_COOKIE_SET,
         actor=admin,
         detail="emergency cookie updated",
     )
+    return _to_out(db)
+
+
+def _normalize_probe_robot(robot_number: str) -> str:
+    try:
+        return emergency_vin.normalize_robot_id(robot_number)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="invalid_robot_number",
+        ) from exc
+
+
+def _last_keepalive_robot(db: Session) -> str | None:
+    ring = settings_svc.get_keepalive_ring(db)
+    return ring[-1] if ring else None
+
+
+@router.post(
+    "/emergency-cookie/check",
+    response_model=IntegrationSettingsOut,
+    responses={422: {"description": "A robot number or keepalive probe is required."}},
+)
+def check_emergency_cookie(
+    payload: EmergencyCookieCheck = EmergencyCookieCheck(),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> IntegrationSettingsOut:
+    probe_robot = payload.robot_number or _last_keepalive_robot(db)
+    if probe_robot is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="emergency_probe_required",
+        )
+
+    vin = _normalize_probe_robot(probe_robot)
+    checked_robot = emergency_vin.short_robot_number(vin)
+    cookie, identity = settings_svc.get_emergency_cookie_probe(db)
+    if not cookie:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="emergency_cookie_not_configured",
+        )
+
+    try:
+        emergency_client.fetch_robot_payload(cookie=cookie, vin=vin)
+    except emergency_client.EmergencyAuthError as exc:
+        from robopark_api.services import reports as reports_svc
+
+        if settings_svc.record_emergency_cookie_probe(
+            db,
+            identity=identity,
+            valid=False,
+            status="invalid",
+            checked_robot=checked_robot,
+        ):
+            reports_svc.ensure_open_emergency_cookie_report(
+                db,
+                author=admin,
+                expected_identity=identity,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="emergency_cookie_invalid",
+        ) from exc
+    except emergency_client.EmergencyError as exc:
+        settings_svc.record_emergency_cookie_probe(
+            db,
+            identity=identity,
+            valid=None,
+            status="unavailable",
+            checked_robot=checked_robot,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="emergency_upstream_unavailable",
+        ) from exc
+
+    from robopark_api.services import reports as reports_svc
+
+    if settings_svc.record_emergency_cookie_probe(
+        db,
+        identity=identity,
+        valid=True,
+        status="valid",
+        checked_robot=checked_robot,
+    ):
+        reports_svc.resolve_open_emergency_cookie_reports(db, expected_identity=identity)
     return _to_out(db)
 
 

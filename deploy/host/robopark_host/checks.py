@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
+
+UTC = timezone.utc
 
 CheckStatus = Literal["ok", "warning", "failed"]
 MAX_OUTPUT = 16_384

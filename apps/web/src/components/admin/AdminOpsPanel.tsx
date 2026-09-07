@@ -84,6 +84,21 @@ export function AdminOpsPanel() {
     }
     finally { actionLock.current = false; setBusy(false) }
   }
+  const abort = async () => {
+    if (actionLock.current) return
+    actionLock.current = true
+    setError(''); setBusy(true)
+    try {
+      accept(await api.opsAbort())
+      setHealthRevision(value => value + 1)
+      await Promise.allSettled([refresh(), refreshJob()])
+    } catch (caught) {
+      setError(mapApiError(caught, ru.errors.generic))
+    } finally {
+      actionLock.current = false
+      setBusy(false)
+    }
+  }
   const getArtifact = async (kind: 'snapshot' | 'diagnostics') => {
     if (job?.kind !== kind || !completed || !job.artifact_ready || blocked) return
     setError('')
@@ -130,7 +145,8 @@ export function AdminOpsPanel() {
         <StatusBadge tone={completed ? 'success' : job.state === 'failed' ? 'critical' : 'info'}>{jobStates[job.state] ?? 'Состояние уточняется'}</StatusBadge>
         {active && <span>{phases[job.phase] ?? 'Хост выполняет операцию'}</span>}
       </div>
-      {active && <OpsAlert tone="info">Операция выполняется хостом. После запуска её нельзя отменить. Статус обновляется автоматически.</OpsAlert>}
+      {active && <OpsAlert tone="info">Операция выполняется хостом. Статус обновляется автоматически.</OpsAlert>}
+      {active && <div className="form-actions"><Button variant="secondary" disabled={busy} onClick={() => void abort()} type="button">Прервать и снять техработы</Button></div>}
       {job.error && <OpsAlert tone="error">{mapApiError(new ApiError(400, job.error), 'Операция не завершена. Подробности доступны в диагностике.')}</OpsAlert>}
       {job.phase === 'rolling_back' && <OpsAlert>Новая версия не прошла проверку. Восстанавливается предыдущая версия.</OpsAlert>}
       {job.restart_required && completed && <OpsAlert>Ожидаем автоматический перезапуск приложения на хосте.</OpsAlert>}

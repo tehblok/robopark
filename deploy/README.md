@@ -2,6 +2,9 @@
 
 Для подписанной установки **0.1.0** на Armbian/Debian/Ubuntu используйте [руководство оператора](INSTALL-ARMBIAN-RU.md) и [приёмку 200 пользователей](CAPACITY-RU.md). Реальная Armbian/systemd/Docker/Tuna и нагрузочная приёмка остаются **НЕ ВЫПОЛНЕНО** до запуска на устройстве. Ниже сохранён существующий ручной Compose-путь.
 
+Для Armbian 26 с 8 ГБ, 200 пользователей и переноса на Ubuntu с 32 ГБ:
+[пошаговая инструкция общего сервера](SHARED-HOST.md).
+
 Robopark runs **only on the host** (Armbian / home server): API, SQLite, web UI.
 
 Remote access uses **[Tuna](https://tuna.am/docs/)** — an HTTP reverse tunnel (ngrok-class).

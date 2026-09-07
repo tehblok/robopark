@@ -1,0 +1,76 @@
+/* Task controls keep their text width even inside narrow Work panes. */
+.issue-actions :is(.issue-action-row, .issue-action-footer, .issue-comment-actions, .issue-assign-form) {
+  min-width: 0;
+  max-width: 100%;
+}
+.issue-actions :is(.btn, .rp-button) {
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+.issue-actions .issue-action-footer > a {
+  width: auto;
+  flex: 1 1 12rem;
+}
+.issue-rich-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.6;
+}
+.issue-rich-text > :first-child { margin-top: 0; }
+.issue-rich-text > :last-child { margin-bottom: 0; }
+.issue-rich-text :is(ul, ol) { padding-left: 1.5rem; }
+.issue-rich-text pre {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+.issue-rich-text code { white-space: pre-wrap; }
+.issue-rich-text pre code { white-space: pre; }
+.issue-description-toggle { margin-top: 0.5rem; }
+.issue-update-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--bg);
+  margin-bottom: 1rem;
+}
+.issue-comment--new .issue-comment-body { border-inline-start: 3px solid var(--accent, #3164d5); }
+.issue-comment:focus { outline: 2px solid var(--accent, #3164d5); outline-offset: 4px; }
+@media (max-width: 599px) {
+  .issue-actions .issue-action-row,
+  .issue-actions .issue-action-footer,
+  .issue-actions .issue-comment-actions,
+  .issue-actions .issue-assign-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+    min-width: 0;
+    margin-inline: 0;
+  }
+  .issue-actions .issue-action-footer {
+    position: static;
+    padding-inline: 0;
+    margin-bottom: 0;
+  }
+  .issue-actions :is(.issue-action-row, .issue-action-footer, .issue-comment-actions, .issue-assign-form) > :is(.btn, .rp-button, input, form) {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+  .issue-actions :is(.btn, .rp-button) { min-height: 44px; }
+}
+
+.issue-collaboration { margin-block: 1rem; padding: .75rem; border: 1px solid var(--border); border-radius: .5rem; }
+.issue-collaboration summary { cursor: pointer; font-weight: 600; }
+.issue-handoff-field { display: grid; gap: .35rem; margin-block: .75rem; }
+.issue-handoff-field textarea { width: 100%; min-width: 0; resize: vertical; }

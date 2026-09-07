@@ -16,11 +16,11 @@ HOST_DEFAULTS = {
     'PASSWORD_REQUIRE_COMPLEXITY': 'true', 'LOGIN_MAX_ATTEMPTS': '5',
     'LOGIN_ATTEMPT_WINDOW_SECONDS': '300', 'LOGIN_LOCKOUT_SECONDS': '900',
     'REGISTER_MAX_ATTEMPTS': '10', 'SEED_USERNAME': 'royal', 'SEED_ROLE': 'royal',
-    'DEV_SEED': 'false', 'UVICORN_WORKERS': '2', 'OPERATOR_SHARED_PASSWORD': '',
+    'DEV_SEED': 'false', 'UVICORN_WORKERS': '', 'OPERATOR_SHARED_PASSWORD': '',
     'SECRET_KEY': '', 'SEED_PASSWORD': '', 'CORS_ORIGINS': '',
 }
 TUNA_DEFAULTS = {'TUNA_TOKEN': '', 'TUNA_LOCATION': 'ru', 'TUNA_SUBDOMAIN': '', 'TUNA_DOMAIN': '', 'TUNA_BIND': '127.0.0.1:8080'}
-UPDATER_DEFAULTS = {'GITHUB_REPOSITORY': '', 'GITHUB_TOKEN': '', 'GITHUB_CHANNEL': 'stable', 'GITHUB_ENABLED': 'false'}
+UPDATER_DEFAULTS = {'GITHUB_REPOSITORY': 'tehblok/robopark', 'GITHUB_TOKEN': '', 'GITHUB_CHANNEL': 'stable', 'GITHUB_ENABLED': 'true'}
 ALLOWED = set(HOST_DEFAULTS) | set(TUNA_DEFAULTS) | set(UPDATER_DEFAULTS)
 
 
@@ -126,32 +126,34 @@ def configure(root, mode, filename, resume):
         values.update(read_env(Path(filename)))
     # Reinstall and crash recovery never rotate non-empty host-owned values.
     values.update({key: value for key, value in existing.items() if value})
-    if mode == 'interactive' and not (resume == '1' and existing.get('TUNA_TOKEN') and existing.get('SEED_PASSWORD')):
-        if not sys.stdin.isatty():
+    if mode == 'interactive' and not (existing.get('TUNA_TOKEN') and existing.get('SEED_PASSWORD')):
+        required = []
+        if not values['TUNA_TOKEN']:
+            required.append(('TUNA_TOKEN', 'Токен Tuna', True))
+        if not values['TUNA_SUBDOMAIN'] and not values['TUNA_DOMAIN']:
+            required.extend((
+                ('TUNA_SUBDOMAIN', 'Зарезервированный поддомен Tuna (пусто для своего домена)', False),
+                ('TUNA_DOMAIN', 'Свой домен (пусто при использовании поддомена)', False),
+            ))
+        if not values['SEED_PASSWORD']:
+            required.append(('SEED_PASSWORD', 'Пароль Royal (12+ символов, 3 класса; без одинарной кавычки и обратной косой черты)', True))
+        if required and not sys.stdin.isatty():
             raise ValueError('terminal_required_use_non_interactive')
-        prompts = (
-            ('TUNA_TOKEN', 'Токен Tuna', True),
-            ('TUNA_SUBDOMAIN', 'Зарезервированный поддомен Tuna (пусто для своего домена)', False),
-            ('TUNA_DOMAIN', 'Свой домен (пусто при использовании поддомена)', False),
-            ('TUNA_LOCATION', 'Регион Tuna', False),
-            ('SEED_USERNAME', 'Логин первого Royal', False),
-            ('SEED_PASSWORD', 'Пароль Royal (12+ символов, 3 класса; без одинарной кавычки и обратной косой черты)', True),
-            ('OPERATOR_SHARED_PASSWORD', 'Пароль регистрации операторов (необязательно)', True),
-            ('CORS_ORIGINS', 'Публичный HTTPS origin (пусто для адреса Tuna)', False),
-            ('GITHUB_REPOSITORY', 'GitHub owner/repo (пусто — без проверки обновлений)', False),
-            ('GITHUB_TOKEN', 'Токен закрытого GitHub репозитория (необязательно)', True),
-            ('UVICORN_WORKERS', 'API workers: 2 — стандартный профиль, 4 — от 24 GiB RAM', False),
-        )
-        for key, label, secret in prompts:
-            if existing.get(key):
-                continue
+        for key, label, secret in required:
             if key == 'TUNA_DOMAIN' and values['TUNA_SUBDOMAIN']:
-                continue
-            if key == 'GITHUB_TOKEN' and not values['GITHUB_REPOSITORY']:
                 continue
             value = getpass.getpass(label + ': ') if secret else input(f'{label} [{values[key]}]: ')
             if value:
                 values[key] = value
+        if sys.stdin.isatty() and not existing.get('OPERATOR_SHARED_PASSWORD'):
+            value = getpass.getpass('Пароль регистрации операторов (необязательно): ')
+            if value:
+                values['OPERATOR_SHARED_PASSWORD'] = value
+    if not values['UVICORN_WORKERS']:
+        memory_path = Path(root) / 'proc/meminfo'
+        memory = memory_path.read_text() if memory_path.exists() else ''
+        total = re.search(r'^MemTotal:\s+(\d+) kB', memory, re.M)
+        values['UVICORN_WORKERS'] = '4' if total and int(total.group(1)) >= 24 * 1024 * 1024 else '2'
     validate(values)
     if values['UVICORN_WORKERS'] == '4':
         memory = (Path(root) / 'proc/meminfo').read_text()

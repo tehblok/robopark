@@ -15,12 +15,19 @@ services:
       REPORT_ATTACHMENTS_DIR: /data/report-attachments
       OPS_DIR: /data/ops
       OPS_HOST_ENV_PATH: /host-repo/deploy/host.env
-      UVICORN_WORKERS: "2"
+      # UVICORN_WORKERS comes from host.env; entrypoint defaults to 2.
     volumes:
       - ${ROBOPARK_DATA_SOURCE:-robopark_data}:/data
       # Royal ZIP updates copy onto the checkout; ops-agent rebuilds images.
       - ..:/host-repo
     restart: unless-stopped
+    init: true
+    mem_limit: 3g
+    stop_grace_period: 45s
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=4)"]
       interval: 30s
@@ -43,6 +50,8 @@ services:
       # Localhost only — Tuna agent on the host forwards public HTTPS here.
       - "127.0.0.1:8080:80"
     restart: unless-stopped
+    init: true
+    mem_limit: 256m
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
       interval: 30s
@@ -69,6 +78,8 @@ services:
     working_dir: /host-repo/deploy
     command: ["sh", "/host-repo/deploy/ops-agent.sh"]
     restart: unless-stopped
+    init: true
+    mem_limit: 256m
     logging:
       driver: json-file
       options:

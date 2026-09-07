@@ -8,12 +8,11 @@ import logging
 import random
 import threading
 import time
-from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
 from robopark_api.db import SessionLocal
-from robopark_api.services import emergency_cache, emergency_client, reports
+from robopark_api.services import emergency_cache, emergency_client
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.ops.maintenance import host_maintenance_active
 
@@ -56,7 +55,8 @@ def keepalive_once(
 
 
 def _keepalive_once_with_db(db: Session, stop_event: threading.Event | None) -> None:
-    cookie = settings_svc.get_emergency_cookie(db)
+    probe = settings_svc.get_emergency_cookie_probe(db)
+    cookie, identity = probe
     if not cookie:
         return
 
@@ -71,24 +71,22 @@ def _keepalive_once_with_db(db: Session, stop_event: threading.Event | None) -> 
             return
 
         try:
-            emergency_cache.get_robot_payload(db=db, vin=vin)
+            emergency_cache.get_robot_payload(db=db, vin=vin, probe=probe)
         except emergency_client.EmergencyAuthError:
-            if host_maintenance_active():
-                return
-            settings_svc.set_emergency_cookie_valid(db, False)
             return
         except emergency_client.EmergencyError:
             logger.warning("Emergency keep-alive failed for VIN %s", vin)
         else:
             if host_maintenance_active():
                 return
-            settings_svc.set_emergency_cookie_valid(db, True)
-            settings_svc.set_setting(
+            # The cache records actual probe results. A cache hit must not
+            # revalidate the cookie or resolve a newer failed-check report.
+            settings_svc.record_emergency_cookie_probe(
                 db,
-                settings_svc.EMERGENCY_KEEPALIVE_LAST_OK_KEY,
-                datetime.now(UTC).isoformat(),
+                identity=identity,
+                valid=None,
+                keepalive_last_ok=True,
             )
-            reports.resolve_open_emergency_cookie_reports(db)
 
         if index + 1 < len(vins) and not _interruptible_sleep(INTER_VIN_GAP_SECONDS, stop_event):
             return

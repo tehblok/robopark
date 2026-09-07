@@ -147,7 +147,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
   },
   {
     id: 'robot-detail', path: '/robots/:vin', label: 'Робот', icon: 'robot',
-    permission: 'nav.robot_search', prerequisites: SHELL_PREREQUISITES, surface: 'shell',
+    anyPermissions: ['nav.robot_search', 'nav.emergency'], prerequisites: SHELL_PREREQUISITES, surface: 'shell',
   },
   {
     id: 'robot-check', path: '/robots/:vin/check', label: ru.nav.emergency, icon: 'robot-check',

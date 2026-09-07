@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, type ReportAttachmentKind, type ReportKindManual } from '../../api'
+import { deleteReportPhotoDraft, readReportPhotoDraft, writeReportPhotoDraft, type ReportPhotoDraft } from '../../domains/reports/reportPhotoDrafts'
 import { reportDraftKey, type ReportsApiClient } from '../../domains/reports/reports'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
@@ -22,6 +23,9 @@ type ReportDraft = {
   trackerKey: string
   title: string
   body: string
+  createdReportId?: number | null
+  ownerKey?: string
+  attachmentDelivered?: boolean
 }
 
 const EMPTY_DRAFT: ReportDraft = {
@@ -31,16 +35,19 @@ const EMPTY_DRAFT: ReportDraft = {
   body: '',
 }
 
-function loadDraft(principalId: number, parkId: number): ReportDraft {
+function loadDraft(principalId: number, parkId: number, ownerKey: string): ReportDraft {
   try {
     const stored = localStorage.getItem(reportDraftKey(principalId, parkId))
     if (!stored) return EMPTY_DRAFT
     const parsed = JSON.parse(stored) as Partial<ReportDraft>
+    if (parsed.ownerKey && parsed.ownerKey !== ownerKey) return EMPTY_DRAFT
     return {
       activeForm: parsed.activeForm === 'problem' ? 'problem' : 'question',
       trackerKey: typeof parsed.trackerKey === 'string' ? parsed.trackerKey : '',
       title: typeof parsed.title === 'string' ? parsed.title : '',
       body: typeof parsed.body === 'string' ? parsed.body : '',
+      attachmentDelivered: parsed.attachmentDelivered === true,
+      createdReportId: parsed.ownerKey === ownerKey && typeof parsed.createdReportId === 'number' ? parsed.createdReportId : null,
     }
   } catch {
     return EMPTY_DRAFT
@@ -51,11 +58,11 @@ function saveDraft(principalId: number, parkId: number, draft: ReportDraft) {
   try {
     const key = reportDraftKey(principalId, parkId)
     const hasContent = draft.activeForm !== 'question'
-      || Boolean(draft.trackerKey || draft.title || draft.body)
+      || Boolean(draft.trackerKey || draft.title || draft.body || draft.createdReportId)
     if (hasContent) localStorage.setItem(key, JSON.stringify(draft))
     else localStorage.removeItem(key)
   } catch {
-    // Browser storage is optional; the in-memory form remains usable.
+    throw new Error('Не удалось сохранить текст черновика.')
   }
 }
 
@@ -65,7 +72,7 @@ function trackerUrlFromKey(key: string): string | null {
 }
 
 export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, restoreDraft = true, onCreated }: ReportFormsProps) {
-  const [initial] = useState(() => restoreDraft ? loadDraft(principalId, parkId) : EMPTY_DRAFT)
+  const [initial] = useState(() => restoreDraft ? loadDraft(principalId, parkId, ownerKey) : EMPTY_DRAFT)
   const [activeForm, setActiveForm] = useState<FormKind>(initial.activeForm)
   const [trackerKey, setTrackerKey] = useState(initial.trackerKey)
   const [title, setTitle] = useState(initial.title)
@@ -73,12 +80,22 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [createdReportId, setCreatedReportId] = useState<number | null>(null)
+  const [createdReportId, setCreatedReportId] = useState<number | null>(initial.createdReportId ?? null)
+  const [attachmentDelivered, setAttachmentDelivered] = useState(initial.attachmentDelivered === true)
   const [attachment, setAttachment] = useState<File | null>(null)
   const [attachmentKind, setAttachmentKind] = useState<ReportAttachmentKind>('device_photo')
   const [attachmentError, setAttachmentError] = useState('')
   const [attachmentSuccess, setAttachmentSuccess] = useState('')
   const [attaching, setAttaching] = useState(false)
+  const [draftReady, setDraftReady] = useState(false)
+  const [storageError, setStorageError] = useState('')
+  const [draftSaved, setDraftSaved] = useState(false)
+  const editRef = useRef(0)
+  const revisionRef = useRef('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const liveRef = useRef({ activeForm, trackerKey, title, body, attachment, attachmentKind })
+  liveRef.current = { activeForm, trackerKey, title, body, attachment, attachmentKind }
+  const busyRef = useRef(false)
   const ownerRef = useRef({ key: ownerKey, parkId, principalId })
   const generationRef = useRef(0)
   const mountedRef = useRef(true)
@@ -92,7 +109,8 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
   }, [])
 
   useLayoutEffect(() => {
-    if (ownerRef.current.key === ownerKey) return
+    if (ownerRef.current.key === ownerKey && ownerRef.current.parkId === parkId && ownerRef.current.principalId === principalId) return
+    void deleteReportPhotoDraft(reportDraftKey(ownerRef.current.principalId, ownerRef.current.parkId)).catch(() => {})
     try {
       localStorage.removeItem(reportDraftKey(ownerRef.current.principalId, ownerRef.current.parkId))
     } catch {
@@ -100,7 +118,12 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
     }
     ownerRef.current = { key: ownerKey, parkId, principalId }
     generationRef.current += 1
-    const next = loadDraft(principalId, parkId)
+    const next = restoreDraft ? loadDraft(principalId, parkId, ownerKey) : EMPTY_DRAFT
+    editRef.current += 1
+    setDraftReady(false)
+    setStorageError('')
+    setDraftSaved(false)
+    busyRef.current = false
     setActiveForm(next.activeForm)
     setTrackerKey(next.trackerKey)
     setTitle(next.title)
@@ -108,18 +131,92 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
     setError('')
     setSuccess('')
     setSubmitting(false)
-    setCreatedReportId(null)
+    setCreatedReportId(next.createdReportId ?? null)
+    setAttachmentDelivered(next.attachmentDelivered === true)
     setAttachment(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
     setAttachmentKind('device_photo')
     setAttachmentError('')
     setAttachmentSuccess('')
     setAttaching(false)
-  }, [ownerKey, parkId, principalId])
+  }, [ownerKey, parkId, principalId, restoreDraft])
 
   useEffect(() => {
-    if (ownerRef.current.key !== ownerKey) return
-    saveDraft(principalId, parkId, { activeForm, trackerKey, title, body })
-  }, [activeForm, body, ownerKey, parkId, principalId, title, trackerKey])
+    const generation = generationRef.current
+    const edits = editRef.current
+    let cancelled = false
+    const current = () => !cancelled && mountedRef.current && generationRef.current === generation && ownerRef.current.key === ownerKey
+    const key = reportDraftKey(principalId, parkId)
+    const loading = restoreDraft ? readReportPhotoDraft(key) : deleteReportPhotoDraft(key).then(() => null)
+    void loading.then((stored) => {
+      if (!current()) return
+      if (stored && stored.ownerKey === ownerKey && editRef.current === edits) {
+        revisionRef.current = stored.revision
+        const textDraft = loadDraft(principalId, parkId, ownerKey)
+        const hasSynchronousText = Boolean(textDraft.title || textDraft.body || textDraft.trackerKey || textDraft.createdReportId)
+        // Synchronous text is the newest fallback if the browser closed mid-transaction.
+        setActiveForm(hasSynchronousText ? textDraft.activeForm : stored.activeForm)
+        setTrackerKey(hasSynchronousText ? textDraft.trackerKey : stored.trackerKey)
+        setTitle(hasSynchronousText ? textDraft.title : stored.title)
+        setBody(hasSynchronousText ? textDraft.body : stored.body)
+        setCreatedReportId((knownId) => knownId ?? textDraft.createdReportId ?? stored.createdReportId)
+        setAttachmentKind(stored.attachmentKind)
+        setAttachment(!textDraft.attachmentDelivered && stored.attachment ? new File([stored.attachment.blob], stored.attachment.name, {
+          type: stored.attachment.blob.type, lastModified: stored.attachment.lastModified,
+        }) : null)
+      }
+    }).catch(() => {
+      if (current()) setStorageError('Не удалось восстановить черновик с файлами. Текст доступен; не закрывайте страницу до отправки.')
+    }).finally(() => { if (current()) setDraftReady(true) })
+    return () => { cancelled = true }
+  }, [ownerKey, parkId, principalId, restoreDraft])
+
+  useEffect(() => {
+    if (ownerRef.current.key !== ownerKey || !draftReady) return
+    try {
+      saveDraft(principalId, parkId, { activeForm, trackerKey, title, body, ownerKey, attachmentDelivered, createdReportId: attachment || attachmentDelivered ? createdReportId : null })
+    } catch {
+      setStorageError('Не удалось сохранить черновик на устройстве. Форма и файл остаются доступны; не закрывайте страницу до отправки.')
+    }
+    if (!draftReady) return
+    const revision = crypto.randomUUID()
+    const previousRevision = revisionRef.current
+    revisionRef.current = revision
+    const stored: ReportPhotoDraft = {
+      key: reportDraftKey(principalId, parkId), ownerKey, revision,
+      activeForm, trackerKey, title, body, createdReportId, attachmentKind,
+      attachment: attachment ? { blob: attachment, name: attachment.name, lastModified: attachment.lastModified } : null,
+    }
+    const generation = generationRef.current
+    const current = () => mountedRef.current && generationRef.current === generation && ownerRef.current.key === ownerKey && revisionRef.current === revision
+    setDraftSaved(false)
+    const hasContent = activeForm !== 'question' || trackerKey || title || body || attachment
+    const saving = hasContent ? writeReportPhotoDraft(stored) : deleteReportPhotoDraft(stored.key, previousRevision)
+    void saving.then(() => {
+      if (current()) { setDraftSaved(Boolean(hasContent)); setStorageError(''); if (attachmentDelivered) setAttachmentDelivered(false) }
+    }).catch((caught: unknown) => {
+      if (current()) setStorageError(`Не удалось сохранить черновик на устройстве. ${caught instanceof Error && caught.name !== 'QuotaExceededError' ? caught.message : 'Хранилище заполнено.'} Форма и файл остаются доступны; не закрывайте страницу до отправки.`)
+    })
+  }, [activeForm, attachment, attachmentDelivered, attachmentKind, body, createdReportId, draftReady, ownerKey, parkId, principalId, title, trackerKey])
+
+  function edited() { editRef.current += 1; setDraftSaved(false) }
+
+  function discardDraft() {
+    edited()
+    resetFields()
+    setCreatedReportId(null)
+    setAttachmentDelivered(false)
+    setAttachment(null)
+    setAttachmentKind('device_photo')
+    setSuccess('')
+    setAttachmentSuccess('')
+    setAttachmentError('')
+    setStorageError('')
+    if (fileInputRef.current) fileInputRef.current.value = ''
+    void deleteReportPhotoDraft(reportDraftKey(principalId, parkId)).catch(() => {
+      if (mountedRef.current && ownerRef.current.key === ownerKey) setStorageError('Не удалось удалить черновик с устройства.')
+    })
+  }
 
   function resetFields() {
     setActiveForm('question')
@@ -130,6 +227,7 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
+    if (busyRef.current || createdReportId != null || !draftReady) return
     setError('')
     setSuccess('')
 
@@ -148,7 +246,10 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
       return
     }
 
+    busyRef.current = true
     setSubmitting(true)
+    const submitted = liveRef.current
+    const submittedRevision = revisionRef.current
     const generation = generationRef.current
     const requestedOwner = ownerKey
     const current = () => mountedRef.current
@@ -166,18 +267,28 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
       if (!current()) return
       setCreatedReportId(created.id)
       setSuccess('Репорт отправлен оператору.')
-      resetFields()
+      const unchanged = liveRef.current.title === submitted.title && liveRef.current.body === submitted.body
+        && liveRef.current.trackerKey === submitted.trackerKey && liveRef.current.activeForm === submitted.activeForm
+      const remainingText = unchanged ? EMPTY_DRAFT : liveRef.current
+      if (unchanged) resetFields()
+      // Persist the acknowledged report ID before the separate attachment request.
+      try {
+        saveDraft(principalId, parkId, { activeForm: remainingText.activeForm, trackerKey: remainingText.trackerKey, title: remainingText.title, body: remainingText.body, ownerKey, createdReportId: attachment ? created.id : null })
+      } catch {
+        setStorageError('Репорт создан, но номер не сохранён на устройстве. Не закрывайте страницу до загрузки файла.')
+      }
+      if (!submitted.attachment) void deleteReportPhotoDraft(reportDraftKey(principalId, parkId), submittedRevision).catch(() => {})
       onCreated()
     } catch (submitError) {
       if (!current()) return
       setError(mapApiError(submitError, ru.errors.generic))
     } finally {
-      if (current()) setSubmitting(false)
+      if (current()) { setSubmitting(false); busyRef.current = false }
     }
   }
 
   async function attachFile() {
-    if (createdReportId == null || attachment == null) return
+    if (busyRef.current || createdReportId == null || attachment == null) return
     const photo = attachmentKind === 'device_photo' || attachmentKind === 'ui_snapshot'
     const imageTypes = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif'])
     const filename = attachment.name.toLowerCase()
@@ -196,6 +307,9 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
       setAttachmentError(`Файл превышает лимит ${attachmentKind === 'client_log' ? '64 КиБ' : '15 МиБ'}.`)
       return
     }
+    busyRef.current = true
+    const submittedAttachment = attachment
+    const submittedKind = attachmentKind
     setAttaching(true)
     setAttachmentError('')
     setAttachmentSuccess('')
@@ -207,13 +321,21 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
     try {
       await apiClient.reportAttach(createdReportId, attachmentKind, attachment)
       if (!current()) return
-      setAttachment(null)
+      if (liveRef.current.attachment === submittedAttachment && liveRef.current.attachmentKind === submittedKind) {
+        // A small synchronous receipt prevents resurrection if photo deletion fails.
+        setAttachmentDelivered(true)
+        try {
+          saveDraft(principalId, parkId, { activeForm: liveRef.current.activeForm, trackerKey: liveRef.current.trackerKey, title: liveRef.current.title, body: liveRef.current.body, ownerKey, createdReportId, attachmentDelivered: true })
+        } catch { setStorageError('Файл отправлен, но подтверждение не сохранено на устройстве.') }
+        setAttachment(null)
+        if (fileInputRef.current) fileInputRef.current.value = ''
+      }
       setAttachmentSuccess('Файл прикреплён к созданному репорту.')
     } catch (caught) {
       if (!current()) return
       setAttachmentError(mapApiError(caught, ru.errors.generic))
     } finally {
-      if (current()) setAttaching(false)
+      if (current()) { setAttaching(false); busyRef.current = false }
     }
   }
 
@@ -226,14 +348,16 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
       <div className="actions">
         <button
           className={`btn btn-filter ${activeForm === 'question' ? 'is-active' : ''}`}
-          onClick={() => setActiveForm('question')}
+          disabled={submitting || attaching || !draftReady}
+          onClick={() => { edited(); setActiveForm('question') }}
           type="button"
         >
           {ru.reports.actions.question}
         </button>
         <button
           className={`btn btn-filter ${activeForm === 'problem' ? 'is-active' : ''}`}
-          onClick={() => setActiveForm('problem')}
+          disabled={submitting || attaching || !draftReady}
+          onClick={() => { edited(); setActiveForm('problem') }}
           type="button"
         >
           {ru.reports.actions.problem}
@@ -243,34 +367,10 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
       {error && <Alert tone="error">{error}</Alert>}
       {success && <Alert tone="success">{success}</Alert>}
 
-      {createdReportId != null && (
-        <div className="form-grid" aria-label="Вложения к репорту">
-          <p className="panel-hint">По одному файлу каждого типа: снимок/фото JPEG, PNG, WebP, HEIC, HEIF до 15 МиБ или лог .log до 64 КиБ. Повтор не создаст новый репорт.</p>
-          {attachmentError && <Alert tone="error">{attachmentError}</Alert>}
-          {attachmentSuccess && <Alert tone="success">{attachmentSuccess}</Alert>}
-          <label className="field">
-            <span className="field-label">Файл</span>
-            <input
-              accept="image/jpeg,image/jpg,image/png,image/webp,image/heic,image/heif,application/octet-stream,binary/octet-stream,.jpg,.jpeg,.png,.webp,.heic,.heif,text/plain,.log"
-              onChange={(event) => setAttachment(event.target.files?.[0] ?? null)}
-              type="file"
-            />
-          </label>
-          <label className="field">
-            <span className="field-label">Тип вложения</span>
-            <select onChange={(event) => setAttachmentKind(event.target.value as ReportAttachmentKind)} value={attachmentKind}>
-              <option value="device_photo">Фото устройства</option>
-              <option value="ui_snapshot">Снимок интерфейса</option>
-              <option value="client_log">Лог клиента</option>
-            </select>
-          </label>
-          <div className="form-actions">
-            <button className="btn btn-secondary" disabled={attaching || attachment == null} onClick={() => void attachFile()} type="button">
-              {attaching ? <Spinner label="Загрузка файла" /> : 'Прикрепить файл'}
-            </button>
-          </div>
-        </div>
-      )}
+      {storageError && <Alert tone="error">{storageError}</Alert>}
+      {draftSaved && !storageError && <p className="panel-hint" role="status">Черновик сохранён на этом устройстве.</p>}
+      {createdReportId != null && <p className="panel-hint">Репорт №{createdReportId} уже создан. Можно завершить загрузку файла.</p>}
+
 
       <form className="form-grid" onSubmit={(event) => void handleSubmit(event)}>
         <p className="panel-hint">
@@ -284,7 +384,8 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
             Ключ Tracker{activeForm === 'question' ? ' *' : ''}
           </span>
           <input
-            onChange={(event) => setTrackerKey(event.target.value)}
+            disabled={!draftReady}
+            onChange={(event) => { edited(); setTrackerKey(event.target.value) }}
             placeholder="ROBOPARK-123"
             required={activeForm === 'question'}
             value={trackerKey}
@@ -294,7 +395,8 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
         <label className="field">
           <span className="field-label">Заголовок *</span>
           <input
-            onChange={(event) => setTitle(event.target.value)}
+            disabled={!draftReady}
+            onChange={(event) => { edited(); setTitle(event.target.value) }}
             required
             value={title}
           />
@@ -303,16 +405,49 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
         <label className="field">
           <span className="field-label">Описание</span>
           <textarea
-            onChange={(event) => setBody(event.target.value)}
+            disabled={!draftReady}
+            onChange={(event) => { edited(); setBody(event.target.value) }}
             rows={4}
             value={body}
           />
         </label>
 
+      <div className="form-grid" aria-label={createdReportId != null ? 'Вложения к репорту' : 'Файл черновика'}>
+          <p className="panel-hint">По одному файлу каждого типа: снимок/фото JPEG, PNG, WebP, HEIC, HEIF до 15 МиБ или лог .log до 64 КиБ. Повтор не создаст новый репорт.</p>
+          {attachmentError && <Alert tone="error">{attachmentError}</Alert>}
+          {attachmentSuccess && <Alert tone="success">{attachmentSuccess}</Alert>}
+          <label className="field">
+            <span className="field-label">Файл</span>
+            <input
+              accept="image/jpeg,image/jpg,image/png,image/webp,image/heic,image/heif,application/octet-stream,binary/octet-stream,.jpg,.jpeg,.png,.webp,.heic,.heif,text/plain,.log"
+              ref={fileInputRef}
+              disabled={submitting || attaching || !draftReady}
+              onChange={(event) => { edited(); setAttachmentDelivered(false); setAttachment(event.target.files?.[0] ?? null) }}
+              type="file"
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">Тип вложения</span>
+            <select disabled={submitting || attaching} onChange={(event) => { edited(); setAttachmentKind(event.target.value as ReportAttachmentKind) }} value={attachmentKind}>
+              <option value="device_photo">Фото устройства</option>
+              <option value="ui_snapshot">Снимок интерфейса</option>
+              <option value="client_log">Лог клиента</option>
+            </select>
+          </label>
+          {attachment && <p className="panel-hint">Выбран файл: {attachment.name} ({Math.ceil(attachment.size / 1024)} КиБ)</p>}
+          <div className="form-actions">
+            <button className="btn btn-secondary" disabled={submitting || attaching || attachment == null || createdReportId == null} onClick={() => void attachFile()} type="button">
+              {attaching ? <Spinner label="Загрузка файла" /> : 'Прикрепить файл'}
+            </button>
+          </div>
+        </div>
+
         <div className="form-actions">
-          <button className="btn" disabled={submitting || !canSubmit} type="submit">
+          <button className="btn" disabled={submitting || attaching || !draftReady || createdReportId != null || !canSubmit} type="submit">
             {submitting ? <Spinner label={ru.create} /> : ru.create}
           </button>
+          <button className="btn btn-secondary" disabled={submitting || attaching} onClick={discardDraft} type="button">Удалить черновик</button>
+          {createdReportId != null && !attachment && <button className="btn btn-secondary" onClick={() => { edited(); setAttachmentDelivered(false); setCreatedReportId(null); setSuccess(''); setAttachmentSuccess('') }} type="button">Новый репорт</button>}
         </div>
       </form>
     </div>

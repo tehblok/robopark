@@ -7,7 +7,7 @@ import {
   useState,
   type PropsWithChildren,
 } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useLocation, useSearchParams } from 'react-router-dom'
 import { api, type Park, type User } from '../../api'
 import { useAuth } from '../../auth-context'
 import {
@@ -32,6 +32,7 @@ type ParkLoadState = {
 }
 
 type ParkSelectionState = {
+  context: string
   user: User | null
   fleetScope: boolean
   parkId: number | null
@@ -39,7 +40,11 @@ type ParkSelectionState = {
 
 export function ParkScopeProvider({ children }: PropsWithChildren) {
   const { user, refreshUser } = useAuth()
+  const { pathname } = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
+  const allowAllParks = Boolean(user && ['admin', 'royal', 'operator'].includes(user.role)
+    && ['/overview', '/analytics'].includes(pathname.replace(/\/$/, '')))
+  const selectionContext = allowAllParks ? `insights:${searchParams.get(PARK_QUERY_KEY) ?? 'all'}` : 'single'
   const fleetScope = Boolean(user && hasFleetParkScope(user))
   const [loadState, setLoadState] = useState<ParkLoadState | null>(null)
   const [selectionState, setSelectionState] = useState<ParkSelectionState | null>(null)
@@ -47,16 +52,19 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
     ? loadState
     : null
   const currentSelectionState =
-    selectionState?.user === user && selectionState.fleetScope === fleetScope
+    selectionState?.user === user && selectionState.fleetScope === fleetScope && selectionState.context === selectionContext
       ? selectionState
       : null
   const loadGeneration = useRef(0)
   const currentScope = useRef({ user, fleetScope })
-  const parks = !user
+  const loadedParks = !user
     ? EMPTY_PARKS
     : fleetScope
       ? (currentLoadState?.parks ?? EMPTY_PARKS)
       : (currentLoadState?.parks ?? user.parks)
+  const parks = useMemo(() => allowAllParks
+    ? loadedParks.filter(park => park.is_active !== false && (user?.role !== 'operator' || user.parks.some(assigned => assigned.id === park.id)))
+    : loadedParks, [allowAllParks, loadedParks, user])
   const loading = !user
     ? false
     : fleetScope
@@ -127,8 +135,11 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
     (nextParkId: number | null, replace: boolean) => {
       const nextSearchParams = new URLSearchParams(searchParams)
       if (nextParkId == null) {
-        nextSearchParams.delete(PARK_QUERY_KEY)
-        sessionStorage.removeItem(PARK_STORAGE_KEY)
+        if (allowAllParks && parks.length) nextSearchParams.set(PARK_QUERY_KEY, 'all')
+        else {
+          nextSearchParams.delete(PARK_QUERY_KEY)
+          sessionStorage.removeItem(PARK_STORAGE_KEY)
+        }
       } else {
         nextSearchParams.set(PARK_QUERY_KEY, String(nextParkId))
         sessionStorage.setItem(PARK_STORAGE_KEY, String(nextParkId))
@@ -138,27 +149,28 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
         setSearchParams(nextSearchParams, { replace })
       }
     },
-    [searchParams, setSearchParams],
+    [allowAllParks, parks.length, searchParams, setSearchParams],
   )
 
   useEffect(() => {
-    if (loading) return
+    if (loading || !user) return
 
     const urlParkId = validParkId(parks, searchParams.get(PARK_QUERY_KEY))
     const storedParkId = validParkId(parks, sessionStorage.getItem(PARK_STORAGE_KEY))
-    const nextParkId = urlParkId ?? storedParkId ?? parks[0]?.id ?? null
+    const explicitAll = allowAllParks && (!searchParams.has(PARK_QUERY_KEY) || searchParams.get(PARK_QUERY_KEY) === 'all')
+    const nextParkId = explicitAll ? null : urlParkId ?? storedParkId ?? parks[0]?.id ?? null
 
-    setSelectionState({ user, fleetScope, parkId: nextParkId })
+    setSelectionState({ user, fleetScope, context: selectionContext, parkId: nextParkId })
     writeSelection(nextParkId, true)
-  }, [fleetScope, loading, parks, searchParams, user, writeSelection])
+  }, [allowAllParks, fleetScope, loading, parks, searchParams, selectionContext, user, writeSelection])
 
   const setParkId = useCallback(
-    (id: number, options?: { replace?: boolean }) => {
-      if (locked || !parks.some((park) => park.id === id)) return
-      setSelectionState({ user, fleetScope, parkId: id })
+    (id: number | null, options?: { replace?: boolean }) => {
+      if (locked || (id === null ? !allowAllParks || !parks.length : !parks.some((park) => park.id === id))) return
+      setSelectionState({ user, fleetScope, context: allowAllParks ? `insights:${id ?? 'all'}` : 'single', parkId: id })
       writeSelection(id, options?.replace ?? false)
     },
-    [fleetScope, locked, parks, user, writeSelection],
+    [allowAllParks, fleetScope, locked, parks, user, writeSelection],
   )
 
   const refreshParks = useCallback(async () => {
@@ -192,15 +204,16 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
   const selectedPark = parks.find((park) => park.id === parkId) ?? null
   const value = useMemo(
     () => ({
+      allowAllParks,
       parkId,
       selectedPark,
       parks,
-      loading,
+      loading: loading || Boolean(allowAllParks && user && (!currentSelectionState || (parkId !== null && !selectedPark))),
       locked,
       setParkId,
       refreshParks,
     }),
-    [parkId, selectedPark, parks, loading, locked, setParkId, refreshParks],
+    [allowAllParks, parkId, selectedPark, parks, loading, user, currentSelectionState, locked, setParkId, refreshParks],
   )
 
   return <ParkScopeContext.Provider value={value}>{children}</ParkScopeContext.Provider>

@@ -1,0 +1,9 @@
+.rp-qr-form { display: grid; gap: 12px; min-width: 0; }
+.rp-qr-form input, .rp-qr-form select { width: 100%; min-width: 0; }
+.rp-qr-hint { margin: 0; color: var(--rp-text-muted); }
+.rp-qr-preview { margin: 0 auto; padding: 8px; max-width: 100%; background: #fff; color: #000; text-align: center; border-radius: 8px; }
+.rp-qr-preview img { display: block; width: min(232px, 100%); height: auto; margin: auto; }
+.rp-qr-preview figcaption { font: 700 14px monospace; overflow-wrap: anywhere; }
+.rp-qr-dimensions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.rp-qr-dimensions label { display: grid; gap: 8px; }
+@media (max-width: 480px) { .rp-qr-dimensions { grid-template-columns: 1fr; } }

@@ -59,7 +59,7 @@ export function Tabs({
           >
             <span>{item.label}</span>
             {item.count !== undefined ? (
-              <span className="rp-tabs__count">{item.count}</span>
+              <span aria-hidden="true" className="rp-tabs__count">{item.count}</span>
             ) : null}
           </button>
         )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import UTC, datetime
 
@@ -19,6 +20,7 @@ from robopark_api.services import audit, rbac, tracker_cache, tracker_client
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import reports as reports_svc
 from robopark_api.services import tracker_signatures as sig_svc
+from robopark_api.services import tracker_submissions as submissions
 from robopark_api.services.login_throttle import client_ip
 from robopark_api.services.rbac import RoleSlug
 from robopark_api.services.tracker_policy import ensure_action_allowed, issue_tags
@@ -123,7 +125,27 @@ def _signed_tracker_text(
     )
 
 
-@router.post("/issues/{key}/comment", response_model=TrackerActionOut)
+def _mutation_lease(
+    key: str,
+    request: Request,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    _ensure_tracker_user(user, db)
+    action = request.url.path.rsplit("/", 1)[-1]
+    if action == "close" and user.role == RoleSlug.MECHANIC and not get_user_parks(db, user):
+        raise HTTPException(400, "mechanic_park_required_for_close_review")
+    issue = _get_issue_or_404(_require_token(db), key)
+    _authorize(db, user, issue, "attach" if action == "attachments" else action, request)
+    with submissions.task_mutation_lease(db, key):
+        yield
+
+
+@router.post(
+    "/issues/{key}/comment",
+    response_model=TrackerActionOut,
+    dependencies=[Depends(_mutation_lease)],
+)
 def add_comment(
     key: str,
     payload: TrackerCommentIn,
@@ -138,9 +160,16 @@ def add_comment(
 
     body = payload.text.strip()
     signed_text = _signed_tracker_text(db, user, issue, body)
+    submission, saved = submissions.begin(
+        db, user, key, "comment", request, payload.model_dump(), token
+    )
+    if saved is not None:
+        return TrackerActionOut(**saved)
+
     try:
         tracker_client.add_comment(token=token, key=key, text=signed_text)
     except tracker_client.TrackerError as exc:
+        submissions.uncertain(db, submission)
         raise _upstream_error(db, user, "comment", key, exc, request) from exc
     tracker_cache.invalidate_issue(key)
 
@@ -155,11 +184,15 @@ def add_comment(
         detail=audit.describe(body, limit=200),
         client_ip=client_ip(request),
     )
-    return _ok(key, "comment", user, issue)
+    return submissions.finish(db, submission, _ok(key, "comment", user, issue))
 
 
-@router.post("/issues/{key}/attachments", response_model=TrackerActionOut)
-async def attach_file(
+@router.post(
+    "/issues/{key}/attachments",
+    response_model=TrackerActionOut,
+    dependencies=[Depends(_mutation_lease)],
+)
+def attach_file(
     key: str,
     request: Request,
     file: UploadFile = File(...),
@@ -171,7 +204,9 @@ async def attach_file(
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "attach", request)
 
-    content = await file.read()
+    # This route uses synchronous Tracker HTTP and SQLAlchemy throughout.
+    # Run it in FastAPI's worker pool, and bound the in-memory upload copy.
+    content = file.file.read(tracker_client.MAX_ATTACHMENT_BYTES + 1)
     if not content:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -194,6 +229,22 @@ async def attach_file(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="tracker_attachment_invalid_type",
         )
+    submission, saved = submissions.begin(
+        db,
+        user,
+        key,
+        "attach",
+        request,
+        {
+            "filename": filename,
+            "content_type": content_type,
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+        token,
+    )
+    if saved is not None:
+        return TrackerActionOut(**saved)
+
     try:
         temp_id = tracker_client.upload_temp_attachment(
             token=token,
@@ -209,6 +260,7 @@ async def attach_file(
             attachment_ids=[temp_id],
         )
     except tracker_client.TrackerError as exc:
+        submissions.uncertain(db, submission)
         raise _upstream_error(db, user, "attach", key, exc, request) from exc
     tracker_cache.invalidate_issue(key)
 
@@ -226,10 +278,12 @@ async def attach_file(
         ),
         client_ip=client_ip(request),
     )
-    return _ok(key, "attach", user, issue)
+    return submissions.finish(db, submission, _ok(key, "attach", user, issue))
 
 
-@router.post("/issues/{key}/assign", response_model=TrackerActionOut)
+@router.post(
+    "/issues/{key}/assign", response_model=TrackerActionOut, dependencies=[Depends(_mutation_lease)]
+)
 def assign_issue(
     key: str,
     payload: TrackerAssignIn,
@@ -242,9 +296,16 @@ def assign_issue(
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "assign", request)
 
+    submission, saved = submissions.begin(
+        db, user, key, "assign", request, payload.model_dump(), token
+    )
+    if saved is not None:
+        return TrackerActionOut(**saved)
+
     try:
         tracker_client.assign_issue(token=token, key=key, assignee=payload.assignee)
     except tracker_client.TrackerError as exc:
+        submissions.uncertain(db, submission)
         raise _upstream_error(db, user, "assign", key, exc, request) from exc
     tracker_cache.invalidate_issue(key)
 
@@ -259,10 +320,14 @@ def assign_issue(
         detail=f"assignee={payload.assignee}",
         client_ip=client_ip(request),
     )
-    return _ok(key, "assign", user, issue)
+    return submissions.finish(db, submission, _ok(key, "assign", user, issue))
 
 
-@router.post("/issues/{key}/unassign", response_model=TrackerActionOut)
+@router.post(
+    "/issues/{key}/unassign",
+    response_model=TrackerActionOut,
+    dependencies=[Depends(_mutation_lease)],
+)
 def unassign_issue(
     key: str,
     request: Request,
@@ -274,9 +339,14 @@ def unassign_issue(
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "unassign", request)
 
+    submission, saved = submissions.begin(db, user, key, "unassign", request, {}, token)
+    if saved is not None:
+        return TrackerActionOut(**saved)
+
     try:
         tracker_client.unassign_issue(token=token, key=key)
     except tracker_client.TrackerError as exc:
+        submissions.uncertain(db, submission)
         raise _upstream_error(db, user, "unassign", key, exc, request) from exc
     tracker_cache.invalidate_issue(key)
 
@@ -290,10 +360,14 @@ def unassign_issue(
         target_id=key,
         client_ip=client_ip(request),
     )
-    return _ok(key, "unassign", user, issue)
+    return submissions.finish(db, submission, _ok(key, "unassign", user, issue))
 
 
-@router.post("/issues/{key}/transition", response_model=TrackerActionOut)
+@router.post(
+    "/issues/{key}/transition",
+    response_model=TrackerActionOut,
+    dependencies=[Depends(_mutation_lease)],
+)
 def transition_issue(
     key: str,
     payload: TrackerTransitionIn,
@@ -306,13 +380,27 @@ def transition_issue(
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "transition", request)
 
-    transitions = tracker_cache.list_transitions(token=token, key=key)
-    transition_ids = {item["id"] for item in transitions}
-    if payload.transition not in transition_ids:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="tracker_transition_invalid",
-        )
+    def validate_workflow():
+        transitions = tracker_cache.list_transitions(token=token, key=key)
+        transition_ids = {item["id"] for item in transitions}
+        if payload.transition not in transition_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="tracker_transition_invalid",
+            )
+
+    submission, saved = submissions.begin(
+        db,
+        user,
+        key,
+        "transition",
+        request,
+        payload.model_dump(),
+        token,
+        validate=validate_workflow,
+    )
+    if saved is not None:
+        return TrackerActionOut(**saved)
 
     try:
         tracker_client.transition_issue(
@@ -322,6 +410,7 @@ def transition_issue(
             resolution=payload.resolution,
         )
     except tracker_client.TrackerError as exc:
+        submissions.uncertain(db, submission)
         raise _upstream_error(db, user, "transition", key, exc, request) from exc
     tracker_cache.invalidate_issue(key)
 
@@ -336,10 +425,12 @@ def transition_issue(
         detail=f"transition={payload.transition} resolution={payload.resolution or '-'}",
         client_ip=client_ip(request),
     )
-    return _ok(key, "transition", user, issue)
+    return submissions.finish(db, submission, _ok(key, "transition", user, issue))
 
 
-@router.post("/issues/{key}/close", response_model=TrackerActionOut)
+@router.post(
+    "/issues/{key}/close", response_model=TrackerActionOut, dependencies=[Depends(_mutation_lease)]
+)
 def close_issue(
     key: str,
     request: Request,
@@ -367,24 +458,35 @@ def close_issue(
         matched = [park for park in parks if park.tag and str(park.tag).strip() in tags]
         mechanic_park = matched[0] if matched else parks[0]
 
-    transitions = tracker_cache.list_transitions(token=token, key=key)
-    close_transition = next(
-        (
-            item
-            for item in transitions
-            if "close" in item["id"].lower() or "закры" in item["display"].lower()
-        ),
-        None,
-    )
-    if not close_transition:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="tracker_close_transition_not_found",
+    close_transition = None
+
+    def validate_workflow():
+        nonlocal close_transition
+        transitions = tracker_cache.list_transitions(token=token, key=key)
+        close_transition = next(
+            (
+                item
+                for item in transitions
+                if "close" in item["id"].lower() or "закры" in item["display"].lower()
+            ),
+            None,
         )
+        if not close_transition:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="tracker_close_transition_not_found",
+            )
+
+    submission, saved = submissions.begin(
+        db, user, key, "close", request, {}, token, validate=validate_workflow
+    )
+    if saved is not None:
+        return TrackerActionOut(**saved)
 
     try:
         tracker_client.transition_issue(token=token, key=key, transition=close_transition["id"])
     except tracker_client.TrackerError as exc:
+        submissions.uncertain(db, submission)
         raise _upstream_error(db, user, "close", key, exc, request) from exc
     tracker_cache.invalidate_issue(key)
 
@@ -414,4 +516,4 @@ def close_issue(
                 detail="tracker_closed_report_failed",
             ) from exc
 
-    return _ok(key, "close", user, issue)
+    return submissions.finish(db, submission, _ok(key, "close", user, issue))

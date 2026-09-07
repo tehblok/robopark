@@ -3,7 +3,9 @@ from contextvars import ContextVar, Token
 from typing import Any
 
 from sqlalchemy import Engine, create_engine, event
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from robopark_api.config import get_settings
 from robopark_api.services.ops.maintenance import (
@@ -14,11 +16,22 @@ from robopark_api.services.ops.maintenance import (
 
 _settings = get_settings()
 _is_sqlite = _settings.database_url.startswith("sqlite")
+_sqlite_file = _is_sqlite and make_url(_settings.database_url).database not in {
+    None,
+    "",
+    ":memory:",
+}
 
 engine = create_engine(
     _settings.database_url,
     future=True,
     connect_args={"check_same_thread": False} if _is_sqlite else {},
+    # Request dependencies and endpoints use the same finite worker thread
+    # pool. A smaller QueuePool lets new auth stages occupy every thread
+    # waiting for connections held by requests whose next stage cannot run.
+    # File SQLite connections are cheap; return/close them without a second
+    # capacity queue. Keep SQLite's in-memory pooling and other DBs unchanged.
+    **({"poolclass": NullPool} if _sqlite_file else {}),
 )
 
 

@@ -1,3 +1,5 @@
+import { SyncStatus } from '../design-system/status/SyncStatus'
+import { deleteReportPhotoDraft } from '../domains/reports/reportPhotoDrafts'
 import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, type Park, type Report, type User } from '../api'
@@ -6,8 +8,9 @@ import { ReportDetail } from '../components/reports/ReportDetail'
 import { ReportForms } from '../components/reports/ReportForms'
 import { ReportList } from '../components/reports/ReportList'
 import { Alert, Panel } from '../components/PageShell'
-import { EmptyBlock, SkeletonList, Spinner } from '../components/ui/Feedback'
+import { EmptyBlock, SkeletonList } from '../components/ui/Feedback'
 import { TabPanel, Tabs } from '../design-system/navigation/Tabs'
+import { MasterDetail } from '../design-system/layout/MasterDetail'
 import {
   reportDraftKey,
   reportsAccessIdentity,
@@ -15,7 +18,7 @@ import {
 } from '../domains/reports/reports'
 import { mapApiError } from '../i18n/errors'
 import { ru } from '../i18n/ru'
-import { useCachedResource, resourceStore } from '../lib/resource'
+import { useCachedResource, resourceStore, RESOURCE_REFRESH_MS } from '../lib/resource'
 import { useParkContext } from '../park-context'
 import { refreshReportsBadge } from '../reports-badge'
 
@@ -57,6 +60,15 @@ function ReportsOwner({
   user: User
 }) {
   const location = useLocation()
+  const active = useRef(true)
+  const navigation = useRef({ identity, key: location.key })
+  useLayoutEffect(() => {
+    navigation.current = { identity, key: location.key }
+  }, [identity, location.key])
+  useLayoutEffect(() => {
+    active.current = true
+    return () => { active.current = false }
+  }, [])
   const navigate = useNavigate()
   const { reportId: reportIdParam } = useParams()
   const [params, setParams] = useSearchParams()
@@ -86,13 +98,13 @@ function ReportsOwner({
   const mineRes = useCachedResource<Report[]>(
     mineKey,
     () => apiClient.reportsMine(),
-    { enabled: listRoute && createEnabled && !parksLoading, persist: false },
+    { enabled: (listRoute || detailRoute) && createEnabled && !parksLoading, persist: false, refreshIntervalMs: listRoute && visiblePane === 'mine' ? RESOURCE_REFRESH_MS : 0 },
   )
   const inboxKey = `${resourcePrefix}inbox`
   const inboxRes = useCachedResource<Report[]>(
     inboxKey,
     () => apiClient.reportsInbox(parkId as number),
-    { enabled: listRoute && inboxEnabled && parkId != null && !parksLoading, persist: false },
+    { enabled: (listRoute || detailRoute) && inboxEnabled && parkId != null && !parksLoading, persist: false, refreshIntervalMs: listRoute && visiblePane === 'inbox' ? RESOURCE_REFRESH_MS : 0 },
   )
   const detailKey = `${resourcePrefix}detail:${parsedReportId ?? 'none'}`
   const detailRes = useCachedResource<Report>(
@@ -130,14 +142,24 @@ function ReportsOwner({
     return parks.find((park) => park.id === report.park_id)?.name ?? `Парк #${report.park_id}`
   }
   const refreshLists = useCallback(async () => {
+    for (const key of [mineKey, inboxKey]) {
+      const cached = resourceStore.get<Report[]>(key)
+      resourceStore.invalidate(key)
+      if (cached) resourceStore.set(key, cached, false)
+    }
     await Promise.all([
-      listRoute && createEnabled ? mineRes.refresh() : Promise.resolve(),
-      listRoute && inboxEnabled && parkId != null ? inboxRes.refresh() : Promise.resolve(),
+      createEnabled ? mineRes.refresh() : Promise.resolve(),
+      inboxEnabled && parkId != null ? inboxRes.refresh() : Promise.resolve(),
     ])
-  }, [createEnabled, inboxEnabled, inboxRes, listRoute, mineRes, parkId])
+  }, [createEnabled, inboxEnabled, inboxKey, inboxRes, mineKey, mineRes, parkId])
   const handleDetailUpdated = async () => {
+    const requestedNavigation = navigation.current
+    const isCurrent = () => active.current && navigation.current === requestedNavigation
     resourceStore.invalidate(detailKey)
     await detailRes.refresh()
+    if (!isCurrent()) return
+    await refreshLists()
+    if (!isCurrent()) return
     refreshReportsBadge()
     const fresh = resourceStore.get<Report>(detailKey)
     if (fresh && fresh.status !== 'open') closeDetail()
@@ -168,7 +190,7 @@ function ReportsOwner({
 
   if (createRoute) {
     return (
-      <div className="dashboard-page animate-in">
+      <div className="dashboard-page rp-reports animate-in">
         <div className="dashboard-toolbar">
           <h1 className="dashboard-title">Создать репорт</h1>
           <Link className="btn btn-secondary" to={{ pathname: '/reports', search: currentSearch }}>
@@ -202,37 +224,8 @@ function ReportsOwner({
     )
   }
 
-  if (detailRoute) {
-    return (
-      <div className="dashboard-page animate-in">
-        <div className="dashboard-toolbar">
-          <h1 className="dashboard-title">Репорт</h1>
-          <button className="btn btn-secondary" onClick={closeDetail} type="button">
-            К списку
-          </button>
-        </div>
-        <Panel title="Детали репорта">
-          {detailError && <Alert tone="error">{detailError}</Alert>}
-          {detailLoading && <SkeletonList rows={2} />}
-          {!detailLoading && selectedReport && (
-            <ReportDetail
-              apiClient={apiClient}
-              canAct={visiblePane === 'inbox' && inboxEnabled}
-              onClose={closeDetail}
-              onUpdated={() => void handleDetailUpdated()}
-              ownerKey={identity}
-              parkName={parkNameForReport(selectedReport)}
-              report={selectedReport}
-              showEscalate={role === 'operator'}
-            />
-          )}
-        </Panel>
-      </div>
-    )
-  }
-
   return (
-    <div className="dashboard-page animate-in">
+    <div className="dashboard-page rp-reports animate-in">
       <div className="dashboard-toolbar">
         <h1 className="dashboard-title" id="reports-title">{ru.nav.reports}</h1>
         <div className="actions">
@@ -241,17 +234,10 @@ function ReportsOwner({
               Создать репорт
             </Link>
           )}
-          <button
-            className="btn btn-secondary"
-            disabled={activeList.isRevalidating || parksLoading || (visiblePane === 'inbox' && parkId == null)}
-            onClick={() => void refreshLists()}
-            type="button"
-          >
-            {activeList.isRevalidating ? <Spinner label="Обновление" /> : 'Обновить'}
-          </button>
         </div>
       </div>
 
+      <MasterDetail detailOpen={detailRoute} onBack={closeDetail} list={<>
       {createEnabled && inboxEnabled && (
         <Tabs
           ariaLabel="Режим репортов"
@@ -285,6 +271,7 @@ function ReportsOwner({
         </label>
       )}
 
+      <SyncStatus {...activeList} />
       {listError && <Alert tone="error">{listError}</Alert>}
 
       {createEnabled && (
@@ -336,6 +323,26 @@ function ReportsOwner({
       {!createEnabled && !inboxEnabled && (
         <EmptyBlock hint="Для этой роли нет действий с репортами." icon="✉" title="Раздел недоступен" />
       )}
+      </>} detail={
+        <Panel title="Детали репорта">
+          {detailError && <Alert tone="error">{detailError}</Alert>}
+          {detailLoading && <SkeletonList rows={2} />}
+          {!detailRoute && <EmptyBlock title="Выберите репорт" hint="Откройте репорт из списка, чтобы прочитать детали и выполнить доступные действия." />}
+          {detailRoute && !detailLoading && selectedReport && (
+            <ReportDetail
+              apiClient={apiClient}
+              canAct={visiblePane === 'inbox' && inboxEnabled}
+              key={selectedReport.id}
+              onClose={closeDetail}
+              onUpdated={() => void handleDetailUpdated()}
+              ownerKey={identity}
+              parkName={parkNameForReport(selectedReport)}
+              report={selectedReport}
+              showEscalate={role === 'operator'}
+            />
+          )}
+        </Panel>
+      } />
     </div>
   )
 }
@@ -358,6 +365,7 @@ export function Reports({ apiClient = api }: { apiClient?: ReportsApiClient } = 
       resourceStore.invalidate(committed.current.resourcePrefix, { prefix: true })
     }
     if (committed.current.draftKey) {
+      void deleteReportPhotoDraft(committed.current.draftKey).catch(() => {})
       try {
         localStorage.removeItem(committed.current.draftKey)
       } catch {

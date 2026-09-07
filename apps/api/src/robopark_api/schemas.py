@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
 class LoginRequest(BaseModel):
@@ -185,6 +185,38 @@ class EmergencySectionOut(BaseModel):
     fields: list[EmergencyFieldOut]
 
 
+DiagnosticMatchKind = Literal["exact", "regex"]
+DiagnosticSeverity = Literal["info", "warning", "critical"]
+DiagnosticView = Literal["top", "front", "rear", "left", "right", "isometric"]
+DiagnosticIndicator = Literal["point", "outline", "zone"]
+
+
+class DiagnosticEvent(BaseModel):
+    id: str
+    rule_id: int | None = None
+    source_path: str = Field(
+        description="Dotted display path; dots/backslashes in keys are escaped."
+    )
+    source_segments: list[str | int] = Field(
+        default_factory=list,
+        description=(
+            "Authoritative JSON source path: string keys and integer indexes. "
+            "For a residual atomic event, identifies the original object; raw_value is its "
+            "unclassified projection."
+        ),
+    )
+    raw_value: JsonValue
+    title: str
+    description: str
+    severity: DiagnosticSeverity
+    sort_order: int = 0
+    part: str | None = None
+    view: DiagnosticView | None = None
+    x: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    y: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    indicator: DiagnosticIndicator | None = None
+
+
 class EmergencySnapshotOut(BaseModel):
     vin: str
     short_number: str
@@ -202,6 +234,7 @@ class EmergencySnapshotOut(BaseModel):
     lte_ok: bool | None = None
     connection: Literal["lte", "wire"] | None = None
     error_banner: str | None = None
+    diagnostic_events: list[DiagnosticEvent] = Field(default_factory=list)
     lat: float | None = None
     lon: float | None = None
     heading_deg: float | None = None
@@ -229,6 +262,69 @@ def _reject_explicit_nulls(data: Any, fields: tuple[str, ...]) -> Any:
             if key in data and data[key] is None:
                 raise ValueError(f"{key} must not be null")
     return data
+
+
+class DiagnosticRuleCreate(BaseModel):
+    source_path: str = Field(min_length=1, max_length=256)
+    match_kind: DiagnosticMatchKind
+    pattern: str = Field(min_length=1, max_length=512)
+    example: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=256)
+    description: str = Field(min_length=1)
+    severity: DiagnosticSeverity
+    part: str = Field(min_length=1, max_length=128)
+    preferred_view: DiagnosticView
+    x: float = Field(ge=0, le=1, allow_inf_nan=False)
+    y: float = Field(ge=0, le=1, allow_inf_nan=False)
+    indicator: DiagnosticIndicator
+    is_enabled: bool = True
+    sort_order: int = 0
+
+
+class DiagnosticRuleUpdate(BaseModel):
+    source_path: str | None = Field(default=None, min_length=1, max_length=256)
+    match_kind: DiagnosticMatchKind | None = None
+    pattern: str | None = Field(default=None, min_length=1, max_length=512)
+    example: str | None = Field(default=None, min_length=1)
+    title: str | None = Field(default=None, min_length=1, max_length=256)
+    description: str | None = Field(default=None, min_length=1)
+    severity: DiagnosticSeverity | None = None
+    part: str | None = Field(default=None, min_length=1, max_length=128)
+    preferred_view: DiagnosticView | None = None
+    x: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    y: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    indicator: DiagnosticIndicator | None = None
+    is_enabled: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_explicit_nulls(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "sort_order" in data:
+            raise ValueError("diagnostic_sort_order_use_reorder")
+        return _reject_explicit_nulls(
+            data,
+            (
+                "source_path",
+                "match_kind",
+                "pattern",
+                "example",
+                "title",
+                "description",
+                "severity",
+                "part",
+                "preferred_view",
+                "x",
+                "y",
+                "indicator",
+                "is_enabled",
+            ),
+        )
+
+
+class DiagnosticRuleOut(DiagnosticRuleCreate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
 
 
 class EmergencyFieldUpdate(BaseModel):
@@ -412,6 +508,31 @@ class ScreenshotGuardSettingsIn(BaseModel):
     admin: bool | None = None
     royal: bool | None = None
     driver: bool | None = None
+
+
+EmergencyCookieStatus = Literal["unchecked", "valid", "invalid", "unavailable"]
+
+
+class EmergencyCookieUpdate(BaseModel):
+    cookie: str = Field(min_length=1)
+    robot_number: str = Field(min_length=1, max_length=64)
+
+
+class EmergencyCookieCheck(BaseModel):
+    robot_number: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class IntegrationSettingsOut(BaseModel):
+    tracker_token_masked: str | None
+    tracker_token_updated_at: str | None
+    tracker_token_encrypted: bool = False
+    emergency_cookie_masked: str | None
+    emergency_cookie_updated_at: str | None
+    emergency_cookie_encrypted: bool = False
+    emergency_cookie_valid: bool | None
+    emergency_cookie_status: EmergencyCookieStatus = "unchecked"
+    emergency_cookie_checked_at: str | None = None
+    emergency_cookie_checked_robot: str | None = None
 
 
 class DashboardMovingItemOut(BaseModel):

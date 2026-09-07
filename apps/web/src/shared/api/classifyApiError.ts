@@ -54,7 +54,7 @@ function classifyHttpError(error: ApiError): ApiDomainErrorKind {
   if (error.status === 403) return 'forbidden'
   if (error.status === 404) return 'not-found'
   if (error.status === 409) return 'conflict'
-  if (error.status >= 500) return 'server'
+  if (error.status === 429 || error.status >= 500) return 'server'
   return 'unknown'
 }
 

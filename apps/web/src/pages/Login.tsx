@@ -65,7 +65,7 @@ export function Login() {
       <form className="rp-auth__card animate-in" onSubmit={handleSubmit}>
         <header className="rp-auth__card-head">
           <span className="rp-auth__card-kicker">Рабочий кабинет</span>
-          <h1>Вход в РобоПарк</h1>
+          <h1>{ru.auth.loginTitle}</h1>
           <p className="rp-auth__card-intro">Введите данные аккаунта, чтобы продолжить смену.</p>
         </header>
         {location.state?.registrationSuccess && (

@@ -248,6 +248,7 @@ describe('AuthProvider session boundaries', () => {
     ['offline', new TypeError('Failed to fetch')],
     ['timeout', new ApiTimeoutError(30_000)],
     ['server', new ApiError(503, 'tracker_upstream_error')],
+    ['rate limit', new ApiError(429, null, undefined, 60_000)],
   ])('retains same-session state after a transient %s refresh failure', async (_label, failure) => {
     vi.spyOn(api, 'me')
       .mockResolvedValueOnce(oldAccount)

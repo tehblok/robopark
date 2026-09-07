@@ -1,10 +1,14 @@
 import type { EmergencySection } from '../../api'
 import type { AccessUser } from '../../app/routing/accessPolicy'
 import { classifyApiError, type DomainError } from '../../shared/api/classifyApiError'
-export type RobotCheckTab = { id: string; title: string; kind: 'map' | 'telemetry' | 'scheme' | 'section' }
+export type RobotCheckTab = { id: string; title: string; kind: 'state' | 'errors' | 'tasks' | 'history' | 'map' | 'telemetry' | 'scheme' | 'section' }
 export const STATIC_CHECK_TABS: readonly RobotCheckTab[] = [
   { id: 'map', title: 'Карта', kind: 'map' },
+  { id: 'state', title: 'Состояние', kind: 'state' },
+  { id: 'errors', title: 'Ошибки', kind: 'errors' },
   { id: 'telemetry', title: 'Телеметрия', kind: 'telemetry' },
+  { id: 'tasks', title: 'Задачи', kind: 'tasks' },
+  { id: 'history', title: 'История', kind: 'history' },
   { id: 'scheme', title: 'Схема', kind: 'scheme' },
 ]
 export function checkTabs(sections: EmergencySection[]): RobotCheckTab[] {

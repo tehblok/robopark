@@ -1,4 +1,5 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, expect, it, vi } from 'vitest'
 import { api, type Park, type Report, type User } from '../api'
@@ -122,4 +123,101 @@ it('clears a draft synchronously when effective access changes at the same princ
   view.rerender(tree({ ...userA, permissions: ['nav.reports', 'reports.create', 'reports.resolve'] }, apiClient, '/reports/new'))
   expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toHaveValue('')
   expect(localStorage.getItem('robopark:report-draft:1:7')).toBeNull()
+})
+
+it('keeps a desktop report list beside its detail and returns to the filtered URL', async () => {
+  const actor = userEvent.setup()
+  const returned = { ...report(9, 'Нужны подробности'), status: 'returned', return_comment: 'Уточните время' }
+  const apiClient = client({ reportsMine: vi.fn(async () => [returned]), report: vi.fn(async () => returned) })
+  render(tree(userA, apiClient, '/reports/9?park=7&status=returned'))
+  const list = await screen.findByRole('region', { name: 'Список' })
+  expect(await within(list).findByRole('button', { name: /Нужны подробности/ })).toBeInTheDocument()
+  expect(await within(screen.getByRole('region', { name: 'Детали' })).findByRole('heading', { name: 'Нужны подробности' })).toBeVisible()
+  await actor.click(screen.getByRole('button', { name: 'Назад к списку' }))
+  expect(screen.getByLabelText('URL')).toHaveTextContent('/reports?park=7&status=returned')
+  expect(screen.getByLabelText('Статус репортов')).toHaveValue('returned')
+})
+
+it.each(['driver', 'mechanic', 'operator', 'admin', 'royal', 'custom_role'])('allows %s with reports.create to open a creation form', async (role) => {
+  const actor = userEvent.setup()
+  render(tree({ ...userA, role }, client({ reportsMine: vi.fn(async () => []) })))
+  await actor.click(screen.getByRole('link', { name: 'Создать репорт' }))
+  expect(await screen.findByRole('textbox', { name: 'Заголовок *' })).toBeVisible()
+})
+
+it('does not infer report creation from resolve or admin capabilities', async () => {
+  render(tree({ ...userA, role: 'royal', permissions: ['nav.reports', 'reports.resolve', 'nav.admin'] }, client({ reportsInbox: vi.fn(async () => []) })))
+  expect(screen.queryByRole('link', { name: 'Создать репорт' })).not.toBeInTheDocument()
+})
+
+it('does not refresh a retired owner list after a pending post-mutation detail load completes', async () => {
+  const actor = userEvent.setup()
+  const lateDetail = deferred<Report>()
+  const firstReport = report(9, 'Репорт A')
+  const apiClient = client({
+    reportsMine: vi.fn(async () => []),
+    reportsInbox: vi.fn(async () => []),
+    report: vi.fn().mockResolvedValueOnce(firstReport).mockImplementationOnce(() => lateDetail.promise)
+      .mockResolvedValueOnce(report(9, 'Репорт B', 2)),
+    reportDone: vi.fn(async () => ({ ...firstReport, status: 'done' })),
+  })
+  const resolver = { ...userA, permissions: ['nav.reports', 'reports.create', 'reports.resolve'] }
+  const view = render(tree(resolver, apiClient, '/reports/9?park=7&pane=inbox'))
+  await actor.click(await screen.findByRole('button', { name: 'Готово' }))
+  await waitFor(() => expect(apiClient.report).toHaveBeenCalledTimes(2))
+  view.rerender(tree({ ...resolver, id: 2, username: 'owner-b' }, apiClient, '/reports/9?park=7&pane=inbox'))
+  await screen.findByRole('heading', { name: 'Репорт B' })
+  const listCalls = vi.mocked(apiClient.reportsMine).mock.calls.length
+  await act(async () => lateDetail.resolve({ ...firstReport, status: 'done' }))
+  expect(apiClient.reportsMine).toHaveBeenCalledTimes(listCalls)
+  expect(screen.getByLabelText('URL')).toHaveTextContent('/reports/9?park=7&pane=inbox')
+  expect(screen.getByRole('heading', { name: 'Репорт B' })).toBeVisible()
+})
+
+it.each(['detail', 'list'] as const)('keeps selected report B when report A completes its late %s refresh', async (stage) => {
+  const actor = userEvent.setup()
+  const a = report(9, 'Репорт A')
+  const b = report(10, 'Репорт B')
+  const lateDetail = deferred<Report>()
+  const lateList = deferred<Report[]>()
+  const apiClient = client({
+    reportsMine: vi.fn(async () => []),
+    reportsInbox: vi.fn().mockResolvedValueOnce([a, b]).mockImplementation(() => lateList.promise),
+    report: vi.fn().mockResolvedValueOnce(a).mockImplementationOnce(() => lateDetail.promise).mockResolvedValue(b),
+    reportDone: vi.fn(async () => ({ ...a, status: 'done' })),
+  })
+  const resolver = { ...userA, permissions: ['nav.reports', 'reports.create', 'reports.resolve'] }
+  render(tree(resolver, apiClient, '/reports/9?park=7&pane=inbox'))
+  await actor.click(await screen.findByRole('button', { name: 'Готово' }))
+  await waitFor(() => expect(apiClient.report).toHaveBeenCalledTimes(2))
+  if (stage === 'list') {
+    await act(async () => lateDetail.resolve({ ...a, status: 'done' }))
+    await waitFor(() => expect(apiClient.reportsInbox).toHaveBeenCalledTimes(2))
+  }
+  await actor.click(within(screen.getByRole('region', { name: 'Список' })).getByRole('button', { name: /Репорт B/ }))
+  expect(await screen.findByRole('heading', { name: 'Репорт B' })).toBeVisible()
+  await act(async () => { lateDetail.resolve({ ...a, status: 'done' }); lateList.resolve([b]) })
+  expect(screen.getByLabelText('URL')).toHaveTextContent('/reports/10?park=7&pane=inbox')
+  expect(screen.getByRole('heading', { name: 'Репорт B' })).toBeVisible()
+})
+
+it('replaces a pre-mutation pending inbox request before showing the completed report list', async () => {
+  const actor = userEvent.setup()
+  const oldInbox = deferred<Report[]>()
+  const current = report(9, 'Завершённый репорт')
+  const inbox = vi.fn().mockReturnValueOnce(oldInbox.promise).mockResolvedValue([])
+  const apiClient = client({
+    reportsMine: vi.fn(async () => []),
+    reportsInbox: inbox,
+    report: vi.fn().mockResolvedValueOnce(current).mockResolvedValue({ ...current, status: 'done' }),
+    reportDone: vi.fn(async () => ({ ...current, status: 'done' })),
+  })
+  const resolver = { ...userA, permissions: ['nav.reports', 'reports.create', 'reports.resolve'] }
+  render(tree(resolver, apiClient, '/reports/9?park=7&pane=inbox'))
+  await actor.click(await screen.findByRole('button', { name: 'Готово' }))
+  await waitFor(() => expect(inbox).toHaveBeenCalledTimes(2))
+  await waitFor(() => expect(screen.getByLabelText('URL')).toHaveTextContent('/reports?park=7&pane=inbox'))
+  await act(async () => oldInbox.resolve([current]))
+  expect(screen.queryByRole('button', { name: /Завершённый репорт/ })).not.toBeInTheDocument()
+  expect(screen.getByText('Нет открытых репортов для выбранного парка.')).toBeVisible()
 })

@@ -1,0 +1,86 @@
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { ApiError } from '../../api'
+import { TaskCollaboration } from './TaskCollaboration'
+import { collaborationClient } from './collaborationClient'
+
+const saved = { revision: 1, done: 'Мотор', remaining: 'Тест', obstacles: '', author: 'alice', updated_at: '2026-09-06T10:00:00Z' }
+beforeEach(() => localStorage.clear())
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers() })
+
+it('loads handoff only when opened and preserves edited text while showing a conflicting revision', async () => {
+  const get = vi.spyOn(collaborationClient, 'handoff').mockResolvedValue(saved)
+  vi.spyOn(collaborationClient, 'save').mockRejectedValue(new ApiError(409, 'tracker_handoff_conflict'))
+  render(<TaskCollaboration issueKey="RP-1" owner="alice" active={false} canWrite />)
+  expect(get).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByText('Передача смены'))
+  await screen.findByDisplayValue('Мотор')
+  fireEvent.change(screen.getByLabelText('Сделано'), { target: { value: 'Мой текст' } })
+  get.mockResolvedValue({ ...saved, revision: 2, done: 'Текст коллеги', author: 'bob' })
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить передачу смены' }))
+  await screen.findByText('Сделано: Текст коллеги')
+  expect(screen.getByLabelText('Сделано')).toHaveValue('Мой текст')
+  expect(screen.getByRole('button', { name: 'Сохранить передачу смены' })).toBeDisabled()
+  fireEvent.click(screen.getByRole('button', { name: 'Продолжить с моим текстом' }))
+  expect(screen.getByRole('button', { name: 'Сохранить передачу смены' })).toBeEnabled()
+})
+
+it('stops presence when the task or browser tab is hidden', async () => {
+  vi.useFakeTimers()
+  vi.spyOn(Math, 'random').mockReturnValue(0)
+  const ping = vi.spyOn(collaborationClient, 'presence').mockResolvedValue({ people: [{ username: 'bob' }] })
+  const view = render(<TaskCollaboration issueKey="RP-1" owner="alice" active canWrite />)
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+  expect(ping).toHaveBeenCalledTimes(1)
+  expect(screen.getByRole('status')).toHaveTextContent('bob')
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+  fireEvent(document, new Event('visibilitychange'))
+  await act(async () => { await vi.advanceTimersByTimeAsync(100_000) })
+  expect(ping).toHaveBeenCalledTimes(1)
+  view.rerender(<TaskCollaboration issueKey="RP-1" owner="alice" active={false} canWrite />)
+  await act(async () => { await vi.advanceTimersByTimeAsync(100_000) })
+  expect(ping).toHaveBeenCalledTimes(1)
+})
+
+it('restores drafts after reopen and isolates a different account', async () => {
+  vi.spyOn(collaborationClient, 'handoff').mockResolvedValue(saved)
+  const view = render(<TaskCollaboration issueKey="RP-1" owner="alice" active={false} canWrite />)
+  fireEvent.click(screen.getByText('Передача смены'))
+  await screen.findByDisplayValue('Мотор')
+  fireEvent.change(screen.getByLabelText('Осталось'), { target: { value: 'Мой черновик' } })
+  view.unmount()
+  const next = render(<TaskCollaboration issueKey="RP-1" owner="alice" active={false} canWrite />)
+  fireEvent.click(screen.getByText('Передача смены'))
+  await screen.findByDisplayValue('Мой черновик')
+  next.rerender(<TaskCollaboration issueKey="RP-1" owner="bob" active={false} canWrite />)
+  fireEvent.click(screen.getByText('Передача смены'))
+  await waitFor(() => expect(screen.getByLabelText('Осталось')).toHaveValue('Тест'))
+})
+
+
+it.each([401, 403])('hides loaded handoff and write controls on save %s without a parent callback', async status => {
+  vi.spyOn(collaborationClient, 'handoff').mockResolvedValue(saved)
+  vi.spyOn(collaborationClient, 'save').mockRejectedValue(new ApiError(status))
+  render(<TaskCollaboration issueKey="RP-1" owner="alice" active={false} canWrite />)
+  fireEvent.click(screen.getByText('Передача смены'))
+  await screen.findByDisplayValue('Мотор')
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить передачу смены' }))
+  await waitFor(() => expect(screen.queryAllByRole('textbox')).toHaveLength(0))
+  expect(screen.queryByText(/alice/)).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Сохранить передачу смены' })).not.toBeInTheDocument()
+})
+
+it('hides both presence and loaded handoff on a polling denial without a parent callback', async () => {
+  vi.useFakeTimers()
+  vi.spyOn(Math, 'random').mockReturnValue(0)
+  vi.spyOn(collaborationClient, 'presence').mockResolvedValueOnce({ people: [{ username: 'bob' }] }).mockRejectedValue(new ApiError(403))
+  vi.spyOn(collaborationClient, 'handoff').mockResolvedValue(saved)
+  render(<TaskCollaboration issueKey="RP-1" owner="alice" active canWrite />)
+  fireEvent.click(screen.getByText('Передача смены'))
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(screen.getByDisplayValue('Мотор')).toBeInTheDocument()
+  expect(screen.getByRole('status')).toHaveTextContent('bob')
+  await act(async () => { await vi.advanceTimersByTimeAsync(35_000) })
+  expect(screen.queryAllByRole('textbox')).toHaveLength(0)
+  expect(screen.queryByText(/Сейчас в задаче/)).not.toBeInTheDocument()
+})

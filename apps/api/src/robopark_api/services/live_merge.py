@@ -17,6 +17,7 @@ import logging
 import os
 import tempfile
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -233,14 +234,22 @@ class LiveMergeStore:
             return None
         return data
 
-    def _write_inflight(self, namespace: str, key: str) -> None:
+    def _write_inflight(self, namespace: str, key: str, claim: str | None = None) -> None:
+        payload: dict[str, Any] = {"pid": os.getpid(), "started_at": time.time()}
+        if claim is not None:
+            payload["claim"] = claim
         self._atomic_write(
             self.inflight_path(namespace, key),
-            {"pid": os.getpid(), "started_at": time.time()},
+            payload,
         )
 
-    def _clear_inflight(self, namespace: str, key: str) -> None:
-        self.inflight_path(namespace, key).unlink(missing_ok=True)
+    def _clear_inflight(self, namespace: str, key: str, claim: str | None = None) -> None:
+        path = self.inflight_path(namespace, key)
+        if claim is not None:
+            current = self._read_json(path)
+            if current is None or current.get("claim") != claim:
+                return
+        path.unlink(missing_ok=True)
 
     def _write_result(self, namespace: str, key: str, payload: Any) -> None:
         self._atomic_write(
@@ -306,8 +315,16 @@ class LiveMergeStore:
         key: str,
         ttl: float,
         loader: Callable[[], T],
+        is_current: Callable[[], bool] | None = None,
     ) -> T:
+        from robopark_api.db import release_request_session
+
+        # Both file-lock contention and another process's upstream flight can
+        # wait. Return the DB connection before either, including cache hits
+        # discovered after waiting; releasing only in the loader misses them.
+        release_request_session()
         deadline = time.monotonic() + self.waiter_timeout
+        claim = uuid.uuid4().hex
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -326,29 +343,32 @@ class LiveMergeStore:
                     self._raise_shared_error(err)
                 inflight = self._read_inflight(namespace, key)
                 if inflight is None:
-                    self._write_inflight(namespace, key)
+                    self._write_inflight(namespace, key, claim)
                     claimed = True
             if claimed:
                 break
             time.sleep(min(_POLL_SEC, max(remaining, 0)))
 
-        from robopark_api.db import release_request_session
-
-        release_request_session()
         try:
             value = loader()
         except BaseException as exc:
             with self._exclusive(namespace, key, timeout=self.waiter_timeout):
+                if is_current is not None and not is_current():
+                    self._clear_inflight(namespace, key, claim)
+                    raise
                 self._write_error(namespace, key, exc)
-                self._clear_inflight(namespace, key)
+                self._clear_inflight(namespace, key, claim)
                 stale = self._read_any_payload(namespace, key)
             if stale is not _MISSING:
                 return stale  # type: ignore[return-value]
             raise
         with self._exclusive(namespace, key, timeout=self.waiter_timeout):
+            if is_current is not None and not is_current():
+                self._clear_inflight(namespace, key, claim)
+                return value
             self._write_result(namespace, key, value)
             self._clear_error(namespace, key)
-            self._clear_inflight(namespace, key)
+            self._clear_inflight(namespace, key, claim)
         return value
 
     def invalidate(self, namespace: str, key: str) -> None:

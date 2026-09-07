@@ -20,7 +20,12 @@ while [ "$#" -gt 0 ]; do
             MODE=non-interactive
             CONFIG_FILE=$2
             shift ;;
-        --help) printf '%s\n' 'sudo ./install.sh [--resume] [--non-interactive CONFIG_FILE]'; exit 0 ;;
+        --defaults)
+            [ "$#" -ge 2 ] || die invalid_arguments
+            MODE=interactive
+            CONFIG_FILE=$2
+            shift ;;
+        --help) printf '%s\n' './START.sh или sudo ./install.sh [--resume] [--defaults CONFIG_FILE] [--non-interactive CONFIG_FILE]'; exit 0 ;;
         *) die invalid_arguments ;;
     esac
     shift

@@ -1,8 +1,8 @@
 {
-  "migration_head": "0017_driver_work_reports",
+  "migration_head": "0022_tracker_collaboration",
   "migration_compatibility": {
-    "from_heads": [],
-    "reversible": false
+    "from_heads": ["0017_driver_work_reports"],
+    "reversible": true
   },
-  "update_notes": ""
+  "update_notes": "Добавлены историческая аналитика, правила и очередь неизвестных диагностических ошибок, реестр роботов и совместная работа с задачами Tracker."
 }

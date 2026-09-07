@@ -1,3 +1,4 @@
+import { SyncStatus } from '../../design-system/status/SyncStatus'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api, type OperationsOverview, type User } from '../../api'
@@ -50,8 +51,8 @@ function OperationsOwner({ resourceKey, load, parkId, onAuthorizationFailure }: 
   }
   if (!data) return <LoadingState label="Загружаем операционный обзор" variant="page" />
   return <>{failure ? <OperationsWarning failure={failure} busy={resource.isRevalidating} onRetry={() => void resource.refresh()} /> : null}
+    <SyncStatus {...resource} />
     <OperationsContent data={data} />
-    <Button busy={resource.isRevalidating} leadingIcon="refresh" onClick={() => void resource.refresh()} variant="secondary">Обновить данные</Button>
   </>
 }
 

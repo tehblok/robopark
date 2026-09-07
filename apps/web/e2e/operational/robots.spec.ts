@@ -1,6 +1,100 @@
 import { expect, test } from '@playwright/test'
 import { FIXED_TIME, installOperational, settlePage, snapshot, userForRole } from './fixtures'
 
+// Exercise nonzero fleet jitter deterministically (first 15s, periodic 11s, resume 15s).
+test.beforeEach(async ({ page }) => { await page.addInitScript(() => { Math.random = () => 0.5 }) })
+
+test('robot search stays first and makes no registry requests across reload and park changes', async ({ page }) => {
+  const registryRequests: string[] = []
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/robots') registryRequests.push(request.url())
+  })
+  await installOperational(page, { role: 'operator' })
+  await page.goto('/robots?park=7&q=447')
+  await expect(page.locator('.rp-robots-page').getByRole('heading', { level: 2 })).toHaveText([
+    'Открыть по номеру или сканировать', 'Недавние роботы',
+  ])
+  await expect(page.getByRole('heading', { name: 'Роботы в работе' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Сменить парк' }).click()
+  await page.getByRole('option', { name: 'Южный парк' }).click()
+  await expect(page).toHaveURL('/robots?park=8&q=447')
+  await expect(page.getByLabel('Номер или VIN робота')).toHaveValue('447')
+  await page.reload()
+  await expect(page.getByLabel('Номер или VIN робота')).toHaveValue('447')
+  await settlePage(page)
+  expect(registryRequests).toEqual([])
+  await page.getByRole('button', { name: 'Найти робота', exact: true }).click()
+  await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=8`)
+})
+
+test('manual search survives reload and fetches Emergency only after opening a robot', async ({ page }) => {
+  const emergency: string[] = []
+  page.on('request', request => {
+    const url = new URL(request.url())
+    if (url.pathname.startsWith('/api/emergency/')) emergency.push(url.pathname)
+  })
+  await installOperational(page)
+  await page.goto('/robots?park=7')
+  await page.getByLabel('Номер или VIN робота').fill('447')
+  await expect(page).toHaveURL('/robots?park=7&q=447')
+  await page.reload()
+  await expect(page.getByLabel('Номер или VIN робота')).toHaveValue('447')
+  await settlePage(page)
+  expect(emergency).toEqual([])
+  await page.getByRole('button', { name: 'Найти робота', exact: true }).click()
+  await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7`)
+  await page.getByRole('tab', { name: 'Задачи', exact: true }).click()
+  await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7&tab=tasks`)
+  await expect(page.getByRole('tab', { name: 'Задачи', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
+  expect(emergency.length).toBeGreaterThan(0)
+  await expect(page.locator('.rp-shell__desktop-nav').getByRole('link', { name: 'Роботы', exact: true })).toHaveAttribute('aria-current', 'page')
+  await page.getByRole('tab', { name: 'История', exact: true }).click()
+  await expect(page.getByRole('tabpanel')).toContainText('История событий пока недоступна')
+})
+
+for (const state of ['pending', 'failed'] as const) test(`direct robot tasks stay usable with a ${state} Emergency snapshot`, async ({ page }) => {
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  await installOperational(page, { routes: [{ method: 'GET', path: /^\/api\/emergency\/[^/]+\/snapshot$/, handler: async () => {
+    if (state === 'pending') await pending
+    return { status: 502, json: { detail: 'emergency_upstream_error' } }
+  } }] })
+  try {
+    await page.goto(`/robots/${snapshot.vin}?park=7&tab=tasks`)
+    await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
+    await page.getByRole('tab', { name: 'Телеметрия', exact: true }).click()
+    await expect(page.getByRole('tabpanel')).toHaveAccessibleName('Телеметрия')
+    await page.getByRole('tab', { name: 'Задачи', exact: true }).click()
+    await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
+  } finally { release() }
+})
+
+test('empty recent robots leave manual search usable on a narrow phone', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 900 })
+  await installOperational(page)
+  await page.goto('/robots?park=7')
+  await expect(page.getByText('Недавно открытых роботов нет.')).toBeVisible()
+  await expect(page.getByLabel('Номер или VIN робота')).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0)
+  await page.getByLabel('Номер или VIN робота').fill('447')
+  await page.getByRole('button', { name: 'Найти робота', exact: true }).click()
+  await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7`)
+})
+
+test('a restored workspace tab is horizontally visible on a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 900 })
+  await installOperational(page)
+  await page.goto(`/robots/${snapshot.vin}?park=7&tab=scheme`)
+  const tab = page.getByRole('tab', { name: 'Схема', exact: true })
+  await expect(tab).toHaveAttribute('aria-selected', 'true')
+  const bounds = await page.getByRole('tablist').boundingBox()
+  const selected = await tab.boundingBox()
+  // Fractional tab widths meet integer clientWidth and browser scroll rounding.
+  expect(selected!.x).toBeGreaterThanOrEqual(bounds!.x - 1)
+  expect(selected!.x + selected!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width + 1)
+})
+
 for (const reference of ['447', 'YASADR00000000447', 'https://robopark.example.invalid/emergency?q=447&tab=wheels&park=7']) {
   test(`resolves manual reference ${reference}`, async ({ page }) => {
     const resolved: string[] = []
@@ -18,6 +112,8 @@ for (const reference of ['447', 'YASADR00000000447', 'https://robopark.example.i
     await expect(page.getByRole('heading', { name: 'Робот 447', exact: true })).toBeVisible()
     await expect(page.getByText(snapshot.vin, { exact: true })).toBeVisible()
     expect(resolved[0]).toBe(reference.startsWith('https:') ? '447' : reference)
+    await page.getByRole('tab', { name: 'Задачи', exact: true }).click()
+    await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
     await settlePage(page)
     expect(trackerRequests.length).toBeGreaterThan(0)
     expect(new Set(trackerRequests)).toEqual(new Set([`/api/tracker/robots/${snapshot.vin}/tickets`]))
@@ -37,6 +133,27 @@ test('short route canonicalizes and identity loads only the selected original ph
   await settlePage(page)
   expect(photos).toEqual(['isometric.png'])
   await expect(page.locator('.rp-robot-identity img')).toHaveCount(1)
+})
+
+test('recents expire at 48 hours and persist the pruned list after reload', async ({ page }) => {
+  const user = userForRole('driver')
+  const fresh = { query: '448', vin: 'YASADR00000000448', openedAt: Date.parse('2026-08-31T09:05:00.001Z') }
+  await installOperational(page, { user })
+  await page.goto('/robots?park=7')
+  await expect(page.getByLabel('Номер или VIN робота')).toBeVisible()
+  await page.evaluate(({ id, fresh }) => localStorage.setItem(`robopark.recentRobots.v2.${id}`, JSON.stringify([
+    { query: '447', vin: 'YASADR00000000447', openedAt: Date.parse('2026-08-31T09:05:00Z') },
+    fresh,
+    { query: '449', vin: 'YASADR00000000449', openedAt: Date.parse('2026-08-30T09:05:00Z') },
+  ])), { id: user.id, fresh })
+  await page.reload()
+  await expect(page.locator('.rp-robots-recent-list').getByRole('link')).toHaveCount(1)
+  await expect(page.locator('.rp-robots-recent-list').getByRole('link')).toContainText('448')
+  expect(await page.evaluate(id => JSON.parse(localStorage.getItem(`robopark.recentRobots.v2.${id}`)!), user.id)).toEqual([fresh])
+  await page.clock.setFixedTime(new Date('2026-09-02T09:05:00.001Z'))
+  await page.reload()
+  await expect(page.getByText('Недавно открытых роботов нет.')).toBeVisible()
+  expect(await page.evaluate(id => JSON.parse(localStorage.getItem(`robopark.recentRobots.v2.${id}`)!), user.id)).toEqual([])
 })
 
 test('v2 recents isolate two users, survive reload and clear only current namespace', async ({ page }) => {
@@ -72,8 +189,9 @@ for (const route of [`/robots/${snapshot.vin}/check?tab=wheels&park=7`, '/emerge
     let snapshots = 0
     page.on('request', request => { if (new URL(request.url()).pathname.endsWith('/snapshot')) snapshots += 1 })
     await installOperational(page)
+    await page.clock.install({ time: new Date('2026-09-02T09:05:00Z') })
     await page.goto(route)
-    await expect(page).toHaveURL(`/robots/${snapshot.vin}/check?park=7&tab=wheels`)
+    await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7&tab=wheels`)
     const wheels = page.getByRole('tab', { name: 'Колёса', exact: true })
     await expect(wheels).toHaveAttribute('aria-selected', 'true')
     await expect(page.getByRole('tabpanel')).toContainText('Неисправность: требуется проверка')
@@ -90,19 +208,21 @@ for (const route of [`/robots/${snapshot.vin}/check?tab=wheels&park=7`, '/emerge
     await expect(page.getByRole('button', { name: 'Слежение включено', exact: true })).toBeVisible()
     await expect(page.locator('.leaflet-container')).toBeVisible()
     const before = snapshots
-    await page.getByRole('button', { name: 'Обновить данные робота', exact: true }).click()
+    await expect(page.getByRole('button', { name: /^Обновить/ })).toHaveCount(0)
+    await page.clock.runFor(15_000)
     await expect.poll(() => snapshots).toBeGreaterThan(before)
   })
 }
 
-test('driver canonical check loads sections, refreshes, and requests scoped Tracker work', async ({ page }) => {
+test('driver canonical check loads sections, automatically refreshes, and requests scoped Tracker work', async ({ page }) => {
   const trackerRequests: string[] = []
   page.on('request', request => {
     if (new URL(request.url()).pathname.startsWith('/api/tracker/')) trackerRequests.push(new URL(request.url()).pathname)
   })
   await installOperational(page, { role: 'driver' })
+  await page.clock.install({ time: new Date('2026-09-02T09:05:00Z') })
   await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=wheels`)
-  await expect(page).toHaveURL(`/robots/${snapshot.vin}/check?park=7&tab=wheels`)
+  await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7&tab=wheels`)
   await expect(page.getByRole('heading', { name: 'Робот 447', exact: true })).toBeVisible()
   await expect(page.getByText('Робот на связи', { exact: true })).toBeVisible()
   await expect(page.getByRole('tab', { name: 'Колёса', exact: true })).toHaveAttribute('aria-selected', 'true')
@@ -110,26 +230,38 @@ test('driver canonical check loads sections, refreshes, and requests scoped Trac
   await settlePage(page)
   await Promise.all([
     page.waitForResponse(response => new URL(response.url()).pathname === `/api/emergency/${snapshot.vin}/snapshot` && response.status() === 200),
-    page.getByRole('button', { name: 'Обновить данные робота', exact: true }).click(),
+    page.clock.runFor(15_000),
   ])
   await page.getByRole('tab', { name: 'Схема', exact: true }).click()
   await expect(page.getByRole('tab', { name: 'Схема', exact: true })).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByRole('button', { name: 'Переднее левое колесо: неисправность', exact: true })).toBeVisible()
+  await page.getByRole('tab', { name: 'Задачи', exact: true }).click()
+  await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
   await settlePage(page)
   expect(trackerRequests.length).toBeGreaterThan(0)
   expect(new Set(trackerRequests)).toEqual(new Set([`/api/tracker/robots/${snapshot.vin}/tickets`]))
 })
 
-test('robot offline and browser offline remain different actionable states', async ({ page, context }) => {
+test('robot offline and browser offline remain different states with automatic recovery', async ({ page, context }) => {
+  let snapshots = 0
+  page.on('request', request => { if (new URL(request.url()).pathname.endsWith('/snapshot')) snapshots += 1 })
   await installOperational(page, { snapshot: { ...snapshot, online: false } })
+  await page.clock.install({ time: new Date('2026-09-02T09:05:00Z') })
   await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=wheels`)
   await expect(page.getByText('Робот не в сети', { exact: true })).toBeVisible()
   await expect(page.getByText('Нет сети на этом устройстве', { exact: true })).toHaveCount(0)
   await context.setOffline(true)
   await expect(page.getByText('Нет сети на этом устройстве', { exact: true })).toBeVisible()
   await expect(page.getByText('Робот не в сети', { exact: true })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Обновить данные робота', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: /^Обновить/ })).toHaveCount(0)
+  const before = snapshots
+  await page.clock.runFor(20_000)
+  expect(snapshots).toBe(before)
   await context.setOffline(false)
+  await expect(page.getByText('Нет сети на этом устройстве', { exact: true })).toHaveCount(0)
+  expect(snapshots).toBe(before)
+  await page.clock.runFor(15_000)
+  await expect.poll(() => snapshots).toBeGreaterThan(before)
   await expect(page.getByText('Робот не в сети', { exact: true })).toBeVisible()
 })
 

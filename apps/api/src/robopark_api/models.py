@@ -5,8 +5,11 @@ from enum import StrEnum
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -162,6 +165,87 @@ class ParkBlockerHistory(Base):
     definition_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
     park: Mapped[Park] = relationship(back_populates="blocker_history")
+
+
+class AnalyticsSnapshot(Base):
+    """A complete, successful source read, including a measured empty park."""
+
+    __tablename__ = "analytics_snapshots"
+
+    park_id: Mapped[int] = mapped_column(
+        ForeignKey("parks.id", ondelete="CASCADE"), primary_key=True
+    )
+    bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    target_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class AnalyticsObservation(Base):
+    __tablename__ = "analytics_observations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["park_id", "bucket_start"],
+            ["analytics_snapshots.park_id", "analytics_snapshots.bucket_start"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    park_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    issue_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    status: Mapped[str] = mapped_column(String(128), primary_key=True)
+    status_bucket: Mapped[str] = mapped_column(String(32))
+    # Exact workflow classification shared with task/card authorization. Unknown
+    # statuses fail closed for restricted roles, independently of display hints.
+    authorization_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    age_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class DiagnosticRule(Base):
+    __tablename__ = "diagnostic_rules"
+    __table_args__ = (
+        CheckConstraint(
+            "match_kind IN ('exact', 'regex')",
+            name="ck_diagnostic_rules_match_kind",
+        ),
+        CheckConstraint(
+            "severity IN ('info', 'warning', 'critical')",
+            name="ck_diagnostic_rules_severity",
+        ),
+        CheckConstraint(
+            "preferred_view IN ('top', 'front', 'rear', 'left', 'right', 'isometric')",
+            name="ck_diagnostic_rules_preferred_view",
+        ),
+        CheckConstraint(
+            "indicator IN ('point', 'outline', 'zone')",
+            name="ck_diagnostic_rules_indicator",
+        ),
+        CheckConstraint("x = x AND x >= 0.0 AND x <= 1.0", name="ck_diagnostic_rules_x"),
+        CheckConstraint("y = y AND y >= 0.0 AND y <= 1.0", name="ck_diagnostic_rules_y"),
+        UniqueConstraint(
+            "source_path",
+            "match_kind",
+            "pattern",
+            name="uq_diagnostic_rules_source_match_pattern",
+        ),
+        Index("ix_diagnostic_rules_sort_order_id", "sort_order", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_path: Mapped[str] = mapped_column(String(256))
+    match_kind: Mapped[str] = mapped_column(String(16))
+    pattern: Mapped[str] = mapped_column(String(512))
+    example: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(String(256))
+    description: Mapped[str] = mapped_column(Text)
+    severity: Mapped[str] = mapped_column(String(16))
+    part: Mapped[str] = mapped_column(String(128))
+    preferred_view: Mapped[str] = mapped_column(String(16))
+    x: Mapped[float] = mapped_column(Float)
+    y: Mapped[float] = mapped_column(Float)
+    indicator: Mapped[str] = mapped_column(String(16))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class PlatformSetting(Base):
@@ -347,3 +431,39 @@ class ReportAttachment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     report: Mapped[Report] = relationship(back_populates="attachments")
+
+
+class DiagnosticUnknown(Base):
+    __tablename__ = "diagnostic_unknowns"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('new', 'mapped', 'ignored')", name="ck_diagnostic_unknowns_state"
+        ),
+        CheckConstraint("observations >= 1", name="ck_diagnostic_unknowns_observations"),
+        Index("ix_diagnostic_unknowns_state_last_seen", "state", "last_seen_at", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    identity: Mapped[str] = mapped_column(String(64), unique=True)
+    source_path: Mapped[str] = mapped_column(String(256))
+    source_segments_json: Mapped[str] = mapped_column(Text)
+    raw_json: Mapped[str] = mapped_column(Text)
+    original_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    observations: Mapped[int] = mapped_column(Integer, default=1)
+    last_robot: Mapped[str] = mapped_column(String(128))
+    state: Mapped[str] = mapped_column(String(16), default="new")
+    rule_id: Mapped[int | None] = mapped_column(ForeignKey("diagnostic_rules.id"), nullable=True)
+
+
+class DiagnosticUnknownSighting(Base):
+    """Last counted observation per robot/error; prevents polling from inflating counts."""
+
+    __tablename__ = "diagnostic_unknown_sightings"
+
+    unknown_id: Mapped[int] = mapped_column(
+        ForeignKey("diagnostic_unknowns.id", ondelete="CASCADE"), primary_key=True
+    )
+    robot: Mapped[str] = mapped_column(String(128), primary_key=True)
+    sampled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

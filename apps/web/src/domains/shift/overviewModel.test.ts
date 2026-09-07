@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { DashboardSummary, Park, TrackerIssue } from '../../api'
+import type { DashboardSummary, OperationsOverview, Park, TrackerIssue } from '../../api'
 import type { OverviewPayload } from './overviewData'
 import { buildOverviewModel } from './overviewModel'
 
@@ -46,7 +46,7 @@ describe('buildOverviewModel', () => {
     expect(model.state.title).toBe(title)
     expect(model.primaryAction).toEqual({
       label,
-      href: '/work/ROBOPARK-42?park=7&queue=ROBOPARK',
+      href: '/work/ROBOPARK-42?park=7&queue=ROBOPARK&status=all',
       icon: 'work',
     })
     expect(model.updatedAt).toBe('2026-09-02T09:00:00Z')
@@ -111,13 +111,13 @@ describe('buildOverviewModel', () => {
       canOpenAdministration: false,
     }, now)
 
-    expect(model.primaryAction?.href).toBe('/work/ROBOPARK-42?park=7&queue=ROBOPARK')
+    expect(model.primaryAction?.href).toBe('/work/ROBOPARK-42?park=7&queue=ROBOPARK&status=all')
     expect(model.risk?.issueKey).toBe('ROBOPARK-42')
     expect(model.queue).toEqual([{
       key: 'ROBOPARK-99',
       summary: 'Проверить колесо',
       robot: '448',
-      href: '/work/ROBOPARK-99?park=7&queue=ROBOPARK',
+      href: '/work/ROBOPARK-99?park=7&queue=ROBOPARK&status=all',
     }])
     expect(model.metrics).toEqual([
       { label: 'Пришли', value: 2 },
@@ -137,7 +137,7 @@ describe('buildOverviewModel', () => {
 
     expect(model.primaryAction).toEqual({
       label: 'Разобрать ROBOPARK-99',
-      href: '/work/ROBOPARK-99?park=7&queue=ROBOPARK',
+      href: '/work/ROBOPARK-99?park=7&queue=ROBOPARK&status=all',
       icon: 'work',
     })
     expect(model.risk?.issueKey).toBe('ROBOPARK-99')
@@ -155,7 +155,7 @@ describe('buildOverviewModel', () => {
     expect(model.risk).toBeNull()
     expect(model.primaryAction).toEqual({
       label: 'Открыть работу',
-      href: '/work?park=7&queue=ROBOPARK',
+      href: '/work?park=7&queue=ROBOPARK&status=all',
       icon: 'work',
     })
   })
@@ -173,8 +173,8 @@ describe('buildOverviewModel', () => {
       canOpenAdministration: false,
     }, now)
 
-    expect(model.primaryAction?.href).toBe('/work/Q%2F42%20%3F%23?park=7&queue=TEAM+%26+OPS')
-    expect(model.queue[0]?.href).toBe('/work/Q%2F42%20%3F%23?park=7&queue=TEAM+%26+OPS')
+    expect(model.primaryAction?.href).toBe('/work/Q%2F42%20%3F%23?park=7&queue=TEAM+%26+OPS&status=all')
+    expect(model.queue[0]?.href).toBe('/work/Q%2F42%20%3F%23?park=7&queue=TEAM+%26+OPS&status=all')
   })
 
   it.each([
@@ -251,7 +251,7 @@ describe('buildOverviewModel', () => {
       title: 'Наибольшая текущая очередь: Юг · 9',
       tone: 'info',
     })
-    expect(model.primaryAction?.href).toBe('/work?park=8')
+    expect(model.primaryAction?.href).toBe('/work?park=8&status=all')
     expect(model.metrics).toEqual([
       { label: 'Пришли', value: 4 },
       { label: 'Завершены', value: 8 },
@@ -262,12 +262,12 @@ describe('buildOverviewModel', () => {
       {
         key: 'ROBOPARK-42',
         summary: 'Робот 447 остановился',
-        href: '/work/ROBOPARK-42?park=7&queue=ROBOPARK',
+        href: '/work/ROBOPARK-42?park=7&queue=ROBOPARK&status=all',
       },
       {
         key: 'ROBOPARK-88',
         summary: 'Робот в пути',
-        href: '/work/ROBOPARK-88?park=8&queue=ROBOPARK',
+        href: '/work/ROBOPARK-88?park=8&queue=ROBOPARK&status=all',
       },
     ])
     expect(payload).toEqual(original)
@@ -287,7 +287,7 @@ describe('buildOverviewModel', () => {
       canOpenAdministration: true,
     }, now)
 
-    expect(model.primaryAction?.href).toBe('/work?park=8')
+    expect(model.primaryAction?.href).toBe('/work?park=8&status=all')
   })
 
   it('keeps an empty fleet truthful without fabricated metrics, freshness or a park action', () => {
@@ -305,5 +305,107 @@ describe('buildOverviewModel', () => {
     expect(model.primaryAction).toBeNull()
     expect(model.queue).toEqual([])
     expect(model.metrics).toEqual([])
+  })
+})
+
+const operationsSnapshot: OperationsOverview = {
+  park_id: 7,
+  generated_at: '2026-09-02T09:00:00Z',
+  timezone: 'Europe/Moscow',
+  selected_status: 'all',
+  status_options: [
+    { key: 'all', label: 'Все доступные' },
+    { key: 'new', label: 'Новые' },
+    { key: 'moving', label: 'Перемещение' },
+    { key: 'queued', label: 'Очередь' },
+    { key: 'diagnostics', label: 'Диагностика' },
+    { key: 'waiting_team', label: 'Ожидает команду' },
+  ],
+  counts: { all: 5, new: 2, moving: 1, queued: 1, diagnostics: 1, waiting_team: 0 },
+  tasks: [
+    { key: 'RP-OLD', summary: 'Старая задача', status: 'Новая', bucket: 'new', robot: '447', created_at: '2026-09-01T09:00:00Z', hours_created: '24', url: '' },
+    { key: 'RP-RECENT', summary: 'Свежая задача', status: 'Очередь', bucket: 'queued', robot: null, created_at: '2026-09-02T08:00:00Z', hours_created: '1', url: '' },
+  ],
+  tasks_total: 2,
+  tasks_truncated: false,
+  flow: {
+    definition_version: 2,
+    window_start: '2026-09-02T03:00:00Z',
+    window_end: '2026-09-02T09:00:00Z',
+    expected_buckets: 3,
+    observed_buckets: 2,
+    complete: false,
+    legacy_buckets: 0,
+    points: [
+      { bucket_start: '2026-09-02T03:00:00Z', arrived_count: 1, departed_count: 0 },
+      { bucket_start: '2026-09-02T07:00:00Z', arrived_count: 0, departed_count: 1 },
+    ],
+  },
+  sla: {
+    target_hours: 8,
+    evaluated_count: 2,
+    unknown_count: 0,
+    at_risk_count: 1,
+    overdue_count: 1,
+    overdue: [{ key: 'RP-OVERDUE', summary: 'Просроченная задача', status: 'Новая', bucket: 'new', robot: '448', created_at: '2026-09-01T00:00:00Z', hours_created: '33', url: '', age_hours: 33, overdue_hours: 25 }],
+    overdue_truncated: false,
+  },
+  workload: [{ login: 'operator', display: 'Оператор смены', open_count: 2, overdue_count: 1, oldest_hours: 33 }],
+  operators: [{ user_id: 5, username: 'operator', tracker_login: 'operator', open_count: 2, overdue_count: 1, oldest_hours: 33 }],
+}
+
+describe('role-aware operational overview', () => {
+  it('shows drivers only new and moving status monitoring', () => {
+    const model = buildOverviewModel(operationsSnapshot, 'driver')
+
+    expect(model.statusCards.map((card) => card.key)).toEqual(['new', 'moving'])
+  })
+
+  it('shows mechanics only queued and diagnostics status monitoring', () => {
+    const model = buildOverviewModel(operationsSnapshot, 'mechanic')
+
+    expect(model.statusCards.map((card) => card.key)).toEqual(['queued', 'diagnostics'])
+  })
+
+  it.each(['operator', 'admin', 'royal'])('lets privileged %s select all permitted task statuses', (role) => {
+    const model = buildOverviewModel(operationsSnapshot, role)
+
+    expect(model.statusCards.map((card) => card.key)).toEqual(['new', 'moving', 'queued', 'diagnostics', 'waiting_team'])
+  })
+
+  it('puts SLA overdue tasks before merely old attention items', () => {
+    const model = buildOverviewModel(operationsSnapshot, 'operator')
+
+    expect(model.attentionQueue.map((item) => item.key)).toEqual(['RP-OVERDUE', 'RP-OLD', 'RP-RECENT'])
+    expect(model.alerts[0]).toMatchObject({ tone: 'critical', taskCount: 1 })
+  })
+
+  it('does not leak an overdue task from another selected status into attention', () => {
+    const model = buildOverviewModel({
+      ...operationsSnapshot,
+      selected_status: 'moving',
+      tasks: [{ ...operationsSnapshot.tasks[0], key: 'RP-MOVING', bucket: 'moving' }],
+      sla: {
+        ...operationsSnapshot.sla,
+        overdue_count: 2,
+        overdue: [
+          { ...operationsSnapshot.sla.overdue[0], key: 'RP-OVERDUE-QUEUED', bucket: 'queued' },
+          { ...operationsSnapshot.sla.overdue[0], key: 'RP-OVERDUE-MOVING', bucket: 'moving' },
+        ],
+      },
+    }, 'operator')
+
+    expect(model.attentionQueue.map((item) => item.key)).toEqual(['RP-OVERDUE-MOVING', 'RP-MOVING'])
+    expect(model.alerts[0]).toMatchObject({ taskCount: 1 })
+  })
+
+  it('keeps arrived and left unknown when no flow interval was observed', () => {
+    const model = buildOverviewModel({
+      ...operationsSnapshot,
+      flow: { ...operationsSnapshot.flow, observed_buckets: 0, complete: false, points: [] },
+    }, 'operator')
+
+    expect(model.flow.arrivedTaskCount).toBeNull()
+    expect(model.flow.leftTaskCount).toBeNull()
   })
 })

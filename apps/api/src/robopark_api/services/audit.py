@@ -43,6 +43,10 @@ ACTION_MECHANIC_CREATED = "admin.mechanic.created"
 ACTION_MECHANIC_UPDATED = "admin.mechanic.updated"
 ACTION_ACCESS_APPROVED = "admin.access.approved"
 ACTION_ACCESS_REJECTED = "admin.access.rejected"
+ACTION_DIAGNOSTIC_RULE_CREATED = "admin.diagnostic_rule.created"
+ACTION_DIAGNOSTIC_RULE_UPDATED = "admin.diagnostic_rule.updated"
+ACTION_DIAGNOSTIC_RULE_DISABLED = "admin.diagnostic_rule.disabled"
+ACTION_DIAGNOSTIC_RULE_REORDERED = "admin.diagnostic_rule.reordered"
 
 TRACKER_ACTIONS = {
     "comment": ACTION_TRACKER_COMMENT,

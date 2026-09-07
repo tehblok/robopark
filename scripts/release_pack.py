@@ -181,6 +181,8 @@ def epoch():
 
 
 def mode_for(name):
+    if name == ".robopark-preset.env":
+        return 0o600
     return 0o755 if name.endswith(".sh") or name == "deploy/host/robopark" else 0o644
 
 
@@ -388,6 +390,7 @@ def build_installer(args):
     output = validate_output(
         args.output,
         [root / "deploy", root / "scripts", root / "apps", args.signing_key, args.public_key]
+        + ([args.preset] if args.preset is not None else [])
         + [Path(str(args.release) + suffix) for suffix in ("", ".sig", ".sha256", ".json")],
     )
     trusted = VERIFIER["read_regular"](args.public_key, 16384)
@@ -401,6 +404,11 @@ def build_installer(args):
     ):
         raise ValueError("signing_key_mismatch")
     files = source_files(root / "deploy/installer", trusted_root=root)
+    if args.preset is not None:
+        preset = Path(args.preset)
+        if stat.S_IMODE(preset.stat().st_mode) & 0o077:
+            raise ValueError("preset_permissions")
+        files[".robopark-preset.env"] = VERIFIER["read_regular"](preset, 16_384)
     files["payload/robopark-release.zip"] = VERIFIER["read_regular"](
         args.release, VERIFIER["MAX_ARCHIVE"]
     )
@@ -444,6 +452,7 @@ def main():
     parser.add_argument("--signing-key", type=Path, required=True)
     parser.add_argument("--release", type=Path)
     parser.add_argument("--public-key", type=Path)
+    parser.add_argument("--preset", type=Path)
     args = parser.parse_args()
     if args.installer:
         if args.release is None or args.public_key is None:

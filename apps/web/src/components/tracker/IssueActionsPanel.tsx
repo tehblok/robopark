@@ -11,6 +11,9 @@ import { ConfirmDialog } from '../../design-system/overlays/ConfirmDialog'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
 import { safeHttpUrl } from '../../lib/safeUrl'
+import { pendingTrackerSubmissions, trackerReliabilityError } from './trackerReliability'
+import { useCommentDraft } from './useCommentDraft'
+import './task-card.css'
 
 const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
 
@@ -111,11 +114,12 @@ function AttachmentActions({
   )
 }
 
-export function IssueActionsPanel({
+function IssueActionsPanelContent({
   canWrite,
   capabilities,
   transitions,
   currentUser,
+  draftOwner,
   issueKey,
   issueUrl: issueUrlRaw,
   onComment,
@@ -129,6 +133,7 @@ export function IssueActionsPanel({
   capabilities?: TrackerIssueCapabilities
   transitions: TrackerTransition[]
   currentUser?: string
+  draftOwner?: string
   issueKey?: string
   issueUrl?: string
   onComment: (text: string) => Promise<void>
@@ -147,10 +152,18 @@ export function IssueActionsPanel({
     close: Boolean(canWrite),
     attach: Boolean(onAttach),
   }
-  const [comment, setComment] = useState('')
+  const { comment, setComment, capture } = useCommentDraft(draftOwner ?? currentUser, issueKey)
   const [assignee, setAssignee] = useState('')
   const [suggestions, setSuggestions] = useState<TrackerUserSuggestion[]>([])
   const [busy, setBusy] = useState('')
+  const submitting = useRef(false)
+  const [pendingCount, setPendingCount] = useState(() => pendingTrackerSubmissions(draftOwner ?? currentUser, issueKey))
+  useEffect(() => {
+    const update = () => setPendingCount(pendingTrackerSubmissions(draftOwner ?? currentUser, issueKey))
+    window.addEventListener('tracker-submissions-changed', update)
+    window.addEventListener('storage', update)
+    return () => { window.removeEventListener('tracker-submissions-changed', update); window.removeEventListener('storage', update) }
+  }, [draftOwner, currentUser, issueKey])
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [closeOpen, setCloseOpen] = useState(false)
@@ -193,6 +206,8 @@ export function IssueActionsPanel({
   }, [effectiveCapabilities.close])
 
   const run: RunAction = async (name, action) => {
+    if (submitting.current) return false
+    submitting.current = true
     setBusy(name)
     setError('')
     setSuccess('')
@@ -202,7 +217,7 @@ export function IssueActionsPanel({
       setSuccess('Действие выполнено')
       return true
     } catch (caught) {
-      const safeMessage = mapApiError(caught) || ru.tracker.actions.failed
+      const safeMessage = trackerReliabilityError(caught) || mapApiError(caught) || ru.tracker.actions.failed
       const message = caught instanceof ApiError && caught.requestId
         ? `${safeMessage} Код запроса: ${caught.requestId}`
         : safeMessage
@@ -213,6 +228,7 @@ export function IssueActionsPanel({
       }
       return false
     } finally {
+      submitting.current = false
       setBusy('')
     }
   }
@@ -221,7 +237,8 @@ export function IssueActionsPanel({
     event.preventDefault()
     const text = comment.trim()
     if (!text) return
-    if (await run('comment', () => onComment(text))) setComment('')
+    const clearSubmittedDraft = capture()
+    if (await run('comment', () => onComment(text))) clearSubmittedDraft()
   }
 
   const submitAssign = async (event: FormEvent) => {
@@ -247,6 +264,7 @@ export function IssueActionsPanel({
 
   return (
     <section className="issue-actions">
+      {pendingCount > 0 && !busy && <p role="status">Есть отправка без подтверждения. Проверьте историю Tracker перед изменением текста или новой отправкой. Повтор того же содержимого использует сохранённый ключ.</p>}
       {error && <p className="alert alert-error" role="alert">{error}</p>}
       {success && <p aria-live="polite">{success}</p>}
 
@@ -405,4 +423,8 @@ export function IssueActionsPanel({
       />
     </section>
   )
+}
+
+export function IssueActionsPanel(props: React.ComponentProps<typeof IssueActionsPanelContent>) {
+  return <IssueActionsPanelContent {...props} key={JSON.stringify([props.draftOwner ?? props.currentUser, props.issueKey])} />
 }

@@ -1,7 +1,7 @@
 import { api } from '../api'
-import { InsightsPage } from '../domains/insights/InsightsPage'
-import type { OperationsApiClient } from '../domains/insights/operations'
+import { AnalyticsWorkspace } from '../domains/analytics/AnalyticsWorkspace'
+import type { AnalyticsApiClient } from '../domains/analytics/analyticsModel'
 
-export function Analytics({ apiClient = api }: { apiClient?: OperationsApiClient }) {
-  return <InsightsPage apiClient={apiClient} mode="analytics" />
+export function Analytics({ apiClient = api }: { apiClient?: AnalyticsApiClient }) {
+  return <AnalyticsWorkspace apiClient={apiClient} />
 }

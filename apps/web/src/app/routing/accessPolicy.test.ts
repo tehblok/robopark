@@ -76,6 +76,11 @@ const accessCases = protectedRoutes.flatMap((route) =>
 )
 
 describe('canAccessRoute', () => {
+  it('keeps a diagnostics-only viewer on the unified card without opening the registry', () => {
+    const viewer = user({ permissions: ['nav.emergency'] })
+    expect(canAccessRoute(viewer, 'robot-detail')).toBe(true)
+    expect(canAccessRoute(viewer, 'robots')).toBe(false)
+  })
   it('uses a granted management capability to expose the management hub without nav.admin', () => {
     const manager = user({
       role: 'field_lead',

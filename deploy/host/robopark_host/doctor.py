@@ -12,7 +12,7 @@ import stat
 import tempfile
 from collections.abc import Mapping
 from contextlib import suppress
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -22,6 +22,8 @@ from .compose import EXPECTED_SERVICES, compose_command, parse_compose_services
 from .paths import HostPaths
 from .redaction import redact
 from .state import atomic_write_json
+
+UTC = timezone.utc
 
 _CONFIG_KEYS = {"host.env": ("SECRET_KEY",), "tuna.env": ("TUNA_TOKEN",)}
 _SERVICE_REPAIRS = {

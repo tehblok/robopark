@@ -1,3 +1,5 @@
+import type { AnalyticsBucket, HistoricalAnalytics } from './domains/analytics/analyticsModel'
+
 export type Park = {
   id: number
   name: string
@@ -44,6 +46,14 @@ export type User = {
   parks: Park[]
 }
 
+export type RobotRegistryRow = {
+  vin: string; short_number: string; park_ids: number[]; task_count: number; task_keys: string[]; issue_keys: string[]
+  state: 'online' | 'offline' | 'unknown'; error_count: number | null
+  telemetry: { source: 'emergency_cache'; online: boolean | null; charge_percent: number | null; mode: string | null; connection: string | null } | null
+}
+export type RobotRegistryParams = { park_id?: number; query?: string; state?: string; active_errors?: boolean; open_tasks?: boolean; offset?: number; limit?: number }
+export type RobotRegistry = { items: RobotRegistryRow[]; total: number; offset: number; limit: number; has_more: boolean; partial: boolean; source_complete: boolean; source: 'scoped_tracker_issues'; park_id: number | null }
+
 export type AdminRole = {
   id: number
   slug: string
@@ -84,6 +94,9 @@ export type IntegrationSettings = {
   emergency_cookie_updated_at: string | null
   emergency_cookie_encrypted?: boolean
   emergency_cookie_valid: boolean | null
+  emergency_cookie_status: 'unchecked' | 'valid' | 'invalid' | 'unavailable'
+  emergency_cookie_checked_at: string | null
+  emergency_cookie_checked_robot: string | null
 }
 
 export type TrackerPolicySettings = {
@@ -227,6 +240,7 @@ export type EmergencySnapshot = {
   lon: number | null
   heading_deg: number | null
   wheels_fault: string[]
+  diagnostic_events?: DiagnosticEvent[]
 }
 
 export type EmergencyViewerRole = 'mechanic' | 'operator' | 'admin' | 'royal' | 'driver'
@@ -475,14 +489,64 @@ export class ApiError extends Error {
   status: number
   detail: string | null
   requestId?: string
+  retryAfterMs?: number
 
-  constructor(status: number, detail: string | null = null, requestId?: string) {
+  constructor(status: number, detail: string | null = null, requestId?: string, retryAfterMs?: number) {
     super(detail ?? String(status))
     this.name = 'ApiError'
     this.status = status
     this.detail = detail
+    this.retryAfterMs = retryAfterMs
     this.requestId = requestId
   }
+}
+
+export type DiagnosticView = 'top' | 'front' | 'rear' | 'left' | 'right' | 'isometric'
+export type DiagnosticSeverity = 'info' | 'warning' | 'critical'
+export type DiagnosticIndicator = 'point' | 'outline' | 'zone'
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+export type DiagnosticRuleCreate = {
+  source_path: string; match_kind: 'exact' | 'regex'; pattern: string; example: string
+  title: string; description: string; severity: DiagnosticSeverity; part: string
+  preferred_view: DiagnosticView; x: number; y: number; indicator: DiagnosticIndicator
+  is_enabled?: boolean; sort_order?: number
+}
+export type DiagnosticRule = Required<DiagnosticRuleCreate> & { id: number }
+export type DiagnosticRuleUpdate = Partial<Omit<DiagnosticRuleCreate, 'sort_order'>>
+export type DiagnosticCatalog = { rules: DiagnosticRule[]; etag: string | null }
+export type DiagnosticEvent = {
+  id: string; rule_id: number | null; source_path: string; source_segments: (string | number)[]
+  raw_value: JsonValue; title: string; description: string; severity: DiagnosticSeverity
+  sort_order: number; part: string | null; view: DiagnosticView | null
+  x: number | null; y: number | null; indicator: DiagnosticIndicator | null
+}
+export type DiagnosticPreview = { matched: boolean; events: DiagnosticEvent[] }
+
+// Keep only fixed backend codes. Validation bodies may contain sensitive examples.
+const diagnosticErrorCodes = new Set([
+  'invalid_diagnostic_source_path', 'invalid_diagnostic_regex', 'unsupported_diagnostic_regex',
+  'diagnostic_preview_source_too_large', 'invalid_diagnostic_rule', 'diagnostic_rule_conflict',
+  'diagnostic_rules_write_conflict', 'diagnostic_rules_changed', 'diagnostic_rules_precondition_required',
+])
+
+async function diagnosticRequest<T>(suffix = '', init: RequestInit = {}): Promise<{ data: T; etag: string | null }> {
+  return fetchWithTimeout(`/api/admin/diagnostic-rules${suffix}`, {
+    ...init, credentials: 'include', headers: { 'Content-Type': 'application/json', ...init.headers },
+  }, JSON_TIMEOUT_MS, async response => {
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as { detail?: unknown } | null
+      const detail = typeof body?.detail === 'string' && diagnosticErrorCodes.has(body.detail) ? body.detail : null
+      throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
+    }
+    return { data: await response.json() as T, etag: response.headers.get('ETag') }
+  })
+}
+
+function diagnosticChanges(changes: DiagnosticRuleUpdate): DiagnosticRuleUpdate {
+  const { source_path, match_kind, pattern, example, title, description, severity, part,
+    preferred_view, x, y, indicator, is_enabled } = changes
+  return { source_path, match_kind, pattern, example, title, description, severity, part,
+    preferred_view, x, y, indicator, is_enabled }
 }
 
 export class ApiTimeoutError extends Error {
@@ -530,6 +594,13 @@ async function fetchWithTimeout<T>(
   }
 }
 
+function responseRetryAfter(response: Response): number | undefined {
+  const value = response.headers.get('Retry-After')?.trim()
+  if (!value) return undefined
+  const delay = /^\d+(?:\.\d+)?$/.test(value) ? Number(value) * 1_000 : Date.parse(value) - Date.now()
+  return Number.isFinite(delay) ? Math.max(0, delay) : undefined
+}
+
 function responseRequestId(response: Response): string | undefined {
   return response.headers.get('X-Request-ID')?.trim() || undefined
 }
@@ -545,7 +616,7 @@ async function readErrorDetail(response: Response): Promise<string | null> {
   return null
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return fetchWithTimeout(
     `/api${path}`,
     {
@@ -560,7 +631,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     async (response) => {
       if (!response.ok) {
         const detail = await readErrorDetail(response)
-        throw new ApiError(response.status, detail, responseRequestId(response))
+        throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
       }
 
       if (response.status === 204) {
@@ -580,26 +651,27 @@ async function requestBlob(path: string): Promise<Blob> {
     async (response) => {
       if (!response.ok) {
         const detail = await readErrorDetail(response)
-        throw new ApiError(response.status, detail, responseRequestId(response))
+        throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
       }
       return response.blob()
     },
   )
 }
 
-async function requestForm<T>(path: string, formData: FormData): Promise<T> {
+async function requestForm<T>(path: string, formData: FormData, headers?: Record<string, string>): Promise<T> {
   return fetchWithTimeout(
     `/api${path}`,
     {
       credentials: 'include',
       method: 'POST',
       body: formData,
+      headers,
     },
     FORM_TIMEOUT_MS,
     async (response) => {
       if (!response.ok) {
         const detail = await readErrorDetail(response)
-        throw new ApiError(response.status, detail, responseRequestId(response))
+        throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
       }
 
       return response.json() as Promise<T>
@@ -608,6 +680,24 @@ async function requestForm<T>(path: string, formData: FormData): Promise<T> {
 }
 
 export const api = {
+  diagnosticRules: async (signal?: AbortSignal): Promise<DiagnosticCatalog> => {
+    const result = await diagnosticRequest<DiagnosticRule[]>('', { signal })
+    return { rules: result.data, etag: result.etag }
+  },
+  createDiagnosticRule: async (rule: DiagnosticRuleCreate) =>
+    (await diagnosticRequest<DiagnosticRule>('', { method: 'POST', body: JSON.stringify(rule) })).data,
+  updateDiagnosticRule: async (id: number, changes: DiagnosticRuleUpdate) =>
+    (await diagnosticRequest<DiagnosticRule>(`/${id}`, { method: 'PATCH', body: JSON.stringify(diagnosticChanges(changes)) })).data,
+  disableDiagnosticRule: async (id: number) =>
+    (await diagnosticRequest<DiagnosticRule>(`/${id}/disable`, { method: 'POST' })).data,
+  reorderDiagnosticRules: async (ids: number[], etag: string): Promise<DiagnosticCatalog> => {
+    const result = await diagnosticRequest<DiagnosticRule[]>('/reorder', {
+      method: 'PUT', headers: { 'If-Match': etag }, body: JSON.stringify({ ids }),
+    })
+    return { rules: result.data, etag: result.etag }
+  },
+  previewDiagnosticRule: async (rule: DiagnosticRuleCreate, payload?: Record<string, JsonValue>, signal?: AbortSignal) =>
+    (await diagnosticRequest<DiagnosticPreview>('/preview', { method: 'POST', body: JSON.stringify({ rule, payload }), signal })).data,
   me: () => request<User>('/auth/me'),
   login: (username: string, password: string, rememberMe = false) =>
     request<void>('/auth/login', {
@@ -654,10 +744,15 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ token }),
     }),
-  setEmergencyCookie: (cookie: string) =>
+  setEmergencyCookie: (cookie: string, robotNumber: string) =>
     request<IntegrationSettings>('/admin/settings/emergency-cookie', {
       method: 'PUT',
-      body: JSON.stringify({ cookie }),
+      body: JSON.stringify({ cookie, robot_number: robotNumber }),
+    }),
+  checkEmergencyCookie: (robotNumber?: string) =>
+    request<IntegrationSettings>('/admin/settings/emergency-cookie/check', {
+      method: 'POST',
+      body: JSON.stringify(robotNumber ? { robot_number: robotNumber } : {}),
     }),
   trackerPolicy: () => request<TrackerPolicySettings>('/admin/settings/tracker-policy'),
   updateTrackerPolicy: (payload: Partial<TrackerPolicySettings>) =>
@@ -774,6 +869,11 @@ export const api = {
     if (parkId != null) params.set('park_id', String(parkId))
     return request<MechanicTasks>(`/mechanic/tasks?${params.toString()}`)
   },
+  robotRegistry: (filters: RobotRegistryParams) => {
+    const params = new URLSearchParams()
+    Object.entries(filters).forEach(([key, value]) => { if (value !== undefined) params.set(key, String(value)) })
+    return request<RobotRegistry>(`/robots?${params}`)
+  },
   mechanicRobotTickets: (query: string) =>
     request<{ query: string; items: Blocker[] }>(
       `/mechanic/robots/${encodeURIComponent(query)}/tickets`,
@@ -850,6 +950,10 @@ export const api = {
     park?: string
     status?: string
     robot?: string
+    related_repairs?: boolean
+    open_only?: boolean
+    robot_exact?: string
+    exclude_key?: string
     assignee?: string
     untagged?: boolean
     age_hours?: number
@@ -894,36 +998,42 @@ export const api = {
     request<TrackerComment[]>(`/tracker/issues/${encodeURIComponent(key)}/comments`),
   trackerTransitions: (key: string) =>
     request<TrackerTransition[]>(`/tracker/transitions/${encodeURIComponent(key)}`),
-  trackerComment: (key: string, text: string) =>
+  trackerComment: (key: string, text: string, headers?: Record<string, string>) =>
     request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/comment`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify({ text }),
     }),
-  trackerAttach: (key: string, file: File) => {
+  trackerAttach: (key: string, file: File, headers?: Record<string, string>) => {
     const form = new FormData()
     form.append('file', file, file.name)
     return requestForm<TrackerActionResult>(
       `/tracker/issues/${encodeURIComponent(key)}/attachments`,
       form,
+      headers,
     )
   },
-  trackerAssign: (key: string, assignee: string) =>
+  trackerAssign: (key: string, assignee: string, headers?: Record<string, string>) =>
     request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/assign`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify({ assignee }),
     }),
-  trackerUnassign: (key: string) =>
+  trackerUnassign: (key: string, headers?: Record<string, string>) =>
     request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/unassign`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
     }),
-  trackerTransition: (key: string, transition: string, resolution?: string) =>
+  trackerTransition: (key: string, transition: string, resolution?: string, headers?: Record<string, string>) =>
     request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/transition`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify({ transition, resolution }),
     }),
-  trackerClose: (key: string) =>
+  trackerClose: (key: string, headers?: Record<string, string>) =>
     request<TrackerActionResult>(`/tracker/issues/${encodeURIComponent(key)}/close`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
     }),
   operatorBlockers: (parkId: number, status = 'all') =>
     request<OperatorBlockers>(
@@ -943,6 +1053,8 @@ export const api = {
     request<DashboardSummary>(`/dashboard/summary?park_id=${parkId}`),
   operationsOverview: (parkId: number, days = 7, status = 'all') =>
     request<OperationsOverview>(`/operations/overview?${new URLSearchParams({ park_id: String(parkId), days: String(days), status })}`),
+  analytics: (parkId: number, days = 7, bucket: AnalyticsBucket = '1d') =>
+    request<HistoricalAnalytics>(`/analytics?${new URLSearchParams({ park_id: String(parkId), days: String(days), bucket })}`),
   operationsSlaPolicy: (parkId: number) =>
     request<OperationsSlaPolicy>(`/operations/sla-policy?park_id=${parkId}`),
   updateOperationsSlaPolicy: (parkId: number, body: { target_hours: number | null }) =>

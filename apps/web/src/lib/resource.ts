@@ -1,11 +1,11 @@
 /**
- * Stale-while-revalidate hook + shared store for РобоПарк screens.
+ * Stale-while-revalidate hook + shared store for park-management screens.
  *
  * The idea:
  *   1. When a screen mounts, show whatever is already cached — a paint from
  *      memory or a mirror in localStorage — with no spinner.
- *   2. In the background, ask the API for the current version. Show a thin
- *      top progress bar only while any resource is revalidating.
+ *   2. Revalidate stale responses automatically while visible and online.
+ *      Only initial or explicitly requested loads use the top progress bar.
  *   3. When the fresh payload arrives, swap it in atomically.
  *
  * The bulk of the win comes from *not* looking at `<SkeletonList>` when the
@@ -18,9 +18,11 @@
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { periodicDelay, resumeDelay, retryAfterMs } from './pollingSchedule'
 
 const LS_PREFIX = 'robopark:res:'
 const LS_VERSION = 1
+export const RESOURCE_REFRESH_MS = 30_000
 /** Drop persisted snapshots older than this; next visit is a cold load. */
 export const LS_MAX_AGE_MS = 12 * 60 * 60 * 1000
 
@@ -107,10 +109,27 @@ class ResourceStore {
     return undefined
   }
 
+  isStale(key: string, staleTimeMs: number): boolean {
+    if (this.get(key) === undefined) return true
+    return Date.now() - (this.mem.get(key)?.updatedAt ?? 0) >= staleTimeMs
+  }
+
+  updatedAt(key: string): number | null {
+    if (this.get(key) === undefined) return null
+    return this.mem.get(key)?.updatedAt ?? null
+  }
+
   set(key: string, data: unknown, persist: boolean): void {
     const entry: StoredEntry = { v: LS_VERSION, updatedAt: Date.now(), data }
     this.mem.set(key, entry)
     if (persist) writeToStorage(key, entry)
+    this.notify(key)
+  }
+
+  /** Drop denied data without retiring sibling consumers of the same request. */
+  evict(key: string): void {
+    this.mem.delete(key)
+    removeFromStorage(key)
     this.notify(key)
   }
 
@@ -266,8 +285,12 @@ export function useIsRevalidating(): boolean {
 type Options = {
   /** Mirror successful responses to localStorage (default: true). */
   persist?: boolean
-  /** Fire the loader on mount even if we already have cached data (default: true). */
+  /** Explicit true forces mount refresh; by default only stale data revalidates. */
   refreshOnMount?: boolean
+  /** Fresh cache avoids repeat loads on mount, focus and timer ticks. */
+  staleTimeMs?: number
+  /** Visible/online refresh cadence. Zero disables automatic polling and resume. */
+  refreshIntervalMs?: number
   /** Set to false to defer loading until a real key is available. */
   enabled?: boolean
   /**
@@ -279,6 +302,8 @@ type Options = {
 
 export type CachedResource<T> = {
   data: T | undefined
+  /** Time of the last successful response, retained during failed refreshes. */
+  updatedAt: number | null
   error: unknown
   /** True only when we have no cached data and a load is in flight. */
   isLoading: boolean
@@ -294,69 +319,146 @@ export function useCachedResource<T>(
   opts: Options = {},
 ): CachedResource<T> {
   const persist = opts.persist ?? true
-  const refreshOnMount = opts.refreshOnMount ?? true
+  const refreshOnMount = opts.refreshOnMount
+  const staleTimeMs = opts.staleTimeMs ?? RESOURCE_REFRESH_MS
+  const refreshIntervalMs = opts.refreshIntervalMs ?? RESOURCE_REFRESH_MS
   const enabled = opts.enabled ?? true
   const trackProgress = opts.trackProgress ?? true
 
   const initial = enabled ? resourceStore.get<T>(key) : undefined
   const [data, setData] = useState<T | undefined>(initial)
+  const [syncTime, setSyncTime] = useState(() => ({ key, time: enabled ? resourceStore.updatedAt(key) : null }))
   const [error, setError] = useState<unknown>(null)
   const [isRevalidating, setIsRevalidating] = useState(false)
 
   const loaderRef = useRef(loader)
   loaderRef.current = loader
   const requestIdRef = useRef(0)
+  const ownerGenerationRef = useRef(Symbol('cached-resource-owner'))
+  const retryRef = useRef({ failures: 0, after: 0, blocked: false })
+
+  useEffect(() => {
+    const ownerGeneration = ownerGenerationRef.current
+    retryRef.current = { failures: 0, after: 0, blocked: false }
+    setError(null)
+    return () => {
+      if (ownerGenerationRef.current === ownerGeneration) {
+        ownerGenerationRef.current = Symbol('cached-resource-owner')
+      }
+    }
+  }, [key])
 
   useEffect(() => {
     if (!enabled) return
     setData(resourceStore.get<T>(key))
+    setSyncTime({ key, time: resourceStore.updatedAt(key) })
     const unsub = resourceStore.subscribe(key, () => {
       setData(resourceStore.get<T>(key))
+      setSyncTime({ key, time: resourceStore.updatedAt(key) })
     })
     return unsub
   }, [key, enabled])
 
-  const runLoad = useCallback(async () => {
+  const runLoad = useCallback(async (background = false) => {
     if (!enabled) return
     const requestId = ++requestIdRef.current
     const loadGeneration = captureLoadGeneration(key)
+    const ownerGeneration = ownerGenerationRef.current
     setIsRevalidating(true)
-    if (trackProgress) inFlight.begin()
+    const showProgress = trackProgress && !background
+    if (showProgress) inFlight.begin()
     try {
       const fresh = await coalesceLoader(key, () => loaderRef.current())
       if (
         requestId !== requestIdRef.current ||
+        ownerGeneration !== ownerGenerationRef.current ||
         !isLoadGenerationCurrent(key, loadGeneration)
       ) return
       resourceStore.set(key, fresh, persist)
+      retryRef.current = { failures: 0, after: 0, blocked: false }
       setError(null)
     } catch (loadError) {
       if (
         requestId !== requestIdRef.current ||
+        ownerGeneration !== ownerGenerationRef.current ||
         !isLoadGenerationCurrent(key, loadGeneration)
       ) return
+      const status = loadError && typeof loadError === 'object' && 'status' in loadError ? loadError.status : undefined
+      const failures = retryRef.current.failures + 1
+      retryRef.current = {
+        failures,
+        after: Date.now() + Math.max(retryAfterMs(loadError), Math.min(300_000, Math.max(refreshIntervalMs, 1_000) * 2 ** Math.min(failures - 1, 8))),
+        blocked: status === 401 || status === 403,
+      }
+      if (retryRef.current.blocked) resourceStore.evict(key)
       setError(loadError)
     } finally {
-      if (requestId === requestIdRef.current) {
+      if (
+        requestId === requestIdRef.current &&
+        ownerGeneration === ownerGenerationRef.current
+      ) {
         setIsRevalidating(false)
       }
-      if (trackProgress) inFlight.end()
+      if (showProgress) inFlight.end()
     }
-  }, [enabled, key, persist, trackProgress])
+  }, [enabled, key, persist, trackProgress, refreshIntervalMs])
+
+  const canLoadAutomatically = useCallback(() => (
+    !document.hidden && document.visibilityState !== 'hidden' && navigator.onLine !== false &&
+    !retryRef.current.blocked && Date.now() >= retryRef.current.after
+  ), [])
+
+  useEffect(() => {
+    if (!enabled || !canLoadAutomatically()) return
+    const cached = resourceStore.get<T>(key)
+    if (cached === undefined || refreshOnMount === true ||
+        (refreshOnMount !== false && resourceStore.isStale(key, staleTimeMs))) {
+      void runLoad(cached !== undefined)
+    }
+  }, [enabled, key, refreshOnMount, staleTimeMs, runLoad, canLoadAutomatically])
 
   useEffect(() => {
     if (!enabled) return
-    const cached = resourceStore.get<T>(key)
-    if (refreshOnMount || cached === undefined) {
-      void runLoad()
+    const refreshIfStale = () => {
+      // Draft-backed resources opt out of periodic replacement, but a cold
+      // mount deferred while offline still needs its first response on return.
+      if (refreshIntervalMs <= 0 && resourceStore.get(key) !== undefined) return
+      if (!canLoadAutomatically() || inflightLoaders.has(key) || !resourceStore.isStale(key, staleTimeMs)) return
+      void runLoad(true)
     }
-  }, [enabled, key, refreshOnMount, runLoad])
+    let timer: number | undefined
+    let resumeTimer: number | undefined
+    const schedule = (initial = false) => {
+      if (refreshIntervalMs <= 0) return
+      timer = window.setTimeout(() => { refreshIfStale(); schedule() }, periodicDelay(refreshIntervalMs, initial))
+    }
+    const resume = () => {
+      if (resumeTimer !== undefined || !canLoadAutomatically()) return
+      const delay = resumeDelay()
+      if (delay === 0) { refreshIfStale(); return }
+      resumeTimer = window.setTimeout(() => { resumeTimer = undefined; refreshIfStale() }, delay)
+    }
+    schedule(true)
+    document.addEventListener('visibilitychange', resume)
+    window.addEventListener('focus', resume)
+    window.addEventListener('online', resume)
+    return () => {
+      window.clearTimeout(timer)
+      window.clearTimeout(resumeTimer)
+      document.removeEventListener('visibilitychange', resume)
+      window.removeEventListener('focus', resume)
+      window.removeEventListener('online', resume)
+    }
+  }, [enabled, key, refreshIntervalMs, staleTimeMs, runLoad, canLoadAutomatically])
+
+  const refresh = useCallback(() => runLoad(), [runLoad])
 
   return {
     data,
+    updatedAt: enabled && syncTime.key === key ? syncTime.time : null,
     error,
     isRevalidating,
     isLoading: data === undefined && isRevalidating,
-    refresh: runLoad,
+    refresh,
   }
 }

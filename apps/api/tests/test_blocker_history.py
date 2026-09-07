@@ -402,7 +402,10 @@ def test_scan_all_parks_once_skips_retention_when_nothing_scanned(
     assert retention_calls == []
 
 
-def test_run_blocker_history_loop_runs_once_with_zero_interval(monkeypatch):
+def test_run_blocker_history_loop_runs_once_with_zero_interval(monkeypatch, db_engine):
+    from sqlalchemy.orm import sessionmaker
+
+    monkeypatch.setattr(blocker_history_job, "SessionLocal", sessionmaker(bind=db_engine))
     asyncio_stop = asyncio.Event()
     calls = []
 

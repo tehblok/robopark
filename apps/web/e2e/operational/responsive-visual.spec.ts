@@ -5,7 +5,7 @@ import { installOperational, settlePage, snapshot } from './fixtures'
 const widths = [320, 390, 768, 1024, 1440] as const
 const themes = ['light', 'dark'] as const
 const states = [
-  { name: 'overview', path: '/overview?park=7', ready: '.rp-insights' },
+  { name: 'overview', path: '/overview?park=7', ready: '.rp-overview' },
   { name: 'work', path: '/work/ROBOPARK-42?park=7&status=open&sort=newest&page=2', ready: '.issue-actions' },
   { name: 'robots', path: '/robots?park=7', ready: '.rp-robots-search-panel' },
   { name: 'robot-check', path: `/robots/${snapshot.vin}/check?park=7&tab=scheme`, ready: '.rp-check-photo-frame img' },
@@ -46,6 +46,16 @@ async function assertResponsiveContracts(page: Page, width: number) {
       if (fontSize < minimum) failures.push(`font ${fontSize}<${minimum}: ${name(element)}`)
       if (width <= 899 && element.matches('input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),select,textarea') && fontSize < 16) failures.push(`input font ${fontSize}<16: ${name(element)}`)
     }
+    if (width <= 899) {
+      const navigation = document.querySelector('.rp-shell__bottom-nav')!
+      for (const label of navigation.querySelectorAll('.rp-shell__nav-label')) {
+        const box = label.getBoundingClientRect()
+        const control = label.closest('a,button')!.getBoundingClientRect()
+        const icon = label.parentElement!.querySelector('svg')!.getBoundingClientRect()
+        if (!visible(label) || box.height <= 0 || box.width <= 0) failures.push(`hidden navigation caption: ${name(label)}`)
+        if (box.top < icon.bottom - 1 || box.left < control.left - 1 || box.right > control.right + 1 || box.bottom > control.bottom + 1) failures.push(`navigation caption outside its control or above icon: ${name(label)}`)
+      }
+    }
     if (width === 320 || width === 390) {
       for (const element of document.querySelectorAll('button,a,input,select,textarea')) {
         if (!visible(element)) continue
@@ -83,6 +93,13 @@ async function assertPhotoGeometry(page: Page) {
 }
 
 async function assertWorkMode(page: Page, width: number) {
+  for (const row of await page.locator('.rp-work-entities .rp-entity-row:visible').all()) {
+    const age = await row.locator('.rp-work-issue-age').boundingBox()
+    const status = await row.locator('.rp-entity-row__status').boundingBox()
+    expect(age && status).toBeTruthy()
+    expect(age!.x + age!.width <= status!.x || status!.x + status!.width <= age!.x
+      || age!.y + age!.height <= status!.y || status!.y + status!.height <= age!.y).toBe(true)
+  }
   await expect(page.locator('.rp-work-detail-pane')).toBeVisible()
   if (width >= 900) {
     await expect(page.locator('.rp-work-list-pane')).toBeInViewport()
@@ -92,9 +109,9 @@ async function assertWorkMode(page: Page, width: number) {
 
 for (const boundary of [
   { width: 899, mode: 'sequential', filterColumns: 2 },
-  { width: 900, mode: 'compact split', filterColumns: 3 },
-  { width: 1199, mode: 'compact split', filterColumns: 3 },
-  { width: 1200, mode: 'wide split', filterColumns: 6 },
+  { width: 900, mode: 'compact split', filterColumns: 2 },
+  { width: 1199, mode: 'compact split', filterColumns: 2 },
+  { width: 1200, mode: 'wide split', filterColumns: 2 },
 ] as const) {
   test(`responsive boundary ${boundary.width}: ${boundary.mode}`, async ({ page }) => {
     await page.setViewportSize({ width: boundary.width, height: 900 })
@@ -129,8 +146,9 @@ for (const width of widths) for (const theme of themes) for (const state of stat
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
     await settlePage(page)
     if (state.name === 'overview' && width >= 900) {
-      await expect(page.locator('.rp-insights-metrics')).toBeInViewport()
-      await expect(page.getByRole('heading', { name: 'Текущие задачи' })).toBeInViewport()
+      await expect(page.locator('.rp-overview-flow')).toBeInViewport()
+      await expect(page.getByRole('heading', { name: 'Статусы задач' })).toBeInViewport()
+      await expect(page.getByRole('heading', { name: 'Очередь внимания' })).toBeInViewport()
     }
     if (state.name === 'work') {
       await assertWorkMode(page, width)
@@ -147,15 +165,15 @@ for (const width of widths) for (const theme of themes) for (const state of stat
   })
 }
 
-test('1440px 200% root text reflow preserves Operations metrics, tasks, SLA and detail', async ({ page }) => {
+test('1440px 200% root text reflow preserves Overview triage and detail', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await installOperational(page)
   await page.goto('/overview?park=7')
   await page.evaluate(() => { document.documentElement.style.fontSize = '200%' })
   for (const target of [
-    page.locator('.rp-insights-metrics'),
-    page.getByRole('heading', { name: 'Текущие задачи' }),
-    page.getByRole('heading', { name: 'Просрочки SLA' }),
+    page.locator('.rp-overview-flow'),
+    page.getByRole('heading', { name: 'Статусы задач' }),
+    page.getByRole('heading', { name: 'Очередь внимания' }),
   ]) {
     await target.scrollIntoViewIfNeeded()
     await expect(target).toBeInViewport()

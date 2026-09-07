@@ -335,6 +335,9 @@ def test_installer_enables_and_starts_approved_command_trigger(tmp_path):
         INSTALLER_DIR=/fixture
         ROBOPARK_OPT=/fixture
         ROBOPARK_ROOT=/fixture
+        ROBOPARK_ETC="$TASK_ETC"
+        mkdir -p "$ROBOPARK_ETC"
+        printf "TUNA_SUBDOMAIN='park'\nTUNA_LOCATION='ru'\nTUNA_DOMAIN=''\n" > "$ROBOPARK_ETC/tuna.env"
         python3() { :; }
         curl() { return 0; }
         systemctl() { printf '%s\\n' "$*" >> "$TASK_LOG"; }
@@ -345,7 +348,7 @@ def test_installer_enables_and_starts_approved_command_trigger(tmp_path):
             "installer-test",
             str(script),
         ],
-        env={"TASK_LOG": str(logfile)},
+        env={"TASK_LOG": str(logfile), "TASK_ETC": str(tmp_path / "etc")},
         capture_output=True,
     )
     assert result.returncode == 0

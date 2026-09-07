@@ -71,6 +71,16 @@ class InstallerScenarios(unittest.TestCase):
             self.assertNotIn(secret, result.stdout + result.stderr)
         return result
 
+    def run_start(self, *args, success=True, **env):
+        result = subprocess.run(
+            ['sh', str(self.bundle / 'START.sh'), *args],
+            env={**self.env, **env}, text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+        for secret in SECRETS:
+            self.assertNotIn(secret, result.stdout + result.stderr)
+        return result
+
     def commands(self, name=None):
         path = self.root / 'commands.jsonl'
         values = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
@@ -100,6 +110,24 @@ class InstallerScenarios(unittest.TestCase):
         enabled = [arg for call in self.commands('systemctl') if call['args'][0] == 'enable' for arg in call['args'][1:]]
         for name in ('docker.service', 'robopark.service', 'robopark-tuna.service', 'robopark-updater.service', 'robopark-doctor.timer', 'robopark-watchdog.timer', 'robopark-update-check.timer'):
             self.assertIn(name, enabled)
+
+    def test_start_performs_install_with_defaults_and_enables_autostart(self):
+        preset = self.bundle / '.robopark-preset.env'
+        preset.write_text(
+            'TUNA_TOKEN=tt_fixture_secret\nTUNA_SUBDOMAIN=park\n'
+            'SEED_USERNAME=royal\nSEED_PASSWORD=Strong!Fixture123\n'
+        )
+        preset.chmod(0o600)
+        self.run_start('install')
+        updater = (self.root / 'etc/robopark/updater.env').read_text()
+        host = (self.root / 'etc/robopark/host.env').read_text()
+        self.assertIn("GITHUB_REPOSITORY='tehblok/robopark'", updater)
+        self.assertIn("GITHUB_ENABLED='true'", updater)
+        self.assertIn("UVICORN_WORKERS='2'", host)
+        enabled = [arg for call in self.commands('systemctl') if call['args'][0] == 'enable' for arg in call['args'][1:]]
+        self.assertIn('robopark.service', enabled)
+        self.assertIn('robopark-tuna.service', enabled)
+        self.assertIn('robopark-watchdog.timer', enabled)
         for name in ('data', 'api-ops'):
             path = self.root / 'var/lib/robopark' / name
             self.assertTrue(path.is_dir())
@@ -145,6 +173,21 @@ class InstallerScenarios(unittest.TestCase):
         self.run_installer(success=False, API_UNREADY='1')
         self.assertEqual(self.state()['phase'], 'services')
         self.assertFalse(any(call['args'] == ['start', 'robopark-tuna.service'] for call in self.commands('systemctl')))
+        self.run_installer('--resume')
+        self.assertEqual(self.state()['phase'], 'complete')
+
+    def test_public_https_is_verified_after_tuna_start(self):
+        self.run_installer()
+        calls = self.commands()
+        tunnel = next(i for i, call in enumerate(calls) if call['name'] == 'systemctl' and call['args'] == ['start', 'robopark-tuna.service'])
+        https = next(i for i, call in enumerate(calls) if call['name'] == 'curl' and call['args'][-1] == 'https://park.ru.tuna.am/')
+        self.assertLess(tunnel, https)
+
+    def test_public_https_failure_is_retried_and_resumable(self):
+        self.run_installer(success=False, PUBLIC_HTTPS_UNREADY='1')
+        public_checks = [call for call in self.commands('curl') if call['args'][-1] == 'https://park.ru.tuna.am/']
+        self.assertEqual(len(public_checks), 30)
+        self.assertEqual(self.state()['phase'], 'services')
         self.run_installer('--resume')
         self.assertEqual(self.state()['phase'], 'complete')
 
@@ -486,7 +529,7 @@ runpy.run_path(helper, run_name='__main__')
         self.run_installer()
 
     def test_interactive_wizard_never_echoes_secrets(self):
-        answers = [SECRETS[0], 'park', '', '', SECRETS[1], '', '', 'example/robopark', SECRETS[2], '']
+        answers = [SECRETS[0], 'park', SECRETS[1], '']
         child, master = pty.fork()
         if child == 0:
             os.execve('/bin/sh', ['sh', str(self.bundle / 'install.sh')], self.env)
@@ -533,6 +576,13 @@ runpy.run_path(helper, run_name='__main__')
         for secret in SECRETS:
             self.assertNotIn(secret, output.decode())
         self.assertEqual(self.state()['phase'], 'complete')
+
+    def test_large_host_selects_four_workers_automatically(self):
+        (self.root / 'proc').mkdir()
+        (self.root / 'proc/meminfo').write_text('MemTotal:       33554432 kB\n')
+        self.run_installer()
+        host = (self.root / 'etc/robopark/host.env').read_text()
+        self.assertIn("UVICORN_WORKERS='4'", host)
 
 
 if __name__ == '__main__':

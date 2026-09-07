@@ -35,7 +35,7 @@ describe('AdminOpsPanel', () => {
     await waitFor(() => expect(callsFor(fetchMock, '/update/approve')).toHaveLength(1))
     const request = callsFor(fetchMock, '/update/approve')[0] as unknown as [string, RequestInit]
     expect(JSON.parse(String(request[1].body))).toEqual({ inspection_id: 'inspection-one', confirm: 'ОБНОВИТЬ' })
-    expect(screen.queryByRole('button', { name: /Прервать/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Прервать и снять техработы' })).toBeVisible()
   })
   it('invalidates old inspection and confirmation when the ZIP changes, ignoring late responses', async () => {
     let resolveFirst!: (value: unknown) => void

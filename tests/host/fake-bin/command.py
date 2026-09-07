@@ -44,6 +44,8 @@ elif name == 'curl':
         Path(args[args.index('--output') + 1]).write_text('fake signed repository key')
     elif args[-1] == 'http://127.0.0.1:8080/api/health/ready':
         sys.exit(int(os.environ.get('API_UNREADY', '0')))
+    elif args[-1].startswith('https://'):
+        sys.exit(int(os.environ.get('PUBLIC_HTTPS_UNREADY', '0')))
     else:
         sys.exit('curl must save repository key explicitly')
 elif name == 'gpg':

@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { TaskCollaboration } from './TaskCollaboration'
+import { attachmentIdentity, runTrackerSubmission } from './trackerReliability'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   api,
   type TrackerIssue,
@@ -48,11 +50,29 @@ export function TrackerWorkspace({
   const [selected, setSelected] = useState('')
   const [validationError, setValidationError] = useState('')
   const loadMoreRef = useRef(false)
+  const loadedExtent = useRef(new Map<string, number>())
+  const appendRequest = useRef<{ key: string; base: ListPage } | null>(null)
 
   const invalidFilter = filters.untagged && !filters.queue
+  const currentListKey = invalidFilter ? '' : listKey(filters)
   const listRes = useCachedResource<ListPage>(
-    invalidFilter ? '' : listKey(filters),
-    () => api.trackerIssues({ ...filters, limit: PAGE_SIZE, offset: 0 }),
+    currentListKey,
+    async () => {
+      const append = appendRequest.current
+      appendRequest.current = null
+      if (append?.key === currentListKey) {
+        const page = await api.trackerIssues({ ...filters, limit: PAGE_SIZE, offset: append.base.items.length })
+        return { ...page, items: [...append.base.items, ...page.items] }
+      }
+      const target = Math.max(PAGE_SIZE, loadedExtent.current.get(currentListKey) ?? 0, resourceStore.get<ListPage>(currentListKey)?.items.length ?? 0)
+      const refreshed: TrackerIssue[] = []
+      let page: ListPage
+      do {
+        page = await api.trackerIssues({ ...filters, limit: PAGE_SIZE, offset: refreshed.length })
+        refreshed.push(...page.items)
+      } while (refreshed.length < target && page.has_more && page.items.length > 0)
+      return { ...page, items: refreshed }
+    },
     { enabled: !invalidFilter },
   )
 
@@ -111,29 +131,34 @@ export function TrackerWorkspace({
     }
   }, [listRes.data, selected])
 
+  const currentOwner = `${user?.id}:${currentListKey}:${selected}`
+  const owner = useRef(currentOwner)
+  useLayoutEffect(() => {
+    owner.current = currentOwner
+    return () => { owner.current = '' }
+  }, [currentOwner])
+
   const loadMore = async () => {
-    if (loadMoreRef.current) return
+    if (loadMoreRef.current || listRes.isRevalidating || !listRes.data) return
     loadMoreRef.current = true
+    const base = listRes.data
+    loadedExtent.current.set(currentListKey, base.items.length + PAGE_SIZE)
+    appendRequest.current = { key: currentListKey, base }
+    // Route pagination through the same request generation as background reads.
+    resourceStore.invalidate(currentListKey)
+    resourceStore.set(currentListKey, base, true)
     try {
-      const data = await api.trackerIssues({
-        ...filters,
-        limit: PAGE_SIZE,
-        offset: items.length,
-      })
-      const merged: ListPage = {
-        items: [...items, ...data.items],
-        total: data.total,
-        has_more: data.has_more,
-      }
-      // Update the cached page so the extra rows survive re-mounts.
-      resourceStore.set(listKey(filters), merged, true)
+      await listRes.refresh()
     } finally {
       loadMoreRef.current = false
     }
   }
 
   const refreshSelected = async () => {
-    if (!selected) return
+    if (!selected || owner.current !== currentOwner) return
+    resourceStore.invalidate(`tracker:issue:${selected}`)
+    resourceStore.invalidate(`tracker:comments:${selected}`)
+    resourceStore.invalidate(`tracker:transitions:${selected}`)
     await Promise.all([
       detailRes.refresh(),
       commentsRes.refresh(),
@@ -142,8 +167,10 @@ export function TrackerWorkspace({
   }
 
   const refreshAll = async () => {
-    await refreshSelected()
-    await listRes.refresh()
+    if (owner.current !== currentOwner) return
+    loadedExtent.current.set(currentListKey, Math.max(loadedExtent.current.get(currentListKey) ?? 0, resourceStore.get<ListPage>(currentListKey)?.items.length ?? 0))
+    resourceStore.invalidate(currentListKey)
+    await Promise.all([refreshSelected(), listRes.refresh()])
   }
 
   return (
@@ -177,8 +204,13 @@ export function TrackerWorkspace({
           </button>
         )}
 
+        {detail && <TaskCollaboration issueKey={detail.key} owner={user?.username ?? ''} active canWrite={canWrite} />}
+
         <IssueDetailPanel
           comments={comments}
+          commentsLoading={commentsRes.isLoading && !commentsRes.data}
+          currentUser={user?.tracker_login ?? user?.username}
+          accountKey={user?.username}
           commentsAsHistory={user?.role === 'mechanic'}
           issue={detail}
           loading={detailLoading}
@@ -188,29 +220,31 @@ export function TrackerWorkspace({
           <IssueActionsPanel
             canWrite={canWrite}
             currentUser={user?.tracker_login ?? undefined}
+            draftOwner={user?.username}
+            issueKey={detail.key}
             issueUrl={detail.url}
             onAssign={async (assignee) => {
-              await api.trackerAssign(detail.key, assignee)
+              await runTrackerSubmission(user?.username ?? '', detail, 'assign', { assignee }, headers => api.trackerAssign(detail.key, assignee, headers), () => { if (owner.current !== currentOwner) throw new Error('work_access_changed') })
               await refreshAll()
             }}
             onClose={async () => {
-              await api.trackerClose(detail.key)
+              await runTrackerSubmission(user?.username ?? '', detail, 'close', {}, headers => api.trackerClose(detail.key, headers), () => { if (owner.current !== currentOwner) throw new Error('work_access_changed') })
               await refreshAll()
             }}
             onComment={async (text) => {
-              await api.trackerComment(detail.key, text)
+              await runTrackerSubmission(user?.username ?? '', detail, 'comment', { text }, headers => api.trackerComment(detail.key, text, headers), () => { if (owner.current !== currentOwner) throw new Error('work_access_changed') })
               await refreshSelected()
             }}
             onAttach={async (file) => {
-              await api.trackerAttach(detail.key, file)
+              await runTrackerSubmission(user?.username ?? '', detail, 'attach', await attachmentIdentity(file), headers => api.trackerAttach(detail.key, file, headers), () => { if (owner.current !== currentOwner) throw new Error('work_access_changed') })
               await refreshAll()
             }}
             onTransition={async (transition) => {
-              await api.trackerTransition(detail.key, transition)
+              await runTrackerSubmission(user?.username ?? '', detail, 'transition', { transition }, headers => api.trackerTransition(detail.key, transition, undefined, headers), () => { if (owner.current !== currentOwner) throw new Error('work_access_changed') })
               await refreshAll()
             }}
             onUnassign={async () => {
-              await api.trackerUnassign(detail.key)
+              await runTrackerSubmission(user?.username ?? '', detail, 'unassign', {}, headers => api.trackerUnassign(detail.key, headers), () => { if (owner.current !== currentOwner) throw new Error('work_access_changed') })
               await refreshAll()
             }}
             transitions={transitions}

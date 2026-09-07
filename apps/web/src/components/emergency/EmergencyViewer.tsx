@@ -8,6 +8,7 @@ import {
   type EmergencySnapshot,
 } from '../../api'
 import { useAuth } from '../../auth-context'
+import { checkAccessIdentity } from '../../domains/robots/robotCheckUrl'
 import { Alert, PageShell, Panel } from '../PageShell'
 import { EmptyBlock, SkeletonList, Spinner } from '../ui/Feedback'
 import { mapApiError } from '../../i18n/errors'
@@ -23,7 +24,7 @@ import {
 } from './inspectionUrl'
 import { RobotSchematic } from './RobotSchematic'
 
-const SNAPSHOT_POLL_MS = 2500
+import { ROBOT_POLL_MS as SNAPSHOT_POLL_MS } from '../../domains/robots/polling'
 
 type ResolvePayload = {
   vin: string
@@ -42,9 +43,11 @@ function wheelsSectionId(sections: EmergencySection[]): string {
   return match?.id ?? 'wheels'
 }
 
-export function EmergencyViewer() {
+function EmergencyViewerOwner() {
   const { user } = useAuth()
   const isDriver = user?.role === 'driver'
+  const cacheScope = `emergency:${user?.id}:${user ? checkAccessIdentity(user) : 'anonymous'}:`
+  const [denied, setDenied] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   const { q: urlQuery, tab: urlTab } = parseInspectionParams(searchParams)
   const [robotNumber, setRobotNumber] = useState(urlQuery)
@@ -88,22 +91,24 @@ export function EmergencyViewer() {
 
   const markCookieStale = useCallback(() => {
     setCookieStale(true)
-    resourceStore.invalidate('emergency:', { prefix: true })
+    resourceStore.invalidate(cacheScope, { prefix: true })
     setError('')
-  }, [])
+  }, [cacheScope])
 
   const snapshotRes = useCachedResource<EmergencySnapshot>(
-    vin && !cookieStale ? `emergency:snapshot:${vin}` : '',
+    vin && !cookieStale && !denied ? `${cacheScope}snapshot:${vin}` : '',
     () => api.emergencySnapshot(vin),
-    { enabled: Boolean(vin) && !cookieStale, persist: false, trackProgress: false },
+    { enabled: Boolean(vin) && !cookieStale && !denied, persist: false, trackProgress: false, refreshIntervalMs: SNAPSHOT_POLL_MS, staleTimeMs: SNAPSHOT_POLL_MS },
   )
   const sectionRes = useCachedResource<EmergencySectionDetail>(
-    vin && activeTab !== 'map' && !cookieStale ? `emergency:section:${vin}:${activeTab}` : '',
+    vin && activeTab !== 'map' && !cookieStale && !denied ? `${cacheScope}section:${vin}:${activeTab}` : '',
     () => api.emergencySection(vin, activeTab),
     {
-      enabled: Boolean(vin) && activeTab !== 'map' && !cookieStale,
+      enabled: Boolean(vin) && activeTab !== 'map' && !cookieStale && !denied,
       persist: false,
       trackProgress: false,
+      refreshIntervalMs: SNAPSHOT_POLL_MS,
+      staleTimeMs: SNAPSHOT_POLL_MS,
     },
   )
 
@@ -114,27 +119,18 @@ export function EmergencyViewer() {
   }, [snapshotRes.error, sectionRes.error, markCookieStale])
 
   useEffect(() => {
-    if (!vin || cookieStale) return
-    const tick = () => {
-      if (document.hidden) return
-      void snapshotRes.refresh()
-      if (activeTab !== 'map') void sectionRes.refresh()
-    }
-    const timer = window.setInterval(tick, SNAPSHOT_POLL_MS)
-    const onVisibility = () => {
-      if (!document.hidden) tick()
-    }
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => {
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisibility)
-    }
-  }, [vin, cookieStale, activeTab, snapshotRes.refresh, sectionRes.refresh])
+    const failure = [snapshotRes.error, sectionRes.error].find(error => error instanceof ApiError && [401, 403].includes(error.status) && !isCookieInvalid(error))
+    if (!failure) return
+    setDenied(true); setVin(''); setSections([])
+    resourceStore.invalidate(cacheScope, { prefix: true })
+    setError(mapApiError(failure, ru.errors.emergency))
+  }, [snapshotRes.error, sectionRes.error, cacheScope])
 
   const resolveRobot = useCallback(async (
     queryOverride?: string,
     opts: { resetView?: boolean } = {},
   ) => {
+    if (denied) return
     const query = (queryOverride ?? robotNumber).trim()
     const resetView = opts.resetView ?? queryOverride == null
     if (queryOverride != null) setRobotNumber(query)
@@ -150,7 +146,7 @@ export function EmergencyViewer() {
 
     setResolving(true)
     setError('')
-    const cached = resourceStore.get<ResolvePayload>(`emergency:resolve:${query}`)
+    const cached = resourceStore.get<ResolvePayload>(`${cacheScope}resolve:${query}`)
     const apply = (data: ResolvePayload) => {
       setVin(data.vin)
       setSections(data.sections)
@@ -171,7 +167,7 @@ export function EmergencyViewer() {
     if (cached) apply(cached)
     try {
       const data = await api.emergencyResolve(query)
-      resourceStore.set(`emergency:resolve:${query}`, data, false)
+      resourceStore.set(`${cacheScope}resolve:${query}`, data, false)
       apply(data)
     } catch (caught) {
       if (isCookieInvalid(caught)) {
@@ -186,7 +182,7 @@ export function EmergencyViewer() {
     } finally {
       setResolving(false)
     }
-  }, [enableFollow, markCookieStale, robotNumber, urlTab, writeUrl])
+  }, [cacheScope, denied, enableFollow, markCookieStale, robotNumber, urlTab, writeUrl])
 
   useEffect(() => {
     if (!urlQuery || autoQueryRef.current === urlQuery) return
@@ -216,7 +212,7 @@ export function EmergencyViewer() {
   const identity = liveSnapshot?.short_number
     ? `${liveSnapshot.short_number} · ${vin}`
     : vin
-  const formLocked = resolving || cookieStale
+  const formLocked = resolving || cookieStale || denied
   const lat = liveSnapshot?.lat ?? null
   const lon = liveSnapshot?.lon ?? null
   const hasCoords = lat != null && lon != null
@@ -381,4 +377,9 @@ export function EmergencyViewer() {
       )}
     </PageShell>
   )
+}
+
+export function EmergencyViewer() {
+  const { user } = useAuth()
+  return <EmergencyViewerOwner key={`${user?.id}:${user ? checkAccessIdentity(user) : 'anonymous'}`} />
 }

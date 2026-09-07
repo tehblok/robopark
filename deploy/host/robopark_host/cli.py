@@ -1,5 +1,7 @@
 """Command dispatch for the privileged Robopark host utility."""
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
