@@ -250,6 +250,11 @@ def _response_payload(response: Any) -> Mapping[str, Any]:
     return parsed if isinstance(parsed, Mapping) else {}
 
 
+def _readiness_checks(response: Any) -> Mapping[str, Any]:
+    checks = _response_payload(response).get("checks")
+    return checks if isinstance(checks, Mapping) else {}
+
+
 def _endpoint_check(http: Any) -> CheckResult:
     try:
         response = _http_get(http, "http://127.0.0.1:8080/", timeout=5)
@@ -270,7 +275,7 @@ def _api_readiness_check(http: Any) -> CheckResult:
     except Exception:
         return CheckResult("api_readiness", "failed", "API readiness недоступен", "restart_app")
     payload = _response_payload(response)
-    database = _response_payload(response).get("checks", {}).get("database")
+    database = _readiness_checks(response).get("database")
     if not _response_ok(response) or payload.get("status") != "ready" or database != "ok":
         return CheckResult("api_readiness", "failed", "API или база данных не готовы", "restart_app")
     return CheckResult("api_readiness", "ok", "API и база данных готовы", None)
@@ -324,7 +329,7 @@ def _integration_check(http: Any) -> CheckResult:
         response = _http_get(http, "http://127.0.0.1:8080/api/health/ready", timeout=5)
     except Exception:
         return CheckResult("integrations", "warning", "Проверка Tracker и Emergency недоступна", None)
-    integration_state = _response_payload(response).get("checks", {}).get("integrations")
+    integration_state = _readiness_checks(response).get("integrations")
     return CheckResult(
         "integrations",
         "ok" if integration_state == "ok" else "warning",
@@ -338,19 +343,25 @@ def _database_check(paths: HostPaths, runner: Runner, http: Any) -> CheckResult:
         response = _http_get(http, "http://127.0.0.1:8080/api/health/ready", timeout=5)
     except Exception:
         return CheckResult("database_unavailable", "failed", "База данных недоступна", None)
-    database = _response_payload(response).get("checks", {}).get("database")
+    database = _readiness_checks(response).get("database")
     migration = execute(runner, compose_command(paths, ["exec", "-T", "api", "alembic", "current"]))
     try:
-        expected_head = json.loads((paths.current / "manifest.json").read_text(encoding="utf-8"))[
-            "migration_head"
-        ]
-    except (OSError, ValueError, KeyError):
+        manifest = json.loads((paths.current / "manifest.json").read_text(encoding="utf-8"))
+        expected_head = manifest.get("migration_head") if isinstance(manifest, Mapping) else None
+    except (OSError, ValueError):
         expected_head = None
     actual_head = migration.stdout.strip().split(maxsplit=1)[0] if migration.stdout.strip() else None
+    revisions_match = (
+        isinstance(expected_head, str)
+        and bool(expected_head)
+        and isinstance(actual_head, str)
+        and bool(actual_head)
+        and actual_head == expected_head
+    )
     return CheckResult(
         "database_unavailable",
-        "ok" if _response_ok(response) and database == "ok" and migration.ok and actual_head == expected_head else "failed",
-        "База данных и миграции доступны" if _response_ok(response) and database == "ok" and migration.ok and actual_head == expected_head else "База данных или миграции недоступны",
+        "ok" if _response_ok(response) and database == "ok" and migration.ok and revisions_match else "failed",
+        "База данных и миграции доступны" if _response_ok(response) and database == "ok" and migration.ok and revisions_match else "База данных или миграции недоступны",
         None,
     )
 
