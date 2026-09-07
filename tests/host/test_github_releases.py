@@ -489,6 +489,19 @@ def test_task10_prerelease_pack_verify_discover_and_host_validation(host_paths, 
     source = tmp_path / "prerelease"
     source.mkdir()
     (source / "VERSION").write_text("1.3.0-rc.1\n")
+    (source / "apps/api/alembic/versions").mkdir(parents=True)
+    (source / "apps/api/alembic/versions/head.py").write_text(
+        "revision = '0017'\ndown_revision = None\n"
+    )
+    (source / "deploy").mkdir()
+    (source / "deploy/release-metadata.json").write_text(
+        json.dumps(
+            {
+                "migration_head": "0017",
+                "migration_compatibility": {"from_heads": [], "reversible": False},
+            }
+        )
+    )
     output = tmp_path / "output/robopark-release-1.3.0-rc.1.zip"
     packer["build_release"](
         SimpleNamespace(

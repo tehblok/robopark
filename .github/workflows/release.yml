@@ -53,10 +53,9 @@ jobs:
           export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
           export ROBOPARK_RELEASE_VERSION="$(cat VERSION)"
           export ROBOPARK_RELEASE_GIT_SHA="$(git rev-parse HEAD)"
-          export ROBOPARK_MIGRATION_HEAD="$(uv run --directory apps/api --frozen python -c 'from alembic.config import Config; from alembic.script import ScriptDirectory; print(ScriptDirectory.from_config(Config("alembic.ini")).get_current_head())')"
           export PATH="$PWD/apps/api/.venv/bin:$PATH"
           mkdir -p artifacts
-          scripts/pack-release.sh "artifacts/robopark-release-$ROBOPARK_RELEASE_VERSION.zip"
+          scripts/pack-release.sh --metadata deploy/release-metadata.json "artifacts/robopark-release-$ROBOPARK_RELEASE_VERSION.zip"
           scripts/pack-installer.sh --release "artifacts/robopark-release-$ROBOPARK_RELEASE_VERSION.zip" \
             "artifacts/robopark-installer-$ROBOPARK_RELEASE_VERSION.tar.gz"
       - name: Independently verify all publishable artifacts

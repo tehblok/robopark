@@ -24,7 +24,6 @@ from uuid import uuid4
 
 from cryptography.hazmat.primitives import serialization
 from installer_scenarios import REPO, SECRETS, InstallerScenarios
-from robopark_api.services.ops.archives import build_archive
 from robopark_host.checks import CommandResult
 from robopark_host.paths import HostPaths
 from robopark_host.release import ReleaseError
@@ -135,21 +134,52 @@ class InstalledHost:
                 target.write_text((target.read_text() if append else "") + body)
                 self.changed_files.append(name)
         (self.source / "VERSION").write_text("0.1.1\n")
-        self.raw = build_archive(
-            kind="release",
-            source_root=self.source,
-            app_version="0.1.1",
-            release_meta={
-                "git_sha": "b" * 40,
-                "migration_head": "next",
-                "migration_compatibility": {"from_heads": ["initial"], "reversible": True},
-            },
-            signing_key=self.installer.key.private_bytes(
+        metadata = self.source / "deploy/release-metadata.json"
+        metadata.write_text(
+            json.dumps(
+                {
+                    "migration_head": "next",
+                    "migration_compatibility": {"from_heads": ["initial"], "reversible": True},
+                }
+            )
+        )
+        (self.source / "apps/api/alembic/versions/initial.py").write_text(
+            "revision = 'initial'\ndown_revision = None\n"
+        )
+        private = self.installer.base / "packer-private.pem"
+        private.write_bytes(
+            self.installer.key.private_bytes(
                 serialization.Encoding.PEM,
                 serialization.PrivateFormat.PKCS8,
                 serialization.NoEncryption(),
-            ),
+            )
         )
+        private.chmod(0o600)
+        output = self.installer.base / "packed-release.zip"
+        try:
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO / "scripts/release_pack.py"),
+                    "--root",
+                    str(self.source),
+                    "--output",
+                    str(output),
+                    "--version",
+                    "0.1.1",
+                    "--git-sha",
+                    "b" * 40,
+                    "--metadata",
+                    str(metadata),
+                    "--signing-key",
+                    str(private),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            self.raw = output.read_bytes()
+        finally:
+            private.unlink(missing_ok=True)
         self.github = self.make_github()
         (self.paths.etc / "updater.env").write_text(
             "GITHUB_REPOSITORY='team/robopark'\nGITHUB_TOKEN='github_fixture_secret'\nGITHUB_CHANNEL='stable'\nGITHUB_ENABLED='true'\n"

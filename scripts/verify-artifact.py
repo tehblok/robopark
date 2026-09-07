@@ -136,6 +136,7 @@ def verify_release(raw, key):
             and type(manifest["format"]) is int
             and manifest["format"] == 2
         )
+        validate_policy_metadata(manifest)
         require_semver(manifest["app_version"])
         require_semver(
             "0.0.0"
@@ -246,6 +247,30 @@ def main():
         return 1
     print("Artifact verified: detached Ed25519 signature, metadata and release contents.")
     return 0
+
+
+def validate_policy_metadata(manifest):
+    """Strict signed policy fields; empty compatibility remains valid for old releases."""
+    migration = manifest["migration_compatibility"]
+    if not isinstance(migration, dict):
+        raise ValueError("invalid_release_policy")
+    if migration:
+        if (
+            set(migration) != {"from_heads", "reversible"}
+            or type(migration["reversible"]) is not bool
+        ):
+            raise ValueError("invalid_release_policy")
+        heads = migration["from_heads"]
+        if (
+            not isinstance(heads, list)
+            or len(heads) > 64
+            or not all(
+                isinstance(head, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", head)
+                for head in heads
+            )
+            or len(set(heads)) != len(heads)
+        ):
+            raise ValueError("invalid_release_policy")
 
 
 if __name__ == "__main__":
