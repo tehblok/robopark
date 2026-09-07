@@ -58,3 +58,8 @@ docs/superpowers/
 
 # Offline release-signing material
 .release-secrets/
+
+# Generated signed release bundles
+/artifacts/
+/robopark-release*.zip*
+/robopark-installer*.tar.gz*

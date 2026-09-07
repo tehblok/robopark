@@ -30,6 +30,7 @@ jobs:
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
+      # The default gate includes unprivileged host/installer tests.
       - name: Verify repository
         run: ./scripts/verify.sh
 

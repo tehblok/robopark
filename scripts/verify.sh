@@ -41,8 +41,22 @@ run_docker() {
     "import importlib.util, multipart, robopark_api; assert importlib.util.find_spec('pytest') is None"
 }
 
+run_host() {
+  for script in deploy/installer/install.sh deploy/installer/lib/*.sh deploy/tuna-http.sh; do
+    sh -n "$script"
+  done
+  PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH="$repo_root/deploy/host:$repo_root/apps/api/src" \
+    uv run --project "$repo_root/apps/api" --frozen --extra dev \
+      python -m pytest -p no:cacheprovider tests/host -q
+  PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH="$repo_root/deploy/host:$repo_root/apps/api/src" \
+    uv run --project "$repo_root/apps/api" --frozen --extra dev \
+      python tests/host/installer_scenarios.py
+}
+
 usage() {
-  echo "usage: $0 [api|web|docker]" >&2
+  echo "usage: $0 [api|web|docker|host|all]" >&2
 }
 
 if [ "$#" -gt 1 ]; then
@@ -60,10 +74,14 @@ case "${1:-all}" in
   docker)
     run_docker
     ;;
+  host)
+    run_host
+    ;;
   all)
     run_api
     run_web
     run_docker
+    run_host
     ;;
   *)
     usage
