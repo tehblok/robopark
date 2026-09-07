@@ -1,13 +1,14 @@
 import json
 import os
 import sys
+import time
 import zipfile
 
 import pytest
 from robopark_host.bundle import create_diagnostic_bundle
 from robopark_host.checks import CheckResult, CommandResult, DiagnosticReport
-from robopark_host.cli import _doctor_handler, _repair_handler, _system_runner
-from robopark_host.doctor import run_doctor
+from robopark_host.cli import _doctor_handler, _Http, _repair_handler, _system_runner
+from robopark_host.doctor import run_doctor, run_status
 from robopark_host.repair import RepairReport
 from robopark_host.watchdog import run_watchdog
 
@@ -66,7 +67,9 @@ def _release(host_paths):
     release = host_paths.releases / "v1"
     (release / "deploy").mkdir(parents=True)
     (release / "deploy" / "docker-compose.yml").write_text("services: {}\n")
-    (release / "manifest.json").write_text(json.dumps({"app_version": "1.2.3", "format_version": 1}))
+    (release / "manifest.json").write_text(
+        json.dumps({"app_version": "1.2.3", "format": 1, "migration_head": "head"})
+    )
     host_paths.current.parent.mkdir(parents=True, exist_ok=True)
     host_paths.previous.parent.mkdir(parents=True, exist_ok=True)
     os.symlink(release, host_paths.current)
@@ -194,3 +197,115 @@ def test_production_runner_drains_large_process_output_but_retains_only_the_cap(
 
     assert result.returncode == 0
     assert len(result.stdout) == 128
+
+
+def test_bundle_keeps_allowlisted_journal_metadata_without_messages_or_credentials(host_paths, tmp_path):
+    _release(host_paths)
+
+    def runner(command, *, timeout, max_output):
+        if command[0] == "journalctl":
+            return CommandResult(
+                stdout=json.dumps(
+                    {
+                        "__REALTIME_TIMESTAMP": "1720000000000000",
+                        "PRIORITY": "6",
+                        "_SYSTEMD_UNIT": "robopark.service",
+                        "MESSAGE_ID": "robopark.ready",
+                        "MESSAGE": "Authorization: Bearer FAKE_SECRET",
+                        "_CMDLINE": "tuna --token FAKE_SECRET",
+                    }
+                )
+            )
+        return ReviewRunner("[]")(command, timeout=timeout, max_output=max_output)
+
+    bundle = create_diagnostic_bundle(host_paths, DiagnosticReport([]), runner, tmp_path / "bundle.zip")
+
+    with zipfile.ZipFile(bundle) as archive:
+        journal = json.loads(archive.read("journal/robopark.service.json"))
+    assert journal["entries"] == [
+        {
+            "event_id": "robopark.ready",
+            "priority": "6",
+            "timestamp": "1720000000000000",
+            "unit": "robopark.service",
+        }
+    ]
+    assert "FAKE_SECRET" not in json.dumps(journal)
+    assert "MESSAGE" not in json.dumps(journal)
+    assert "CMDLINE" not in json.dumps(journal)
+
+
+def test_production_http_parses_bounded_healthy_json(monkeypatch):
+    class RawResponse:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+
+        def read(self, amount):
+            assert amount <= 16_384
+            return b'{"status":"ready","checks":{"database":"ok","integrations":"ok"}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout: RawResponse())
+
+    response = _Http().get("http://127.0.0.1:8080/api/health/ready", timeout=5)
+
+    assert response.json()["checks"]["database"] == "ok"
+
+
+def test_actual_release_manifest_and_migration_head_are_reported(host_paths):
+    _release(host_paths)
+
+    class MigrationRunner(ReviewRunner):
+        def __call__(self, command, *, timeout, max_output):
+            if command[-2:] == ["alembic", "current"]:
+                return CommandResult(stdout="head (head)\n")
+            return super().__call__(command, timeout=timeout, max_output=max_output)
+
+    report = run_doctor(host_paths, MigrationRunner("[]"), ContractHttp())
+    status = run_status(host_paths, MigrationRunner("[]"), ContractHttp())
+
+    assert report.by_code("release_layout").status == "ok"
+    assert report.by_code("database_unavailable").status == "ok"
+    assert status["version"] == "1.2.3"
+
+
+def test_swap_exhaustion_and_naive_backup_timestamp_are_nonhealthy(host_paths):
+    _release(host_paths)
+    host_paths.state.mkdir(parents=True)
+    (host_paths.state / "last-backup.json").write_text(
+        json.dumps({"status": "success", "completed_at": "2026-09-07T12:00:00"})
+    )
+
+    class SwapRunner(ReviewRunner):
+        def __call__(self, command, *, timeout, max_output):
+            if command[:2] == ["free", "-m"]:
+                return CommandResult(stdout="Mem: 4096 1000 1000 0 2000 2000\nSwap: 1000 1000 0\n")
+            if command[-2:] == ["alembic", "current"]:
+                return CommandResult(stdout="head (head)\n")
+            return super().__call__(command, timeout=timeout, max_output=max_output)
+
+    report = run_doctor(host_paths, SwapRunner("[]"), ContractHttp())
+
+    assert report.by_code("memory_load_swap").status == "failed"
+    assert report.by_code("backup").status == "warning"
+
+
+def test_runner_timeout_terminates_descendants_holding_pipes_open():
+    started = time.monotonic()
+    result = _system_runner(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c','import time; time.sleep(10)']); time.sleep(10)",
+        ],
+        timeout=1,
+        max_output=128,
+    )
+
+    assert result.returncode == 124
+    assert time.monotonic() - started < 2

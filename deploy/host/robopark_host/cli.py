@@ -2,6 +2,8 @@
 
 import argparse
 import json
+import os
+import signal
 import subprocess
 import urllib.request
 from collections.abc import Callable, Sequence
@@ -32,6 +34,7 @@ def _system_runner(command: Sequence[str], *, timeout: int, max_output: int) -> 
             list(command),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            start_new_session=True,
         )
     except OSError as error:
         return CommandResult(returncode=1, stderr=str(error)[:max_output])
@@ -54,10 +57,17 @@ def _system_runner(command: Sequence[str], *, timeout: int, max_output: int) -> 
     try:
         returncode = process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        process.kill()
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=0.2)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
         returncode = 124
+        process.stdout.close()
+        process.stderr.close()
     for reader in readers:
-        reader.join()
+        reader.join(timeout=max(0, timeout - 0.1))
     return CommandResult(
         returncode=returncode,
         stdout=bytes(stdout).decode("utf-8", errors="replace"),
@@ -68,7 +78,21 @@ def _system_runner(command: Sequence[str], *, timeout: int, max_output: int) -> 
 class _Http:
     def get(self, url: str, *, timeout: int) -> Any:
         with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - URLs are fixed checks
-            return type("HttpResponse", (), {"status": response.status, "headers": dict(response.headers)})()
+            body = response.read(16_384)
+            return _HttpResponse(response.status, dict(response.headers), body, True)
+
+
+class _HttpResponse:
+    def __init__(self, status: int, headers: dict[str, str], body: bytes, complete: bool) -> None:
+        self.status = status
+        self.headers = headers
+        self._body = body
+        self._complete = complete
+
+    def json(self) -> Any:
+        if not self._complete:
+            raise ValueError("response body exceeds diagnostic limit")
+        return json.loads(self._body.decode("utf-8"))
 
 
 def _print(payload: Any) -> None:

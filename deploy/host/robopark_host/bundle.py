@@ -17,6 +17,28 @@ from .paths import HostPaths
 from .redaction import redact
 
 _UNITS = ("robopark.service", "robopark-tuna.service", "robopark-updater.service")
+
+
+def _journal_entries(output: str, unit: str) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    for line in output.splitlines()[:200]:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        entries.append(
+            {
+                "timestamp": str(event.get("__REALTIME_TIMESTAMP", "")),
+                "priority": str(event.get("PRIORITY", "")),
+                "unit": str(event.get("_SYSTEMD_UNIT", unit)),
+                "event_id": str(event.get("MESSAGE_ID", "")),
+            }
+        )
+    return entries
+
+
 def _write_json(archive: zipfile.ZipFile, name: str, value: Any) -> None:
     archive.writestr(name, json.dumps(redact(value), ensure_ascii=False, sort_keys=True, indent=2) + "\n")
 
@@ -46,7 +68,12 @@ def create_diagnostic_bundle(
                 _write_json(
                     archive,
                     f"journal/{unit}.json",
-                    {"unit": unit, "available": journal.ok, "line_limit": 200},
+                    {
+                        "unit": unit,
+                        "available": journal.ok,
+                        "line_limit": 200,
+                        "entries": _journal_entries(journal.stdout, unit),
+                    },
                 )
         os.chmod(temporary, 0o600)
         os.replace(temporary, target)
