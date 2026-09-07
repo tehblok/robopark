@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api'
 import { installMatchMedia, renderApp, testUser } from '../../test/renderApp'
@@ -96,4 +96,25 @@ describe('Management routes', () => {
     expect(document.body).not.toHaveTextContent(/Аварийный режим/i)
     expect(screen.queryByText(/^(?:Emergency|Конфиг Emergency|Разделы Emergency)/i)).not.toBeInTheDocument()
   })
+})
+
+it('Royal tabs move keyboard focus into the system panel and mount operations only when selected', async () => {
+  installMatchMedia()
+  const health = vi.spyOn(api, 'opsSystemHealth').mockResolvedValue({ version: null, git_sha: null, generated_at: null, overall: 'unknown', checks: [], update: { state: 'unknown', publication: null }, last_backup: { status: 'unknown', completed_at: null } })
+  vi.spyOn(api, 'opsAvailableUpdate').mockResolvedValue({ state: 'disabled', checked_at: null, release: null })
+  vi.spyOn(api, 'opsJob').mockRejectedValue(new Error('offline'))
+  vi.spyOn(api, 'parks').mockResolvedValue([north])
+  renderApp('/admin/settings?tab=parks', testUser({ role: 'royal', permissions: ['parks.manage'], parks: [north] }))
+  const parksTab = await screen.findByRole('tab', { name: /Парки/ })
+  expect(health).not.toHaveBeenCalled()
+  parksTab.focus()
+  fireEvent.keyDown(parksTab, { key: 'End' })
+  const opsTab = screen.getByRole('tab', { name: 'Система и обновления' })
+  expect(opsTab).toHaveFocus()
+  expect(await screen.findByRole('tabpanel', { name: 'Система и обновления' })).toBeVisible()
+  expect(await screen.findByRole('heading', { name: 'Здоровье системы' })).toBeVisible()
+  fireEvent.keyDown(opsTab, { key: 'Home' })
+  expect(parksTab).toHaveFocus()
+  expect(screen.queryByRole('heading', { name: 'Здоровье системы' })).not.toBeInTheDocument()
+  vi.restoreAllMocks()
 })
