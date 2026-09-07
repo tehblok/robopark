@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiError, type OpsJob } from '../../api'
-import { coalesceLoader } from '../../lib/resource'
+import { coalesceLoader, resourceStore } from '../../lib/resource'
 
 export const activeJob = (job: OpsJob | null) => job?.state === 'queued' || job?.state === 'running'
 
@@ -9,7 +9,15 @@ export function useOpsJob() {
   const [error, setError] = useState(false)
   const generation = useRef(0)
   const mounted = useRef(false)
-  const accept = useCallback((next: OpsJob) => { generation.current++; setJob(next); setError(false) }, [])
+  const accept = useCallback((next: OpsJob) => {
+    generation.current++
+    // A post-dispatch poll must not join a GET started before this operation.
+    // Invalidation evicts the old in-flight loader; the generation check below
+    // still rejects its eventual response without disturbing the fresh loader.
+    resourceStore.invalidate('ops:job-request')
+    setJob(next)
+    setError(false)
+  }, [])
   const load = useCallback(async () => {
     const request = generation.current
     try {
