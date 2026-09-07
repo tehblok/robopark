@@ -22,8 +22,15 @@ class WatchdogResult:
 
 def _ready(http: Any) -> bool:
     try:
-        response = getattr(http, "get", http)("http://127.0.0.1:8080/", timeout=5)
-        return int(getattr(response, "status", getattr(response, "status_code", 200))) < 400
+        response = getattr(http, "get", http)(
+            "http://127.0.0.1:8080/api/health/ready", timeout=5
+        )
+        payload = response.json() if callable(getattr(response, "json", None)) else {}
+        return (
+            int(getattr(response, "status", getattr(response, "status_code", 200))) < 400
+            and payload.get("status") == "ready"
+            and payload.get("checks", {}).get("database") == "ok"
+        )
     except Exception:
         return False
 

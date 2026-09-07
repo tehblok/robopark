@@ -1,12 +1,12 @@
 import json
 import os
 import stat
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
-
-from robopark_host.cli import main
-from robopark_host.paths import HostPaths, paths_from_environment
+from robopark_host.cli import COMMAND_HANDLERS, main
+from robopark_host.paths import paths_from_environment
 from robopark_host.redaction import redact
 from robopark_host.state import atomic_write_json, exclusive_lock
 
@@ -18,7 +18,7 @@ def test_fake_root_paths_are_immutable_and_follow_host_layout(host_paths):
     assert host_paths.previous == host_paths.root / "opt/robopark/previous"
     assert host_paths.ops == host_paths.root / "var/lib/robopark/ops"
     assert host_paths.state == host_paths.root / "var/lib/robopark/ops/state"
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         host_paths.root = Path("/")
 
 
@@ -107,5 +107,6 @@ def test_redaction_normalizes_secret_key_separators_without_redacting_normal_key
 def test_cli_dispatches_each_host_command(command, tmp_path, monkeypatch):
     monkeypatch.setenv("ROBOPARK_ROOT", str(tmp_path))
     monkeypatch.setenv("ROBOPARK_TESTING", "1")
+    monkeypatch.setitem(COMMAND_HANDLERS, command, lambda paths: 0)
 
     assert main([command]) == 0

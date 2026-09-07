@@ -101,13 +101,7 @@ def execute(
     """Run one argument-array command through an injectable bounded runner."""
 
     arguments = [str(item) for item in command]
-    try:
-        value = runner(arguments, timeout=timeout, max_output=max_output)
-    except TypeError:
-        try:
-            value = runner(arguments, timeout=timeout)
-        except TypeError:
-            value = runner(arguments)
+    value = runner(arguments, timeout=timeout, max_output=max_output)
     return _bounded_result(value, max_output)
 
 

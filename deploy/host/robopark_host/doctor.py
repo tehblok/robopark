@@ -5,14 +5,17 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import stat
 import tempfile
 from collections.abc import Mapping
 from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from .checks import CheckResult, DiagnosticReport, Runner, execute
+from .compose import EXPECTED_SERVICES, compose_command, parse_compose_services
 from .paths import HostPaths
 from .redaction import redact
 from .state import atomic_write_json
@@ -52,6 +55,66 @@ def _platform_check() -> CheckResult:
     )
 
 
+def _clock_check(runner: Runner) -> CheckResult:
+    result = execute(runner, ["timedatectl", "show", "--property=NTPSynchronized", "--value"])
+    synchronized = result.stdout.strip().casefold() in {"yes", "true", "1"}
+    return CheckResult(
+        "clock_sync",
+        "ok" if result.ok and synchronized else "failed",
+        "Часы синхронизированы" if result.ok and synchronized else "Часы не синхронизированы",
+        None,
+    )
+
+
+def _df_check(runner: Runner, command: list[str], code: str, label: str) -> CheckResult:
+    result = execute(runner, command)
+    percentages = [
+        int(token[:-1])
+        for line in result.stdout.splitlines()[1:]
+        for token in line.split()
+        if token.endswith("%") and token[:-1].isdigit()
+    ]
+    if not result.ok or not percentages:
+        return CheckResult(code, "warning", f"Не удалось измерить {label}", None)
+    used = max(percentages)
+    status = "failed" if used >= 95 else "warning" if used >= 85 else "ok"
+    return CheckResult(code, status, f"{label}: занято {used}%", None)
+
+
+def _memory_check(runner: Runner) -> CheckResult:
+    result = execute(runner, ["free", "-m"])
+    lines = [line.split() for line in result.stdout.splitlines() if line.startswith("Mem:")]
+    if not result.ok or not lines or len(lines[0]) < 7:
+        return CheckResult("memory_load_swap", "warning", "Не удалось измерить память и swap", None)
+    try:
+        available = int(lines[0][-1])
+    except ValueError:
+        return CheckResult("memory_load_swap", "warning", "Не удалось измерить память и swap", None)
+    status = "failed" if available < 128 else "warning" if available < 512 else "ok"
+    return CheckResult(status=status, code="memory_load_swap", message=f"Доступно памяти: {available} MiB")
+
+
+def _load_check(runner: Runner) -> CheckResult:
+    result = execute(runner, ["uptime"])
+    matched = re.search(r"load averages?:\s*([0-9]+(?:[.,][0-9]+)?)", result.stdout)
+    if not result.ok or matched is None:
+        return CheckResult("load", "warning", "Не удалось измерить нагрузку", None)
+    load = float(matched.group(1).replace(",", "."))
+    cores = max(1, os.cpu_count() or 1)
+    status = "failed" if load >= cores * 2 else "warning" if load >= cores else "ok"
+    return CheckResult("load", status, f"Нагрузка за минуту: {load:.2f}", None)
+
+
+def _temperature_check(runner: Runner) -> CheckResult:
+    result = execute(runner, ["cat", "/sys/class/thermal/thermal_zone0/temp"])
+    try:
+        temperature = int(result.stdout.strip()) / 1000
+    except ValueError:
+        return CheckResult("temperature", "warning", "Температурные датчики недоступны", None)
+    status = "failed" if temperature >= 90 else "warning" if temperature >= 80 else "ok"
+    return CheckResult("temperature", status, f"Температура: {temperature:.1f} °C", None)
+
+
 def _configuration_check(paths: HostPaths) -> CheckResult:
     absent: list[str] = []
     invalid: list[str] = []
@@ -68,9 +131,13 @@ def _configuration_check(paths: HostPaths) -> CheckResult:
                 if "=" in line and not line.lstrip().startswith("#")
             }
             configuration[filename] = values
-            if not set(required_keys).issubset(values):
+            if not set(required_keys).issubset(values) or any(
+                not values[key] for key in required_keys if key in values
+            ):
                 invalid.append(filename)
             if stat.S_IMODE(target.stat().st_mode) & 0o077:
+                invalid.append(filename)
+            if os.environ.get("ROBOPARK_TESTING") != "1" and target.stat().st_uid != 0:
                 invalid.append(filename)
         except OSError:
             invalid.append(filename)
@@ -96,30 +163,78 @@ def _release_check(paths: HostPaths) -> CheckResult:
     if paths.releases not in target.parents:
         return CheckResult("release_layout", "failed", "Текущий релиз находится вне каталога релизов", None)
     manifest = target / "manifest.json"
-    if not manifest.is_file():
+    if not paths.previous.is_symlink() or not manifest.is_file():
         return CheckResult("release_layout", "failed", "У текущего релиза нет манифеста", None)
     try:
-        json.loads(manifest.read_text(encoding="utf-8"))
+        previous_target = paths.previous.resolve(strict=True)
+    except OSError:
+        return CheckResult("release_layout", "failed", "Ссылка на предыдущий релиз повреждена", None)
+    if paths.releases not in previous_target.parents:
+        return CheckResult("release_layout", "failed", "Предыдущий релиз находится вне каталога релизов", None)
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return CheckResult("release_layout", "failed", "Манифест текущего релиза повреждён", None)
+    if (
+        not isinstance(payload, Mapping)
+        or not isinstance(payload.get("app_version"), str)
+        or not payload["app_version"]
+        or not isinstance(payload.get("format_version"), int)
+    ):
+        return CheckResult("release_layout", "failed", "Манифест текущего релиза неполный", None)
     return CheckResult("release_layout", "ok", "Текущий релиз и манифест согласованы", None)
 
 
-def _container_check(runner: Runner) -> CheckResult:
-    result = execute(runner, ["docker", "compose", "ps", "--format", "json"])
+def _container_check(paths: HostPaths, runner: Runner) -> CheckResult:
+    result = execute(runner, compose_command(paths, ["ps", "--format", "json"]))
     if not result.ok:
         return CheckResult("containers", "failed", "Состояние контейнеров недоступно", "restart_app")
-    try:
-        containers = json.loads(result.stdout or "[]")
-    except ValueError:
-        return CheckResult("containers", "warning", "Compose вернул неполный статус контейнеров", None)
-    unhealthy = [item for item in containers if str(item.get("Health", "")).lower() == "unhealthy"]
+    containers = parse_compose_services(result.stdout)
+    if containers is None:
+        return CheckResult("containers", "failed", "Compose вернул неполный статус контейнеров", "restart_app")
+    by_service = {str(item.get("Service", "")): item for item in containers}
+    missing = EXPECTED_SERVICES - set(by_service)
+    def number(item: Mapping[str, Any], name: str) -> int:
+        try:
+            return int(str(item.get(name, "0") or "0"))
+        except ValueError:
+            return 0
+
+    unhealthy = [
+        item
+        for item in containers
+        if str(item.get("State", "")).casefold() != "running"
+        or (
+            str(item.get("Service", "")) in {"api", "web"}
+            and str(item.get("Health", "")).casefold() in {"unhealthy", ""}
+        )
+        or number(item, "ExitCode") != 0
+    ]
+    restarted = [
+        item
+        for item in containers
+        if number(item, "RestartCount") >= 5
+    ]
+    if missing or unhealthy or restarted:
+        return CheckResult("containers", "failed", "Есть остановленные, нездоровые или отсутствующие контейнеры Compose", "restart_app")
     return CheckResult(
         "containers",
-        "failed" if unhealthy else "ok",
-        "Контейнеры Compose здоровы" if not unhealthy else "Есть нездоровые контейнеры Compose",
-        "restart_app" if unhealthy else None,
+        "ok",
+        "Контейнеры Compose запущены и здоровы",
+        None,
     )
+
+
+def _response_payload(response: Any) -> Mapping[str, Any]:
+    value = getattr(response, "json", None)
+    if callable(value):
+        try:
+            parsed = value()
+        except Exception:
+            return {}
+    else:
+        parsed = value
+    return parsed if isinstance(parsed, Mapping) else {}
 
 
 def _endpoint_check(http: Any) -> CheckResult:
@@ -136,28 +251,123 @@ def _endpoint_check(http: Any) -> CheckResult:
     return CheckResult("local_endpoint", "ok", "Локальный веб-интерфейс доступен", None)
 
 
+def _api_readiness_check(http: Any) -> CheckResult:
+    try:
+        response = _http_get(http, "http://127.0.0.1:8080/api/health/ready", timeout=5)
+    except Exception:
+        return CheckResult("api_readiness", "failed", "API readiness недоступен", "restart_app")
+    payload = _response_payload(response)
+    database = _response_payload(response).get("checks", {}).get("database")
+    if not _response_ok(response) or payload.get("status") != "ready" or database != "ok":
+        return CheckResult("api_readiness", "failed", "API или база данных не готовы", "restart_app")
+    return CheckResult("api_readiness", "ok", "API и база данных готовы", None)
+
+
 def _state_check(paths: HostPaths, code: str, message: str) -> CheckResult:
     target = paths.state / ("updater.json" if code == "updater" else "last-backup.json")
     if not target.exists():
         return CheckResult(code, "warning", message, None)
     try:
-        json.loads(target.read_text(encoding="utf-8"))
+        state = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return CheckResult(code, "failed", "Состояние Robopark повреждено", None)
+    if not isinstance(state, Mapping):
+        return CheckResult(code, "failed", "Состояние Robopark повреждено", None)
+    if code == "updater":
+        outcome = str(state.get("status", state.get("state", ""))).casefold()
+        if outcome in {"failed", "stuck", "running", "manual_recovery_required"}:
+            return CheckResult(code, "failed" if outcome != "running" else "warning", "Обновление требует внимания", None)
+        if outcome not in {"success", "ready", "idle", "completed"}:
+            return CheckResult(code, "warning", "Нет подтверждённого состояния обновления", None)
+    if code == "backup" and (
+        state.get("status") not in {"success", "completed", "ok"} or not state.get("completed_at")
+    ):
+        return CheckResult(code, "warning", "Нет подтверждённой свежей резервной копии", None)
+    if code == "backup":
+        try:
+            completed_at = datetime.fromisoformat(str(state["completed_at"]).replace("Z", "+00:00"))
+        except ValueError:
+            return CheckResult(code, "warning", "Время резервной копии не распознано", None)
+        if completed_at < datetime.now(UTC) - timedelta(days=7):
+            return CheckResult(code, "warning", "Резервная копия устарела", None)
     return CheckResult(code, "ok", message, None)
 
 
 def _integration_check(http: Any) -> CheckResult:
     try:
-        response = _http_get(http, "http://127.0.0.1:8000/health/integrations", timeout=5)
+        response = _http_get(http, "http://127.0.0.1:8080/api/health/ready", timeout=5)
     except Exception:
         return CheckResult("integrations", "warning", "Проверка Tracker и Emergency недоступна", None)
+    integration_state = _response_payload(response).get("checks", {}).get("integrations")
     return CheckResult(
         "integrations",
-        "ok" if _response_ok(response) else "warning",
-        "Интеграции доступны" if _response_ok(response) else "Интеграции работают с деградацией",
+        "ok" if integration_state == "ok" else "warning",
+        "Интеграции доступны" if integration_state == "ok" else "Интеграции работают с деградацией",
         None,
     )
+
+
+def _database_check(paths: HostPaths, runner: Runner, http: Any) -> CheckResult:
+    try:
+        response = _http_get(http, "http://127.0.0.1:8080/api/health/ready", timeout=5)
+    except Exception:
+        return CheckResult("database_unavailable", "failed", "База данных недоступна", None)
+    database = _response_payload(response).get("checks", {}).get("database")
+    migration = execute(runner, compose_command(paths, ["exec", "-T", "api", "alembic", "current"]))
+    return CheckResult(
+        "database_unavailable",
+        "ok" if _response_ok(response) and database == "ok" and migration.ok else "failed",
+        "База данных и миграции доступны" if _response_ok(response) and database == "ok" and migration.ok else "База данных или миграции недоступны",
+        None,
+    )
+
+
+def _tuna_route_check(paths: HostPaths, http: Any) -> CheckResult:
+    public_url = _public_url(paths)
+    if not public_url or not public_url.startswith("https://"):
+        return CheckResult("tuna_route", "warning", "Публичный HTTPS-маршрут Tuna не настроен", None)
+    try:
+        response = _http_get(http, public_url, timeout=10)
+    except Exception:
+        return CheckResult("tuna_route", "failed", "Публичный HTTPS-маршрут Tuna недоступен", "restart_tuna")
+    return CheckResult(
+        "tuna_route",
+        "ok" if _response_ok(response) else "failed",
+        "Публичный HTTPS-маршрут Tuna доступен" if _response_ok(response) else "Публичный HTTPS-маршрут Tuna вернул ошибку",
+        None if _response_ok(response) else "restart_tuna",
+    )
+
+
+def _tuna_certificate_check(paths: HostPaths, http: Any) -> CheckResult:
+    public_url = _public_url(paths)
+    if not public_url:
+        return CheckResult("tuna_certificate", "warning", "Срок сертификата Tuna не установлен", None)
+    try:
+        response = _http_get(http, public_url, timeout=10)
+        expires_at = getattr(response, "certificate_expires", None)
+        expires = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+    except (Exception, ValueError):
+        return CheckResult("tuna_certificate", "warning", "Не удалось проверить срок сертификата Tuna", None)
+    status = "failed" if expires <= datetime.now(UTC) else "warning" if expires <= datetime.now(UTC) + timedelta(days=14) else "ok"
+    return CheckResult("tuna_certificate", status, "Срок сертификата Tuna проверен", None)
+
+
+def _artifact_check(paths: HostPaths, runner: Runner) -> CheckResult:
+    result = execute(runner, ["du", "-sk", paths.var / "diagnostics"])
+    amount = next((int(token) for token in result.stdout.split() if token.isdigit()), None)
+    if not result.ok or amount is None:
+        return CheckResult("diagnostic_artifacts", "warning", "Не удалось измерить объём диагностических артефактов", None)
+    status = "failed" if amount >= 1_048_576 else "warning" if amount >= 524_288 else "ok"
+    return CheckResult("diagnostic_artifacts", status, f"Диагностические артефакты: {amount} KiB", None)
+
+
+def _log_growth_check(paths: HostPaths, runner: Runner) -> CheckResult:
+    result = execute(runner, ["du", "-sk", paths.root / "var/log/robopark"])
+    amount = next((int(token) for token in result.stdout.split() if token.isdigit()), None)
+    if not result.ok or amount is None:
+        return CheckResult("log_growth", "warning", "Не удалось измерить рост журналов", None)
+    status = "failed" if amount >= 1_048_576 else "warning" if amount >= 524_288 else "ok"
+    return CheckResult("log_growth", status, f"Журналы Robopark: {amount} KiB", None)
 
 
 def _write_human_log(paths: HostPaths, report: DiagnosticReport) -> None:
@@ -191,26 +401,31 @@ def run_doctor(paths: HostPaths, runner: Runner, http: Any) -> DiagnosticReport:
 
     checks: list[CheckResult] = [
         _platform_check(),
-        _command_check(runner, "clock_sync", ["timedatectl", "show", "--property=NTPSynchronized", "--value"], "Синхронизация часов проверена"),
+        _clock_check(runner),
         _command_check(runner, "dns", ["getent", "hosts", "github.com"], "DNS доступен"),
         _command_check(runner, "outbound_https", ["curl", "--fail", "--silent", "--show-error", "--max-time", "10", "https://example.com"], "Исходящий HTTPS доступен"),
-        _command_check(runner, "resources", ["df", "-Pk", paths.var], "Дисковое пространство проверено"),
-        _command_check(runner, "inode_space", ["df", "-Pi", paths.var], "Inode-пространство проверено"),
-        _command_check(runner, "memory_load_swap", ["free", "-m"], "Память и swap проверены"),
-        _command_check(runner, "temperature", ["sh", "-c", "test -d /sys/class/thermal"], "Датчики температуры проверены"),
+        _df_check(runner, ["df", "-Pk", paths.var], "resources", "Дисковое пространство"),
+        _df_check(runner, ["df", "-Pi", paths.var], "inode_space", "Inode-пространство"),
+        _memory_check(runner),
+        _load_check(runner),
+        _temperature_check(runner),
         _command_check(runner, "docker_daemon", ["systemctl", "is-active", "docker.service"], "Docker daemon доступен", _SERVICE_REPAIRS["docker"]),
         _command_check(runner, "compose", ["docker", "compose", "version"], "Docker Compose доступен"),
-        _container_check(runner),
+        _container_check(paths, runner),
         _release_check(paths),
         _configuration_check(paths),
-        _command_check(runner, "database_unavailable", ["docker", "compose", "exec", "-T", "api", "python", "-c", "from pathlib import Path; assert Path('/data/robopark.db').exists()"], "База данных доступна"),
+        _database_check(paths, runner, http),
         _endpoint_check(http),
+        _api_readiness_check(http),
         _command_check(runner, "tuna_binary", ["tuna", "help"], "Tuna доступна"),
         _command_check(runner, "tuna_inactive", ["systemctl", "is-active", "robopark-tuna.service"], "Tuna запущен", _SERVICE_REPAIRS["tuna"]),
+        _tuna_route_check(paths, http),
+        _tuna_certificate_check(paths, http),
         _state_check(paths, "updater", "Состояние обновлений проверено"),
         _integration_check(http),
         _state_check(paths, "backup", "Последняя резервная копия проверена"),
-        _command_check(runner, "diagnostic_artifacts", ["du", "-sk", paths.var / "diagnostics"], "Диагностические артефакты проверены"),
+        _artifact_check(paths, runner),
+        _log_growth_check(paths, runner),
     ]
     report = DiagnosticReport(checks)
     atomic_write_json(paths.var / "diagnostics" / "latest.json", report.as_dict())

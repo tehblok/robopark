@@ -5,6 +5,7 @@ import json
 import subprocess
 import urllib.request
 from collections.abc import Callable, Sequence
+from threading import Thread
 from typing import Any
 
 from .checks import CommandResult
@@ -24,22 +25,43 @@ def _foundation_handler(paths: HostPaths) -> int:
 
 
 def _system_runner(command: Sequence[str], *, timeout: int, max_output: int) -> CommandResult:
-    """Run a host command without shell interpolation and cap collected output."""
+    """Run a command without a shell while draining but retaining bounded output."""
 
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             list(command),
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except OSError as error:
         return CommandResult(returncode=1, stderr=str(error)[:max_output])
+    stdout = bytearray()
+    stderr = bytearray()
+
+    def drain(stream: Any, retained: bytearray) -> None:
+        while chunk := stream.read(4096):
+            remaining = max_output - len(retained)
+            if remaining > 0:
+                retained.extend(chunk[:remaining])
+
+    assert process.stdout is not None and process.stderr is not None
+    readers = [
+        Thread(target=drain, args=(process.stdout, stdout)),
+        Thread(target=drain, args=(process.stderr, stderr)),
+    ]
+    for reader in readers:
+        reader.start()
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        returncode = 124
+    for reader in readers:
+        reader.join()
     return CommandResult(
-        returncode=completed.returncode,
-        stdout=(completed.stdout or "")[:max_output],
-        stderr=(completed.stderr or "")[:max_output],
+        returncode=returncode,
+        stdout=bytes(stdout).decode("utf-8", errors="replace"),
+        stderr=bytes(stderr).decode("utf-8", errors="replace"),
     )
 
 
@@ -54,13 +76,15 @@ def _print(payload: Any) -> None:
 
 
 def _doctor_handler(paths: HostPaths) -> int:
-    _print(run_doctor(paths, _system_runner, _Http()).as_dict())
-    return 0
+    report = run_doctor(paths, _system_runner, _Http())
+    _print(report.as_dict())
+    return 2 if report.failed else 0
 
 
 def _status_handler(paths: HostPaths) -> int:
-    _print(run_status(paths, _system_runner, _Http()))
-    return 0
+    status = run_status(paths, _system_runner, _Http())
+    _print(status)
+    return 2 if status["failed_check_count"] else 0
 
 
 def _repair_handler(paths: HostPaths) -> int:
@@ -75,7 +99,7 @@ def _repair_handler(paths: HostPaths) -> int:
             "post_check": post_check.as_dict(),
         }
     )
-    return 0
+    return 2 if result.failed or post_check.failed else 0
 
 
 def _watchdog_handler(paths: HostPaths) -> int:
