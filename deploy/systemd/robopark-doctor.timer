@@ -2,8 +2,8 @@
 Description=Robopark doctor schedule
 
 [Timer]
-OnCalendar=daily
-RandomizedDelaySec=30min
+OnCalendar=*:0/15
+RandomizedDelaySec=1min
 Persistent=true
 Unit=robopark-doctor.service
 

@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import shutil
 import stat
 import tempfile
 import zipfile
@@ -177,6 +178,27 @@ def release_admission_key(settings, root):
     return anchor
 
 
+MAX_UPLOAD_STORAGE = 2 * 1024**3
+MAX_UPLOAD_COUNT = 32
+MIN_FREE_STORAGE = 2 * 1024**3
+
+
+def _admit_upload(root, size):
+    # Caller holds API begin.lock, also held by root retention. Admission never
+    # deletes artifacts: an open preview or approved job must remain usable.
+    total = size
+    count = 0
+    with os.scandir(root / "artifacts") as entries:
+        for entry in entries:
+            count += 1
+            info = entry.stat(follow_symlinks=False)
+            total += info.st_size
+            if count >= MAX_UPLOAD_COUNT or total > MAX_UPLOAD_STORAGE:
+                raise JobConflict("artifact_storage_full")
+    if total > MAX_UPLOAD_STORAGE or shutil.disk_usage(root).free < size + MIN_FREE_STORAGE:
+        raise JobConflict("artifact_storage_full")
+
+
 def inspect_update(settings, ops, root, blob, actor):
     try:
         key = release_admission_key(settings, root)
@@ -188,6 +210,7 @@ def inspect_update(settings, ops, root, blob, actor):
     identity = str(uuid4())
     artifact = f"update-{identity}.zip"
     with _locked(ops):
+        _admit_upload(root, len(blob))
         _atomic(root / "artifacts" / artifact, blob)
         directory = ops / "inspections"
         directory.mkdir(exist_ok=True)

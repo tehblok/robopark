@@ -328,7 +328,7 @@ def _state_check(paths: HostPaths, code: str, message: str) -> CheckResult:
         state = read_object(paths.ops / "public/host-status.json")
         if state.get("error") == "manual_recovery_required" or not state:
             return CheckResult(code, "failed", "Обновление требует внимания", None)
-        if state.get("state") in {"current_healthy", "previous_restored", "idle"}:
+        if state.get("state") in ("current_healthy", "previous_restored", "idle"):
             return CheckResult(code, "ok", message, None)
         return CheckResult(code, "warning", "Обновление выполняется или требует внимания", None)
     if code == "backup":
@@ -340,7 +340,7 @@ def _state_check(paths: HostPaths, code: str, message: str) -> CheckResult:
             "failed"
             if not state or phase == "failed"
             else "ok"
-            if phase in {"succeeded", "rolled_back"}
+            if phase in ("succeeded", "rolled_back")
             else "warning"
         )
         return CheckResult(code, status, message, None)
@@ -494,19 +494,20 @@ def _tuna_certificate_check(paths: HostPaths, http: Any) -> CheckResult:
 
 
 def _artifact_check(paths: HostPaths, runner: Runner) -> CheckResult:
-    result = execute(runner, ["du", "-sk", paths.var / "diagnostics"])
-    amount = next((int(token) for token in result.stdout.split() if token.isdigit()), None)
-    if not result.ok or amount is None:
-        return CheckResult(
-            "diagnostic_artifacts",
-            "warning",
-            "Не удалось измерить объём диагностических артефактов",
-            None,
-        )
-    status = "failed" if amount >= 1_048_576 else "warning" if amount >= 524_288 else "ok"
-    return CheckResult(
-        "diagnostic_artifacts", status, f"Диагностические артефакты: {amount} KiB", None
-    )
+    from .operational_state import read_object
+    from .retention import artifact_usage
+
+    usage = artifact_usage(paths)
+    last = read_object(paths.state / "retention.json")
+    blocked = usage["blocked"] or last.get("blocked")
+    busy = last.get("busy") is True
+    status = "failed" if usage["pressure"] or blocked and not busy else "warning" if busy else "ok"
+    message = f"Операционные артефакты: {usage['bytes']} байт, {usage['files']} файлов"
+    if busy:
+        message += "; очистка отложена до завершения операции"
+    elif blocked:
+        message += "; очистка заблокирована, нужна проверка хоста"
+    return CheckResult("diagnostic_artifacts", status, message, None)
 
 
 def _log_growth_check(paths: HostPaths, runner: Runner) -> CheckResult:

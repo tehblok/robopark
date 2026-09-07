@@ -326,14 +326,17 @@ def test_invalid_create_response_never_schedules_cleanup(tmp_path, monkeypatch, 
 def test_measured_mutations_emit_real_sql_updates(tmp_path, monkeypatch):
     # Exercise the real ORM endpoint, not just HTTP verbs. The old constant name
     # emits one UPDATE in warmup and silently turns the measured run into reads.
+    import importlib
+
+    # Host-only pytest does not load the API conftest/main bootstrap. Initialize
+    # RBAC first, as the application does, before importing its dependent router.
+    importlib.import_module("robopark_api.services.rbac")
     from robopark_api.models import Base, Park
     from robopark_api.routers.parks import update_park
     from robopark_api.schemas import ParkUpdate
-    from robopark_api.services import rbac  # initialize deps without circular import
     from sqlalchemy import create_engine, event
     from sqlalchemy.orm import Session
 
-    assert rbac.RoleSlug.ROYAL
     monkeypatch.setenv("ALLOW_ISOLATED_WRITES", "true")
     api = module()
     config = api["load_config"](

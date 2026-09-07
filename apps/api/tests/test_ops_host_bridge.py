@@ -531,3 +531,26 @@ def test_real_snapshot_publishes_backup_receipt(client, seed_royal, test_setting
     assert set(payload) == {"status", "completed_at"}
     assert payload["status"] == "success"
 
+
+@pytest.mark.parametrize("pressure", ["bytes", "count", "disk"])
+def test_inspection_admission_bounds_disk_without_removing_existing_uploads(
+    client, seed_royal, installed, tmp_path, release_key_pair, monkeypatch, pressure
+):
+    from types import SimpleNamespace
+
+    from robopark_api.services.ops import host_bridge
+
+    login_as(client, "royal", "secret")
+    existing = installed / "artifacts/update-existing.zip"
+    existing.write_bytes(b"keep")
+    if pressure == "bytes":
+        monkeypatch.setattr(host_bridge, "MAX_UPLOAD_STORAGE", 4, raising=False)
+    elif pressure == "count":
+        monkeypatch.setattr(host_bridge, "MAX_UPLOAD_COUNT", 1, raising=False)
+    else:
+        monkeypatch.setattr("shutil.disk_usage", lambda path: SimpleNamespace(free=1))
+    response = inspect(client, tmp_path, release_key_pair)
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "artifact_storage_full"
+    assert list((installed / "artifacts").iterdir()) == [existing]
+    assert existing.read_bytes() == b"keep"

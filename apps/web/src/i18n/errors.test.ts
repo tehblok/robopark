@@ -51,3 +51,7 @@ it.each([
 ])('maps host operation error %s without leaking implementation details', (detail, status, expected) => {
   expect(mapApiError(new ApiError(status, detail), 'Ошибка')).toBe(expected)
 })
+
+it('explains bounded archive storage admission', () => {
+  expect(mapApiError(new ApiError(409, 'artifact_storage_full'))).toBe('Недостаточно места для нового архива. Дождитесь очистки или проверьте диагностику хоста.')
+})

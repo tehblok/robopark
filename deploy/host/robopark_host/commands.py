@@ -225,6 +225,39 @@ def consume_commands(paths, runner, http, *, update_runner=None, github_http=Non
                 <= (datetime.now(UTC) - timestamp(request["created_at"])).total_seconds()
                 <= 86400
             )
+            from .retention import command_retired
+
+            if command_retired(paths, request["job_id"]):
+                if request["kind"] in {"update", "github-update"}:
+                    atomic_write_json(
+                        _public(paths) / "rebuild.result",
+                        {
+                            "job_id": request["job_id"],
+                            "ok": False,
+                            "error": "command_retired",
+                        },
+                        mode=0o644,
+                    )
+                else:
+                    atomic_write_json(
+                        _public(paths) / "command-result.json",
+                        {
+                            "job_id": request["job_id"],
+                            "kind": request["kind"],
+                            "actor_user_id": request["actor_user_id"],
+                            "state": "failed",
+                            "artifact": None,
+                            "before": [],
+                            "after": [],
+                            "performed": [],
+                            "failed": [],
+                            "error": "command_retired",
+                        },
+                        mode=0o644,
+                    )
+                pending.unlink(missing_ok=True)
+                _claim_public(paths, request, False)
+                return 1
             receipt = paths.state / "command-receipts" / (request["job_id"] + ".json")
             if receipt.is_file():
                 saved = _read(receipt, limit=65536)
@@ -316,6 +349,10 @@ def consume_commands(paths, runner, http, *, update_runner=None, github_http=Non
                 }
                 try:
                     if not resumed and fresh:
+                        if request["kind"] == "diagnostics":
+                            from .retention import require_capacity
+
+                            require_capacity(paths, 16 * 1024**2)
                         before = run_doctor(paths, runner, http)
                         result["before"] = before.as_dict()["checks"]
                         if request["kind"] == "diagnostics":

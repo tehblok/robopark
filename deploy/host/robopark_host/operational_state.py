@@ -38,7 +38,13 @@ def update_state(paths):
     outcome = state.get("state")
     if outcome == "previous_restored":
         outcome = "rolled_back"
-    if outcome not in {"idle", "updating", "current_healthy", "rolled_back", "maintenance"}:
+    if not isinstance(outcome, str) or outcome not in {
+        "idle",
+        "updating",
+        "current_healthy",
+        "rolled_back",
+        "maintenance",
+    }:
         outcome = "unknown"
     return {
         "state": outcome,

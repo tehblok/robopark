@@ -878,3 +878,13 @@ def test_asset_transport_rejection_is_stale_not_up_to_date(host_paths, github):
         json.loads((host_paths.state / "available-update.json").read_text())["state"]
         == "discovery_stale"
     )
+
+
+def test_download_refuses_storage_pressure_before_writing_large_artifact(github, host_paths, monkeypatch):
+    from robopark_host.github_releases import check_latest_release, download_approved_release
+    from robopark_host import retention
+    release = check_latest_release(config(host_paths), github)
+    monkeypatch.setattr(retention, 'MAX_BYTES', 1)
+    with pytest.raises(ValueError):
+        download_approved_release(release, host_paths, github)
+    assert not list((host_paths.state / 'github-artifacts').glob('*.zip*'))
