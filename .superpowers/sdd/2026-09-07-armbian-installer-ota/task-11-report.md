@@ -56,5 +56,6 @@ The dependency-change JSON is a filesystem/signature/cutover probe for fake Dock
 
 ## Commits
 
-- Production E2E blocker fixes + their tests: **8e7dfa6** (`fix(deploy): align installer and OTA runtime contracts`).
-- Task 11 capacity harness/operator docs/report: the following `test(deploy): add capacity gate and Armbian operator guide` commit (hash supplied in handoff).
+- Integrated production E2E blocker fixes + their tests: **44f9540** (`fix(deploy): align installer and OTA runtime contracts`).
+- Integrated capacity harness/operator docs/report: **7a20d74** (`test(deploy): add capacity gate and Armbian operator guide`).
+- Review follow-up for cleanup authority and successor execution: **26e9463** (`fix(deploy): validate capacity cleanup and execute successor in E2E`).
