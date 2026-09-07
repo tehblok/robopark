@@ -43,6 +43,26 @@ def test_release_changes_dependencies_units_and_updater_then_survives_reboot(e2e
     assert next(item for item in checks if item["code"] == "tuna_route")["status"] == "ok"
 
 
+def test_signed_successor_source_executes_reconciliation_and_boot_recovery(e2e_host):
+    host = e2e_host
+    marker = host.paths.state / "e2e-successor.jsonl"
+    host.approve()
+    assert host.result()["ok"] is True, host.result()
+    assert marker.exists(), "successor reconciled without executing its signed CLI source"
+    records = [json.loads(line) for line in marker.read_text().splitlines()]
+    assert [record["args"] for record in records] == [["update", "--reconcile"]]
+    successor = (host.paths.opt / "host-tools/robopark_host/cli.py").resolve()
+    assert records[0]["source"] == str(successor)
+    assert records[0]["version"] == "0.1.1"
+
+    marker.unlink()
+    host.reboot()
+    records = [json.loads(line) for line in marker.read_text().splitlines()]
+    assert [record["args"] for record in records] == [["update", "--recover"]]
+    assert records[0]["source"] == str(successor)
+    assert records[0]["version"] == "0.1.1"
+
+
 @pytest.mark.parametrize(
     "failure,error",
     [

@@ -267,3 +267,57 @@ def test_write_cleanup_failure_fails_gate(tmp_path, monkeypatch):
     report = asyncio.run(api["run_load"](config, transport=httpx.MockTransport(respond)))
     assert report["cleanup_ok"] is False
     assert report["gate"] == "FAIL"
+
+
+@pytest.mark.parametrize("rejected_id", ["999", True, 0, -1, None, 999.0, 2**63, {}, []])
+def test_rejected_created_park_id_never_becomes_a_cleanup_target(
+    tmp_path, monkeypatch, rejected_id
+):
+    monkeypatch.setenv("ALLOW_ISOLATED_WRITES", "true")
+    api = module()
+    config = api["load_config"](
+        config_file(
+            tmp_path,
+            users=1,
+            duration_seconds=0.001,
+            warmup_seconds=0,
+            writes=True,
+            isolated_test_data=True,
+        )
+    )
+    commands = []
+
+    def respond(request):
+        commands.append((request.method, request.url.path))
+        return httpx.Response(201, json={"id": rejected_id})
+
+    with pytest.raises(ValueError, match="isolated_setup_failed"):
+        asyncio.run(api["run_load"](config, transport=httpx.MockTransport(respond)))
+    assert commands == [("POST", "/api/parks")]
+
+
+@pytest.mark.parametrize("body", [[], "not-an-object", None])
+def test_invalid_create_response_never_schedules_cleanup(tmp_path, monkeypatch, body):
+    monkeypatch.setenv("ALLOW_ISOLATED_WRITES", "true")
+    api = module()
+    config = api["load_config"](
+        config_file(
+            tmp_path,
+            users=1,
+            duration_seconds=0.001,
+            warmup_seconds=0,
+            writes=True,
+            isolated_test_data=True,
+        )
+    )
+    commands = []
+
+    def respond(request):
+        commands.append(request.method)
+        return httpx.Response(
+            201, content=json.dumps(body), headers={"content-type": "application/json"}
+        )
+
+    with pytest.raises(ValueError, match="isolated_setup_failed"):
+        asyncio.run(api["run_load"](config, transport=httpx.MockTransport(respond)))
+    assert commands == ["POST"]

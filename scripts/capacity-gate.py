@@ -236,9 +236,13 @@ async def run_load(config, *, transport=None):
                 response = await client.post("/api/parks", json={"name": tag, "tag": tag})
                 if response.status_code != 201:
                     raise ValueError("isolated_setup_failed")
-                isolated_park_id = response.json().get("id")
-                if type(isolated_park_id) is not int or isolated_park_id <= 0:
+                created = response.json()
+                candidate_id = created.get("id") if isinstance(created, dict) else None
+                if type(candidate_id) is not int or not 0 < candidate_id < 2**63:
                     raise ValueError("isolated_setup_failed")
+                # Cleanup authority begins only after validation. Never interpolate
+                # rejected response values into a PATCH path from the finally block.
+                isolated_park_id = candidate_id
                 inactive = await request(
                     "PATCH", f"/api/parks/{isolated_park_id}", {"is_active": False}
                 )

@@ -6,9 +6,11 @@ real Docker dependency resolution remains an explicit target acceptance gate.
 """
 
 import hashlib
+import importlib
 import json
 import multiprocessing
 import os
+import runpy
 import shutil
 import sqlite3
 import subprocess
@@ -22,7 +24,6 @@ from uuid import uuid4
 from cryptography.hazmat.primitives import serialization
 from installer_scenarios import REPO, SECRETS, InstallerScenarios
 from robopark_api.services.ops.archives import build_archive
-from robopark_host import cli
 from robopark_host.checks import CommandResult
 from robopark_host.paths import HostPaths
 from robopark_host.release import ReleaseError
@@ -57,6 +58,7 @@ class InstalledHost:
         self.fail = None
         self.launches = []
         self.calls = []
+        self.command_error = ReleaseError
         self.secrets = SECRETS
         self.check_multiworker = False
         self.writer_outcomes = []
@@ -99,9 +101,6 @@ class InstalledHost:
         self.paths = HostPaths.from_root(self.installer.root)
         (self.paths.var / "data/robopark.db").write_text("original")
         (self.paths.var / "data/attachment").write_text("private-database-record")
-        self.patch.setattr("robopark_host.updater.SystemRunner", lambda: self)
-        self.patch.setattr(cli, "_system_runner", self.diagnostic_command)
-        self.patch.setattr(cli, "_Http", lambda: self)
         self.patch.setattr("platform.system", lambda: "Linux")
         self.patch.setattr("platform.machine", lambda: "aarch64")
         # TLS socket is external; a missing certificate yields a warning, not a failure.
@@ -149,7 +148,6 @@ class InstalledHost:
             ),
         )
         self.github = self.make_github()
-        self.patch.setattr("robopark_host.github_releases.GithubHttp", lambda: self.github)
         (self.paths.etc / "updater.env").write_text(
             "GITHUB_REPOSITORY='team/robopark'\nGITHUB_TOKEN='github_fixture_secret'\nGITHUB_CHANNEL='stable'\nGITHUB_ENABLED='true'\n"
         )
@@ -171,7 +169,54 @@ class InstalledHost:
         return (self.paths.ops / "public/maintenance.json").exists()
 
     def command(self, *args):
-        return cli.main(list(args))
+        return self.execute_entry((self.paths.opt / "host-tools/robopark").resolve(), args)
+
+    def execute_entry(self, entry, args):
+        """Load each child command from its actual host-tools source, like exec.
+
+        Only the external runner/HTTP boundaries are injected. Swapping the package
+        namespace prevents this process adapter from reusing old CLI/updater modules
+        after self-update; nested worker and successor invocations restore their caller.
+        """
+
+        def host_module(name):
+            return name == "robopark_host" or name.startswith("robopark_host.")
+
+        previous_modules = {
+            name: module for name, module in sys.modules.items() if host_module(name)
+        }
+        previous_path = sys.path[:]
+        previous_argv = sys.argv[:]
+        previous_bytecode = sys.dont_write_bytecode
+        previous_error = self.command_error
+        try:
+            for name in previous_modules:
+                del sys.modules[name]
+            sys.path.insert(0, str(entry.parent))
+            sys.argv = [str(entry), *args]
+            sys.dont_write_bytecode = True
+            successor_cli = importlib.import_module("robopark_host.cli")
+            successor_updater = importlib.import_module("robopark_host.updater")
+            successor_github = importlib.import_module("robopark_host.github_releases")
+            self.command_error = importlib.import_module("robopark_host.release").ReleaseError
+            successor_updater.SystemRunner = lambda: self
+            successor_cli._system_runner = self.diagnostic_command
+            successor_cli._Http = lambda: self
+            successor_github.GithubHttp = lambda: self.github
+            try:
+                runpy.run_path(str(entry), run_name="__main__")
+            except SystemExit as result:
+                return result.code
+            raise AssertionError("host entrypoint did not exit")
+        finally:
+            for name in list(sys.modules):
+                if host_module(name):
+                    del sys.modules[name]
+            sys.modules.update(previous_modules)
+            sys.path[:] = previous_path
+            sys.argv[:] = previous_argv
+            sys.dont_write_bytecode = previous_bytecode
+            self.command_error = previous_error
 
     def installed_files(self):
         return {name: (self.paths.current / name).read_bytes() for name in self.changed_files}
@@ -277,9 +322,9 @@ class InstalledHost:
                 )
             else:
                 self.launches.append(entry)
-                code = self.command(*argv[3:])
+                code = self.execute_entry(entry, argv[3:])
                 if code:
-                    raise ReleaseError("command_failed")
+                    raise self.command_error("command_failed")
             return b""
         if argv[0] == "curl":
             return (
@@ -290,7 +335,7 @@ class InstalledHost:
         if argv[:2] == ["systemctl", "stop"] and self.check_multiworker:
             self.multiworker_probe()
         if argv[0] == "systemctl" and argv[-1] == "robopark-tuna.service" and self.fail == "tuna":
-            raise ReleaseError("command_failed")
+            raise self.command_error("command_failed")
         if argv[:3] == ["docker", "image", "inspect"]:
             return ("sha256:" + ("3" if "api" in argv[-1] else "4") * 64).encode()
         if "--format" in argv and "config" in argv:
@@ -310,14 +355,14 @@ class InstalledHost:
                 }
             ).encode()
         if self.fail == "build" and "build" in argv:
-            raise ReleaseError("command_failed")
+            raise self.command_error("command_failed")
         if self.fail == "tests" and "/verify/scripts/verify.sh" in argv:
-            raise ReleaseError("command_failed")
+            raise self.command_error("command_failed")
         if "upgrade" in argv:
             assert self.maintenance()
             (self.paths.var / "data/robopark.db").write_text("migrated")
             if self.fail == "migration":
-                raise ReleaseError("command_failed")
+                raise self.command_error("command_failed")
         if any("SELECT version_num FROM alembic_version" in arg for arg in argv):
             return json.dumps(["next" if self.version() == "0.1.1" else "initial"]).encode()
         return b""
