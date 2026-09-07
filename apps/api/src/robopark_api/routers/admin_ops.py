@@ -231,6 +231,8 @@ def _launch(
     if kind == KIND_UPDATE and confirm.strip() != UPDATE_PHRASE:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="confirm_required")
     if settings.ops_host_root:
+        if kind == KIND_RESTORE:
+            raise HTTPException(status_code=503, detail="host_restore_required")
         if kind == KIND_UPDATE:
             raise HTTPException(status_code=400, detail="inspection_required")
         host_bridge.require_host_idle(_bridge_root(settings))
@@ -292,14 +294,24 @@ async def post_restore(
     exempt = _token_hash(request, settings)
     blob = await _read_upload(archive, settings.ops_max_upload_bytes)
     try:
-        job = _launch(
-            kind=KIND_RESTORE,
-            exempt=exempt,
-            archive=blob,
-            confirm=confirm,
-            settings=settings,
-            background=background,
-        )
+        if settings.ops_host_root:
+            if confirm.strip() != RESTORE_PHRASE:
+                raise HTTPException(status_code=400, detail="confirm_required")
+            try:
+                job = host_bridge.enqueue_restore(
+                    resolved_ops_dir(settings), _bridge_root(settings), blob, royal.id, exempt
+                )
+            except ArchiveError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        else:
+            job = _launch(
+                kind=KIND_RESTORE,
+                exempt=exempt,
+                archive=blob,
+                confirm=confirm,
+                settings=settings,
+                background=background,
+            )
     except JobConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="job_in_progress") from exc
     audit.record(

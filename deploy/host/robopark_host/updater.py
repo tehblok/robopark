@@ -564,6 +564,10 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
     except OSError:
         return UpdateResult("rejected", "preflight_failed")
     with exclusive_lock(paths.ops / "host.lock"):
+        from .restore import active_restore
+
+        if active_restore(paths):
+            return UpdateResult("rejected", "update_in_progress")
         old = _load_journal(paths)
         if old and old["phase"] not in {"succeeded", "rolled_back", "failed"}:
             return UpdateResult("rejected", "update_in_progress")
@@ -1075,6 +1079,11 @@ def reconcile_after_exit(paths: HostPaths, runner: Runner) -> RecoveryResult:
 
 def recover_interrupted_update(paths: HostPaths, runner: Runner) -> RecoveryResult:
     with exclusive_lock(paths.ops / "host.lock"):
+        from .restore import active_restore
+
+        if active_restore(paths):
+            _maintenance(paths, True)
+            return UpdateResult("maintenance", "manual_recovery_required")
         try:
             journal = _load_journal(paths)
             if journal is None:

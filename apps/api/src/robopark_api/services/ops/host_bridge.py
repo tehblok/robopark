@@ -24,7 +24,7 @@ from robopark_api.ops_schemas import (
     public_checks,
     public_result,
 )
-from robopark_api.services.ops.archives import KIND_RELEASE, inspect_archive
+from robopark_api.services.ops.archives import KIND_RELEASE, KIND_SNAPSHOT, inspect_archive
 from robopark_api.services.ops.jobs import (
     ACTIVE_STATES,
     STATE_RUNNING,
@@ -299,6 +299,23 @@ def _new_host_job(kind, actor, exempt, artifact=None):
         request["artifact"] = artifact
     job.extra = {"host_updater": True, "host_request": request}
     return job
+
+
+def enqueue_restore(ops, root, blob, actor, exempt):
+    """Approval references immutable bytes; only root may stop writers/replace data."""
+    inspect_archive(blob, expected_kind=KIND_SNAPSHOT)
+    with _locked(ops):
+        require_idle(ops)
+        require_host_idle(root)
+        job = _new_host_job("restore", actor, exempt)
+        request = job.extra["host_request"]
+        request.update(
+            artifact="restore-" + job.id + ".zip", sha256=hashlib.sha256(blob).hexdigest()
+        )
+        _atomic(root / "artifacts" / request["artifact"], blob)
+        _save_job_unlocked(ops, job)
+        _dispatch(ops, root, job)
+        return job
 
 
 def enqueue_operation(ops, root, kind, actor, exempt):

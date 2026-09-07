@@ -75,7 +75,7 @@ curl -fsS http://127.0.0.1:8080/api/health/ready
 sudo python3 -I /opt/robopark/host-tools/robopark repair
 ```
 
-Repair выполняет только разрешённые действия для найденных проблем: перезапуск Docker/app/Tuna и `systemctl daemon-reload` согласно диагностике. Он не исправляет произвольные данные, не меняет пароль/ключи и не выполняет введённые shell-команды. После repair снова выполните doctor. Watchdog перезапускает Tuna после нескольких подтверждённых сбоев, с ограничением повторов.
+Repair выполняет только разрешённые действия для найденных проблем: перезапуск Docker/app/Tuna и `systemctl daemon-reload` согласно диагностике. Он не исправляет произвольные данные, не меняет пароль/ключи и не выполняет введённые shell-команды. После repair снова выполните doctor. Watchdog перезапускает app после трёх последовательных сбоев локального readiness, с ограничением повторов.
 
 В Royal → системное состояние запросите диагностику, дождитесь окончания и скачайте ZIP. Host consumer публикует очищенный архив, API получает только отдельные каталоги `inbox`, `artifacts` и read-only `public`. Закрытые `ops/state`, `ops/rollbacks`, `/etc/robopark`, immutable releases и Docker socket не смонтированы в API. Вложения, база, секреты, необработанные строки journal и argv в диагностический ZIP не включаются. Перед передачей ZIP дополнительно выполните secret scan по процедуре ниже.
 
@@ -88,6 +88,12 @@ GitHub: настройте root-owned `/etc/robopark/updater.env` через `su
 OTA проверяет подпись и совместимость, место, сборку и тесты кандидата, запускает изолированный smoke без production DB/секретов. Затем включает maintenance, останавливает writers, делает snapshot, переключает release/config, выполняет миграцию, проверяет локальную готовность. Старый worker завершается; successor из нового host-tools согласует systemd и публикацию. После этого maintenance снимается. Все UI writers, фоновые задачи и SQL commit проходят барьер maintenance во всех API-процессах.
 
 При отказе тестов кандидат отбрасывается без переключения данных. При migration/local-health failure восстанавливаются предыдущий релиз, конфигурация, units/updater и snapshot данных. Ошибка публичного Tuna при здоровой локальной базе даёт `publication=degraded`; локальные данные сохраняются, исправляйте публикацию через диагностику/repair. После возобновления пользовательских записей старая snapshot автоматически больше не накатывается.
+
+## Владение операцией на хосте
+
+Установщик, root updater/restore, repair и watchdog используют один `ops/host.lock`. Standalone repair возвращает `host_busy` и код 75, если lock занят, есть root maintenance или незавершённый claim; watchdog пропускает такой цикл без увеличения счётчика ошибок. Не удаляйте lock/claim/maintenance-файлы для обхода busy. Установщик отказывает до изменения пакетов/конфигурации и освобождает host.lock перед синхронным запуском root consumer.
+
+Root consumer сначала берёт `command-consumer.lock`, затем `host.lock`. Для OTA он сохраняет private claim, отпускает host.lock и последовательно передаёт работу worker и successor; незавершённый claim закрывает этот промежуток для standalone repair/watchdog/installer. Restore выполняется под host.lock consumer целиком. Внутренние helpers повторно lock не берут, а `restore-check` в ExecStartPre только читает journal, поэтому запуск app внутри транзакции не блокируется на собственном lock.
 
 ## Резервные копии и восстановление
 
@@ -103,6 +109,18 @@ sudo python3 -I /opt/robopark/host-tools/robopark doctor
 ```
 
 Если проверенный предыдущий release или snapshot повреждён, либо нет возможности восстановить локальный readiness, оставьте maintenance включённым и привлеките ответственного за релизы. Сохраните job ID, sanitized status и diagnostics. Не удаляйте journal/maintenance marker, не меняйте current вручную, не редактируйте SQLite и не выполняйте `alembic downgrade` наугад. Восстановление из внешнего backup после потери обеих версий требует согласованного плана по версии приложения, миграции и ключам.
+
+Installed restore принимает подтверждение «ВОССТАНОВИТЬ»: API публикует только approval и ZIP с привязкой к SHA-256. Root повторно проверяет архив и SQLite, требует текущий Alembic head, включает durable maintenance, останавливает все app-контейнеры, сохраняет прежний каталог данных и заменяет его целиком вместе с SQLite/WAL/SHM. После readiness запускается Tuna и снимается maintenance; отдельный ручной restart не требуется. При ошибке до открытия записей root восстанавливает предыдущие данные. Ошибка публикации не отменяет здоровые локальные данные.
+
+Переносятся данные и attachments. Конфигурация `/etc/robopark`, ключи, пароли, приложение и API jobs сохраняются; config-файлы из ZIP не применяются. Архив со сторонними executable-файлами или SQLite WAL/SHM отклоняется. Legacy local mode сохраняет прежнее отдельное поведение. Убедитесь, что сохранённый SECRET_KEY соответствует зашифрованным данным в backup.
+
+После прерывания ручного restore root consumer использует `ops/state/restore-journal.json`; при загрузке `restore-check` не позволяет app открыть каталог между переименованиями. После трёх неудачных автоматических попыток и устранения причины выполните явный root retry:
+
+```sh
+sudo python3 -I /opt/robopark/host-tools/robopark restore --recover
+```
+
+Команда принимает только уже утверждённую транзакцию из private journal и возвращает 75, если host.lock занят. Пока readiness не восстановлен, maintenance и предыдущие данные сохраняются. Не редактируйте journal и не удаляйте маркер вручную.
 
 ## Журналы и безопасная эскалация
 

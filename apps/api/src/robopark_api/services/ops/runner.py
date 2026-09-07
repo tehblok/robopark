@@ -262,6 +262,8 @@ def run_snapshot(ctx: OpsContext, job: OpsJob) -> OpsJob:
 def run_restore(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) -> OpsJob:
     from robopark_api.services.ops.maintenance import HostMaintenanceActive
 
+    if ctx.use_host_updater:
+        return fail_job(ctx, job, "host_restore_required")
     if confirm.strip() != RESTORE_PHRASE:
         return fail_job(ctx, job, "confirm_required")
     try:

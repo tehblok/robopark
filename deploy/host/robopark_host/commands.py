@@ -47,6 +47,14 @@ def _validate(value, *, fresh=True):
         return value
     try:
         expected = {"job_id", "kind", "actor_user_id", "created_at"}
+        if value.get("kind") == "restore":
+            expected.update({"artifact", "sha256"})
+            if value.get("artifact") != "restore-" + str(value.get("job_id")) + ".zip":
+                raise ValueError()
+            if not isinstance(value.get("sha256"), str) or not re.fullmatch(
+                r"[a-f0-9]{64}", value["sha256"]
+            ):
+                raise ValueError()
         if value.get("kind") == "github-update":
             expected.add("release_id")
             if type(value.get("release_id")) is not int or not 0 < value["release_id"] < 2**63:
@@ -57,6 +65,7 @@ def _validate(value, *, fresh=True):
             "diagnostics",
             "repair",
             "github-update",
+            "restore",
         }:
             raise ValueError()
         if type(value["actor_user_id"]) is not int or not 0 < value["actor_user_id"] < 2**63:
@@ -151,7 +160,7 @@ def _allow_attempt(paths, request):
     if attempts >= 3:
         # No more automatic retries for this command. Keep interrupted updates
         # in maintenance until the root operator explicitly recovers them.
-        if request["kind"] == "update":
+        if request["kind"] in {"update", "restore"}:
             from .updater import _maintenance, _publish_status
 
             _maintenance(paths, True)
@@ -278,6 +287,27 @@ def consume_commands(paths, runner, http, *, update_runner=None, github_http=Non
                     return 1
             if not _allow_attempt(paths, request):
                 return 0
+            if request["kind"] == "restore":
+                from .restore import run_restore
+                from .updater import SystemRunner, _maintenance
+
+                if not fresh and not resumed:
+                    result = {
+                        **{key: request[key] for key in ("job_id", "kind", "actor_user_id")},
+                        "state": "failed",
+                        "error": "request_expired",
+                    }
+                else:
+                    try:
+                        result = run_restore(paths, request, update_runner or SystemRunner())
+                    except Exception:
+                        _maintenance(paths, True)
+                        return 1
+                if result["state"] == "maintenance":
+                    atomic_write_json(_public(paths) / "command-result.json", result, mode=0o644)
+                    return 1
+                _finish(paths, request, result)
+                return int(result["state"] != "succeeded")
             if request["kind"] != "update":
                 result = {
                     "job_id": request["job_id"],
