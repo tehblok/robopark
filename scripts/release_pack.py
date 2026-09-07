@@ -63,7 +63,6 @@ EXCLUDED_DIRS = {
     "build",
     "coverage",
     "logs",
-    "diagnostics",
     ".worktrees",
     ".superpowers",
 }
@@ -80,7 +79,7 @@ def excluded(relative):
         and relative.as_posix() != "apps/api/data/emergency_sections.json"
     ):
         return True
-    if "data" in parts and parts[:3] != ("apps", "api", "data"):
+    if parts[:1] in (("data",), ("diagnostics",)):
         return True
     if (".env" in name or name.startswith("env.")) and not (
         name.endswith(".env.example") or name == ".env.example"

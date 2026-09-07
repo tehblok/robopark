@@ -147,6 +147,26 @@ def test_release_excludes_runtime_and_secrets(packaging, tmp_path, name):
         assert name not in archive.namelist()
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "apps/web/src/design-system/data/EntityRow.tsx",
+        "apps/web/src/domains/diagnostics/DiagnosticRuleEditor.tsx",
+    ],
+)
+def test_release_keeps_source_directories_named_data_or_diagnostics(packaging, tmp_path, name):
+    path = packaging[0] / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("export const included = true\n")
+    output = tmp_path / "release.zip"
+
+    result = pack(packaging, output)
+
+    assert result.returncode == 0, result.stderr
+    with zipfile.ZipFile(output) as archive:
+        assert name in archive.namelist()
+
+
 @pytest.mark.parametrize("kind", ["symlink", "fifo", "output_inside", "sidecar_inside"])
 def test_release_refuses_unsafe_inputs_before_writing(packaging, tmp_path, kind):
     source = packaging[0]
