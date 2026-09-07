@@ -20,7 +20,33 @@ from .state import atomic_write_json
 
 
 def _run(command: Sequence[str]) -> str:
+    if "build" in command:
+        # Docker BuildKit provides useful live progress and may run for many
+        # minutes on ARM. Inheriting the terminal makes activity visible.
+        subprocess.run(command, check=True, text=True, timeout=1800)
+        return ""
     return subprocess.run(command, check=True, capture_output=True, text=True, timeout=1800).stdout
+
+
+def explain_process_failure(error: subprocess.CalledProcessError) -> str:
+    """Return a stable, non-secret reason instead of exposing command output."""
+
+    detail = "\n".join(
+        value for value in (getattr(error, "stdout", ""), getattr(error, "stderr", "")) if value
+    ).lower()
+    if "no-env-resolution" in detail and ("unknown" in detail or "flag" in detail):
+        return "compose_version_unsupported"
+    if "no space left" in detail or "disk quota" in detail:
+        return "docker_disk_full"
+    if any(value in detail for value in ("network is unreachable", "temporary failure", "connection timed out", "tls handshake timeout")):
+        return "docker_network_failed"
+    if "out of memory" in detail or "cannot allocate memory" in detail or error.returncode in {137, -9}:
+        return "docker_out_of_memory"
+    return "docker_command_failed"
+
+
+def _progress(step: int, message: str) -> None:
+    print(f"  [Docker {step}/4] {message}", flush=True)
 
 
 def production_config(document, paths, release, image_tag):
@@ -107,6 +133,7 @@ def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
     previous_env = os.environ.get("HOST_ENV_FILE")
     os.environ["HOST_ENV_FILE"] = str(paths.etc / "host.env")
     try:
+        _progress(1, "Проверяю конфигурацию Docker Compose")
         raw = json.loads(run([*command, "config", "--format", "json", "--no-env-resolution"]))
     finally:
         if previous_env is None:
@@ -115,6 +142,7 @@ def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
             os.environ["HOST_ENV_FILE"] = previous_env
     release_id = hashlib.sha256((release / "manifest.json").read_bytes()).hexdigest()
     document = production_config(raw, paths, release, "release-" + release_id)
+    _progress(2, "Готовлю защищённую конфигурацию контейнеров")
     build_config = paths.state / "bootstrap-compose.json"
     atomic_write_json(build_config, document)
     try:
@@ -129,7 +157,9 @@ def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
         from .image_retention import record, require_record_capacity
 
         require_record_capacity(paths)
+        _progress(3, "Собираю API и web; на ARM это может занять несколько минут")
         run([*build_command, "build", "api", "web"])
+        _progress(4, "Проверяю и закрепляю собранные образы")
         pin_images(document, run)
         record(paths, release, "release-" + release_id, document)
         immutable = paths.state / "compose" / ("bootstrap-" + release_id + ".json")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -175,12 +176,25 @@ def _watchdog_handler(paths: HostPaths) -> int:
 
 
 def _bootstrap_handler(paths: HostPaths) -> int:
-    from .runtime import bootstrap_compose
+    from .runtime import bootstrap_compose, explain_process_failure
 
     try:
         bootstrap_compose(paths)
-    except (ValueError, OSError, subprocess.SubprocessError):
-        print("Runtime bootstrap failed")
+    except subprocess.CalledProcessError as error:
+        print(
+            f"Runtime bootstrap failed: {explain_process_failure(error)} (exit {error.returncode})",
+            file=sys.stderr,
+        )
+        return 1
+    except subprocess.TimeoutExpired:
+        print("Runtime bootstrap failed: docker_timeout", file=sys.stderr)
+        return 1
+    except ValueError as error:
+        reason = str(error) if re.fullmatch(r"[a-z0-9_]+", str(error)) else "invalid_runtime_configuration"
+        print(f"Runtime bootstrap failed: {reason}", file=sys.stderr)
+        return 1
+    except OSError:
+        print("Runtime bootstrap failed: host_io_error", file=sys.stderr)
         return 1
     return 0
 

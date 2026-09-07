@@ -164,6 +164,42 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
     assert target.read_bytes() == before
 
 
+def test_runtime_runner_streams_long_docker_build_output(monkeypatch):
+    from robopark_host import runtime
+
+    calls = []
+
+    def fake_run(command, **options):
+        calls.append((command, options))
+        return subprocess.CompletedProcess(command, 0, stdout="image-id\n")
+
+    monkeypatch.setattr(runtime.subprocess, "run", fake_run)
+    assert runtime._run(["docker", "compose", "build", "api", "web"]) == ""
+    assert "capture_output" not in calls[0][1]
+    assert runtime._run(["docker", "image", "inspect", "api"]) == "image-id\n"
+    assert calls[1][1]["capture_output"] is True
+
+
+@pytest.mark.parametrize(
+    "stderr,expected",
+    [
+        ("unknown flag: --no-env-resolution", "compose_version_unsupported"),
+        ("write failed: no space left on device", "docker_disk_full"),
+        ("failed to solve: network is unreachable", "docker_network_failed"),
+        ("process exited", "docker_command_failed"),
+    ],
+)
+def test_runtime_failure_reason_is_safe_and_actionable(stderr, expected):
+    from robopark_host.runtime import explain_process_failure
+
+    error = subprocess.CalledProcessError(
+        17,
+        ["docker", "compose", "config", "--no-env-resolution"],
+        stderr=stderr,
+    )
+    assert explain_process_failure(error) == expected
+
+
 def test_tuna_script_never_starts_tunnel_until_readiness(tmp_path):
     fake = tmp_path / "bin"
     fake.mkdir()

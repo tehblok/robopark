@@ -49,6 +49,12 @@ if [ -z "$ACTION" ]; then
 fi
 
 run_install() {
+    started_at=$(date +%s)
+    printf '\n%s\n' '========================================'
+    printf 'Robopark: %s\n' "$ACTION"
+    printf 'Начало: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+    printf '%s\n' 'Окно можно оставить открытым: ниже всегда виден текущий этап.'
+    printf '%s\n\n' '========================================'
     set --
     if [ -f "$PRESET" ]; then
         chown 0:0 "$PRESET"
@@ -60,11 +66,20 @@ run_install() {
         set -- --resume "$@"
     fi
     if ! "$INSTALLER_DIR/install.sh" "$@"; then
-        printf '%s\n' 'Установка прервалась. Исправляю состояние и повторяю последний этап…' >&2
-        "$INSTALLER_DIR/install.sh" --resume "$@"
+        printf '\n%s\n' 'Первая попытка завершилась ошибкой. Повторяю незавершённый этап…' >&2
+        if ! "$INSTALLER_DIR/install.sh" --resume "$@"; then
+            printf '\n%s\n' 'Установка остановлена после двух попыток.' >&2
+            printf '%s\n' 'Скопируйте строки от «Runtime bootstrap failed» до «Код:» — в них теперь есть точная категория сбоя.' >&2
+            printf '%s\n' 'После исправления снова запустите этот START.sh: готовые этапы не повторятся.' >&2
+            exit 1
+        fi
     fi
     rm -f "$PRESET"
-    printf '%s\n' 'Готово: https://robopark.ru.tuna.am'
+    elapsed=$(($(date +%s) - started_at))
+    printf '\n%s\n' '========================================'
+    printf 'Установка завершена за %s сек.\n' "$elapsed"
+    printf '%s\n' 'Адрес: https://robopark.ru.tuna.am' 'Автозапуск: включён' 'Диагностика и обновления: включены'
+    printf '%s\n' '========================================'
 }
 
 diagnose() {

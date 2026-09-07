@@ -47,6 +47,8 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 if ! phase_done packages; then
     run_phase packages install_packages
+else
+    printf '\n[1/5] Системные пакеты уже установлены — пропускаю повторную загрузку.\n'
 fi
 # Always validate configuration and links, including on an already-complete rerun.
 run_phase layout prepare_layout

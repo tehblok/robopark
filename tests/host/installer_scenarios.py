@@ -192,7 +192,9 @@ class InstallerScenarios(unittest.TestCase):
         self.assertEqual(self.state()['phase'], 'complete')
 
     def test_failed_image_build_never_publishes_runtime_or_starts_app(self):
-        self.run_installer(success=False, BUILD_FAIL='1')
+        result = self.run_installer(success=False, BUILD_FAIL='1')
+        self.assertIn('[5/5] Запуск контейнеров и служб', result.stdout)
+        self.assertIn('docker_command_failed', result.stderr)
         self.assertFalse((self.root / 'var/lib/robopark/ops/state/current-compose.json').exists())
         self.assertFalse(any(call['args'] == ['start', 'robopark.service'] for call in self.commands('systemctl')))
 
