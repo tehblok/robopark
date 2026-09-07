@@ -322,15 +322,32 @@ def _api_readiness_check(http: Any) -> CheckResult:
 
 
 def _state_check(paths: HostPaths, code: str, message: str) -> CheckResult:
-    target = paths.state / ("updater.json" if code == "updater" else "last-backup.json")
-    if not target.exists():
+    from .operational_state import backup_state, read_object
+
+    if code == "updater" and (paths.ops / "public/host-status.json").exists():
+        state = read_object(paths.ops / "public/host-status.json")
+        if state.get("error") == "manual_recovery_required" or not state:
+            return CheckResult(code, "failed", "Обновление требует внимания", None)
+        if state.get("state") in {"current_healthy", "previous_restored", "idle"}:
+            return CheckResult(code, "ok", message, None)
+        return CheckResult(code, "warning", "Обновление выполняется или требует внимания", None)
+    if code == "backup":
+        state = backup_state(paths)
+    elif (paths.state / "updater-journal.json").exists():
+        state = read_object(paths.state / "updater-journal.json")
+        phase = state.get("phase")
+        status = (
+            "failed"
+            if not state or phase == "failed"
+            else "ok"
+            if phase in {"succeeded", "rolled_back"}
+            else "warning"
+        )
+        return CheckResult(code, status, message, None)
+    else:
+        state = read_object(paths.state / "updater.json")  # legacy local installation
+    if not state:
         return CheckResult(code, "warning", message, None)
-    try:
-        state = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return CheckResult(code, "failed", "Состояние Robopark повреждено", None)
-    if not isinstance(state, Mapping):
-        return CheckResult(code, "failed", "Состояние Robopark повреждено", None)
     if code == "updater":
         outcome = str(state.get("status", state.get("state", ""))).casefold()
         if outcome in {"failed", "stuck", "manual_recovery_required"}:
@@ -598,6 +615,8 @@ def run_doctor(paths: HostPaths, runner: Runner, http: Any) -> DiagnosticReport:
 
 
 def _release_metadata(paths: HostPaths) -> dict[str, str | None]:
+    from .operational_state import public_version
+
     manifest = paths.current / "manifest.json"
     if not manifest.is_file():
         return {"version": None, "git_sha": None}
@@ -610,9 +629,7 @@ def _release_metadata(paths: HostPaths) -> dict[str, str | None]:
     version = payload.get("app_version")
     git_sha = payload.get("git_sha")
     return {
-        "version": version
-        if isinstance(version, str) and re.fullmatch(r"\d{1,9}(?:\.\d{1,9}){0,2}", version)
-        else None,
+        "version": public_version(version),
         "git_sha": git_sha
         if isinstance(git_sha, str) and re.fullmatch(r"[a-fA-F0-9]{40}", git_sha)
         else None,

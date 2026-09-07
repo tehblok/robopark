@@ -10,6 +10,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from robopark_api.services.ops.archives import (
@@ -250,6 +251,17 @@ def run_snapshot(ctx: OpsContext, job: OpsJob) -> OpsJob:
         append_log(ctx.ops_dir, job, "Сборка снимка…")
         blob = create_snapshot_bytes(ctx)
         _write_artifact(ctx, job, blob)
+        from robopark_api.services.ops.host_bridge import _atomic
+
+        _atomic(
+            ctx.ops_dir / "last-backup.json",
+            json.dumps(
+                {
+                    "status": "success",
+                    "completed_at": datetime.now(UTC).isoformat(),
+                }
+            ).encode(),
+        )
         append_log(ctx.ops_dir, job, "Снимок готов.")
         return succeed_job(ctx, job, phase="ready")
     except JobAborted:
