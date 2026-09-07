@@ -499,8 +499,15 @@ def _artifact_check(paths: HostPaths, runner: Runner) -> CheckResult:
 
     usage = artifact_usage(paths)
     last = read_object(paths.state / "retention.json")
-    blocked = usage["blocked"] or last.get("blocked")
-    busy = last.get("busy") is True
+    images = read_object(paths.state / "image-retention.json")
+    restore_cleanup = read_object(paths.state / "restore-retention.json")
+    blocked = (
+        usage["blocked"]
+        or last.get("blocked")
+        or images.get("blocked")
+        or restore_cleanup.get("blocked")
+    )
+    busy = last.get("busy") is True or images.get("pending") is True
     status = "failed" if usage["pressure"] or blocked and not busy else "warning" if busy else "ok"
     message = f"Операционные артефакты: {usage['bytes']} байт, {usage['files']} файлов"
     if busy:

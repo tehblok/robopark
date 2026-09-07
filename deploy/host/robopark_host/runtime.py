@@ -126,8 +126,12 @@ def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
             "--file",
             str(build_config),
         ]
+        from .image_retention import record, require_record_capacity
+
+        require_record_capacity(paths)
         run([*build_command, "build", "api", "web"])
         pin_images(document, run)
+        record(paths, release, "release-" + release_id, document)
         immutable = paths.state / "compose" / ("bootstrap-" + release_id + ".json")
         atomic_write_json(immutable, document)
         atomic_symlink(immutable, target)

@@ -318,6 +318,15 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
             restore_bytes, restored_deleted = prune(
                 restores, identities, now=now, max_bytes=max_bytes - total
             )
+            atomic_write_json(
+                paths.state / "restore-retention.json",
+                {
+                    "blocked": False,
+                    "bytes": restore_bytes,
+                    "deleted": restored_deleted,
+                    "pressure": restore_bytes > max_bytes,
+                },
+            )
             result["deleted"] += restored_deleted
             total += restore_bytes
             receipt_total = sum(item[3].st_size for item in entries if item[2] == "receipt")
