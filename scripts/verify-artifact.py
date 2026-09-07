@@ -22,6 +22,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 MAX_ARCHIVE = 512 * 1024 * 1024
 MAX_EXPANDED = 2 * 1024 * 1024 * 1024
 MAX_MANIFEST = 4 * 1024 * 1024
+MAX_MEMBER_COUNT = 20000
+MAX_COMPRESSION_RATIO = 200
 MANIFEST_KEYS = {
     "kind",
     "format",
@@ -91,13 +93,16 @@ def verify_release(raw, key):
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         infos = archive.infolist()
         names = archive.namelist()
-        require(len(names) <= 20002 and len(names) == len(set(names)))
+        require(len(names) <= MAX_MEMBER_COUNT and len(names) == len(set(names)))
         total = 0
         for info in infos:
             safe_name(info.filename)
             require(stat.S_IFMT(info.external_attr >> 16) in {0, stat.S_IFREG})
             total += info.file_size
-            require(total <= MAX_EXPANDED and info.file_size <= max(info.compress_size, 1) * 200)
+            require(
+                total <= MAX_EXPANDED
+                and info.file_size <= max(info.compress_size, 1) * MAX_COMPRESSION_RATIO
+            )
         require(archive.getinfo("manifest.json").file_size <= MAX_MANIFEST)
         require(archive.getinfo("manifest.sig").file_size == 64)
         manifest = json.loads(archive.read("manifest.json"), object_pairs_hook=unique_object)

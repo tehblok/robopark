@@ -538,3 +538,201 @@ def test_installer_verifier_rejects_unsafe_or_tampered_bundle(packaging, tmp_pat
         metadata.update(size=len(raw), sha256=digest)
         metadata_path.write_text(json.dumps(metadata))
     assert verify(packaging[2], output).returncode != 0
+
+
+@pytest.mark.parametrize(
+    "kind,key_name", [("release", "private"), ("installer", "private"), ("installer", "public")]
+)
+@pytest.mark.parametrize("suffix", ["", ".sig", ".sha256", ".json"])
+@pytest.mark.parametrize("alias", ["direct", "parent_symlink", "hardlink"])
+def test_all_outputs_reject_key_collisions_before_first_write(
+    packaging, tmp_path, kind, key_name, suffix, alias
+):
+    source, private, public, key, env = packaging
+    release = tmp_path / "payload.zip"
+    assert pack(packaging, release).returncode == 0
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    output = destination / ("release.zip" if kind == "release" else "installer.tar.gz")
+    collided = Path(str(output) + suffix)
+    original_key = private if key_name == "private" else public
+    original = original_key.read_bytes()
+    if alias == "hardlink":
+        os.link(original_key, collided)
+        protected = original_key
+    else:
+        collided.write_bytes(original)
+        collided.chmod(0o600)
+        protected = collided
+        if alias == "parent_symlink":
+            link = tmp_path / "alias"
+            link.symlink_to(destination, target_is_directory=True)
+            output = link / output.name
+    private = protected if key_name == "private" else private
+    public = protected if key_name == "public" else public
+    if kind == "release":
+        result = pack((source, private, public, key, env), output)
+    else:
+        result = run(
+            "bash",
+            ROOT / "scripts/pack-installer.sh",
+            "--release",
+            release,
+            "--public-key",
+            public,
+            "--signing-key",
+            private,
+            output,
+            env=env,
+        )
+    assert result.returncode != 0
+    assert protected.read_bytes() == original
+    assert collided.read_bytes() == original
+    for extension in ("", ".sig", ".sha256", ".json"):
+        candidate = Path(str(output) + extension)
+        if extension != suffix:
+            assert not candidate.exists(), "reject before publishing any artifact or sidecar"
+
+
+@pytest.fixture
+def installer_source_copy(tmp_path):
+    # A disposable repository layout, containing only trusted files needed by
+    # the real packaging entrypoint; no real source files are mutated.
+    root = tmp_path / "repository"
+    shutil.copytree(
+        ROOT / "scripts", root / "scripts", ignore=shutil.ignore_patterns("__pycache__")
+    )
+    shutil.copytree(
+        ROOT / "deploy/installer",
+        root / "deploy/installer",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    shutil.copytree(
+        ROOT / "apps/api/src", root / "apps/api/src", ignore=shutil.ignore_patterns("__pycache__")
+    )
+    return root
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "deploy",
+        "deploy/installer",
+        "deploy/installer/lib",
+        "deploy/installer/install.sh",
+        "deploy/installer/README-RU.txt",
+        "apps",
+        "apps/api/src/robopark_api/services/ops",
+        "apps/api/src/robopark_api/services/ops/archives.py",
+    ],
+)
+def test_installer_rejects_symlink_components_in_required_sources(
+    packaging, installer_source_copy, tmp_path, relative
+):
+    release = tmp_path / "release.zip"
+    assert pack(packaging, release).returncode == 0
+    root = installer_source_copy
+    original = root / relative
+    external = tmp_path / "outside-source"
+    original.rename(external)
+    original.symlink_to(external, target_is_directory=external.is_dir())
+    marker = tmp_path / "outside-code-executed"
+    if relative.startswith("apps"):
+        verifier = root / "apps/api/src/robopark_api/services/ops/archives.py"
+        with verifier.open("a") as stream:
+            stream.write(f'\nPath({str(marker)!r}).write_text("outside import")\n')
+    output = tmp_path / "installer.tar.gz"
+    result = run(
+        "bash",
+        root / "scripts/pack-installer.sh",
+        "--release",
+        release,
+        "--public-key",
+        packaging[2],
+        "--signing-key",
+        packaging[1],
+        output,
+        env=packaging[4],
+    )
+    assert result.returncode != 0
+    assert not output.exists()
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("members,accepted", [(20000, True), (20001, False)])
+def test_standalone_verifier_matches_production_zip_member_limit(
+    packaging, tmp_path, members, accepted
+):
+    from robopark_api.services.ops.archives import KIND_RELEASE, ArchiveError, inspect_archive
+
+    payload = b"x"
+    names = [f"files/{i:05d}" for i in range(members - 2)]
+    manifest = {
+        "kind": "release",
+        "format": 2,
+        "app_version": "1.2.3",
+        "git_sha": "a" * 40,
+        "migration_head": "initial",
+        "min_installer_version": "0",
+        "migration_compatibility": {},
+        "required_capabilities": [],
+        "created_at": "2023-11-14T22:13:20Z",
+        "update_notes": "",
+        "files": {
+            name: {"size": 1, "sha256": hashlib.sha256(payload).hexdigest()} for name in names
+        },
+    }
+    canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    output = tmp_path / "release.zip"
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
+        for name in names:
+            archive.writestr(name, payload)
+        archive.writestr("manifest.json", canonical)
+        archive.writestr("manifest.sig", packaging[3].sign(canonical))
+    raw = output.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    Path(str(output) + ".sig").write_bytes(packaging[3].sign(raw))
+    Path(str(output) + ".sha256").write_text(f"{digest}  release.zip\n")
+    metadata = {
+        "format": 1,
+        "kind": "release",
+        "filename": "release.zip",
+        "size": len(raw),
+        "sha256": digest,
+        "app_version": "1.2.3",
+        "git_sha": "a" * 40,
+        "migration_head": "initial",
+    }
+    Path(str(output) + ".json").write_text(json.dumps(metadata))
+    if accepted:
+        inspect_archive(raw, expected_kind=KIND_RELEASE, public_key=packaging[2].read_bytes())
+    else:
+        with pytest.raises(ArchiveError, match="too_many_files"):
+            inspect_archive(raw, expected_kind=KIND_RELEASE, public_key=packaging[2].read_bytes())
+    assert (verify(packaging[2], output).returncode == 0) is accepted
+
+
+@pytest.mark.parametrize("input_suffix", ["", ".sig", ".sha256", ".json"])
+def test_installer_preserves_all_input_release_files(packaging, tmp_path, input_suffix):
+    release = tmp_path / "release.zip"
+    assert pack(packaging, release).returncode == 0
+    inputs = {
+        suffix: Path(str(release) + suffix).read_bytes()
+        for suffix in ("", ".sig", ".sha256", ".json")
+    }
+    output = Path(str(release) + input_suffix)
+    result = run(
+        "bash",
+        ROOT / "scripts/pack-installer.sh",
+        "--release",
+        release,
+        "--public-key",
+        packaging[2],
+        "--signing-key",
+        packaging[1],
+        output,
+        env=packaging[4],
+    )
+    assert result.returncode != 0
+    for suffix, original in inputs.items():
+        assert Path(str(release) + suffix).read_bytes() == original
