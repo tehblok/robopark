@@ -78,7 +78,12 @@ jobs:
         run: |
           set -euo pipefail
           version="$(cat VERSION)"
-          gh release create "$RELEASE_TAG" --verify-tag --title "Robopark $version" --generate-notes \
+          test "$RELEASE_TAG" = "v$version"
+          publish_flags=(--verify-tag)
+          if [[ "$version" == *-* ]]; then
+            publish_flags+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" "${publish_flags[@]}" --title "Robopark $version" --generate-notes \
             "artifacts/robopark-release-$version.zip"{,.sig,.sha256,.json} \
             "artifacts/robopark-installer-$version.tar.gz"{,.sig,.sha256,.json} \
             artifacts/verify-artifact.py artifacts/release-public-key.pem

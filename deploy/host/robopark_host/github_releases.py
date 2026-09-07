@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import multiprocessing
 import os
 import re
+import selectors
 import stat
 import time
 import urllib.request
@@ -164,6 +166,55 @@ class GithubHttp:
         self.deadline = time.monotonic() + 120
 
     def iter_bytes(self, url, *, token, asset, limit):
+        """Parent enforces a hard deadline even while the child blocks in libc/HTTP."""
+        deadline = min(self.deadline, time.monotonic() + (120 if asset else 30))
+        require(time.monotonic() < deadline)
+        reader, writer = os.pipe()
+        worker = multiprocessing.get_context("fork").Process(
+            target=_http_worker,
+            args=(self, reader, writer, url, token, asset, limit),
+            daemon=True,
+        )
+        started = False
+        try:
+            os.set_blocking(reader, False)
+            worker.start()
+            started = True
+            os.close(writer)
+            writer = None
+            total = 0
+            with selectors.DefaultSelector() as selector:
+                selector.register(reader, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise GithubTransportError("github_transport_timeout")
+                    chunk = os.read(reader, 65536)
+                    if time.monotonic() >= deadline:
+                        raise GithubTransportError("github_transport_timeout")
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    require(total <= limit)
+                    yield chunk
+            worker.join(timeout=max(0, deadline - time.monotonic()))
+            if time.monotonic() >= deadline or worker.exitcode != 0:
+                raise GithubTransportError("github_transport_failed")
+        finally:
+            os.close(reader)
+            if writer is not None:
+                os.close(writer)
+            if started:
+                if worker.is_alive():
+                    worker.terminate()
+                    worker.join(timeout=0.1)
+                if worker.is_alive():
+                    worker.kill()
+                    worker.join(timeout=0.1)
+                if not worker.is_alive():
+                    worker.close()
+
+    def _request_bytes(self, url, *, token, asset, limit):
         target = urlsplit(url)
         require(
             target.scheme == "https"
@@ -181,7 +232,8 @@ class GithubHttp:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), AssetRedirects(asset))
         started = time.monotonic()
         require(started < self.deadline)
-        with opener.open(request, timeout=15) as response:
+        with opener.open(request, timeout=min(15, self.deadline - started)) as response:
+            require(time.monotonic() < self.deadline)
             require(response.status == 200)
             declared = response.headers.get("Content-Length")
             if declared is not None:
@@ -191,12 +243,26 @@ class GithubHttp:
             while True:
                 require(time.monotonic() < min(self.deadline, started + (120 if asset else 30)))
                 chunk = response.read1(65536)
+                require(time.monotonic() < min(self.deadline, started + (120 if asset else 30)))
                 if not chunk:
                     break
                 total += len(chunk)
                 require(total <= limit)
                 yield chunk
             require(declared is None or total == declared)
+
+
+def _http_worker(client, reader, writer, url, token, asset, limit):
+    """No credentials on argv, environment, disk, logs or error pipe."""
+    os.close(reader)
+    try:
+        for chunk in client._request_bytes(url, token=token, asset=asset, limit=limit):
+            view = memoryview(chunk)
+            while view:
+                view = view[os.write(writer, view) :]
+    except Exception:
+        os._exit(1)
+    os._exit(0)
 
 
 def _fetch(config, http, path, limit, *, asset=False):
@@ -330,11 +396,67 @@ def _history_path(config):
     )
 
 
+def _saved_release(value):
+    require(isinstance(value, dict) and set(value) == set(AvailableRelease.__dataclass_fields__))
+    release = AvailableRelease(**value)
+    require(
+        isinstance(release.repository, str)
+        and bool(
+            re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}",
+                release.repository,
+            )
+        )
+    )
+    require(type(release.release_id) is int and 0 < release.release_id < 2**63)
+    semver(release.version)
+    require(
+        "+" not in release.version
+        and release.filename == "robopark-release-" + release.version + ".zip"
+    )
+    require(type(release.size) is int and 0 < release.size <= MAX_ARCHIVE)
+    for value, pattern in (
+        (release.git_sha, r"[a-fA-F0-9]{40}"),
+        (release.sha256, r"[a-f0-9]{64}"),
+        (release.migration_head, r"[A-Za-z0-9_.-]{1,128}"),
+    ):
+        require(isinstance(value, str) and bool(re.fullmatch(pattern, value)))
+    wanted = {release.filename + suffix for suffix in ("", ".sig", ".sha256", ".json")}
+    require(isinstance(release.assets, dict) and set(release.assets) == wanted)
+    ids = set()
+    for descriptor in release.assets.values():
+        require(
+            isinstance(descriptor, dict)
+            and set(descriptor) in ({"id", "size"}, {"id", "size", "digest"})
+        )
+        require(
+            type(descriptor["id"]) is int
+            and 0 < descriptor["id"] < 2**63
+            and descriptor["id"] not in ids
+        )
+        require(type(descriptor["size"]) is int and 0 < descriptor["size"] <= MAX_ARCHIVE)
+        ids.add(descriptor["id"])
+        if "digest" in descriptor:
+            require(
+                isinstance(descriptor["digest"], str)
+                and bool(re.fullmatch(r"sha256:[a-f0-9]{64}", descriptor["digest"]))
+            )
+    require(release.assets[release.filename]["size"] == release.size)
+    require(release.assets[release.filename + ".sig"]["size"] == 64)
+    require(release.assets[release.filename + ".json"]["size"] <= 4096)
+    require(release.assets[release.filename + ".sha256"]["size"] <= 1024)
+    return release
+
+
 def _history(config):
     try:
-        return _json(_read(_history_path(config), private=True))
+        value = _json(_read(_history_path(config), private=True))
     except FileNotFoundError:
         return {}
+    require(isinstance(value, dict) and set(value) == {"release", "consumed"})
+    require(type(value["consumed"]) is bool)
+    require(_saved_release(value["release"]).repository == config.repository)
+    return value
 
 
 def _publish(paths, state, release=None):
@@ -404,11 +526,12 @@ def check_latest_release(config, http):
 
 def current_available(paths, release_id):
     value = _json(_read(paths.state / "available-update.json", private=True))
+    require(isinstance(value, dict) and set(value) == {"state", "checked_at", "release"})
     require(
         value.get("state") == "available"
         and 0 <= (datetime.now(UTC) - timestamp(value.get("checked_at"))).total_seconds() <= 86400
     )
-    release = AvailableRelease(**value["release"])
+    release = _saved_release(value["release"])
     require(release.release_id == release_id)
     return release
 
