@@ -7,6 +7,8 @@ StartLimitIntervalSec=300
 StartLimitBurst=3
 
 [Service]
+LimitNOFILE=65536
+TasksMax=4096
 Type=oneshot
 RemainAfterExit=yes
 Environment=HOST_ENV_FILE=/etc/robopark/host.env
