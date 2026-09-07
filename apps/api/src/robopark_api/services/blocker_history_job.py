@@ -13,6 +13,7 @@ from robopark_api.services.blocker_history import (
     align_bucket_start,
     scan_all_parks_once,
 )
+from robopark_api.services.ops.maintenance import host_maintenance_active
 
 logger = logging.getLogger(__name__)
 
@@ -55,5 +56,7 @@ async def run_blocker_history_loop(
 
 
 def _scan_once() -> None:
+    if host_maintenance_active():
+        return
     with SessionLocal() as db:
         scan_all_parks_once(db)

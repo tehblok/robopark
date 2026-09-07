@@ -1,8 +1,7 @@
 [Unit]
 Description=Robopark root command consumer
 After=network-online.target robopark.service
-StartLimitIntervalSec=300
-StartLimitBurst=3
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot

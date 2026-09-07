@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from robopark_api.models import Park, ParkBlockerHistory
 from robopark_api.services import platform_settings as settings_svc
+from robopark_api.services.ops.maintenance import host_maintenance_active
 from robopark_api.services.tracker_client import TrackerError, count_issues
 from robopark_api.services.tracker_metrics import (
     build_arrived_in_window_query,
@@ -61,6 +62,8 @@ def scan_park_bucket(
     *,
     token: str,
 ) -> tuple[int, int]:
+    if host_maintenance_active():
+        return 0, 0
     config = _park_scan_config(park)
     if config is None:
         return 0, 0
@@ -83,6 +86,8 @@ def scan_park_bucket(
     )
     arrived_count = count_issues(token=token, query=arrived_query)
     departed_count = count_issues(token=token, query=departed_query)
+    if host_maintenance_active():
+        return 0, 0
     upsert_bucket(
         db,
         park_id=park.id,
@@ -94,6 +99,8 @@ def scan_park_bucket(
 
 
 def scan_all_parks_once(db: Session, *, now: datetime | None = None) -> int:
+    if host_maintenance_active():
+        return 0
     token = settings_svc.get_tracker_token(db)
     if not token:
         logger.warning("Blocker history scan skipped: tracker token not configured")

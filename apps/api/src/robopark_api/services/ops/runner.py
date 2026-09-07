@@ -92,6 +92,13 @@ def begin_job(ctx: OpsContext, kind: str, *, exempt_token_hash: str) -> OpsJob:
     return begin_exclusive(ctx.ops_dir, kind, exempt_token_hash=exempt_token_hash)
 
 
+def _require_host_writes(ctx: OpsContext) -> None:
+    from robopark_api.services.ops.maintenance import HostMaintenanceActive, host_marker_active
+
+    if ctx.use_host_updater and (ctx.host_ops_dir is None or host_marker_active(ctx.host_ops_dir)):
+        raise HostMaintenanceActive()
+
+
 def _aborted_job(ctx: OpsContext, job: OpsJob) -> OpsJob:
     disk = load_job(ctx.ops_dir)
     return disk if disk is not None else job
@@ -253,6 +260,8 @@ def run_snapshot(ctx: OpsContext, job: OpsJob) -> OpsJob:
 
 
 def run_restore(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) -> OpsJob:
+    from robopark_api.services.ops.maintenance import HostMaintenanceActive
+
     if confirm.strip() != RESTORE_PHRASE:
         return fail_job(ctx, job, "confirm_required")
     try:
@@ -271,6 +280,7 @@ def run_restore(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) -
         if ctx.before_db_replace:
             ctx.before_db_replace()
         save_job(ctx.ops_dir, job)
+        _require_host_writes(ctx)
         restore_snapshot_tree(
             tree,
             database_path=sqlite_path_from_url(ctx.database_url),
@@ -283,6 +293,8 @@ def run_restore(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) -
         return succeed_job(ctx, job, phase="restored")
     except JobAborted:
         return _aborted_job(ctx, job)
+    except HostMaintenanceActive:
+        return fail_job(ctx, job, "maintenance")
     except ArchiveError as exc:
         return fail_job(ctx, job, str(exc))
     except SnapshotError as exc:
@@ -452,7 +464,13 @@ def execute_job(
     archive: bytes | None = None,
     confirm: str = "",
 ) -> OpsJob:
+    from robopark_api.services.ops.maintenance import HostMaintenanceActive
+
     try:
+        # Host updates only publish an operational request; the root consumer
+        # owns their writer barrier. Local snapshot/restore tasks touch data.
+        if job.kind != JOB_UPDATE or not ctx.use_host_updater:
+            _require_host_writes(ctx)
         if job.kind == JOB_SNAPSHOT:
             return run_snapshot(ctx, job)
         if job.kind == JOB_RESTORE:
@@ -466,6 +484,8 @@ def execute_job(
         return fail_job(ctx, job, "unknown_job")
     except JobAborted:
         return _aborted_job(ctx, job)
+    except HostMaintenanceActive:
+        return fail_job(ctx, job, "maintenance")
 
 
 def start_and_run(

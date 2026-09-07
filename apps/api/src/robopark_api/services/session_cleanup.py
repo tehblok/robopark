@@ -13,11 +13,14 @@ import logging
 
 from robopark_api.db import SessionLocal
 from robopark_api.routers.auth import purge_expired_sessions
+from robopark_api.services.ops.maintenance import host_maintenance_active
 
 logger = logging.getLogger(__name__)
 
 
 def purge_expired_sessions_once() -> int:
+    if host_maintenance_active():
+        return 0
     with SessionLocal() as db:
         removed = purge_expired_sessions(db)
     if removed:

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from robopark_api.db import SessionLocal
 from robopark_api.services import emergency_cache, emergency_client, reports
 from robopark_api.services import platform_settings as settings_svc
+from robopark_api.services.ops.maintenance import host_maintenance_active
 
 MIN_INTERVAL_SECONDS = 90.0
 MAX_INTERVAL_SECONDS = 120.0
@@ -43,7 +44,7 @@ def keepalive_once(
     stop_event: threading.Event | None = None,
 ) -> None:
     """Run one keep-alive cycle for the recent VIN ring or optional seed VIN."""
-    if stop_event is not None and stop_event.is_set():
+    if host_maintenance_active() or (stop_event is not None and stop_event.is_set()):
         return
 
     if db is not None:
@@ -66,17 +67,21 @@ def _keepalive_once_with_db(db: Session, stop_event: threading.Event | None) -> 
             vins = [seed.value.strip()]
 
     for index, vin in enumerate(vins):
-        if stop_event is not None and stop_event.is_set():
+        if host_maintenance_active() or (stop_event is not None and stop_event.is_set()):
             return
 
         try:
             emergency_cache.get_robot_payload(db=db, vin=vin)
         except emergency_client.EmergencyAuthError:
+            if host_maintenance_active():
+                return
             settings_svc.set_emergency_cookie_valid(db, False)
             return
         except emergency_client.EmergencyError:
             logger.warning("Emergency keep-alive failed for VIN %s", vin)
         else:
+            if host_maintenance_active():
+                return
             settings_svc.set_emergency_cookie_valid(db, True)
             settings_svc.set_setting(
                 db,

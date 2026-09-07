@@ -296,7 +296,7 @@ def test_command_service_retries_crashed_consumer_with_bounded_backoff():
     parser.read(Path(__file__).resolve().parents[2] / "deploy/systemd/robopark-commands.service")
     assert parser["Service"]["Restart"] == "on-failure"
     assert 1 <= int(parser["Service"]["RestartSec"]) <= 30
-    assert int(parser["Unit"]["StartLimitBurst"]) <= 3
+    assert parser["Unit"]["StartLimitIntervalSec"] == "0"
 
 
 def test_public_health_reports_backup_time_without_private_backup_fields(host_paths):
@@ -392,4 +392,64 @@ def test_expired_approved_diagnostics_publishes_failure_without_work(host_paths,
     assert result["job_id"] == command["job_id"]
     assert result["state"] == "failed"
     assert result["error"] == "request_expired"
+    assert not (host_paths.ops / "inbox/approved.json").exists()
+
+
+def test_trigger_does_not_rate_limit_four_successful_commands(host_paths, monkeypatch):
+    from robopark_host import commands
+
+    unit = configparser.ConfigParser(interpolation=None)
+    unit.read(Path(__file__).resolve().parents[2] / "deploy/systemd/robopark-commands.service")
+    assert unit["Unit"]["StartLimitIntervalSec"] == "0"
+    monkeypatch.setattr(commands, "run_doctor", lambda *args: DiagnosticReport([]))
+    for _ in range(4):
+        command = request(host_paths)
+        assert (
+            commands.consume_commands(host_paths, lambda *args, **kwargs: CommandResult(), None)
+            == 0
+        )
+        assert (
+            json.loads((host_paths.ops / "public/command-result.json").read_text())["job_id"]
+            == command["job_id"]
+        )
+
+
+def test_crash_retry_budget_is_per_command_and_survives_process_restarts(host_paths, monkeypatch):
+    from types import SimpleNamespace
+
+    from robopark_host import commands
+
+    request(host_paths, "update", artifact="update-test.zip")
+    monkeypatch.setattr(
+        "robopark_host.updater.recover_interrupted_update",
+        lambda *args: SimpleNamespace(state="idle"),
+    )
+    launches = []
+
+    def crash(*args):
+        launches.append(True)
+        raise SystemExit("crash")
+
+    monkeypatch.setattr("robopark_host.launcher.launch_update", crash)
+    for _ in range(3):
+        with pytest.raises(SystemExit):
+            commands.consume_commands(host_paths, None, None, update_runner=object())
+    assert commands.consume_commands(host_paths, None, None, update_runner=object()) == 0
+    assert len(launches) == 3
+    assert json.loads((host_paths.ops / "public/maintenance.json").read_text())["enabled"] is True
+    assert (
+        json.loads((host_paths.ops / "public/host-status.json").read_text())["error"]
+        == "manual_recovery_required"
+    )
+
+
+def test_deeply_nested_inbox_is_rejected_and_removed(host_paths, monkeypatch):
+    from robopark_host import commands
+
+    request(host_paths)
+    (host_paths.ops / "inbox/approved.json").write_text("[" * 1500 + "0" + "]" * 1500)
+    monkeypatch.setattr(
+        commands.json, "loads", lambda *args, **kwargs: (_ for _ in ()).throw(RecursionError())
+    )
+    assert commands.consume_commands(host_paths, None, None) == 1
     assert not (host_paths.ops / "inbox/approved.json").exists()

@@ -85,6 +85,9 @@ def _resolve_storage_key(storage_key: str) -> Path:
 
 
 def _atomic_write(destination: Path, content: bytes) -> None:
+    from robopark_api.services.ops.maintenance import require_application_writes
+
+    require_application_writes()
     destination.parent.mkdir(parents=True, exist_ok=True)
     file_descriptor, temporary_name = tempfile.mkstemp(
         prefix=".report-upload-",
@@ -96,6 +99,7 @@ def _atomic_write(destination: Path, content: bytes) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
+        require_application_writes()
         os.link(temporary, destination)
     finally:
         with suppress(OSError):

@@ -9,6 +9,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from robopark_api.security import hash_session_token
 from robopark_api.services.ops.jobs import is_exempt_session, is_maintenance_active
+from robopark_api.services.ops.maintenance import HostMaintenanceActive, host_maintenance_active
 
 EXEMPT_PATHS = frozenset(
     {
@@ -47,41 +48,37 @@ class MaintenanceGateMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path") or ""
-        if path in EXEMPT_PATHS or path.startswith("/admin/ops/"):
-            await self.app(scope, receive, send)
-            return
-        if (scope.get("method") or "").upper() == "OPTIONS":
-            await self.app(scope, receive, send)
-            return
+        method = (scope.get("method") or "").upper()
         app = scope.get("app")
-        ops_dir = getattr(getattr(app, "state", None), "ops_dir", None)
-        cookie_name = getattr(
-            getattr(app, "state", None), "session_cookie_name", "robopark_session"
-        )
-        settings = getattr(getattr(app, "state", None), "ops_settings", None)
-        host_active = False
-        if settings is not None and settings.ops_host_root:
-            from robopark_api.services.ops.host_bridge import (
-                BridgeError,
-                host_root,
-                read_json,
-                reconcile_host_job,
-            )
-
-            try:
-                root = host_root(settings)
-                if ops_dir is not None:
-                    reconcile_host_job(ops_dir, root)
-                host_active = read_json(root / "public/maintenance.json").get("enabled") is True
-            except BridgeError:
-                host_active = True
-        if not host_active and (ops_dir is None or not is_maintenance_active(ops_dir)):
+        state = getattr(app, "state", None)
+        settings = getattr(state, "ops_settings", None)
+        ops_dir = getattr(state, "ops_dir", None)
+        cookie_name = getattr(state, "session_cookie_name", "robopark_session")
+        host_active = settings is not None and host_maintenance_active(settings)
+        safe_poll = method in {"GET", "HEAD"} and path in {
+            "/health",
+            "/health/ready",
+            "/ops/maintenance",
+            "/admin/ops/job",
+            "/admin/ops/system-health",
+            "/admin/ops/artifact",
+            "/admin/ops/diagnostic-artifact",
+        }
+        if host_active:
+            if not safe_poll and method != "OPTIONS":
+                await JSONResponse({"detail": "maintenance"}, status_code=503)(scope, receive, send)
+                return
+        elif (
+            not (path in EXEMPT_PATHS or path.startswith("/admin/ops/") or method == "OPTIONS")
+            and ops_dir is not None
+            and is_maintenance_active(ops_dir)
+        ):
+            token = _cookie_value(scope, cookie_name)
+            token_hash = hash_session_token(token) if token else None
+            if not is_exempt_session(ops_dir, token_hash):
+                await JSONResponse({"detail": "maintenance"}, status_code=503)(scope, receive, send)
+                return
+        try:
             await self.app(scope, receive, send)
-            return
-        token = _cookie_value(scope, cookie_name)
-        token_hash = hash_session_token(token) if token else None
-        if is_exempt_session(ops_dir, token_hash):
-            await self.app(scope, receive, send)
-            return
-        response = JSONResponse({"detail": "maintenance"}, status_code=503)
-        await response(scope, receive, send)
+        except HostMaintenanceActive:
+            await JSONResponse({"detail": "maintenance"}, status_code=503)(scope, receive, send)
