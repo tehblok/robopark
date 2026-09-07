@@ -214,3 +214,34 @@ def test_completed_updates_prune_old_compose_and_displaced_data(host):
         updater.reconcile_after_exit(host.paths, host.runner)
     assert len(list((host.paths.state / "compose").iterdir())) == 2
     assert not list(host.paths.var.glob(".displaced-*"))
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ["unpacking", "unpacked", "building", "built", "testing", "tested", "smoking", "smoked"],
+)
+def test_pre_maintenance_recovery_only_discards_candidate(host, monkeypatch, phase):
+    original = updater.atomic_write_json
+    before_current = host.paths.current.readlink()
+    before_config = (host.paths.state / "current-compose.json").readlink()
+
+    def interrupt(path, payload, *args, **kwargs):
+        original(path, payload, *args, **kwargs)
+        if path.name == "updater-journal.json" and payload.get("phase") == phase:
+            raise SimulatedPowerLoss()
+
+    monkeypatch.setattr(updater, "atomic_write_json", interrupt)
+    with pytest.raises(SimulatedPowerLoss):
+        apply_release(host.request(), host.paths, host.runner)
+    monkeypatch.setattr(updater, "atomic_write_json", original)
+    for _ in range(2):
+        result = recover_interrupted_update(host.paths, host.runner)
+        assert result.error == "interrupted"
+        assert not any(command[0] == "systemctl" for command in host.runner.commands)
+        assert host.paths.current.readlink() == before_current
+        assert (host.paths.state / "current-compose.json").readlink() == before_config
+        assert (host.paths.var / "data/robopark.db").read_text() == "original"
+        assert not (host.paths.state / "maintenance.json").exists()
+        assert not (host.paths.ops / "public/maintenance.json").exists()
+        assert not list(host.paths.releases.glob(".staging-*"))
+        assert not list((host.paths.state / "compose").glob("*-production.json"))

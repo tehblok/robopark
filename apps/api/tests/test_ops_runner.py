@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from robopark_api.services.ops import runner as runner_mod
 from robopark_api.services.ops.archives import KIND_RELEASE, KIND_SNAPSHOT, build_archive
 from robopark_api.services.ops.jobs import (
@@ -469,3 +470,111 @@ def test_abort_while_host_approval_is_queued_leaves_no_approval(tmp_path, monkey
     )
     assert job.error == "aborted"
     assert not (ctx.ops_dir / "inbox/approved.json").exists()
+
+
+@pytest.mark.parametrize("claimed", [False, True])
+def test_dispatched_host_update_rejects_abort_and_expiry(tmp_path, claimed):
+    from robopark_api.services.ops.jobs import (
+        JobConflict,
+        expire_stale_job,
+        is_maintenance_active,
+    )
+
+    db = tmp_path / "data/robopark.db"
+    _tiny_db(db)
+    ctx = _ctx(tmp_path, db, None, use_host_updater=True, actor_user_id=17)
+    job = start_and_run(
+        ctx,
+        "update",
+        exempt_token_hash="x",
+        archive=_release_zip(tmp_path, tests_ok=True),
+        confirm=UPDATE_PHRASE,
+    )
+    approval = ctx.ops_dir / "inbox/approved.json"
+    request = approval.read_bytes()
+    if claimed:
+        approval.unlink()  # Host consumed the request; absence does not make it cancellable.
+    with pytest.raises(JobConflict, match="host_update_dispatched"):
+        abort_job(ctx.ops_dir)
+    assert expire_stale_job(ctx.ops_dir, ttl_seconds=0.000001) is None
+    assert is_maintenance_active(ctx.ops_dir, ttl_seconds=0.000001)
+    assert load_job(ctx.ops_dir).state == job.state
+    assert load_job(ctx.ops_dir).extra["host_dispatch"] == "dispatched"
+    if not claimed:
+        assert approval.read_bytes() == request
+
+
+@pytest.mark.parametrize("after_publish", [False, True])
+@pytest.mark.parametrize("power_loss", [False, True])
+def test_dispatch_failure_retains_durable_host_ownership(
+    tmp_path, monkeypatch, after_publish, power_loss
+):
+    from robopark_api.services.ops.jobs import JobConflict, is_maintenance_active
+
+    class PowerLoss(BaseException):
+        pass
+
+    db = tmp_path / "data/robopark.db"
+    _tiny_db(db)
+    ctx = _ctx(tmp_path, db, None, use_host_updater=True, actor_user_id=17)
+    replace = runner_mod.os.replace
+
+    def interrupt(source, destination):
+        if Path(destination).name != "approved.json":
+            return replace(source, destination)
+        assert load_job(ctx.ops_dir).extra["host_dispatch"] == "dispatched"
+        if after_publish:
+            replace(source, destination)
+        raise PowerLoss() if power_loss else OSError("publication interrupted")
+
+    monkeypatch.setattr(runner_mod.os, "replace", interrupt)
+
+    def dispatch():
+        return start_and_run(
+            ctx,
+            "update",
+            exempt_token_hash="x",
+            archive=_release_zip(tmp_path, tests_ok=True),
+            confirm=UPDATE_PHRASE,
+        )
+
+    if power_loss:
+        with pytest.raises(PowerLoss):
+            dispatch()
+    else:
+        assert dispatch().phase == PHASE_AWAITING_REBUILD
+    job = load_job(ctx.ops_dir)
+    assert job.extra["host_dispatch"] == "dispatched"
+    assert job.extra["host_request"]["job_id"] == job.id
+    assert (ctx.ops_dir / "artifacts" / job.extra["host_request"]["artifact"]).is_file()
+    assert (ctx.ops_dir / "inbox/approved.json").exists() is after_publish
+    with pytest.raises(JobConflict, match="host_update_dispatched"):
+        abort_job(ctx.ops_dir)
+    assert is_maintenance_active(ctx.ops_dir, ttl_seconds=0.000001)
+
+
+def test_error_after_host_publication_cannot_fail_the_api_job(tmp_path, monkeypatch):
+    from robopark_api.services.ops.jobs import is_maintenance_active
+
+    db = tmp_path / "data/robopark.db"
+    _tiny_db(db)
+    ctx = _ctx(tmp_path, db, None, use_host_updater=True, actor_user_id=17)
+    unlink = Path.unlink
+
+    def failed_cleanup(path, *args, **kwargs):
+        if path.name.startswith(".approved-"):
+            raise OSError("cleanup failed with sensitive detail")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", failed_cleanup)
+    job = start_and_run(
+        ctx,
+        "update",
+        exempt_token_hash="x",
+        archive=_release_zip(tmp_path, tests_ok=True),
+        confirm=UPDATE_PHRASE,
+    )
+    assert job.state == STATE_RUNNING
+    assert (ctx.ops_dir / "inbox/approved.json").exists()
+    assert is_maintenance_active(ctx.ops_dir)
+    assert "sensitive detail" not in load_job(ctx.ops_dir).log
