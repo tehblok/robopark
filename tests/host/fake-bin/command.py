@@ -62,13 +62,21 @@ elif name == 'chown':
         for path in args[1:]:
             os.chown(path, owner, group)
 elif name == 'docker':
+    if args == ['info'] or 'build' in args or args[:2] == ['image', 'inspect']:
+        if os.environ.get('DOCKER_STOPPED') == '1' and not (root / 'docker-running').exists():
+            sys.exit(1)
     if args[:2] == ['image', 'inspect']:
         print('sha256:' + ('1' if 'api' in args[-1] else '2') * 64)
     elif 'config' in args:
         print(json.dumps({'services': {'api': {'build': {'context': 'api'}, 'environment': {}}, 'web': {'build': {'context': 'web'}}, 'ops-agent': {}}}))
     elif 'build' in args and os.environ.get('BUILD_FAIL') == '1':
         sys.exit(1)
-elif name in ('sleep', 'systemctl'):
+elif name == 'systemctl':
+    if args == ['start', 'docker.service']:
+        if os.environ.get('DOCKER_START_FAIL') == '1':
+            sys.exit(1)
+        (root / 'docker-running').touch()
+elif name == 'sleep':
     pass
 else:
     sys.exit('unexpected fake command: ' + name)

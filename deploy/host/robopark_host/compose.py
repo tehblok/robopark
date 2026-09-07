@@ -9,7 +9,7 @@ from typing import Any
 from .paths import HostPaths
 
 PROJECT_NAME = "robopark"
-EXPECTED_SERVICES = frozenset({"api", "web", "ops-agent"})
+EXPECTED_SERVICES = frozenset({"api", "web"})
 _SAFE_SERVICE_FIELDS = ("Service", "Name", "State", "Health", "ExitCode", "RestartCount")
 
 

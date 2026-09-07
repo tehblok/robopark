@@ -97,7 +97,10 @@ def test_checksum_mismatch_is_rejected(tmp_path: Path, release_keys: tuple[bytes
     lying = io.BytesIO()
     with source, zipfile.ZipFile(lying, "w") as zf:
         for info in source.infolist():
-            zf.writestr(info.filename, b"changed" if info.filename == "a.txt" else source.read(info.filename))
+            zf.writestr(
+                info.filename,
+                b"changed" if info.filename == "a.txt" else source.read(info.filename),
+            )
     with pytest.raises(ArchiveError, match="checksum_mismatch"):
         inspect_archive(lying.getvalue(), expected_kind=KIND_RELEASE, public_key=release_keys[1])
 

@@ -272,7 +272,11 @@ def test_root_gitignore_tracks_api_lockfile():
     assert "uv.lock" not in ignored_lines
 
 
-def test_api_data_gitignore_allows_only_the_tracked_seed_file():
+def test_api_data_gitignore_allows_only_the_tracked_seed_file(tmp_path: Path):
+    # Exercise the shipped ignore policy without requiring the payload to be a
+    # Git checkout (release images intentionally contain no .git directory).
+    (tmp_path / ".gitignore").write_bytes((REPO_ROOT / ".gitignore").read_bytes())
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
     runtime = subprocess.run(
         [
             "git",
@@ -282,7 +286,7 @@ def test_api_data_gitignore_allows_only_the_tracked_seed_file():
             "--",
             "apps/api/data/runtime-cache/session.bin",
         ],
-        cwd=REPO_ROOT,
+        cwd=tmp_path,
         check=False,
     )
     seed = subprocess.run(
@@ -294,7 +298,7 @@ def test_api_data_gitignore_allows_only_the_tracked_seed_file():
             "--",
             "apps/api/data/emergency_sections.json",
         ],
-        cwd=REPO_ROOT,
+        cwd=tmp_path,
         check=False,
     )
 

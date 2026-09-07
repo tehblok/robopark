@@ -247,7 +247,7 @@ def test_release_pack_creates_a_signed_archive(tmp_path: Path, ed25519_keys: tup
 
     packed = subprocess.run(
         [
-            "/usr/bin/python3",
+            sys.executable,
             script,
             "--root",
             release_tree(tmp_path),
@@ -285,7 +285,7 @@ def test_release_pack_refuses_to_invent_a_base_migration_head(
 
     packed = subprocess.run(
         [
-            "/usr/bin/python3",
+            sys.executable,
             script,
             "--root",
             release_tree(tmp_path),
@@ -408,10 +408,18 @@ def test_pack_extracted_release_resolves_sha_without_git(
     (root / "apps/web").mkdir(parents=True)
     (root / "apps/web/package.json").write_text("{}")
     (root / "deploy").mkdir()
+    (root / "apps/api/data").mkdir()
+    (root / "apps/api/data/emergency_sections.json").write_text("{}")
+    for runtime in ("robopark.db", "robopark.db-wal", "robopark.db-shm"):
+        (root / "apps/api/data" / runtime).write_bytes(bytes(32768))
     (root / "manifest.json").write_text(json.dumps({"git_sha": retained_sha}))
     (root / "VERSION").write_text("1.2.3\n")
     (root / ".dockerignore").write_text(".env\n.release-secrets\n")
     (root / ".env").write_text("TEST_ONLY_SECRET=never-package\n")
+    (root / ".gitignore").write_text("*.env\n")
+    (root / ".github/workflows").mkdir(parents=True)
+    (root / ".github/workflows/ci.yml").write_text("name: fixture\n")
+    (root / ".github/private.env").write_text("TEST_ONLY_SECRET=never-package\n")
     key = tmp_path / "key.pem"
     key.write_bytes(private)
     key.chmod(0o600)
@@ -442,6 +450,13 @@ def test_pack_extracted_release_resolves_sha_without_git(
             assert archive.read("VERSION") == b"1.2.3\n"
             assert archive.read(".dockerignore") == b".env\n.release-secrets\n"
             assert ".env" not in archive.namelist()
+            assert archive.read(".gitignore") == b"*.env\n"
+            assert archive.read(".github/workflows/ci.yml") == b"name: fixture\n"
+            assert ".github/private.env" not in archive.namelist()
+            assert archive.read("apps/api/data/emergency_sections.json") == b"{}"
+            assert {name for name in archive.namelist() if name.startswith("apps/api/data/")} == {
+                "apps/api/data/emergency_sections.json"
+            }
         assert (
             inspect_archive(
                 output.read_bytes(), expected_kind=KIND_RELEASE, public_key=public

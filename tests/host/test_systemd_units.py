@@ -139,12 +139,17 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
     assert mounts["/ops"]["source"] == str(host_paths.var / "api-ops")
     assert mounts["/data"]["source"] == str(host_paths.var / "data")
     assert mounts["/host-ops/public"]["read_only"] is True
+    key_path = api["environment"]["OPS_RELEASE_PUBLIC_KEY_PATH"]
+    assert key_path == "/etc/robopark/release-public-key.pem"
+    assert mounts[key_path]["source"] == str(host_paths.etc / "release-public-key.pem")
+    assert mounts[key_path]["read_only"] is True
     assert set(mounts) == {
         "/ops",
         "/data",
         "/host-ops/inbox",
         "/host-ops/artifacts",
         "/host-ops/public",
+        "/etc/robopark/release-public-key.pem",
     }
     for command in calls:
         if command[:2] == ["docker", "compose"]:
@@ -235,3 +240,26 @@ def test_bootstrap_rejects_unresolved_images_without_publishing_state(host_paths
         bootstrap_compose(host_paths, run)
     assert not (host_paths.state / "current-compose.json").exists()
     assert not (host_paths.state / "bootstrap-compose.json").exists()
+
+
+def test_docker_readiness_failure_has_bounded_attempts_and_command_timeouts():
+    import runpy
+
+    helper = REPO / "deploy/installer/lib/ensure-docker.py"
+    assert helper.exists(), "missing bounded Docker daemon preparation"
+    module = runpy.run_path(str(helper))
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command == ["docker", "info"]:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    with pytest.raises(RuntimeError, match="docker_not_ready"):
+        module["ensure_docker"](run=run, sleep=lambda _: None)
+    assert [command for command, _ in calls[:2]] == [
+        ["systemctl", "enable", "docker.service"],
+        ["systemctl", "start", "docker.service"],
+    ]
+    assert len([command for command, _ in calls if command == ["docker", "info"]]) == 10
+    assert all(0 < options["timeout"] <= 60 for _, options in calls)

@@ -111,6 +111,35 @@ class InstallerScenarios(unittest.TestCase):
         document = json.loads(config.read_text())
         self.assertEqual(document['services']['api']['image'], 'sha256:' + '1' * 64)
         self.assertNotIn('ops-agent', document['services'])
+        api = document['services']['api']
+        key_path = api['environment']['OPS_RELEASE_PUBLIC_KEY_PATH']
+        key_mount = next(mount for mount in api['volumes'] if mount['target'] == key_path)
+        self.assertTrue(key_mount['read_only'])
+        self.assertEqual(key_mount['source'], str(self.root / 'etc/robopark/release-public-key.pem'))
+        self.assertEqual(Path(key_mount['source']).read_bytes(), (self.bundle / 'keys/release-public-key.pem').read_bytes())
+        self.assertEqual(stat.S_IMODE(Path(key_mount['source']).stat().st_mode), 0o644)
+
+    def test_doctor_output_directories_are_provisioned_root_only(self):
+        self.run_installer()
+        for relative in ('var/lib/robopark/diagnostics', 'var/log/robopark'):
+            path = self.root / relative
+            self.assertTrue(path.is_dir())
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
+            self.assertTrue(any(call['args'] == ['0:0', str(path)] for call in self.commands('chown')))
+
+    def test_stopped_docker_is_started_and_ready_before_bootstrap_build(self):
+        self.run_installer(DOCKER_STOPPED='1')
+        calls = self.commands()
+        start = next(i for i, call in enumerate(calls) if call['name'] == 'systemctl' and call['args'] == ['start', 'docker.service'])
+        ready = next(i for i, call in enumerate(calls) if call['name'] == 'docker' and call['args'] == ['info'])
+        build = next(i for i, call in enumerate(calls) if call['name'] == 'docker' and 'build' in call['args'])
+        self.assertLess(start, ready)
+        self.assertLess(ready, build)
+
+    def test_docker_start_failure_never_builds_or_publishes_runtime(self):
+        self.run_installer(success=False, DOCKER_STOPPED='1', DOCKER_START_FAIL='1')
+        self.assertFalse(any('build' in call['args'] for call in self.commands('docker')))
+        self.assertFalse((self.root / 'var/lib/robopark/ops/state/current-compose.json').exists())
 
     def test_readiness_failure_never_starts_tuna_and_resume_recovers(self):
         self.run_installer(success=False, API_UNREADY='1')

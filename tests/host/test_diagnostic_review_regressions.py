@@ -362,3 +362,35 @@ def test_doctor_handles_null_readiness_checks_and_malformed_migration_manifest(h
 
     assert report.by_code("api_readiness").status == "failed"
     assert report.by_code("database_unavailable").status == "failed"
+
+
+def test_healthy_installed_profile_does_not_require_legacy_ops_agent(host_paths):
+    _release(host_paths)
+    healthy = json.dumps([{'Service': name, 'State': 'running', 'Health': 'healthy'} for name in ('api', 'web')])
+    report = run_doctor(host_paths, ReviewRunner(healthy), ContractHttp())
+    assert report.by_code('containers').status == 'ok'
+    assert report.by_code('containers').repair is None
+
+
+def test_scheduled_doctor_actual_writes_fit_its_systemd_sandbox(host_paths, monkeypatch):
+    import configparser
+    from pathlib import Path
+
+    unit = configparser.ConfigParser(interpolation=None)
+    unit.read(Path(__file__).resolve().parents[2] / 'deploy/systemd/robopark-doctor.service')
+    allowed = [host_paths.root / value.lstrip('/') for value in unit['Service']['ReadWritePaths'].split()]
+    assert host_paths.var not in allowed
+    _release(host_paths)
+    real_replace = os.replace
+    writes = []
+
+    def enforce_sandbox(source, destination, *args, **kwargs):
+        path = Path(destination)
+        assert any(path.is_relative_to(directory) for directory in allowed), f'doctor sandbox denies {path}'
+        writes.append(path)
+        return real_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'replace', enforce_sandbox)
+    run_doctor(host_paths, ReviewRunner('[]'), ContractHttp())
+    assert host_paths.var / 'diagnostics/latest.json' in writes
+    assert host_paths.root / 'var/log/robopark/doctor.log' in writes

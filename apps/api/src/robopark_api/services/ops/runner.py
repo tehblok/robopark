@@ -292,9 +292,7 @@ def run_update(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) ->
     try:
         job.phase = "validating"
         save_job(ctx.ops_dir, job)
-        inspect_archive(
-            archive, expected_kind=KIND_RELEASE, public_key=ctx.release_public_key
-        )
+        inspect_archive(archive, expected_kind=KIND_RELEASE, public_key=ctx.release_public_key)
         if staging.exists():
             shutil.rmtree(staging)
         save_job(ctx.ops_dir, job)
