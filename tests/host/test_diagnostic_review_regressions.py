@@ -241,7 +241,7 @@ def test_production_http_parses_bounded_healthy_json(monkeypatch):
         headers = {"Content-Type": "application/json"}
 
         def read(self, amount):
-            assert amount <= 16_384
+            assert amount == 16_385
             return b'{"status":"ready","checks":{"database":"ok","integrations":"ok"}}'
 
         def __enter__(self):
@@ -255,6 +255,27 @@ def test_production_http_parses_bounded_healthy_json(monkeypatch):
     response = _Http().get("http://127.0.0.1:8080/api/health/ready", timeout=5)
 
     assert response.json()["checks"]["database"] == "ok"
+
+
+def test_production_http_rejects_json_when_body_exceeds_cap(monkeypatch):
+    class RawResponse:
+        status = 200
+        headers = {}
+
+        def read(self, amount):
+            assert amount == 16_385
+            return b'{"status":"ready","checks":{"database":"ok"}}' + b" " * 16_340 + b"x"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout: RawResponse())
+
+    with pytest.raises(ValueError, match="exceeds"):
+        _Http().get("http://127.0.0.1:8080/api/health/ready", timeout=5).json()
 
 
 def test_actual_release_manifest_and_migration_head_are_reported(host_paths):
@@ -309,3 +330,35 @@ def test_runner_timeout_terminates_descendants_holding_pipes_open():
 
     assert result.returncode == 124
     assert time.monotonic() - started < 2
+
+
+def test_runner_deadline_applies_when_parent_exits_but_child_keeps_pipes_open():
+    started = time.monotonic()
+    result = _system_runner(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time; time.sleep(10)'])",
+        ],
+        timeout=1,
+        max_output=128,
+    )
+
+    assert result.returncode == 124
+    assert time.monotonic() - started < 2
+
+
+def test_doctor_handles_null_readiness_checks_and_malformed_migration_manifest(host_paths):
+    _release(host_paths)
+    (host_paths.current / "manifest.json").write_text("[]")
+
+    class NullChecksHttp(ContractHttp):
+        def get(self, url, *, timeout):
+            if url.endswith("/api/health/ready"):
+                return Response(payload={"status": "ready", "checks": None})
+            return super().get(url, timeout=timeout)
+
+    report = run_doctor(host_paths, ReviewRunner("[]"), NullChecksHttp())
+
+    assert report.by_code("api_readiness").status == "failed"
+    assert report.by_code("database_unavailable").status == "failed"

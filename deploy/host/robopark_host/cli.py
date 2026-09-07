@@ -5,8 +5,10 @@ import json
 import os
 import signal
 import subprocess
+import time
 import urllib.request
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from threading import Thread
 from typing import Any
 
@@ -54,20 +56,31 @@ def _system_runner(command: Sequence[str], *, timeout: int, max_output: int) -> 
     ]
     for reader in readers:
         reader.start()
-    try:
-        returncode = process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGTERM)
-        try:
-            process.wait(timeout=0.2)
-        except subprocess.TimeoutExpired:
+    deadline = time.monotonic() + timeout
+    while process.poll() is None and time.monotonic() < deadline:
+        time.sleep(min(0.02, max(0, deadline - time.monotonic())))
+    while any(reader.is_alive() for reader in readers) and time.monotonic() < deadline:
+        for reader in readers:
+            reader.join(timeout=min(0.02, max(0, deadline - time.monotonic())))
+    timed_out = process.poll() is None or any(reader.is_alive() for reader in readers)
+    if timed_out:
+        with suppress(OSError):
+            os.killpg(process.pid, signal.SIGTERM)
+        grace_deadline = time.monotonic() + 0.2
+        while any(reader.is_alive() for reader in readers) and time.monotonic() < grace_deadline:
+            for reader in readers:
+                reader.join(timeout=min(0.02, max(0, grace_deadline - time.monotonic())))
+        with suppress(OSError):
             os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
-        returncode = 124
         process.stdout.close()
         process.stderr.close()
-    for reader in readers:
-        reader.join(timeout=max(0, timeout - 0.1))
+        for reader in readers:
+            reader.join(timeout=0.1)
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=0.1)
+        returncode = 124
+    else:
+        returncode = process.wait()
     return CommandResult(
         returncode=returncode,
         stdout=bytes(stdout).decode("utf-8", errors="replace"),
@@ -78,8 +91,10 @@ def _system_runner(command: Sequence[str], *, timeout: int, max_output: int) -> 
 class _Http:
     def get(self, url: str, *, timeout: int) -> Any:
         with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - URLs are fixed checks
-            body = response.read(16_384)
-            return _HttpResponse(response.status, dict(response.headers), body, True)
+            body = response.read(16_385)
+            return _HttpResponse(
+                response.status, dict(response.headers), body[:16_384], len(body) <= 16_384
+            )
 
 
 class _HttpResponse:
