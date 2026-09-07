@@ -1,0 +1,87 @@
+name: Signed release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: write
+    env:
+      ROBOPARK_SIGNING_KEY_FILE: ${{ runner.temp }}/robopark-release-key.pem
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          version: 0.11.31
+          enable-cache: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.18.0
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Check tag and version sources
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: uv run --directory apps/api --frozen --extra dev python ../../scripts/check-release-version.py --tag "$RELEASE_TAG"
+      - name: Full verification gate
+        run: ./scripts/verify.sh
+      - name: Prepare ephemeral signing key
+        env:
+          ROBOPARK_RELEASE_SIGNING_KEY_B64: ${{ secrets.ROBOPARK_RELEASE_SIGNING_KEY_B64 }}
+        run: |
+          set +x
+          umask 077
+          uv run --directory apps/api --frozen --extra dev python ../../scripts/prepare-release-key.py \
+            --public-key ../../deploy/keys/release-public-key.pem --output "$ROBOPARK_SIGNING_KEY_FILE"
+      - name: Build architecture-neutral release and installer
+        run: |
+          set +x
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          export ROBOPARK_RELEASE_VERSION="$(cat VERSION)"
+          export ROBOPARK_RELEASE_GIT_SHA="$(git rev-parse HEAD)"
+          export ROBOPARK_MIGRATION_HEAD="$(uv run --directory apps/api --frozen python -c 'from alembic.config import Config; from alembic.script import ScriptDirectory; print(ScriptDirectory.from_config(Config("alembic.ini")).get_current_head())')"
+          export PATH="$PWD/apps/api/.venv/bin:$PATH"
+          mkdir -p artifacts
+          scripts/pack-release.sh "artifacts/robopark-release-$ROBOPARK_RELEASE_VERSION.zip"
+          scripts/pack-installer.sh --release "artifacts/robopark-release-$ROBOPARK_RELEASE_VERSION.zip" \
+            "artifacts/robopark-installer-$ROBOPARK_RELEASE_VERSION.tar.gz"
+      - name: Independently verify all publishable artifacts
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/apps/api/.venv/bin:$PATH"
+          version="$(cat VERSION)"
+          # Run a standalone copy outside the checkout, with the committed key.
+          cp scripts/verify-artifact.py "$RUNNER_TEMP/verify-artifact.py"
+          cp deploy/keys/release-public-key.pem "$RUNNER_TEMP/release-public-key.pem"
+          for artifact in "$PWD/artifacts/robopark-release-$version.zip" "$PWD/artifacts/robopark-installer-$version.tar.gz"; do
+            (cd "$RUNNER_TEMP" && python3 verify-artifact.py --public-key release-public-key.pem "$artifact")
+          done
+          cp scripts/verify-artifact.py deploy/keys/release-public-key.pem artifacts/
+      - name: Publish verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(cat VERSION)"
+          gh release create "$RELEASE_TAG" --verify-tag --title "Robopark $version" --generate-notes \
+            "artifacts/robopark-release-$version.zip"{,.sig,.sha256,.json} \
+            "artifacts/robopark-installer-$version.tar.gz"{,.sig,.sha256,.json} \
+            artifacts/verify-artifact.py artifacts/release-public-key.pem
+      - name: Delete ephemeral signing material
+        if: always()
+        run: rm -f -- "$ROBOPARK_SIGNING_KEY_FILE"

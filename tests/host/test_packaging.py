@@ -1,0 +1,540 @@
+"""Exercise real packers with disposable signing keys and hostile input trees."""
+
+import hashlib
+import io
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import zipfile
+from pathlib import Path
+
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def run(*args, **kwargs):
+    return subprocess.run([str(a) for a in args], capture_output=True, text=True, **kwargs)
+
+
+@pytest.fixture
+def packaging(tmp_path):
+    key = Ed25519PrivateKey.generate()
+    private = tmp_path / "signing.pem"
+    private.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    private.chmod(0o600)
+    public = tmp_path / "public.pem"
+    public.write_bytes(
+        key.public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    )
+    source = tmp_path / "source"
+    (source / "apps/api").mkdir(parents=True)
+    (source / "apps/api/main.py").write_text('print("release")\n')
+    env = {
+        **os.environ,
+        "SOURCE_DATE_EPOCH": "1700000000",
+        "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"],
+    }
+    return source, private, public, key, env
+
+
+def pack(packaging, output):
+    source, private, _, _, env = packaging
+    return run(
+        sys.executable,
+        ROOT / "scripts/release_pack.py",
+        "--root",
+        source,
+        "--output",
+        output,
+        "--version",
+        "1.2.3",
+        "--git-sha",
+        "a" * 40,
+        "--migration-head",
+        "initial",
+        "--signing-key",
+        private,
+        env=env,
+    )
+
+
+def verify(public, output, script=None):
+    return run(
+        sys.executable,
+        script or ROOT / "scripts/verify-artifact.py",
+        "--public-key",
+        public,
+        output,
+        cwd=output.parent,
+    )
+
+
+def test_release_reproducible_with_normalized_zip_and_standalone_verifier(packaging, tmp_path):
+    a, b = tmp_path / "a/release.zip", tmp_path / "b/release.zip"
+    assert pack(packaging, a).returncode == 0
+    os.utime(packaging[0] / "apps/api/main.py", (1800000000, 1800000000))
+    (packaging[0] / "apps/api/main.py").chmod(0o700)
+    assert pack(packaging, b).returncode == 0
+    for suffix in ("", ".sig", ".sha256", ".json"):
+        assert Path(str(a) + suffix).read_bytes() == Path(str(b) + suffix).read_bytes()
+    with zipfile.ZipFile(a) as archive:
+        assert archive.namelist() == sorted(archive.namelist())
+        assert {i.date_time for i in archive.infolist()} == {(2023, 11, 14, 22, 13, 20)}
+        assert all(stat.S_IMODE(i.external_attr >> 16) == 0o644 for i in archive.infolist())
+    standalone = tmp_path / "verify.py"
+    shutil.copyfile(ROOT / "scripts/verify-artifact.py", standalone)
+    result = verify(packaging[2], a, standalone)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        ".env.production",
+        "secrets.env.local",
+        "config.env",
+        "private-key.pem",
+        "id_ed25519",
+        "nested/backup.key",
+        "nested/runtime.sqlite3-wal",
+        "db.db-shm",
+        "log.txt.log",
+        "logs/output.txt",
+        "diagnostics/bundle.zip",
+        "venv/pyvenv.cfg",
+        ".cache/item",
+        ".git/config",
+        "node_modules/item",
+        "apps/api/data/unknown.json",
+    ],
+)
+def test_release_excludes_runtime_and_secrets(packaging, tmp_path, name):
+    path = packaging[0] / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("MUST_NOT_SHIP")
+    output = tmp_path / "release.zip"
+    result = pack(packaging, output)
+    assert result.returncode == 0, result.stderr
+    with zipfile.ZipFile(output) as archive:
+        assert name not in archive.namelist()
+
+
+@pytest.mark.parametrize("kind", ["symlink", "fifo", "output_inside", "sidecar_inside"])
+def test_release_refuses_unsafe_inputs_before_writing(packaging, tmp_path, kind):
+    source = packaging[0]
+    output = tmp_path / "release.zip"
+    if kind == "symlink":
+        (source / "link").symlink_to(source / "apps/api/main.py")
+    elif kind == "fifo":
+        os.mkfifo(source / "pipe")
+    elif kind == "output_inside":
+        output = source / "release.zip"
+    else:
+        Path(str(output) + ".sig").symlink_to(source / "apps/api/main.py")
+    result = pack(packaging, output)
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "signature",
+        "checksum",
+        "metadata_size",
+        "metadata_extra",
+        "metadata_duplicate",
+        "metadata_bool",
+        "internal_hash",
+        "alias",
+        "traversal",
+        "duplicate",
+        "oversize",
+        "wrong_key",
+    ],
+)
+def test_verifier_rejects_tampering_even_with_valid_outer_signature(packaging, tmp_path, mutation):
+    output = tmp_path / "release.zip"
+    assert pack(packaging, output).returncode == 0
+    public, key = packaging[2:4]
+    if mutation in {"internal_hash", "alias", "traversal", "duplicate", "oversize"}:
+        data = io.BytesIO()
+        with (
+            zipfile.ZipFile(output) as old,
+            zipfile.ZipFile(data, "w", compression=zipfile.ZIP_DEFLATED) as new,
+        ):
+            for info in old.infolist():
+                value = old.read(info)
+                if mutation == "internal_hash" and info.filename == "apps/api/main.py":
+                    value = b"EVIL"
+                new.writestr(info, value)
+            if mutation != "internal_hash":
+                name = {
+                    "alias": "apps/./evil",
+                    "traversal": "../evil",
+                    "duplicate": "apps/api/main.py",
+                    "oversize": "bomb",
+                }[mutation]
+                with (
+                    pytest.warns(UserWarning)
+                    if mutation == "duplicate"
+                    else __import__("contextlib").nullcontext()
+                ):
+                    new.writestr(name, bytes(1024 * 1024) if mutation == "oversize" else b"evil")
+        output.write_bytes(data.getvalue())
+        digest = hashlib.sha256(data.getvalue()).hexdigest()
+        Path(str(output) + ".sig").write_bytes(key.sign(data.getvalue()))
+        Path(str(output) + ".sha256").write_text(f"{digest}  release.zip\n")
+        metadata_path = Path(str(output) + ".json")
+        metadata = json.loads(metadata_path.read_text())
+        metadata.update(sha256=digest, size=len(data.getvalue()))
+        metadata_path.write_text(json.dumps(metadata))
+    elif mutation == "signature":
+        Path(str(output) + ".sig").write_bytes(bytes(64))
+    elif mutation == "checksum":
+        Path(str(output) + ".sha256").write_text("0" * 64 + "  release.zip\n")
+    elif mutation == "wrong_key":
+        public.write_bytes(
+            Ed25519PrivateKey.generate()
+            .public_key()
+            .public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+        )
+    else:
+        path = Path(str(output) + ".json")
+        metadata = json.loads(path.read_text())
+        if mutation == "metadata_duplicate":
+            path.write_text(path.read_text().rstrip().removesuffix("}") + ',"size":1}')
+        else:
+            if mutation == "metadata_size":
+                metadata["size"] += 1
+            elif mutation == "metadata_extra":
+                metadata["unrecognized"] = 1
+            else:
+                metadata["format"] = True
+            path.write_text(json.dumps(metadata))
+    assert verify(public, output).returncode != 0
+
+
+def test_installer_is_reproducible_self_contained_and_does_not_embed_private_key(
+    packaging, tmp_path
+):
+    release = tmp_path / "release.zip"
+    assert pack(packaging, release).returncode == 0
+    outputs = [tmp_path / name / "installer.tar.gz" for name in ("a", "b")]
+    for output in outputs:
+        result = run(
+            "bash",
+            ROOT / "scripts/pack-installer.sh",
+            "--release",
+            release,
+            "--public-key",
+            packaging[2],
+            "--signing-key",
+            packaging[1],
+            output,
+            env=packaging[4],
+        )
+        assert result.returncode == 0, result.stderr
+    assert outputs[0].read_bytes() == outputs[1].read_bytes()
+    with tarfile.open(outputs[0]) as archive:
+        names = archive.getnames()
+        assert names == sorted(names)
+        expected = {
+            "install.sh",
+            "lib/install-release.py",
+            "payload/robopark-release.zip",
+            "keys/release-public-key.pem",
+            "README-RU.txt",
+            "verifier/robopark_api/__init__.py",
+            "verifier/robopark_api/services/__init__.py",
+            "verifier/robopark_api/services/ops/__init__.py",
+            "verifier/robopark_api/services/ops/archives.py",
+            "verifier/robopark_api/services/ops/release_signing.py",
+        }
+        assert expected <= set(names)
+        for member in archive:
+            assert member.isfile()
+            assert (member.uid, member.gid, member.uname, member.gname, member.mtime) == (
+                0,
+                0,
+                "",
+                "",
+                1700000000,
+            )
+            assert member.mode == (0o755 if member.name.endswith(".sh") else 0o644)
+            assert b"PRIVATE KEY" not in archive.extractfile(member).read()
+        extracted = tmp_path / "unpacked"
+        archive.extractall(extracted, filter="data")
+    assert run("sh", extracted / "install.sh", "--help").returncode == 0
+    assert verify(packaging[2], outputs[0]).returncode == 0
+
+
+def test_installer_rejects_unsigned_release(packaging, tmp_path):
+    release = tmp_path / "release.zip"
+    assert pack(packaging, release).returncode == 0
+    Path(str(release) + ".sig").write_bytes(bytes(64))
+    result = run(
+        "bash",
+        ROOT / "scripts/pack-installer.sh",
+        "--release",
+        release,
+        "--public-key",
+        packaging[2],
+        "--signing-key",
+        packaging[1],
+        tmp_path / "installer.tar.gz",
+        env=packaging[4],
+    )
+    assert result.returncode != 0
+    assert not (tmp_path / "installer.tar.gz").exists()
+
+
+def test_version_sources_match_authoritative_version():
+    import ast
+    import tomllib
+
+    version = (ROOT / "VERSION").read_text().strip()
+    assert json.loads((ROOT / "apps/web/package.json").read_text())["version"] == version
+    lock = json.loads((ROOT / "apps/web/package-lock.json").read_text())
+    assert lock["version"] == lock["packages"][""]["version"] == version
+    assert (
+        tomllib.loads((ROOT / "apps/api/pyproject.toml").read_text())["project"]["version"]
+        == version
+    )
+    context = ast.parse((ROOT / "apps/api/src/robopark_api/services/ops/context.py").read_text())
+    values = [
+        ast.literal_eval(node.value)
+        for node in context.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "APP_VERSION" for target in node.targets
+        )
+    ]
+    assert values == [version]
+
+
+@pytest.mark.parametrize("tag", ["v0.1.0", "v9.9.9", "0.1.0", "v0.1.0;echo evil"])
+def test_release_tag_consistency(tag):
+    result = run(sys.executable, ROOT / "scripts/check-release-version.py", "--tag", tag)
+    assert (result.returncode == 0) == (tag == "v0.1.0")
+
+
+@pytest.mark.parametrize("secret", ["valid", "missing", "invalid", "wrong_key", "ed448"])
+def test_ci_key_is_ephemeral_private_and_matches_committed_trust(packaging, tmp_path, secret):
+    import base64
+
+    from cryptography.hazmat.primitives.asymmetric.ed448 import Ed448PrivateKey
+
+    key = packaging[1].read_bytes()
+    if secret == "missing":
+        encoded = ""
+    elif secret == "invalid":
+        encoded = "invalid-base64-secret"
+    else:
+        if secret == "wrong_key":
+            key = Ed25519PrivateKey.generate().private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        elif secret == "ed448":
+            key = Ed448PrivateKey.generate().private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        encoded = base64.b64encode(key).decode()
+    output = tmp_path / "ephemeral.pem"
+    result = run(
+        sys.executable,
+        ROOT / "scripts/prepare-release-key.py",
+        "--public-key",
+        packaging[2],
+        "--output",
+        output,
+        env={**os.environ, "ROBOPARK_RELEASE_SIGNING_KEY_B64": encoded},
+    )
+    assert (result.returncode == 0) == (secret == "valid")
+    assert encoded not in result.stdout + result.stderr if encoded else True
+    assert "PRIVATE KEY" not in result.stdout + result.stderr
+    if secret == "valid":
+        assert stat.S_IMODE(output.stat().st_mode) == 0o600
+        assert output.read_bytes() == key
+    else:
+        assert not output.exists()
+
+
+def test_repository_packer_refuses_symlinked_source_parent(packaging, tmp_path):
+    source = packaging[0]
+    external = tmp_path / "external"
+    (external / "api").mkdir(parents=True)
+    (external / "web").mkdir()
+    (external / "api/private.txt").write_text("outside")
+    shutil.rmtree(source / "apps")
+    (source / "apps").symlink_to(external, target_is_directory=True)
+    (source / "deploy").mkdir()
+    (source / "scripts").mkdir()
+    output = tmp_path / "release.zip"
+    result = run(
+        sys.executable,
+        ROOT / "scripts/release_pack.py",
+        "--repository",
+        "--root",
+        source,
+        "--output",
+        output,
+        "--version",
+        "1.2.3",
+        "--git-sha",
+        "a" * 40,
+        "--migration-head",
+        "initial",
+        "--signing-key",
+        packaging[1],
+        env=packaging[4],
+    )
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("kind", ["ed448", "permissions", "disguised_private"])
+def test_packer_refuses_wrong_algorithm_or_exposed_private_key(packaging, tmp_path, kind):
+    from cryptography.hazmat.primitives.asymmetric.ed448 import Ed448PrivateKey
+
+    if kind == "ed448":
+        packaging[1].write_bytes(
+            Ed448PrivateKey.generate().private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        )
+    elif kind == "permissions":
+        packaging[1].chmod(0o644)
+    else:
+        (packaging[0] / "innocent.txt").write_bytes(packaging[1].read_bytes())
+    output = tmp_path / "release.zip"
+    assert pack(packaging, output).returncode != 0
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("kind", ["detached", "metadata", "zip_oversize", "fifo"])
+def test_verifier_bounds_reads_before_loading_untrusted_input(packaging, tmp_path, kind):
+    output = tmp_path / "release.zip"
+    assert pack(packaging, output).returncode == 0
+    if kind == "detached":
+        Path(str(output) + ".sig").write_bytes(bytes(65))
+    elif kind == "metadata":
+        Path(str(output) + ".json").write_bytes(bytes(4097))
+    elif kind == "zip_oversize":
+        with output.open("wb") as stream:
+            stream.truncate(512 * 1024 * 1024 + 1)
+    else:
+        output.unlink()
+        os.mkfifo(output)
+    result = run(
+        sys.executable,
+        ROOT / "scripts/verify-artifact.py",
+        "--public-key",
+        packaging[2],
+        output,
+        timeout=5,
+    )
+    assert result.returncode != 0
+
+
+def test_release_workflow_enforces_order_trust_and_cleanup():
+    import re
+
+    import yaml
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
+    job = workflow["jobs"]["release"]
+    steps = job["steps"]
+    actions = [s["uses"] for s in steps if "uses" in s]
+    assert actions and all(re.fullmatch(r"[^@]+@[a-f0-9]{40}", action) for action in actions)
+    names = [s.get("name", "") for s in steps]
+    gates = [
+        "Check tag and version sources",
+        "Full verification gate",
+        "Prepare ephemeral signing key",
+        "Build architecture-neutral release and installer",
+        "Independently verify all publishable artifacts",
+        "Publish verified assets",
+        "Delete ephemeral signing material",
+    ]
+    assert [names.index(name) for name in gates] == sorted(names.index(name) for name in gates)
+    assert all(not s.get("continue-on-error") for s in steps)
+    assert steps[-1]["if"] == "always()"
+    assert "rm -f" in steps[-1]["run"]
+    secret_steps = [s for s in steps if "secrets." in str(s)]
+    assert len(secret_steps) == 1 and secret_steps[0]["name"] == "Prepare ephemeral signing key"
+    assert "environment" in job
+
+
+@pytest.mark.parametrize(
+    "mutation", ["bootstrap", "alias", "duplicate", "symlink", "inner_release"]
+)
+def test_installer_verifier_rejects_unsafe_or_tampered_bundle(packaging, tmp_path, mutation):
+    release = tmp_path / "release.zip"
+    assert pack(packaging, release).returncode == 0
+    output = tmp_path / "installer.tar.gz"
+    result = run(
+        "bash",
+        ROOT / "scripts/pack-installer.sh",
+        "--release",
+        release,
+        "--public-key",
+        packaging[2],
+        "--signing-key",
+        packaging[1],
+        output,
+        env=packaging[4],
+    )
+    assert result.returncode == 0, result.stderr
+    data = io.BytesIO()
+    with tarfile.open(output) as old, tarfile.open(fileobj=data, mode="w:gz") as new:
+        for member in old:
+            content = old.extractfile(member).read()
+            if mutation == "bootstrap" and member.name == "install.sh":
+                content = b"evil script\n"
+                member.size = len(content)
+            if mutation == "inner_release" and member.name == "payload/robopark-release.zip":
+                content = b"not a signed release"
+                member.size = len(content)
+            new.addfile(member, io.BytesIO(content))
+        if mutation in {"alias", "duplicate", "symlink"}:
+            member = tarfile.TarInfo("lib/../evil" if mutation == "alias" else "install.sh")
+            if mutation == "symlink":
+                member.name = "lib/evil"
+                member.type = tarfile.SYMTYPE
+                member.linkname = "/etc/passwd"
+            new.addfile(member)
+    raw = data.getvalue()
+    output.write_bytes(raw)
+    if mutation != "bootstrap":
+        Path(str(output) + ".sig").write_bytes(packaging[3].sign(raw))
+        digest = hashlib.sha256(raw).hexdigest()
+        Path(str(output) + ".sha256").write_text(f"{digest}  installer.tar.gz\n")
+        metadata_path = Path(str(output) + ".json")
+        metadata = json.loads(metadata_path.read_text())
+        metadata.update(size=len(raw), sha256=digest)
+        metadata_path.write_text(json.dumps(metadata))
+    assert verify(packaging[2], output).returncode != 0

@@ -212,24 +212,29 @@ def test_verification_script_web_target_runs_only_web_commands(tmp_path: Path):
 def test_verification_script_default_runs_all_targets_in_order(tmp_path: Path):
     result, commands = _run_verify(tmp_path)
     assert result.returncode == 0, result.stderr
-    assert commands == [
-        "uv\tsync\t--frozen\t--extra\tdev",
-        "uv\trun\t--frozen\t--extra\tdev\truff\tcheck\t.",
-        "uv\trun\t--frozen\t--extra\tdev\truff\tformat\t--check\t.",
-        "uv\trun\t--frozen\t--extra\tdev\tpython\t-m\tpytest\t-p\tno:cacheprovider\t-q",
-        "npm\tci",
-        "npm\trun\tlint",
-        "npm\trun\tbuild",
-        "npm\ttest",
-        "npm\trun\tcheck-nav",
-        "sh\t-n\tdeploy/ops-agent.sh",
-        "docker\tHOST_ENV_FILE=./host.env.example\tcompose\t--project-name\trobopark\t-f\tdeploy/docker-compose.yml\tconfig\t--quiet",
-        "docker\tHOST_ENV_FILE=\tbuild\t-t\trobopark-api:verify\tapps/api",
-        "docker\tHOST_ENV_FILE=\tbuild\t-t\trobopark-web:verify\tapps/web",
-        "docker\tHOST_ENV_FILE=\trun\t--rm\t--entrypoint\tpython\trobopark-api:verify\t-c\t"
-        "import importlib.util, multipart, robopark_api; "
-        "assert importlib.util.find_spec('pytest') is None",
-    ]
+    _, host_commands = _run_verify(tmp_path / "host", "host")
+    assert (
+        commands
+        == [
+            "uv\tsync\t--frozen\t--extra\tdev",
+            "uv\trun\t--frozen\t--extra\tdev\truff\tcheck\t.",
+            "uv\trun\t--frozen\t--extra\tdev\truff\tformat\t--check\t.",
+            "uv\trun\t--frozen\t--extra\tdev\tpython\t-m\tpytest\t-p\tno:cacheprovider\t-q",
+            "npm\tci",
+            "npm\trun\tlint",
+            "npm\trun\tbuild",
+            "npm\ttest",
+            "npm\trun\tcheck-nav",
+            "sh\t-n\tdeploy/ops-agent.sh",
+            "docker\tHOST_ENV_FILE=./host.env.example\tcompose\t--project-name\trobopark\t-f\tdeploy/docker-compose.yml\tconfig\t--quiet",
+            "docker\tHOST_ENV_FILE=\tbuild\t-t\trobopark-api:verify\tapps/api",
+            "docker\tHOST_ENV_FILE=\tbuild\t-t\trobopark-web:verify\tapps/web",
+            "docker\tHOST_ENV_FILE=\trun\t--rm\t--entrypoint\tpython\trobopark-api:verify\t-c\t"
+            "import importlib.util, multipart, robopark_api; "
+            "assert importlib.util.find_spec('pytest') is None",
+        ]
+        + host_commands
+    )
 
 
 def test_verification_script_rejects_invalid_or_excess_arguments(tmp_path: Path):
@@ -237,7 +242,7 @@ def test_verification_script_rejects_invalid_or_excess_arguments(tmp_path: Path)
         result, commands = _run_verify(tmp_path / str(index), *args)
         assert result.returncode == 2
         assert result.stdout == ""
-        assert result.stderr == f"usage: {VERIFY_SCRIPT} [api|web|docker]\n"
+        assert result.stderr == f"usage: {VERIFY_SCRIPT} [api|web|docker|host|all]\n"
         assert commands == []
 
 
@@ -304,3 +309,11 @@ def test_api_data_gitignore_allows_only_the_tracked_seed_file(tmp_path: Path):
 
     assert runtime.returncode == 0
     assert seed.returncode == 1
+
+
+def test_verification_host_gate_runs_tests_without_privileged_commands(tmp_path):
+    result, commands = _run_verify(tmp_path, "host")
+    assert result.returncode == 0, result.stderr
+    assert any("pytest" in command and "tests/host" in command for command in commands)
+    assert any("installer_scenarios.py" in command for command in commands)
+    assert all(command.startswith(("sh\t-n\t", "uv\t")) for command in commands)
