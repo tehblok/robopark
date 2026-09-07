@@ -1,0 +1,196 @@
+import json
+import os
+import sys
+import zipfile
+
+import pytest
+from robopark_host.bundle import create_diagnostic_bundle
+from robopark_host.checks import CheckResult, CommandResult, DiagnosticReport
+from robopark_host.cli import _doctor_handler, _repair_handler, _system_runner
+from robopark_host.doctor import run_doctor
+from robopark_host.repair import RepairReport
+from robopark_host.watchdog import run_watchdog
+
+
+class Response:
+    def __init__(self, status=200, headers=None, payload=None):
+        self.status = status
+        self.headers = headers or {"X-Content-Type-Options": "nosniff"}
+        self._payload = payload or {"status": "ready", "checks": {"database": "ok", "integrations": "ok"}}
+
+    def json(self):
+        return self._payload
+
+
+class ContractHttp:
+    def __init__(self, api_status=200):
+        self.api_status = api_status
+        self.urls = []
+
+    def get(self, url, *, timeout):
+        self.urls.append(url)
+        if url.endswith("/api/health/ready"):
+            ready = self.api_status < 400
+            return Response(
+                status=self.api_status,
+                payload={
+                    "status": "ready" if ready else "degraded",
+                    "checks": {
+                        "database": "ok" if ready else "error",
+                        "integrations": "ok" if ready else "degraded",
+                    },
+                },
+            )
+        return Response()
+
+
+class ReviewRunner:
+    def __init__(self, compose):
+        self.compose = compose
+        self.commands = []
+
+    def __call__(self, command, *, timeout, max_output):
+        self.commands.append(command)
+        if "ps" in command:
+            return CommandResult(stdout=self.compose)
+        if command[:2] == ["timedatectl", "show"]:
+            return CommandResult(stdout="no\n")
+        if command[:2] == ["df", "-Pk"]:
+            return CommandResult(stdout="Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/root 100 99 1 99% /\n")
+        if command[:2] == ["df", "-Pi"]:
+            return CommandResult(stdout="Filesystem Inodes IUsed IFree IUse% Mounted on\n/dev/root 100 99 1 99% /\n")
+        return CommandResult()
+
+
+def _release(host_paths):
+    release = host_paths.releases / "v1"
+    (release / "deploy").mkdir(parents=True)
+    (release / "deploy" / "docker-compose.yml").write_text("services: {}\n")
+    (release / "manifest.json").write_text(json.dumps({"app_version": "1.2.3", "format_version": 1}))
+    host_paths.current.parent.mkdir(parents=True, exist_ok=True)
+    host_paths.previous.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(release, host_paths.current)
+    os.symlink(release, host_paths.previous)
+
+
+def test_bundle_excludes_credentials_json_cli_cookie_payloads_and_compose_commands(host_paths, tmp_path):
+    _release(host_paths)
+    sentinel = "FAKE_SECRET"
+    runner = ReviewRunner('{"Service":"api","State":"running","Command":"exec tuna --token FAKE_SECRET"}')
+
+    def journal(command, *, timeout, max_output):
+        if command[0] == "journalctl":
+            return CommandResult(stdout='Authorization: Bearer FAKE_SECRET\n{"TUNA_TOKEN":"FAKE_SECRET"}\nCookie: session=FAKE_SECRET\nexec tuna --token FAKE_SECRET\nuser payload FAKE_SECRET')
+        return runner(command, timeout=timeout, max_output=max_output)
+
+    bundle = create_diagnostic_bundle(host_paths, DiagnosticReport([CheckResult("x", "ok", "ok")]), journal, tmp_path / "bundle.zip")
+
+    with zipfile.ZipFile(bundle) as archive:
+        exported = "\n".join(archive.read(name).decode() for name in archive.namelist())
+    assert sentinel not in exported
+    assert "Command" not in exported
+    compose_command = next(command for command in runner.commands if "ps" in command)
+    assert "--project-name" in compose_command
+    assert "--file" in compose_command
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["[]", '{"Service":"api","State":"running","Health":"healthy"}', '[{"Service":"api","State":"exited","Health":""}]'],
+)
+def test_doctor_fails_missing_or_nonrunning_compose_services_and_uses_explicit_release_config(host_paths, payload):
+    _release(host_paths)
+    runner = ReviewRunner(payload)
+
+    report = run_doctor(host_paths, runner, ContractHttp())
+
+    assert report.by_code("containers").status == "failed"
+    compose_command = next(command for command in runner.commands if "ps" in command)
+    assert "--project-name" in compose_command
+    assert str(host_paths.current / "deploy" / "docker-compose.yml") in compose_command
+
+
+def test_doctor_grades_clock_and_full_resource_measurements_as_failed(host_paths):
+    _release(host_paths)
+
+    report = run_doctor(host_paths, ReviewRunner("[]"), ContractHttp())
+
+    assert report.by_code("clock_sync").status == "failed"
+    assert report.by_code("resources").status == "failed"
+    assert report.by_code("inode_space").status == "failed"
+
+
+def test_doctor_requires_database_migration_probe_in_addition_to_api_readiness(host_paths):
+    _release(host_paths)
+
+    class MigrationRunner(ReviewRunner):
+        def __call__(self, command, *, timeout, max_output):
+            if command[-2:] == ["alembic", "current"]:
+                return CommandResult(returncode=1)
+            return super().__call__(command, timeout=timeout, max_output=max_output)
+
+    report = run_doctor(host_paths, MigrationRunner("[]"), ContractHttp())
+
+    assert report.by_code("database_unavailable").status == "failed"
+
+
+def test_doctor_marks_unknown_temperature_and_excessive_load_nonhealthy(host_paths):
+    _release(host_paths)
+
+    class ResourceRunner(ReviewRunner):
+        def __call__(self, command, *, timeout, max_output):
+            if command[0] == "cat":
+                return CommandResult(stdout="")
+            if command[0] == "uptime":
+                return CommandResult(stdout=" 10:00:00 up 1 day, load average: 99.00, 99.00, 99.00")
+            return super().__call__(command, timeout=timeout, max_output=max_output)
+
+    report = run_doctor(host_paths, ResourceRunner("[]"), ContractHttp())
+
+    assert report.by_code("temperature").status == "warning"
+    assert report.by_code("load").status == "failed"
+
+
+def test_watchdog_requires_api_readiness_even_if_web_root_is_healthy(host_paths):
+    runner = ReviewRunner("[]")
+    http = ContractHttp(api_status=503)
+
+    run_watchdog(host_paths, runner, http)
+    run_watchdog(host_paths, runner, http)
+    result = run_watchdog(host_paths, runner, http)
+
+    assert result.restarted == "restart_app"
+    assert http.urls.count("http://127.0.0.1:8080/api/health/ready") == 3
+
+
+def test_doctor_cli_returns_nonzero_when_a_required_check_fails(host_paths, monkeypatch):
+    monkeypatch.setattr(
+        "robopark_host.cli.run_doctor",
+        lambda paths, runner, http: DiagnosticReport([CheckResult("database_unavailable", "failed", "База недоступна")]),
+    )
+    monkeypatch.setattr("robopark_host.cli._print", lambda payload: None)
+
+    assert _doctor_handler(host_paths) != 0
+
+
+def test_repair_cli_returns_nonzero_when_an_allowlisted_action_fails(host_paths, monkeypatch):
+    healthy = DiagnosticReport([CheckResult("local_endpoint", "ok", "ok")])
+    monkeypatch.setattr("robopark_host.cli.run_doctor", lambda paths, runner, http: healthy)
+    monkeypatch.setattr(
+        "robopark_host.cli.run_repairs",
+        lambda report, allowlist, runner: RepairReport(failed=["restart_app"]),
+    )
+    monkeypatch.setattr("robopark_host.cli._print", lambda payload: None)
+
+    assert _repair_handler(host_paths) != 0
+
+
+def test_production_runner_drains_large_process_output_but_retains_only_the_cap():
+    result = _system_runner(
+        [sys.executable, "-c", "import sys; sys.stdout.write('x' * 1000000)"],
+        timeout=5,
+        max_output=128,
+    )
+
+    assert result.returncode == 0
+    assert len(result.stdout) == 128

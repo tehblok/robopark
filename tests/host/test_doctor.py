@@ -21,8 +21,25 @@ class DoctorRunner:
 
 
 class ReadyHttp:
+    def __init__(self, db_ready=True):
+        self.db_ready = db_ready
+
     def get(self, url, *, timeout):
-        return type("Response", (), {"status": 200, "headers": {"X-Content-Type-Options": "nosniff"}})()
+        return type(
+            "Response",
+            (),
+            {
+                "status": 200,
+                "headers": {"X-Content-Type-Options": "nosniff"},
+                "json": lambda response: {
+                    "status": "ready" if self.db_ready else "degraded",
+                    "checks": {
+                        "database": "ok" if self.db_ready else "error",
+                        "integrations": "ok",
+                    },
+                },
+            },
+        )()
 
 
 class UnreadyHttp:
@@ -31,7 +48,7 @@ class UnreadyHttp:
 
 
 def test_database_failure_is_reported_but_never_auto_repaired(host_paths):
-    report = run_doctor(host_paths, DoctorRunner(db_ready=False), ReadyHttp())
+    report = run_doctor(host_paths, DoctorRunner(), ReadyHttp(db_ready=False))
 
     item = report.by_code("database_unavailable")
 
