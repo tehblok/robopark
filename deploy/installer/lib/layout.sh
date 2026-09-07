@@ -34,4 +34,11 @@ prepare_layout() {
     chown 0:0 "$host_directory"
     chmod 755 "$host_directory"
 
+    for host_directory in "$ROBOPARK_VAR/diagnostics" "${ROBOPARK_ROOT%/}/var/log/robopark"; do
+        [ ! -L "$host_directory" ] || die symlinked_host_directory
+        mkdir -p "$host_directory"
+        chown 0:0 "$host_directory"
+        chmod 700 "$host_directory"
+    done
+
 }

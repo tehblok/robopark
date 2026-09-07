@@ -55,9 +55,18 @@ def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
     api["env_file"] = [str(paths.etc / "host.env")]
     api["environment"].pop("UVICORN_WORKERS", None)
     api["environment"].update(
-        OPS_DIR="/ops", OPS_HOST_ENV_PATH="", OPS_HOST_ROOT="/host-ops"
+        OPS_DIR="/ops",
+        OPS_HOST_ENV_PATH="",
+        OPS_HOST_ROOT="/host-ops",
+        OPS_RELEASE_PUBLIC_KEY_PATH="/etc/robopark/release-public-key.pem",
     )
     api["volumes"] = [
+        {
+            "type": "bind",
+            "source": str(paths.etc / "release-public-key.pem"),
+            "target": "/etc/robopark/release-public-key.pem",
+            "read_only": True,
+        },
         {"type": "bind", "source": str(paths.var / "data"), "target": "/data"},
         {"type": "bind", "source": str(paths.var / "api-ops"), "target": "/ops"},
         *[

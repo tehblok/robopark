@@ -142,7 +142,11 @@ def _validate_release_manifest(manifest: object) -> tuple[dict[str, str], str, s
     migration_head = manifest.get("migration_head")
     if not isinstance(app_version, str) or not app_version:
         raise ArchiveError("invalid_manifest")
-    if not isinstance(git_sha, str) or len(git_sha) != 40 or any(c not in "0123456789abcdef" for c in git_sha.lower()):
+    if (
+        not isinstance(git_sha, str)
+        or len(git_sha) != 40
+        or any(c not in "0123456789abcdef" for c in git_sha.lower())
+    ):
         raise ArchiveError("invalid_manifest")
     if not isinstance(migration_head, str) or not migration_head:
         raise ArchiveError("invalid_manifest")
@@ -169,8 +173,10 @@ def _validate_release_manifest(manifest: object) -> tuple[dict[str, str], str, s
             raise ArchiveError("invalid_manifest")
         digest = descriptor.get("sha256")
         size = descriptor.get("size")
-        if not isinstance(digest, str) or len(digest) != 64 or any(
-            char not in "0123456789abcdef" for char in digest.lower()
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest.lower())
         ):
             raise ArchiveError("invalid_manifest")
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
