@@ -1,5 +1,7 @@
 # Robopark
 
+Для подписанной установки **0.1.0** на Armbian/Debian/Ubuntu используйте [руководство оператора](deploy/INSTALL-ARMBIAN-RU.md) и [приёмку 200 пользователей](deploy/CAPACITY-RU.md). Реальная Armbian/systemd/Docker/Tuna и нагрузочная приёмка остаются **НЕ ВЫПОЛНЕНО** до запуска на устройстве. Ниже сохранён существующий ручной Compose-путь.
+
 Web-first fleet operations system (admin / operator / mechanic).
 
 - **Primary:** website on local host (API + app); remote access via **Tuna HTTPS tunnel** (no VPS, mechanics open a link).

@@ -1,0 +1,144 @@
+# Установка Robopark на Armbian и безопасные обновления
+
+Версия этого руководства и корневого `VERSION`: **0.1.0**. Основной целевой хост — Armbian 26 ARM64 с 8 GiB RAM. Installer допускает Armbian, Debian и Ubuntu, архитектуры ARM64 (`aarch64`/`arm64`) и AMD64 (`x86_64`/`amd64`), с `apt`, работающим systemd и системным Python **3.11+** (Debian 12+, Ubuntu 24.04+ или подходящая база Armbian). Старые дистрибутивы с Python 3.10/3.9 не входят в целевой профиль. Для 32 GiB предусмотрен профиль на четыре API-процесса. ARM32 и системы без systemd не поддерживаются. Проверка на macOS использует временный корень и подменяет внешние команды; работоспособность настоящих Linux/systemd/Docker/Tuna и 200 пользователей подтверждает только целевой стенд.
+
+## До установки
+
+- Проверьте `uname -m`, `/etc/os-release`, `free -h`, `df -h /opt /var/lib`, `df -i /opt /var/lib`. Нужно **не менее 6 GiB свободного места** на каждом задействованном разделе. Это минимум установки: OTA дополнительно требует место для слоёв образов, кандидата и двух копий данных; для эксплуатации держите запас от 12 GiB и увеличивайте его вместе с данными.
+- Нужны root/sudo, синхронизированные часы, DNS и исходящий HTTPS к репозиториям APT/Docker/Tuna и, если включены обновления, GitHub. Публичные входящие порты открывать не нужно.
+- Подготовьте токен Tuna, **зарезервированный стабильный адрес** или свой домен, регион (`ru`/`eu`, который поддерживает установленная Tuna), логин и новый пароль Royal. Пароль: от 12 символов, минимум три класса символов; installer не допускает одинарную кавычку и обратную косую черту.
+- Необязательно: пароль регистрации операторов, `owner/repo` GitHub и fine-grained token с **Contents: read** для нужного репозитория. Публичному репозиторию токен не обязателен. Проверка GitHub не устанавливает релиз без отдельного подтверждения Royal.
+- Подготовьте резервную копию и доступ к локальной консоли. Для существующей ручной Compose-установки сначала выполните пробную установку на отдельном хосте: этот installer не является миграцией старого Docker volume.
+
+## Проверка архива до распаковки
+
+Получите из доверенного канала публичный Ed25519-ключ `release-public-key.pem` и автономный `verify-artifact.py` из каталога `scripts` проверенного исходного релиза. Не запускайте проверяющий код и не берите ключ из ещё не проверенного архива. Сверьте fingerprint публичного ключа по независимому каналу. Закрытый ключ на целевой хост не передаётся.
+
+Скачайте комплект файлов с одинаковым базовым именем: `.tar.gz`, `.tar.gz.sig`, `.tar.gz.sha256`, `.tar.gz.json`. Для самостоятельного release ZIP нужен такой же набор `.zip` и трёх sidecar-файлов. На машине проверки нужны Python 3.11+ и `cryptography` (в поддерживаемом Debian/Ubuntu пакет `python3-cryptography`).
+
+```sh
+python3 verify-artifact.py --public-key release-public-key.pem robopark-installer-0.1.0.tar.gz
+python3 verify-artifact.py --public-key release-public-key.pem robopark-release-0.1.0.zip
+```
+
+Продолжайте только после кода выхода 0. Проверяется Ed25519-подпись всего архива, SHA-256, metadata, внутренняя подпись манифеста, пути и хеши файлов. Один checksum рядом с архивом не заменяет проверку подписи. Ошибка проверки означает остановку; не распаковывайте архив с обходом валидации.
+
+Архив имеет плоский корень, поэтому создайте отдельный каталог:
+
+```sh
+mkdir robopark-installer-0.1.0
+tar -xzf robopark-installer-0.1.0.tar.gz -C robopark-installer-0.1.0
+cd robopark-installer-0.1.0
+sudo ./install.sh
+```
+
+Wizard скрывает ввод секретов. Установка проверяет хост, готовит пакеты, конфигурацию, проверенный релиз, образы и службы; Tuna запускается после локального readiness. Сохраняются root-owned `/etc/robopark/{host,tuna,updater}.env` с mode 0600; ключ проверки публичный, mode 0644. Не выводите эти env-файлы в терминал и не прикладывайте к обращению в поддержку.
+
+Для повторения после сбоя используйте тот же проверенный installer:
+
+```sh
+sudo ./install.sh --resume
+```
+
+Повторный запуск использует завершённые этапы, проверяет существующий релиз и не заменяет непустые секреты. При незавершённой конфигурации передайте тот же answer-файл. После успешного OTA дальнейшее управление выполняется host utility/Royal; не переустанавливайте поверх нового релиза старый installer.
+
+## Noninteractive установка
+
+Создайте answer-файл без передачи значений в аргументах процессов или истории shell:
+
+```sh
+sudo install -o root -g root -m 0600 /dev/null /root/robopark-answers.env
+sudoedit /root/robopark-answers.env
+sudo ./install.sh --non-interactive /root/robopark-answers.env
+# После сбоя:
+sudo ./install.sh --resume --non-interactive /root/robopark-answers.env
+```
+
+В editor заполните по одной записи `KEY=value`: обязательные `TUNA_TOKEN`, `TUNA_SUBDOMAIN` **или** `TUNA_DOMAIN`, `SEED_PASSWORD`; обычно также `TUNA_LOCATION`, `SEED_USERNAME`. Дополнительные: `CORS_ORIGINS` (точный HTTPS origin), `OPERATOR_SHARED_PASSWORD`, `GITHUB_REPOSITORY`, `GITHUB_TOKEN`, `GITHUB_CHANNEL=stable`, `UVICORN_WORKERS=2` (8 GiB) либо `4` (32 GiB; installer требует минимум 24 GiB). Для недостающих необязательных значений оставьте defaults. Это файл данных, не shell-скрипт: `source` и подстановки команд не используются. Файл должен быть обычным, принадлежать root, mode **0600**. После успешной установки храните его как секретную резервную копию либо удалите согласно правилам команды.
+
+## Состояние, автозапуск и диагностика
+
+```sh
+sudo python3 -I /opt/robopark/host-tools/robopark status
+sudo python3 -I /opt/robopark/host-tools/robopark doctor
+sudo systemctl is-enabled docker.service robopark.service robopark-tuna.service robopark-updater.service
+sudo systemctl is-enabled robopark-commands.path robopark-doctor.timer robopark-watchdog.timer robopark-update-check.timer
+sudo systemctl is-active robopark.service robopark-tuna.service
+curl -fsS http://127.0.0.1:8080/api/health/ready
+```
+
+Короткое имя `robopark` в тексте означает host utility; installer не создаёт глобальный alias. Полная команда: `sudo python3 -I /opt/robopark/host-tools/robopark status` (или `doctor`, `repair`). Readiness должен вернуть `status=ready` и `checks.database=ok`. В браузере откройте ваш стабильный HTTPS-адрес, выполните Royal login и проверьте раздел системного состояния. Web слушает только `127.0.0.1:8080`; API, SQLite и Docker socket не публикуются наружу.
+
+В согласованное окно выполните `sudo reboot`, дождитесь SSH/консоли и повторите команды выше, проверку HTTPS и Royal login. `robopark-updater.service` выполняет восстановление незавершённой операции при загрузке; app требует Docker, Tuna требует app и снова проверяет API перед открытием туннеля. Состояние oneshot-служб и таймеров различается: inactive у завершённой диагностической oneshot не означает поломку, проверяйте последний результат и активный timer.
+
+```sh
+sudo python3 -I /opt/robopark/host-tools/robopark repair
+```
+
+Repair выполняет только разрешённые действия для найденных проблем: перезапуск Docker/app/Tuna и `systemctl daemon-reload` согласно диагностике. Он не исправляет произвольные данные, не меняет пароль/ключи и не выполняет введённые shell-команды. После repair снова выполните doctor. Watchdog перезапускает Tuna после нескольких подтверждённых сбоев, с ограничением повторов.
+
+В Royal → системное состояние запросите диагностику, дождитесь окончания и скачайте ZIP. Host consumer публикует очищенный архив, API получает только отдельные каталоги `inbox`, `artifacts` и read-only `public`. Закрытые `ops/state`, `ops/rollbacks`, `/etc/robopark`, immutable releases и Docker socket не смонтированы в API. Вложения, база, секреты, необработанные строки journal и argv в диагностический ZIP не включаются. Перед передачей ZIP дополнительно выполните secret scan по процедуре ниже.
+
+## Обновление вручную и через GitHub
+
+Ручной путь: получите **подписанный release ZIP**, проверьте sidecar-подпись, в Royal выберите архив, выполните проверку/предпросмотр, сверьте версию, commit, миграцию и состав изменений, затем отдельно подтвердите установку. Загрузка и просмотр сами не запускают OTA. Обновлять можно не только приложение: релиз содержит Python/npm lockfiles, Dockerfiles, migrations, systemd units/scripts и host updater. Артефакт одного подписанного релиза должен содержать весь согласованный комплект.
+
+GitHub: настройте root-owned `/etc/robopark/updater.env` через `sudoedit`, не передавайте токен в CLI. Команда `sudo python3 -I /opt/robopark/host-tools/robopark check-update` и timer обнаруживают релиз и показывают его в Royal. Royal подтверждает конкретный найденный release ID; URL загрузки из браузера не принимается. Приватные токены используются только host checker. При outage/rate limit показывается `discovery_stale`, текущая версия продолжает работать; повторите проверку после восстановления связи. Стабильный канал не предлагает prerelease.
+
+OTA проверяет подпись и совместимость, место, сборку и тесты кандидата, запускает изолированный smoke без production DB/секретов. Затем включает maintenance, останавливает writers, делает snapshot, переключает release/config, выполняет миграцию, проверяет локальную готовность. Старый worker завершается; successor из нового host-tools согласует systemd и публикацию. После этого maintenance снимается. Все UI writers, фоновые задачи и SQL commit проходят барьер maintenance во всех API-процессах.
+
+При отказе тестов кандидат отбрасывается без переключения данных. При migration/local-health failure восстанавливаются предыдущий релиз, конфигурация, units/updater и snapshot данных. Ошибка публичного Tuna при здоровой локальной базе даёт `publication=degraded`; локальные данные сохраняются, исправляйте публикацию через диагностику/repair. После возобновления пользовательских записей старая snapshot автоматически больше не накатывается.
+
+## Резервные копии и восстановление
+
+Перед обновлением создайте snapshot в Royal и скачайте архив через интерфейс резервных копий. Храните копию вне устройства и отдельно защищённую копию `/etc/robopark`: без `SECRET_KEY` невозможно расшифровать сохранённые интеграционные секреты. Загрузка резервной копии выполняется в Royal через предусмотренное подтверждение восстановления. Проверяйте дату и результат backup; ZIP диагностики резервной копией не является.
+
+Host rollback snapshots находятся в `/var/lib/robopark/ops/rollbacks/<job-id>/`; это закрытый каталог root. Сохраняются текущий и предыдущий успешные релизы, относящиеся к ним конфигурации и recovery material. Не удаляйте их вручную для освобождения места и не очищайте весь Docker cache во время OTA.
+
+Если обе версии не проходят readiness, статус — `maintenance`/`manual_recovery_required`, барьер остаётся включён, snapshot сохраняется. Остановите новые попытки обновления; восстановите диск, Docker, сетевые зависимости или повреждённый проверенный релиз по диагностике. После устранения причины предыдущей версии повторите **реальный recovery entry point**:
+
+```sh
+sudo python3 -I /opt/robopark/host-tools/robopark update --recover
+sudo python3 -I /opt/robopark/host-tools/robopark doctor
+```
+
+Если проверенный предыдущий release или snapshot повреждён, либо нет возможности восстановить локальный readiness, оставьте maintenance включённым и привлеките ответственного за релизы. Сохраните job ID, sanitized status и diagnostics. Не удаляйте journal/maintenance marker, не меняйте current вручную, не редактируйте SQLite и не выполняйте `alembic downgrade` наугад. Восстановление из внешнего backup после потери обеих версий требует согласованного плана по версии приложения, миграции и ключам.
+
+## Журналы и безопасная эскалация
+
+- Краткий результат: `sudo python3 -I /opt/robopark/host-tools/robopark status`, `sudo python3 -I /opt/robopark/host-tools/robopark doctor`.
+- Root journal операции: `/var/lib/robopark/ops/state/updater-journal.json`; install journal: `install.json` там же. Их нельзя изменять вручную.
+- Очищенная диагностика: `/var/lib/robopark/diagnostics/latest.json`, `/var/log/robopark/doctor.log`, `ops/public`.
+- Для локального расследования: `sudo journalctl -u robopark.service -u robopark-tuna.service -u robopark-updater.service --since today`; raw journal может содержать чувствительные строки, не пересылайте его целиком.
+- В обращение включайте архитектуру/OS, версию/commit, job ID, код безопасной ошибки, время, этап и очищенный ZIP. Не включайте env-файлы, answer-файл, session cookie или закрытый ключ.
+
+Secret scan не должен печатать найденные значения. Проверяйте распакованный диагностический ZIP локально на вхождение известных секретов, читая их из защищённого файла в памяти; результат — только pass/fail и количество. Дополнительно проверяйте имена членов ZIP: там не должно быть env-файлов, DB, attachments или private keys. Повторите после успешного и неуспешного OTA. Автотесты используют искусственные секреты; они не доказывают чистоту диагностик конкретного хоста.
+
+## Приёмка на целевом Armbian
+
+Заполняется оператором после выполнения. Ни одна строка ниже не считается пройденной по результатам Mac/fake-host тестов.
+
+| Проверка | Что записать без секретов | Результат |
+|---|---|---|
+| Идентификация устройства | Модель, архитектура, OS release/kernel, дата | **НЕ ВЫПОЛНЕНО** |
+| Ресурсы | RAM, CPU, свободные GiB/inodes на /opt и /var/lib | **НЕ ВЫПОЛНЕНО** |
+| Подписи | Версия 0.1.0, публичный fingerprint, hashes артефактов | **НЕ ВЫПОЛНЕНО** |
+| Чистая установка | Длительность, завершённые этапы, версия | **НЕ ВЫПОЛНЕНО** |
+| Resume/idempotence | Прерванный этап, успешный resume, сохранение конфигурации | **НЕ ВЫПОЛНЕНО** |
+| Docker/Compose/Tuna | Установленные версии, активные службы/timers | **НЕ ВЫПОЛНЕНО** |
+| Локальный readiness | HTTP code, status, database check | **НЕ ВЫПОЛНЕНО** |
+| Публичный HTTPS | Проверенный стабильный адрес, TLS, доступность UI | **НЕ ВЫПОЛНЕНО** |
+| Royal login | Успешный вход и запрет ops для обычной роли | **НЕ ВЫПОЛНЕНО** |
+| Перезагрузка | Время до readiness/HTTPS; app и Tuna стартуют сами | **НЕ ВЫПОЛНЕНО** |
+| Успешный OTA | Из/в версию, job ID, новая DB head, maintenance снят | **НЕ ВЫПОЛНЕНО** |
+| Dependencies и host tools | Реально пересобраны Python/npm deps, Dockerfiles, migration, unit/script/updater; проверка после reboot | **НЕ ВЫПОЛНЕНО** |
+| Заведомо плохой OTA | Только отдельный тестовый стенд: signed кандидат с отказом теста/миграции/health; доказан rollback данных и версии | **НЕ ВЫПОЛНЕНО** |
+| Прерывание питания | Только стенд: journal recovery, в том числе self-update reconciliation | **НЕ ВЫПОЛНЕНО** |
+| Outage/recovery | Tuna и GitHub outage отдельно, degraded/stale, восстановление без потери данных | **НЕ ВЫПОЛНЕНО** |
+| Doctor/repair | Найденная проблема, только allowlist, повторная проверка | **НЕ ВЫПОЛНЕНО** |
+| Backup/recovery | Внешняя копия, восстановление на изолированном стенде; обе версии неисправны → maintenance | **НЕ ВЫПОЛНЕНО** |
+| Diagnostics | Download, secret scan по фактическим секретам, отсутствие DB/attachments | **НЕ ВЫПОЛНЕНО** |
+| Границы API/root | API uid 10001; нет root state/env/releases/docker.sock; public read-only | **НЕ ВЫПОЛНЕНО** |
+| 200 пользователей | [CAPACITY-RU.md](CAPACITY-RU.md): профиль, run_id, отчёт, server logs, p50/p95/p99, rps/error, cleanup | **НЕ ВЫПОЛНЕНО** |
+
+Релиз разрешается к эксплуатации после прохождения этого checklist и локальных gates, независимой проверки артефактов и отсутствия секретов. Сейчас реальная целевая приёмка не выполнена.
