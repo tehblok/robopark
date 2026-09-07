@@ -150,11 +150,12 @@ def test_release_excludes_runtime_and_secrets(packaging, tmp_path, name):
 @pytest.mark.parametrize(
     "name",
     [
+        "apps/api/alembic/env.py",
         "apps/web/src/design-system/data/EntityRow.tsx",
         "apps/web/src/domains/diagnostics/DiagnosticRuleEditor.tsx",
     ],
 )
-def test_release_keeps_source_directories_named_data_or_diagnostics(packaging, tmp_path, name):
+def test_release_keeps_required_source_paths(packaging, tmp_path, name):
     path = packaging[0] / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("export const included = true\n")

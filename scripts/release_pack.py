@@ -81,7 +81,7 @@ def excluded(relative):
         return True
     if parts[:1] in (("data",), ("diagnostics",)):
         return True
-    if (".env" in name or name.startswith("env.")) and not (
+    if (name == ".env" or name.startswith(".env.") or name.endswith(".env") or ".env." in name) and not (
         name.endswith(".env.example") or name == ".env.example"
     ):
         return True
