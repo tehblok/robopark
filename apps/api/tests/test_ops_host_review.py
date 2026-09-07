@@ -5,6 +5,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select, text
+from sqlalchemy.orm import sessionmaker
+
 from conftest import login_as
 from robopark_api.config import reset_settings_cache
 from robopark_api.models import AuthSession, ParkBlockerHistory
@@ -17,8 +20,6 @@ from robopark_api.services import (
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.ops import host_bridge
 from robopark_api.services.ops.jobs import load_job
-from sqlalchemy import select, text
-from sqlalchemy.orm import sessionmaker
 
 
 @pytest.fixture
@@ -292,6 +293,7 @@ def test_candidate_startup_is_readonly_until_host_releases_marker(
     import threading
 
     from fastapi.testclient import TestClient
+
     from robopark_api import main
     from robopark_api.db import get_db
 

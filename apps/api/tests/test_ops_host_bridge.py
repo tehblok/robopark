@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from conftest import login_as, role_id_for
 from robopark_api.models import AuditLog, User
 from robopark_api.security import hash_password
