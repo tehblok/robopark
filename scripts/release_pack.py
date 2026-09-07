@@ -21,7 +21,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--git-sha", required=True)
-    parser.add_argument("--migration-head", default="base")
+    parser.add_argument("--migration-head", required=True)
     parser.add_argument("--signing-key", type=Path, required=True)
     args = parser.parse_args()
 
