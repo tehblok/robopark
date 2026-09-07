@@ -127,6 +127,9 @@ def check_app_start(paths):
 
 def _phase(paths, journal, phase, **changes):
     journal.update(changes, phase=phase)
+    from .restore_retention import record
+
+    record(paths, journal)
     atomic_write_json(_path(paths), journal)
 
 
@@ -165,24 +168,29 @@ def _prepare(paths, journal):
     if artifact_dir.is_symlink():
         raise ReleaseError("snapshot_invalid")
     fd = os.open(
-        artifact_dir / journal["request"]["artifact"], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        artifact_dir / journal["request"]["artifact"],
+        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
     )
     private = root / "snapshot.zip"
     digest = hashlib.sha256()
-    with os.fdopen(fd, "rb") as source, private.open("wb") as destination:
+    from .retention import require_capacity
+
+    with os.fdopen(fd, "rb") as source:
         info = os.fstat(source.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_ARCHIVE:
             raise ReleaseError("snapshot_invalid")
-        size = 0
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            size += len(chunk)
-            if size > MAX_ARCHIVE:
-                raise ReleaseError("snapshot_invalid")
-            digest.update(chunk)
-            destination.write(chunk)
-        destination.flush()
-        os.fchmod(destination.fileno(), 0o600)
-        os.fsync(destination.fileno())
+        require_capacity(paths, info.st_size)
+        with private.open("wb") as destination:
+            size = 0
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                size += len(chunk)
+                if size > MAX_ARCHIVE:
+                    raise ReleaseError("snapshot_invalid")
+                digest.update(chunk)
+                destination.write(chunk)
+            destination.flush()
+            os.fchmod(destination.fileno(), 0o600)
+            os.fsync(destination.fileno())
     if digest.hexdigest() != journal["request"]["sha256"]:
         raise ReleaseError("snapshot_invalid")
     with zipfile.ZipFile(private) as archive:
@@ -229,6 +237,7 @@ def _prepare(paths, journal):
             raise ReleaseError("snapshot_invalid")
         expanded = sum(item.file_size for item in infos)
         live_size = sum(p.stat().st_size for p in (paths.var / "data").rglob("*") if p.is_file())
+        require_capacity(paths, 2 * (expanded + live_size))
         for filesystem in (paths.state, paths.var):
             if shutil.disk_usage(filesystem).free < 2 * (expanded + live_size) + 64 * 1024 * 1024:
                 raise ReleaseError("snapshot_invalid")
@@ -236,7 +245,10 @@ def _prepare(paths, journal):
         for name, expected in files.items():
             if not isinstance(expected, str) or not re.fullmatch(r"[a-f0-9]{64}", expected):
                 raise ReleaseError("snapshot_invalid")
-            if not name.startswith("data/") and name not in {"config/host.env", "config/env"}:
+            if not name.startswith("data/") and name not in {
+                "config/host.env",
+                "config/env",
+            }:
                 raise ReleaseError("snapshot_invalid")
             if name in {"data/robopark.db-wal", "data/robopark.db-shm"}:
                 raise ReleaseError("snapshot_invalid")
@@ -349,7 +361,12 @@ def _recover(paths, journal, runner):
         _replace(paths, _root(paths, journal) / "previous", journal)
     _phase(paths, journal, "rollback_starting")
     _ready(paths, runner)
-    _phase(paths, journal, "rollback_ready", publication_degraded=_publication(paths, runner))
+    _phase(
+        paths,
+        journal,
+        "rollback_ready",
+        publication_degraded=_publication(paths, runner),
+    )
     _phase(paths, journal, "rollback_resuming", writes_resumed=True)
     _maintenance(paths, False)
     _phase(paths, journal, "rolled_back")
@@ -401,6 +418,9 @@ def run_restore(paths, request, runner):
         _phase(paths, journal, "resuming", writes_resumed=True)
         _maintenance(paths, False)
         _phase(paths, journal, "succeeded")
+        from .restore_retention import cleanup_terminal
+
+        cleanup_terminal(paths)
         return _result(journal)
     except Exception:
         if journal["phase"] in {"validating", "prepared"}:
@@ -411,7 +431,12 @@ def run_restore(paths, request, runner):
             return _recover(paths, journal, runner)
         except Exception:
             _maintenance(paths, True)
-            _phase(paths, journal, "manual_recovery_required", error="manual_recovery_required")
+            _phase(
+                paths,
+                journal,
+                "manual_recovery_required",
+                error="manual_recovery_required",
+            )
             return _result(journal)
 
 
