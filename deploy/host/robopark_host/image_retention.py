@@ -56,11 +56,17 @@ def _records(paths):
                     or value["tag"] != entry.name[:-5]
                     or not isinstance(value["release"], str)
                     or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,200}", value["release"]) is None
-                    or not isinstance(value["images"], dict)
-                    or set(value["images"]) != {"api", "web"}
-                    or any(
-                        not isinstance(image, str) or re.fullmatch(DIGEST, image) is None
-                        for image in value["images"].values()
+                    or (
+                        value["images"] is not None
+                        and (
+                            not isinstance(value["images"], dict)
+                            or set(value["images"]) != {"api", "web"}
+                            or any(
+                                not isinstance(image, str)
+                                or re.fullmatch(DIGEST, image) is None
+                                for image in value["images"].values()
+                            )
+                        )
                     )
                 ):
                     raise ValueError("invalid_image_ownership")
@@ -71,6 +77,16 @@ def _records(paths):
 def require_record_capacity(paths):
     if len(_records(paths)) >= MAX_RECORDS:
         raise ValueError("image_retention_required")
+
+
+def reserve(paths, release, tag):
+    """Durably claim the exact production tags before Docker can create them."""
+    if re.fullmatch(TAG, tag) is None:
+        raise ValueError("invalid_image_tag")
+    atomic_write_json(
+        paths.state / "image-owned" / (tag + ".json"),
+        {"schema": 1, "release": release.name, "tag": tag, "images": None},
+    )
 
 
 def record(paths, release, tag, document):
@@ -100,7 +116,12 @@ def _protected(paths, records):
     if journal and journal["phase"] not in {"succeeded", "rolled_back", "failed"}:
         keep.update((journal["previous"], journal["candidate"]))
     retained = [item for item in records if item["release"] in keep]
-    images = {image for item in retained for image in item["images"].values()}
+    images = {
+        image
+        for item in retained
+        if item["images"] is not None
+        for image in item["images"].values()
+    }
     tags = {
         "robopark-" + service + ":" + item["tag"] for item in retained for service in ("api", "web")
     }
@@ -166,21 +187,27 @@ def cleanup(paths, runner):
             if item["release"] in keep:
                 continue
             complete = True
-            for service, expected in item["images"].items():
+            owned = item["images"]
+            for service in ("api", "web"):
                 tag = "robopark-" + service + ":" + item["tag"]
                 current = inventory.get(tag)
                 if current is None:
                     continue  # earlier interrupted cleanup already removed this tag
-                if current != expected:
+                expected = owned.get(service) if owned is not None else None
+                if expected is not None and current != expected:
                     raise ValueError("image_tag_changed")
-                alias = any(inventory.get(name) == expected for name in retained_tags)
-                if expected in protected and not alias:
+                alias = expected is not None and any(
+                    inventory.get(name) == expected for name in retained_tags
+                )
+                if expected is not None and expected in protected and not alias:
                     complete = False
                     continue
                 # Recheck the exact tag immediately before the non-force removal.
-                if (
-                    run(["docker", "image", "inspect", "--format", "{{.Id}}", tag]).strip()
-                    != expected
+                observed = run(
+                    ["docker", "image", "inspect", "--format", "{{.Id}}", tag]
+                ).strip()
+                if re.fullmatch(DIGEST, observed) is None or (
+                    expected is not None and observed != expected
                 ):
                     raise ValueError("image_tag_changed")
                 run(["docker", "image", "rm", tag])

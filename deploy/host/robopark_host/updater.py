@@ -28,6 +28,7 @@ from uuid import UUID
 from .image_retention import cleanup as cleanup_images
 from .image_retention import record as record_images
 from .image_retention import require_record_capacity
+from .image_retention import reserve as reserve_images
 from .operational_state import record_backup
 from .paths import HostPaths
 from .release import (
@@ -628,6 +629,7 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
             release.unpack(stage)
             phase("unpacked")
             require_record_capacity(paths)
+            reserve_images(paths, candidate, request.job_id)
             phase("building")
             work, smoke_config = _render_configs(paths, journal, runner, stage)
             prefix = compose("robopark-candidate-" + request.job_id, smoke_config)
@@ -835,6 +837,7 @@ def _discard_unstarted_update(paths, journal, runner):
         if config.resolve() == (paths.state / "current-compose.json").resolve():
             raise ReleaseError("unsafe_config_path")
         config.unlink(missing_ok=True)
+        cleanup_images(paths, runner)
     except Exception:
         # Failed staging cleanup must not turn into a production restart or
         # manufacture maintenance. Keep the durable failed journal for retry.

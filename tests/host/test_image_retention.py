@@ -215,3 +215,40 @@ def test_failed_candidate_images_are_reclaimed_after_safe_rollback(host):
     assert host.paths.current.resolve().name == "1.0.0"
     assert "robopark-api:" + request.job_id in removed
     assert "robopark-web:" + request.job_id in removed
+
+
+def test_production_tags_are_owned_before_build_can_be_interrupted(host):
+    import json
+
+    from robopark_host.image_retention import cleanup
+
+    class PowerLoss(BaseException):
+        pass
+
+    request = host.request()
+    original = host.runner.run
+    inventory = {}
+
+    def run(argv, **kwargs):
+        if argv[:2] == ["docker", "compose"] and "build" in argv:
+            receipt = host.paths.state / "image-owned" / (request.job_id + ".json")
+            assert json.loads(receipt.read_text())["images"] is None
+            for service in ("api", "web"):
+                tag = "robopark-" + service + ":" + request.job_id
+                inventory[tag] = "sha256:" + hashlib.sha256(tag.encode()).hexdigest()
+            raise PowerLoss()
+        return original(argv, **kwargs)
+
+    host.runner.run = run
+    with pytest.raises(PowerLoss):
+        apply_release(request, host.paths, host.runner)
+
+    from robopark_host.updater import _load_journal, _phase
+
+    journal = _load_journal(host.paths)
+    _phase(host.paths, journal, "failed", error="interrupted")
+    runner = Images(inventory)
+    result = cleanup(host.paths, runner)
+    assert not result["blocked"]
+    assert sorted(runner.removed) == sorted(inventory)
+    assert not (host.paths.state / "image-owned" / (request.job_id + ".json")).exists()
