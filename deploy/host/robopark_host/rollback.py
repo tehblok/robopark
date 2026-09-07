@@ -10,6 +10,8 @@ from pathlib import Path
 from .release import ReleaseError, verify_directory
 
 UNITS = (
+    "robopark-commands.service",
+    "robopark-commands.path",
     "robopark.service",
     "robopark-tuna.service",
     "robopark-updater.service",

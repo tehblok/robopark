@@ -18,14 +18,21 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
-
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
 from robopark_api.deps import require_royal
 from robopark_api.models import User
+from robopark_api.ops_schemas import (
+    HostResultOut,
+    SystemHealthOut,
+    UpdateApprovalIn,
+    UpdateInspectionOut,
+    public_result,
+)
 from robopark_api.security import hash_session_token
 from robopark_api.services import audit
+from robopark_api.services.ops import host_bridge
+from robopark_api.services.ops.archives import ArchiveError
 from robopark_api.services.ops.context import build_ops_context, resolved_ops_dir
 from robopark_api.services.ops.jobs import (
     KIND_RESTORE,
@@ -45,6 +52,7 @@ from robopark_api.services.ops.runner import (
     artifact_path,
     start_and_run,
 )
+from sqlalchemy.orm import Session
 
 ACTION_OPS_SNAPSHOT = "admin.ops.snapshot"
 ACTION_OPS_RESTORE = "admin.ops.restore"
@@ -72,6 +80,7 @@ class OpsJobOut(BaseModel):
     updated_at: str
     restore_phrase: str = RESTORE_PHRASE
     update_phrase: str = UPDATE_PHRASE
+    host_result: HostResultOut | None = None
 
 
 def _token_hash(request: Request, settings: Settings) -> str:
@@ -83,6 +92,12 @@ def _token_hash(request: Request, settings: Settings) -> str:
 
 def _reconcile_if_needed(settings: Settings) -> None:
     """Finalize Docker cutover when ops-agent writes rebuild.result after API boot."""
+    if settings.ops_host_root:
+        with suppress(host_bridge.BridgeError):
+            host_bridge.reconcile_host_job(
+                resolved_ops_dir(settings), host_bridge.host_root(settings)
+            )
+        return
     ctx = build_ops_context(settings)
     with suppress(Exception):
         reconcile_pending_rebuild(
@@ -95,7 +110,7 @@ def _reconcile_if_needed(settings: Settings) -> None:
 
 def _job_out(job) -> OpsJobOut:
     data = job.to_public_dict()
-    return OpsJobOut(**data)
+    return OpsJobOut(**data, host_result=public_result(job.extra.get("host_result")))
 
 
 async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
@@ -124,6 +139,15 @@ def maintenance_status(
     ops_dir = resolved_ops_dir(settings)
     job = load_job(ops_dir)
     active = is_maintenance_active(ops_dir)
+    if settings.ops_host_root:
+        try:
+            root = host_bridge.host_root(settings)
+            active = (
+                active
+                or host_bridge.read_json(root / "public/maintenance.json").get("enabled") is True
+            )
+        except host_bridge.BridgeError:
+            active = True
     raw = request.cookies.get(settings.session_cookie_name)
     token_hash = hash_session_token(raw) if raw else None
     return MaintenanceOut(
@@ -206,6 +230,10 @@ def _launch(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="confirm_required")
     if kind == KIND_UPDATE and confirm.strip() != UPDATE_PHRASE:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="confirm_required")
+    if settings.ops_host_root:
+        if kind == KIND_UPDATE:
+            raise HTTPException(status_code=400, detail="inspection_required")
+        host_bridge.require_host_idle(_bridge_root(settings))
     ctx = build_ops_context(settings)
     if settings.ops_sync:
         try:
@@ -315,3 +343,142 @@ async def post_update(
         detail=job.error or job.state,
     )
     return _job_out(job)
+
+
+def _bridge_root(settings):
+    try:
+        return host_bridge.host_root(settings)
+    except host_bridge.BridgeError as exc:
+        raise HTTPException(status_code=503, detail="host_bridge_unavailable") from exc
+
+
+def _host_action(db, actor, action, operation):
+    try:
+        result = operation()
+    except (host_bridge.BridgeError, ArchiveError, JobConflict, OSError) as exc:
+        detail = (
+            str(exc)
+            if isinstance(exc, (host_bridge.BridgeError, ArchiveError, JobConflict))
+            else "host_bridge_unavailable"
+        )
+        audit.record(db, action=action, actor=actor, outcome=audit.OUTCOME_FAILURE, detail=detail)
+        code = (
+            409
+            if isinstance(exc, JobConflict)
+            else 503
+            if detail == "host_bridge_unavailable"
+            else 400
+        )
+        raise HTTPException(status_code=code, detail=detail) from exc
+    audit.record(db, action=action, actor=actor, outcome=audit.OUTCOME_SUCCESS, detail="accepted")
+    return result
+
+
+@router.get("/admin/ops/system-health", response_model=SystemHealthOut)
+def get_system_health(
+    royal: User = Depends(require_royal), settings: Settings = Depends(get_settings)
+):
+    root = _bridge_root(settings)
+    host_bridge.reconcile_host_job(resolved_ops_dir(settings), root)
+    return host_bridge.system_health(root)
+
+
+@router.post("/admin/ops/update/inspect", response_model=UpdateInspectionOut)
+async def inspect_host_update(
+    archive: UploadFile = File(...),
+    royal: User = Depends(require_royal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    root = _bridge_root(settings)
+    blob = await _read_upload(archive, settings.ops_max_upload_bytes)
+    return _host_action(
+        db,
+        royal,
+        "admin.ops.update.inspect",
+        lambda: host_bridge.inspect_update(
+            settings, resolved_ops_dir(settings), root, blob, royal.id
+        ),
+    )
+
+
+@router.post("/admin/ops/update/approve", response_model=OpsJobOut)
+def approve_host_update(
+    payload: UpdateApprovalIn,
+    request: Request,
+    royal: User = Depends(require_royal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    root = _bridge_root(settings)
+
+    def approve():
+        if payload.confirm != UPDATE_PHRASE:
+            raise host_bridge.BridgeError("confirm_required")
+        host_bridge.reconcile_host_job(resolved_ops_dir(settings), root)
+        return host_bridge.approve_update(
+            settings,
+            resolved_ops_dir(settings),
+            root,
+            payload.inspection_id,
+            royal.id,
+            _token_hash(request, settings),
+        )
+
+    return _job_out(_host_action(db, royal, "admin.ops.update.approve", approve))
+
+
+def _start_host_operation(kind, request, royal, db, settings):
+    root = _bridge_root(settings)
+    host_bridge.reconcile_host_job(resolved_ops_dir(settings), root)
+    return _job_out(
+        _host_action(
+            db,
+            royal,
+            "admin.ops." + kind,
+            lambda: host_bridge.enqueue_operation(
+                resolved_ops_dir(settings), root, kind, royal.id, _token_hash(request, settings)
+            ),
+        )
+    )
+
+
+@router.post("/admin/ops/diagnostics", response_model=OpsJobOut)
+def post_diagnostics(
+    request: Request,
+    royal: User = Depends(require_royal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    return _start_host_operation("diagnostics", request, royal, db, settings)
+
+
+@router.post("/admin/ops/repair", response_model=OpsJobOut)
+def post_repair(
+    request: Request,
+    royal: User = Depends(require_royal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    return _start_host_operation("repair", request, royal, db, settings)
+
+
+@router.get("/admin/ops/diagnostic-artifact")
+def download_diagnostic_artifact(
+    royal: User = Depends(require_royal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    root = _bridge_root(settings)
+    job = host_bridge.reconcile_host_job(resolved_ops_dir(settings), root)
+    path = host_bridge.diagnostic_artifact(root, job)
+    audit.record(
+        db,
+        action="admin.ops.diagnostics.download",
+        actor=royal,
+        outcome=audit.OUTCOME_SUCCESS if path else audit.OUTCOME_FAILURE,
+        detail="download" if path else "artifact_missing",
+    )
+    if path is None:
+        raise HTTPException(status_code=404, detail="artifact_missing")
+    return FileResponse(path, filename=path.name, media_type="application/zip")

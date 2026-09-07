@@ -151,15 +151,23 @@ def _watchdog_handler(paths: HostPaths) -> int:
 
 def _bootstrap_handler(paths: HostPaths) -> int:
     from .runtime import bootstrap_compose
+
     try:
         bootstrap_compose(paths)
     except (ValueError, OSError, subprocess.SubprocessError):
-        print('Runtime bootstrap failed')
+        print("Runtime bootstrap failed")
         return 1
     return 0
 
 
+def _consume_handler(paths: HostPaths) -> int:
+    from .commands import consume_commands
+
+    return consume_commands(paths, _system_runner, _Http())
+
+
 COMMAND_HANDLERS: dict[str, Handler] = {
+    "consume": _consume_handler,
     "bootstrap-compose": _bootstrap_handler,
     "status": _status_handler,
     "doctor": _doctor_handler,
@@ -208,6 +216,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.reconcile or arguments.recover:
             result = recover_interrupted_update(paths, runner)
             return int(result.state == "maintenance")
+        if arguments.request is None and not arguments.worker:
+            code = _consume_handler(paths)
+            result = recover_interrupted_update(paths, runner)
+            return code or int(result.state == "maintenance")
         request_path = arguments.request or paths.ops / "inbox/approved.json"
         if not request_path.exists():
             return 0

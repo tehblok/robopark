@@ -63,12 +63,17 @@ def create_app() -> FastAPI:
             settings_svc.migrate_registration_password_from_env(db)
         try:
             ctx = build_ops_context(settings)
-            reconcile_pending_rebuild(
-                ctx.ops_dir,
-                database_url=ctx.database_url,
-                config_files=ctx.config_files,
-                data_dir=ctx.data_dir,
-            )
+            if ctx.use_host_updater:
+                from robopark_api.services.ops.host_bridge import reconcile_host_job
+
+                reconcile_host_job(ctx.ops_dir, ctx.host_ops_dir)
+            else:
+                reconcile_pending_rebuild(
+                    ctx.ops_dir,
+                    database_url=ctx.database_url,
+                    config_files=ctx.config_files,
+                    data_dir=ctx.data_dir,
+                )
         except Exception:  # noqa: BLE001
             import logging
 
@@ -110,6 +115,7 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json" if settings.openapi_enabled else None,
     )
     app.state.ops_dir = resolved_ops_dir(settings)
+    app.state.ops_settings = settings
     app.state.session_cookie_name = settings.session_cookie_name
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     # Explicit method/header allowlists paired with ``allow_credentials=True``:

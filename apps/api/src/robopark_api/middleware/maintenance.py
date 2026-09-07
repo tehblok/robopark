@@ -47,7 +47,7 @@ class MaintenanceGateMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path") or ""
-        if path in EXEMPT_PATHS:
+        if path in EXEMPT_PATHS or path.startswith("/admin/ops/"):
             await self.app(scope, receive, send)
             return
         if (scope.get("method") or "").upper() == "OPTIONS":
@@ -58,7 +58,24 @@ class MaintenanceGateMiddleware:
         cookie_name = getattr(
             getattr(app, "state", None), "session_cookie_name", "robopark_session"
         )
-        if ops_dir is None or not is_maintenance_active(ops_dir):
+        settings = getattr(getattr(app, "state", None), "ops_settings", None)
+        host_active = False
+        if settings is not None and settings.ops_host_root:
+            from robopark_api.services.ops.host_bridge import (
+                BridgeError,
+                host_root,
+                read_json,
+                reconcile_host_job,
+            )
+
+            try:
+                root = host_root(settings)
+                if ops_dir is not None:
+                    reconcile_host_job(ops_dir, root)
+                host_active = read_json(root / "public/maintenance.json").get("enabled") is True
+            except BridgeError:
+                host_active = True
+        if not host_active and (ops_dir is None or not is_maintenance_active(ops_dir)):
             await self.app(scope, receive, send)
             return
         token = _cookie_value(scope, cookie_name)

@@ -10,7 +10,6 @@ from .paths import HostPaths
 
 PROJECT_NAME = "robopark"
 EXPECTED_SERVICES = frozenset({"api", "web"})
-_SAFE_SERVICE_FIELDS = ("Service", "Name", "State", "Health", "ExitCode", "RestartCount")
 
 
 def compose_command(paths: HostPaths, arguments: Sequence[str]) -> list[str]:
@@ -56,7 +55,26 @@ def parse_compose_services(output: str) -> list[dict[str, Any]] | None:
 def safe_compose_services(services: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Return only operational service fields, never commands or environment data."""
 
-    return [
-        {field: service[field] for field in _SAFE_SERVICE_FIELDS if field in service}
-        for service in services
-    ]
+    output = []
+    for service in services:
+        if service.get("Service") not in ("api", "web", "ops-agent"):
+            continue
+        item = {"Service": service["Service"]}
+        if service.get("State") in (
+            "running",
+            "exited",
+            "created",
+            "restarting",
+            "paused",
+            "dead",
+            "removing",
+        ):
+            item["State"] = service["State"]
+        if service.get("Health") in ("", "healthy", "unhealthy", "starting"):
+            item["Health"] = service["Health"]
+        for field in ("ExitCode", "RestartCount"):
+            value = service.get(field)
+            if type(value) is int and 0 <= value < 2**31:
+                item[field] = value
+        output.append(item)
+    return output

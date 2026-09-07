@@ -1,0 +1,127 @@
+"""Finite public projections at the privileged host boundary."""
+
+from datetime import datetime
+from typing import Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
+
+CHECK_LABELS = {
+    "supported_platform": "ОС и архитектура",
+    "clock_sync": "Синхронизация часов",
+    "dns": "DNS",
+    "outbound_https": "Исходящий HTTPS",
+    "resources": "Диск",
+    "inode_space": "Inode",
+    "memory_load_swap": "Память",
+    "load": "Нагрузка",
+    "temperature": "Температура",
+    "docker_daemon": "Docker",
+    "compose": "Compose",
+    "containers": "Контейнеры",
+    "release_layout": "Релиз",
+    "configuration": "Конфигурация",
+    "database_unavailable": "База данных и миграции",
+    "local_endpoint": "Веб-сервис",
+    "api_readiness": "Готовность API",
+    "tuna_binary": "Tuna",
+    "tuna_inactive": "Сервис Tuna",
+    "tuna_route": "HTTPS-маршрут",
+    "tuna_certificate": "Сертификат HTTPS",
+    "updater": "Обновления",
+    "integrations": "Интеграции",
+    "backup": "Резервная копия",
+    "diagnostic_artifacts": "Диагностика",
+    "log_growth": "Журналы",
+}
+REPAIR_IDS = {"restart_docker", "restart_app", "restart_tuna", "daemon_reload"}
+
+
+class CheckOut(BaseModel):
+    code: str
+    status: Literal["ok", "warning", "failed"]
+    message: str
+    repair: str | None = None
+
+
+def public_checks(value):
+    if not isinstance(value, list):
+        return []
+    return [
+        CheckOut(
+            code=item["code"],
+            status=item["status"],
+            message=CHECK_LABELS[item["code"]],
+            repair=item.get("repair")
+            if isinstance(item.get("repair"), str) and item.get("repair") in REPAIR_IDS
+            else None,
+        )
+        for item in value[:64]
+        if isinstance(item, dict)
+        and isinstance(item.get("code"), str)
+        and item.get("code") in CHECK_LABELS
+        and item.get("status") in ("ok", "warning", "failed")
+    ]
+
+
+class UpdateOut(BaseModel):
+    state: Literal[
+        "idle", "updating", "current_healthy", "rolled_back", "maintenance", "unknown"
+    ] = "unknown"
+    publication: Literal["degraded"] | None = None
+
+
+class BackupOut(BaseModel):
+    status: Literal["success", "failed", "unknown"] = "unknown"
+    completed_at: datetime | None = None
+
+
+class SystemHealthOut(BaseModel):
+    version: str | None = None
+    git_sha: str | None = None
+    generated_at: datetime | None = None
+    overall: Literal["ok", "degraded", "unknown"] = "unknown"
+    checks: list[CheckOut] = []
+    update: UpdateOut = UpdateOut()
+    last_backup: BackupOut = BackupOut()
+
+
+class UpdateInspectionOut(BaseModel):
+    inspection_id: UUID
+    version: str
+    git_sha: str
+    migration_head: str
+    notes: str
+
+
+class UpdateApprovalIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    inspection_id: UUID
+    confirm: str
+
+
+class HostResultOut(BaseModel):
+    before: list[CheckOut] = []
+    after: list[CheckOut] = []
+    performed: list[str] = []
+    failed: list[str] = []
+
+
+def public_result(value):
+    if not isinstance(value, dict):
+        return None
+
+    def actions(name):
+        raw = value.get(name)
+        return (
+            [item for item in raw[:8] if isinstance(item, str) and item in REPAIR_IDS]
+            if isinstance(raw, list)
+            else []
+        )
+
+    return HostResultOut(
+        before=public_checks(value.get("before")),
+        after=public_checks(value.get("after")),
+        performed=actions("performed"),
+        failed=actions("failed"),
+    )

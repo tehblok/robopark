@@ -1,0 +1,20 @@
+[Unit]
+Description=Robopark root command consumer
+After=network-online.target robopark.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+Restart=on-failure
+RestartSec=5
+User=root
+ExecStart=/usr/bin/python3 -I /opt/robopark/host-tools/robopark consume
+TimeoutStartSec=18000
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+UMask=0077
+ReadWritePaths=/var/lib/robopark /opt/robopark /etc/robopark /etc/systemd/system /var/log/robopark
