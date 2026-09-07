@@ -63,3 +63,6 @@ docs/superpowers/
 /artifacts/
 /robopark-release*.zip*
 /robopark-installer*.tar.gz*
+
+# Local capacity-test session credentials
+capacity-private*.json
