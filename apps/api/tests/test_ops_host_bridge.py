@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from conftest import login_as, role_id_for
 from robopark_api.models import AuditLog, User
 from robopark_api.security import hash_password
@@ -478,8 +479,9 @@ def test_royal_reload_bootstrap_is_read_only_during_host_maintenance(
 ):
     from datetime import UTC, datetime, timedelta
 
-    from robopark_api.models import AuthSession
     from sqlalchemy import event
+
+    from robopark_api.models import AuthSession
 
     login_as(client, "royal", "secret")
     session = db_session.query(AuthSession).one()
