@@ -3,6 +3,7 @@ import { useLocation, useSearchParams } from 'react-router-dom'
 import { api, ApiError, type DiagnosticCatalog, type DiagnosticPreview, type DiagnosticRule, type DiagnosticRuleCreate, type User } from '../../api'
 import { useAuth } from '../../auth-context'
 import { Tabs, Toggle } from '../../components/ui/Tabs'
+import { Panel } from '../../components/PageShell'
 import { Button } from '../../design-system/actions/Button'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { FormField } from '../../design-system/forms/FormField'
@@ -357,8 +358,9 @@ export function RuleForm({ rule, initialDraft, onDraftAdopted, busy, onSave, onC
       if (mounted.current && current === revision.current) setError(errorText(failure))
     }
   }
-  return <form className="rp-diagnostic-form" onSubmit={event => void save(event)}>
-    <h2>{rule ? 'Редактирование правила' : lockSource ? 'Разметка неизвестной ошибки' : 'Новое правило'}</h2>
+  const title = rule ? 'Редактирование правила' : lockSource ? 'Разметка неизвестной ошибки' : 'Новое правило'
+  return <Panel collapsible storageKey="diagnostics-rule-editor" title={title}>
+    <form className="rp-diagnostic-form" onSubmit={event => void save(event)}>
     <div className="rp-diagnostic-fields">
       <FormField id={`${formId}-diagnostic-title`} label="Название ошибки" required><input maxLength={256} value={draft.title} onChange={event => edit({ title: event.target.value })} /></FormField>
       <FormField id={`${formId}-diagnostic-part`} label="Часть робота" required><input maxLength={128} value={draft.part} onChange={event => edit({ part: event.target.value })} /></FormField>
@@ -403,5 +405,6 @@ export function RuleForm({ rule, initialDraft, onDraftAdopted, busy, onSave, onC
     <Toggle label="Правило включено" checked={draft.is_enabled} onChange={is_enabled => edit({ is_enabled })} />
     <div className="rp-diagnostic-save"><Button type="submit" disabled={!valid} busy={busy}>Сохранить правило</Button></div>
     {rule?.is_enabled ? <div className="rp-diagnostic-disable"><p>Отключённое правило остаётся в каталоге и истории.</p><Button type="button" variant="secondary" disabled={busy} onClick={() => void save(undefined, true)}>Отключить правило</Button></div> : null}
-  </form>
+    </form>
+  </Panel>
 }

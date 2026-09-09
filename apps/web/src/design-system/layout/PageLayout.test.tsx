@@ -2,7 +2,7 @@
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { PageLayout, Panel } from './PageLayout'
 
@@ -53,6 +53,26 @@ it('styles only headings owned by the layout primitives', () => {
 })
 
 describe('Panel', () => {
+  it('rejects a collapsible panel without an explicit identity in development', () => {
+    expect(() => render(<Panel collapsible title="Диагностика"><p>Данные</p></Panel>)).toThrow(
+      'A collapsible Panel requires a nonempty string title and storageKey.',
+    )
+  })
+
+  it('collapses accessible content and persists the selected state', () => {
+    render(
+      <Panel collapsible storageKey="diagnostics" title="Диагностика">
+        <p>Данные</p>
+      </Panel>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Свернуть: Диагностика' }))
+
+    expect(screen.queryByText('Данные')).not.toBeInTheDocument()
+    expect(localStorage.getItem('robopark:panel:diagnostics:collapsed')).toBe('1')
+    expect(screen.getByRole('button', { name: 'Развернуть: Диагностика' })).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('names a titled panel region from its heading', () => {
     render(
       <Panel actions={<button type="button">Ещё</button>} description="Детали" title="Риск">

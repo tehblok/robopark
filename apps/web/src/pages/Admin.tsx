@@ -426,7 +426,9 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
       {canIntegrations && <TabPanel id="integrations" active={tab === 'integrations'}>
         {user?.role === 'royal' && (
           <Panel
+            collapsible
             hint="Если пароль не задан, регистрация на /register закрыта."
+            storageKey="admin-registration-password"
             title="Общий пароль регистрации"
           >
             {registrationSettings && (
@@ -483,7 +485,9 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
         )}
 
         <Panel
+          collapsible
           hint="Секреты хранятся зашифрованными. Здесь только статус — без маски значения."
+          storageKey="admin-integration-secrets"
           title="Секреты"
         >
           {settings && (
@@ -566,7 +570,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
         </Panel>
 
         {trackerPolicy && (
-          <Panel hint="Влияет на то, что видят операторы и механики." title="Политика Tracker">
+          <Panel collapsible hint="Влияет на то, что видят операторы и механики." storageKey="admin-tracker-policy" title="Политика Tracker">
             <div className="toggle-list">
               <Toggle
                 checked={trackerPolicy.operator_show_untagged}
@@ -594,7 +598,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
           </Panel>
         )}
 
-        <Panel hint={ru.screenshotGuard.adminHint} title="Защита от скриншотов">
+        <Panel collapsible hint={ru.screenshotGuard.adminHint} storageKey="admin-screenshot-guard" title="Защита от скриншотов">
           {!screenshotGuard || !screenshotGuardLive ? <>
             <p role="status">{bootRes.isRevalidating
               ? 'Загрузка состояния защиты…'
@@ -641,7 +645,9 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
         {user && parkId != null && <SlaPolicyEditor parkId={parkId} user={user} />}
         {parkRequests.length > 0 && (
         <Panel
+          collapsible
           hint="Операторы запрашивают дополнительные парки из своего кабинета."
+          storageKey="admin-park-requests"
           title={`Заявки на парки (${parkRequests.length})`}
         >
           <ul className="card-list">
@@ -685,7 +691,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
         </Panel>
         )}
 
-        <Panel hint="Тег используется в Tracker; очередь нужна для задач и поиска." title="Новый парк">
+        <Panel collapsible hint="Тег используется в Tracker; очередь нужна для задач и поиска." storageKey="admin-park-create" title="Новый парк">
           <form className="form-grid" onSubmit={createPark}>
             <label className="field">
               <span className="field-label">Название</span>
@@ -721,7 +727,9 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
           parks.map((park) => (
             <Panel
               actions={<Badge active={park.is_active ?? true} />}
+              collapsible
               key={park.id}
+              storageKey={`admin-park-${park.id}`}
               title={park.name || `Парк #${park.id}`}
             >
               <div className="form-grid">
@@ -858,7 +866,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
 
       {user?.role === 'royal' && (
         <TabPanel id="ops" active={tab === 'ops'}>
-          <Panel hint={ru.ops.hint} title={ru.ops.title}>
+          <Panel collapsible hint={ru.ops.hint} storageKey="admin-ops" title={ru.ops.title}>
             <AdminOpsPanel />
           </Panel>
         </TabPanel>

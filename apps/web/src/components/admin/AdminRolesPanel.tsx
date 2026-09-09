@@ -152,7 +152,7 @@ function AdminRolesWorkspace({ onDenied }: { onDenied: (denied: boolean) => void
       {Boolean(error || loadError) && <Alert tone="error">{error || mapApiError(loadError)}</Alert>}
 
       <MasterDetail detailOpen={detailOpen} onBack={() => setDetailOpen(false)} list={
-      <Panel hint="Выберите роль для просмотра и изменения доступов." title="Роли"
+      <Panel collapsible hint="Выберите роль для просмотра и изменения доступов." storageKey="admin-roles-list" title="Роли"
         actions={<button className="btn btn-secondary" type="button" onClick={() => {
           setEditingId(null); setNewSlug(''); setDraft({ name: '', description: '', permissions: new Set() }); setDetailOpen(true)
         }}>Новая роль</button>}>
@@ -168,7 +168,7 @@ function AdminRolesWorkspace({ onDenied }: { onDenied: (denied: boolean) => void
         </ul>
       </Panel>
       } detail={
-      <Panel title={editing ? `Редактор: ${editing.name}` : 'Новая роль'}>
+      <Panel collapsible storageKey="admin-roles-editor" title={editing ? `Редактор: ${editing.name}` : 'Новая роль'}>
         {!editing && (
           <label className="field">
             <span className="field-label">Slug (латиница)</span>

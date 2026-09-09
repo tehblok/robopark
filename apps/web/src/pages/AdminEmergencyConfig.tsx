@@ -187,7 +187,7 @@ function EmergencyFieldsConfig() {
       {displayError && <Alert tone="error">{displayError}</Alert>}
       {message && <Alert tone="success">{message}</Alert>}
 
-      <Panel hint="ID можно задать только при создании." title="Новый раздел">
+      <Panel collapsible hint="ID можно задать только при создании." storageKey="admin-emergency-create" title="Новый раздел">
         <form className="form-grid" onSubmit={createSection}>
           <label className="field">
             <span className="field-label">ID раздела</span>
@@ -228,6 +228,7 @@ function EmergencyFieldsConfig() {
           const canAddField = Boolean(draft.path.trim() && draft.label.trim())
           return (
             <Panel
+              collapsible
               actions={(
                 <>
                   <Badge active={section.is_enabled} />
@@ -265,6 +266,7 @@ function EmergencyFieldsConfig() {
               )}
               hint={`ID: ${section.id} · позиция ${index + 1}`}
               key={section.id}
+              storageKey={`admin-emergency-section-${section.id}`}
               title={section.title || section.id}
             >
               <div className="form-grid">

@@ -1,4 +1,4 @@
-import { useId, type ReactElement, type ReactNode } from 'react'
+import { useId, useState, type ReactElement, type ReactNode } from 'react'
 import './PageLayout.css'
 
 export type PageLayoutProps = {
@@ -39,6 +39,22 @@ export type PanelProps = {
   actions?: ReactNode
   children: ReactNode
   className?: string
+  collapsible?: boolean
+  storageKey?: string
+  defaultCollapsed?: boolean
+}
+
+function panelStorageKey(storageKey: string): string {
+  return `robopark:panel:${storageKey}:collapsed`
+}
+
+function readCollapsed(storageKey: string | undefined, fallback: boolean): boolean {
+  if (!storageKey || typeof window === 'undefined') return fallback
+  try {
+    return window.localStorage.getItem(panelStorageKey(storageKey)) === '1'
+  } catch {
+    return fallback
+  }
 }
 
 export function Panel({
@@ -47,8 +63,29 @@ export function Panel({
   actions,
   children,
   className = '',
+  collapsible = false,
+  storageKey,
+  defaultCollapsed = false,
 }: PanelProps): ReactElement {
   const headingId = useId()
+  const contentId = useId()
+  if (import.meta.env.DEV && collapsible && (typeof title !== 'string' || !title.trim() || !storageKey?.trim())) {
+    throw new Error('A collapsible Panel requires a nonempty string title and storageKey.')
+  }
+  const [collapsed, setCollapsed] = useState(() => readCollapsed(storageKey, defaultCollapsed))
+  const canCollapse = collapsible && typeof title === 'string' && Boolean(title.trim() && storageKey?.trim())
+  const toggleCollapsed = () => {
+    const next = !collapsed
+    setCollapsed(next)
+    try {
+      if (storageKey) {
+        if (next) window.localStorage.setItem(panelStorageKey(storageKey), '1')
+        else window.localStorage.removeItem(panelStorageKey(storageKey))
+      }
+    } catch {
+      // Persistent storage can be unavailable in private or embedded contexts.
+    }
+  }
 
   return (
     <section
@@ -61,10 +98,21 @@ export function Panel({
             {title ? <h2 className="rp-panel__title" id={headingId}>{title}</h2> : null}
             {description ? <div className="rp-panel__description">{description}</div> : null}
           </div>
-          {actions ? <div className="rp-panel__actions">{actions}</div> : null}
+          {actions || canCollapse ? <div className="rp-panel__actions">
+            {canCollapse ? <button
+              aria-controls={contentId}
+              aria-expanded={!collapsed}
+              className="rp-panel__collapse"
+              onClick={toggleCollapsed}
+              type="button"
+            >
+              {collapsed ? `Развернуть: ${title}` : `Свернуть: ${title}`}
+            </button> : null}
+            {actions}
+          </div> : null}
         </header>
       ) : null}
-      <div className="rp-panel__content">{children}</div>
+      {!collapsed ? <div className="rp-panel__content" id={contentId}>{children}</div> : null}
     </section>
   )
 }

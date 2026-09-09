@@ -337,6 +337,27 @@ textarea {
   flex-wrap: wrap;
 }
 
+.panel-collapse {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: var(--rp-radius-control);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--rp-font-size-caption);
+  font-weight: var(--rp-font-weight-bold);
+  padding: var(--space-1) var(--space-2);
+}
+
+.panel-collapse:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.panel-collapsed {
+  gap: 0;
+}
+
 .panel-hint {
   color: var(--text-muted);
   line-height: 1.5;

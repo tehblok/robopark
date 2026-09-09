@@ -1,4 +1,5 @@
 import { TaskCollaboration } from '../../components/tracker/TaskCollaboration'
+import { Panel } from '../../components/PageShell'
 import { attachmentIdentity, runTrackerSubmission } from '../../components/tracker/trackerReliability'
 import {
   type ReactNode,
@@ -592,7 +593,7 @@ function IssueWorkbenchOwner({
       >
         <MasterDetail
           detail={<div className="rp-work-detail-pane">
-            <h2>{issueKey ? `Задача ${issueKey}` : 'Детали задачи'}</h2>
+            <Panel collapsible storageKey="work-detail" title={issueKey ? `Задача ${issueKey}` : 'Детали задачи'}>
             {!issueKey ? (
               <EmptyState
                 description="Выберите задачу в очереди, чтобы увидеть подробности."
@@ -683,6 +684,7 @@ function IssueWorkbenchOwner({
                 )}
               </ResourceBoundary>
             )}
+            </Panel>
           </div>}
           detailOpen={Boolean(issueKey)}
           list={<div className="rp-work-list-pane">

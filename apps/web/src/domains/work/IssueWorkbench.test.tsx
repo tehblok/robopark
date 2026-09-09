@@ -206,6 +206,12 @@ afterEach(() => {
 })
 
 describe('IssueWorkbench', () => {
+  it('offers a collapse control for the selected issue detail', async () => {
+    renderWorkbench()
+
+    expect(await screen.findByRole('button', { name: 'Свернуть: Задача ROBOPARK-42' })).toBeVisible()
+  })
+
   it('never paints a released detail on a synchronous same-scope full remount', async () => {
     const client = apiClient()
     const first = renderWorkbench({ client })

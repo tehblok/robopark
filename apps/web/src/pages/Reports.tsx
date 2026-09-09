@@ -207,7 +207,9 @@ function ReportsOwner({
           />
         ) : (
           <Panel
+            collapsible
             hint={`Парк: ${selectedPark?.name ?? parkId}. Репорт уходит оператору парка.`}
+            storageKey="reports-create"
             title="Данные репорта"
           >
             <ReportForms
@@ -280,7 +282,7 @@ function ReportsOwner({
           id="reports-mine-panel"
           labelledBy={createEnabled && inboxEnabled ? 'tab-mine' : 'reports-title'}
         >
-          <Panel hint="Статусы ваших репортов и комментарии при возврате." title="Мои репорты">
+          <Panel collapsible hint="Статусы ваших репортов и комментарии при возврате." storageKey="reports-mine" title="Мои репорты">
             <ReportList
               emptyMessage="Вы ещё не создавали репортов."
               loading={showListSkeleton && visiblePane === 'mine'}
@@ -306,7 +308,7 @@ function ReportsOwner({
               title="Выберите парк в верхней панели"
             />
           ) : (
-            <Panel hint={inboxHint} title={inboxTitle}>
+            <Panel collapsible hint={inboxHint} storageKey="reports-inbox" title={inboxTitle}>
               <ReportList
                 emptyMessage="Нет открытых репортов для выбранного парка."
                 loading={showListSkeleton && visiblePane === 'inbox'}
@@ -324,7 +326,7 @@ function ReportsOwner({
         <EmptyBlock hint="Для этой роли нет действий с репортами." icon="✉" title="Раздел недоступен" />
       )}
       </>} detail={
-        <Panel title="Детали репорта">
+        <Panel collapsible storageKey="reports-detail" title="Детали репорта">
           {detailError && <Alert tone="error">{detailError}</Alert>}
           {detailLoading && <SkeletonList rows={2} />}
           {!detailRoute && <EmptyBlock title="Выберите репорт" hint="Откройте репорт из списка, чтобы прочитать детали и выполнить доступные действия." />}

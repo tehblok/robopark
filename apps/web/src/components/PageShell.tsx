@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { ru } from '../i18n/ru'
 
@@ -69,24 +69,67 @@ export function Panel({
   hint,
   actions,
   children,
+  collapsible = false,
+  storageKey,
+  defaultCollapsed = false,
 }: {
   title?: string
   hint?: string
   actions?: ReactNode
   children: ReactNode
+  collapsible?: boolean
+  storageKey?: string
+  defaultCollapsed?: boolean
 }) {
+  const contentId = useId()
+  if (import.meta.env.DEV && collapsible && (!title?.trim() || !storageKey?.trim())) {
+    throw new Error('A collapsible Panel requires a nonempty title and storageKey.')
+  }
+  const [collapsed, setCollapsed] = useState(() => {
+    if (!storageKey || typeof window === 'undefined') return defaultCollapsed
+    try {
+      return window.localStorage.getItem(`robopark:panel:${storageKey}:collapsed`) === '1'
+    } catch {
+      return defaultCollapsed
+    }
+  })
+  const canCollapse = collapsible && Boolean(title?.trim() && storageKey?.trim())
+  const toggleCollapsed = () => {
+    const next = !collapsed
+    setCollapsed(next)
+    try {
+      if (storageKey) {
+        const key = `robopark:panel:${storageKey}:collapsed`
+        if (next) window.localStorage.setItem(key, '1')
+        else window.localStorage.removeItem(key)
+      }
+    } catch {
+      // Persistent storage can be unavailable in private or embedded contexts.
+    }
+  }
   return (
-    <section className="panel">
+    <section className={`panel${canCollapse && collapsed ? ' panel-collapsed' : ''}`}>
       {(title || hint || actions) && (
         <div className="panel-head">
           <div>
             {title && <h2>{title}</h2>}
             {hint && <p className="panel-hint">{hint}</p>}
           </div>
-          {actions && <div className="panel-actions">{actions}</div>}
+          {(actions || canCollapse) && <div className="panel-actions">
+            {canCollapse && <button
+              aria-controls={contentId}
+              aria-expanded={!collapsed}
+              className="panel-collapse"
+              onClick={toggleCollapsed}
+              type="button"
+            >
+              {collapsed ? `Развернуть: ${title}` : `Свернуть: ${title}`}
+            </button>}
+            {actions}
+          </div>}
         </div>
       )}
-      {children}
+      {!collapsed && <div id={contentId}>{children}</div>}
     </section>
   )
 }

@@ -112,6 +112,13 @@ it('releases a pending A owner before B and a remounted A start fresh', async ()
   expect(resourceStore.get(`${stalePrefix}mine`)).toEqual([report(3, 'Свежий A')])
 })
 
+it('offers a collapse control for the report list without changing its initial visibility', async () => {
+  render(tree(userA, client({ reportsMine: vi.fn(async () => []) })))
+
+  expect(await screen.findByRole('button', { name: 'Свернуть: Мои репорты' })).toBeVisible()
+  expect(screen.getByText('Вы ещё не создавали репортов.')).toBeVisible()
+})
+
 it('clears a draft synchronously when effective access changes at the same principal and park', async () => {
   localStorage.setItem('robopark:report-draft:1:7', JSON.stringify({
     activeForm: 'problem', trackerKey: '', title: 'Старый секретный контекст', body: '',

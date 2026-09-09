@@ -64,6 +64,12 @@ it('places and clamps a marker against the rendered image, supports numeric coor
   expect(await screen.findByLabelText('Маркер: Лидар')).toHaveStyle({ left: '40%', top: '30%' })
 })
 
+it('offers a collapse control for the detailed diagnostic rule form', async () => {
+  render(tree())
+
+  expect(await screen.findByRole('button', { name: 'Свернуть: Редактирование правила' })).toBeVisible()
+})
+
 it.each(['matched', 'unknown', 'failure', 'unsupported'] as const)('shows the backend preview %s without exposing validation input', async state => {
   const normal = handler
   handler = (path, init) => path.endsWith('/preview') ? state === 'failure' ? json({ detail: [{ input: 'PRIVATE_VALUE' }] }, 422) : state === 'unsupported' ? json({ detail: 'unsupported_diagnostic_regex' }, 422) : json({ matched: state === 'matched', events: state === 'matched' ? [event] : [{ ...event, rule_id: null, part: null, view: null, x: null, y: null, indicator: null, title: 'Неизвестная ошибка' }] }) : normal(path, init)

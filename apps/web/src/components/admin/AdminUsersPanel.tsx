@@ -14,6 +14,7 @@ import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { EffectivePermissions } from './EffectivePermissions'
 import { resourceStore, useCachedResource } from '../../lib/resource'
 import { adminAccessDeniedMessage, adminAccessFailure, adminResourceKey, adminResourceOptions } from './adminResources'
+import { ParkMultiSelect } from './ParkMultiSelect'
 
 type UserDraft = {
   role_slug: string
@@ -104,7 +105,6 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
     trackerLogin: '',
   })
 
-  const activeParks = parks.filter((park) => park.is_active)
   const pendingCount = users.filter((row) => row.access_status === 'pending').length
   const roleOptions = useMemo<RoleOption[]>(() => {
     if (roles.length > 0) {
@@ -185,24 +185,6 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
   const roleDefaultPerms = (slug: string): string[] =>
     (roles.find((role) => role.slug === slug)?.permissions ?? []).filter(key => key !== 'users.approve')
   const effectivePermissions = draft.role_slug === 'royal' ? new Set(catalog.map(item => item.key)) : draft.permissions
-
-  const toggleDraftPark = (parkId: number) => {
-    setDraft((current) => {
-      const next = new Set(current.park_ids)
-      if (next.has(parkId)) next.delete(parkId)
-      else next.add(parkId)
-      return { ...current, park_ids: [...next] }
-    })
-  }
-
-  const toggleCreatePark = (parkId: number) => {
-    setCreateForm((current) => {
-      const next = new Set(current.parkIds)
-      if (next.has(parkId)) next.delete(parkId)
-      else next.add(parkId)
-      return { ...current, parkIds: [...next] }
-    })
-  }
 
   const togglePerm = (key: string) => {
     setDraft((current) => {
@@ -376,7 +358,7 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
         <MetricCard label="Ожидают одобрения" value={pendingCount} tone={pendingCount ? 'warning' : 'neutral'} />
       </div>
       <MasterDetail detailOpen={detailOpen} onBack={() => setDetailOpen(false)} list={
-        <Panel hint="Выберите аккаунт, чтобы сменить роль, парки, пароль и статус." title="Аккаунты">
+        <Panel collapsible hint="Выберите аккаунт, чтобы сменить роль, парки, пароль и статус." storageKey="admin-users-list" title="Аккаунты">
           <div className="admin-user-filters form-grid">
             <label className="field">
               <span className="field-label">Поиск</span>
@@ -445,6 +427,7 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
         </Panel>
       } detail={
         <Panel
+          collapsible
           hint={
             selectedUser
               ? selectedLocked
@@ -453,6 +436,7 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
               : 'Выберите пользователя слева или создайте нового ниже.'
           }
           title={selectedUser ? selectedUser.username : 'Карточка пользователя'}
+          storageKey="admin-users-detail"
         >
           {selectedUser ? (
             <div className="form-grid">
@@ -544,26 +528,13 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
                 {parks.length === 0 ? (
                   <p className="issue-muted">Сначала создайте парк во вкладке «Парки».</p>
                 ) : (
-                  <div className="admin-park-checks">
-                    {parks.map((park) => {
-                      const assigned = draft.park_ids.includes(park.id)
-                      const lockedInactive = !park.is_active && !assigned
-                      return (
-                        <label className="admin-perm-check" key={park.id}>
-                          <input
-                            checked={assigned}
-                            disabled={selectedLocked || busy || lockedInactive}
-                            onChange={() => toggleDraftPark(park.id)}
-                            type="checkbox"
-                          />
-                          {park.name}
-                          {!park.is_active ? (
-                            <span className="issue-muted"> · неактивен</span>
-                          ) : null}
-                        </label>
-                      )
-                    })}
-                  </div>
+                  <ParkMultiSelect
+                    disabled={selectedLocked || busy}
+                    label="Парки"
+                    onChange={(park_ids) => setDraft((current) => ({ ...current, park_ids }))}
+                    parks={parks}
+                    value={draft.park_ids}
+                  />
                 )}
               </div>
 
@@ -663,7 +634,7 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
         </Panel>
       } />
 
-      <Panel title="Создать пользователя">
+      <Panel collapsible storageKey="admin-users-create" title="Создать пользователя">
         <div className="form-grid">
           <label className="field">
             <span className="field-label">Логин</span>
@@ -709,18 +680,13 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
           </label>
           <div className="field">
             <span className="field-label">Парки</span>
-            <div className="admin-park-checks">
-              {activeParks.map((park) => (
-                <label className="admin-perm-check" key={park.id}>
-                  <input
-                    checked={createForm.parkIds.includes(park.id)}
-                    onChange={() => toggleCreatePark(park.id)}
-                    type="checkbox"
-                  />
-                  {park.name}
-                </label>
-              ))}
-            </div>
+            <ParkMultiSelect
+              disabled={busy}
+              label="Парки"
+              onChange={(parkIds) => setCreateForm((current) => ({ ...current, parkIds }))}
+              parks={parks}
+              value={createForm.parkIds}
+            />
           </div>
         </div>
         <div className="form-actions">

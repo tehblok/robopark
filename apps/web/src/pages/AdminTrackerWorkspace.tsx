@@ -44,7 +44,9 @@ export function AdminTrackerWorkspace() {
 
       {policy && (
         <Panel
+          collapsible
           hint="Политика записи механика во внутренний Tracker (st.yandex-team.ru)."
+          storageKey="admin-tracker-policy"
           title="Политика"
         >
           <div className="toggle-list">
