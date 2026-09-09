@@ -44,7 +44,6 @@ class BridgeError(ValueError):
 
 
 UPDATE_PROGRESS_PERCENT = {
-    "validating": 5,
     "verified": 5,
     "unpacking": 10,
     "unpacked": 15,

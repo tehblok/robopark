@@ -1,5 +1,6 @@
 """Installed bridge authority, durable approval and safe host projections."""
 
+import ast
 import io
 import json
 from pathlib import Path
@@ -10,6 +11,7 @@ from conftest import login_as, role_id_for
 from robopark_api.models import AuditLog, User
 from robopark_api.security import hash_password
 from robopark_api.services import rbac
+from robopark_api.services.ops import host_bridge
 from robopark_api.services.ops.archives import KIND_RELEASE, build_archive
 from robopark_api.services.ops.context import build_ops_context
 from robopark_api.services.ops.jobs import load_job, new_job, save_job
@@ -82,7 +84,6 @@ def test_installed_context_has_separate_host_root(installed, test_settings):
 @pytest.mark.parametrize(
     ("phase", "percent"),
     [
-        ("validating", 5),
         ("unpacking", 10),
         ("building", 25),
         ("smoking", 45),
@@ -129,6 +130,7 @@ def test_update_job_projects_only_matching_allowlisted_host_progress(
         {},
         {"state": "updating", "job_id": "other", "phase": "building"},
         {"state": "idle", "phase": "building"},
+        {"state": "updating", "phase": "validating"},
         {"state": "updating", "phase": "unknown"},
         {"state": [], "job_id": [], "phase": []},
     ],
@@ -151,6 +153,19 @@ def test_update_job_rejects_untrusted_or_unrelated_host_progress(
 
     assert payload["progress_phase"] is None
     assert payload["progress_percent"] is None
+
+
+def test_update_progress_allowlist_matches_durable_updater_phases():
+    updater = Path(__file__).resolve().parents[3] / "deploy/host/robopark_host/updater.py"
+    module = ast.parse(updater.read_text(encoding="utf-8"))
+    phases = next(
+        node.value
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "PHASES" for target in node.targets)
+    )
+
+    assert set(host_bridge.UPDATE_PROGRESS_PERCENT) == ast.literal_eval(phases)
 
 
 def test_missing_bridge_fails_closed(client, seed_royal):

@@ -12,7 +12,6 @@ const baseJob: OpsJob = {
 describe('updateProgress', () => {
   it('presents forward host milestones with their server-projected percentages', () => {
     const milestones = [
-      ['validating', 5, 'Проверяем архив'],
       ['unpacking', 10, 'Распаковываем обновление'],
       ['building', 25, 'Собираем API и веб-интерфейс'],
       ['smoking', 45, 'Проверяем новую версию'],
@@ -29,13 +28,14 @@ describe('updateProgress', () => {
       return result!.percent
     })
 
-    expect(values).toEqual([5, 10, 25, 45, 60, 70, 82, 90, 96])
+    expect(values).toEqual([10, 25, 45, 60, 70, 82, 90, 96])
   })
 
   it('labels rollback explicitly and rejects missing or malformed projections', () => {
     expect(updateProgress({ ...baseJob, progress_phase: 'rolling_back', progress_percent: 50 }))
       .toEqual({ percent: 50, label: 'Восстанавливаем предыдущую версию', rollback: true })
     expect(updateProgress(baseJob)).toBeNull()
+    expect(updateProgress({ ...baseJob, progress_phase: 'validating', progress_percent: 5 })).toBeNull()
     expect(updateProgress({ ...baseJob, progress_phase: 'unknown', progress_percent: 70 })).toBeNull()
     expect(updateProgress({ ...baseJob, progress_phase: 'building', progress_percent: 101 })).toBeNull()
   })

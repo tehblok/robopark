@@ -3,7 +3,6 @@ import type { OpsJob } from '../../api'
 import { useCachedResource } from '../../lib/resource'
 
 const UPDATE_PHASE_LABELS: Record<string, string> = {
-  validating: 'Проверяем архив',
   verified: 'Архив проверен',
   unpacking: 'Распаковываем обновление',
   unpacked: 'Обновление распаковано',
