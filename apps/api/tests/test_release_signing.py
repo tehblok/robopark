@@ -369,11 +369,12 @@ def test_pack_release_keeps_api_ops_code_and_excludes_runtime_state(
     runtime_state = root / "apps" / "api" / "data" / "ops" / "task1-pack-state.json"
     secret = root / "apps" / "api" / ".env"
     assert not runtime_state.exists()
-    assert not secret.exists()
     created_state_dir = not runtime_state.parent.exists()
+    created_secret = not secret.exists()
     runtime_state.parent.mkdir(parents=True, exist_ok=True)
     runtime_state.write_text('{"state":"runtime-only"}', encoding="utf-8")
-    secret.write_text("SECRET_KEY=task1-test-only\n", encoding="utf-8")
+    if created_secret:
+        secret.write_text("SECRET_KEY=task1-test-only\n", encoding="utf-8")
     output = tmp_path / "release.zip"
     env = {
         **os.environ,
@@ -391,7 +392,8 @@ def test_pack_release_keeps_api_ops_code_and_excludes_runtime_state(
             check=False,
         )
     finally:
-        secret.unlink(missing_ok=True)
+        if created_secret:
+            secret.unlink(missing_ok=True)
         runtime_state.unlink(missing_ok=True)
         if created_state_dir:
             runtime_state.parent.rmdir()
