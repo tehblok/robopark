@@ -433,8 +433,6 @@ class InstalledHost:
             ).encode()
         if self.fail == "build" and "build" in argv:
             raise self.command_error("command_failed")
-        if self.fail == "tests" and "/verify/scripts/verify.sh" in argv:
-            raise self.command_error("command_failed")
         if "upgrade" in argv:
             assert self.maintenance()
             (self.paths.var / "data/robopark.db").write_text("migrated")

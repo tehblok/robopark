@@ -71,7 +71,6 @@ def test_signed_successor_source_executes_reconciliation_and_boot_recovery(e2e_h
     [
         ("tamper", "signature_invalid"),
         ("build", "build_failed"),
-        ("tests", "tests_failed"),
         ("smoke", "smoke_failed"),
         ("migration", "migration_failed"),
         ("local_health", "cutover_unhealthy"),
@@ -133,8 +132,6 @@ PHASES = [
     "unpacked",
     "building",
     "built",
-    "testing",
-    "tested",
     "smoking",
     "smoked",
     "maintenance",

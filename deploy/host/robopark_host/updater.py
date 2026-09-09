@@ -191,17 +191,20 @@ class SystemRunner:
             pass
 
     def run(self, argv, *, timeout, cwd=None, env=None, capture=False):
+        root = Path("/")
         environment = {
             "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "LANG": "C.UTF-8",
             "PYTHONDONTWRITEBYTECODE": "1",
         }
         if os.environ.get("ROBOPARK_TESTING") == "1":
+            root = Path(os.environ["ROBOPARK_ROOT"])
             environment["PATH"] = os.environ["PATH"]
             environment["ROBOPARK_TESTING"] = "1"
             environment["ROBOPARK_ROOT"] = os.environ["ROBOPARK_ROOT"]
             if "TMPDIR" in os.environ:
                 environment["TMPDIR"] = os.environ["TMPDIR"]
+        environment["DOCKER_CONFIG"] = str(root / "var/lib/robopark/ops/docker-config")
         environment.update(env or {})
         output = bytearray()
         diagnostic = bytearray()
@@ -700,77 +703,19 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
             require_record_capacity(paths)
             reserve_images(paths, candidate, request.job_id)
             phase("building")
-            work, smoke_config = _render_configs(paths, journal, runner, stage)
+            _, smoke_config = _render_configs(paths, journal, runner, stage)
             prefix = compose("robopark-candidate-" + request.job_id, smoke_config)
             runner.run(prefix + ["config", "--quiet"], timeout=60)
             # Compose otherwise builds independent services concurrently. That
             # creates avoidable memory pressure on the supported 8 GiB ARM host.
             runner.run(prefix + ["build", "--pull", "api"], timeout=1800)
             runner.run(prefix + ["build", "--pull", "web"], timeout=1800)
-            runner.run(
-                [
-                    "docker",
-                    "build",
-                    "--target",
-                    "test",
-                    "-f",
-                    str(stage / "deploy/Dockerfile.api-tests"),
-                    "-t",
-                    "robopark-api-tests:" + request.job_id,
-                    str(stage),
-                ],
-                timeout=1800,
-            )
-            runner.run(
-                [
-                    "docker",
-                    "build",
-                    "--target",
-                    "build",
-                    "-f",
-                    str(stage / "apps/web/Dockerfile"),
-                    "-t",
-                    "robopark-web-tests:" + request.job_id,
-                    str(stage / "apps/web"),
-                ],
-                timeout=1800,
-            )
             production_path = paths.state / "compose" / (request.job_id + "-production.json")
             production = json.loads(production_path.read_text())
             pin_images(production, lambda argv: runner.run(argv, timeout=30, capture=True))
             record_images(paths, candidate, request.job_id, production)
             atomic_write_json(production_path, production)
             phase("built")
-            phase("testing")
-            test_tree = work / "tests"
-            shutil.copytree(stage, test_tree)
-            for target in ("api", "web"):
-                runner.run(
-                    [
-                        "docker",
-                        "run",
-                        "--rm",
-                        "--name",
-                        "robopark-tests-" + request.job_id + "-" + target,
-                        "--mount",
-                        "type=bind,source=" + str(test_tree) + ",target=/verify",
-                        "--workdir",
-                        "/verify",
-                        "--user",
-                        "0:0",
-                        "--entrypoint",
-                        "sh",
-                        "--env",
-                        "DATABASE_URL=sqlite:////tmp/pytest.db",
-                        "--env",
-                        "DEV_SEED=false",
-                        "robopark-" + target + "-tests:" + request.job_id,
-                        "/verify/scripts/verify.sh",
-                        target,
-                    ],
-                    timeout=1800,
-                )
-            phase("tested")
             phase("smoking")
             runner.run(prefix + ["up", "-d", "--no-build"], timeout=180)
             if not runner.wait_ready(

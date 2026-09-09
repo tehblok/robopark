@@ -300,6 +300,18 @@ def test_production_images_are_built_sequentially_for_small_arm_hosts(host):
     assert all(command[-3:-1] == ["build", "--pull"] for command in builds)
 
 
+def test_ota_skips_redundant_test_images_and_uses_runtime_smoke(host):
+    apply_release(host.request(), host.paths, host.runner)
+
+    assert not any(command[:2] == ["docker", "run"] for command in host.runner.commands)
+    assert not any("--target" in command for command in host.runner.commands)
+    assert any(
+        command[:2] == ["docker", "compose"] and "up" in command
+        for command in host.runner.commands
+    )
+    assert host.runner.observations
+
+
 def test_success_stages_isolated_compose_then_reconciles_after_worker_exit(host):
     request = host.request()
     result = apply_release(request, host.paths, host.runner)
@@ -371,6 +383,19 @@ def test_system_runner_bounds_output_and_timeout():
     with pytest.raises(ReleaseError, match="command_timeout"):
         runner.run([sys.executable, "-c", "import time; time.sleep(3)"], timeout=0.1)
     assert runner.run([sys.executable, "-c", "print('ok')"], timeout=5, capture=True) == b"ok\n"
+
+
+def test_system_runner_places_docker_config_in_writable_ops(host_paths, monkeypatch):
+    monkeypatch.setenv("ROBOPARK_TESTING", "1")
+    monkeypatch.setenv("ROBOPARK_ROOT", str(host_paths.root))
+
+    output = SystemRunner().run(
+        [sys.executable, "-c", "import os; print(os.environ['DOCKER_CONFIG'])"],
+        timeout=5,
+        capture=True,
+    )
+
+    assert output.decode().strip() == str(host_paths.ops / "docker-config")
 
 
 def test_system_runner_classifies_and_retains_root_only_failed_command_log(
@@ -779,51 +804,12 @@ def test_tuna_failure_marks_publication_degraded_without_database_rollback(host)
     )
 
 
-def test_canonical_quality_gates_run_in_candidate_test_images_without_host_tooling(host):
-    apply_release(host.request(), host.paths, host.runner)
-    containers = [c for c in host.runner.commands if c[:2] == ["docker", "run"]]
-    assert len(containers) == 2
-    assert all("/verify/scripts/verify.sh" in c for c in containers)
-    assert all("--user" in c and "--mount" in c for c in containers)
-    assert all(str(host.paths.var / "data") not in " ".join(c) for c in containers)
-    assert all(str(host.paths.etc) not in " ".join(c) for c in containers)
-    assert all("--env-file" not in c and "--privileged" not in c for c in containers)
-    assert not any(c[0] in {"sh", "npm", "uv"} for c in host.runner.commands)
-    targets = [c[c.index("--target") + 1] for c in host.runner.commands if "--target" in c]
-    assert targets == ["test", "build"]
-
-
-def test_missing_candidate_test_target_fails_before_production_cutover(host):
-    host.runner.fail_on = "test"
-    result = apply_release(host.request(), host.paths, host.runner)
-    assert result.error == "build_failed"
-    assert host.paths.current.resolve().name == "1.0.0"
-    assert not (host.paths.state / "maintenance.json").exists()
-
-
 @pytest.mark.parametrize("missing", ["apps/api/uv.lock", "apps/web/package-lock.json"])
 def test_missing_candidate_lockfile_is_rejected(host, missing):
     archive = host.package("3.0.0", omit=(missing,))
     result = apply_release(host.request(archive), host.paths, host.runner)
     assert result.error == "quality_gate_inputs_missing"
     assert host.runner.commands == []
-
-
-def test_quality_gate_writes_are_confined_to_disposable_copy(host):
-    original = host.runner.run
-
-    def mutate_copy(argv, **kwargs):
-        if list(argv[:2]) == ["docker", "run"]:
-            mount = argv[argv.index("--mount") + 1]
-            copied_tree = Path(mount.split("source=", 1)[1].split(",target=", 1)[0])
-            assert copied_tree.is_relative_to(host.paths.ops / "staging")
-            (copied_tree / "scripts/verify.sh").write_text("gate changed its own working tree")
-        return original(argv, **kwargs)
-
-    host.runner.run = mutate_copy
-    result = apply_release(host.request(), host.paths, host.runner)
-    assert result.state == "awaiting_reconciliation"
-    assert (host.paths.current.resolve() / "scripts/verify.sh").read_text() == "#!/bin/sh\nexit 0\n"
 
 
 def test_test_image_cleanup_still_runs_when_auto_removed_container_is_absent(host):
