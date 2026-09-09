@@ -8,7 +8,6 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src \
-    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     PATH=/app/.venv/bin:$PATH
 
 COPY pyproject.toml uv.lock ./
@@ -18,8 +17,6 @@ COPY src ./src
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY data/emergency_sections.json ./data/emergency_sections.json
-COPY certificates/YandexInternalRootCA.crt /usr/local/share/ca-certificates/
-RUN update-ca-certificates
 RUN uv sync --frozen --no-dev
 
 COPY docker-entrypoint.sh ./docker-entrypoint.sh

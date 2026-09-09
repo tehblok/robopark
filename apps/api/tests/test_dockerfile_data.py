@@ -138,12 +138,12 @@ def test_api_dockerfile_uses_pinned_frozen_runtime_dependencies():
 
 def test_api_image_trusts_yandex_internal_root_ca():
     text = (API_ROOT / "Dockerfile").read_text(encoding="utf-8")
-    certificate = API_ROOT / "certificates/YandexInternalRootCA.crt"
+    certificate = API_ROOT / "src/robopark_api/certificates/YandexInternalRootCA.crt"
 
     assert certificate.read_text(encoding="ascii").startswith("-----BEGIN CERTIFICATE-----")
-    assert "COPY certificates/YandexInternalRootCA.crt /usr/local/share/ca-certificates/" in text
-    assert "update-ca-certificates" in text
-    assert "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" in text
+    assert "COPY src ./src" in text
+    assert "update-ca-certificates" not in text
+    assert "SSL_CERT_FILE" not in text
 
 
 def test_api_dockerfile_runs_exact_ordered_production_sync_phases():

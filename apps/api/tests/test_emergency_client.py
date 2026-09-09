@@ -6,6 +6,17 @@ import pytest
 from robopark_api.services import emergency_client
 
 
+def test_ssl_context_contains_yandex_internal_root():
+    context = emergency_client._ssl_context()
+    common_names = {
+        dict(certificate["subject"][0]).get("commonName")
+        for certificate in context.get_ca_certs()
+        if certificate.get("subject")
+    }
+
+    assert "YandexInternalRootCA" in common_names
+
+
 def test_malformed_success_response_raises_emergency_error():
     response = MagicMock(status_code=200, headers={"content-type": "application/json"})
     response.json.side_effect = json.JSONDecodeError("invalid JSON", "not-json", 0)

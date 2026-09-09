@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ssl
+from pathlib import Path
 from typing import Any
 
+import certifi
 import httpx
 
 EMERGENCY_BASE = "https://emergency.sdc.yandex-team.ru/api/v1"
@@ -15,6 +18,7 @@ _BROWSER_HEADERS = {
     ),
     "X-Requested-With": "XMLHttpRequest",
 }
+_YANDEX_ROOT_CA = Path(__file__).resolve().parent.parent / "certificates/YandexInternalRootCA.crt"
 
 
 class EmergencyAuthError(Exception):
@@ -23,6 +27,12 @@ class EmergencyAuthError(Exception):
 
 class EmergencyError(Exception):
     pass
+
+
+def _ssl_context() -> ssl.SSLContext:
+    context = ssl.create_default_context(cafile=certifi.where())
+    context.load_verify_locations(cafile=_YANDEX_ROOT_CA)
+    return context
 
 
 def _cookie_candidates(cookie: str) -> list[str]:
@@ -57,7 +67,7 @@ def _auth_response(response: httpx.Response) -> bool:
 def fetch_robot_payload(*, cookie: str, vin: str) -> dict[str, Any]:
     url = f"{EMERGENCY_BASE}/{vin}/"
     try:
-        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+        with httpx.Client(timeout=30.0, follow_redirects=True, verify=_ssl_context()) as client:
             for candidate in _cookie_candidates(cookie):
                 response = client.get(url, headers={**_BROWSER_HEADERS, "Cookie": candidate})
                 if not _auth_response(response):
