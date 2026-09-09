@@ -150,9 +150,9 @@ function ReportsOwner({
     }
     await Promise.all([
       createEnabled ? mineRes.refresh() : Promise.resolve(),
-      inboxEnabled && parkId != null ? inboxRes.refresh() : Promise.resolve(),
+      inboxEnabled && (user.role === 'royal' || parkId != null) ? inboxRes.refresh() : Promise.resolve(),
     ])
-  }, [createEnabled, inboxEnabled, inboxKey, inboxRes, mineKey, mineRes, parkId])
+  }, [createEnabled, inboxEnabled, inboxKey, inboxRes, mineKey, mineRes, parkId, user.role])
   const handleDetailUpdated = async () => {
     const requestedNavigation = navigation.current
     const isCurrent = () => active.current && navigation.current === requestedNavigation
@@ -184,7 +184,9 @@ function ReportsOwner({
   const role = user.role
   const isAdminInbox = role === 'admin' || role === 'royal'
   const inboxTitle = isAdminInbox ? 'Эскалации' : 'Входящие'
-  const inboxHint = isAdminInbox
+  const inboxHint = role === 'royal'
+    ? 'Все открытые репорты и системные уведомления по доступным паркам.'
+    : isAdminInbox
     ? 'Открытые эскалации от операторов. Фильтр по парку — в верхней панели.'
     : 'Открытые репорты по выбранному парку.'
   const currentSearch = searchString(params)
@@ -302,7 +304,7 @@ function ReportsOwner({
           id="reports-inbox-panel"
           labelledBy={createEnabled && inboxEnabled ? 'tab-inbox' : 'reports-title'}
         >
-          {parkId == null && !parksLoading ? (
+          {role !== 'royal' && parkId == null && !parksLoading ? (
             <EmptyBlock
               hint="Входящие репорты показываются по выбранному парку."
               icon="📥"
@@ -311,7 +313,7 @@ function ReportsOwner({
           ) : (
             <Panel collapsible hint={inboxHint} storageKey="reports-inbox" title={inboxTitle}>
               <ReportList
-                emptyMessage="Нет открытых репортов для выбранного парка."
+                emptyMessage={role === 'royal' ? 'Нет открытых репортов.' : 'Нет открытых репортов для выбранного парка.'}
                 loading={showListSkeleton && visiblePane === 'inbox'}
                 onSelect={(report) => openReport(report, true)}
                 reports={inbox}

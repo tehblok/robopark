@@ -227,6 +227,28 @@ describe('AppRouter', () => {
     expect(api.reportsInbox).not.toHaveBeenCalledWith(7)
   })
 
+  it('shows a parkless cookie alert to royal even when no active parks exist', async () => {
+    const cookieAlert = {
+      id: 34, kind: 'emergency_cookie_alert', status: 'open', park_id: null,
+      author_user_id: 1, target_role: 'admin', tracker_key: null, tracker_url: null,
+      title: 'Cookie требует внимания', body: '', parent_report_id: null, return_comment: null,
+      created_at: '2026-09-09T10:00:00Z', updated_at: '2026-09-09T10:00:00Z', resolved_at: null,
+    }
+    vi.spyOn(api, 'parks').mockResolvedValue([])
+    vi.spyOn(api, 'reportsMine').mockResolvedValue([])
+    vi.spyOn(api, 'reportsInbox').mockResolvedValue([cookieAlert])
+
+    renderApp('/reports?pane=inbox', testUser({
+      role: 'royal',
+      permissions: ['nav.reports', 'reports.create', 'reports.resolve'],
+      parks: [],
+    }))
+
+    expect(await screen.findByRole('button', { name: 'Открыть репорт Cookie требует внимания' })).toBeVisible()
+    expect(screen.queryByText('Выберите парк в верхней панели')).not.toBeInTheDocument()
+    expect(api.reportsInbox).toHaveBeenCalledWith(undefined)
+  })
+
   it('restores the report pane and author status filter from the canonical URL', async () => {
     vi.spyOn(api, 'reportsMine').mockResolvedValue([])
     vi.spyOn(api, 'reportsInbox').mockResolvedValue([])
