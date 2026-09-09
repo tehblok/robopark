@@ -61,8 +61,12 @@ def test_snapshot_to_inbox_to_rule(royal_client, snapshot):
 def test_ignore_hides_the_raw_signal_until_reopen(royal_client, snapshot, monkeypatch):
     from robopark_api.services import emergency_cache
 
-    invalidated: list[str] = []
-    monkeypatch.setattr(emergency_cache, "invalidate_vin", invalidated.append)
+    invalidated: list[tuple[str, str | None]] = []
+
+    def invalidate(vin: str, *, identity: str | None = None) -> None:
+        invalidated.append((vin, identity))
+
+    monkeypatch.setattr(emergency_cache, "invalidate_vin", invalidate)
     royal_client.get("/emergency/001/snapshot")
     item = royal_client.get(BASE).json()["items"][0]
     robot = item["last_robot"]
@@ -75,15 +79,42 @@ def test_ignore_hides_the_raw_signal_until_reopen(royal_client, snapshot, monkey
     assert ignored.json()["state"] == "ignored"
     assert "last_robot" not in ignored.json()
     assert "raw_value" not in ignored.json()
-    assert invalidated == [robot]
+    assert invalidated == [(robot, None)]
     events = royal_client.get("/emergency/001/snapshot").json()["diagnostic_events"]
     assert not any(e["raw_value"] == "WHEEL_BLOCKED" and e["rule_id"] is None for e in events)
     assert royal_client.post(f"{BASE}/{item['id']}/reopen").json()["state"] == "new"
-    assert invalidated == [robot, robot]
+    assert invalidated == [(robot, None), (robot, None)]
     events = royal_client.get("/emergency/001/snapshot").json()["diagnostic_events"]
     assert any(e["raw_value"] == "WHEEL_BLOCKED" and e["rule_id"] is None for e in events)
     royal_client.get("/emergency/002/snapshot")
     assert royal_client.get(f"{BASE}/{item['id']}").json()["observations"] == 2
+
+
+def test_ignore_and_reopen_invalidate_the_active_cookie_live_merge_entry(
+    royal_client, snapshot, db_session, tmp_path, monkeypatch
+):
+    from robopark_api.services import emergency_cache
+    from robopark_api.services import platform_settings as settings_svc
+    from robopark_api.services.live_merge import LiveMergeStore
+    from robopark_api.services.ops import maintenance
+
+    identity = settings_svc.activate_emergency_cookie(
+        db_session, cookie="active-cookie", status="valid", checked_robot="1"
+    )
+    store = LiveMergeStore(tmp_path)
+    monkeypatch.setattr(emergency_cache, "get_live_merge_store", lambda: store)
+    monkeypatch.setattr(maintenance, "require_application_writes", lambda: None)
+    royal_client.get("/emergency/001/snapshot")
+    item = royal_client.get(BASE).json()["items"][0]
+    key = emergency_cache._shared_key(identity, item["last_robot"])
+
+    for action in ("ignore", "reopen"):
+        store.merge_load(
+            emergency_cache._MERGE_NS, key, 60, lambda action=action: {"cached": action}
+        )
+        assert store.try_fresh(emergency_cache._MERGE_NS, key, 60)[0]
+        assert royal_client.post(f"{BASE}/{item['id']}/{action}").status_code == 200
+        assert not store.try_fresh(emergency_cache._MERGE_NS, key, 60)[0]
 
 
 @pytest.mark.parametrize(

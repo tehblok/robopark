@@ -22,6 +22,7 @@ from robopark_api.routers.admin_diagnostic_rules import (
 )
 from robopark_api.schemas import DiagnosticRuleCreate, DiagnosticRuleOut
 from robopark_api.services import audit, emergency_cache
+from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.diagnostic_rules import (
     diagnostic_rule_matches_sample,
     match_diagnostic_events_for_rules,
@@ -218,7 +219,10 @@ def _change_state(
             vin_to_invalidate = row.last_robot
     response.headers["Cache-Control"] = "no-store"
     if vin_to_invalidate:
-        emergency_cache.invalidate_vin(vin_to_invalidate)
+        emergency_cache.invalidate_vin(
+            vin_to_invalidate,
+            identity=settings_svc.get_emergency_cookie_identity(db),
+        )
     _audit_unknown(db, actor, "ignored" if state == "ignored" else "reopened", unknown_id)
     return result
 
