@@ -8,7 +8,7 @@ export const healthFixture = {
 export const releaseFixture = { state: 'available', checked_at: new Date().toISOString(), release: { release_id: 42, version: '1.3.0', git_sha: 'b'.repeat(40), size: 10485760, sha256: 'c'.repeat(64) } }
 export const inspectionFixture = { inspection_id: 'inspection-one', version: '1.4.0', git_sha: 'd'.repeat(40), migration_head: 'migration_14', notes: 'Улучшена диагностика' }
 export function jobFixture(kind = 'diagnostics', state = 'running') {
-  return { id: 'job-1', kind, state, phase: 'host_dispatched', log: '', error: null, artifact_ready: state === 'succeeded', restart_required: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), restore_phrase: 'ВОССТАНОВИТЬ', update_phrase: 'ОБНОВИТЬ', host_result: null }
+  return { id: 'job-1', kind, state, phase: 'host_dispatched', log: '', error: null, artifact_ready: state === 'succeeded', restart_required: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), restore_phrase: 'ВОССТАНОВИТЬ', update_phrase: 'ОБНОВИТЬ', progress_percent: null, progress_phase: null, host_result: null }
 }
 export function mockOpsServer(overrides: Record<string, unknown | (() => unknown)> = {}) {
   const responses: Record<string, unknown | (() => unknown)> = {

@@ -12,7 +12,7 @@ from robopark_api.security import hash_password
 from robopark_api.services import rbac
 from robopark_api.services.ops.archives import KIND_RELEASE, build_archive
 from robopark_api.services.ops.context import build_ops_context
-from robopark_api.services.ops.jobs import load_job
+from robopark_api.services.ops.jobs import load_job, new_job, save_job
 
 
 @pytest.fixture
@@ -77,6 +77,80 @@ def test_installed_context_has_separate_host_root(installed, test_settings):
     assert ctx.use_host_updater is True
     assert ctx.host_ops_dir == installed
     assert ctx.ops_dir == Path(test_settings.ops_dir)
+
+
+@pytest.mark.parametrize(
+    ("phase", "percent"),
+    [
+        ("validating", 5),
+        ("unpacking", 10),
+        ("building", 25),
+        ("smoking", 45),
+        ("snapshotting", 60),
+        ("publishing", 70),
+        ("migrating", 82),
+        ("starting", 90),
+        ("health_check", 96),
+        ("rolling_back", 50),
+    ],
+)
+def test_update_job_projects_only_matching_allowlisted_host_progress(
+    client, seed_royal, installed, test_settings, phase, percent
+):
+    login_as(client, "royal", "secret")
+    job = new_job("update", exempt_token_hash="session")
+    job.state = "running"
+    job.extra = {"host_updater": True}
+    save_job(Path(test_settings.ops_dir), job)
+    (installed / "public/host-status.json").write_text(
+        json.dumps(
+            {
+                "state": "updating",
+                "job_id": job.id,
+                "phase": phase,
+                "error": "SECRET",
+                "unexpected": {"token": "LEAK"},
+            }
+        )
+    )
+
+    response = client.get("/admin/ops/job")
+
+    assert response.status_code == 200
+    assert response.json()["progress_phase"] == phase
+    assert response.json()["progress_percent"] == percent
+    assert "SECRET" not in response.text
+    assert "LEAK" not in response.text
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        {},
+        {"state": "updating", "job_id": "other", "phase": "building"},
+        {"state": "idle", "phase": "building"},
+        {"state": "updating", "phase": "unknown"},
+        {"state": [], "job_id": [], "phase": []},
+    ],
+)
+def test_update_job_rejects_untrusted_or_unrelated_host_progress(
+    client, seed_royal, installed, test_settings, status
+):
+    login_as(client, "royal", "secret")
+    job = new_job("update", exempt_token_hash="session")
+    job.state = "running"
+    job.extra = {"host_updater": True}
+    save_job(Path(test_settings.ops_dir), job)
+    if status:
+        status = {**status}
+        if status.get("state") == "updating" and "job_id" not in status:
+            status["job_id"] = job.id
+        (installed / "public/host-status.json").write_text(json.dumps(status))
+
+    payload = client.get("/admin/ops/job").json()
+
+    assert payload["progress_phase"] is None
+    assert payload["progress_percent"] is None
 
 
 def test_missing_bridge_fails_closed(client, seed_royal):

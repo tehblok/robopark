@@ -476,6 +476,8 @@ export type OpsJob = {
   updated_at: string
   restore_phrase: string
   update_phrase: string
+  progress_percent: number | null
+  progress_phase: string | null
   host_result?: { before: HostCheck[]; after: HostCheck[]; performed: string[]; failed: string[] } | null
 }
 

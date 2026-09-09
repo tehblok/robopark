@@ -84,6 +84,8 @@ class OpsJobOut(BaseModel):
     restore_phrase: str = RESTORE_PHRASE
     update_phrase: str = UPDATE_PHRASE
     host_result: HostResultOut | None = None
+    progress_percent: int | None = None
+    progress_phase: str | None = None
 
 
 def _token_hash(request: Request, settings: Settings) -> str:
@@ -111,9 +113,15 @@ def _reconcile_if_needed(settings: Settings) -> None:
         )
 
 
-def _job_out(job) -> OpsJobOut:
+def _job_out(job, *, progress: tuple[str | None, int | None] = (None, None)) -> OpsJobOut:
     data = job.to_public_dict()
-    return OpsJobOut(**data, host_result=public_result(job.extra.get("host_result")))
+    phase, percent = progress
+    return OpsJobOut(
+        **data,
+        host_result=public_result(job.extra.get("host_result")),
+        progress_percent=percent,
+        progress_phase=phase,
+    )
 
 
 async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
@@ -177,7 +185,13 @@ def get_job(
             created_at="",
             updated_at="",
         )
-    return _job_out(job)
+    progress = (None, None)
+    if settings.ops_host_root:
+        try:
+            progress = host_bridge.update_progress(host_bridge.host_root(settings), job)
+        except host_bridge.BridgeError:
+            pass
+    return _job_out(job, progress=progress)
 
 
 @router.get("/admin/ops/artifact")

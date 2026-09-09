@@ -1,5 +1,67 @@
 import { useEffect } from 'react'
+import type { OpsJob } from '../../api'
 import { useCachedResource } from '../../lib/resource'
+
+const UPDATE_PHASE_LABELS: Record<string, string> = {
+  validating: 'Проверяем архив',
+  verified: 'Архив проверен',
+  unpacking: 'Распаковываем обновление',
+  unpacked: 'Обновление распаковано',
+  building: 'Собираем API и веб-интерфейс',
+  built: 'Сборка завершена',
+  testing: 'Запускаем тесты',
+  tested: 'Тесты завершены',
+  smoking: 'Проверяем новую версию',
+  smoked: 'Новая версия прошла проверку',
+  maintenance: 'Включаем режим техработ',
+  stopping: 'Останавливаем текущую версию',
+  snapshotting: 'Создаём резервную копию',
+  snapshotted: 'Резервная копия создана',
+  tools_staging: 'Готовим служебные файлы',
+  tools_staged: 'Служебные файлы готовы',
+  publishing: 'Публикуем версию',
+  published: 'Версия опубликована',
+  switching: 'Переключаем версию',
+  switched: 'Версия переключена',
+  migrating: 'Обновляем данные',
+  migrated: 'Данные обновлены',
+  starting: 'Запускаем сервисы',
+  started: 'Сервисы запущены',
+  activating: 'Активируем версию',
+  activated: 'Версия активирована',
+  health_check: 'Проверяем работоспособность',
+  healthy: 'Новая версия работает',
+  reconciling: 'Завершаем обновление',
+  publication: 'Проверяем публикацию',
+  publication_checked: 'Публикация проверена',
+  resuming: 'Возобновляем работу',
+  succeeded: 'Обновление завершено',
+  rolling_back: 'Восстанавливаем предыдущую версию',
+  rollback_healthy: 'Предыдущая версия работает',
+  rollback_resuming: 'Возобновляем работу после отката',
+  rolled_back: 'Предыдущая версия восстановлена',
+  failed: 'Обновление не завершено',
+  manual_recovery_required: 'Требуется ручное восстановление',
+}
+
+const ROLLBACK_PHASES = new Set([
+  'rolling_back', 'rollback_healthy', 'rollback_resuming', 'rolled_back',
+])
+
+export function updateProgress(job: OpsJob) {
+  const phase = job.progress_phase
+  const percent = job.progress_percent
+  if (
+    job.kind !== 'update'
+    || typeof phase !== 'string'
+    || UPDATE_PHASE_LABELS[phase] == null
+    || typeof percent !== 'number'
+    || !Number.isInteger(percent)
+    || percent < 0
+    || percent > 100
+  ) return null
+  return { percent, label: UPDATE_PHASE_LABELS[phase], rollback: ROLLBACK_PHASES.has(phase) }
+}
 
 export function useOpsResource<T>(key: string, loader: () => Promise<T>) {
   const resource = useCachedResource(key, loader, { persist: false })

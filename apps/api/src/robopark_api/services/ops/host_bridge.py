@@ -43,6 +43,65 @@ class BridgeError(ValueError):
     pass
 
 
+UPDATE_PROGRESS_PERCENT = {
+    "validating": 5,
+    "verified": 5,
+    "unpacking": 10,
+    "unpacked": 15,
+    "building": 25,
+    "built": 40,
+    "testing": 42,
+    "tested": 44,
+    "smoking": 45,
+    "smoked": 55,
+    "maintenance": 56,
+    "stopping": 58,
+    "snapshotting": 60,
+    "snapshotted": 65,
+    "tools_staging": 66,
+    "tools_staged": 68,
+    "publishing": 70,
+    "published": 74,
+    "switching": 76,
+    "switched": 80,
+    "migrating": 82,
+    "migrated": 88,
+    "starting": 90,
+    "started": 92,
+    "activating": 93,
+    "activated": 95,
+    "health_check": 96,
+    "healthy": 98,
+    "reconciling": 98,
+    "publication": 98,
+    "publication_checked": 99,
+    "resuming": 99,
+    "succeeded": 100,
+    "rolling_back": 50,
+    "rollback_healthy": 75,
+    "rollback_resuming": 90,
+    "rolled_back": 100,
+    "failed": 100,
+    "manual_recovery_required": 100,
+}
+
+
+def update_progress(root: Path, job) -> tuple[str | None, int | None]:
+    """Project only the matching update job's allow-listed public host phase."""
+    if job.kind != "update" or job.state not in ACTIVE_STATES:
+        return None, None
+    value = read_json(root / "public/host-status.json")
+    phase = value.get("phase")
+    if (
+        value.get("state") != "updating"
+        or value.get("job_id") != job.id
+        or type(phase) is not str
+        or phase not in UPDATE_PROGRESS_PERCENT
+    ):
+        return None, None
+    return phase, UPDATE_PROGRESS_PERCENT[phase]
+
+
 def host_root(settings) -> Path:
     raw = settings.ops_host_root
     if not raw:

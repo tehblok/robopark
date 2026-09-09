@@ -9,7 +9,7 @@ import { Dialog } from '../../design-system/overlays/Dialog'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { Panel } from '../PageShell'
 import { SystemHealthPanel } from './SystemHealthPanel'
-import { age, opsText, repairLabels, useOpsResource } from './opsPresentation'
+import { age, opsText, repairLabels, updateProgress, useOpsResource } from './opsPresentation'
 import { activeJob, useOpsJob } from './useOpsJob'
 import './AdminOpsPanel.css'
 
@@ -48,6 +48,7 @@ export function AdminOpsPanel() {
   const active = activeJob(job)
   const blocked = busy || active
   const completed = job?.state === 'succeeded'
+  const progress = job ? updateProgress(job) : null
   const { refresh } = available
   const previousJob = useRef<OpsJob | null>(null)
 
@@ -145,6 +146,10 @@ export function AdminOpsPanel() {
         <StatusBadge tone={completed ? 'success' : job.state === 'failed' ? 'critical' : 'info'}>{jobStates[job.state] ?? 'Состояние уточняется'}</StatusBadge>
         {active && <span>{phases[job.phase] ?? 'Хост выполняет операцию'}</span>}
       </div>
+      {progress ? <div aria-live="polite" className="ops-update-progress" data-rollback={progress.rollback}>
+        <div><span>{progress.label}</span><strong>{progress.percent}%</strong></div>
+        <progress aria-label="Прогресс обновления" max={100} value={progress.percent} />
+      </div> : null}
       {active && <OpsAlert tone="info">Операция выполняется хостом. Статус обновляется автоматически.</OpsAlert>}
       {active && <div className="form-actions"><Button variant="secondary" disabled={busy} onClick={() => void abort()} type="button">Прервать и снять техработы</Button></div>}
       {job.error && <OpsAlert tone="error">{mapApiError(new ApiError(400, job.error), 'Операция не завершена. Подробности доступны в диагностике.')}</OpsAlert>}
@@ -184,7 +189,7 @@ export function AdminOpsPanel() {
       <div className="form-actions"><Button type="button" disabled={blocked || githubConfirm !== CONFIRM || available.data?.state !== 'available' || Boolean(available.error) || available.isRevalidating || available.data.release?.release_id !== selectedRelease?.release_id} onClick={() => void approveGithub()}>Установить версию {opsText(selectedRelease?.version)}</Button></div>
     </Dialog>
 
-    <Panel hint={ru.ops.updateHint} title={ru.ops.updateTitle}>
+    <Panel collapsible storageKey="admin-ops-update" hint={ru.ops.updateHint} title={ru.ops.updateTitle}>
       <form className="form-grid" onSubmit={event => void update(event)}>
         <label className="field"><span className="field-label">Архив обновления</span><input accept=".zip,application/zip" disabled={blocked} onChange={event => void inspect(event.target.files?.[0] ?? null)} type="file" /></label>
         {inspecting && <LoadingState label="Проверяем архив обновления" />}

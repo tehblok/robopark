@@ -11,6 +11,18 @@ beforeEach(() => resourceStore.clearAll())
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('AdminOpsPanel', () => {
+  it('shows durable host update progress with the current phase', async () => {
+    mockOpsServer({ '/admin/ops/job': {
+      ...jobFixture('update'), progress_phase: 'building', progress_percent: 25,
+    } })
+    render(<AdminOpsPanel />)
+
+    const progress = await screen.findByRole('progressbar', { name: 'Прогресс обновления' })
+    expect(progress).toHaveAttribute('value', '25')
+    expect(screen.getByText('25%')).toBeVisible()
+    expect(screen.getByText('Собираем API и веб-интерфейс')).toBeVisible()
+  })
+
   it('loads idle resources once and describes the diagnostics cookie', async () => {
     const fetchMock = mockOpsServer()
     render(<AdminOpsPanel />)
