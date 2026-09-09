@@ -1,12 +1,8 @@
 {
   "migration_head": "0022_tracker_collaboration",
   "migration_compatibility": {
-    "from_heads": ["0017_driver_work_reports"],
-    "reversible": true
+    "from_heads": [],
+    "reversible": false
   },
-  "update_notes": "Упрощена очистка OTA, исправлена диагностика сетевых ошибок Docker и добавлена проверка согласованности версии API.",
-  "signing_key_rotation": {
-    "next_public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAqeW6CoHtdGYQKdu59EyToDuLJltfZ0WujUC8eZyjl24=\n-----END PUBLIC KEY-----\n",
-    "activation_version": "0.1.10"
-  }
+  "update_notes": "Тестовое OTA-обновление для проверки стабильности обновления после перехода на 0.1.10."
 }
