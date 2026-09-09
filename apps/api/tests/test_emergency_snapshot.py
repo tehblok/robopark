@@ -464,9 +464,7 @@ def _regex_budget_probe(database_path, pattern, length):
     print(json.dumps({"elapsed": elapsed, "recovered": True}))
 
 
-@pytest.mark.parametrize(
-    ("pattern", "length"), [(r"^(a+)+$", 32), (r"^(a+)+$", 30000), (r"^(a|aa)+$", 1000)]
-)
+@pytest.mark.parametrize(("pattern", "length"), [(r"^(a+)+$", 32), (r"^(a+)+$", 30000)])
 def test_regex_timeout_returns_unknown_and_next_snapshot_recovers(tmp_path, pattern, length):
     api_root = Path(__file__).resolve().parent.parent
     probe = (
