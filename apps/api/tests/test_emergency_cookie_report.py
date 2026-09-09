@@ -99,7 +99,9 @@ def test_cache_hit_does_not_resolve_cookie_report(db_session, monkeypatch):
     assert calls["resolve"] == 1
 
 
-def test_put_emergency_cookie_resolves_open_report(client, db_session, seed_royal, monkeypatch):
+def test_cookie_report_resolves_only_after_separate_successful_check(
+    client, db_session, seed_royal, monkeypatch
+):
     reports_svc.ensure_open_emergency_cookie_report(db_session, author=seed_royal)
     login_as(client, "royal", "secret")
     monkeypatch.setattr(
@@ -113,6 +115,14 @@ def test_put_emergency_cookie_resolves_open_report(client, db_session, seed_roya
     )
     assert put.status_code == 200
     row = db_session.query(Report).one()
+    db_session.refresh(row)
+    assert row.status == "open"
+
+    checked = client.post(
+        "/admin/settings/emergency-cookie/check",
+        json={"robot_number": "447"},
+    )
+    assert checked.status_code == 200
     db_session.refresh(row)
     assert row.status == "done"
 

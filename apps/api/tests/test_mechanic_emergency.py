@@ -51,7 +51,7 @@ def test_emergency_invalid_cookie(client, seed_mechanic, seed_royal):
 
     with patch(
         "robopark_api.services.emergency_client.fetch_robot_payload",
-        side_effect=[{"vin": "YASADR00000000447"}, EmergencyAuthError("invalid")],
+        side_effect=EmergencyAuthError("invalid"),
     ):
         setup = client.put(
             "/admin/settings/emergency-cookie",

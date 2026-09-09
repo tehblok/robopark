@@ -1,6 +1,5 @@
-import json
 import threading
-from unittest.mock import MagicMock, Mock
+from unittest.mock import Mock
 
 import pytest
 from sqlalchemy.orm import Session
@@ -35,18 +34,18 @@ def test_set_tracker_token_masked(client, seed_royal):
     assert "oken" not in body["tracker_token_masked"]
 
 
-def test_invalid_candidate_does_not_replace_working_cookie(
+def test_save_replaces_working_cookie_without_auth_probe(
     client, db_session, seed_royal, monkeypatch
 ):
     login_as(client, "royal", "secret")
     settings_svc.activate_emergency_cookie(
         db_session, cookie="working", status="valid", checked_robot="447"
     )
-    before = client.get("/admin/settings/integrations").json()
+    fetch = Mock(side_effect=emergency_client.EmergencyAuthError())
     monkeypatch.setattr(
         emergency_client,
         "fetch_robot_payload",
-        Mock(side_effect=emergency_client.EmergencyAuthError()),
+        fetch,
     )
 
     response = client.put(
@@ -54,35 +53,30 @@ def test_invalid_candidate_does_not_replace_working_cookie(
         json={"cookie": "bad", "robot_number": "A2378"},
     )
 
-    assert response.status_code == 401
-    assert settings_svc.get_emergency_cookie(db_session) == "working"
+    assert response.status_code == 200
+    fetch.assert_not_called()
+    assert settings_svc.get_emergency_cookie(db_session) == "bad"
     assert "bad" not in response.text
-    assert client.get("/admin/settings/integrations").json() == before
+    assert response.json()["emergency_cookie_status"] == "unchecked"
 
 
-def test_unavailable_candidate_does_not_replace_working_cookie(
-    client, db_session, seed_royal, monkeypatch
-):
+def test_save_clears_previous_cookie_validation_metadata(client, db_session, seed_royal):
     login_as(client, "royal", "secret")
     settings_svc.activate_emergency_cookie(
         db_session, cookie="working", status="valid", checked_robot="447"
     )
-    before = client.get("/admin/settings/integrations").json()
-    monkeypatch.setattr(
-        emergency_client,
-        "fetch_robot_payload",
-        Mock(side_effect=emergency_client.EmergencyError()),
-    )
-
     response = client.put(
         "/admin/settings/emergency-cookie",
         json={"cookie": "candidate-cookie", "robot_number": "A2378"},
     )
 
-    assert response.status_code == 503
-    assert settings_svc.get_emergency_cookie(db_session) == "working"
+    assert response.status_code == 200
+    assert settings_svc.get_emergency_cookie(db_session) == "candidate-cookie"
     assert "candidate-cookie" not in response.text
-    assert client.get("/admin/settings/integrations").json() == before
+    assert response.json()["emergency_cookie_valid"] is None
+    assert response.json()["emergency_cookie_status"] == "unchecked"
+    assert response.json()["emergency_cookie_checked_at"] is None
+    assert response.json()["emergency_cookie_checked_robot"] is None
 
 
 def test_old_candidate_put_cannot_resolve_new_activation_report(db_engine, seed_royal, monkeypatch):
@@ -137,42 +131,23 @@ def test_old_candidate_put_cannot_resolve_new_activation_report(db_engine, seed_
         assert settings_svc.get_emergency_cookie_status(check) == "invalid"
 
 
-def test_malformed_emergency_response_returns_503_for_candidate(client, seed_royal, monkeypatch):
+def test_candidate_is_saved_without_upstream_probe(client, db_session, seed_royal, monkeypatch):
     login_as(client, "royal", "secret")
-    upstream_response = MagicMock(status_code=200, headers={"content-type": "application/json"})
-    upstream_response.json.side_effect = json.JSONDecodeError("invalid JSON", "not-json", 0)
-    http_client = MagicMock()
-    http_client.__enter__.return_value = http_client
-    http_client.get.return_value = upstream_response
-    monkeypatch.setattr(emergency_client.httpx, "Client", lambda **_kwargs: http_client)
+    fetch = Mock(side_effect=AssertionError("save must not call upstream"))
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", fetch)
 
     response = client.put(
         "/admin/settings/emergency-cookie",
-        json={"cookie": "candidate", "robot_number": "A2378"},
-    )
-
-    assert response.status_code == 503
-    assert response.json()["detail"] == "emergency_upstream_unavailable"
-
-
-def test_valid_candidate_is_saved_after_probe(client, db_session, seed_royal, monkeypatch):
-    login_as(client, "royal", "secret")
-    monkeypatch.setattr(
-        emergency_client,
-        "fetch_robot_payload",
-        Mock(return_value={"vin": "YASADR00000002378"}),
-    )
-
-    response = client.put(
-        "/admin/settings/emergency-cookie",
-        json={"cookie": "candidate", "robot_number": "A2378"},
+        json={"cookie": "candidate"},
     )
 
     assert response.status_code == 200
+    fetch.assert_not_called()
     assert settings_svc.get_emergency_cookie(db_session) == "candidate"
-    assert response.json()["emergency_cookie_status"] == "valid"
-    assert response.json()["emergency_cookie_checked_robot"] == "2378"
-    assert response.json()["emergency_cookie_checked_at"] is not None
+    assert response.json()["emergency_cookie_valid"] is None
+    assert response.json()["emergency_cookie_status"] == "unchecked"
+    assert response.json()["emergency_cookie_checked_robot"] is None
+    assert response.json()["emergency_cookie_checked_at"] is None
 
 
 def test_valid_candidate_clears_cached_emergency_payload(
@@ -197,7 +172,7 @@ def test_valid_candidate_clears_cached_emergency_payload(
     emergency_cache.get_robot_payload(db=db_session, vin=vin)
 
     assert response.status_code == 200
-    assert calls == ["working", "candidate", "candidate"]
+    assert calls == ["working", "candidate"]
 
 
 def test_recheck_prefers_explicit_robot_over_keepalive_robot(
@@ -300,7 +275,7 @@ def test_recheck_auth_failure_marks_saved_cookie_invalid(
 @pytest.mark.parametrize(
     "payload",
     [
-        {"cookie": "candidate-secret"},
+        {"cookie": ""},
         {"cookie": {"legacy": "candidate-secret"}, "robot_number": "447"},
         {"cookie": "candidate-secret", "robot_number": []},
     ],

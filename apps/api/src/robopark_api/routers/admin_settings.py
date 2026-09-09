@@ -106,34 +106,12 @@ def put_emergency_cookie(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> IntegrationSettingsOut:
-    vin = _normalize_probe_robot(payload.robot_number)
-    checked_robot = emergency_vin.short_robot_number(vin)
     try:
-        emergency_client.fetch_robot_payload(cookie=payload.cookie, vin=vin)
-    except emergency_client.EmergencyAuthError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="emergency_cookie_invalid",
-        ) from exc
-    except emergency_client.EmergencyError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="emergency_upstream_unavailable",
-        ) from exc
-
-    try:
-        identity = settings_svc.activate_emergency_cookie(
-            db,
-            cookie=payload.cookie,
-            status="valid",
-            checked_robot=checked_robot,
-        )
+        settings_svc.save_emergency_cookie_unchecked(db, cookie=payload.cookie)
     except MissingSecretKeyError as exc:
         raise _require_secret_key(exc) from exc
-    from robopark_api.services import reports as reports_svc
 
     emergency_cache.clear_cache()
-    reports_svc.resolve_open_emergency_cookie_reports(db, expected_identity=identity)
     audit.record(
         db,
         action=audit.ACTION_EMERGENCY_COOKIE_SET,

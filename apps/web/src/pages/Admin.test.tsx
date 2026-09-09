@@ -279,28 +279,24 @@ describe('Admin Emergency cookie validation', () => {
     expect(name).toHaveValue('Новое название')
   })
 
-  it('requires both a cookie and robot before saving and checking', async () => {
+  it('saves a cookie without requiring or running a robot check', async () => {
     const user = userEvent.setup()
     const setCookie = vi.spyOn(api, 'setEmergencyCookie').mockResolvedValue(settings({
-      emergency_cookie_status: 'valid',
-      emergency_cookie_valid: true,
-      emergency_cookie_checked_robot: '447',
-      emergency_cookie_checked_at: '2026-09-06T09:00:00Z',
+      emergency_cookie_status: 'unchecked',
+      emergency_cookie_valid: null,
     }))
     setup()
 
-    const save = await screen.findByRole('button', { name: 'Сохранить и проверить' })
+    const save = await screen.findByRole('button', { name: 'Сохранить cookie' })
     const cookie = screen.getByLabelText('Cookie диагностики робота')
-    const robot = screen.getByLabelText('Робот для проверки')
     expect(save).toBeDisabled()
 
     await user.type(cookie, 'candidate-cookie')
-    expect(save).toBeDisabled()
-    await user.type(robot, '447')
     expect(save).toBeEnabled()
     await user.click(save)
 
-    await waitFor(() => expect(setCookie).toHaveBeenCalledWith('candidate-cookie', '447'))
+    await waitFor(() => expect(setCookie).toHaveBeenCalledWith('candidate-cookie'))
+    expect(await screen.findByText('Cookie сохранена')).toBeVisible()
   })
 
   it('keeps a rejected candidate cookie available for correction', async () => {
@@ -312,7 +308,7 @@ describe('Admin Emergency cookie validation', () => {
 
     await user.type(await screen.findByLabelText('Cookie диагностики робота'), 'candidate-cookie')
     await user.type(screen.getByLabelText('Робот для проверки'), '447')
-    await user.click(screen.getByRole('button', { name: 'Сохранить и проверить' }))
+    await user.click(screen.getByRole('button', { name: 'Сохранить cookie' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Cookie проверки робота отклонена. Скопируйте свежую сессию и повторите.',
@@ -332,7 +328,7 @@ describe('Admin Emergency cookie validation', () => {
     await user.click(screen.getByRole('button', { name: 'Сохранить токен' }))
 
     await waitFor(() => expect(api.setTrackerToken).toHaveBeenCalledWith('tracker-token'))
-    expect(screen.getByRole('button', { name: 'Сохранить и проверить' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Сохранить cookie' })).toBeEnabled()
     pending.resolve(settings())
   })
 

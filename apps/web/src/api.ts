@@ -744,10 +744,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ token }),
     }),
-  setEmergencyCookie: (cookie: string, robotNumber: string) =>
+  setEmergencyCookie: (cookie: string) =>
     request<IntegrationSettings>('/admin/settings/emergency-cookie', {
       method: 'PUT',
-      body: JSON.stringify({ cookie, robot_number: robotNumber }),
+      body: JSON.stringify({ cookie }),
     }),
   checkEmergencyCookie: (robotNumber?: string) =>
     request<IntegrationSettings>('/admin/settings/emergency-cookie/check', {

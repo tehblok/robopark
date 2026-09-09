@@ -336,13 +336,12 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
   const saveEmergencyCookie = async (event: FormEvent) => {
     event.preventDefault()
     const cookie = emergencyCookie.trim()
-    const robot = emergencyRobot.trim()
-    if (!cookie || !robot) return
+    if (!cookie) return
     await runEmergencyCheck(async () => {
-      const updated = await api.setEmergencyCookie(cookie, robot)
+      const updated = await api.setEmergencyCookie(cookie)
       setEmergencyCookie('')
       return updated
-    }, 'Cookie сохранена и проверена')
+    }, 'Cookie сохранена')
   }
 
   const checkEmergencyCookie = async () => {
@@ -549,10 +548,10 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
             <div className="form-actions">
               <button
                 className="btn"
-                disabled={emergencyBusy || !emergencyCookie.trim() || !emergencyRobot.trim()}
+                disabled={emergencyBusy || !emergencyCookie.trim()}
                 type="submit"
               >
-                {emergencyBusy ? 'Проверяем…' : 'Сохранить и проверить'}
+                {emergencyBusy ? 'Сохраняем…' : 'Сохранить cookie'}
               </button>
               <button
                 className="btn btn-secondary"

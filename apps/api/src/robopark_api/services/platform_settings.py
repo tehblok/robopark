@@ -7,7 +7,7 @@ import uuid
 from contextlib import nullcontext
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
@@ -240,6 +240,34 @@ def activate_emergency_cookie(
         _upsert_setting(db, EMERGENCY_COOKIE_STATUS_KEY, status, now=now)
         _upsert_setting(db, EMERGENCY_COOKIE_CHECKED_AT_KEY, now.isoformat(), now=now)
         _upsert_setting(db, EMERGENCY_COOKIE_CHECKED_ROBOT_KEY, checked_robot, now=now)
+        _upsert_setting(db, EMERGENCY_KEEPALIVE_RING_KEY, "[]", now=now)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    return identity
+
+
+def save_emergency_cookie_unchecked(db: Session, *, cookie: str) -> str:
+    """Save a replacement cookie without depending on the upstream service."""
+    now = datetime.now(UTC)
+    identity = uuid.uuid4().hex
+    try:
+        db.execute(
+            delete(PlatformSetting).where(
+                PlatformSetting.key.in_(
+                    (
+                        EMERGENCY_COOKIE_VALID_KEY,
+                        EMERGENCY_COOKIE_CHECKED_AT_KEY,
+                        EMERGENCY_COOKIE_CHECKED_ROBOT_KEY,
+                        EMERGENCY_KEEPALIVE_LAST_OK_KEY,
+                    )
+                )
+            )
+        )
+        _upsert_setting(db, EMERGENCY_COOKIE_KEY, cookie, now=now)
+        _upsert_setting(db, EMERGENCY_COOKIE_IDENTITY_KEY, identity, now=now)
+        _upsert_setting(db, EMERGENCY_COOKIE_STATUS_KEY, "unchecked", now=now)
         _upsert_setting(db, EMERGENCY_KEEPALIVE_RING_KEY, "[]", now=now)
         db.commit()
     except BaseException:

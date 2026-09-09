@@ -515,7 +515,7 @@ EmergencyCookieStatus = Literal["unchecked", "valid", "invalid", "unavailable"]
 
 class EmergencyCookieUpdate(BaseModel):
     cookie: str = Field(min_length=1)
-    robot_number: str = Field(min_length=1, max_length=64)
+    robot_number: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class EmergencyCookieCheck(BaseModel):
