@@ -187,6 +187,34 @@ describe('AppRouter', () => {
       .toEqual([])
   })
 
+  it('renders operator and admin targets together in the royal inbox', async () => {
+    const operatorTarget = {
+      id: 31, kind: 'mechanic_problem' as const, status: 'open' as const, park_id: 7,
+      author_user_id: 2, target_role: 'operator', tracker_key: null, tracker_url: null,
+      title: 'Нужен оператор', body: '', parent_report_id: null, return_comment: null,
+      created_at: '2026-09-04T08:00:00Z', updated_at: '2026-09-04T08:00:00Z', resolved_at: null,
+    }
+    const adminTarget = {
+      ...operatorTarget,
+      id: 32,
+      target_role: 'admin' as const,
+      title: 'Нужен администратор',
+    }
+    vi.spyOn(api, 'parks').mockResolvedValue([north])
+    vi.spyOn(api, 'reportsMine').mockResolvedValue([])
+    vi.spyOn(api, 'reportsInbox').mockResolvedValue([operatorTarget, adminTarget])
+
+    renderApp('/reports?pane=inbox&park=7', testUser({
+      role: 'royal',
+      permissions: ['nav.reports', 'reports.create', 'reports.resolve'],
+      parks: [north],
+    }))
+
+    expect(await screen.findByRole('button', { name: 'Открыть репорт Нужен оператор' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Открыть репорт Нужен администратор' })).toBeVisible()
+    expect(api.reportsInbox).toHaveBeenCalledWith(7)
+  })
+
   it('restores the report pane and author status filter from the canonical URL', async () => {
     vi.spyOn(api, 'reportsMine').mockResolvedValue([])
     vi.spyOn(api, 'reportsInbox').mockResolvedValue([])

@@ -5,6 +5,7 @@ from conftest import login_as, role_id_for
 from robopark_api.models import Park, Report, ReportAttachment, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import rbac
+from robopark_api.services import reports as reports_svc
 
 
 def _user(db, slug, park=None, *, name=None, access="approved"):
@@ -26,7 +27,7 @@ def _user(db, slug, park=None, *, name=None, access="approved"):
 def _report(db, author, park, *, target="operator", state="open"):
     row = Report(
         author_user_id=author.id,
-        park_id=park.id,
+        park_id=park.id if park is not None else None,
         kind="mechanic_problem",
         status=state,
         target_role=target,
@@ -170,6 +171,72 @@ def test_admin_inbox_and_badge_follow_same_park_filter(
     login_as(client, user.username, "secret")
     assert len(client.get(f"/reports/inbox?park_id={other.id}").json()) == 1
     assert client.get(f"/reports/badge?park_id={other.id}").json() == {"count": 1}
+
+
+def test_royal_routes_all_open_reports_without_widening_other_role_boundaries(
+    db_session, seed_mechanic, seed_park_with_tracker
+):
+    alpha = seed_park_with_tracker
+    beta = Park(name="Beta", tag="Beta", is_active=True)
+    db_session.add(beta)
+    db_session.commit()
+
+    royal = _user(db_session, "royal")
+    admin = _user(db_session, "admin")
+    operator = _user(db_session, "operator", alpha)
+    driver = _user(db_session, "driver", alpha)
+
+    operator_report = _report(db_session, seed_mechanic, alpha, target="operator")
+    admin_report = _report(db_session, seed_mechanic, beta, target="admin")
+    royal_open_report = _report(db_session, royal, beta, target="operator")
+    _report(db_session, royal, alpha, state="returned")
+    _report(db_session, seed_mechanic, alpha, state="done")
+    stale_cookie_report = reports_svc.ensure_open_emergency_cookie_report(
+        db_session, author=royal
+    )
+    assert stale_cookie_report is not None
+
+    assert {row.id for row in reports_svc.list_inbox(db_session, royal)} == {
+        operator_report.id,
+        admin_report.id,
+        royal_open_report.id,
+        stale_cookie_report.id,
+    }
+    assert reports_svc.badge_counts(db_session, royal) == {"count": 5}
+
+    assert {row.id for row in reports_svc.list_inbox(db_session, admin)} == {
+        admin_report.id,
+        stale_cookie_report.id,
+    }
+    assert reports_svc.badge_counts(db_session, admin) == {"count": 2}
+
+    assert [row.id for row in reports_svc.list_inbox(db_session, operator)] == [operator_report.id]
+    assert reports_svc.badge_counts(db_session, operator) == {"count": 1}
+
+    for user in (seed_mechanic, driver):
+        with pytest.raises(PermissionError):
+            reports_svc.list_inbox(db_session, user)
+        assert reports_svc.badge_counts(db_session, user) == {"count": 0}
+
+    assert reports_svc.get_report(db_session, royal, operator_report.id).id == operator_report.id
+    assert reports_svc.get_report(db_session, royal, stale_cookie_report.id).id == stale_cookie_report.id
+    assert reports_svc.get_report(db_session, seed_mechanic, operator_report.id).id == operator_report.id
+    assert reports_svc.get_report(db_session, admin, operator_report.id).id == operator_report.id
+    with pytest.raises(PermissionError):
+        reports_svc.get_report(db_session, driver, stale_cookie_report.id)
+
+    admin_action = _report(db_session, seed_mechanic, alpha, target="admin")
+    operator_action = _report(db_session, seed_mechanic, alpha, target="operator")
+    assert reports_svc.done_report(db_session, royal, admin_action.id).status == "done"
+    assert reports_svc.done_report(db_session, operator, operator_action.id).status == "done"
+    with pytest.raises(PermissionError):
+        reports_svc.done_report(db_session, royal, operator_report.id)
+    with pytest.raises(PermissionError):
+        reports_svc.done_report(db_session, admin, operator_report.id)
+    with pytest.raises(PermissionError):
+        reports_svc.done_report(db_session, seed_mechanic, operator_report.id)
+    with pytest.raises(PermissionError):
+        reports_svc.done_report(db_session, driver, operator_report.id)
 
 
 def test_author_cannot_attach_after_losing_report_park_scope(

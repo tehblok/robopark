@@ -446,6 +446,22 @@ describe('AppShell', () => {
     await waitFor(() => expect(badge.mock.calls.length).toBeGreaterThan(beforeReports))
   })
 
+  it('renders the royal report badge count returned for mixed-target inbox items', async () => {
+    vi.mocked(api.reportsBadge).mockResolvedValue({ count: 4 })
+    renderApp('/overview?park=7', testUser({
+      role: 'royal',
+      permissions: ['nav.dashboard', 'nav.reports'],
+      parks: [north],
+    }))
+
+    const desktopNavigation = screen.getAllByRole('navigation', {
+      name: 'Основная навигация',
+    })[0]
+    const reportsLink = within(desktopNavigation).getByRole('link', { name: 'Репорты' })
+    await waitFor(() => expect(within(reportsLink).getByText('4')).toBeVisible())
+    expect(api.reportsBadge).toHaveBeenCalledWith(undefined)
+  })
+
   it.each(['operator', 'admin', 'royal'] as const)('switches parks from the %s park identity', async (role) => {
     const actor = userEvent.setup()
     const { setParkId } = renderShellWithParkScope(role)
