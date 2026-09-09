@@ -155,9 +155,7 @@ def calculate_workload(
     for (login, fallback), group in grouped.items():
         display = str((group[0].get("assignee") or {}).get("display") or login or fallback)
         ages = [age for item in group if (age := age_hours(item, now)) is not None]
-        sla_ages = [
-            age for item in group if (age := queued_working_hours(item, now)) is not None
-        ]
+        sla_ages = [age for item in group if (age := queued_working_hours(item, now)) is not None]
         result.append(
             WorkloadOut(
                 login=login,

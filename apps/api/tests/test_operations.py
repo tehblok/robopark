@@ -128,7 +128,12 @@ def test_sla_counts_only_queued_working_hours_in_moscow():
     now = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)  # 15:00 Moscow
     queued = issue("queued", status="queued")
     queued["created"] = "2026-09-02T17:00:00+00:00"  # 20:00 Moscow: 1h + 6h
-    diagnostics = {**queued, "key": "diagnostics", "status": "diagnostics", "status_key": "diagnostics"}
+    diagnostics = {
+        **queued,
+        "key": "diagnostics",
+        "status": "diagnostics",
+        "status_key": "diagnostics",
+    }
 
     result = calculate_sla([queued, diagnostics], target_hours=4, now=now)
     assert result.evaluated_count == 1

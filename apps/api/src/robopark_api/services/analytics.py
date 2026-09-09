@@ -178,7 +178,11 @@ def build_analytics(
         evaluated = []
         overdue = []
         for row in rows:
-            if row.status_bucket != "queued" or row.age_hours is None or snapshot.target_hours is None:
+            if (
+                row.status_bucket != "queued"
+                or row.age_hours is None
+                or snapshot.target_hours is None
+            ):
                 continue
             created = observed_at - timedelta(hours=row.age_hours)
             sla_age = queued_working_hours(

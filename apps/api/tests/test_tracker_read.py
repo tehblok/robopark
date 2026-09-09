@@ -487,10 +487,10 @@ def test_mechanic_comments_filtered_to_platform_and_staff(
             "status": "Open",
             "status_key": "open",
             "queue": "ROBOPARK",
-                "resolution": "",
-                "tags": ["Alpha"],
-                "assignee": {"login": "mech1", "display": "Mechanic"},
-            },
+            "resolution": "",
+            "tags": ["Alpha"],
+            "assignee": {"login": "mech1", "display": "Mechanic"},
+        },
     )
     monkeypatch.setattr(
         tracker_client,
@@ -526,10 +526,15 @@ def test_mechanic_must_claim_issue_before_reading_detail(
     seed_mechanic.tracker_login = "mech.login"
     db_session.commit()
     issue = {
-        "key": "ROBOPARK-1", "summary": "blocker [447]", "status": "Open",
-        "status_key": "open", "queue": "ROBOPARK", "tags": ["Alpha"],
+        "key": "ROBOPARK-1",
+        "summary": "blocker [447]",
+        "status": "Open",
+        "status_key": "open",
+        "queue": "ROBOPARK",
+        "tags": ["Alpha"],
     }
     from robopark_api.services import tracker_client
+
     monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: dict(issue))
     login_as(client, "mech1", "secret")
 
@@ -539,6 +544,7 @@ def test_mechanic_must_claim_issue_before_reading_detail(
 
     issue["assignee"] = {"login": "mech.login", "display": "Mechanic"}
     from robopark_api.services import tracker_cache
+
     tracker_cache.invalidate_issue("ROBOPARK-1")
     assert client.get("/tracker/issues/ROBOPARK-1").status_code == 200
 
