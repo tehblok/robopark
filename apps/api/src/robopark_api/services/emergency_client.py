@@ -25,27 +25,50 @@ class EmergencyError(Exception):
     pass
 
 
-def fetch_robot_payload(*, cookie: str, vin: str) -> dict[str, Any]:
+def _cookie_candidates(cookie: str) -> list[str]:
     cookie = cookie.strip()
     if cookie.lower().startswith("cookie:"):
         cookie = cookie.split(":", 1)[1].strip()
-    headers = {**_BROWSER_HEADERS, "Cookie": cookie}
+    candidates = [cookie]
+    pairs = [part.strip() for part in cookie.split(";") if "=" in part]
+    for name in ("session_id", "sessionid2"):
+        candidate = next(
+            (pair for pair in pairs if pair.split("=", 1)[0].strip().casefold() == name),
+            None,
+        )
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def _auth_response(response: httpx.Response) -> bool:
+    content_type = response.headers.get("content-type", "")
+    if response.status_code in {401, 403}:
+        return True
+    if "text/html" not in content_type.lower():
+        return False
+    body_hint = str(getattr(response, "text", "") or "")[:4096].casefold()
+    return any(
+        marker in body_hint
+        for marker in ("passport.yandex", "oauth", "login", "войти", "авторизац")
+    )
+
+
+def fetch_robot_payload(*, cookie: str, vin: str) -> dict[str, Any]:
     url = f"{EMERGENCY_BASE}/{vin}/"
     try:
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-            response = client.get(url, headers=headers)
+            for candidate in _cookie_candidates(cookie):
+                response = client.get(url, headers={**_BROWSER_HEADERS, "Cookie": candidate})
+                if not _auth_response(response):
+                    break
+            else:
+                raise EmergencyAuthError("emergency cookie invalid")
     except httpx.HTTPError as exc:
         raise EmergencyError(str(exc)) from exc
 
     content_type = response.headers.get("content-type", "")
     html = "text/html" in content_type.lower()
-    body_hint = str(getattr(response, "text", "") or "")[:4096].casefold()
-    auth_html = html and any(
-        marker in body_hint
-        for marker in ("passport.yandex", "oauth", "login", "войти", "авторизац")
-    )
-    if response.status_code in {401, 403} or auth_html:
-        raise EmergencyAuthError("emergency cookie invalid")
     if html:
         raise EmergencyError("unexpected html response")
     if response.status_code >= 400:

@@ -39,6 +39,31 @@ def test_cookie_header_is_normalized_and_request_looks_like_a_browser():
     assert "Mozilla/5.0" in headers["User-Agent"]
 
 
+def test_auth_failure_retries_with_each_session_cookie_separately():
+    rejected = MagicMock(
+        status_code=200,
+        headers={"content-type": "text/html"},
+        text="<html>passport.yandex login</html>",
+    )
+    accepted = MagicMock(status_code=200, headers={"content-type": "application/json"})
+    accepted.json.return_value = {"vin": "YASADR00000000447"}
+    http_client = MagicMock()
+    http_client.__enter__.return_value = http_client
+    http_client.get.side_effect = [rejected, accepted]
+
+    with patch("robopark_api.services.emergency_client.httpx.Client", return_value=http_client):
+        payload = emergency_client.fetch_robot_payload(
+            cookie="gdpr=0; Session_id=working; sessionid2=stale",
+            vin="YASADR00000000447",
+        )
+
+    assert payload == {"vin": "YASADR00000000447"}
+    assert [call.kwargs["headers"]["Cookie"] for call in http_client.get.call_args_list] == [
+        "gdpr=0; Session_id=working; sessionid2=stale",
+        "Session_id=working",
+    ]
+
+
 def test_unexpected_html_is_not_misreported_as_an_expired_cookie():
     response = MagicMock(status_code=200, headers={"content-type": "text/html"})
     response.text = "<html><body>temporary proxy error</body></html>"

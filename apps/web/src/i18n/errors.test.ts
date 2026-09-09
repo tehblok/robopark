@@ -11,9 +11,12 @@ describe('mapApiError', () => {
     expect(ru.errors.emergency503).not.toMatch(/\bEmergency\b/i)
   })
   it('uses product-safe robot-check copy for integration configuration errors', () => {
-    const expected = 'Интеграция проверки робота требует внимания.'
-    expect(mapApiError(new ApiError(403, 'emergency_cookie_invalid'), 'fb')).toBe(expected)
-    expect(mapApiError(new ApiError(503, 'emergency_cookie_not_configured'), 'fb')).toBe(expected)
+    expect(mapApiError(new ApiError(403, 'emergency_cookie_invalid'), 'fb')).toBe(
+      'Cookie проверки робота отклонена. Скопируйте свежую сессию и повторите.',
+    )
+    expect(mapApiError(new ApiError(503, 'emergency_cookie_not_configured'), 'fb')).toBe(
+      'Cookie проверки робота не настроена.',
+    )
 
     const session = new ApiError(401, 'session_expired')
     expect(mapApiError(session, 'fb')).toBe(ru.errors.sessionExpired)

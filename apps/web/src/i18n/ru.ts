@@ -175,9 +175,11 @@ export const ru = {
       tracker_attachment_too_large: 'Файл слишком большой (максимум 15 МБ).',
       tracker_attachment_invalid_type: 'Можно прикреплять только изображения (JPEG, PNG, WebP, HEIC).',
       emergency_cookie_not_configured:
-        'Интеграция проверки робота требует внимания.',
+        'Cookie проверки робота не настроена.',
       emergency_cookie_invalid:
-        'Интеграция проверки робота требует внимания.',
+        'Cookie проверки робота отклонена. Скопируйте свежую сессию и повторите.',
+      emergency_upstream_unavailable:
+        'Сервис проверки робота временно недоступен. Повторите попытку позже.',
       emergency_probe_required:
         'Укажите номер робота в поле «Робот для проверки» и повторите проверку.',
       too_many_attempts: 'Слишком много попыток. Подождите минуту.',

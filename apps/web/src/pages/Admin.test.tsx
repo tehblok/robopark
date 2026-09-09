@@ -315,7 +315,7 @@ describe('Admin Emergency cookie validation', () => {
     await user.click(screen.getByRole('button', { name: 'Сохранить и проверить' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Интеграция проверки робота требует внимания.',
+      'Cookie проверки робота отклонена. Скопируйте свежую сессию и повторите.',
     )
     expect(screen.getByLabelText('Cookie диагностики робота')).toHaveValue('candidate-cookie')
   })

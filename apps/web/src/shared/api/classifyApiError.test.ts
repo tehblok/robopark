@@ -41,7 +41,7 @@ describe('classifyApiError', () => {
   it('uses product-safe copy for an invalid robot-check integration', () => {
     expect(classifyApiError(new ApiError(403, 'emergency_cookie_invalid'), 'Нужна настройка')).toMatchObject({
       kind: 'configuration',
-      description: 'Интеграция проверки робота требует внимания.',
+      description: 'Cookie проверки робота отклонена. Скопируйте свежую сессию и повторите.',
     })
   })
 
