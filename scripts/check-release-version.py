@@ -24,6 +24,13 @@ def check(root, tag=None):
     ):
         raise ValueError()
     api = tomllib.loads((root / "apps/api/pyproject.toml").read_text())["project"]["version"]
+    api_lock = tomllib.loads((root / "apps/api/uv.lock").read_text())
+    locked_api_versions = [
+        package.get("version")
+        for package in api_lock.get("package", [])
+        if package.get("name") == "robopark-api"
+        and package.get("source") == {"editable": "."}
+    ]
     web = json.loads((root / "apps/web/package.json").read_text())["version"]
     lock = json.loads((root / "apps/web/package-lock.json").read_text())
     context = ast.parse((root / "apps/api/src/robopark_api/services/ops/context.py").read_text())
@@ -35,7 +42,7 @@ def check(root, tag=None):
             isinstance(target, ast.Name) and target.id == "APP_VERSION" for target in node.targets
         )
     ]
-    if host != [version] or {
+    if locked_api_versions != [version] or host != [version] or {
         api,
         web,
         lock["version"],

@@ -96,6 +96,10 @@ def explain_process_failure(error: subprocess.CalledProcessError) -> str:
             "temporary failure",
             "connection timed out",
             "tls handshake timeout",
+            "dns error",
+            "failed to lookup address information",
+            "name resolution",
+            "could not resolve host",
         )
     ):
         return "docker_network_failed"

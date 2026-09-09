@@ -53,6 +53,10 @@ def test_validated_tag_publishes_matching_channel(tmp_path, version, prerelease)
     files = {
         "VERSION": version,
         "apps/api/pyproject.toml": f'[project]\nversion="{version}"\n',
+        "apps/api/uv.lock": (
+            'version = 1\n\n[[package]]\nname = "robopark-api"\n'
+            f'version = "{version}"\nsource = {{ editable = "." }}\n'
+        ),
         "apps/web/package.json": json.dumps({"version": version}),
         "apps/web/package-lock.json": json.dumps(
             {"version": version, "packages": {"": {"version": version}}}
@@ -71,6 +75,32 @@ def test_validated_tag_publishes_matching_channel(tmp_path, version, prerelease)
     assert ("--prerelease" in args) is prerelease
     assert "--verify-tag" in args
     assert f"artifacts/robopark-release-{version}.zip.sig" in args
+
+
+def test_version_gate_rejects_stale_api_lock(tmp_path):
+    version = "1.3.0"
+    source = tmp_path / "version-sources"
+    files = {
+        "VERSION": version,
+        "apps/api/pyproject.toml": f'[project]\nversion="{version}"\n',
+        "apps/api/uv.lock": (
+            'version = 1\n\n[[package]]\nname = "robopark-api"\n'
+            'version = "1.2.9"\nsource = { editable = "." }\n'
+        ),
+        "apps/web/package.json": json.dumps({"version": version}),
+        "apps/web/package-lock.json": json.dumps(
+            {"version": version, "packages": {"": {"version": version}}}
+        ),
+        "apps/api/src/robopark_api/services/ops/context.py": f'APP_VERSION = "{version}"\n',
+    }
+    for name, content in files.items():
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+
+    check = runpy.run_path(str(ROOT / "scripts/check-release-version.py"))["check"]
+    with pytest.raises(ValueError):
+        check(source, "v" + version)
 
 
 def test_publisher_refuses_mismatched_tag(tmp_path):

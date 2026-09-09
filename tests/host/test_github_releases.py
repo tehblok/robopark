@@ -582,6 +582,10 @@ def test_release_tag_checker_accepts_prerelease_sources(tmp_path):
     files = {
         "VERSION": version,
         "apps/api/pyproject.toml": '[project]\nversion="1.3.0-rc.1"\n',
+        "apps/api/uv.lock": (
+            'version = 1\n\n[[package]]\nname = "robopark-api"\n'
+            'version = "1.3.0-rc.1"\nsource = { editable = "." }\n'
+        ),
         "apps/web/package.json": json.dumps({"version": version}),
         "apps/web/package-lock.json": json.dumps(
             {"version": version, "packages": {"": {"version": version}}}

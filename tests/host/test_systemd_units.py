@@ -213,6 +213,7 @@ def test_runtime_runner_streams_and_retains_failed_docker_build_output(tmp_path,
         ("unknown flag: --no-env-resolution", "compose_version_unsupported"),
         ("write failed: no space left on device", "docker_disk_full"),
         ("failed to solve: network is unreachable", "docker_network_failed"),
+        ("dns error: failed to lookup address information", "docker_network_failed"),
         ("src/App.tsx(3,2): error TS2322: bad type", "frontend_typescript_failed"),
         (
             "Cannot find module @rollup/rollup-linux-arm64-musl",

@@ -390,6 +390,29 @@ def test_system_runner_classifies_and_retains_root_only_failed_command_log(
     assert log.stat().st_mode & 0o777 == 0o600
 
 
+def test_system_runner_cleanup_failure_does_not_replace_real_failure_log(
+    host_paths, monkeypatch, tmp_path
+):
+    from robopark_host.updater import _cleanup_staging
+
+    monkeypatch.setenv("ROBOPARK_TESTING", "1")
+    monkeypatch.setenv("ROBOPARK_ROOT", str(host_paths.root))
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker = fake_bin / "docker"
+    docker.write_text("#!/bin/sh\necho 'No such image' >&2\nexit 1\n")
+    docker.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin) + os.pathsep + os.environ["PATH"])
+    log = host_paths.root / "var/log/robopark/ota-update.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("real build failure\n")
+
+    runner = SystemRunner(log)
+    _cleanup_staging(host_paths, {"job_id": str(uuid.uuid4())}, runner)
+
+    assert log.read_text() == "real build failure\n"
+
+
 def test_retention_keeps_two_successes_after_third_update(host):
     apply_release(host.request(), host.paths, host.runner)
     reconcile_after_exit(host.paths, host.runner)

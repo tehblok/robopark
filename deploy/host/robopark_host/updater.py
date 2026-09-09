@@ -273,6 +273,19 @@ class SystemRunner:
             if process.stderr:
                 process.stderr.close()
 
+    def run_cleanup(self, argv, *, timeout) -> bool:
+        """Run best-effort cleanup without replacing the real failure log."""
+
+        failure_log = self.failure_log
+        self.failure_log = None
+        try:
+            self.run(argv, timeout=timeout)
+            return True
+        except (OSError, ReleaseError):
+            return False
+        finally:
+            self.failure_log = failure_log
+
     def wait_ready(self, *, project, config, timeout):
         deadline = time.monotonic() + timeout
         prefix = compose(project, config)
@@ -528,8 +541,12 @@ def _cleanup_staging(paths, journal, runner, *, discard_displaced=True):
         ]
         for command in commands:
             # Already removed resources are normal after --rm or interrupted cleanup.
-            with suppress(ReleaseError):
-                runner.run(command, timeout=60)
+            cleanup = getattr(runner, "run_cleanup", None)
+            if cleanup is not None:
+                cleanup(command, timeout=60)
+            else:
+                with suppress(ReleaseError):
+                    runner.run(command, timeout=60)
     smoke = paths.state / "compose" / (journal["job_id"] + "-smoke.json")
     if smoke.exists():
         runner.run(
