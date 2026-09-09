@@ -74,6 +74,7 @@ function ReportsOwner({
   const [params, setParams] = useSearchParams()
   const createEnabled = canCreateReports(user)
   const inboxEnabled = hasInbox(user)
+  const inboxParkId = user.role === 'royal' ? undefined : parkId ?? undefined
   const listRoute = location.pathname === '/reports'
   const createRoute = location.pathname === '/reports/new'
   const parsedReportId = reportIdParam && /^\d+$/.test(reportIdParam)
@@ -103,8 +104,8 @@ function ReportsOwner({
   const inboxKey = `${resourcePrefix}inbox`
   const inboxRes = useCachedResource<Report[]>(
     inboxKey,
-    () => apiClient.reportsInbox(parkId as number),
-    { enabled: (listRoute || detailRoute) && inboxEnabled && parkId != null && !parksLoading, persist: false, refreshIntervalMs: listRoute && visiblePane === 'inbox' ? RESOURCE_REFRESH_MS : 0 },
+    () => apiClient.reportsInbox(inboxParkId),
+    { enabled: (listRoute || detailRoute) && inboxEnabled && (user.role === 'royal' || parkId != null) && !parksLoading, persist: false, refreshIntervalMs: listRoute && visiblePane === 'inbox' ? RESOURCE_REFRESH_MS : 0 },
   )
   const detailKey = `${resourcePrefix}detail:${parsedReportId ?? 'none'}`
   const detailRes = useCachedResource<Report>(
@@ -353,7 +354,7 @@ export function Reports({ apiClient = api }: { apiClient?: ReportsApiClient } = 
   const { user } = useAuth()
   const { parkId, parks, parksLoading } = useParkContext()
   const selectedPark = parks.find((park) => park.id === parkId) ?? null
-  const identity = user ? reportsAccessIdentity(user, selectedPark) : ''
+  const identity = user ? reportsAccessIdentity(user, user.role === 'royal' ? null : selectedPark) : ''
   const resourcePrefix = user ? `reports:${user.id}:${identity}:` : ''
   const draftKey = user && parkId != null ? reportDraftKey(user.id, parkId) : null
   const committed = useRef({ identity, resourcePrefix, draftKey })

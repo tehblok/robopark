@@ -188,6 +188,7 @@ describe('AppRouter', () => {
   })
 
   it('renders operator and admin targets together in the royal inbox', async () => {
+    const south = { id: 9, name: 'Южный', tag: 'south', tracker_queue: 'SOUTH', is_active: true }
     const operatorTarget = {
       id: 31, kind: 'mechanic_problem' as const, status: 'open' as const, park_id: 7,
       author_user_id: 2, target_role: 'operator', tracker_key: null, tracker_url: null,
@@ -197,22 +198,33 @@ describe('AppRouter', () => {
     const adminTarget = {
       ...operatorTarget,
       id: 32,
+      park_id: 9,
       target_role: 'admin' as const,
       title: 'Нужен администратор',
     }
-    vi.spyOn(api, 'parks').mockResolvedValue([north])
+    const cookieAlert = {
+      ...operatorTarget,
+      id: 33,
+      kind: 'emergency_cookie_alert',
+      park_id: null,
+      target_role: 'admin' as const,
+      title: 'Cookie требует внимания',
+    }
+    vi.spyOn(api, 'parks').mockResolvedValue([north, south])
     vi.spyOn(api, 'reportsMine').mockResolvedValue([])
-    vi.spyOn(api, 'reportsInbox').mockResolvedValue([operatorTarget, adminTarget])
+    vi.spyOn(api, 'reportsInbox').mockResolvedValue([operatorTarget, adminTarget, cookieAlert])
 
     renderApp('/reports?pane=inbox&park=7', testUser({
       role: 'royal',
       permissions: ['nav.reports', 'reports.create', 'reports.resolve'],
-      parks: [north],
+      parks: [north, south],
     }))
 
     expect(await screen.findByRole('button', { name: 'Открыть репорт Нужен оператор' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Открыть репорт Нужен администратор' })).toBeVisible()
-    expect(api.reportsInbox).toHaveBeenCalledWith(7)
+    expect(screen.getByRole('button', { name: 'Открыть репорт Cookie требует внимания' })).toBeVisible()
+    expect(api.reportsInbox).toHaveBeenCalledWith(undefined)
+    expect(api.reportsInbox).not.toHaveBeenCalledWith(7)
   })
 
   it('restores the report pane and author status filter from the canonical URL', async () => {

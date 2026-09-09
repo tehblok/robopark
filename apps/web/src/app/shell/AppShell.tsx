@@ -265,8 +265,8 @@ export function AppShell() {
   const desktopCurrent = currentNavigationItem(desktopItems, location.pathname)
   const mobileCurrent = currentNavigationItem(mobileItems, location.pathname)
   const moreCurrent = secondaryMobileItems.some((item) => item.id === mobileCurrent?.id)
-  const badgeParkId = parkId ?? undefined
-  const badgeIdentity = user ? reportsAccessIdentity(user, selectedPark) : ''
+  const badgeParkId = user?.role === 'royal' ? undefined : parkId ?? undefined
+  const badgeIdentity = user ? reportsAccessIdentity(user, user.role === 'royal' ? null : selectedPark) : ''
   const badgeKey = user ? `reports:badge:${user.id}:${badgeIdentity}` : ''
   const committedBadgeKey = useRef(badgeKey)
   const [visibleBadgeKey, setVisibleBadgeKey] = useState(badgeKey)

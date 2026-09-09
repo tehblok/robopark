@@ -459,7 +459,8 @@ describe('AppShell', () => {
     })[0]
     const reportsLink = within(desktopNavigation).getByRole('link', { name: 'Репорты' })
     await waitFor(() => expect(within(reportsLink).getByText('4')).toBeVisible())
-    expect(api.reportsBadge).toHaveBeenCalledWith(undefined)
+    expect(vi.mocked(api.reportsBadge).mock.calls).not.toContainEqual([7])
+    expect(vi.mocked(api.reportsBadge).mock.calls).toContainEqual([undefined])
   })
 
   it.each(['operator', 'admin', 'royal'] as const)('switches parks from the %s park identity', async (role) => {
