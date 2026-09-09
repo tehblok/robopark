@@ -1,4 +1,4 @@
-"""Strict admin triage of unknown diagnostic samples; ignores affect inbox only."""
+"""Strict admin triage of unknown diagnostic samples and live raw-error suppression."""
 
 import json
 from datetime import UTC, datetime
@@ -21,7 +21,7 @@ from robopark_api.routers.admin_diagnostic_rules import (
     require_rule_admin,
 )
 from robopark_api.schemas import DiagnosticRuleCreate, DiagnosticRuleOut
-from robopark_api.services import audit
+from robopark_api.services import audit, emergency_cache
 from robopark_api.services.diagnostic_rules import (
     diagnostic_rule_matches_sample,
     match_diagnostic_events_for_rules,
@@ -56,6 +56,11 @@ class UnknownPage(BaseModel):
     limit: int
     offset: int
     has_more: bool
+
+
+class UnknownStateOut(BaseModel):
+    id: int
+    state: State
 
 
 class UnknownClassify(BaseModel):
@@ -198,35 +203,41 @@ def classify_unknown(
 
 def _change_state(
     unknown_id: int, state: State, response: Response, db: Session, actor: User
-) -> UnknownOut:
+) -> UnknownStateOut:
+    vin_to_invalidate: str | None = None
     with _write(db):
         row = _get(db, unknown_id, lock=True)
         if row.state == "mapped":
             raise HTTPException(status_code=409, detail="diagnostic_unknown_already_mapped")
+        transitioning = row.state != state
         row.state = state
         row.rule_id = None
         db.flush()
-        result = _out(row)
+        result = UnknownStateOut(id=row.id, state=row.state)
+        if transitioning:
+            vin_to_invalidate = row.last_robot
     response.headers["Cache-Control"] = "no-store"
+    if vin_to_invalidate:
+        emergency_cache.invalidate_vin(vin_to_invalidate)
     _audit_unknown(db, actor, "ignored" if state == "ignored" else "reopened", unknown_id)
     return result
 
 
-@router.post("/{unknown_id}/ignore", response_model=UnknownOut)
+@router.post("/{unknown_id}/ignore", response_model=UnknownStateOut)
 def ignore_unknown(
     unknown_id: RuleId,
     response: Response,
     db: Session = Depends(get_db),
     actor: User = Depends(require_rule_admin),
-) -> UnknownOut:
+) -> UnknownStateOut:
     return _change_state(unknown_id, "ignored", response, db, actor)
 
 
-@router.post("/{unknown_id}/reopen", response_model=UnknownOut)
+@router.post("/{unknown_id}/reopen", response_model=UnknownStateOut)
 def reopen_unknown(
     unknown_id: RuleId,
     response: Response,
     db: Session = Depends(get_db),
     actor: User = Depends(require_rule_admin),
-) -> UnknownOut:
+) -> UnknownStateOut:
     return _change_state(unknown_id, "new", response, db, actor)

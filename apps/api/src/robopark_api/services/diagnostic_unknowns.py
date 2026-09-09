@@ -36,6 +36,15 @@ def canonical(value: Any) -> str:
     )
 
 
+def ignored_diagnostic_identities(db: Session) -> set[str]:
+    """Return only raw diagnostic identities deliberately hidden by an admin."""
+    return set(
+        db.scalars(
+            select(DiagnosticUnknown.identity).where(DiagnosticUnknown.state == "ignored")
+        )
+    )
+
+
 def _sensitive(value: Any) -> bool:
     if isinstance(value, dict):
         return any(_SENSITIVE.search(key) or _sensitive(child) for key, child in value.items())

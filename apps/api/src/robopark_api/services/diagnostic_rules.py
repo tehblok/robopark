@@ -404,7 +404,13 @@ def _residual_errors(node: _Residual, *, list_item: bool = False) -> Iterator[_R
 
 
 def match_diagnostic_events(db: Session, payload: dict[str, Any]) -> list[DiagnosticEvent]:
-    return match_diagnostic_events_for_rules(list(db.scalars(select(DiagnosticRule))), payload)
+    # Import locally: unknown capture already shares normalization helpers from
+    # this module, while live projection alone needs persisted suppression.
+    from robopark_api.services.diagnostic_unknowns import ignored_diagnostic_identities
+
+    events = match_diagnostic_events_for_rules(list(db.scalars(select(DiagnosticRule))), payload)
+    ignored = ignored_diagnostic_identities(db)
+    return [event for event in events if event.rule_id is not None or event.id not in ignored]
 
 
 def match_diagnostic_events_for_rules(

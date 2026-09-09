@@ -152,8 +152,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
         {tab.kind === 'scheme' ? snapshot ? <RobotDiagnosticDiagram faults={snapshot.wheels_fault} events={events} view={diagnosticSelection.view} selectedEventId={diagnosticSelection.eventId}
           onViewChange={view => { automaticApplied.current = true; setDiagnosticSelection(current => ({ ...current, view })) }}
           onSelectEvent={event => { automaticApplied.current = true; setDiagnosticSelection(current => ({ ...current, eventId: event.id })) }}
-          onShowError={showLeadingError} onRevealEvent={showEvent} onOpenErrors={() => onTabChange('errors')}
-          onSelectWheels={tabs.some(item => item.id === 'wheels' && item.kind === 'section') ? () => onTabChange('wheels') : undefined} /> : <EmptyState title="Данные диагностики не получены" /> : null}
+          onShowError={showLeadingError} onRevealEvent={showEvent} onOpenErrors={() => onTabChange('errors')} /> : <EmptyState title="Данные диагностики не получены" /> : null}
         {tab.kind === 'section' ? <>
           {sectionError ? <CheckError failure={sectionError} user={user} onRetry={refresh} /> : null}
           {section ? section.fields.length ? section.fields.map((field, index) => <div className="rp-check-field" key={`${field.label}-${index}`}><h3>{field.label}</h3><pre className="rp-check-field-lines">{field.lines.length ? field.lines.join('\n') : 'Нет данных'}</pre></div>) : <EmptyState title="В разделе пока нет данных" />

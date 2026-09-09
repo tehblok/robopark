@@ -10,7 +10,7 @@ import { resourceStore, useCachedResource } from '../../lib/resource'
 import { emptyDraft, errorText, RuleForm, type Draft } from './DiagnosticRuleEditor'
 import { unknownDiagnosticApi, type UnknownDiagnostic, type UnknownDiagnosticState } from './unknownDiagnosticApi'
 
-const states = [{ id: 'new', label: 'Новые' }, { id: 'mapped', label: 'Размеченные' }, { id: 'ignored', label: 'Отложенные' }]
+const states = [{ id: 'new', label: 'Новые' }, { id: 'mapped', label: 'Размеченные' }, { id: 'ignored', label: 'Игнорируемые' }]
 const date = (value: string) => new Date(value).toLocaleString('ru-RU')
 const noop = () => undefined
 
@@ -84,10 +84,10 @@ export function UnknownDiagnosticInbox({ cachePrefix, active, onAccess, onRuleCr
     try {
       const result = await (item.state === 'ignored' ? unknownDiagnosticApi.reopen(item.id) : unknownDiagnosticApi.ignore(item.id))
       if (!alive.current || denied.current) return
-      if (selectionRef.current === item.id) setSelected(result)
+      if (selectionRef.current === item.id) setSelected(current => current ? { ...current, state: result.state, rule_id: null } : current)
       resourceStore.invalidate(cachePrefix, { prefix: true })
       await resource.refresh()
-      if (alive.current && !denied.current) setNotice(result.state === 'ignored' ? 'Ошибка отложена. Сигнал остаётся видимым в карточке робота.' : 'Ошибка возвращена в новые.')
+      if (alive.current && !denied.current) setNotice(result.state === 'ignored' ? 'Ошибка скрыта из проверок робота до восстановления.' : 'Ошибка возвращена в проверки робота.')
     } catch (failure) { if (alive.current) { access(failure); setError(errorText(failure)); if (!denied.current) await recoverMapped(failure, item.id) } }
     finally { mutation.current = false; if (alive.current) setBusy(false) }
   }
@@ -150,8 +150,8 @@ export function UnknownDiagnosticInbox({ cachePrefix, active, onAccess, onRuleCr
       {selected.state === 'mapped' && selected.rule_id ? <Button variant="secondary" onClick={() => onOpenRule(selected.rule_id!)}>Открыть правило №{selected.rule_id}</Button> : <>
         <Button disabled={busy || selected.original_value === null} onClick={() => setEditing(selected)}>Разметить</Button>
         {selected.original_value === null ? <p role="status">Повторите проверку робота для получения исходного сигнала.</p> : null}
-        <p className="rp-diagnostic-hint">Отложенная ошибка остаётся видимой в карточке робота. Её можно вернуть в новые.</p>
-        <Button variant="secondary" busy={busy} onClick={() => void updateState(selected)}>{selected.state === 'ignored' ? 'Вернуть в новые' : 'Отложить'}</Button>
+        <p className="rp-diagnostic-hint">Игнорируемая ошибка скрыта из проверок робота до восстановления.</p>
+        <Button variant="secondary" busy={busy} onClick={() => void updateState(selected)}>{selected.state === 'ignored' ? 'Вернуть' : 'Игнорировать'}</Button>
       </>}
     </section> : <EmptyState title="Выберите неизвестную ошибку" description="Откройте значение, чтобы разметить его или отложить." />} />
   </div>

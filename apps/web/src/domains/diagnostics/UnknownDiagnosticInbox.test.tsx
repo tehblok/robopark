@@ -96,14 +96,14 @@ it('keeps both drafts through tab changes and refreshes evidence without resetti
   expect(inbox().getByLabelText('Координата Y')).toHaveValue(.7)
 })
 
-it('defers an error without suppressing its signal and can reopen it', async () => {
+it('ignores an error until it is restored', async () => {
   render(tree()); await openInbox()
-  fireEvent.click(inbox().getByRole('button', { name: 'Отложить' }))
-  await inbox().findByText('Ошибка отложена. Сигнал остаётся видимым в карточке робота.')
-  fireEvent.click(inbox().getByRole('tab', { name: 'Отложенные' }))
+  fireEvent.click(inbox().getByRole('button', { name: 'Игнорировать' }))
+  await inbox().findByText('Ошибка скрыта из проверок робота до восстановления.')
+  fireEvent.click(inbox().getByRole('tab', { name: 'Игнорируемые' }))
   await inbox().findByRole('button', { name: /Наблюдений: 19/ })
-  fireEvent.click(inbox().getByRole('button', { name: 'Вернуть в новые' }))
-  await inbox().findByText('Ошибка возвращена в новые.')
+  fireEvent.click(inbox().getByRole('button', { name: 'Вернуть' }))
+  await inbox().findByText('Ошибка возвращена в проверки робота.')
   expect(requests.filter(request => request.init.method === 'POST').map(request => request.path)).toEqual(['/api/admin/diagnostic-unknowns/7/ignore', '/api/admin/diagnostic-unknowns/7/reopen'])
 })
 

@@ -7,6 +7,7 @@ export type UnknownDiagnostic = {
   state: UnknownDiagnosticState; rule_id: number | null
 }
 export type UnknownDiagnosticPage = { items: UnknownDiagnostic[]; total: number; limit: number; offset: number; has_more: boolean }
+export type UnknownDiagnosticStateChange = Pick<UnknownDiagnostic, 'id' | 'state'>
 
 // Deliberately exclude validation input and arbitrary response text from errors.
 const safeCodes = new Set(['invalid_diagnostic_source_path', 'invalid_diagnostic_regex', 'unsupported_diagnostic_regex', 'diagnostic_preview_source_too_large', 'diagnostic_unknown_already_mapped', 'unknown_sample_requires_observation', 'unknown_rule_does_not_match', 'diagnostic_rule_conflict'])
@@ -36,6 +37,6 @@ export const unknownDiagnosticApi = {
   list: (state: UnknownDiagnosticState, offset = 0, signal?: AbortSignal) => request<UnknownDiagnosticPage>(`?state=${state}&limit=50&offset=${offset}`, { signal }),
   get: (id: number, signal?: AbortSignal) => request<UnknownDiagnostic>(`/${id}`, { signal }),
   classify: (id: number, rule: DiagnosticRuleCreate) => request<DiagnosticRule>(`/${id}/classify`, { method: 'POST', body: JSON.stringify({ rule }) }),
-  ignore: (id: number) => request<UnknownDiagnostic>(`/${id}/ignore`, { method: 'POST' }),
-  reopen: (id: number) => request<UnknownDiagnostic>(`/${id}/reopen`, { method: 'POST' }),
+  ignore: (id: number) => request<UnknownDiagnosticStateChange>(`/${id}/ignore`, { method: 'POST' }),
+  reopen: (id: number) => request<UnknownDiagnosticStateChange>(`/${id}/reopen`, { method: 'POST' }),
 }

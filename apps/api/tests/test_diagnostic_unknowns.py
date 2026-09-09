@@ -58,9 +58,14 @@ def test_snapshot_to_inbox_to_rule(royal_client, snapshot):
     assert next_snapshot["diagnostic_events"][0]["rule_id"] == created.json()["id"]
 
 
-def test_throttle_ignore_and_reopen(royal_client, snapshot):
+def test_ignore_hides_the_raw_signal_until_reopen(royal_client, snapshot, monkeypatch):
+    from robopark_api.services import emergency_cache
+
+    invalidated: list[str] = []
+    monkeypatch.setattr(emergency_cache, "invalidate_vin", invalidated.append)
     royal_client.get("/emergency/001/snapshot")
     item = royal_client.get(BASE).json()["items"][0]
+    robot = item["last_robot"]
     snapshot["errors"]["navigation"].insert(0, "OTHER")
     royal_client.get("/emergency/001/snapshot")
     current = royal_client.get(f"{BASE}/{item['id']}").json()
@@ -68,9 +73,15 @@ def test_throttle_ignore_and_reopen(royal_client, snapshot):
     ignored = royal_client.post(f"{BASE}/{item['id']}/ignore")
     assert ignored.status_code == 200
     assert ignored.json()["state"] == "ignored"
+    assert "last_robot" not in ignored.json()
+    assert "raw_value" not in ignored.json()
+    assert invalidated == [robot]
+    events = royal_client.get("/emergency/001/snapshot").json()["diagnostic_events"]
+    assert not any(e["raw_value"] == "WHEEL_BLOCKED" and e["rule_id"] is None for e in events)
+    assert royal_client.post(f"{BASE}/{item['id']}/reopen").json()["state"] == "new"
+    assert invalidated == [robot, robot]
     events = royal_client.get("/emergency/001/snapshot").json()["diagnostic_events"]
     assert any(e["raw_value"] == "WHEEL_BLOCKED" and e["rule_id"] is None for e in events)
-    assert royal_client.post(f"{BASE}/{item['id']}/reopen").json()["state"] == "new"
     royal_client.get("/emergency/002/snapshot")
     assert royal_client.get(f"{BASE}/{item['id']}").json()["observations"] == 2
 

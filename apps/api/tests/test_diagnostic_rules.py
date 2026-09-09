@@ -2,6 +2,7 @@ import json
 import math
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -174,6 +175,37 @@ def _events(db_session, payload):
 
     db_session.flush()
     return match_diagnostic_events(db_session, payload)
+
+
+def test_live_matching_hides_an_ignored_raw_identity_without_hiding_a_mapped_event(db_session):
+    rule = _insert_rule(db_session)
+    db_session.flush()
+    payload = {"errors": {"navigation": ["WHEEL_BLOCKED", "RAW_IGNORED"]}}
+
+    from robopark_api.services.diagnostic_rules import match_diagnostic_events_for_rules
+
+    preview = match_diagnostic_events_for_rules([rule], payload)
+    ignored = next(event for event in preview if event.raw_value == "RAW_IGNORED")
+    now = datetime.now(UTC)
+    db_session.add(
+        models.DiagnosticUnknown(
+            identity=ignored.id,
+            source_path="errors.navigation",
+            source_segments_json=json.dumps(ignored.source_segments),
+            raw_json=json.dumps(ignored.raw_value),
+            original_json=json.dumps(ignored.raw_value),
+            first_seen_at=now,
+            last_seen_at=now,
+            observations=1,
+            last_robot="YASADR00000000447",
+            state="ignored",
+        )
+    )
+    db_session.flush()
+
+    events = _events(db_session, payload)
+
+    assert [(event.rule_id, event.raw_value) for event in events] == [(rule.id, "WHEEL_BLOCKED")]
 
 
 def test_exact_match_returns_display_ready_event_and_preserves_raw_value(db_session):
