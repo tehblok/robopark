@@ -4,5 +4,9 @@
     "from_heads": ["0017_driver_work_reports"],
     "reversible": true
   },
-  "update_notes": "Упрощена очистка OTA, исправлена диагностика сетевых ошибок Docker и добавлена проверка согласованности версии API."
+  "update_notes": "Упрощена очистка OTA, исправлена диагностика сетевых ошибок Docker и добавлена проверка согласованности версии API.",
+  "signing_key_rotation": {
+    "next_public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAqeW6CoHtdGYQKdu59EyToDuLJltfZ0WujUC8eZyjl24=\n-----END PUBLIC KEY-----\n",
+    "activation_version": "0.1.10"
+  }
 }
