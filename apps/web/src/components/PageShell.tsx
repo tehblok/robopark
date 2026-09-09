@@ -117,7 +117,7 @@ export function Panel({
           </div>
           {(actions || canCollapse) && <div className="panel-actions">
             {canCollapse && <button
-              aria-controls={contentId}
+              aria-controls={collapsed ? undefined : contentId}
               aria-expanded={!collapsed}
               className="panel-collapse"
               onClick={toggleCollapsed}

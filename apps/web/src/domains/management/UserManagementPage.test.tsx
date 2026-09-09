@@ -100,6 +100,7 @@ it('saves owner password, role, park and section changes and isolates account de
   await actor.selectOptions(within(detail).getByRole('combobox', { name: 'Роль' }), 'driver')
   await actor.type(within(detail).getByLabelText('Новый пароль'), 'NewPassword!2026')
   await actor.click(within(detail).getByRole('checkbox', { name: 'Требовать смену пароля при входе' }))
+  await actor.click(within(detail).getByRole('button', { name: /Парки.*Выбрано: 1/ }))
   await actor.click(within(detail).getByRole('checkbox', { name: 'Северный' }))
   await actor.click(within(detail).getByRole('checkbox', { name: 'Южный' }))
   await actor.click(within(detail).getByRole('checkbox', { name: 'Репорты' }))
@@ -115,7 +116,7 @@ it('saves owner password, role, park and section changes and isolates account de
   await actor.click(within(danger).getByRole('button', { name: 'Удалить аккаунт' }))
   await waitFor(() => expect(remove).toHaveBeenCalledWith(2))
   expect(await screen.findByText('Аккаунт удалён')).toBeVisible()
-  expect(screen.queryByRole('button', { name: /mechanic-two/ })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Открыть аккаунт mechanic-two' })).not.toBeInTheDocument()
 })
 
 it.each(['selection', 'owner'])('does not apply a late account PATCH draft after %s changes', async change => {
@@ -149,7 +150,7 @@ it('refreshes the account list automatically without replacing an unsaved accoun
   vi.mocked(api.adminUsers).mockResolvedValue([{ ...account, username: 'renamed-elsewhere', tracker_login: 'server-login' }])
   vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
   fireEvent.focus(window)
-  await screen.findByRole('button', { name: /renamed-elsewhere/ })
+  await screen.findByRole('button', { name: 'Открыть аккаунт renamed-elsewhere' })
   expect(within(detail).getByLabelText('Tracker login')).toHaveValue('unsaved-login')
   expect(api.adminUsers).toHaveBeenCalledTimes(2)
 })

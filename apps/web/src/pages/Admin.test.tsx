@@ -58,7 +58,15 @@ describe('Admin Emergency cookie validation', () => {
     setup()
 
     expect(await screen.findByRole('button', { name: 'Свернуть: Секреты' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Свернуть: Политика Tracker' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Свернуть: Быстрые переходы' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the short new-park form expanded', async () => {
+    setup({}, [{ id: 7, name: 'Северный', tag: 'north', is_active: true }], ['nav.admin', 'parks.manage'], '/admin/settings?park=7&tab=parks')
+
+    expect(await screen.findByDisplayValue('Северный')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Свернуть: Новый парк' })).not.toBeInTheDocument()
   })
 
   it('keeps an unsaved park draft when stale data could otherwise reload on focus', async () => {

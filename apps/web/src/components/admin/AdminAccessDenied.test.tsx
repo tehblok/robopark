@@ -25,7 +25,7 @@ it.each([['users', 401], ['users', 403], ['roles', 401], ['roles', 403]] as cons
     const roles = vi.spyOn(api, 'adminRoles').mockResolvedValue([role])
     vi.spyOn(api, 'adminRolePermissionCatalog').mockResolvedValue([])
     const mounted = render(tree(panel))
-    const rowName = panel === 'users' ? /private-account/ : /Открыть роль Закрытая роль/
+    const rowName = panel === 'users' ? 'Открыть аккаунт private-account' : 'Открыть роль Закрытая роль'
     fireEvent.click(await screen.findByRole('button', { name: rowName }))
     const fieldName = panel === 'users' ? 'Tracker login' : 'Название'
     fireEvent.change(screen.getAllByLabelText(fieldName)[0], { target: { value: 'private-draft' } })
@@ -58,7 +58,7 @@ it.each(['users', 'roles'] as const)('keeps the %s draft available after a trans
   const roles = vi.spyOn(api, 'adminRoles').mockResolvedValue([role])
   vi.spyOn(api, 'adminRolePermissionCatalog').mockResolvedValue([])
   render(tree(panel))
-  const rowName = panel === 'users' ? /private-account/ : /Открыть роль Закрытая роль/
+  const rowName = panel === 'users' ? 'Открыть аккаунт private-account' : 'Открыть роль Закрытая роль'
   fireEvent.click(await screen.findByRole('button', { name: rowName }))
   const fieldName = panel === 'users' ? 'Tracker login' : 'Название'
   fireEvent.change(screen.getAllByLabelText(fieldName)[0], { target: { value: 'keep-my-draft' } })

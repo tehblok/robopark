@@ -12,7 +12,9 @@ it('restores a panel collapse state from its explicit storage key', () => {
   )
 
   expect(screen.queryByText('Список репортов')).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: 'Развернуть: Мои репорты' }))
+  const toggle = screen.getByRole('button', { name: 'Развернуть: Мои репорты' })
+  expect(toggle).not.toHaveAttribute('aria-controls')
+  fireEvent.click(toggle)
   expect(screen.getByText('Список репортов')).toBeVisible()
   expect(localStorage.getItem('robopark:panel:reports-mine:collapsed')).toBeNull()
 })

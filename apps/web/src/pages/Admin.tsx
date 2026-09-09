@@ -570,7 +570,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
         </Panel>
 
         {trackerPolicy && (
-          <Panel collapsible hint="Влияет на то, что видят операторы и механики." storageKey="admin-tracker-policy" title="Политика Tracker">
+          <Panel hint="Влияет на то, что видят операторы и механики." title="Политика Tracker">
             <div className="toggle-list">
               <Toggle
                 checked={trackerPolicy.operator_show_untagged}
@@ -691,7 +691,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
         </Panel>
         )}
 
-        <Panel collapsible hint="Тег используется в Tracker; очередь нужна для задач и поиска." storageKey="admin-park-create" title="Новый парк">
+        <Panel hint="Тег используется в Tracker; очередь нужна для задач и поиска." title="Новый парк">
           <form className="form-grid" onSubmit={createPark}>
             <label className="field">
               <span className="field-label">Название</span>

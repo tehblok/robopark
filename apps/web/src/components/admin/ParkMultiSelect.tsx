@@ -44,8 +44,9 @@ export function ParkMultiSelect({ parks, value, onChange, disabled = false, labe
 
   return <div className="park-multi-select" ref={root}>
     <button
-      aria-controls={listboxId}
+      aria-controls={open ? listboxId : undefined}
       aria-expanded={open}
+      aria-haspopup="dialog"
       className="park-multi-select__trigger"
       disabled={disabled}
       onClick={() => setOpen((current) => !current)}
@@ -55,7 +56,7 @@ export function ParkMultiSelect({ parks, value, onChange, disabled = false, labe
     </button>
     {open ? <div
       aria-label={label}
-      aria-multiselectable="true"
+      aria-modal="false"
       className="park-multi-select__menu"
       id={listboxId}
       onKeyDown={(event) => {
@@ -64,7 +65,7 @@ export function ParkMultiSelect({ parks, value, onChange, disabled = false, labe
           setOpen(false)
         }
       }}
-      role="listbox"
+      role="dialog"
     >
       <div className="park-multi-select__tools">
         <input

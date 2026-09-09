@@ -13,11 +13,12 @@ it('selects active parks, filters choices, and returns sorted unique IDs', () =>
   const onChange = vi.fn()
   render(<ParkMultiSelect label="Парки" onChange={onChange} parks={parks} value={[3]} />)
 
-  fireEvent.click(screen.getByRole('button', { name: /Парки.*Выбрано: 1/ }))
-  const listbox = screen.getByRole('listbox', { name: 'Парки' })
-  expect(listbox).toHaveAttribute('aria-multiselectable', 'true')
+  const trigger = screen.getByRole('button', { name: /Парки.*Выбрано: 1/ })
+  expect(trigger).toHaveAttribute('aria-haspopup', 'dialog')
+  fireEvent.click(trigger)
+  const dialog = screen.getByRole('dialog', { name: 'Парки' })
   fireEvent.change(screen.getByRole('textbox', { name: 'Поиск парков' }), { target: { value: 'сев' } })
-  fireEvent.click(within(listbox).getByRole('checkbox', { name: 'Север' }))
+  fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Север' }))
 
   expect(onChange).toHaveBeenLastCalledWith([1, 3])
 })
@@ -46,11 +47,11 @@ it('selects all active parks, clears selections, and closes on Escape or outside
   expect(onChange).toHaveBeenLastCalledWith([1, 2, 3])
   fireEvent.click(screen.getByRole('button', { name: 'Очистить' }))
   expect(onChange).toHaveBeenLastCalledWith([])
-  fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' })
-  expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+  fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: /Парки.*Выбрано: 1/ }))
   fireEvent.mouseDown(screen.getByRole('button', { name: 'Вне' }))
-  expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 })
 
 it('does not open or focus controls when disabled', () => {
@@ -58,5 +59,5 @@ it('does not open or focus controls when disabled', () => {
   const trigger = screen.getByRole('button', { name: /Парки.*Выбрано: 0/ })
   expect(trigger).toBeDisabled()
   fireEvent.click(trigger)
-  expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 })

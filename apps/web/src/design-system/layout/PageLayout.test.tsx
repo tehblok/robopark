@@ -70,7 +70,9 @@ describe('Panel', () => {
 
     expect(screen.queryByText('Данные')).not.toBeInTheDocument()
     expect(localStorage.getItem('robopark:panel:diagnostics:collapsed')).toBe('1')
-    expect(screen.getByRole('button', { name: 'Развернуть: Диагностика' })).toHaveAttribute('aria-expanded', 'false')
+    const toggle = screen.getByRole('button', { name: 'Развернуть: Диагностика' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(toggle).not.toHaveAttribute('aria-controls')
   })
 
   it('names a titled panel region from its heading', () => {
