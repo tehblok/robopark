@@ -173,7 +173,7 @@ def test_admin_inbox_and_badge_follow_same_park_filter(
     assert client.get(f"/reports/badge?park_id={other.id}").json() == {"count": 1}
 
 
-def test_royal_routes_all_open_reports_without_widening_other_role_boundaries(
+def test_royal_routes_all_reports_without_widening_other_role_boundaries(
     db_session, seed_mechanic, seed_park_with_tracker
 ):
     alpha = seed_park_with_tracker
@@ -189,8 +189,8 @@ def test_royal_routes_all_open_reports_without_widening_other_role_boundaries(
     operator_report = _report(db_session, seed_mechanic, alpha, target="operator")
     admin_report = _report(db_session, seed_mechanic, beta, target="admin")
     royal_open_report = _report(db_session, royal, beta, target="operator")
-    _report(db_session, royal, alpha, state="returned")
-    _report(db_session, seed_mechanic, alpha, state="done")
+    returned_report = _report(db_session, royal, alpha, state="returned")
+    done_report = _report(db_session, seed_mechanic, alpha, state="done")
     stale_cookie_report = reports_svc.ensure_open_emergency_cookie_report(db_session, author=royal)
     assert stale_cookie_report is not None
 
@@ -198,6 +198,8 @@ def test_royal_routes_all_open_reports_without_widening_other_role_boundaries(
         operator_report.id,
         admin_report.id,
         royal_open_report.id,
+        returned_report.id,
+        done_report.id,
         stale_cookie_report.id,
     }
     assert reports_svc.badge_counts(db_session, royal) == {"count": 5}

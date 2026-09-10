@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from conftest import role_id_for
 from robopark_api.models import AccessStatus, User, UserPark
 from robopark_api.security import hash_password
@@ -19,8 +21,17 @@ def test_format_signed_comment():
         park_name="Next",
         mechanic_login="mech.startrek",
         operator_login="operator1",
+        actor_login="admin1",
+        occurred_at=datetime(2026, 9, 10, 19, 30, tzinfo=UTC),
     )
-    assert text == "Не работает крышка\nNext / mech.startrek / operator1"
+    assert text == (
+        "Не работает крышка\n\n—\n"
+        "Время: 10.09.2026 22:30 МСК\n"
+        "Парк: Next\n"
+        "Инициатор: admin1\n"
+        "Механик: mech.startrek\n"
+        "Оператор: operator1"
+    )
 
 
 def test_build_signature_context_for_operator(db_session, seed_park_with_tracker):
@@ -43,7 +54,7 @@ def test_build_signature_context_for_operator(db_session, seed_park_with_tracker
     ctx = build_signature_context(db_session, operator, issue)
     assert ctx.park_name == "Alpha"
     assert ctx.park_id == seed_park_with_tracker.id
-    assert ctx.mechanic_login == "mech.startrek"
+    assert ctx.mechanic_login == "—"
     assert ctx.operator_login == "operator1"
 
 
@@ -52,7 +63,7 @@ def test_resolve_mechanic_login_from_robopark_user(db_session, seed_mechanic):
     db_session.commit()
 
     issue = {"assignee": {"login": "mech.startrek", "display": "Mechanic One"}}
-    assert resolve_mechanic_login(db_session, issue, seed_mechanic) == "mech.startrek"
+    assert resolve_mechanic_login(db_session, issue, seed_mechanic) == "mech1"
 
 
 def test_resolve_operator_login_from_park(db_session, seed_park_with_tracker, seed_mechanic):

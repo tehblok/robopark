@@ -90,6 +90,15 @@ def test_close_is_audited_with_actor(
     """The core gap: Tracker shows one service account for every user."""
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "t")
     _mock_tracker(monkeypatch)
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key="ROBOPARK-1",
+        park_id=seed_park_with_tracker.id,
+    )
 
     login_as(client, "mech1", "secret")
     assert client.post("/tracker/issues/ROBOPARK-1/close").status_code == 200
@@ -101,9 +110,20 @@ def test_close_is_audited_with_actor(
     assert entry.park_id == seed_park_with_tracker.id
 
 
-def test_comment_is_signed_and_audited(client, db_session, seed_mechanic, monkeypatch):
+def test_comment_is_signed_and_audited(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "t")
     captured = _mock_tracker(monkeypatch)
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key="ROBOPARK-1",
+        park_id=seed_park_with_tracker.id,
+    )
 
     login_as(client, "mech1", "secret")
     response = client.post("/tracker/issues/ROBOPARK-1/comment", json={"text": "проверил робота"})

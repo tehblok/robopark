@@ -29,6 +29,19 @@ class TrackerSubmission(Base):
     created_at: Mapped[float] = mapped_column(Float)
 
 
+class TrackerClaim(Base):
+    """Robopark-owned task assignment; Tracker's service account stays the upstream actor."""
+
+    __tablename__ = "tracker_claims"
+    issue_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
+    owner_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    updated_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    updated_at: Mapped[float] = mapped_column(Float)
+
+
 class TrackerHandoff(Base):
     __tablename__ = "tracker_handoffs"
     issue_key: Mapped[str] = mapped_column(String(128), primary_key=True)

@@ -118,6 +118,16 @@ def test_task_writeoff_requires_owner_and_writes_technical_tracker_comment(
     login_as(client, mechanic.username, "secret")
     _, part = _seed_part(client, seed_park_with_tracker.id)
 
+    from robopark_api.services.tracker_claims import claim_issue, release_claim
+
+    claim_issue(
+        db_session,
+        actor=mechanic,
+        owner=mechanic,
+        issue_key="RP-42",
+        park_id=seed_park_with_tracker.id,
+    )
+
     response = client.post(
         "/inventory/tasks/RP-42/writeoff", json={"part_id": part["id"], "quantity": 2}
     )
@@ -126,11 +136,13 @@ def test_task_writeoff_requires_owner_and_writes_technical_tracker_comment(
     assert comments[0]["key"] == "RP-42"
     assert "TY-001" in comments[0]["text"]
     assert "tracker-mechanic" in comments[0]["text"]
+    assert "Время:" in comments[0]["text"]
+    assert "Инициатор: tracker-mechanic" in comments[0]["text"]
     movement = db_session.scalar(
         select(InventoryMovement).where(InventoryMovement.kind == "task_writeoff")
     )
     assert movement.issue_key == "RP-42"
-    issue["assignee"] = {"login": "another-mechanic"}
+    release_claim(db_session, "RP-42")
     rejected = client.post(
         "/inventory/tasks/RP-42/writeoff", json={"part_id": part["id"], "quantity": 1}
     )

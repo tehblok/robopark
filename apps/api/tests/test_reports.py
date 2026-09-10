@@ -332,6 +332,26 @@ def test_list_inbox_excludes_non_open(
     assert inbox == []
 
 
+def test_royal_inbox_contains_open_returned_and_done_reports(
+    db_session, seed_mechanic, seed_operator_with_park, seed_royal, seed_park_with_tracker
+):
+    opened = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id, title="Open"
+    )
+    returned = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id, title="Returned"
+    )
+    done = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id, title="Done"
+    )
+    reports_svc.return_report(db_session, seed_operator_with_park, returned.id, "Fix")
+    reports_svc.done_report(db_session, seed_operator_with_park, done.id)
+
+    inbox = reports_svc.list_inbox(db_session, seed_royal)
+
+    assert {item.id for item in inbox} == {opened.id, returned.id, done.id}
+
+
 def test_list_mine_returns_author_reports(db_session, seed_mechanic, seed_park_with_tracker):
     first = _create_open_report(
         db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id, title="One"
@@ -434,6 +454,31 @@ def test_done_report_success(
 
     assert updated.status == reports_svc.STATUS_DONE
     assert updated.resolved_at is not None
+
+
+def test_author_can_edit_and_resubmit_returned_report(
+    db_session, seed_mechanic, seed_operator_with_park, seed_park_with_tracker
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+    reports_svc.return_report(db_session, seed_operator_with_park, report.id, "Add details")
+
+    updated = reports_svc.resubmit_report(
+        db_session,
+        seed_mechanic,
+        report.id,
+        title="Updated title",
+        body="Updated body",
+        tracker_key="ROBO-2",
+        tracker_url="https://st.yandex-team.ru/ROBO-2",
+    )
+
+    assert updated.status == reports_svc.STATUS_OPEN
+    assert updated.title == "Updated title"
+    assert updated.body == "Updated body"
+    assert updated.tracker_key == "ROBO-2"
+    assert updated.return_comment is None
 
 
 def test_escalate_report_creates_child_parent_stays_open(

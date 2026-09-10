@@ -27,7 +27,7 @@ it.each([['users', 401], ['users', 403], ['roles', 401], ['roles', 403]] as cons
     const mounted = render(tree(panel))
     const rowName = panel === 'users' ? 'Открыть аккаунт private-account' : 'Открыть роль Закрытая роль'
     fireEvent.click(await screen.findByRole('button', { name: rowName }))
-    const fieldName = panel === 'users' ? 'Tracker login' : 'Название'
+    const fieldName = panel === 'users' ? 'Новый пароль' : 'Название'
     fireEvent.change(screen.getAllByLabelText(fieldName)[0], { target: { value: 'private-draft' } })
     const read = panel === 'users' ? users : roles
     read.mockRejectedValue(new ApiError(status, 'access_denied'))
@@ -60,7 +60,7 @@ it.each(['users', 'roles'] as const)('keeps the %s draft available after a trans
   render(tree(panel))
   const rowName = panel === 'users' ? 'Открыть аккаунт private-account' : 'Открыть роль Закрытая роль'
   fireEvent.click(await screen.findByRole('button', { name: rowName }))
-  const fieldName = panel === 'users' ? 'Tracker login' : 'Название'
+  const fieldName = panel === 'users' ? 'Новый пароль' : 'Название'
   fireEvent.change(screen.getAllByLabelText(fieldName)[0], { target: { value: 'keep-my-draft' } })
   const read = panel === 'users' ? users : roles
   read.mockRejectedValue(new ApiError(503, 'temporarily_unavailable'))

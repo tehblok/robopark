@@ -59,7 +59,7 @@ for (const selected of ['1', 'new']) test(`reselecting ${selected} preserves nav
   const history = await page.evaluate(() => ({ key: window.history.state.key, length: window.history.length }))
   await page.getByRole('button', { name: 'Проверить пример' }).click()
   await expect.poll(() => typeof release).toBe('function')
-  const sameSelection = page.getByRole('button', { name: selected === 'new' ? 'Новое правило' : `Открыть правило ${rule.title}` })
+  const sameSelection = page.getByRole('button', { name: selected === 'new' ? 'Новое правило' : `Открыть правило ${rule.title}`, exact: true })
   await sameSelection.click()
   await expect(sameSelection).toBeFocused()
   await sameSelection.press('Enter')

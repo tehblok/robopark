@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from robopark_api.deps import get_user_parks
-from robopark_api.models import Role, User, UserPark
+from robopark_api.models import AccessStatus, Role, User, UserPark
 from robopark_api.services import rbac
 from robopark_api.services.rbac import RoleSlug
 
@@ -14,7 +14,7 @@ from robopark_api.services.rbac import RoleSlug
 def list_assignee_candidates(
     db: Session, user: User, query: str, *, limit: int = 20
 ) -> list[dict[str, str]]:
-    """Mechanics with a Startrek login in parks visible to the current user."""
+    """Active local mechanics in parks visible to the current user."""
     needle = query.strip().lower()
     if not needle:
         return []
@@ -36,8 +36,7 @@ def list_assignee_candidates(
         .where(
             Role.slug == RoleSlug.MECHANIC,
             User.is_active.is_(True),
-            User.tracker_login.is_not(None),
-            User.tracker_login != "",
+            User.access_status == AccessStatus.approved.value,
         )
     )
     if park_ids is not None:
@@ -46,10 +45,9 @@ def list_assignee_candidates(
     seen: set[str] = set()
     results: list[dict[str, str]] = []
     for row in db.scalars(stmt).unique():
-        login = (row.tracker_login or "").strip()
-        if not login:
-            continue
-        if needle not in login.lower() and needle not in row.username.lower():
+        login = row.username.strip()
+        tracker_login = (row.tracker_login or "").strip()
+        if needle not in login.lower() and needle not in tracker_login.lower():
             continue
         key = login.lower()
         if key in seen:

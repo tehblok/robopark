@@ -56,7 +56,7 @@ export function parseWorkUrl(
   const queue = defaults.queue
   const rawStatus = text(params, 'status')
   const completedStatus = ['closed', 'resolved'].includes(rawStatus?.toLowerCase() ?? '')
-  const status = completedStatus || rawStatus === 'all'
+  const status = completedStatus || rawStatus === 'all' || (!rawStatus && defaults.status === 'all')
     ? undefined
     : rawStatus ?? defaults.status ?? 'queued'
   const robot = text(params, 'robot')

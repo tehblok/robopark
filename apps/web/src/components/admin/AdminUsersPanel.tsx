@@ -21,7 +21,6 @@ type UserDraft = {
   access_status: string
   is_active: boolean
   must_change_password: boolean
-  tracker_login: string
   password: string
   park_ids: number[]
   permissions: Set<string>
@@ -43,7 +42,6 @@ function emptyDraft(): UserDraft {
     access_status: 'approved',
     is_active: true,
     must_change_password: false,
-    tracker_login: '',
     password: '',
     park_ids: [],
     permissions: new Set(),
@@ -56,7 +54,6 @@ function draftFromUser(user: AdminUser): UserDraft {
     access_status: user.access_status,
     is_active: user.is_active,
     must_change_password: user.must_change_password ?? false,
-    tracker_login: user.tracker_login ?? '',
     password: '',
     park_ids: user.parks.map((park) => park.id),
     permissions: new Set((user.permissions ?? []).filter(key => key !== 'users.approve')),
@@ -102,7 +99,6 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
     password: '',
     role_slug: 'mechanic',
     parkIds: [] as number[],
-    trackerLogin: '',
   })
 
   const pendingCount = users.filter((row) => row.access_status === 'pending').length
@@ -215,7 +211,6 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
         role_slug: draft.role_slug,
         is_active: draft.is_active,
         must_change_password: draft.must_change_password,
-        tracker_login: draft.tracker_login.trim() || null,
         park_ids: draft.park_ids,
         permissions: [...effectivePermissions],
       }
@@ -295,14 +290,13 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
         password: createForm.password,
         role_slug: createForm.role_slug,
         park_ids: createForm.parkIds,
-        tracker_login: createForm.trackerLogin.trim() || null,
+        tracker_login: null,
       })
       setCreateForm({
         username: '',
         password: '',
         role_slug: 'mechanic',
         parkIds: [],
-        trackerLogin: '',
       })
       setUsers((rows) => [...rows, created])
       resourceStore.invalidate(adminResourceKey('users', actor))
@@ -501,18 +495,6 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
                 Требовать смену пароля при входе
               </label>
 
-              <label className="field">
-                <span className="field-label">Tracker login</span>
-                <input
-                  disabled={selectedLocked || busy}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, tracker_login: event.target.value }))
-                  }
-                  placeholder="mechanic.dev"
-                  value={draft.tracker_login}
-                />
-              </label>
-
               <PasswordField
                 disabled={selectedLocked || busy}
                 label="Новый пароль"
@@ -668,15 +650,6 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
                   </option>
                 ))}
             </select>
-          </label>
-          <label className="field">
-            <span className="field-label">Tracker login</span>
-            <input
-              onChange={(event) =>
-                setCreateForm((current) => ({ ...current, trackerLogin: event.target.value }))
-              }
-              value={createForm.trackerLogin}
-            />
           </label>
           <div className="field">
             <span className="field-label">Парки</span>

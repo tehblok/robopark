@@ -1186,6 +1186,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ comment }),
     }),
+  reportResubmit: (id: number, payload: Pick<ReportCreatePayload, 'title' | 'body' | 'tracker_key' | 'tracker_url'>) =>
+    request<Report>(`/reports/${id}/resubmit`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   reportDone: (id: number) =>
     request<Report>(`/reports/${id}/done`, { method: 'POST' }),
   reportEscalate: (id: number, comment: string) =>

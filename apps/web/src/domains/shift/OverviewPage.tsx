@@ -1,5 +1,5 @@
 import { SyncStatus } from '../../design-system/status/SyncStatus'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api, type OperationsOverview, type Park, type User } from '../../api'
 import { useParkScope } from '../../app/park/parkScope'
@@ -156,7 +156,7 @@ function OverviewSessionPage({ apiClient, user }: { apiClient: OperationsApiClie
           : overviewParks.length === 0 ? <EmptyState description="Нет доступных парков для обзора смены." icon="parks" title="Парк не выбран" />
             : overviewParks.map(park => {
               const content = <><OverviewPark apiClient={apiClient} authorizationBlocked={authorizationBlocked} identity={identity} onAuthorizationFailure={observeAuthorizationFailure} params={params} park={park} query={query} selectable={selectable} user={user} /><CampaignOverviewSection parkId={park.id} /></>
-              return allParks ? <section key={park.id} aria-label={park.name}><h2>{park.name}</h2>{content}</section> : content
+              return allParks ? <section key={park.id} aria-label={park.name}><h2>{park.name}</h2>{content}</section> : <Fragment key={park.id}>{content}</Fragment>
             })}
   </PageLayout>
 }

@@ -14,6 +14,7 @@ type ReportDetailProps = {
   ownerKey: string
   parkName?: string
   canAct: boolean
+  canResubmit?: boolean
   showEscalate: boolean
   onClose: () => void
   onUpdated: () => void
@@ -25,6 +26,7 @@ export function ReportDetail({
   ownerKey,
   parkName,
   canAct,
+  canResubmit = false,
   showEscalate,
   onClose,
   onUpdated,
@@ -35,6 +37,9 @@ export function ReportDetail({
   const [returnComment, setReturnComment] = useState('')
   const [escalateComment, setEscalateComment] = useState('')
   const [actionMode, setActionMode] = useState<'idle' | 'return' | 'escalate'>('idle')
+  const [editTitle, setEditTitle] = useState(report.title)
+  const [editBody, setEditBody] = useState(report.body)
+  const [editTrackerKey, setEditTrackerKey] = useState(report.tracker_key ?? '')
   const ownerRef = useRef(ownerKey)
   const generationRef = useRef(0)
   const mountedRef = useRef(true)
@@ -105,6 +110,21 @@ export function ReportDetail({
     void runAction(() => apiClient.reportEscalate(report.id, comment))
   }
 
+  function handleResubmit() {
+    const title = editTitle.trim()
+    if (!title) {
+      setError('Укажите заголовок.')
+      return
+    }
+    const trackerKey = editTrackerKey.trim()
+    void runAction(() => apiClient.reportResubmit(report.id, {
+      title,
+      body: editBody.trim(),
+      tracker_key: trackerKey || null,
+      tracker_url: trackerKey ? `https://st.yandex-team.ru/${trackerKey}` : null,
+    }))
+  }
+
   return (
     <article className="report-detail">
       {error && <Alert tone="error">{error}</Alert>}
@@ -171,6 +191,15 @@ export function ReportDetail({
         <Alert tone="warning">
           Комментарий при возврате: {report.return_comment}
         </Alert>
+      )}
+
+      {canResubmit && report.status === 'returned' && (
+        <section className="issue-comment-form" aria-label="Исправить и повторно отправить">
+          <label className="field"><span className="field-label">Заголовок</span><input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} /></label>
+          <label className="field"><span className="field-label">Описание</span><textarea rows={4} value={editBody} onChange={(event) => setEditBody(event.target.value)} /></label>
+          <label className="field"><span className="field-label">Тикет Tracker</span><input value={editTrackerKey} onChange={(event) => setEditTrackerKey(event.target.value)} /></label>
+          <button className="btn" disabled={busy || !editTitle.trim()} onClick={handleResubmit} type="button">Повторно отправить</button>
+        </section>
       )}
 
       {actionMode === 'return' && (

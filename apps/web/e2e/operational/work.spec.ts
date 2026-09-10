@@ -30,7 +30,7 @@ test('deep-link restores filters, pagination and detail after reload', async ({ 
 
 test('phone back restores list scroll and saved filters', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 })
-  await installOperational(page, { listCount: 50 })
+  await installOperational(page, { role: 'operator', listCount: 50 })
   await page.goto('/work?park=7&status=open&sort=newest&page=2')
   const row = page.getByRole('button', { name: /^Открыть задачу ROBOPARK-42:/ })
   await expect(row).toBeVisible()
@@ -151,8 +151,8 @@ test('status-only filtering updates immediately and makes task age prominent', a
   await installOperational(page)
   await page.goto('/work?park=7&queue=OBSOLETE&sort=newest&page=2')
   const filters = page.locator('.rp-work-filters')
-  await expect(filters.getByRole('combobox')).toHaveValue('queued')
-  await expect.poll(() => queries.at(-1)?.get('status')).toBe('queued')
+  await expect(filters.getByRole('combobox')).toHaveValue('')
+  await expect.poll(() => queries.at(-1)?.has('status')).toBe(false)
   await expect(filters.locator('input')).toHaveCount(0)
   await expect(filters.getByRole('combobox')).toHaveCount(1)
   await expect(filters.getByRole('button')).toHaveCount(0)

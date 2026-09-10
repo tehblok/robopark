@@ -24,6 +24,7 @@ from robopark_api.operations_schemas import (
 from robopark_api.routers._blockers import blocker_out
 from robopark_api.services import platform_settings, rbac, tracker_cache, tracker_client
 from robopark_api.services.blocker_history import BUCKET_SECONDS, align_bucket_start
+from robopark_api.services.tracker_claims import local_assignees
 from robopark_api.services.tracker_filters import (
     count_status_buckets,
     filter_issues_by_status,
@@ -47,7 +48,7 @@ STATUS_LABELS = {
     "waiting_parts": "Ожидание поставки",
     "other": "Другие",
 }
-ROLE_STATUSES = {"driver": {"new", "moving"}, "mechanic": {"queued", "diagnostics"}}
+ROLE_STATUSES = {"driver": {"new", "moving"}}
 LEADERSHIP = {rbac.RoleSlug.OPERATOR, rbac.RoleSlug.ADMIN, rbac.RoleSlug.ROYAL}
 
 
@@ -322,6 +323,11 @@ def build_overview(
         and park.tag in issue_tags(item)
         and is_issue_status_visible(user, item)
         and issue_status_bucket(item) in allowed
+    ]
+    claims = local_assignees(db, [str(item.get("key") or "") for item in items])
+    items = [
+        {**item, "assignee": claims.get(str(item.get("key") or ""), item.get("assignee"))}
+        for item in items
     ]
     ordered = sort_issues_oldest_first(sorted(items, key=lambda item: item["key"]))
     tasks = filter_issues_by_status(ordered, selected_status)

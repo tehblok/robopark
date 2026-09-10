@@ -307,11 +307,7 @@ def list_inbox(db: Session, user: User, *, park_id: int | None = None) -> list[R
         raise PermissionError("forbidden")
     scope = _scope_clause(db, user, park_id)
     if _is_royal_inbox_user(user):
-        stmt = (
-            select(Report)
-            .options(selectinload(Report.attachments))
-            .where(Report.status == STATUS_OPEN)
-        )
+        stmt = select(Report).options(selectinload(Report.attachments))
     elif _is_admin_inbox_user(user):
         stmt = (
             select(Report)
@@ -362,6 +358,42 @@ def return_report(db: Session, user: User, report_id: int, comment: str) -> Repo
     _require_act(db, user, report)
     report.status = STATUS_RETURNED
     report.return_comment = _require_non_empty_comment(comment)
+    db.commit()
+    db.refresh(report)
+    return report
+
+
+def resubmit_report(
+    db: Session,
+    user: User,
+    report_id: int,
+    *,
+    title: str,
+    body: str,
+    tracker_key: str | None,
+    tracker_url: str | None,
+) -> Report:
+    report = _load_report(db, report_id)
+    if (
+        not _is_approved(user)
+        or report.author_user_id != user.id
+        or report.status != STATUS_RETURNED
+        or not _in_scope(db, user, report)
+    ):
+        raise PermissionError("forbidden")
+    clean_title = title.strip()
+    if not clean_title:
+        raise ValueError("title_required")
+    clean_key = (tracker_key or "").strip() or None
+    if report.kind == KIND_TICKET_QUESTION and not clean_key:
+        raise ValueError("tracker_key_required")
+    report.title = clean_title
+    report.body = body.strip()
+    report.tracker_key = clean_key
+    report.tracker_url = (tracker_url or "").strip() or None
+    report.return_comment = None
+    report.status = STATUS_OPEN
+    report.resolved_at = None
     db.commit()
     db.refresh(report)
     return report

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,6 +24,7 @@ PLATFORM_COMMENT_LEGACY_RE = re.compile(
     re.MULTILINE,
 )
 LEGACY_PLATFORM_FOOTER = "\n\n—\nРобопарк:"
+PLATFORM_ACCOUNTABILITY_FOOTER = "\n\n—\nВремя: "
 MISSING = "—"
 
 
@@ -31,6 +34,7 @@ class SignatureContext:
     park_name: str
     mechanic_login: str
     operator_login: str
+    actor_login: str
 
 
 def is_platform_signed_comment(text: str) -> bool:
@@ -40,6 +44,8 @@ def is_platform_signed_comment(text: str) -> bool:
     if PLATFORM_SIGNATURE_FOOTER_RE.search(normalized):
         return True
     if PLATFORM_COMMENT_LEGACY_RE.search(normalized):
+        return True
+    if PLATFORM_ACCOUNTABILITY_FOOTER in normalized:
         return True
     return LEGACY_PLATFORM_FOOTER in normalized
 
@@ -57,28 +63,14 @@ def resolve_park(db: Session, issue: dict) -> Park | None:
     return None
 
 
-def _assignee_login(issue: dict) -> str | None:
-    assignee = issue.get("assignee")
-    if not isinstance(assignee, dict):
-        return None
-    login = str(assignee.get("login") or "").strip()
-    return login or None
-
-
 def resolve_mechanic_login(db: Session, issue: dict, user: User) -> str:
-    assignee_login = _assignee_login(issue)
-    if assignee_login:
-        matched = db.scalar(
-            select(User)
-            .where((User.tracker_login == assignee_login) | (User.username == assignee_login))
-            .limit(1)
-        )
-        if matched is not None:
-            return (matched.tracker_login or matched.username).strip()
-        return assignee_login
+    from robopark_api.services.tracker_claims import local_assignee
 
+    local = local_assignee(db, issue)
+    if local is not None:
+        return local["login"]
     if user.role == RoleSlug.MECHANIC:
-        return (user.tracker_login or user.username).strip()
+        return user.username.strip()
 
     return MISSING
 
@@ -123,6 +115,7 @@ def build_signature_context(db: Session, user: User, issue: dict) -> SignatureCo
         park_name=park.name if park is not None else MISSING,
         mechanic_login=resolve_mechanic_login(db, issue, user),
         operator_login=resolve_operator_login(db, park, user),
+        actor_login=user.username,
     )
 
 
@@ -132,9 +125,18 @@ def format_signed_comment(
     park_name: str,
     mechanic_login: str,
     operator_login: str,
+    actor_login: str,
+    occurred_at: datetime | None = None,
 ) -> str:
-    footer = f"{park_name} / {mechanic_login} / {operator_login}"
-    return f"{body.strip()}\n{footer}"
+    moment = (occurred_at or datetime.now(UTC)).astimezone(ZoneInfo("Europe/Moscow"))
+    footer = (
+        f"Время: {moment:%d.%m.%Y %H:%M} МСК\n"
+        f"Парк: {park_name}\n"
+        f"Инициатор: {actor_login}\n"
+        f"Механик: {mechanic_login}\n"
+        f"Оператор: {operator_login}"
+    )
+    return f"{body.strip()}\n\n—\n{footer}"
 
 
 STAFF_ROLES = frozenset({RoleSlug.OPERATOR, RoleSlug.ADMIN, RoleSlug.ROYAL})

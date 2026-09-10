@@ -49,4 +49,8 @@ def test_comment_posts_signed_text_to_tracker(
     response = client.post("/tracker/issues/ROBOPARK-1/comment", json={"text": "Проверил"})
     assert response.status_code == 200
 
-    assert captured["text"] == "Проверил\nAlpha / mech1 / op_sig"
+    assert captured["text"].startswith("Проверил\n\n—\nВремя: ")
+    assert "\nПарк: Alpha" in captured["text"]
+    assert "\nИнициатор: op_sig" in captured["text"]
+    assert "\nМеханик: —" in captured["text"]
+    assert "\nОператор: op_sig" in captured["text"]

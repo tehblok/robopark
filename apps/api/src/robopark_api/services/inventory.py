@@ -19,7 +19,13 @@ from robopark_api.models import (
     User,
     UserPark,
 )
-from robopark_api.services import audit, platform_settings, tracker_cache, tracker_client
+from robopark_api.services import (
+    audit,
+    platform_settings,
+    tracker_cache,
+    tracker_client,
+    tracker_signatures,
+)
 from robopark_api.services.rbac import PERMISSION_NAV_INVENTORY, has_permission
 from robopark_api.services.report_attachments import sanitize_filename
 from robopark_api.services.tracker_claims import mechanic_owns_issue
@@ -323,13 +329,21 @@ def task_writeoff(
     except tracker_client.TrackerError as exc:
         raise RuntimeError("tracker_upstream_error") from exc
     tags = {str(tag).strip().casefold() for tag in (issue or {}).get("tags") or []}
-    if issue is None or park.tag.casefold() not in tags or not mechanic_owns_issue(user, issue):
+    if issue is None or park.tag.casefold() not in tags or not mechanic_owns_issue(db, user, issue):
         raise PermissionError("inventory_issue_not_owned")
     part.quantity -= quantity
-    comment = (
+    body = (
         "Техническое сообщение · Склад\n"
         f"Запчасть: {part.name}\nАртикул: {part.article}\n"
         f"Количество: {quantity}\nМеханик: {user.username}"
+    )
+    ctx = tracker_signatures.build_signature_context(db, user, issue)
+    comment = tracker_signatures.format_signed_comment(
+        body=body,
+        park_name=ctx.park_name,
+        mechanic_login=ctx.mechanic_login,
+        operator_login=ctx.operator_login,
+        actor_login=ctx.actor_login,
     )
     try:
         tracker_client.add_comment(token=token, key=issue_key, text=comment)

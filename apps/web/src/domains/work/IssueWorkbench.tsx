@@ -106,7 +106,7 @@ function failureFor(error: unknown, fallback: string): DomainError | null {
 }
 
 function mechanicOwnsIssue(user: User, issue: TrackerIssueDetail): boolean {
-  const expected = (user.tracker_login || user.username).trim().toLocaleLowerCase()
+  const expected = user.username.trim().toLocaleLowerCase()
   return user.role === 'mechanic'
     && Boolean(expected)
     && issue.assignee?.login?.trim().toLocaleLowerCase() === expected
@@ -159,9 +159,15 @@ function WorkIssueRows({
   apiClient?: IssueWorkbenchApiClient
   onClaimed?: () => void
 }) {
-  const mechanicLogin = (user?.tracker_login || user?.username || '').trim()
+  const mechanicLogin = (user?.username || '').trim()
+  const seen = new Set<string>()
+  const uniqueItems = items.filter((item) => {
+    if (seen.has(item.key)) return false
+    seen.add(item.key)
+    return true
+  })
   return <div className="rp-work-entities">
-    {items.map((item) => <ClaimableIssueRow
+    {uniqueItems.map((item) => <ClaimableIssueRow
       apiClient={apiClient} item={item} key={item.key} mechanicLogin={mechanicLogin}
       onClaimed={onClaimed} onOpen={onOpen} selected={selected}
       requireClaim={user?.role === 'mechanic'} />)}
@@ -187,10 +193,16 @@ function ClaimableIssueRow({ item, selected, onOpen, requireClaim, mechanicLogin
       setClaimError(classifyApiError(error, 'Не удалось взять задачу в работу.').description)
     } finally { setClaiming(false) }
   }
+  const openButton = <Button
+    aria-current={item.key === selected ? 'page' : undefined}
+    aria-label={`Открыть задачу ${item.key}: ${item.summary}`}
+    onClick={() => onOpen(item.key)}
+    variant="secondary"
+  >Открыть</Button>
   const action = !requireClaim || mine
-    ? <Button aria-current={item.key === selected ? 'page' : undefined} aria-label={`Открыть задачу ${item.key}: ${item.summary}`} onClick={() => onOpen(item.key)} variant="secondary">Открыть</Button>
+    ? openButton
     : assigned
-      ? <Button disabled title={`Задача уже у ${item.assignee?.display || assigned}`} variant="secondary">В работе</Button>
+      ? <>{openButton}<Button busy={claiming} disabled={!mechanicLogin} onClick={() => void claim()}>Взять вместо сменщика</Button></>
       : <Button busy={claiming} disabled={!mechanicLogin} onClick={() => void claim()}>Взять в работу</Button>
   return <EntityRow
     actions={<>{action}{claimError ? <span role="alert">{claimError}</span> : null}</>}
@@ -721,11 +733,11 @@ function IssueWorkbenchOwner({
               ) : list.data ? (
                 <div className="rp-work-list-scroll" ref={listScrollRef}>
                   <p className="rp-work-list-count">Показано {list.data.items.length}{list.data.total > list.data.items.length ? ` из ${list.data.total}` : ''}</p>
-                  {user.role === 'mechanic' && list.data.items.some(item => item.assignee?.login?.toLocaleLowerCase() === (user.tracker_login || user.username).toLocaleLowerCase()) ? <>
+                  {user.role === 'mechanic' && list.data.items.some(item => item.assignee?.login?.toLocaleLowerCase() === user.username.toLocaleLowerCase()) ? <>
                     <h3>Мои задачи в работе</h3>
                     <WorkIssueRows
                       apiClient={apiClient}
-                      items={oldestFirst(list.data.items).filter(item => item.assignee?.login?.toLocaleLowerCase() === (user.tracker_login || user.username).toLocaleLowerCase())}
+                      items={oldestFirst(list.data.items).filter(item => item.assignee?.login?.toLocaleLowerCase() === user.username.toLocaleLowerCase())}
                       onClaimed={() => void list.refresh()}
                       onOpen={saveAndOpenIssue}
                       selected={issueKey}
@@ -735,7 +747,8 @@ function IssueWorkbenchOwner({
                   </> : null}
                   <WorkIssueRows
                     apiClient={apiClient}
-                    items={oldestFirst(list.data.items)}
+                    items={oldestFirst(list.data.items).filter(item => user.role !== 'mechanic'
+                      || item.assignee?.login?.toLocaleLowerCase() !== user.username.toLocaleLowerCase())}
                     onClaimed={() => void list.refresh()}
                     onOpen={saveAndOpenIssue}
                     selected={issueKey}

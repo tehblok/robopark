@@ -728,6 +728,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
             <Panel
               actions={<Badge active={park.is_active ?? true} />}
               collapsible
+              defaultCollapsed
               key={park.id}
               storageKey={`admin-park-${park.id}`}
               title={park.name || `Парк #${park.id}`}

@@ -587,6 +587,13 @@ class ReportReturnIn(BaseModel):
     comment: str
 
 
+class ReportResubmitIn(BaseModel):
+    title: str = Field(min_length=1, max_length=256)
+    body: str = ""
+    tracker_key: str | None = Field(default=None, max_length=128)
+    tracker_url: str | None = Field(default=None, max_length=512)
+
+
 class ReportEscalateIn(BaseModel):
     comment: str
 

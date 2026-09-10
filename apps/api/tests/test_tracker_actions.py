@@ -54,11 +54,11 @@ def test_tracker_action_comment(client, db_session, seed_park_with_tracker, monk
     assert response.json()["action"] == "comment"
 
 
-def test_mechanic_can_only_assign_a_free_issue_to_self(
+def test_mechanic_claims_locally_without_tracker_login_or_upstream_assignment(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
-    seed_mechanic.tracker_login = "mech.login"
+    seed_mechanic.tracker_login = None
     db_session.commit()
     issue = {
         "key": "ROBOPARK-9",
@@ -72,8 +72,12 @@ def test_mechanic_can_only_assign_a_free_issue_to_self(
 
     monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: dict(issue))
     assigned = []
+    comments = []
     monkeypatch.setattr(
         tracker_client, "assign_issue", lambda **kwargs: assigned.append(kwargs["assignee"])
+    )
+    monkeypatch.setattr(
+        tracker_client, "add_comment", lambda **kwargs: comments.append(kwargs["text"])
     )
     login_as(client, "mech1", "secret")
 
@@ -81,9 +85,52 @@ def test_mechanic_can_only_assign_a_free_issue_to_self(
         client.post("/tracker/issues/ROBOPARK-9/assign", json={"assignee": "other"}).status_code
         == 403
     )
-    ok = client.post("/tracker/issues/ROBOPARK-9/assign", json={"assignee": "mech.login"})
+    ok = client.post("/tracker/issues/ROBOPARK-9/assign", json={"assignee": seed_mechanic.username})
     assert ok.status_code == 200
-    assert assigned == ["mech.login"]
+    assert assigned == []
+    assert "Задача взята в работу" in comments[0]
+    assert f"Инициатор: {seed_mechanic.username}" in comments[0]
+    detail = client.get("/tracker/issues/ROBOPARK-9")
+    assert detail.status_code == 200
+    assert detail.json()["assignee"]["login"] == seed_mechanic.username
+
+
+def test_mechanic_can_take_over_a_shiftmates_local_claim(
+    client, db_session, seed_mechanic, seed_royal, seed_park_with_tracker, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    issue = {
+        "key": "ROBOPARK-10",
+        "summary": "[447]",
+        "status": "Open",
+        "status_key": "open",
+        "queue": "ROBOPARK",
+        "tags": ["Alpha"],
+    }
+    from robopark_api.services import tracker_client
+    from robopark_api.services.tracker_claims import claim_issue
+
+    monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: dict(issue))
+    monkeypatch.setattr(tracker_client, "add_comment", lambda **_kwargs: {"id": "1"})
+    claim_issue(
+        db_session,
+        actor=seed_royal,
+        owner=seed_royal,
+        issue_key=issue["key"],
+        park_id=seed_park_with_tracker.id,
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.post(
+        f"/tracker/issues/{issue['key']}/assign",
+        json={"assignee": seed_mechanic.username},
+    )
+
+    assert response.status_code == 200
+    assert (
+        client.get(f"/tracker/issues/{issue['key']}").json()["assignee"]["login"]
+        == seed_mechanic.username
+    )
 
 
 def test_tracker_action_attach(client, db_session, seed_park_with_tracker, monkeypatch):
@@ -241,6 +288,16 @@ def test_mechanic_can_attach_when_write_disabled(
         lambda **_kwargs: {"id": "1", "text": "ok"},
     )
 
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key="ROBOPARK-1",
+        park_id=seed_park_with_tracker.id,
+    )
+
     login_as(client, "mech1", "secret")
     response = client.post(
         "/tracker/issues/ROBOPARK-1/attachments",
@@ -353,6 +410,16 @@ def test_mechanic_close_creates_close_review(
 ):
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     _mock_close_tracker(monkeypatch)
+
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key="ROBOPARK-1",
+        park_id=seed_park_with_tracker.id,
+    )
 
     login_as(client, "mech1", "secret")
     response = client.post("/tracker/issues/ROBOPARK-1/close")

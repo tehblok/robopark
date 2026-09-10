@@ -344,14 +344,14 @@ textarea {
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: var(--rp-font-size-caption);
+  font-size: var(--rp-font-size-body);
   font-weight: var(--rp-font-weight-bold);
   padding: var(--space-1) var(--space-2);
 }
 
 .panel-collapse:hover {
   border-color: var(--brand);
-  color: var(--brand);
+  color: var(--text);
 }
 
 .panel-collapsed {
@@ -3005,6 +3005,33 @@ textarea {
 }
 
 @media (max-width: 480px) {
+  .issue-actions .btn {
+    width: 100%;
+  }
+
+  .issue-assign-form,
+  .issue-comment-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .issue-action-row,
+  .issue-action-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .issue-action-footer {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .issue-action-row > .btn,
+  .issue-action-footer > .btn,
+  .issue-action-footer > a {
+    width: 100%;
+  }
+
   .stat-grid,
   .dashboard-kpi-grid {
     grid-template-columns: 1fr;

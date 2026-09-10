@@ -519,8 +519,8 @@ def test_mechanic_comments_filtered_to_platform_and_staff(
     assert [item["id"] for item in payload] == ["1", "2"]
 
 
-def test_mechanic_must_claim_issue_before_reading_detail(
-    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+def test_mechanic_can_open_unclaimed_issue_and_another_users_claim_to_take_over(
+    client, db_session, seed_mechanic, seed_royal, seed_park_with_tracker, monkeypatch
 ):
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     seed_mechanic.tracker_login = "mech.login"
@@ -538,15 +538,20 @@ def test_mechanic_must_claim_issue_before_reading_detail(
     monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: dict(issue))
     login_as(client, "mech1", "secret")
 
-    denied = client.get("/tracker/issues/ROBOPARK-1")
-    assert denied.status_code == 409
-    assert denied.json()["detail"] == "tracker_issue_claim_required"
-
-    issue["assignee"] = {"login": "mech.login", "display": "Mechanic"}
-    from robopark_api.services import tracker_cache
-
-    tracker_cache.invalidate_issue("ROBOPARK-1")
     assert client.get("/tracker/issues/ROBOPARK-1").status_code == 200
+
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=seed_royal,
+        owner=seed_royal,
+        issue_key="ROBOPARK-1",
+        park_id=seed_park_with_tracker.id,
+    )
+    claimed = client.get("/tracker/issues/ROBOPARK-1")
+    assert claimed.status_code == 200
+    assert claimed.json()["assignee"]["login"] == seed_royal.username
 
 
 def test_tracker_robot_search_royal(

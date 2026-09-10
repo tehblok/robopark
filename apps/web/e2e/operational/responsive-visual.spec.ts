@@ -74,22 +74,8 @@ async function assertResponsiveContracts(page: Page, width: number) {
 async function assertPhotoGeometry(page: Page) {
   const photo = page.locator('.rp-check-photo-frame img')
   await expect.poll(() => photo.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(2269)
-  const image = await photo.boundingBox()
-  const markers = page.locator('.rp-check-wheel')
-  await expect(markers).toHaveCount(6)
-  const expected = [[.202, .215], [.202, .465], [.202, .715], [.798, .215], [.798, .465], [.798, .715]]
-  const boxes = await markers.evaluateAll(elements => elements.map(element => {
-    const box = element.getBoundingClientRect()
-    return { x: box.x, y: box.y, width: box.width, height: box.height }
-  }))
-  for (const [index, box] of boxes.entries()) {
-    expect(Math.abs((box.x + box.width / 2 - image!.x) / image!.width - expected[index][0])).toBeLessThan(.005)
-    expect(Math.abs((box.y + box.height / 2 - image!.y) / image!.height - expected[index][1])).toBeLessThan(.005)
-    for (const other of boxes.slice(index + 1)) {
-      expect(box.x + box.width <= other.x || other.x + other.width <= box.x || box.y + box.height <= other.y || other.y + other.height <= box.y).toBe(true)
-    }
-  }
-  await expect(page.getByRole('button', { name: 'Переднее левое колесо: неисправность', exact: true })).toBeVisible()
+  await expect(page.locator('.rp-check-wheel')).toHaveCount(0)
+  await expect(page.locator('.rp-check-wheel-details')).toContainText('Неисправность: Переднее левое колесо')
 }
 
 async function assertWorkMode(page: Page, width: number) {

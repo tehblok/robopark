@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { EmergencySnapshot } from '../../api'
-import { buildRobotDetailModel } from './robotDetailModel'
+import { buildRobotDetailModel, formatRobotMode } from './robotDetailModel'
 
 const now = new Date('2026-09-02T09:05:00Z')
 function snapshot(overrides: Partial<EmergencySnapshot> = {}): EmergencySnapshot {
@@ -12,6 +12,11 @@ function snapshot(overrides: Partial<EmergencySnapshot> = {}): EmergencySnapshot
   }
 }
 describe('robot detail model', () => {
+  it.each([
+    ['AUTO', 'Автономный'], ['MANUAL', 'Ручной'], ['PAUSE', 'Пауза'], ['', 'Нет данных'], [null, 'Нет данных'],
+  ])('formats robot mode %s for people', (mode, expected) => {
+    expect(formatRobotMode(mode)).toBe(expected)
+  })
   it.each([
     [false, true, 'device-offline', 'warning'], [true, false, 'robot-offline', 'critical'],
     [true, true, 'online', 'success'], [true, null, 'unknown', 'neutral'],

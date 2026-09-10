@@ -79,4 +79,28 @@ describe('ReportDetail', () => {
     expect(onUpdated).not.toHaveBeenCalled()
     expect(screen.queryByText('Действие выполнено.')).not.toBeInTheDocument()
   })
+
+  it('lets the author edit and resubmit a returned report', async () => {
+    const actor = userEvent.setup()
+    const returned = { ...report, status: 'returned', return_comment: 'Add details' }
+    const reportResubmit = vi.fn(async () => ({ ...returned, status: 'open' }))
+    const apiClient = { ...api, reportResubmit } as ReportsApiClient
+
+    render(<ReportDetail
+      apiClient={apiClient}
+      canAct={false}
+      canResubmit
+      onClose={vi.fn()}
+      onUpdated={vi.fn()}
+      ownerKey="owner-a"
+      report={returned}
+      showEscalate={false}
+    />)
+
+    await actor.clear(screen.getByRole('textbox', { name: 'Заголовок' }))
+    await actor.type(screen.getByRole('textbox', { name: 'Заголовок' }), 'Уточнёно')
+    await actor.click(screen.getByRole('button', { name: 'Повторно отправить' }))
+
+    expect(reportResubmit).toHaveBeenCalledWith(42, expect.objectContaining({ title: 'Уточнёно' }))
+  })
 })

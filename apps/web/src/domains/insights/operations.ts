@@ -9,7 +9,7 @@ export const STATUS_LABELS: Record<string, string> = {
   diagnostics: 'Диагностика', waiting_team: 'Ожидает команду', waiting_parts: 'Ожидает запчасти', other: 'Другие',
 }
 export function allowedStatuses(role: string): string[] {
-  return role === 'driver' ? ['all', 'new', 'moving'] : role === 'mechanic' ? ['all', 'queued', 'diagnostics'] : Object.keys(STATUS_LABELS)
+  return role === 'driver' ? ['all', 'new', 'moving'] : Object.keys(STATUS_LABELS)
 }
 export function parseOperationsQuery(params: URLSearchParams, role: string): OperationsQuery {
   const rawDays = params.get('days')

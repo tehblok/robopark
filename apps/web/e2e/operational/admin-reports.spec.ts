@@ -116,10 +116,10 @@ test('late account PATCH updates its row without replacing a different selected 
   release()
   await response
   await settlePage(page)
-  await expect(detail.getByLabel('Tracker login', { exact: true })).toHaveValue('other.login')
+  await expect(detail.getByLabel('Tracker login', { exact: true })).toHaveCount(0)
   await expect(page.getByText('Изменения сохранены', { exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: 'Открыть аккаунт mechanic.shift', exact: true }).click()
-  await expect(detail.getByLabel('Tracker login', { exact: true })).toHaveValue('saved.first')
+  await expect(detail.getByLabel('Tracker login', { exact: true })).toHaveCount(0)
 })
 
 test('owner role displays immutable effective permissions despite empty stored defaults', async ({ page }, info) => {
@@ -167,13 +167,14 @@ for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark'] as c
       { method: 'DELETE', path: '/api/admin/users/2', handler: () => { removed = true; return { status: 204 } } },
     ] })
     await page.goto('/admin/users?park=7')
-    await page.getByRole('button', { name: /mechanic.shift/ }).click()
+    await page.getByRole('button', { name: 'Открыть аккаунт mechanic.shift', exact: true }).click()
     const detail = page.getByRole('region', { name: 'Детали' })
     await expect(detail).toBeVisible()
     await expect(detail.getByRole('region', { name: 'Итоговые доступы' })).toContainText('Создавать репорты')
     await evidence(page, info, `accounts-${theme}-${width}`)
     await detail.getByLabel('Новый пароль', { exact: true }).fill('NewPassword!2026')
     await detail.getByLabel('Требовать смену пароля при входе').check()
+    await detail.getByRole('button', { name: /Парки.*Выбрано: 1/ }).click()
     await detail.getByLabel('Северный парк', { exact: true }).uncheck()
     await detail.getByLabel('Южный парк', { exact: true }).check()
     await detail.getByRole('button', { name: 'Сохранить', exact: true }).click()

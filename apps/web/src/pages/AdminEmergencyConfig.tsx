@@ -187,7 +187,7 @@ function EmergencyFieldsConfig() {
       {displayError && <Alert tone="error">{displayError}</Alert>}
       {message && <Alert tone="success">{message}</Alert>}
 
-      <Panel collapsible hint="ID можно задать только при создании." storageKey="admin-emergency-create" title="Новый раздел">
+      <Panel collapsible defaultCollapsed hint="ID можно задать только при создании." storageKey="admin-emergency-create" title="Новый раздел">
         <form className="form-grid" onSubmit={createSection}>
           <label className="field">
             <span className="field-label">ID раздела</span>
@@ -229,6 +229,7 @@ function EmergencyFieldsConfig() {
           return (
             <Panel
               collapsible
+              defaultCollapsed
               actions={(
                 <>
                   <Badge active={section.is_enabled} />

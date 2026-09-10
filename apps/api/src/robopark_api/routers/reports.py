@@ -14,6 +14,7 @@ from robopark_api.schemas import (
     ReportCreateIn,
     ReportEscalateIn,
     ReportOut,
+    ReportResubmitIn,
     ReportReturnIn,
 )
 from robopark_api.services import rbac
@@ -173,6 +174,27 @@ def done_report(
     db: Session = Depends(get_db),
 ) -> ReportOut:
     report = _run_svc(lambda: reports_svc.done_report(db, user, report_id))
+    return _report_out(report)
+
+
+@router.post("/{report_id}/resubmit", response_model=ReportOut)
+def resubmit_report(
+    report_id: int,
+    payload: ReportResubmitIn,
+    user: User = Depends(_require_report_author),
+    db: Session = Depends(get_db),
+) -> ReportOut:
+    report = _run_svc(
+        lambda: reports_svc.resubmit_report(
+            db,
+            user,
+            report_id,
+            title=payload.title,
+            body=payload.body,
+            tracker_key=payload.tracker_key,
+            tracker_url=payload.tracker_url,
+        )
+    )
     return _report_out(report)
 
 

@@ -56,7 +56,38 @@ def test_list_assignee_candidates_filters_by_park(db_session, seed_park_with_tra
 
     found = list_assignee_candidates(db_session, operator, "mech")
     assert len(found) == 1
-    assert found[0]["login"] == "mech.startrek"
+    assert found[0]["login"] == "mech-assignee"
+
+
+def test_list_assignee_candidates_does_not_require_tracker_login(
+    db_session, seed_park_with_tracker
+):
+    mechanic = User(
+        username="local-mechanic",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "mechanic"),
+        access_status=AccessStatus.approved.value,
+        tracker_login=None,
+        is_active=True,
+    )
+    db_session.add(mechanic)
+    db_session.flush()
+    db_session.add(UserPark(user_id=mechanic.id, park_id=seed_park_with_tracker.id))
+    operator = User(
+        username="local-operator",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "operator"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(operator)
+    db_session.flush()
+    db_session.add(UserPark(user_id=operator.id, park_id=seed_park_with_tracker.id))
+    db_session.commit()
+
+    assert list_assignee_candidates(db_session, operator, "local-mech") == [
+        {"login": "local-mechanic", "display": "local-mechanic", "source": "park"}
+    ]
 
 
 def test_tracker_users_endpoint(client, db_session, seed_park_with_tracker):
@@ -91,7 +122,7 @@ def test_tracker_users_endpoint(client, db_session, seed_park_with_tracker):
     response = client.get("/tracker/users?q=api")
     assert response.status_code == 200
     body = response.json()
-    assert any(item["login"] == "api.login" for item in body)
+    assert any(item["login"] == "mech-api" for item in body)
 
 
 def test_change_password_clears_flag(client, db_session, seed_mechanic):

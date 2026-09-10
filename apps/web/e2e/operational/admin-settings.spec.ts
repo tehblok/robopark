@@ -109,7 +109,8 @@ for (const theme of ['light', 'dark'] as const) {
   test(`admin validates a replacement robot-check cookie at ${width}px ${theme}`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 720 })
     await page.addInitScript((preference) => localStorage.setItem('robopark-theme', preference), theme)
-    let submitted: { cookie: string; robot_number: string } | undefined
+    let submitted: { cookie: string } | undefined
+    let checked: { robot_number: string } | undefined
     await installOperational(page, {
       role: 'admin',
       routes: [
@@ -123,10 +124,13 @@ for (const theme of ['light', 'dark'] as const) {
           operator: false, mechanic: false, admin: false, royal: false, driver: false,
         } }) },
         { method: 'PUT', path: '/api/admin/settings/emergency-cookie', handler: async (request) => {
-          submitted = await request.json() as { cookie: string; robot_number: string }
+          submitted = await request.json() as { cookie: string }
           return { json: integration('valid') }
         } },
-        { method: 'POST', path: '/api/admin/settings/emergency-cookie/check', handler: () => ({ json: integration('valid') }) },
+        { method: 'POST', path: '/api/admin/settings/emergency-cookie/check', handler: async request => {
+          checked = await request.json() as { robot_number: string }
+          return { json: integration('valid') }
+        } },
       ],
     })
 
@@ -134,16 +138,18 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(page.getByText('Недействительна')).toBeVisible()
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
     await expectAdminFits(page)
-    const save = page.getByRole('button', { name: 'Сохранить и проверить' })
+    const save = page.getByRole('button', { name: 'Сохранить cookie' })
     await expect(save).toBeDisabled()
     await page.getByLabel('Cookie диагностики робота').fill('candidate-cookie')
     await page.getByLabel('Робот для проверки').fill('447')
     await expect(save).toBeEnabled()
     await save.click()
 
-    await expect.poll(() => submitted).toEqual({ cookie: 'candidate-cookie', robot_number: '447' })
+    await expect.poll(() => submitted).toEqual({ cookie: 'candidate-cookie' })
     await expect(page.getByText('Действительна')).toBeVisible()
     await expect(page.getByLabel('Cookie диагностики робота')).toHaveValue('')
+    await page.getByRole('button', { name: 'Проверить текущую' }).click()
+    await expect.poll(() => checked).toEqual({ robot_number: '447' })
     await expectAdminFits(page)
     await assertNoSeriousA11yViolations(page)
     await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); window.scrollTo(0, 0) })

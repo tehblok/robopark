@@ -158,7 +158,7 @@ def test_sla_bounded_list_retains_exact_total():
     "role,expected",
     [
         ("driver", ["ROBOPARK-1", "ROBOPARK-4"]),
-        ("mechanic", ["ROBOPARK-2", "ROBOPARK-3"]),
+        ("mechanic", [f"ROBOPARK-{i}" for i in range(1, 6)]),
         ("operator", [f"ROBOPARK-{i}" for i in range(1, 6)]),
         ("admin", [f"ROBOPARK-{i}" for i in range(1, 6)]),
         ("royal", [f"ROBOPARK-{i}" for i in range(1, 6)]),
@@ -182,6 +182,34 @@ def test_overview_role_defaults(client, db_session, seed_park_with_tracker, sour
         assert data["operators"] is None
 
 
+def test_overview_uses_local_task_owner_instead_of_tracker_assignee(
+    client, db_session, seed_park_with_tracker, source
+):
+    operator = account(db_session, seed_park_with_tracker, "operator")
+    mechanic = account(
+        db_session,
+        seed_park_with_tracker,
+        "mechanic",
+        username="local-mechanic",
+    )
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=operator,
+        owner=mechanic,
+        issue_key="ROBOPARK-1",
+        park_id=seed_park_with_tracker.id,
+    )
+    login_as(client, "subject", "secret")
+
+    data = client.get(f"/operations/overview?park_id={seed_park_with_tracker.id}&status=all").json()
+
+    first = next(row for row in data["tasks"] if row["key"] == "ROBOPARK-1")
+    assert first["assignee"]["login"] == "local-mechanic"
+    assert any(row["login"] == "local-mechanic" for row in data["workload"])
+
+
 def test_leadership_filter_counts_before_render_cap(
     client, db_session, seed_park_with_tracker, source
 ):
@@ -200,7 +228,7 @@ def test_leadership_filter_counts_before_render_cap(
     assert data["workload"][0]["overdue_count"] == 1
 
 
-@pytest.mark.parametrize("role,filter_value", [("driver", "queued"), ("mechanic", "new")])
+@pytest.mark.parametrize("role,filter_value", [("driver", "queued")])
 def test_overview_filter_cannot_expand_role_scope(
     client, db_session, seed_park_with_tracker, source, role, filter_value
 ):

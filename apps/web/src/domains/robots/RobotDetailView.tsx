@@ -50,7 +50,7 @@ export function RobotDetailView({ display = 'all', snapshot, reference, relatedW
             : relatedWorkLoading ? <LoadingState label="Загружаем связанные задачи" />
               : relatedWork.length ? (
                 <ul className="rp-robot-detail__tasks">
-                  {relatedWork.map((item) => <li key={item.key}>
+                  {relatedWork.filter((item, index, rows) => rows.findIndex(candidate => candidate.key === item.key) === index).map((item) => <li key={item.key}>
                     {canOpenWork ? <Link to={`/work/${encodeURIComponent(item.key)}${search}`} aria-label={`Открыть ${item.key}`}>{item.key}</Link> : <strong>{item.key}</strong>}
                     <p>{item.summary}</p><span>{item.status}</span>
                   </li>)}

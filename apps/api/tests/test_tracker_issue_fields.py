@@ -234,6 +234,6 @@ def test_issue_endpoint_exposes_new_fields(client, db_session, seed_royal, monke
     body = client.get("/tracker/issues/ROBOPARK-1").json()
 
     assert body["description"] == "Описание"
-    assert body["assignee"]["display"] == "Иван"
+    assert body["assignee"] is None
     assert body["priority"] == "Блокер"
     assert body["url"].endswith("/ROBOPARK-1")

@@ -234,7 +234,7 @@ test('driver canonical check loads sections, automatically refreshes, and reques
   ])
   await page.getByRole('tab', { name: 'Схема', exact: true }).click()
   await expect(page.getByRole('tab', { name: 'Схема', exact: true })).toHaveAttribute('aria-selected', 'true')
-  await expect(page.getByRole('button', { name: 'Переднее левое колесо: неисправность', exact: true })).toBeVisible()
+  await expect(page.locator('.rp-check-wheel-details')).toContainText('Неисправность: Переднее левое колесо')
   await page.getByRole('tab', { name: 'Задачи', exact: true }).click()
   await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
   await settlePage(page)
@@ -331,23 +331,9 @@ test('all six original views load only on selection with correct visible wheel m
     await expect(photo).toHaveCount(1)
     await expect.poll(() => photo.evaluate((element: HTMLImageElement) => [element.naturalWidth, element.naturalHeight])).toEqual([view.width, view.height])
     expect(images).toEqual(Array.from(new Set(['isometric.png', ...views.slice(0, index + 1).map(item => item.file)])))
-    const markers = page.locator('.rp-check-wheel')
-    await expect(markers).toHaveCount(view.wheels.length)
-    for (const [wheelIndex, label] of view.wheels.entries()) {
-      await expect(markers.nth(wheelIndex)).toHaveAttribute('aria-label', `${label} колесо: ${label === 'Переднее левое' ? 'неисправность' : 'ошибка не сообщена'}`)
-    }
-    if (view.wheels.length > 1 && view.label !== 'Сверху') {
-      const first = await markers.first().boundingBox()
-      const last = await markers.last().boundingBox()
-      expect(first!.x).toBeLessThan(last!.x)
-    }
+    await expect(page.locator('.rp-check-wheel')).toHaveCount(0)
   }
-  await page.getByRole('button', { name: 'Показать колёса сверху', exact: true }).click()
-  const failed = page.getByRole('button', { name: 'Переднее левое колесо: неисправность', exact: true })
-  await failed.focus()
-  await page.keyboard.press('Enter')
-  await expect(page.getByText('Выбрано: Переднее левое колесо', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: 'Открыть данные колёс', exact: true }).click()
+  await page.getByRole('tab', { name: 'Колёса', exact: true }).click()
   await expect(page.getByRole('tab', { name: 'Колёса', exact: true })).toHaveAttribute('aria-selected', 'true')
 })
 

@@ -5,6 +5,7 @@ import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
@@ -23,7 +24,12 @@ from robopark_api.services import tracker_signatures as sig_svc
 from robopark_api.services import tracker_submissions as submissions
 from robopark_api.services.login_throttle import client_ip
 from robopark_api.services.rbac import RoleSlug
-from robopark_api.services.tracker_claims import assignee_login, mechanic_login, mechanic_owns_issue
+from robopark_api.services.tracker_claims import (
+    claim_issue,
+    local_assignee,
+    mechanic_owns_issue,
+    release_claim,
+)
 from robopark_api.services.tracker_policy import ensure_action_allowed, issue_tags
 
 router = APIRouter(prefix="/tracker", tags=["tracker-actions"])
@@ -71,7 +77,11 @@ def _authorize(db: Session, user: User, issue: dict, action: str, request: Reque
     """Check the policy and audit a denial before propagating it."""
     try:
         ensure_action_allowed(db, user, issue, action)
-        if action != "assign" and not mechanic_owns_issue(user, issue):
+        if (
+            user.role == RoleSlug.MECHANIC
+            and action != "assign"
+            and not mechanic_owns_issue(db, user, issue)
+        ):
             raise HTTPException(status_code=409, detail="tracker_issue_claim_required")
     except HTTPException as exc:
         audit.record(
@@ -125,7 +135,22 @@ def _signed_tracker_text(
         park_name=ctx.park_name,
         mechanic_login=ctx.mechanic_login,
         operator_login=ctx.operator_login,
+        actor_login=ctx.actor_login,
     )
+
+
+def _publish_bot_note(token: str, db: Session, user: User, issue: dict, body: str) -> None:
+    """Accountability publication is best-effort and never blocks local work."""
+    try:
+        tracker_client.add_comment(
+            token=token,
+            key=str(issue.get("key") or ""),
+            text=_signed_tracker_text(db, user, issue, body),
+        )
+    except tracker_client.TrackerError:
+        # The local audit remains authoritative; a transient external failure
+        # must not strand the task between shifts again.
+        return
 
 
 def _mutation_lease(
@@ -298,28 +323,42 @@ def assign_issue(
     token = _require_token(db)
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "assign", request)
+    requested = payload.assignee.strip()
     if user.role == RoleSlug.MECHANIC:
-        own_login = mechanic_login(user)
-        if payload.assignee.casefold() != own_login.casefold():
+        own_names = {user.username.casefold()}
+        if user.tracker_login:
+            own_names.add(user.tracker_login.casefold())
+        if requested.casefold() not in own_names:
             raise HTTPException(status_code=403, detail="mechanic_can_only_claim_self")
-        current = assignee_login(issue)
-        if current and current.casefold() != own_login.casefold():
-            raise HTTPException(status_code=409, detail="tracker_issue_already_claimed")
-
-    submission, saved = submissions.begin(
-        db, user, key, "assign", request, payload.model_dump(), token
-    )
-    if saved is not None:
-        return TrackerActionOut(**saved)
-
-    try:
-        tracker_client.assign_issue(token=token, key=key, assignee=payload.assignee)
-    except tracker_client.TrackerError as exc:
-        submissions.uncertain(db, submission)
-        raise _upstream_error(db, user, "assign", key, exc, request) from exc
-    tracker_cache.invalidate_issue(key)
+        owner = user
+    else:
+        owner = db.scalar(
+            select(User).where(
+                User.is_active.is_(True),
+                or_(User.username == requested, User.tracker_login == requested),
+            )
+        )
+        if owner is None:
+            raise HTTPException(status_code=400, detail="tracker_local_assignee_not_found")
 
     park = sig_svc.resolve_park(db, issue)
+    if park is None:
+        raise HTTPException(status_code=409, detail="tracker_issue_park_required")
+
+    try:
+        claim_issue(
+            db,
+            actor=user,
+            owner=owner,
+            issue_key=key,
+            park_id=park.id,
+            replace=True,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+    _publish_bot_note(token, db, user, issue, f"Задача взята в работу: {owner.username}")
+
     audit.record(
         db,
         action=audit.ACTION_TRACKER_ASSIGN,
@@ -327,10 +366,10 @@ def assign_issue(
         park_id=park.id if park is not None else None,
         target_type="tracker_issue",
         target_id=key,
-        detail=f"assignee={payload.assignee}",
+        detail=f"assignee={owner.username}",
         client_ip=client_ip(request),
     )
-    return submissions.finish(db, submission, _ok(key, "assign", user, issue))
+    return _ok(key, "assign", user, {**issue, "assignee": local_assignee(db, issue)})
 
 
 @router.post(
@@ -349,16 +388,8 @@ def unassign_issue(
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "unassign", request)
 
-    submission, saved = submissions.begin(db, user, key, "unassign", request, {}, token)
-    if saved is not None:
-        return TrackerActionOut(**saved)
-
-    try:
-        tracker_client.unassign_issue(token=token, key=key)
-    except tracker_client.TrackerError as exc:
-        submissions.uncertain(db, submission)
-        raise _upstream_error(db, user, "unassign", key, exc, request) from exc
-    tracker_cache.invalidate_issue(key)
+    _publish_bot_note(token, db, user, issue, "Задача освобождена")
+    release_claim(db, key)
 
     park = sig_svc.resolve_park(db, issue)
     audit.record(
@@ -370,7 +401,7 @@ def unassign_issue(
         target_id=key,
         client_ip=client_ip(request),
     )
-    return submissions.finish(db, submission, _ok(key, "unassign", user, issue))
+    return _ok(key, "unassign", user, issue)
 
 
 @router.post(
@@ -423,6 +454,13 @@ def transition_issue(
         submissions.uncertain(db, submission)
         raise _upstream_error(db, user, "transition", key, exc, request) from exc
     tracker_cache.invalidate_issue(key)
+    _publish_bot_note(
+        token,
+        db,
+        user,
+        issue,
+        f"Статус изменён: {payload.transition}",
+    )
 
     park = sig_svc.resolve_park(db, issue)
     audit.record(
@@ -499,6 +537,7 @@ def close_issue(
         submissions.uncertain(db, submission)
         raise _upstream_error(db, user, "close", key, exc, request) from exc
     tracker_cache.invalidate_issue(key)
+    _publish_bot_note(token, db, user, issue, "Задача закрыта")
 
     audit.record(
         db,

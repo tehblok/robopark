@@ -29,7 +29,11 @@ from robopark_api.services import rbac, tracker_cache, tracker_client, tracker_f
 from robopark_api.services import tracker_signatures as sig_svc
 from robopark_api.services.rbac import RoleSlug
 from robopark_api.services.tracker_assignees import list_assignee_candidates
-from robopark_api.services.tracker_claims import mechanic_owns_issue
+from robopark_api.services.tracker_claims import (
+    local_assignee,
+    local_assignees,
+    mechanic_can_access_issue,
+)
 from robopark_api.services.tracker_policy import (
     allowed_park_tags_for_user,
     allowed_queues_for_user,
@@ -56,8 +60,8 @@ def _ensure_tracker_user(user: User, db: Session) -> None:
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
 
-def _enforce_mechanic_claim(user: User, issue: dict) -> None:
-    if not mechanic_owns_issue(user, issue):
+def _enforce_mechanic_claim(db: Session, user: User, issue: dict) -> None:
+    if not mechanic_can_access_issue(db, user, issue):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="tracker_issue_claim_required",
@@ -74,7 +78,17 @@ def _person_out(raw: object) -> TrackerPersonOut | None:
     return TrackerPersonOut(display=display or login, login=login)
 
 
-def _issue_out(issue: dict) -> TrackerIssueOut:
+def _issue_out(
+    issue: dict,
+    *,
+    db: Session | None = None,
+    assignee_override: dict[str, str] | None = None,
+) -> TrackerIssueOut:
+    assignee = assignee_override
+    if assignee is None and db is not None:
+        assignee = local_assignee(db, issue)
+    elif assignee is None and db is None:
+        assignee = issue.get("assignee")
     return TrackerIssueOut(
         key=str(issue.get("key") or ""),
         summary=str(issue.get("summary") or ""),
@@ -89,7 +103,7 @@ def _issue_out(issue: dict) -> TrackerIssueOut:
         tags=[str(tag) for tag in (issue.get("tags") or [])],
         priority=str(issue.get("priority") or ""),
         type=str(issue.get("type") or ""),
-        assignee=_person_out(issue.get("assignee")),
+        assignee=_person_out(assignee),
     )
 
 
@@ -107,7 +121,7 @@ def _detail_out(issue: dict, *, db: Session, user: User) -> TrackerIssueDetailOu
     attachments = [TrackerAttachmentOut(**item) for item in (issue.get("attachments") or [])]
     writable = can_write_tracker(db, user)
     return TrackerIssueDetailOut(
-        **_issue_out(issue).model_dump(),
+        **_issue_out(issue, db=db).model_dump(),
         resolution=str(issue.get("resolution") or ""),
         description=str(issue.get("description") or ""),
         reporter=_person_out(issue.get("reporter")),
@@ -334,7 +348,7 @@ def list_issues(
         ordered.reverse()
 
     excluded_key = (exclude_key or "").strip()
-    scoped: list[TrackerIssueOut] = []
+    scoped_raw: list[dict] = []
     seen_keys: set[str] = set()
     # Raw upstream data is shared; authorization is loaded afresh for this
     # response after the upstream wait and reused only across its rows.
@@ -369,10 +383,20 @@ def list_issues(
             except (TypeError, ValueError):
                 pass
         seen_keys.add(key)
-        scoped.append(_issue_out(issue))
+        scoped_raw.append(issue)
 
-    total = len(scoped)
-    page = scoped[offset : offset + limit]
+    total = len(scoped_raw)
+    page_raw = scoped_raw[offset : offset + limit]
+    assignments = local_assignees(db, [str(issue.get("key") or "") for issue in page_raw])
+    page = [
+        _issue_out(
+            {
+                **issue,
+                "assignee": assignments.get(str(issue.get("key") or "")),
+            }
+        )
+        for issue in page_raw
+    ]
     return TrackerIssuesOut(
         items=page,
         total=total,
@@ -415,7 +439,7 @@ def get_issue(
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     enforce_issue_scope(db, user, issue)
-    _enforce_mechanic_claim(user, issue)
+    _enforce_mechanic_claim(db, user, issue)
     return _detail_out(issue, db=db, user=user)
 
 
@@ -437,7 +461,7 @@ def get_comments(
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     enforce_issue_scope(db, user, issue)
-    _enforce_mechanic_claim(user, issue)
+    _enforce_mechanic_claim(db, user, issue)
 
     try:
         comments = tracker_cache.list_comments(token=token, key=key)
@@ -480,7 +504,7 @@ def get_transitions(
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     enforce_issue_scope(db, user, issue)
-    _enforce_mechanic_claim(user, issue)
+    _enforce_mechanic_claim(db, user, issue)
 
     try:
         transitions = tracker_cache.list_transitions(token=token, key=key)

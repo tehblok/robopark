@@ -2,7 +2,11 @@
   border-bottom: 1px solid var(--rp-divider);
   display: flex;
   gap: var(--rp-space-1);
+  max-width: 100%;
+  min-width: 0;
+  overscroll-behavior-inline: contain;
   overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .rp-tabs__tab {
@@ -56,4 +60,16 @@
 .rp-tab-panel {
   color: var(--rp-text);
   padding-block: var(--rp-space-4);
+}
+
+@media (max-width: 899px) {
+  .rp-tabs {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+
+  .rp-tabs__tab {
+    flex: 1 1 9rem;
+    min-width: 0;
+  }
 }

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { FIXED_TIME, installOperational, issue } from './fixtures'
 
-test('handoff persists and an uncertain comment retains its request key after reload', async ({ page }) => {
+test('handoff persists and a deliberate retry gets a fresh request key after reload', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 })
   await page.addInitScript(() => { Math.random = () => 0 })
   const requests: string[] = []
@@ -38,6 +38,6 @@ test('handoff persists and an uncertain comment retains its request key after re
   await page.getByRole('button', { name: 'Отправить', exact: true }).click()
   await expect.poll(() => requests.length).toBe(2)
   expect(requests[0]).not.toBe('')
-  expect(requests[1]).toBe(requests[0])
+  expect(requests[1]).not.toBe(requests[0])
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })

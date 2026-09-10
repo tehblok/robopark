@@ -43,7 +43,7 @@ it('starts a fresh authorization lifecycle for a different principal', async () 
 })
 
 it.each(['driver', 'mechanic', 'operator', 'admin', 'royal'])('%s loads tasks for the selected park from the shared endpoint', async role => {
-  const buckets = role === 'driver' ? ['new', 'moving'] : role === 'mechanic' ? ['queued', 'diagnostics'] : ['new', 'moving', 'queued', 'diagnostics']
+  const buckets = role === 'driver' ? ['new', 'moving'] : ['new', 'moving', 'queued', 'diagnostics']
   const data = snapshot({ tasks: buckets.map((bucket, index) => ({ ...snapshot().tasks[0], key: `RP-${index}`, bucket, summary: `Задача ${bucket}` })), status_options: snapshot().status_options.filter(option => option.key === 'all' || buckets.includes(option.key)) })
   const client = { operationsOverview: vi.fn(async () => data) }
   render(tree({ user: makeUser({ role }), client }))

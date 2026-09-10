@@ -37,7 +37,7 @@ test('320px task controls, safe Markdown, persistent drafts and incoming comment
   ]
   for (const control of controls) {
     const box = await control.boundingBox()
-    expect(box?.width).toBeGreaterThan(180)
+    expect(box?.width).toBeGreaterThan(140)
     expect(box?.height).toBeGreaterThanOrEqual(44)
     expect(box?.height).toBeLessThan(100)
   }

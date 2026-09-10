@@ -45,7 +45,7 @@ export function IssueList({
       </div>
 
       <ul className="issue-list">
-        {items.map((item) => {
+        {items.filter((item, index, rows) => rows.findIndex(candidate => candidate.key === item.key) === index).map((item) => {
           const priority = priorityLabel(item.priority)
           const age = formatAge(item.hours_created)
           const isSelected = item.key === selected

@@ -37,6 +37,7 @@ def test_metadata_has_required_tables():
         "tracker_presence",
         "tracker_submissions",
         "tracker_handoffs",
+        "tracker_claims",
         "campaigns",
         "campaign_parks",
         "campaign_submissions",
@@ -46,10 +47,10 @@ def test_metadata_has_required_tables():
     }
 
 
-def test_alembic_head_is_inventory():
+def test_alembic_head_is_local_task_claims():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0024_inventory"]
+    assert script.get_heads() == ["0025_local_task_claims"]
 
 
 def test_diagnostic_rules_upgrade_from_previous_head(sqlite_database_url, monkeypatch):
@@ -407,7 +408,7 @@ def test_inventory_upgrade_preserves_existing_data(sqlite_database_url, monkeypa
                 "INSERT INTO parks (id, name, tag, is_active) VALUES (1, 'Existing', 'existing', 1)"
             )
         )
-    command.upgrade(config, "0024_inventory")
+    command.upgrade(config, "0025_local_task_claims")
     assert {
         "tracker_presence",
         "tracker_submissions",
@@ -418,6 +419,7 @@ def test_inventory_upgrade_preserves_existing_data(sqlite_database_url, monkeypa
         "inventory_components",
         "inventory_parts",
         "inventory_movements",
+        "tracker_claims",
     } <= set(inspect(engine).get_table_names())
     with engine.connect() as connection:
         assert (

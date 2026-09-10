@@ -128,7 +128,40 @@ it('requires a mechanic to claim a task before opening it', async () => {
   const take = await screen.findByRole('button', { name: 'Взять в работу' })
   expect(screen.queryByRole('button', { name: /Открыть задачу/ })).not.toBeInTheDocument()
   fireEvent.click(take)
-  await waitFor(() => expect(client.trackerAssign).toHaveBeenCalledWith(issue.key, 'mech.login'))
+  await waitFor(() => expect(client.trackerAssign).toHaveBeenCalledWith(issue.key, 'mech1'))
+})
+
+it('shows a claimed mechanic task only once', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
+  const owned = { ...issue, assignee: { display: 'mech1', login: 'mech1' } }
+  const client = apiClient({ trackerIssues: vi.fn(async () => page([owned])) })
+
+  renderWorkbench({ client, selectedIssue: '', currentUser: mechanic })
+
+  expect(await screen.findAllByRole('button', {
+    name: `Открыть задачу ${issue.key}: ${issue.summary}`,
+  })).toHaveLength(1)
+})
+
+it('lets a mechanic inspect and explicitly take over a shiftmates task', async () => {
+  const mechanic: User = { ...user, username: 'mech2', role: 'mechanic', tracker_login: null }
+  const claimedByShiftmate = { ...issue, assignee: { display: 'Сменщик', login: 'mech1' } }
+  const client = apiClient({ trackerIssues: vi.fn(async () => page([claimedByShiftmate])) })
+  renderWorkbench({ client, selectedIssue: '', currentUser: mechanic })
+
+  expect(await screen.findByRole('button', {
+    name: `Открыть задачу ${issue.key}: ${issue.summary}`,
+  })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Взять вместо сменщика' }))
+  await waitFor(() => expect(client.trackerAssign).toHaveBeenCalledWith(issue.key, 'mech2'))
+})
+
+it('renders a duplicate upstream task key only once', async () => {
+  const client = apiClient({ trackerIssues: vi.fn(async () => page([issue, issue])) })
+  renderWorkbench({ client, selectedIssue: '' })
+  expect(await screen.findAllByRole('button', {
+    name: `Открыть задачу ${issue.key}: ${issue.summary}`,
+  })).toHaveLength(1)
 })
 
 function Harness({ children }: { children: ReactNode }) {
@@ -212,7 +245,7 @@ afterEach(() => {
 describe('IssueWorkbench', () => {
   it('shows the write-off control in the main tab only to the mechanic assigned to the task', async () => {
     const mechanic: User = { ...user, role: 'mechanic', username: 'mech', tracker_login: 'Mech.Login' }
-    const owned = { ...issue, assignee: { display: 'Mechanic', login: 'mech.login' } }
+    const owned = { ...issue, assignee: { display: 'Mechanic', login: 'mech' } }
     renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => owned) }), currentUser: mechanic })
 
     expect(await screen.findByText('Использовать запчасть')).toBeInTheDocument()

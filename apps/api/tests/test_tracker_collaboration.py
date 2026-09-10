@@ -10,7 +10,7 @@ from robopark_api.services import platform_settings, tracker_client
 
 
 @pytest.fixture
-def tracker_setup(client, db_session, seed_mechanic, monkeypatch):
+def tracker_setup(client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch):
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     issue = {
         "key": "ROBOPARK-1",
@@ -21,6 +21,15 @@ def tracker_setup(client, db_session, seed_mechanic, monkeypatch):
         "assignee": {"login": "mech1", "display": "Mechanic"},
     }
     monkeypatch.setattr(tracker_client, "get_issue", lambda **kw: dict(issue))
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key="ROBOPARK-1",
+        park_id=seed_park_with_tracker.id,
+    )
     login_as(client, "mech1", "secret")
     return issue
 
@@ -65,6 +74,34 @@ def test_unknown_outcome_never_replayed(client, tracker_setup, monkeypatch):
     assert first.status_code == 409
     assert second.json()["detail"] == "tracker_submission_uncertain"
     assert len(written) == 1
+
+
+def test_old_unknown_outcome_can_be_retried(client, db_session, tracker_setup, monkeypatch):
+    import time
+
+    from robopark_api.collaboration_models import TrackerSubmission
+
+    written = []
+
+    def lost_response(**kw):
+        written.append(kw)
+        raise tracker_client.TrackerError("timeout after acceptance")
+
+    monkeypatch.setattr(tracker_client, "add_comment", lost_response)
+    first = client.post(
+        "/tracker/issues/ROBOPARK-1/comment", json={"text": "done"}, headers=headers()
+    )
+    assert first.status_code == 409
+    row = db_session.query(TrackerSubmission).one()
+    row.created_at = time.time() - 61
+    db_session.commit()
+
+    second = client.post(
+        "/tracker/issues/ROBOPARK-1/comment", json={"text": "done"}, headers=headers()
+    )
+
+    assert second.status_code == 409
+    assert len(written) == 2
 
 
 def test_conflict_checks_uncached_state_before_write(client, tracker_setup, monkeypatch):
@@ -236,7 +273,7 @@ def test_submission_identity_isolated_by_actor_task_and_action(
         ("comment", "ROBOPARK-1"),
         ("comment", "ROBOPARK-1"),
         ("comment", "ROBOPARK-2"),
-        ("unassign", "ROBOPARK-2"),
+        ("comment", "ROBOPARK-2"),
     ]
 
 
@@ -282,23 +319,11 @@ def test_tracker_write_timeout_not_retried_by_transport(monkeypatch):
     assert len(written) == 1
 
 
-def test_two_actors_assigning_same_snapshot_are_serialized_and_second_must_review(
-    db_engine, db_session, seed_mechanic, seed_royal, monkeypatch
+def test_assignments_are_local_and_staff_can_take_over(
+    client, db_session, seed_mechanic, seed_royal, seed_park_with_tracker, monkeypatch
 ):
-    import threading
-    from concurrent.futures import ThreadPoolExecutor
-
-    from fastapi import Depends, FastAPI, Header
-    from fastapi.testclient import TestClient
-    from sqlalchemy.orm import Session
-
-    from robopark_api.db import get_db
-    from robopark_api.deps import require_user
-    from robopark_api.models import User
-    from robopark_api.routers.tracker_actions import router
-
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
-    seed_mechanic.tracker_login = "alice"
+    seed_mechanic.tracker_login = None
     db_session.commit()
     issue = {
         "key": "ROBOPARK-1",
@@ -307,61 +332,33 @@ def test_two_actors_assigning_same_snapshot_are_serialized_and_second_must_revie
         "queue": "ROBOPARK",
         "tags": ["Alpha"],
     }
-    entered = threading.Event()
-    release = threading.Event()
-    writes = []
     monkeypatch.setattr(tracker_client, "get_issue", lambda **kwargs: dict(issue))
+    monkeypatch.setattr(
+        tracker_client,
+        "assign_issue",
+        lambda **kwargs: pytest.fail("local assignment must not call Tracker assignment"),
+    )
 
-    def assign(**kwargs):
-        writes.append(kwargs["assignee"])
-        entered.set()
-        assert release.wait(timeout=5)
-        issue["assignee"] = {"login": kwargs["assignee"]}
-
-    monkeypatch.setattr(tracker_client, "assign_issue", assign)
-    app = FastAPI()
-    app.include_router(router)
-
-    def database():
-        with Session(db_engine) as db:
-            yield db
-
-    def actor(x_actor: int = Header(), db: Session = Depends(get_db)):
-        return db.get(User, x_actor)
-
-    app.dependency_overrides[get_db] = database
-    app.dependency_overrides[require_user] = actor
-    first_headers = {**headers("first-request", ""), "X-Actor": str(seed_mechanic.id)}
-    second_headers = {**headers("second-request", ""), "X-Actor": str(seed_royal.id)}
-    with (
-        TestClient(app) as first,
-        TestClient(app) as second,
-        ThreadPoolExecutor(max_workers=1) as pool,
-    ):
-        pending = pool.submit(
-            first.post,
+    login_as(client, seed_mechanic.username, "secret")
+    assert (
+        client.post(
             "/tracker/issues/ROBOPARK-1/assign",
-            json={"assignee": "alice"},
-            headers=first_headers,
-        )
-        try:
-            assert entered.wait(timeout=5)
-            busy = second.post(
-                "/tracker/issues/ROBOPARK-1/assign",
-                json={"assignee": "bob"},
-                headers=second_headers,
-            )
-            assert busy.status_code == 409
-            assert busy.json()["detail"] == "tracker_task_busy"
-        finally:
-            release.set()
-        assert pending.result(timeout=5).status_code == 200
-        stale = second.post(
-            "/tracker/issues/ROBOPARK-1/assign", json={"assignee": "bob"}, headers=second_headers
-        )
-        assert stale.status_code == 409
-        assert stale.json()["detail"] == "tracker_state_conflict"
-    assert writes == ["alice"]
+            json={"assignee": seed_mechanic.username},
+        ).status_code
+        == 200
+    )
+    login_as(client, seed_royal.username, "secret")
+    assert (
+        client.post(
+            "/tracker/issues/ROBOPARK-1/assign",
+            json={"assignee": seed_royal.username},
+        ).status_code
+        == 200
+    )
+
+    from robopark_api.services.tracker_claims import local_assignee
+
+    assert local_assignee(db_session, issue)["login"] == seed_royal.username
 
 
 def test_sdk_retries_disabled_for_durable_mutations(monkeypatch):

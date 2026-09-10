@@ -66,7 +66,8 @@ def vin_allowed_for_user(db: Session, user: User, vin: str) -> bool:
         seen_queues.add(queue)
         issues = tracker_cache.search_robot_tickets(token=token, queue=queue, query=query)
         if any(
-            is_issue_in_scope(db, user, issue) and mechanic_owns_issue(user, issue)
+            is_issue_in_scope(db, user, issue)
+            and (user.role != RoleSlug.MECHANIC or mechanic_owns_issue(db, user, issue))
             for issue in issues
         ):
             return True

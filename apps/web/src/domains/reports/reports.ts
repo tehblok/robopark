@@ -9,6 +9,7 @@ export type ReportsApiClient = Pick<typeof api,
   | 'reportDone'
   | 'reportEscalate'
   | 'reportReturn'
+  | 'reportResubmit'
   | 'reportsBadge'
   | 'reportsInbox'
   | 'reportsMine'

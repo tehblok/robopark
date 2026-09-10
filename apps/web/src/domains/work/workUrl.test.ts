@@ -28,6 +28,10 @@ describe('work URL state', () => {
     expect(parseWorkUrl(new URLSearchParams(), { queue: 'ROBOPARK', status: 'new' }).filters.status).toBe('new')
   })
 
+  it('supports all open tasks as the mechanic default', () => {
+    expect(parseWorkUrl(new URLSearchParams(), { queue: 'ROBOPARK', status: 'all' }).filters.status).toBeUndefined()
+  })
+
   it.each(['closed', 'resolved'])('normalizes legacy completed status %s to the first page of open blockers', (status) => {
     expect(parseWorkUrl(new URLSearchParams({ status, page: '3' }), defaults)).toEqual({
       filters: { queue: 'ROBOPARK' }, sort: 'oldest', page: 1,

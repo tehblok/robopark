@@ -171,7 +171,7 @@ function ReportsOwner({
   }
 
   const mine = mineRes.data ?? []
-  const inbox = (inboxRes.data ?? []).filter((report) => report.status === 'open')
+  const inbox = inboxRes.data ?? []
   const visibleMine = statusFilter === 'all'
     ? mine
     : mine.filter((report) => report.status === statusFilter)
@@ -185,7 +185,7 @@ function ReportsOwner({
   const isAdminInbox = role === 'admin' || role === 'royal'
   const inboxTitle = isAdminInbox ? 'Эскалации' : 'Входящие'
   const inboxHint = role === 'royal'
-    ? 'Все открытые репорты и системные уведомления по доступным паркам.'
+    ? 'Все репорты и системные уведомления по доступным паркам.'
     : isAdminInbox
     ? 'Открытые эскалации от операторов. Фильтр по парку — в верхней панели.'
     : 'Открытые репорты по выбранному парку.'
@@ -313,7 +313,7 @@ function ReportsOwner({
           ) : (
             <Panel collapsible hint={inboxHint} storageKey="reports-inbox" title={inboxTitle}>
               <ReportList
-                emptyMessage={role === 'royal' ? 'Нет открытых репортов.' : 'Нет открытых репортов для выбранного парка.'}
+                emptyMessage={role === 'royal' ? 'Репортов пока нет.' : 'Нет открытых репортов для выбранного парка.'}
                 loading={showListSkeleton && visiblePane === 'inbox'}
                 onSelect={(report) => openReport(report, true)}
                 reports={inbox}
@@ -337,6 +337,7 @@ function ReportsOwner({
             <ReportDetail
               apiClient={apiClient}
               canAct={visiblePane === 'inbox' && inboxEnabled}
+              canResubmit={selectedReport.author_user_id === user.id && selectedReport.status === 'returned'}
               key={selectedReport.id}
               onClose={closeDetail}
               onUpdated={() => void handleDetailUpdated()}

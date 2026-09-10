@@ -15,6 +15,7 @@ import { DiagnosticEventDetails } from './DiagnosticEventDetails'
 import { chooseAutomaticView, isLocalizedEvent, leadingDiagnosticEvent } from './diagnosticPresentation'
 import { checkAccessIdentity, checkTabs, classifyCheckError } from './robotCheckUrl'
 import { ROBOT_POLL_MS } from './polling'
+import { formatRobotMode } from './robotDetailModel'
 import { useVisibilityPolling } from './useVisibilityPolling'
 import './robot-check.css'
 
@@ -128,7 +129,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
   const detail = <div className="rp-check-detail">
       <RobotCheckTabs tabs={tabs} activeId={tab.id} onChange={onTabChange} />
       <section className="rp-check-panel" role="tabpanel" tabIndex={0} id={`robot-check-panel-${tab.id}`} aria-labelledby={`robot-check-tab-${tab.id}`}>
-        {tab.kind === 'state' ? <dl className="rp-check-telemetry"><div><dt>Режим</dt><dd>{snapshot?.mode ?? 'Нет данных'}</dd></div><div><dt>Связь робота</dt><dd>{snapshot?.online == null ? 'Нет данных' : snapshot.online ? 'На связи' : 'Не в сети'}</dd></div><div><dt>Заряд</dt><dd>{snapshot?.charge_percent == null ? 'Нет данных' : `${snapshot.charge_percent} %`}</dd></div></dl> : null}
+        {tab.kind === 'state' ? <dl className="rp-check-telemetry"><div><dt>Режим</dt><dd>{formatRobotMode(snapshot?.mode)}</dd></div><div><dt>Связь робота</dt><dd>{snapshot?.online == null ? 'Нет данных' : snapshot.online ? 'На связи' : 'Не в сети'}</dd></div><div><dt>Заряд</dt><dd>{snapshot?.charge_percent == null ? 'Нет данных' : `${snapshot.charge_percent} %`}</dd></div></dl> : null}
         {tab.kind === 'errors' ? <>
           {snapshot?.error_banner ? <p role="status">{snapshot.error_banner}</p> : !events.length ? <p>Сообщения об ошибках не получены.</p> : null}
           {events.length ? <>
@@ -147,7 +148,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
           <InspectionMap lat={snapshot.lat} lon={snapshot.lon} follow={follow} onUserPan={() => setFollow(false)} />
         </> : <EmptyState title="Координаты не получены" /> : null}
         {tab.kind === 'telemetry' ? <dl className="rp-check-telemetry">
-          {([['Скорость', snapshot?.speed, 'м/с'], ['Заряд', snapshot?.charge_percent, '%'], ['Батарея 1', snapshot?.battery1_percent, '%'], ['Батарея 2', snapshot?.battery2_percent, '%'], ['Диск', snapshot?.disk_percent, '%'], ['Режим', snapshot?.mode], ['ICP', snapshot?.icp_label], ['LTE', snapshot?.lte_label], ['Соединение', snapshot?.connection === 'wire' ? 'Проводное' : snapshot?.connection === 'lte' ? 'Мобильное' : null]] as const).map(([label, value, unit]) => <div key={label}><dt>{label}</dt><dd>{value == null ? 'Нет данных' : `${value}${unit ? ` ${unit}` : ''}`}</dd></div>)}
+          {([['Скорость', snapshot?.speed, 'м/с'], ['Заряд', snapshot?.charge_percent, '%'], ['Батарея 1', snapshot?.battery1_percent, '%'], ['Батарея 2', snapshot?.battery2_percent, '%'], ['Диск', snapshot?.disk_percent, '%'], ['Режим', formatRobotMode(snapshot?.mode)], ['ICP', snapshot?.icp_label], ['LTE', snapshot?.lte_label], ['Соединение', snapshot?.connection === 'wire' ? 'Проводное' : snapshot?.connection === 'lte' ? 'Мобильное' : null]] as const).map(([label, value, unit]) => <div key={label}><dt>{label}</dt><dd>{value == null ? 'Нет данных' : `${value}${unit ? ` ${unit}` : ''}`}</dd></div>)}
         </dl> : null}
         {tab.kind === 'scheme' ? snapshot ? <RobotDiagnosticDiagram faults={snapshot.wheels_fault} events={events} view={diagnosticSelection.view} selectedEventId={diagnosticSelection.eventId}
           onViewChange={view => { automaticApplied.current = true; setDiagnosticSelection(current => ({ ...current, view })) }}

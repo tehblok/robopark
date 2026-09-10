@@ -157,6 +157,15 @@ it('does not infer report creation from resolve or admin capabilities', async ()
   expect(screen.queryByRole('link', { name: 'Создать репорт' })).not.toBeInTheDocument()
 })
 
+it('shows royal the complete report history without calling it open-only', async () => {
+  const completed = { ...report(12, 'Проверка завершена'), status: 'done' }
+  const royal = { ...userA, role: 'royal', permissions: ['nav.reports', 'reports.resolve'] }
+  render(tree(royal, client({ reportsInbox: vi.fn(async () => [completed]) }), '/reports?pane=inbox'))
+
+  expect(await screen.findByRole('button', { name: /Проверка завершена/ })).toBeVisible()
+  expect(screen.getByText('Все репорты и системные уведомления по доступным паркам.')).toBeVisible()
+})
+
 it('does not refresh a retired owner list after a pending post-mutation detail load completes', async () => {
   const actor = userEvent.setup()
   const lateDetail = deferred<Report>()

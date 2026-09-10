@@ -89,15 +89,15 @@ for (const theme of ['light', 'dark'] as const) for (const width of [320, 390, 7
   })
 }
 
-test('failed photo suppresses server markers but preserves the selected explanation and legacy wheels', async ({ page }) => {
+test('failed photo suppresses markers but preserves the selected explanation and wheel fault text', async ({ page }) => {
   await installOperational(page, { snapshot: { ...snapshot, diagnostic_events: events } })
   await page.route(/\/assets\/robots\/front\.png(?:\?.*)?$/, route => route.request().resourceType() === 'image' ? route.abort() : route.continue())
   await page.goto(`/robots/${snapshot.vin}?park=7&tab=scheme`)
   await expect(page.getByRole('img', { name: 'Схема модели робота', exact: true })).toBeVisible()
   await expect(page.locator('.rp-check-event-marker')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Выбранная ошибка' })).toContainText(lidar.description)
-  await page.getByRole('button', { name: 'Переднее левое колесо: неисправность', exact: true }).click()
-  await expect(page.getByText('Выбрано: Переднее левое колесо', { exact: true })).toBeVisible()
+  await expect(page.locator('.rp-check-wheel')).toHaveCount(0)
+  await expect(page.locator('.rp-check-wheel-details')).toContainText('Неисправность: Переднее левое колесо')
 })
 
 async function assertExplanationUncovered(page: Page) {

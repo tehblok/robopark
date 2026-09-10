@@ -12,6 +12,19 @@ export type RobotDetailViewModel = {
   criticalReason: string | null
 }
 
+const ROBOT_MODES: Record<string, string> = {
+  AUTO: 'Автономный',
+  MANUAL: 'Ручной',
+  PAUSE: 'Пауза',
+  IDLE: 'Ожидание',
+}
+
+export function formatRobotMode(value: string | null | undefined): string {
+  const mode = value?.trim()
+  if (!mode) return 'Нет данных'
+  return ROBOT_MODES[mode.toUpperCase()] ?? mode
+}
+
 export function buildRobotDetailModel(snapshot: EmergencySnapshot, browserOnline: boolean, now = new Date()): RobotDetailViewModel {
   const age = Math.max(0, now.getTime() - new Date(snapshot.observed_at).getTime())
   const freshness: Freshness = !browserOnline ? 'offline' : age <= 30_000 ? 'live' : age <= 300_000 ? 'fresh' : 'stale'

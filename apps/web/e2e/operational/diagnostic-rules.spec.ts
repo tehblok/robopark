@@ -57,7 +57,6 @@ for (const width of [390, 1440]) test(`persisted rule controls real Emergency sn
     await expect(list).toContainText('UNMAPPED_SENSOR_42'); await expect(list).toContainText('Без локализации')
     await page.getByRole('tab', { name: 'Схема', exact: true }).click()
     await page.getByRole('button', { name: 'Сверху', exact: true }).click()
-    await page.getByRole('button', { name: 'Переднее левое колесо: неисправность', exact: true }).click()
     await expect(page.locator('.rp-check-wheel-details')).toContainText('Переднее левое колесо')
 
     const { id: _id, ...second } = saved
