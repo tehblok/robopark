@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shutil
 import stat
 import time
 from contextlib import ExitStack, suppress
@@ -15,6 +16,8 @@ TAG = rf"(?:{UUID}|release-[a-f0-9]{{64}})"
 DIGEST = r"sha256:[a-f0-9]{64}"
 MAX_RECORDS = 256
 MAX_COMMANDS = 32
+BUILDER_CACHE_MIN_FREE = 2 * 1024**3
+BUILDER_CACHE_TIMEOUT = 30
 
 
 def _records(paths):
@@ -102,15 +105,12 @@ def record(paths, release, tag, document):
 
 
 def _protected(paths, records):
-    keep = set()
-    for link in (paths.current, paths.previous):
-        if link == paths.previous and not link.exists() and not link.is_symlink():
-            continue
-        target = link.resolve(strict=True)
-        if not link.is_symlink() or target.parent != paths.releases.resolve():
-            raise ValueError("invalid_release_link")
-        keep.add(target.name)
-    from .updater import _load_journal
+    from .updater import _load_journal, _retained_successful_releases
+
+    try:
+        keep = _retained_successful_releases(paths)
+    except Exception as exc:
+        raise ValueError("invalid_release_link") from exc
 
     journal = _load_journal(paths)
     if journal and journal["phase"] not in {"succeeded", "rolled_back", "failed"}:
@@ -229,11 +229,41 @@ def cleanup(paths, runner):
     return result
 
 
+def cleanup_builder_cache(paths, runner):
+    """Reclaim only stale unused build cache when the host is under disk pressure."""
+    result = {"attempted": False, "blocked": False}
+    try:
+        if shutil.disk_usage(paths.var).free >= BUILDER_CACHE_MIN_FREE:
+            return result
+        result["attempted"] = True
+        runner.run(
+            [
+                "docker",
+                "builder",
+                "prune",
+                "-f",
+                "--filter",
+                "until=168h",
+                "--keep-storage",
+                "2GB",
+            ],
+            timeout=BUILDER_CACHE_TIMEOUT,
+        )
+    except Exception:
+        result["blocked"] = True
+    finally:
+        with suppress(OSError):
+            atomic_write_json(paths.state / "builder-cache-retention.json", result)
+    return result
+
+
 def scheduled(paths, runner):
     from .state import HostBusy
 
     try:
         with host_operation(paths):
-            return cleanup(paths, runner)
+            result = cleanup(paths, runner)
+            result["builder_cache"] = cleanup_builder_cache(paths, runner)
+            return result
     except HostBusy:
         return {"busy": True}

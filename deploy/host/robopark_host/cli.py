@@ -225,9 +225,12 @@ def _retain_after_terminal_update(paths: HostPaths, state: str) -> None:
     if state not in {"current_healthy", "previous_restored", "rejected"}:
         return
     from .retention import retain_artifacts
+    from .image_retention import scheduled
+    from .updater import SystemRunner
 
     with suppress(OSError, ValueError):
         retain_artifacts(paths)
+        scheduled(paths, SystemRunner())
 
 
 COMMAND_HANDLERS: dict[str, Handler] = {

@@ -1,6 +1,7 @@
 """Prune only authenticated host-owned obsolete production images."""
 
 import hashlib
+from types import SimpleNamespace
 
 import pytest
 from robopark_host.updater import apply_release, reconcile_after_exit
@@ -42,10 +43,10 @@ def test_four_versions_remove_old_tags_but_preserve_current_previous_and_foreign
         jobs.append(request.job_id)
         assert apply_release(request, host.paths, host.runner).error is None
         assert reconcile_after_exit(host.paths, host.runner).state == "current_healthy"
-    for job in jobs[:2]:
+    for job in jobs[:1]:
         assert "robopark-api:" + job in removals
         assert "robopark-web:" + job in removals
-    for job in jobs[2:]:
+    for job in jobs[1:]:
         assert "robopark-api:" + job not in removals
         assert "robopark-web:" + job not in removals
     assert not any(tag.startswith("sha256:") for tag in removals)
@@ -98,6 +99,66 @@ class Images:
         self.removed.append(argv[-1])
         self.images.pop(argv[-1])
         return b""
+
+
+class Builder:
+    def __init__(self, error=None):
+        self.commands = []
+        self.error = error
+
+    def run(self, argv, **kwargs):
+        self.commands.append((argv, kwargs["timeout"]))
+        if self.error:
+            raise self.error
+        return b""
+
+
+def test_builder_cache_cleanup_is_disk_pressure_bounded(host, monkeypatch):
+    from robopark_host import image_retention
+
+    runner = Builder()
+    monkeypatch.setattr(
+        image_retention.shutil, "disk_usage", lambda _: SimpleNamespace(free=2 * 1024**3)
+    )
+    assert image_retention.cleanup_builder_cache(host.paths, runner) == {
+        "attempted": False,
+        "blocked": False,
+    }
+    assert runner.commands == []
+
+    monkeypatch.setattr(
+        image_retention.shutil, "disk_usage", lambda _: SimpleNamespace(free=2 * 1024**3 - 1)
+    )
+    assert image_retention.cleanup_builder_cache(host.paths, runner) == {
+        "attempted": True,
+        "blocked": False,
+    }
+    assert runner.commands == [
+        (
+            [
+                "docker",
+                "builder",
+                "prune",
+                "-f",
+                "--filter",
+                "until=168h",
+                "--keep-storage",
+                "2GB",
+            ],
+            30,
+        )
+    ]
+
+
+@pytest.mark.parametrize("error", [TimeoutError(), ValueError("docker failed")])
+def test_builder_cache_cleanup_records_runner_failures(host, monkeypatch, error):
+    from robopark_host import image_retention
+
+    monkeypatch.setattr(
+        image_retention.shutil, "disk_usage", lambda _: SimpleNamespace(free=0)
+    )
+    result = image_retention.cleanup_builder_cache(host.paths, Builder(error))
+    assert result == {"attempted": True, "blocked": True}
 
 
 def test_running_image_and_foreign_retag_are_preserved_with_diagnostic(host):
