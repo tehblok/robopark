@@ -289,3 +289,32 @@ def test_crashed_upload_temporary_file_is_bounded_and_cleaned(host_paths):
     record = old(host_paths.var / "api-ops/inspections/.bridge-1234abcd", b"{}")
     assert retain_artifacts(host_paths)["deleted"] == 2
     assert not target.exists() and not record.exists()
+
+
+def test_scheduled_cleanup_reclaims_only_stale_owned_staging_work(host_paths, tmp_path):
+    from robopark_host.retention import retain_artifacts
+
+    stale = []
+    for name in (str(uuid4()), f"local-updater-{uuid4()}"):
+        path = host_paths.ops / "staging" / name
+        old(path / "work", seconds=2 * 86400)
+        os.utime(path, (time.time() - 2 * 86400,) * 2)
+        stale.append(path)
+    active_id = str(uuid4())
+    active = host_paths.ops / "staging" / active_id
+    old(active / "work", seconds=2 * 86400)
+    os.utime(active, (time.time() - 2 * 86400,) * 2)
+    atomic_write_json(host_paths.state / "updater-journal.json", {"job_id": active_id})
+    recent = host_paths.ops / "staging" / str(uuid4())
+    old(recent / "work", seconds=60)
+    foreign = host_paths.ops / "staging/keep-me"
+    old(foreign / "work", seconds=2 * 86400)
+    outside = old(tmp_path / "outside", b"safe", seconds=2 * 86400)
+    (host_paths.ops / "staging" / f"local-updater-{uuid4()}").symlink_to(outside)
+
+    result = retain_artifacts(host_paths)
+
+    assert result["staging_deleted"] == 2
+    assert all(not path.exists() for path in stale)
+    assert active.exists() and recent.exists() and foreign.exists()
+    assert outside.read_bytes() == b"safe"

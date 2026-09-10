@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -501,6 +502,23 @@ def test_cli_can_process_explicit_request_and_reconcile(host, monkeypatch):
     assert (host.paths.state / "maintenance.json").exists()
     assert cli.main(["update", "--reconcile"]) == 0
     assert not (host.paths.state / "maintenance.json").exists()
+
+
+def test_cli_reconcile_cleans_expired_artifacts_after_terminal_update(host, monkeypatch):
+    from robopark_host import cli
+
+    monkeypatch.setattr("robopark_host.updater.SystemRunner", lambda: host.runner)
+    stale = host.paths.ops / "artifacts" / f"update-{uuid.uuid4()}.zip"
+    stale.write_bytes(b"old")
+    expired = time.time() - 2 * 86400
+    os.utime(stale, (expired, expired))
+    path = host.paths.ops / "approved.json"
+    path.write_text(json.dumps(vars(host.request())))
+
+    assert cli.main(["update", "--request", str(path), "--worker"]) == 0
+    assert stale.exists()
+    assert cli.main(["update", "--reconcile"]) == 0
+    assert not stale.exists()
 
 
 def test_stable_launcher_waits_for_old_worker_before_successor_reconciliation(host):
