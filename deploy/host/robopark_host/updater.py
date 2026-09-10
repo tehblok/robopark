@@ -156,6 +156,10 @@ SAFE_ERRORS = {
     "interrupted",
 }
 
+RELEASE_NAME = r"[A-Za-z0-9][A-Za-z0-9._+-]{0,200}"
+MAX_SUCCESSFUL_RELEASE_RECEIPTS = 256
+MAX_SUCCESSFUL_RELEASE_RECEIPT_BYTES = 4096
+
 
 class Runner(Protocol):
     def run(self, argv, *, timeout, cwd=None, env=None, capture=False) -> bytes: ...
@@ -417,8 +421,12 @@ def _successful_release_receipts(paths):
     try:
         result = []
         with os.scandir(parent) as listing:
+            seen = 0
             for entry in listing:
-                if re.fullmatch(r"[A-Za-z0-9._+-]+\.json", entry.name) is None:
+                seen += 1
+                if seen > MAX_SUCCESSFUL_RELEASE_RECEIPTS:
+                    raise ReleaseError("unsafe_release_path")
+                if re.fullmatch(RELEASE_NAME + r"\.json", entry.name) is None:
                     continue
                 info = entry.stat(follow_symlinks=False)
                 if (
@@ -437,8 +445,11 @@ def _successful_release_receipts(paths):
                             current.st_dev != info.st_dev
                             or current.st_ino != info.st_ino
                             or current.st_nlink != 1
-                            or current.st_size > 4096
-                            or json.loads(stream.read(4097), object_pairs_hook=unique_object)
+                            or current.st_size > MAX_SUCCESSFUL_RELEASE_RECEIPT_BYTES
+                            or json.loads(
+                                stream.read(MAX_SUCCESSFUL_RELEASE_RECEIPT_BYTES + 1),
+                                object_pairs_hook=unique_object,
+                            )
                             != {"successful": True}
                         ):
                             continue
@@ -453,11 +464,12 @@ def _successful_release_receipts(paths):
         os.close(parent)
 
 
-def _retained_successful_releases(paths, limit=3):
+def _retained_successful_releases(paths, limit=3, receipts=None):
     keep = {_release_target(paths, paths.current).name}
     if paths.previous.is_symlink():
         keep.add(_release_target(paths, paths.previous).name)
-    for release, _, _ in sorted(_successful_release_receipts(paths), key=lambda item: item[2], reverse=True):
+    records = _successful_release_receipts(paths) if receipts is None else receipts
+    for release, _, _ in sorted(records, key=lambda item: item[2], reverse=True):
         if len(keep) >= limit:
             break
         keep.add(release)
@@ -629,9 +641,10 @@ def _cleanup_staging(paths, journal, runner, *, discard_displaced=True):
 
 
 def _retention(paths, journal):
-    keep = _retained_successful_releases(paths)
+    receipts = _successful_release_receipts(paths)
+    keep = _retained_successful_releases(paths, receipts=receipts)
     # Only delete targets with root-owned success receipts. Never sweep unknown directories.
-    for name, receipt, _ in _successful_release_receipts(paths):
+    for name, receipt, _ in receipts:
         if name in keep:
             continue
         target = paths.releases / name
@@ -649,8 +662,7 @@ def _retention(paths, journal):
         except ValueError:
             continue
         keep_configs.add(paths.state / "compose" / (identifier + "-production.json"))
-        if name == paths.current.resolve().name:
-            keep_snapshots.add(identifier)
+        keep_snapshots.add(identifier)
     for config in (paths.state / "compose").glob("*.json"):
         if config not in keep_configs and not config.is_symlink():
             config.unlink()

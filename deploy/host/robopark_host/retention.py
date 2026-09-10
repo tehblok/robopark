@@ -326,7 +326,7 @@ def _cleanup_operation_residue(paths, identities, *, now):
             rf"\.(?:{UUID}|release-[a-f0-9]{{64}})\.json\.[a-z0-9_]{{8}}",
             "atomic_deleted",
         ),
-        (paths.var / "diagnostics", r"\.doctor-[a-z0-9_]{8}", "diagnostic_deleted"),
+        (paths.root / "var/log/robopark", r"\.doctor-[a-z0-9_]{8}", "diagnostic_deleted"),
     )
     result.update(atomic_deleted=0, diagnostic_deleted=0)
     seen = 0

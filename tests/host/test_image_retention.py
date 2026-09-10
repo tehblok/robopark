@@ -49,6 +49,7 @@ def test_four_versions_remove_old_tags_but_preserve_current_previous_and_foreign
     for job in jobs[1:]:
         assert "robopark-api:" + job not in removals
         assert "robopark-web:" + job not in removals
+        assert (host.paths.state / "image-owned" / (job + ".json")).exists()
     assert not any(tag.startswith("sha256:") for tag in removals)
     assert all(
         tag.startswith(
