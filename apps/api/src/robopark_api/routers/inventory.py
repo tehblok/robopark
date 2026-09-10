@@ -1,0 +1,174 @@
+from collections.abc import Callable
+from typing import TypeVar
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
+from sqlalchemy.orm import Session
+
+from robopark_api.db import get_db
+from robopark_api.deps import require_user
+from robopark_api.inventory_schemas import (
+    InventoryComponentOut,
+    InventoryMovementIn,
+    InventoryMovementOut,
+    InventoryOverviewOut,
+    InventoryPartOut,
+    InventoryPartUpdateIn,
+    InventoryTaskWriteoffIn,
+)
+from robopark_api.models import User
+from robopark_api.services import inventory as service
+from robopark_api.services.tracker_client import MAX_ATTACHMENT_BYTES
+
+router = APIRouter(prefix="/inventory", tags=["inventory"])
+T = TypeVar("T")
+
+
+def _run(fn: Callable[[], T]) -> T:
+    try:
+        return fn()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc) or "forbidden") from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            503 if str(exc) == "tracker_token_not_configured" else 502, str(exc)
+        ) from exc
+
+
+async def _photo(upload: UploadFile | None):
+    if upload is None:
+        return None
+    return upload.filename, await upload.read(MAX_ATTACHMENT_BYTES + 1), upload.content_type
+
+
+@router.get("", response_model=InventoryOverviewOut)
+def overview(park_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    return _run(lambda: service.overview(db, user, park_id))
+
+
+@router.post(
+    "/components", response_model=InventoryComponentOut, status_code=status.HTTP_201_CREATED
+)
+async def create_component(
+    park_id: int = Form(...),
+    name: str = Form(...),
+    photo: UploadFile | None = File(None),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    photo_data = await _photo(photo)
+    row = _run(lambda: service.create_component(db, user, park_id, name, photo_data))
+    return {
+        "id": row.id,
+        "park_id": row.park_id,
+        "name": row.name,
+        "has_photo": bool(row.photo_storage_key),
+        "parts": [],
+    }
+
+
+@router.post("/parts", response_model=InventoryPartOut, status_code=status.HTTP_201_CREATED)
+async def create_part(
+    park_id: int = Form(...),
+    component_id: int = Form(...),
+    name: str = Form(...),
+    article: str = Form(...),
+    quantity: int = Form(0, ge=0),
+    minimum_quantity: int = Form(0, ge=0),
+    location: str = Form(...),
+    photo: UploadFile | None = File(None),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    photo_data = await _photo(photo)
+    row = _run(
+        lambda: service.create_part(
+            db,
+            user,
+            park_id=park_id,
+            component_id=component_id,
+            name=name,
+            article=article,
+            quantity=quantity,
+            minimum_quantity=minimum_quantity,
+            location=location,
+            photo=photo_data,
+        )
+    )
+    return service.part_out(row)
+
+
+@router.patch("/parts/{part_id}", response_model=InventoryPartOut)
+def update_part(
+    part_id: int,
+    payload: InventoryPartUpdateIn,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    return service.part_out(
+        _run(lambda: service.update_part(db, user, part_id, payload.model_dump(exclude_unset=True)))
+    )
+
+
+@router.post(
+    "/parts/{part_id}/movements",
+    response_model=InventoryMovementOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def move_stock(
+    part_id: int,
+    payload: InventoryMovementIn,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    row = _run(
+        lambda: service.move_stock(
+            db, user, part_id, kind=payload.kind, quantity=payload.quantity, note=payload.note
+        )
+    )
+    return {**row.__dict__, "actor_username": user.username}
+
+
+@router.post(
+    "/tasks/{issue_key}/writeoff",
+    response_model=InventoryMovementOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def task_writeoff(
+    issue_key: str,
+    payload: InventoryTaskWriteoffIn,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    row = _run(
+        lambda: service.task_writeoff(db, user, issue_key, payload.part_id, payload.quantity)
+    )
+    return {**row.__dict__, "actor_username": user.username}
+
+
+@router.get("/movements", response_model=list[InventoryMovementOut])
+def movements(
+    park_id: int,
+    limit: int = 100,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    return _run(lambda: service.movements(db, user, park_id, limit))
+
+
+@router.get("/components/{component_id}/photo")
+def component_photo(
+    component_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)
+):
+    path, media_type, _filename = _run(lambda: service.component_photo(db, user, component_id))
+    return FileResponse(path, media_type=media_type)
+
+
+@router.get("/parts/{part_id}/photo")
+def part_photo(part_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    path, media_type, _filename = _run(lambda: service.part_photo(db, user, part_id))
+    return FileResponse(path, media_type=media_type)

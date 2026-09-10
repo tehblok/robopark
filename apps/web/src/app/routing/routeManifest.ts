@@ -13,6 +13,8 @@ export type AppRouteId =
   | 'access-pending' | 'access-rejected' | 'mechanic-no-park'
   | 'overview' | 'operator-parks' | 'work' | 'robots' | 'robot-check'
   | 'work-issue' | 'robot-detail' | 'legacy-robot-check'
+  | 'campaigns' | 'campaign-detail'
+  | 'inventory'
   | 'analytics' | 'reports' | 'reports-new' | 'report-detail' | 'admin' | 'admin-settings' | 'admin-users' | 'admin-roles' | 'admin-tracker'
   | 'admin-robot-check' | 'not-found'
 export type NavGroup = 'operations' | 'collaboration' | 'insights' | 'administration'
@@ -163,6 +165,16 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
     surface: 'shell',
   },
   {
+    id: 'inventory',
+    path: '/inventory',
+    label: 'Склад',
+    icon: 'work',
+    permission: 'nav.inventory',
+    prerequisites: SHELL_PREREQUISITES,
+    surface: 'shell',
+    nav: { group: 'operations', desktopOrder: 50 },
+  },
+  {
     id: 'reports',
     path: '/reports',
     label: ru.nav.reports,
@@ -175,6 +187,19 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
       desktopOrder: 60,
       mobilePriority: { driver: 4 },
     },
+  },
+  {
+    id: 'campaigns',
+    path: '/campaigns',
+    label: 'СК и оклейка',
+    icon: 'work',
+    prerequisites: SHELL_PREREQUISITES,
+    surface: 'shell',
+    nav: { group: 'collaboration', desktopOrder: 65 },
+  },
+  {
+    id: 'campaign-detail', path: '/campaigns/:campaignId', label: 'Кампания', icon: 'work',
+    prerequisites: SHELL_PREREQUISITES, surface: 'shell',
   },
   {
     id: 'reports-new',

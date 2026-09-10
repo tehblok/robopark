@@ -1,0 +1,13 @@
+.campaign-list,.campaign-tickets,.campaign-overview-list { display:grid; gap:var(--rp-space-4); }
+.campaign-card__heading,.campaign-overview-item,.campaign-ticket__head,.campaign-actions { display:flex; align-items:flex-start; justify-content:space-between; gap:var(--rp-space-4); }
+.campaign-card h2,.campaign-overview-item h3,.campaign-ticket h3 { margin:.45rem 0 .2rem; }
+.campaign-card p,.campaign-overview-item p,.campaign-ticket p { margin:.25rem 0; color:var(--rp-text-muted); }
+.campaign-metrics { display:grid; grid-template-columns:auto 1fr; align-items:center; gap:var(--rp-space-5); }
+.campaign-progress { --campaign-progress:0deg; inline-size:7rem; block-size:7rem; flex:0 0 auto; border-radius:50%; display:grid; place-content:center; text-align:center; background:radial-gradient(circle closest-side,var(--rp-surface) 72%,transparent 74% 99%),conic-gradient(var(--rp-accent) var(--campaign-progress),var(--rp-border) 0); }
+.campaign-progress strong { font-size:1.45rem; }.campaign-progress span { font-size:.75rem;color:var(--rp-text-muted); }
+.campaign-overview-item { border-block-end:1px solid var(--rp-border); padding-block-end:var(--rp-space-3); }.campaign-overview-item:last-child{border:0;padding:0}.campaign-overview-item .campaign-progress{inline-size:5rem;block-size:5rem}
+.campaign-columns { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--rp-space-4);align-items:start; }
+.campaign-ticket { border:1px solid var(--rp-border);border-radius:var(--rp-radius-card);padding:var(--rp-space-4);display:grid;gap:var(--rp-space-3);min-inline-size:0;overflow-wrap:anywhere; }
+.campaign-ticket blockquote { margin:0;padding-inline-start:var(--rp-space-3);border-inline-start:3px solid var(--rp-border); }
+.campaign-complete { display:grid;gap:var(--rp-space-3); }.campaign-complete textarea{min-block-size:7rem;resize:vertical}.campaign-warning,.form-error{color:var(--rp-critical-text)!important}.campaign-create{align-items:end}.campaign-search{margin-block-end:var(--rp-space-4)}
+@media (max-width:800px){.campaign-columns,.campaign-metrics{grid-template-columns:1fr}.campaign-progress{margin-inline:auto}.campaign-card__heading{flex-direction:column}.campaign-card__heading>.campaign-progress{align-self:center}}

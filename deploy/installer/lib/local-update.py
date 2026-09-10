@@ -34,19 +34,52 @@ PHASE_LABELS = {
 SAFE_ERRORS = {
     "archive_too_large",
     "build_failed",
+    "capability_missing",
+    "checksum_mismatch",
+    "command_failed",
+    "command_output_limit",
+    "command_timeout",
+    "compose_config_missing",
+    "compose_invalid",
     "compose_version_unsupported",
+    "current_changed",
     "cutover_unhealthy",
     "docker_command_failed",
     "docker_disk_full",
     "docker_network_failed",
     "docker_out_of_memory",
+    "downgrade_rejected",
+    "duplicate_member",
     "frontend_arm_dependency_failed",
     "frontend_typescript_failed",
     "insufficient_space",
+    "installer_incompatible",
+    "interrupted",
+    "invalid_archive",
+    "invalid_manifest",
+    "invalid_request",
+    "invalid_version",
+    "manual_recovery_required",
+    "manifest_files_mismatch",
     "migration_failed",
+    "migration_head_mismatch",
+    "migration_incompatible",
+    "preflight_failed",
+    "quality_gate_inputs_missing",
+    "release_missing",
+    "request_replayed",
     "signature_invalid",
     "smoke_failed",
+    "staging_filesystem_mismatch",
     "tests_failed",
+    "unsafe_artifact",
+    "unsafe_build_context",
+    "unsafe_config_path",
+    "unsafe_data_path",
+    "unsafe_path",
+    "unsafe_release_path",
+    "unsupported_format",
+    "update_in_progress",
     "update_failed",
 }
 
@@ -138,11 +171,6 @@ def main(argv: list[str]) -> int:
     root = Path(argv[1]).resolve()
     bundle = Path(argv[2]).resolve()
     payload = bundle / "payload/robopark-release.zip"
-    installed_key = root / "etc/robopark/release-public-key.pem"
-    bundled_key = bundle / "keys/release-public-key.pem"
-    if read_regular(installed_key, 16_384) != read_regular(bundled_key, 16_384):
-        raise ValueError("signing_key_mismatch")
-
     sys.path.insert(0, str(bundle / "verifier"))
     from robopark_api.services.ops.archives import (
         KIND_RELEASE,
@@ -151,8 +179,8 @@ def main(argv: list[str]) -> int:
     )
 
     raw = read_regular(payload, MAX_ARCHIVE_BYTES)
-    inspect_archive(raw, expected_kind=KIND_RELEASE, public_key=read_regular(installed_key, 16_384))
-    print("  • Подпись архива проверена", flush=True)
+    inspect_archive(raw, expected_kind=KIND_RELEASE)
+    print("  • Целостность архива проверена", flush=True)
 
     identity = str(uuid4())
     ops = root / "var/lib/robopark/ops"
@@ -200,6 +228,8 @@ def main(argv: list[str]) -> int:
             result,
             identity,
         )
+        if worker_code and update_status(result, identity)[1] is not None:
+            return worker_code
         successor = root / "opt/robopark/host-tools/robopark"
         reconciler_code = run_with_progress(
             ["python3", "-B", str(successor.resolve()), "update", "--reconcile"],

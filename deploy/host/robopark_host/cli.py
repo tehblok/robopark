@@ -221,6 +221,15 @@ def _check_update_handler(paths: HostPaths) -> int:
     return run_check(paths)
 
 
+def _retain_after_terminal_update(paths: HostPaths, state: str) -> None:
+    if state not in {"current_healthy", "previous_restored", "rejected"}:
+        return
+    from .retention import retain_artifacts
+
+    with suppress(OSError, ValueError):
+        retain_artifacts(paths)
+
+
 COMMAND_HANDLERS: dict[str, Handler] = {
     "consume": _consume_handler,
     "restore-check": _restore_check_handler,
@@ -282,6 +291,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         runner.failure_log = paths.root / "var/log/robopark/ota-update.log"
         if arguments.reconcile or arguments.recover:
             result = recover_interrupted_update(paths, runner)
+            _retain_after_terminal_update(paths, result.state)
             return int(result.state == "maintenance")
         if arguments.request is None and not arguments.worker:
             code = _consume_handler(paths)
@@ -307,6 +317,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 from .rollback import sync_directory
 
                 sync_directory(request_path.parent)
+            _retain_after_terminal_update(paths, result.state)
             return int(result.state not in {"awaiting_reconciliation", "current_healthy"})
         except ReleaseError:
             return 1

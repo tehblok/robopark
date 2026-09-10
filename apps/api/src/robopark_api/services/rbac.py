@@ -33,6 +33,7 @@ PERMISSION_NAV_EMERGENCY = "nav.emergency"
 PERMISSION_NAV_MAP = "nav.map"
 PERMISSION_NAV_ANALYTICS = "nav.analytics"
 PERMISSION_NAV_REPORTS = "nav.reports"
+PERMISSION_NAV_INVENTORY = "nav.inventory"
 PERMISSION_NAV_LEARNING = "nav.learning"
 PERMISSION_NAV_HELP = "nav.help"
 PERMISSION_NAV_ADMIN = "nav.admin"
@@ -59,6 +60,7 @@ ALL_PERMISSIONS: tuple[str, ...] = (
     PERMISSION_NAV_MAP,
     PERMISSION_NAV_ANALYTICS,
     PERMISSION_NAV_REPORTS,
+    PERMISSION_NAV_INVENTORY,
     PERMISSION_NAV_LEARNING,
     PERMISSION_NAV_HELP,
     PERMISSION_NAV_ADMIN,
@@ -122,6 +124,7 @@ PERMISSION_CATALOG: tuple[PermissionDef, ...] = (
     PermissionDef(PERMISSION_NAV_MAP, "nav", "Карта", 50),
     PermissionDef(PERMISSION_NAV_ANALYTICS, "nav", "Аналитика", 60),
     PermissionDef(PERMISSION_NAV_REPORTS, "nav", "Обращения", 70),
+    PermissionDef(PERMISSION_NAV_INVENTORY, "nav", "Склад", 75),
     PermissionDef(PERMISSION_NAV_LEARNING, "nav", "Обучение", 80),
     PermissionDef(PERMISSION_NAV_HELP, "nav", "Помощь", 90),
     PermissionDef(PERMISSION_NAV_ADMIN, "nav", "Админ-панель", 100),
@@ -150,6 +153,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             PERMISSION_NAV_EMERGENCY,
             PERMISSION_NAV_ANALYTICS,
             PERMISSION_NAV_REPORTS,
+            PERMISSION_NAV_INVENTORY,
             PERMISSION_TRACKER_READ,
             PERMISSION_TRACKER_WRITE,
             PERMISSION_TRACKER_ATTACH,
@@ -164,6 +168,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             PERMISSION_NAV_ROBOT_SEARCH,
             PERMISSION_NAV_EMERGENCY,
             PERMISSION_NAV_REPORTS,
+            PERMISSION_NAV_INVENTORY,
             PERMISSION_TRACKER_READ,
             PERMISSION_TRACKER_WRITE,
             PERMISSION_TRACKER_ATTACH,

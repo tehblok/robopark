@@ -1,8 +1,9 @@
-"""Bounded deletion of exact root-recorded production image tags, never Docker prune."""
+"""Bounded cleanup of exact owned image tags; never broad Docker system/image/container/network/volume prune."""
 
 import json
 import os
 import re
+import shutil
 import stat
 import time
 from contextlib import ExitStack, suppress
@@ -15,6 +16,26 @@ TAG = rf"(?:{UUID}|release-[a-f0-9]{{64}})"
 DIGEST = r"sha256:[a-f0-9]{64}"
 MAX_RECORDS = 256
 MAX_COMMANDS = 32
+BUILDER_CACHE_MIN_FREE = 2 * 1024**3
+BUILDER_CACHE_TIMEOUT = 30
+MAINTENANCE_TIMEOUT = 30
+
+
+class _CleanupBudget:
+    """One bounded Docker budget shared by image and builder-cache cleanup."""
+
+    def __init__(self, timeout):
+        self.calls = 0
+        self.deadline = time.monotonic() + timeout
+
+    def timeout(self, maximum):
+        if self.calls >= MAX_COMMANDS:
+            raise TimeoutError()
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError()
+        self.calls += 1
+        return min(maximum, remaining)
 
 
 def _records(paths):
@@ -102,15 +123,12 @@ def record(paths, release, tag, document):
 
 
 def _protected(paths, records):
-    keep = set()
-    for link in (paths.current, paths.previous):
-        if link == paths.previous and not link.exists() and not link.is_symlink():
-            continue
-        target = link.resolve(strict=True)
-        if not link.is_symlink() or target.parent != paths.releases.resolve():
-            raise ValueError("invalid_release_link")
-        keep.add(target.name)
-    from .updater import _load_journal
+    from .updater import _load_journal, _retained_successful_releases
+
+    try:
+        keep = _retained_successful_releases(paths)
+    except Exception as exc:
+        raise ValueError("invalid_release_link") from exc
 
     journal = _load_journal(paths)
     if journal and journal["phase"] not in {"succeeded", "rolled_back", "failed"}:
@@ -141,19 +159,13 @@ def _protected(paths, records):
     return keep, images, tags
 
 
-def cleanup(paths, runner):
+def cleanup(paths, runner, *, budget=None):
     """Caller owns host.lock. Errors become bounded diagnostics, never rollback."""
     result = {"blocked": False, "deleted_tags": 0, "pending": False}
-    deadline = time.monotonic() + 25
-    calls = 0
+    budget = budget or _CleanupBudget(25)
 
     def run(argv):
-        nonlocal calls
-        calls += 1
-        left = deadline - time.monotonic()
-        if calls > MAX_COMMANDS or left <= 0:
-            raise TimeoutError()
-        raw = runner.run(argv, timeout=min(5, left), capture=True)
+        raw = runner.run(argv, timeout=budget.timeout(5), capture=True)
         if not isinstance(raw, (str, bytes)) or len(raw) > 2 * 1024**2:
             raise ValueError("invalid_docker_response")
         return raw.decode("utf8") if isinstance(raw, bytes) else raw
@@ -229,11 +241,50 @@ def cleanup(paths, runner):
     return result
 
 
+def cleanup_builder_cache(paths, runner, *, budget=None):
+    """Reclaim only stale unused build cache when the host is under disk pressure."""
+    result = {"attempted": False, "blocked": False}
+    try:
+        if shutil.disk_usage(paths.var).free >= BUILDER_CACHE_MIN_FREE:
+            return result
+        result["attempted"] = True
+        timeout = budget.timeout(BUILDER_CACHE_TIMEOUT) if budget else BUILDER_CACHE_TIMEOUT
+        runner.run(
+            [
+                "docker",
+                "builder",
+                "prune",
+                "-f",
+                "--filter",
+                "until=168h",
+                "--keep-storage",
+                "2GB",
+            ],
+            timeout=timeout,
+        )
+    except Exception:
+        result["blocked"] = True
+    finally:
+        with suppress(OSError):
+            atomic_write_json(paths.state / "builder-cache-retention.json", result)
+    return result
+
+
+def maintenance(paths, runner):
+    """Run both image stages under one command and elapsed-time budget."""
+    budget = _CleanupBudget(MAINTENANCE_TIMEOUT)
+    result = cleanup(paths, runner, budget=budget)
+    result["builder_cache"] = cleanup_builder_cache(paths, runner, budget=budget)
+    with suppress(OSError):
+        atomic_write_json(paths.state / "image-retention.json", result)
+    return result
+
+
 def scheduled(paths, runner):
     from .state import HostBusy
 
     try:
         with host_operation(paths):
-            return cleanup(paths, runner)
+            return maintenance(paths, runner)
     except HostBusy:
         return {"busy": True}

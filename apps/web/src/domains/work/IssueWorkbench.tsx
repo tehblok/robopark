@@ -41,6 +41,7 @@ import {
 import { resourceStore, useCachedResource } from '../../lib/resource'
 import { Tabs, TabPanel } from '../../design-system/navigation/Tabs'
 import { WorkRobotCheck } from './WorkRobotCheck'
+import { TaskPartsPanel } from '../inventory/TaskPartsPanel'
 import { WorkFilters } from './WorkFilters'
 import { loadWorkPage, oldestFirst } from './workData'
 import {
@@ -64,6 +65,10 @@ export type IssueWorkbenchApiClient = Pick<
   | 'trackerUnassign'
   | 'trackerTransition'
   | 'trackerClose'
+  | 'inventory'
+  | 'writeoffInventoryForTask'
+  | 'inventoryComponentPhotoUrl'
+  | 'inventoryPartPhotoUrl'
 >
 
 export type IssueWorkbenchProps = {
@@ -98,6 +103,13 @@ function isAuthorizationFailure(failure: DomainError): boolean {
 
 function failureFor(error: unknown, fallback: string): DomainError | null {
   return error ? classifyApiError(error, fallback) : null
+}
+
+function mechanicOwnsIssue(user: User, issue: TrackerIssueDetail): boolean {
+  const expected = (user.tracker_login || user.username).trim().toLocaleLowerCase()
+  return user.role === 'mechanic'
+    && Boolean(expected)
+    && issue.assignee?.login?.trim().toLocaleLowerCase() === expected
 }
 
 const RELATED_PAGE_SIZE = 10
@@ -450,7 +462,7 @@ function IssueWorkbenchOwner({
   }, [accessPrefix, commentsKey, detailFailure?.kind, detailKey, issueKey])
 
   const search = buildWorkSearch({ ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, selectedPark.id)
-  const activeTab = state.detailTab ?? 'task'
+  const activeTab = state.detailTab === 'parts' ? 'task' : state.detailTab ?? 'task'
   const changeTab = (detailTab: 'task' | 'open' | 'closed' | 'check') => onStateChange({ ...state, detailTab }, { replace: false })
   const rootIssue = state.rootIssue ?? issueKey
   const rootHref = rootIssue ? workIssueHref(rootIssue, { ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, selectedPark.id) : ''
@@ -635,6 +647,9 @@ function IssueWorkbenchOwner({
                       loading={detail.isLoading && !detail.data} showRobotCheck={false}
                       onOpenRobotCheck={() => changeTab('check')}
                     />
+                    {detail.data && mechanicOwnsIssue(user, detail.data) ? <Panel collapsible defaultCollapsed storageKey={`work-task-parts-${detail.data.key}`} title="Использовать запчасть">
+                      <TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={selectedPark.id} />
+                    </Panel> : null}
                     {canRenderDetailActions && detail.data ? (
                       <IssueActionsPanel
                         capabilities={detail.data.capabilities}

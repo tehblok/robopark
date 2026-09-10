@@ -39,9 +39,7 @@ def canonical(value: Any) -> str:
 def ignored_diagnostic_identities(db: Session) -> set[str]:
     """Return only raw diagnostic identities deliberately hidden by an admin."""
     return set(
-        db.scalars(
-            select(DiagnosticUnknown.identity).where(DiagnosticUnknown.state == "ignored")
-        )
+        db.scalars(select(DiagnosticUnknown.identity).where(DiagnosticUnknown.state == "ignored"))
     )
 
 

@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -220,7 +221,7 @@ def test_artifact_symlink_cannot_escape_inbox(host):
     assert not (host.paths.state / "updater-journal.json").exists()
 
 
-def test_signature_rejected_before_mutation_or_commands(host):
+def test_signature_value_does_not_block_local_update(host):
     with zipfile.ZipFile(host.artifact) as z:
         files = {name: z.read(name) for name in z.namelist()}
     files["manifest.sig"] = b"x" * 64
@@ -228,10 +229,7 @@ def test_signature_rejected_before_mutation_or_commands(host):
         for name, data in files.items():
             z.writestr(name, data)
     result = apply_release(host.request(), host.paths, host.runner)
-    assert result.error == "signature_invalid"
-    assert host.runner.commands == []
-    assert sorted(p.name for p in host.paths.releases.iterdir()) == ["1.0.0"]
-    assert not (host.paths.state / "updater-journal.json").exists()
+    assert result.state == "awaiting_reconciliation"
 
 
 @pytest.mark.parametrize(
@@ -438,7 +436,7 @@ def test_system_runner_cleanup_failure_does_not_replace_real_failure_log(
     assert log.read_text() == "real build failure\n"
 
 
-def test_retention_keeps_two_successes_after_third_update(host):
+def test_retention_keeps_three_successes_after_third_update(host):
     apply_release(host.request(), host.paths, host.runner)
     reconcile_after_exit(host.paths, host.runner)
     second = host.paths.current.resolve()
@@ -448,9 +446,9 @@ def test_retention_keeps_two_successes_after_third_update(host):
     reconcile_after_exit(host.paths, host.runner)
     assert host.paths.previous.resolve() == second
     assert sorted(p.name for p in host.paths.releases.iterdir()) == sorted(
-        [second.name, host.paths.current.resolve().name]
+        ["1.0.0", second.name, host.paths.current.resolve().name]
     )
-    assert len(list((host.paths.ops / "rollbacks").iterdir())) == 1
+    assert len(list((host.paths.ops / "rollbacks").iterdir())) == 2
 
 
 def test_failure_after_partial_restore_is_recoverable(host, monkeypatch):
@@ -504,6 +502,23 @@ def test_cli_can_process_explicit_request_and_reconcile(host, monkeypatch):
     assert (host.paths.state / "maintenance.json").exists()
     assert cli.main(["update", "--reconcile"]) == 0
     assert not (host.paths.state / "maintenance.json").exists()
+
+
+def test_cli_reconcile_cleans_expired_artifacts_after_terminal_update(host, monkeypatch):
+    from robopark_host import cli
+
+    monkeypatch.setattr("robopark_host.updater.SystemRunner", lambda: host.runner)
+    stale = host.paths.ops / "artifacts" / f"update-{uuid.uuid4()}.zip"
+    stale.write_bytes(b"old")
+    expired = time.time() - 2 * 86400
+    os.utime(stale, (expired, expired))
+    path = host.paths.ops / "approved.json"
+    path.write_text(json.dumps(vars(host.request())))
+
+    assert cli.main(["update", "--request", str(path), "--worker"]) == 0
+    assert stale.exists()
+    assert cli.main(["update", "--reconcile"]) == 0
+    assert not stale.exists()
 
 
 def test_stable_launcher_waits_for_old_worker_before_successor_reconciliation(host):

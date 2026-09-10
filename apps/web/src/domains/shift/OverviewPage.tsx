@@ -19,6 +19,7 @@ import {
   OverviewWorkload,
 } from './OverviewSections'
 import { buildOverviewModel } from './overviewModel'
+import { CampaignOverviewSection } from '../campaigns/CampaignsPage'
 import { limitOperationsRequest } from './operationsRequestLimit'
 import './overview.css'
 
@@ -154,7 +155,7 @@ function OverviewSessionPage({ apiClient, user }: { apiClient: OperationsApiClie
         : !canReadOperations(user, 'overview') ? <ErrorState description="Для этого раздела нужны доступ к Tracker и разрешение на обзор смены." title="Нет доступа" />
           : overviewParks.length === 0 ? <EmptyState description="Нет доступных парков для обзора смены." icon="parks" title="Парк не выбран" />
             : overviewParks.map(park => {
-              const content = <OverviewPark key={park.id} apiClient={apiClient} authorizationBlocked={authorizationBlocked} identity={identity} onAuthorizationFailure={observeAuthorizationFailure} params={params} park={park} query={query} selectable={selectable} user={user} />
+              const content = <><OverviewPark apiClient={apiClient} authorizationBlocked={authorizationBlocked} identity={identity} onAuthorizationFailure={observeAuthorizationFailure} params={params} park={park} query={query} selectable={selectable} user={user} /><CampaignOverviewSection parkId={park.id} /></>
               return allParks ? <section key={park.id} aria-label={park.name}><h2>{park.name}</h2>{content}</section> : content
             })}
   </PageLayout>

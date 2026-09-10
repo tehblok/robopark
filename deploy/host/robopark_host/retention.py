@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import time
 from contextlib import ExitStack, contextmanager
@@ -21,6 +22,7 @@ from .state import atomic_write_json
 MAX_BYTES = 2 * 1024**3
 MAX_AGE = 7 * 86400
 INSPECTION_TTL = 86400
+STAGING_TTL = 86400
 RECEIPT_BYTES = 8 * 1024**2
 BLOOM_BYTES = 1024**2
 MAX_FILL = 0.4
@@ -281,9 +283,91 @@ def _remove(entry):
     os.fsync(fd)
 
 
+def _cleanup_staging(paths, identities, *, now):
+    """Remove only expired updater work directories with known names."""
+    try:
+        with _directory(paths, paths.ops / "staging") as parent:
+            deleted = 0
+            seen = 0
+            with os.scandir(parent) as listing:
+                for entry in listing:
+                    seen += 1
+                    if seen > MAX_ENTRIES:
+                        raise RetentionBlocked("too_many_artifacts")
+                    match = re.fullmatch(rf"(?:{UUID}|local-updater-({UUID}))", entry.name)
+                    identity = match.group(1) if match and match.group(1) else entry.name
+                    info = entry.stat(follow_symlinks=False)
+                    if (
+                        match is None
+                        or identity in identities
+                        or not stat.S_ISDIR(info.st_mode)
+                        or info.st_uid not in {0, os.geteuid()}
+                        or now - info.st_mtime < STAGING_TTL
+                    ):
+                        continue
+                    shutil.rmtree(entry.name, dir_fd=parent)
+                    deleted += 1
+            return deleted
+    except FileNotFoundError:
+        return 0
+
+
+def _cleanup_operation_residue(paths, identities, *, now):
+    """Reclaim only expired, exact-name technical residue under host-owned paths."""
+    result = {"staging_deleted": _cleanup_staging(paths, identities, now=now)}
+    locations = (
+        (
+            paths.state / "successful-releases",
+            r"\.[A-Za-z0-9._+-]+\.json\.[a-z0-9_]{8}",
+            "atomic_deleted",
+        ),
+        (
+            paths.state / "image-owned",
+            rf"\.(?:{UUID}|release-[a-f0-9]{{64}})\.json\.[a-z0-9_]{{8}}",
+            "atomic_deleted",
+        ),
+        (paths.root / "var/log/robopark", r"\.doctor-[a-z0-9_]{8}", "diagnostic_deleted"),
+    )
+    result.update(atomic_deleted=0, diagnostic_deleted=0)
+    seen = 0
+    for directory, pattern, category in locations:
+        try:
+            with _directory(paths, directory) as parent:
+                with os.scandir(parent) as listing:
+                    for entry in listing:
+                        seen += 1
+                        if seen > MAX_ENTRIES:
+                            raise RetentionBlocked("too_many_artifacts")
+                        info = entry.stat(follow_symlinks=False)
+                        if (
+                            re.fullmatch(pattern, entry.name) is None
+                            or any(identity in entry.name for identity in identities)
+                            or not stat.S_ISREG(info.st_mode)
+                            or info.st_nlink != 1
+                            or info.st_uid not in {0, os.geteuid()}
+                            or now - info.st_mtime < STAGING_TTL
+                        ):
+                            continue
+                        _remove((parent, entry.name, "temporary", info, True))
+                        result[category] += 1
+        except FileNotFoundError:
+            continue
+    result["temporary_deleted"] = sum(result.values())
+    return result
+
+
 def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
     """Nonblocking scheduled cleanup; never runs inside an existing host operation."""
-    result = {"deleted": 0, "bytes": 0, "pressure": False, "blocked": False}
+    result = {
+        "deleted": 0,
+        "staging_deleted": 0,
+        "atomic_deleted": 0,
+        "diagnostic_deleted": 0,
+        "temporary_deleted": 0,
+        "bytes": 0,
+        "pressure": False,
+        "blocked": False,
+    }
     if paths.root.as_posix() == "/" and os.geteuid() != 0:
         return {**result, "blocked": True}
     now = time.time() if now is None else now
@@ -305,6 +389,7 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
                 if marker.exists() and read_object(marker).get("enabled") is not False:
                     raise RetentionBlocked("maintenance")
             names, identities = _protected(paths)
+            result.update(_cleanup_operation_residue(paths, identities, now=now))
             bits = _bloom(paths)
             fill = sum(byte.bit_count() for byte in bits)
             if fill >= BLOOM_BYTES * 8 * MAX_FILL:

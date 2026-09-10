@@ -10,9 +10,9 @@ from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
-from .operational_state import backup_state, public_version, update_state
 from .bundle import create_diagnostic_bundle
 from .doctor import run_doctor
+from .operational_state import backup_state, public_version, update_state
 from .release import UTC, ReleaseError, UpdateRequest, timestamp, unique_object
 from .repair import DEFAULT_REPAIRS, run_repairs
 from .state import atomic_write_json, exclusive_lock
@@ -197,6 +197,22 @@ def _allow_attempt(paths, request):
     return True
 
 
+def _superseded_by_successful_update(paths, request):
+    try:
+        journal = _read(paths.state / "updater-journal.json", limit=65536)
+        result = _read(paths.ops / "public/rebuild.result")
+        successor = str(UUID(journal["job_id"]))
+    except (ReleaseError, KeyError, ValueError, TypeError):
+        return False
+    return (
+        successor != request["job_id"]
+        and journal.get("phase") == "succeeded"
+        and result.get("job_id") == successor
+        and result.get("ok") is True
+        and result.get("error") is None
+    )
+
+
 def consume_commands(paths, runner, http, *, update_runner=None, github_http=None):
     """All privileged work is serialized; API never chooses argv or output paths."""
     if paths.root == Path("/") and os.geteuid() != 0:
@@ -284,6 +300,17 @@ def consume_commands(paths, runner, http, *, update_runner=None, github_http=Non
                 else:
                     _finish(paths, request, saved["result"])
                 return 0
+            if request["kind"] == "update" and _superseded_by_successful_update(paths, request):
+                result = {
+                    "job_id": request["job_id"],
+                    "ok": False,
+                    "error": "request_superseded",
+                }
+                atomic_write_json(_public(paths) / "rebuild.result", result, mode=0o644)
+                atomic_write_json(receipt, {"request": request, "result": result})
+                _claim_public(paths, request, False)
+                pending.unlink(missing_ok=True)
+                return 1
             if request["kind"] == "github-update":
                 from .github_releases import (
                     GithubHttp,

@@ -255,11 +255,38 @@ class InstallerScenarios(unittest.TestCase):
         result = self.run_start('update')
 
         self.assertIn('Локальное обновление завершено', result.stdout)
-        self.assertIn('Подпись архива проверена', result.stdout)
+        self.assertIn('Целостность архива проверена', result.stdout)
         self.assertIn('Начинаю сборку', result.stdout)
         self.assertEqual((self.root / 'opt/robopark/current/VERSION').read_text(), '1.0.1\n')
         self.assertEqual(data.read_text(), 'keep-me')
         self.assertEqual(host_env.read_bytes(), before)
+
+    def test_rejected_local_update_keeps_new_error_instead_of_replaying_old_success(self):
+        self.run_installer()
+        (self.source / 'VERSION').write_text('1.0.1\n')
+        for name in (
+            'apps/api/Dockerfile', 'apps/api/pyproject.toml', 'apps/api/uv.lock',
+            'apps/web/Dockerfile', 'apps/web/package.json', 'apps/web/package-lock.json',
+            'deploy/Dockerfile.api-tests', 'scripts/verify.sh',
+        ):
+            target = self.source / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(REPO / name, target)
+        self.write_release('1.0.1')
+        self.run_start('update')
+        old_job = json.loads(
+            (self.root / 'var/lib/robopark/ops/state/updater-journal.json').read_text()
+        )['job_id']
+
+        self.write_release('1.0.1')
+        result = self.run_start('update', success=False)
+        failure = json.loads(
+            (self.root / 'var/lib/robopark/ops/public/rebuild.result').read_text()
+        )
+
+        self.assertIn('Код ошибки OTA: downgrade_rejected', result.stderr)
+        self.assertEqual(failure['error'], 'downgrade_rejected')
+        self.assertNotEqual(failure['job_id'], old_job)
 
     def test_start_update_rejects_tampered_payload_without_changing_install(self):
         self.run_installer()

@@ -45,7 +45,8 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
   const allowAllParks = Boolean(user && ['admin', 'royal', 'operator'].includes(user.role)
     && ['/overview', '/analytics'].includes(pathname.replace(/\/$/, '')))
   const selectionContext = allowAllParks ? `insights:${searchParams.get(PARK_QUERY_KEY) ?? 'all'}` : 'single'
-  const fleetScope = Boolean(user && hasFleetParkScope(user))
+  const inventoryFleetScope = Boolean(user?.role === 'operator' && pathname.replace(/\/$/, '') === '/inventory')
+  const fleetScope = Boolean(user && (hasFleetParkScope(user) || inventoryFleetScope))
   const [loadState, setLoadState] = useState<ParkLoadState | null>(null)
   const [selectionState, setSelectionState] = useState<ParkSelectionState | null>(null)
   const currentLoadState = loadState?.user === user && loadState.fleetScope === fleetScope
@@ -118,7 +119,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
   }, [])
 
   useEffect(() => {
-    if (!user || !hasFleetParkScope(user)) return
+    if (!user || !fleetScope) return
 
     const generation = beginLoad(user, true, [])
     void api
@@ -129,7 +130,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
       .catch(() => {
         commitLoad(generation, user, true, [])
       })
-  }, [beginLoad, commitLoad, user])
+  }, [beginLoad, commitLoad, fleetScope, user])
 
   const writeSelection = useCallback(
     (nextParkId: number | null, replace: boolean) => {
@@ -175,7 +176,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
 
   const refreshParks = useCallback(async () => {
     const requestUser = user
-    const requestFleetScope = Boolean(requestUser && hasFleetParkScope(requestUser))
+    const requestFleetScope = Boolean(requestUser && (hasFleetParkScope(requestUser) || inventoryFleetScope))
     const generation = beginLoad(requestUser, requestFleetScope, parks)
     try {
       if (requestFleetScope) {
@@ -199,7 +200,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
       commitLoad(generation, requestUser, requestFleetScope, parks)
       throw error
     }
-  }, [beginLoad, commitLoad, parks, refreshUser, user])
+  }, [beginLoad, commitLoad, inventoryFleetScope, parks, refreshUser, user])
 
   const selectedPark = parks.find((park) => park.id === parkId) ?? null
   const value = useMemo(

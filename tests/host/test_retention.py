@@ -144,6 +144,23 @@ def test_scheduled_doctor_wires_retention_and_reports_actual_usage(host_paths, m
     assert not victim.exists()
 
 
+def test_terminal_update_does_not_repeat_updater_image_cleanup(host_paths, monkeypatch):
+    from robopark_host import cli, image_retention, retention
+
+    calls = []
+    monkeypatch.setattr(retention, "retain_artifacts", lambda paths: calls.append("artifacts"))
+    monkeypatch.setattr(
+        image_retention,
+        "maintenance",
+        lambda paths, runner: calls.append("maintenance") or {"blocked": False, "builder_cache": {}},
+    )
+
+    cli._retain_after_terminal_update(host_paths, "current_healthy")
+    image_retention.scheduled(host_paths, object())
+
+    assert calls == ["artifacts", "maintenance"]
+
+
 def test_compaction_crash_cannot_forget_identity(host_paths, monkeypatch):
     from robopark_host import retention
 
@@ -289,3 +306,71 @@ def test_crashed_upload_temporary_file_is_bounded_and_cleaned(host_paths):
     record = old(host_paths.var / "api-ops/inspections/.bridge-1234abcd", b"{}")
     assert retain_artifacts(host_paths)["deleted"] == 2
     assert not target.exists() and not record.exists()
+
+
+def test_scheduled_cleanup_reclaims_only_stale_owned_staging_work(host_paths, tmp_path):
+    from robopark_host.retention import retain_artifacts
+
+    stale = []
+    for name in (str(uuid4()), f"local-updater-{uuid4()}"):
+        path = host_paths.ops / "staging" / name
+        old(path / "work", seconds=2 * 86400)
+        os.utime(path, (time.time() - 2 * 86400,) * 2)
+        stale.append(path)
+    active_id = str(uuid4())
+    active = host_paths.ops / "staging" / active_id
+    old(active / "work", seconds=2 * 86400)
+    os.utime(active, (time.time() - 2 * 86400,) * 2)
+    atomic_write_json(host_paths.state / "updater-journal.json", {"job_id": active_id})
+    recent = host_paths.ops / "staging" / str(uuid4())
+    old(recent / "work", seconds=60)
+    foreign = host_paths.ops / "staging/keep-me"
+    old(foreign / "work", seconds=2 * 86400)
+    outside = old(tmp_path / "outside", b"safe", seconds=2 * 86400)
+    (host_paths.ops / "staging" / f"local-updater-{uuid4()}").symlink_to(outside)
+
+    result = retain_artifacts(host_paths)
+
+    assert result["staging_deleted"] == 2
+    assert all(not path.exists() for path in stale)
+    assert active.exists() and recent.exists() and foreign.exists()
+    assert outside.read_bytes() == b"safe"
+
+
+def test_cleanup_reclaims_only_expired_exact_operation_residue(host_paths, tmp_path):
+    from robopark_host.retention import retain_artifacts
+
+    inactive = str(uuid4())
+    active = str(uuid4())
+    atomic = old(host_paths.state / "image-owned" / f".{inactive}.json.abcdefgh")
+    receipt_atomic = old(
+        host_paths.state / "successful-releases" / f".{inactive}.json.abcdefgh"
+    )
+    diagnostic = old(host_paths.root / "var/log/robopark/.doctor-abcdefgh")
+    fresh = old(
+        host_paths.state / "image-owned" / f".{uuid4()}.json.abcdefgh", seconds=60
+    )
+    active_atomic = old(host_paths.state / "image-owned" / f".{active}.json.abcdefgh")
+    atomic_write_json(host_paths.state / "updater-journal.json", {"job_id": active})
+    foreign = old(host_paths.state / "image-owned" / ".foreign.json.abcdefgh")
+    business_photo = old(host_paths.var / "data/photos/keep.jpg")
+    outside = old(tmp_path / "outside")
+    wrong_directory = old(host_paths.var / "diagnostics/.doctor-abcdefgh")
+    symlink = host_paths.root / "var/log/robopark/.doctor-hgfedcba"
+    symlink.symlink_to(outside)
+
+    result = retain_artifacts(host_paths)
+
+    assert result["staging_deleted"] == 0
+    assert result["atomic_deleted"] == 2
+    assert result["diagnostic_deleted"] == 1
+    assert result["temporary_deleted"] == 3
+    assert not atomic.exists() and not receipt_atomic.exists() and not diagnostic.exists()
+    assert fresh.exists() and active_atomic.exists()
+    assert (
+        foreign.exists()
+        and wrong_directory.exists()
+        and business_photo.exists()
+        and outside.exists()
+        and symlink.is_symlink()
+    )

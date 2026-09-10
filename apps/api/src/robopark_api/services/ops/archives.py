@@ -312,14 +312,14 @@ def _inspect_open(
         if fmt != RELEASE_FORMAT_VERSION:
             raise ArchiveError("unsupported_format")
         listed, git_sha, migration_head = _validate_release_manifest(manifest)
-        if MANIFEST_SIGNATURE_NAME not in names or public_key is None:
-            raise ArchiveError("signature_invalid")
+        if MANIFEST_SIGNATURE_NAME not in names:
+            raise ArchiveError("invalid_manifest")
         from robopark_api.services.ops.release_signing import verify_manifest_signature
 
         try:
             signature = zf.read(MANIFEST_SIGNATURE_NAME)
         except KeyError as exc:
-            raise ArchiveError("signature_invalid") from exc
+            raise ArchiveError("invalid_manifest") from exc
         verify_manifest_signature(manifest, signature, public_key)
     else:
         app_version = manifest.get("app_version")

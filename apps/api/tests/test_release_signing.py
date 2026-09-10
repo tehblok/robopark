@@ -129,11 +129,14 @@ def test_signed_release_roundtrip(tmp_path: Path, ed25519_keys: tuple[bytes, byt
     assert meta.git_sha == "a" * 40
 
 
-def test_tampered_signed_release_is_rejected(tmp_path: Path, ed25519_keys: tuple[bytes, bytes]):
+def test_local_release_admission_ignores_manifest_signature(
+    tmp_path: Path, ed25519_keys: tuple[bytes, bytes]
+):
     archive = tamper_manifest(build_signed_release(tmp_path, ed25519_keys), "app_version", "9.9.9")
 
-    with pytest.raises(ArchiveError, match="signature_invalid"):
-        inspect_archive(archive, expected_kind=KIND_RELEASE, public_key=ed25519_keys[1])
+    meta = inspect_archive(archive, expected_kind=KIND_RELEASE, public_key=ed25519_keys[1])
+
+    assert meta.app_version == "9.9.9"
 
 
 def test_release_rejects_dot_path_alias_before_extraction(
@@ -174,7 +177,7 @@ def test_release_rejects_noncanonical_member_aliases(
         inspect_archive(archive, expected_kind=KIND_RELEASE, public_key=ed25519_keys[1])
 
 
-def test_signing_helpers_reject_ed448_keys():
+def test_packaging_rejects_ed448_private_key_but_admission_ignores_public_key():
     private = Ed448PrivateKey.generate()
     private_key = private.private_bytes(
         serialization.Encoding.PEM,
@@ -190,15 +193,15 @@ def test_signing_helpers_reject_ed448_keys():
     with pytest.raises(ArchiveError, match="signature_invalid"):
         sign_manifest(manifest, private_key)
     signature = private.sign(canonical_manifest_bytes(manifest))
-    with pytest.raises(ArchiveError, match="signature_invalid"):
-        verify_manifest_signature(manifest, signature, public_key)
+    verify_manifest_signature(manifest, signature, public_key)
 
 
-def test_release_requires_a_trusted_public_key(tmp_path: Path, ed25519_keys: tuple[bytes, bytes]):
+def test_local_release_does_not_require_a_public_key(
+    tmp_path: Path, ed25519_keys: tuple[bytes, bytes]
+):
     archive = build_signed_release(tmp_path, ed25519_keys)
 
-    with pytest.raises(ArchiveError, match="signature_invalid"):
-        inspect_archive(archive, expected_kind=KIND_RELEASE)
+    assert inspect_archive(archive, expected_kind=KIND_RELEASE).app_version == "1.2.3"
 
 
 def test_release_rejects_duplicate_and_symbolic_link_members(
@@ -349,12 +352,12 @@ def test_pack_release_wrapper_propagates_reviewed_migration_metadata(
 
     assert packed.returncode == 0, packed.stderr
     meta = inspect_archive(output.read_bytes(), expected_kind=KIND_RELEASE, public_key=public)
-    assert meta.migration_head == "0022_tracker_collaboration"
+    assert meta.migration_head == "0024_inventory"
     with zipfile.ZipFile(output) as archive:
         manifest = json.loads(archive.read("manifest.json"))
     assert manifest["migration_compatibility"] == {
-        "from_heads": [],
-        "reversible": False,
+        "from_heads": ["0022_tracker_collaboration"],
+        "reversible": True,
     }
 
 

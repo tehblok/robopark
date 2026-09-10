@@ -187,10 +187,8 @@ def get_job(
         )
     progress = (None, None)
     if settings.ops_host_root:
-        try:
+        with suppress(host_bridge.BridgeError):
             progress = host_bridge.update_progress(host_bridge.host_root(settings), job)
-        except host_bridge.BridgeError:
-            pass
     return _job_out(job, progress=progress)
 
 

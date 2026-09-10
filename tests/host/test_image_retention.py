@@ -1,6 +1,7 @@
 """Prune only authenticated host-owned obsolete production images."""
 
 import hashlib
+from types import SimpleNamespace
 
 import pytest
 from robopark_host.updater import apply_release, reconcile_after_exit
@@ -42,12 +43,13 @@ def test_four_versions_remove_old_tags_but_preserve_current_previous_and_foreign
         jobs.append(request.job_id)
         assert apply_release(request, host.paths, host.runner).error is None
         assert reconcile_after_exit(host.paths, host.runner).state == "current_healthy"
-    for job in jobs[:2]:
+    for job in jobs[:1]:
         assert "robopark-api:" + job in removals
         assert "robopark-web:" + job in removals
-    for job in jobs[2:]:
+    for job in jobs[1:]:
         assert "robopark-api:" + job not in removals
         assert "robopark-web:" + job not in removals
+        assert (host.paths.state / "image-owned" / (job + ".json")).exists()
     assert not any(tag.startswith("sha256:") for tag in removals)
     assert all(
         tag.startswith(
@@ -98,6 +100,66 @@ class Images:
         self.removed.append(argv[-1])
         self.images.pop(argv[-1])
         return b""
+
+
+class Builder:
+    def __init__(self, error=None):
+        self.commands = []
+        self.error = error
+
+    def run(self, argv, **kwargs):
+        self.commands.append((argv, kwargs["timeout"]))
+        if self.error:
+            raise self.error
+        return b""
+
+
+def test_builder_cache_cleanup_is_disk_pressure_bounded(host, monkeypatch):
+    from robopark_host import image_retention
+
+    runner = Builder()
+    monkeypatch.setattr(
+        image_retention.shutil, "disk_usage", lambda _: SimpleNamespace(free=2 * 1024**3)
+    )
+    assert image_retention.cleanup_builder_cache(host.paths, runner) == {
+        "attempted": False,
+        "blocked": False,
+    }
+    assert runner.commands == []
+
+    monkeypatch.setattr(
+        image_retention.shutil, "disk_usage", lambda _: SimpleNamespace(free=2 * 1024**3 - 1)
+    )
+    assert image_retention.cleanup_builder_cache(host.paths, runner) == {
+        "attempted": True,
+        "blocked": False,
+    }
+    assert runner.commands == [
+        (
+            [
+                "docker",
+                "builder",
+                "prune",
+                "-f",
+                "--filter",
+                "until=168h",
+                "--keep-storage",
+                "2GB",
+            ],
+            30,
+        )
+    ]
+
+
+@pytest.mark.parametrize("error", [TimeoutError(), ValueError("docker failed")])
+def test_builder_cache_cleanup_records_runner_failures(host, monkeypatch, error):
+    from robopark_host import image_retention
+
+    monkeypatch.setattr(
+        image_retention.shutil, "disk_usage", lambda _: SimpleNamespace(free=0)
+    )
+    result = image_retention.cleanup_builder_cache(host.paths, Builder(error))
+    assert result == {"attempted": True, "blocked": True}
 
 
 def test_running_image_and_foreign_retag_are_preserved_with_diagnostic(host):
@@ -179,6 +241,51 @@ def test_scheduled_image_cleanup_respects_host_operation_owner(host):
     with exclusive_lock(host.paths.ops / "host.lock"):
         assert scheduled(host.paths, runner)["busy"]
     assert not runner.removed
+
+
+def test_scheduled_cleanup_shares_one_image_and_builder_command_budget(host, monkeypatch):
+    from robopark_host import image_retention
+
+    class ScheduledImages(Images):
+        def __init__(self, images):
+            super().__init__(images)
+            self.commands = []
+
+        def run(self, argv, **kwargs):
+            self.commands.append((argv, kwargs["timeout"]))
+            if argv[:3] == ["docker", "builder", "prune"]:
+                return b""
+            return super().run(argv, **kwargs)
+
+    _, inventory = obsolete_image(host)
+    runner = ScheduledImages(inventory)
+    monkeypatch.setattr(image_retention.shutil, "disk_usage", lambda _: SimpleNamespace(free=0))
+
+    result = image_retention.scheduled(host.paths, runner)
+
+    assert len(runner.commands) <= image_retention.MAX_COMMANDS
+    assert result["builder_cache"] == {"attempted": True, "blocked": False}
+    assert [command for command, _ in runner.commands if command[:3] == ["docker", "builder", "prune"]]
+
+
+def test_doctor_handler_reports_blocked_scheduled_builder_cleanup(host, monkeypatch):
+    from robopark_host import cli, image_retention
+    from robopark_host.checks import DiagnosticReport
+    from robopark_host.doctor import _artifact_check
+
+    monkeypatch.setattr(image_retention.shutil, "disk_usage", lambda _: SimpleNamespace(free=0))
+    monkeypatch.setattr("robopark_host.updater.SystemRunner", lambda: Builder(ValueError("docker failed")))
+    monkeypatch.setattr(
+        cli,
+        "run_doctor",
+        lambda paths, *_: DiagnosticReport([_artifact_check(paths, None)]),
+    )
+    reported = []
+    monkeypatch.setattr(cli, "_print", reported.append)
+
+    assert cli._doctor_handler(host.paths) == 2
+    assert reported[0]["checks"][0]["code"] == "diagnostic_artifacts"
+    assert reported[0]["checks"][0]["status"] == "failed"
 
 
 def test_interrupted_atomic_receipt_temporary_does_not_block_next_cleanup(host):

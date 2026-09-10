@@ -191,9 +191,7 @@ def test_royal_routes_all_open_reports_without_widening_other_role_boundaries(
     royal_open_report = _report(db_session, royal, beta, target="operator")
     _report(db_session, royal, alpha, state="returned")
     _report(db_session, seed_mechanic, alpha, state="done")
-    stale_cookie_report = reports_svc.ensure_open_emergency_cookie_report(
-        db_session, author=royal
-    )
+    stale_cookie_report = reports_svc.ensure_open_emergency_cookie_report(db_session, author=royal)
     assert stale_cookie_report is not None
 
     assert {row.id for row in reports_svc.list_inbox(db_session, royal)} == {
@@ -219,8 +217,14 @@ def test_royal_routes_all_open_reports_without_widening_other_role_boundaries(
         assert reports_svc.badge_counts(db_session, user) == {"count": 0}
 
     assert reports_svc.get_report(db_session, royal, operator_report.id).id == operator_report.id
-    assert reports_svc.get_report(db_session, royal, stale_cookie_report.id).id == stale_cookie_report.id
-    assert reports_svc.get_report(db_session, seed_mechanic, operator_report.id).id == operator_report.id
+    assert (
+        reports_svc.get_report(db_session, royal, stale_cookie_report.id).id
+        == stale_cookie_report.id
+    )
+    assert (
+        reports_svc.get_report(db_session, seed_mechanic, operator_report.id).id
+        == operator_report.id
+    )
     assert reports_svc.get_report(db_session, admin, operator_report.id).id == operator_report.id
     with pytest.raises(PermissionError):
         reports_svc.get_report(db_session, driver, stale_cookie_report.id)
