@@ -290,6 +290,7 @@ function ReportsOwner({
               emptyMessage="Вы ещё не создавали репортов."
               loading={showListSkeleton && visiblePane === 'mine'}
               onSelect={(report) => openReport(report, false)}
+              parkNameForReport={parkNameForReport}
               reports={visibleMine}
               selectedId={parsedReportId}
               showReturnComment
@@ -316,6 +317,7 @@ function ReportsOwner({
                 emptyMessage={role === 'royal' ? 'Репортов пока нет.' : 'Нет открытых репортов для выбранного парка.'}
                 loading={showListSkeleton && visiblePane === 'inbox'}
                 onSelect={(report) => openReport(report, true)}
+                parkNameForReport={parkNameForReport}
                 reports={inbox}
                 selectedId={parsedReportId}
                 showReturnComment={false}

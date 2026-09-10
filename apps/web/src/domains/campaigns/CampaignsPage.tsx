@@ -14,6 +14,7 @@ import { Button } from '../../design-system/actions/Button'
 import { MetricCard } from '../../design-system/data/MetricCard'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { PageLayout, Panel } from '../../design-system/layout/PageLayout'
+import { ResponsiveDisclosure, ResponsiveDisclosureGroup } from '../../design-system/layout/ResponsiveDisclosure'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { refreshReportsBadge } from '../../reports-badge'
 import { classifyApiError } from '../../shared/api/classifyApiError'
@@ -75,7 +76,7 @@ function CampaignCreateForm({ apiClient, onCreated }: { apiClient: CampaignApi; 
     catch (reason) { setError(classifyApiError(reason, 'Не удалось создать кампанию.').description) }
     finally { setBusy(false) }
   }
-  return <Panel collapsible defaultCollapsed storageKey="campaign-create" title="Новая кампания">
+  return <ResponsiveDisclosureGroup label="Создание кампании"><ResponsiveDisclosure id="create" title="Новая кампания">
     <form className="form-grid campaign-create" onSubmit={submit}>
       <label className="field"><span>Тип</span><select value={payload.kind} onChange={event => setPayload(current => ({ ...current, kind: event.target.value as Campaign['kind'] }))}><option value="service_company">Сервисная компания</option><option value="wrapping">Оклейка</option></select></label>
       <label className="field"><span>Название</span><input required maxLength={128} value={payload.name} onChange={event => setPayload(current => ({ ...current, name: event.target.value }))} /></label>
@@ -86,7 +87,7 @@ function CampaignCreateForm({ apiClient, onCreated }: { apiClient: CampaignApi; 
       {error ? <p className="form-error" role="alert">{error}</p> : null}
       <Button busy={busy} disabled={!payload.park_ids.length} type="submit">Создать кампанию</Button>
     </form>
-  </Panel>
+  </ResponsiveDisclosure></ResponsiveDisclosureGroup>
 }
 
 function CampaignList({ apiClient }: { apiClient: CampaignApi }) {
@@ -107,9 +108,9 @@ function CampaignList({ apiClient }: { apiClient: CampaignApi }) {
     {failure ? <ErrorState description={failure.description} onRetry={failure.retryable ? load : undefined} title={failure.title} />
       : !items ? <LoadingState label="Загружаем кампании" variant="page" />
         : !items.length ? <EmptyState description="Администратор ещё не добавил кампании для доступных парков." icon="work" title="Кампаний нет" />
-          : <div className="campaign-list">{items.map(item => <Panel className="campaign-card" key={item.id}>
+          : <div className="campaign-list">{items.map(item => <Panel className="campaign-card" density="dense" key={item.id}>
             <div className="campaign-card__heading"><div><StatusBadge tone={!item.is_active ? 'neutral' : item.overdue ? 'critical' : 'info'}>{kindLabel(item.kind)}</StatusBadge><h2><Link to={`/campaigns/${item.id}`}>{item.name}</Link></h2><p>{item.park_names.join(', ')} · {dateLabel(item.starts_on)} — {dateLabel(item.due_on)}</p></div><Progress label={item.name} value={item.percent_complete} /></div>
-            <CampaignMetrics campaign={item} />
+            <ResponsiveDisclosureGroup label={`Метрики ${item.name}`}><ResponsiveDisclosure id="metrics" summary={`${item.percent_complete}% выполнено`} title="Метрики"><CampaignMetrics campaign={item} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>
           </Panel>)}</div>}
   </PageLayout>
 }
@@ -171,12 +172,12 @@ function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; api
   if (failure) return <PageLayout title="СК и оклейка"><ErrorState description={failure.description} onRetry={failure.retryable ? load : undefined} title={failure.title} /></PageLayout>
   if (!data) return <PageLayout title="СК и оклейка"><LoadingState label="Загружаем кампанию" variant="page" /></PageLayout>
   return <PageLayout actions={manager ? <Button onClick={() => void apiClient.updateCampaign(data.id, { is_active: !data.is_active }).then(load)} variant="secondary">{data.is_active ? 'Завершить кампанию' : 'Возобновить кампанию'}</Button> : null} description={`${data.park_names.join(', ')} · тег ${data.tracker_tag} · ${dateLabel(data.starts_on)} — ${dateLabel(data.due_on)}`} eyebrow={<Link to="/campaigns">СК и оклейка</Link>} title={data.name}>
-    <CampaignMetrics campaign={data} />
+    <ResponsiveDisclosureGroup label="Разделы кампании"><ResponsiveDisclosure id="metrics" summary={`${data.percent_complete}% · ${data.completed_count} из ${data.total_count}`} title="Метрики"><CampaignMetrics campaign={data} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>
     <div className="campaign-columns">
-      <Panel title={`Открытые · ${data.open_tickets.length}`}><label className="field campaign-search"><span>Поиск по роботу</span><input onChange={event => setQuery(event.target.value)} placeholder="Номер робота или тикет" value={query} /></label>
+      <Panel density="dense" title={`Открытые · ${data.open_tickets.length}`}><label className="field campaign-search"><span>Поиск по роботу</span><input onChange={event => setQuery(event.target.value)} placeholder="Номер робота или тикет" value={query} /></label>
         <div className="campaign-tickets">{open.map(ticket => <TicketCard apiClient={apiClient} campaign={data} key={ticket.key} reload={load} ticket={ticket} />)}{!open.length ? <p>Открытые тикеты не найдены.</p> : null}</div>
       </Panel>
-      <Panel title={`Закрытые · ${data.closed_tickets.length}`}><div className="campaign-tickets">{data.closed_tickets.map(ticket => <TicketCard apiClient={apiClient} campaign={data} key={ticket.key} reload={load} ticket={ticket} />)}{!data.closed_tickets.length ? <p>Закрытых тикетов пока нет.</p> : null}</div></Panel>
+      <Panel density="dense"><ResponsiveDisclosureGroup label="История кампании"><ResponsiveDisclosure id="closed" summary={`${data.closed_tickets.length} тикетов`} title={`Закрытые · ${data.closed_tickets.length}`}><div className="campaign-tickets">{data.closed_tickets.map(ticket => <TicketCard apiClient={apiClient} campaign={data} key={ticket.key} reload={load} ticket={ticket} />)}{!data.closed_tickets.length ? <p>Закрытых тикетов пока нет.</p> : null}</div></ResponsiveDisclosure></ResponsiveDisclosureGroup></Panel>
     </div>
   </PageLayout>
 }

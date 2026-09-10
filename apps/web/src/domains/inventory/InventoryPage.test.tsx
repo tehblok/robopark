@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, type InventoryOverview, type Park } from '../../api'
 import { ParkScopeContext } from '../../app/park/parkScope'
 import { InventoryPage } from './InventoryPage'
@@ -28,7 +28,38 @@ function renderInventoryPage(currentPark: Park, client = inventoryClient()) {
   return <MemoryRouter><ParkScopeContext.Provider value={{ parkId: currentPark.id, selectedPark: currentPark, parks: [currentPark], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><InventoryPage apiClient={client} /></ParkScopeContext.Provider></MemoryRouter>
 }
 
-afterEach(() => vi.restoreAllMocks())
+function useViewport(matches: boolean) {
+  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
+    matches,
+    media: '(max-width: 599px)',
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }))
+}
+
+beforeEach(() => useViewport(false))
+
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+it('keeps the mobile catalog visible and opens inventory workflows on demand', async () => {
+  useViewport(true)
+  render(renderInventoryPage(park))
+
+  expect(await screen.findByRole('heading', { name: 'Подвязка' })).toBeVisible()
+  expect(screen.getByRole('combobox', { name: 'Компонента' })).toBeVisible()
+  expect(screen.queryByRole('textbox', { name: 'Название новой запчасти' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('spinbutton', { name: 'Количество' })).not.toBeInTheDocument()
+  const thumbnail = screen.getByRole('img', { name: 'Тяга' })
+  expect(thumbnail).toHaveAttribute('width', '72')
+  expect(thumbnail).toHaveAttribute('height', '72')
+
+  await userEvent.click(screen.getByRole('button', { name: 'Добавить запчасть' }))
+  expect(screen.getByRole('textbox', { name: 'Название новой запчасти' })).toBeVisible()
+})
 
 it('filters the compact catalog by component without another inventory request', async () => {
   const client = inventoryClient({ inventory: vi.fn(async () => stockWithTwoComponents) })

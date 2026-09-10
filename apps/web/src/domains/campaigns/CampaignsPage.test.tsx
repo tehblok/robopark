@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, type CampaignDetail, type Park, type User } from '../../api'
 import { ParkScopeContext } from '../../app/park/parkScope'
 import { AuthContext } from '../../auth-context'
@@ -23,6 +23,36 @@ const detail: CampaignDetail = {
 function renderPage(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>) {
   return render(<MemoryRouter initialEntries={['/campaigns/4']}><AuthContext.Provider value={{ user, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={apiClient} />} path="/campaigns/:campaignId" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>)
 }
+
+function useViewport(matches: boolean) {
+  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
+    matches,
+    media: '(max-width: 599px)',
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }))
+}
+
+beforeEach(() => useViewport(false))
+afterEach(() => vi.unstubAllGlobals())
+
+it('keeps mobile campaign search and ticket summary visible while deferring metrics and history', async () => {
+  useViewport(true)
+  renderPage({ ...api, campaign: vi.fn(async () => detail) })
+
+  expect(await screen.findByRole('textbox', { name: 'Поиск по роботу' })).toBeVisible()
+  expect(screen.getByText('A101')).toBeVisible()
+  expect(screen.queryByRole('img', { name: 'СК Альфа: 50%' })).not.toBeInTheDocument()
+  expect(screen.queryByText('A102')).not.toBeInTheDocument()
+  expect(screen.queryByRole('textbox', { name: 'Комментарий для оператора' })).not.toBeInTheDocument()
+
+  await userEvent.click(screen.getByRole('button', { name: 'Метрики' }))
+  expect(screen.getByRole('img', { name: 'СК Альфа: 50%' })).toBeVisible()
+})
 
 it('shows progress, open and closed campaign tickets and filters by robot', async () => {
   const apiClient = { ...api, campaign: vi.fn(async () => detail) }

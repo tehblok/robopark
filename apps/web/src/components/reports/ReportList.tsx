@@ -16,6 +16,7 @@ type ReportListProps = {
   onSelect?: (report: Report) => void
   selectedId?: number | null
   showReturnComment?: boolean
+  parkNameForReport?: (report: Report) => string
 }
 
 export function ReportList({
@@ -26,6 +27,7 @@ export function ReportList({
   onSelect,
   selectedId = null,
   showReturnComment = true,
+  parkNameForReport,
 }: ReportListProps) {
   if (loading) {
     return <SkeletonList rows={4} />
@@ -50,7 +52,7 @@ export function ReportList({
           <EntityRow title={report.title}
             status={<StatusBadge tone={report.status === 'done' ? 'success' : report.status === 'returned' ? 'warning' : 'info'}>{reportStatusText(report.status)}</StatusBadge>}
             meta={<>
-              <span>{[reportKindText(report.kind), report.tracker_key, formatReportDate(report.created_at)].filter(Boolean).join(' · ')}</span>
+              <span>{[reportKindText(report.kind), parkNameForReport?.(report), report.tracker_key, formatReportDate(report.created_at)].filter(Boolean).join(' · ')}</span>
               {showReturnComment && report.return_comment && (
                 <p className="report-row-return">{report.return_comment}</p>
               )}

@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, type Park, type Report, type User } from '../api'
 import { AuthContext } from '../auth-context'
 import { reportsAccessIdentity, type ReportsApiClient } from '../domains/reports/reports'
@@ -83,10 +83,43 @@ function tree(user: User, apiClient: ReportsApiClient, url = '/reports') {
   )
 }
 
+function useViewport(matches: boolean) {
+  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
+    matches,
+    media: '(max-width: 599px)',
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }))
+}
+
+beforeEach(() => useViewport(false))
+
 afterEach(() => {
   resourceStore.clearAll()
   localStorage.clear()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
+
+it('keeps mobile report filters and summaries visible while deferring detail history', async () => {
+  useViewport(true)
+  const item = { ...report(9, 'Нужны подробности'), attachments: [{ id: 4, kind: 'device_photo', filename: 'photo.jpg', content_type: 'image/jpeg', size_bytes: 10 }] }
+  render(tree(userA, client({ reportsMine: vi.fn(async () => [item]), report: vi.fn(async () => item) })))
+
+  const summary = await screen.findByRole('button', { name: /Нужны подробности/ })
+  expect(summary).toBeVisible()
+  expect(summary).toHaveTextContent('Север')
+  expect(screen.getByRole('combobox', { name: 'Статус репортов' })).toBeVisible()
+  expect(screen.queryByText('photo.jpg')).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: /Нужны подробности/ }))
+  expect(await screen.findByRole('heading', { name: 'Нужны подробности' })).toBeVisible()
+  expect(screen.queryByText('photo.jpg')).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'История и вложения' }))
+  expect(screen.getByText('photo.jpg')).toBeVisible()
 })
 
 it('releases a pending A owner before B and a remounted A start fresh', async () => {

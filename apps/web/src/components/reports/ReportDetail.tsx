@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { api, type Report } from '../../api'
 import type { ReportsApiClient } from '../../domains/reports/reports'
 import { mapApiError } from '../../i18n/errors'
@@ -6,6 +6,7 @@ import { ru, reportKindLabel, reportStatusLabel } from '../../i18n/ru'
 import { Alert } from '../PageShell'
 import { Spinner } from '../ui/Feedback'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
+import { ResponsiveDisclosure, ResponsiveDisclosureGroup } from '../../design-system/layout/ResponsiveDisclosure'
 import { formatReportDate, trackerHref } from './report-utils'
 
 type ReportDetailProps = {
@@ -18,6 +19,11 @@ type ReportDetailProps = {
   showEscalate: boolean
   onClose: () => void
   onUpdated: () => void
+}
+
+function ResponsiveReportHistory({ children, summary }: { children: ReactNode; summary?: string }) {
+  if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') return <>{children}</>
+  return <ResponsiveDisclosureGroup label="Дополнительные разделы репорта"><ResponsiveDisclosure id="history" summary={summary} title="История и вложения">{children}</ResponsiveDisclosure></ResponsiveDisclosureGroup>
 }
 
 export function ReportDetail({
@@ -140,7 +146,14 @@ export function ReportDetail({
         </div>
       </header>
 
-      <dl className="report-detail-fields">
+      {report.body && (
+        <div className="report-detail-body">
+          <strong>Описание</strong>
+          <p>{report.body}</p>
+        </div>
+      )}
+
+      <ResponsiveReportHistory summary={parkName}><dl className="report-detail-fields">
         <div className="issue-field">
           <dt>Парк</dt>
           <dd>{parkName ?? (report.park_id == null ? 'Платформа' : `#${report.park_id}`)}</dd>
@@ -165,13 +178,6 @@ export function ReportDetail({
         )}
       </dl>
 
-      {report.body && (
-        <div className="report-detail-body">
-          <strong>Описание</strong>
-          <p>{report.body}</p>
-        </div>
-      )}
-
       {(report.attachments?.length ?? 0) > 0 && (
         <div className="report-detail-body">
           <strong>Вложения</strong>
@@ -186,6 +192,7 @@ export function ReportDetail({
           </ul>
         </div>
       )}
+      </ResponsiveReportHistory>
 
       {report.return_comment && (
         <Alert tone="warning">
