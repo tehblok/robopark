@@ -318,3 +318,29 @@ def test_scheduled_cleanup_reclaims_only_stale_owned_staging_work(host_paths, tm
     assert all(not path.exists() for path in stale)
     assert active.exists() and recent.exists() and foreign.exists()
     assert outside.read_bytes() == b"safe"
+
+
+def test_cleanup_reclaims_only_expired_exact_operation_residue(host_paths, tmp_path):
+    from robopark_host.retention import retain_artifacts
+
+    inactive = str(uuid4())
+    active = str(uuid4())
+    atomic = old(host_paths.state / "image-owned" / f".{inactive}.json.abcdefgh")
+    diagnostic = old(host_paths.var / "diagnostics" / ".doctor-abcdefgh")
+    fresh = old(
+        host_paths.state / "image-owned" / f".{uuid4()}.json.abcdefgh", seconds=60
+    )
+    active_atomic = old(host_paths.state / "image-owned" / f".{active}.json.abcdefgh")
+    atomic_write_json(host_paths.state / "updater-journal.json", {"job_id": active})
+    foreign = old(host_paths.state / "image-owned" / ".foreign.json.abcdefgh")
+    business_photo = old(host_paths.var / "data/photos/keep.jpg")
+    outside = old(tmp_path / "outside")
+    symlink = host_paths.var / "diagnostics/.doctor-hgfedcba"
+    symlink.symlink_to(outside)
+
+    result = retain_artifacts(host_paths)
+
+    assert result["temporary_deleted"] == 2
+    assert not atomic.exists() and not diagnostic.exists()
+    assert fresh.exists() and active_atomic.exists()
+    assert foreign.exists() and business_photo.exists() and outside.exists() and symlink.is_symlink()
