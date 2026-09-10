@@ -42,6 +42,7 @@ export type PanelProps = {
   collapsible?: boolean
   storageKey?: string
   defaultCollapsed?: boolean
+  density?: 'summary' | 'work' | 'dense'
 }
 
 function panelStorageKey(storageKey: string): string {
@@ -51,7 +52,8 @@ function panelStorageKey(storageKey: string): string {
 function readCollapsed(storageKey: string | undefined, fallback: boolean): boolean {
   if (!storageKey || typeof window === 'undefined') return fallback
   try {
-    return window.localStorage.getItem(panelStorageKey(storageKey)) === '1'
+    const stored = window.localStorage.getItem(panelStorageKey(storageKey))
+    return stored === null ? fallback : stored === '1'
   } catch {
     return fallback
   }
@@ -66,6 +68,7 @@ export function Panel({
   collapsible = false,
   storageKey,
   defaultCollapsed = false,
+  density,
 }: PanelProps): ReactElement {
   const headingId = useId()
   const contentId = useId()
@@ -91,6 +94,7 @@ export function Panel({
     <section
       aria-labelledby={title ? headingId : undefined}
       className={`rp-panel ${className}`.trim()}
+      data-density={density}
     >
       {title || description || actions ? (
         <header className="rp-panel__header">

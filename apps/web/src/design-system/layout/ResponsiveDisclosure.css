@@ -1,0 +1,37 @@
+.rp-responsive-disclosure-group {
+  display: grid;
+  gap: var(--rp-space-3);
+}
+
+.rp-responsive-disclosure {
+  display: grid;
+  gap: var(--rp-space-2);
+}
+
+.rp-responsive-disclosure__header {
+  display: grid;
+  gap: var(--rp-space-1);
+}
+
+.rp-responsive-disclosure__trigger {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--rp-text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: var(--rp-font-weight-bold);
+  padding: 0;
+  text-align: start;
+}
+
+.rp-responsive-disclosure__summary {
+  color: var(--rp-text-muted);
+  font-size: var(--rp-font-size-caption);
+}
+
+@media (min-width: 600px) {
+  .rp-responsive-disclosure__trigger {
+    cursor: default;
+  }
+}

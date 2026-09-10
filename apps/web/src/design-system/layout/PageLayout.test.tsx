@@ -53,6 +53,22 @@ it('styles only headings owned by the layout primitives', () => {
 })
 
 describe('Panel', () => {
+  it('uses the saved fallback when no collapse preference exists', () => {
+    render(
+      <Panel collapsible defaultCollapsed storageKey="secondary" title="Secondary">
+        Body
+      </Panel>,
+    )
+
+    expect(screen.queryByText('Body')).not.toBeInTheDocument()
+  })
+
+  it('exposes its content density', () => {
+    render(<Panel density="dense">Body</Panel>)
+
+    expect(screen.getByText('Body').closest('section')).toHaveAttribute('data-density', 'dense')
+  })
+
   it('rejects a collapsible panel without an explicit identity in development', () => {
     expect(() => render(<Panel collapsible title="Диагностика"><p>Данные</p></Panel>)).toThrow(
       'A collapsible Panel requires a nonempty string title and storageKey.',
