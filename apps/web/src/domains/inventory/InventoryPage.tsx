@@ -7,6 +7,7 @@ import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedba
 import { PageLayout, Panel } from '../../design-system/layout/PageLayout'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { classifyApiError } from '../../shared/api/classifyApiError'
+import { InventoryLabels } from './InventoryLabels'
 import './inventory.css'
 
 type InventoryApi = Pick<typeof api, 'inventory' | 'createInventoryComponent' | 'createInventoryPart' | 'updateInventoryPart' | 'moveInventoryStock' | 'inventoryComponentPhotoUrl' | 'inventoryPartPhotoUrl'>
@@ -66,11 +67,15 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
   const { selectedPark, loading } = useParkScope()
   const [data, setData] = useState<InventoryOverview | null>(null)
   const [error, setError] = useState<unknown>(null)
-  const [printPart, setPrintPart] = useState<InventoryPart | null>(null)
+  const [printParts, setPrintParts] = useState<InventoryPart[]>([])
   const [componentId, setComponentId] = useState<'all' | number>('all')
   const load = useCallback(() => { if (!selectedPark) return; setError(null); apiClient.inventory(selectedPark.id).then(setData).catch(setError) }, [apiClient, selectedPark])
   useEffect(load, [load])
-  const print = (part: InventoryPart) => { setPrintPart(part); globalThis.setTimeout(() => window.print(), 0) }
+  const print = (parts: InventoryPart[]) => {
+    if (!parts.length) return
+    setPrintParts(parts)
+    globalThis.setTimeout(() => window.print(), 0)
+  }
   if (loading) return <LoadingState label="Загружаем парк" variant="page" />
   if (!selectedPark) return <EmptyState description="Выберите парк." icon="parks" title="Парк не выбран" />
   const failure = error ? classifyApiError(error, 'Не удалось загрузить склад.') : null
@@ -79,8 +84,9 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
       <div className="stat-grid"><MetricCard label="Компоненты" value={data.component_count} /><MetricCard label="Запчасти" value={data.part_count} /><MetricCard label="Ниже минимума" tone={data.low_stock_count ? 'warning' : 'neutral'} value={data.low_stock_count} /><MetricCard label="Нет на складе" tone={data.out_of_stock_count ? 'critical' : 'neutral'} value={data.out_of_stock_count} /></div>
       <CreateForms apiClient={apiClient} data={data} parkId={selectedPark.id} reload={load} />
       <label className="field inventory-component-filter"><span>Компонента</span><select value={componentId} onChange={event => setComponentId(event.target.value === 'all' ? 'all' : Number(event.target.value))}><option value="all">Все компоненты</option>{data.components.map(component => <option key={component.id} value={component.id}>{component.name}</option>)}</select></label>
-      <div className="inventory-components">{visibleComponents(data, componentId).map(component => <Panel key={component.id} collapsible storageKey={`inventory-component-${component.id}`} title={component.name}>{component.has_photo ? <img alt={`Компонента ${component.name}`} className="inventory-component-photo" src={apiClient.inventoryComponentPhotoUrl(component.id)} /> : null}<div className="inventory-parts">{component.parts.map(part => <PartCard apiClient={apiClient} componentName={component.name} key={part.id} onPrint={print} part={part} reload={load} />)}{!component.parts.length ? <p>Запчастей в этой компоненте пока нет.</p> : null}</div></Panel>)}{!data.components.length ? <EmptyState description="Добавьте первую компоненту и запчасть." icon="work" title="Склад пуст" /> : null}</div>
+      <Button onClick={() => print(visibleComponents(data, componentId).flatMap(component => component.parts))} variant="secondary">Печать этикеток</Button>
+      <div className="inventory-components">{visibleComponents(data, componentId).map(component => <Panel key={component.id} collapsible storageKey={`inventory-component-${component.id}`} title={component.name}>{component.has_photo ? <img alt={`Компонента ${component.name}`} className="inventory-component-photo" src={apiClient.inventoryComponentPhotoUrl(component.id)} /> : null}<div className="inventory-parts">{component.parts.map(part => <PartCard apiClient={apiClient} componentName={component.name} key={part.id} onPrint={part => print([part])} part={part} reload={load} />)}{!component.parts.length ? <p>Запчастей в этой компоненте пока нет.</p> : null}</div></Panel>)}{!data.components.length ? <EmptyState description="Добавьте первую компоненту и запчасть." icon="work" title="Склад пуст" /> : null}</div>
     </>}
-    {printPart ? <div className="inventory-print-label"><strong>{printPart.name}</strong><span>Артикул: {printPart.article}</span><b>{printPart.location}</b></div> : null}
+    <InventoryLabels parts={printParts} />
   </PageLayout>
 }
