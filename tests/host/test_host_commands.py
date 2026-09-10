@@ -384,6 +384,44 @@ def test_expired_claimed_update_recovers_then_publishes_bounded_rejection(host_p
     assert not (host_paths.ops / "inbox/approved.json").exists()
 
 
+def test_successful_newer_local_update_retires_superseded_host_request(host_paths, monkeypatch):
+    from robopark_host import commands
+    from robopark_host.state import atomic_write_json
+
+    command = request(host_paths, "update", artifact="update-old.zip")
+    atomic_write_json(host_paths.state / "command-request.json", command)
+    atomic_write_json(
+        host_paths.ops / "public/command-claim.json",
+        {**{key: command[key] for key in ("job_id", "kind", "actor_user_id")}, "active": True},
+        mode=0o644,
+    )
+    successor = str(uuid4())
+    atomic_write_json(
+        host_paths.state / "updater-journal.json",
+        {"job_id": successor, "phase": "succeeded"},
+    )
+    atomic_write_json(
+        host_paths.ops / "public/rebuild.result",
+        {"job_id": successor, "ok": True, "error": None},
+        mode=0o644,
+    )
+    monkeypatch.setattr(
+        "robopark_host.updater.recover_interrupted_update",
+        lambda *args: pytest.fail("superseded request entered update recovery"),
+    )
+    monkeypatch.setattr(
+        "robopark_host.launcher.launch_update",
+        lambda *args: pytest.fail("superseded update relaunched"),
+    )
+
+    assert commands.consume_commands(host_paths, None, None, update_runner=object()) == 1
+
+    result = json.loads((host_paths.ops / "public/rebuild.result").read_text())
+    assert result == {"job_id": command["job_id"], "ok": False, "error": "request_superseded"}
+    assert not (host_paths.state / "command-request.json").exists()
+    assert json.loads((host_paths.ops / "public/command-claim.json").read_text())["active"] is False
+
+
 def test_expired_approved_diagnostics_publishes_failure_without_work(host_paths, monkeypatch):
     from robopark_host import commands
 
