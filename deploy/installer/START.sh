@@ -90,7 +90,7 @@ run_local_update() {
     started_at=$(date +%s)
     printf '\n%s\n' '========================================'
     printf '%s\n' 'Robopark: локальное OTA-обновление'
-    printf '%s\n' 'Проверяю подпись и готовлю изолированную сборку. Данные и настройки сохраняются.'
+    printf '%s\n' 'Проверяю архив и готовлю изолированную сборку. Данные и настройки сохраняются.'
     if ! python3 -I "$INSTALLER_DIR/lib/local-update.py" "$ROOT" "$INSTALLER_DIR"; then
         printf '\n%s\n' 'ОБНОВЛЕНИЕ НЕ УСТАНОВЛЕНО: рабочая версия сохранена.' >&2
         printf '%s\n' "Диагностика: ${ROOT%/}/var/log/robopark/ota-update.log" >&2
