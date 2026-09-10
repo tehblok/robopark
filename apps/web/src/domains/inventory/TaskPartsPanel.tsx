@@ -19,6 +19,20 @@ export function TaskPartsPanel({ parkId, issueKey, apiClient = api, onWritten }:
   useEffect(() => { void load() }, [load])
   const component = data?.components.find(item => item.id === componentId)
   const part = useMemo(() => component?.parts.find(item => item.id === partId), [component, partId])
+  useEffect(() => {
+    if (!data) return
+    const refreshedComponent = data.components.find(item => item.id === componentId)
+    if (!refreshedComponent) {
+      setComponentId(0); setPartId(0); setQuantity(1)
+      return
+    }
+    const refreshedPart = refreshedComponent.parts.find(item => item.id === partId)
+    if (!refreshedPart) {
+      setPartId(0); setQuantity(1)
+      return
+    }
+    if (quantity > refreshedPart.quantity) setQuantity(1)
+  }, [componentId, data, partId, quantity])
   const submit = async (event: FormEvent) => {
     event.preventDefault(); if (!part) return; setBusy(true); setError(null)
     try { await apiClient.writeoffInventoryForTask(issueKey, part.id, quantity); await load(); onWritten?.() }

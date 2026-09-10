@@ -72,3 +72,18 @@ it('writes a selected part off from the current task', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
   await waitFor(() => expect(writeoff).toHaveBeenCalledWith('RP-42', 3, 2))
 })
+
+it('resets an invalid write-off quantity after inventory refresh', async () => {
+  const refreshedStock: InventoryOverview = { ...stock, components: [{ ...stock.components[0], parts: [{ ...stock.components[0].parts[0], quantity: 1 }] }] }
+  const client = inventoryClient({ inventory: vi.fn().mockResolvedValueOnce(stock).mockResolvedValueOnce(refreshedStock), writeoffInventoryForTask: vi.fn(async () => ({ id: 1, part_id: 3, park_id: 7, actor_user_id: 4, actor_username: 'mech', kind: 'task_writeoff', delta: -2, balance_after: 1, issue_key: 'RP-42', note: null, created_at: '2026-09-10T10:00:00Z' })) })
+  render(<TaskPartsPanel apiClient={client} issueKey="RP-42" parkId={7} />)
+
+  await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Компонента' }), '2')
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Запчасть' }), '3')
+  await userEvent.clear(screen.getByRole('spinbutton', { name: 'Списать, шт.' }))
+  await userEvent.type(screen.getByRole('spinbutton', { name: 'Списать, шт.' }), '2')
+  await userEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
+
+  await waitFor(() => expect(client.inventory).toHaveBeenCalledTimes(2))
+  expect(screen.getByRole('spinbutton', { name: 'Списать, шт.' })).toHaveValue(1)
+})
