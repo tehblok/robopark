@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from robopark_api.collaboration_models import TrackerSubmission
-from robopark_api.services import tracker_cache, tracker_client
+from robopark_api.services import tracker_cache, tracker_claims, tracker_client
 from robopark_api.services.tracker_policy import ensure_action_allowed
 
 UNCERTAIN_RETRY_SECONDS = 60
@@ -55,10 +55,11 @@ def begin(db, user, key, action, request, payload, token, *, validate=None):
             raise ValueError
     except (ValueError, TypeError):
         raise HTTPException(400, "tracker_state_required") from None
+    effective_assignee = tracker_claims.local_assignee(db, issue)
     actual = {
         "status": str(issue.get("status") or ""),
         "status_key": str(issue.get("status_key") or ""),
-        "assignee": str((issue.get("assignee") or {}).get("login") or ""),
+        "assignee": str((effective_assignee or issue.get("assignee") or {}).get("login") or ""),
     }
     if expected != actual:
         tracker_cache.invalidate_issue(key)

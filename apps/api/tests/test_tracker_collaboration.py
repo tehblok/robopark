@@ -57,6 +57,23 @@ def test_success_replayed_without_duplicate_comment(client, tracker_setup, monke
     assert len(written) == 1
 
 
+def test_submission_state_uses_local_claim_when_tracker_has_no_assignee(
+    client, tracker_setup, monkeypatch
+):
+    tracker_setup["assignee"] = None
+    written = []
+    monkeypatch.setattr(tracker_client, "add_comment", lambda **kw: written.append(kw))
+
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/comment",
+        json={"text": "continue after takeover"},
+        headers=headers("local-claim-state", assignee="mech1"),
+    )
+
+    assert response.status_code == 200
+    assert len(written) == 1
+
+
 def test_unknown_outcome_never_replayed(client, tracker_setup, monkeypatch):
     written = []
 
