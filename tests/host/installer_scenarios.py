@@ -255,7 +255,7 @@ class InstallerScenarios(unittest.TestCase):
         result = self.run_start('update')
 
         self.assertIn('Локальное обновление завершено', result.stdout)
-        self.assertIn('Подпись архива проверена', result.stdout)
+        self.assertIn('Целостность архива проверена', result.stdout)
         self.assertIn('Начинаю сборку', result.stdout)
         self.assertEqual((self.root / 'opt/robopark/current/VERSION').read_text(), '1.0.1\n')
         self.assertEqual(data.read_text(), 'keep-me')

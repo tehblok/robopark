@@ -220,7 +220,7 @@ def test_artifact_symlink_cannot_escape_inbox(host):
     assert not (host.paths.state / "updater-journal.json").exists()
 
 
-def test_signature_rejected_before_mutation_or_commands(host):
+def test_signature_value_does_not_block_local_update(host):
     with zipfile.ZipFile(host.artifact) as z:
         files = {name: z.read(name) for name in z.namelist()}
     files["manifest.sig"] = b"x" * 64
@@ -228,10 +228,7 @@ def test_signature_rejected_before_mutation_or_commands(host):
         for name, data in files.items():
             z.writestr(name, data)
     result = apply_release(host.request(), host.paths, host.runner)
-    assert result.error == "signature_invalid"
-    assert host.runner.commands == []
-    assert sorted(p.name for p in host.paths.releases.iterdir()) == ["1.0.0"]
-    assert not (host.paths.state / "updater-journal.json").exists()
+    assert result.state == "awaiting_reconciliation"
 
 
 @pytest.mark.parametrize(

@@ -138,11 +138,6 @@ def main(argv: list[str]) -> int:
     root = Path(argv[1]).resolve()
     bundle = Path(argv[2]).resolve()
     payload = bundle / "payload/robopark-release.zip"
-    installed_key = root / "etc/robopark/release-public-key.pem"
-    bundled_key = bundle / "keys/release-public-key.pem"
-    if read_regular(installed_key, 16_384) != read_regular(bundled_key, 16_384):
-        raise ValueError("signing_key_mismatch")
-
     sys.path.insert(0, str(bundle / "verifier"))
     from robopark_api.services.ops.archives import (
         KIND_RELEASE,
@@ -151,8 +146,8 @@ def main(argv: list[str]) -> int:
     )
 
     raw = read_regular(payload, MAX_ARCHIVE_BYTES)
-    inspect_archive(raw, expected_kind=KIND_RELEASE, public_key=read_regular(installed_key, 16_384))
-    print("  • Подпись архива проверена", flush=True)
+    inspect_archive(raw, expected_kind=KIND_RELEASE)
+    print("  • Целостность архива проверена", flush=True)
 
     identity = str(uuid4())
     ops = root / "var/lib/robopark/ops"

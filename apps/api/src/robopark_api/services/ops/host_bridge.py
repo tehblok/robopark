@@ -223,19 +223,6 @@ def system_health(root):
     return health
 
 
-def release_admission_key(settings, root):
-    from .release_signing import projected_admission_key
-
-    anchor = Path(settings.ops_release_public_key_path).read_bytes()
-    policy = root / "public/signing-trust.json"
-    if policy.exists() or policy.is_symlink():
-        try:
-            return projected_admission_key(anchor, read_json(policy, 8 * 1024 * 1024))
-        except (ValueError, TypeError, KeyError, AttributeError) as exc:
-            raise BridgeError("host_bridge_unavailable") from exc
-    return anchor
-
-
 MAX_UPLOAD_STORAGE = 2 * 1024**3
 MAX_UPLOAD_COUNT = 32
 MIN_FREE_STORAGE = 2 * 1024**3
@@ -258,11 +245,7 @@ def _admit_upload(root, size):
 
 
 def inspect_update(settings, ops, root, blob, actor):
-    try:
-        key = release_admission_key(settings, root)
-    except OSError as exc:
-        raise BridgeError("host_bridge_unavailable") from exc
-    meta = inspect_archive(blob, expected_kind=KIND_RELEASE, public_key=key)
+    meta = inspect_archive(blob, expected_kind=KIND_RELEASE)
     with zipfile.ZipFile(io.BytesIO(blob)) as archive:
         notes = json.loads(archive.read("manifest.json"))["update_notes"][:8000]
     identity = str(uuid4())
@@ -367,11 +350,7 @@ def approve_update(settings, ops, root, identity, actor, exempt):
         blob = target.read_bytes()
         if hashlib.sha256(blob).hexdigest() != record.get("sha256"):
             raise BridgeError("artifact_changed")
-        inspect_archive(
-            blob,
-            expected_kind=KIND_RELEASE,
-            public_key=release_admission_key(settings, root),
-        )
+        inspect_archive(blob, expected_kind=KIND_RELEASE)
         job = _new_host_job("update", actor, exempt, artifact)
         job.extra["inspection_id"] = identity
         _save_job_unlocked(ops, job)

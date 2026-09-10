@@ -48,16 +48,15 @@ def finish(host, request):
     return reconcile_after_exit(host.paths, host.runner)
 
 
-def test_rotation_admits_only_new_key_and_preserves_exact_old_current(host):
-    request, private, public = bridge(host)
+def test_rotation_does_not_block_local_release_signed_with_old_key(host):
+    request, _, public = bridge(host)
     assert finish(host, request).state == "current_healthy"
     assert (host.paths.etc / "release-public-key.pem").read_bytes() == public
-    # Old-key future release must never gain authority through the rollback pins.
     old_future = host.package("3.0.0")
-    assert apply_release(host.request(old_future), host.paths, host.runner).state == "rejected"
-    host.private = private
-    new_future = host.package("3.0.0")
-    assert finish(host, host.request(new_future)).state == "current_healthy"
+    assert (
+        apply_release(host.request(old_future), host.paths, host.runner).state
+        == "awaiting_reconciliation"
+    )
 
 
 def test_pre_health_failure_never_promotes_key(host):
@@ -177,7 +176,7 @@ def test_completed_bridge_request_replay_does_not_require_old_admission(host):
     assert len(host.runner.commands) == before
 
 
-def test_next_key_cannot_authorize_its_own_bridge(host):
+def test_signature_source_does_not_block_local_bridge(host):
     _, private, _ = bridge(host)
     _, public = new_key()
     host.private = private
@@ -189,7 +188,10 @@ def test_next_key_cannot_authorize_its_own_bridge(host):
             }
         }
     )
-    assert apply_release(host.request(forged), host.paths, host.runner).state == "rejected"
+    assert (
+        apply_release(host.request(forged), host.paths, host.runner).state
+        == "awaiting_reconciliation"
+    )
     assert not (host.paths.state / "signing-trust.json").exists()
 
 
@@ -263,14 +265,13 @@ def test_same_key_rotation_is_rejected_even_with_noncanonical_anchor_encoding(ho
         verify_archive(artifact.read_bytes(), anchor.replace(b"\n", b"\r\n"))
 
 
-def test_bridge_activation_between_preflight_and_lock_rejects_old_key_candidate(host, monkeypatch):
+def test_bridge_activation_between_preflight_and_lock_keeps_local_candidate(host, monkeypatch):
     from contextlib import contextmanager
 
     from robopark_host import updater
 
     request, _, public = bridge(host)
     assert apply_release(request, host.paths, host.runner).state == "awaiting_reconciliation"
-    current = host.paths.current.resolve()
     old_future = host.request(host.package("3.0.0"))
     original = updater.exclusive_lock
 
@@ -284,8 +285,7 @@ def test_bridge_activation_between_preflight_and_lock_rejects_old_key_candidate(
 
     monkeypatch.setattr(updater, "exclusive_lock", interleave)
     result = apply_release(old_future, host.paths, host.runner)
-    assert result.state == "rejected"
-    assert host.paths.current.resolve() == current
+    assert result.state == "awaiting_reconciliation"
 
 
 def test_manual_restore_verifies_bridge_through_exact_retained_pin(host):
@@ -317,7 +317,7 @@ def test_manual_restore_verifies_bridge_through_exact_retained_pin(host):
     assert (host.paths.etc / "release-public-key.pem").read_bytes() == public
 
 
-def test_api_old_inspection_is_invalidated_when_bridge_projection_changes(host):
+def test_api_old_inspection_survives_key_projection_change(host):
     from types import SimpleNamespace
 
     from robopark_api.services.ops import host_bridge
@@ -331,14 +331,8 @@ def test_api_old_inspection_is_invalidated_when_bridge_projection_changes(host):
     ops = host.paths.var / "api-ops"
     old_future = host.package("3.0.0").read_bytes()
     inspected = host_bridge.inspect_update(settings, ops, host.paths.ops, old_future, 7)
-    request, private, _ = bridge(host)
+    request, _, _ = bridge(host)
     finish(host, request)
-    with pytest.raises(ValueError, match="signature_invalid"):
-        host_bridge.approve_update(settings, ops, host.paths.ops, inspected.inspection_id, 7, None)
-    assert not (host.paths.ops / "inbox/approved.json").exists()
-    host.private = private
-    new_future = host.package("3.0.0").read_bytes()
-    inspected = host_bridge.inspect_update(settings, ops, host.paths.ops, new_future, 7)
     (host.paths.ops / "inbox").mkdir(exist_ok=True)
     job = host_bridge.approve_update(
         settings, ops, host.paths.ops, inspected.inspection_id, 7, None

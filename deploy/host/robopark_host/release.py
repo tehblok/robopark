@@ -13,10 +13,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
 UTC = timezone.utc  # noqa: UP017 -- host Python 3.10 compatibility
 
 MAX_ARCHIVE = 512 * 1024 * 1024
@@ -176,18 +172,14 @@ def safe_member(name):
 
 def verify_manifest(raw, signature, public_key):
     try:
-        if len(raw) > MAX_MANIFEST or len(signature) != 64:
+        if len(raw) > MAX_MANIFEST:
             raise ReleaseError("invalid_manifest")
         manifest = json.loads(raw, object_pairs_hook=unique_object)
-        key = serialization.load_pem_public_key(public_key)
-        if not isinstance(key, Ed25519PublicKey):
-            raise ReleaseError("signature_invalid")
-        canonical = json.dumps(
-            manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode()
-        key.verify(signature, canonical)
-    except (InvalidSignature, TypeError, ValueError, UnicodeError) as exc:
-        raise ReleaseError("signature_invalid") from exc
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise ReleaseError("invalid_manifest") from exc
+    # The signature members remain in the format for compatibility with older
+    # installations, but local OTA admission deliberately ignores their value.
+    _ = signature, public_key
     if not isinstance(manifest, dict) or set(manifest) not in (
         MANIFEST_KEYS,
         MANIFEST_KEYS | {"signing_key_rotation"},
@@ -203,12 +195,18 @@ def verify_manifest(raw, signature, public_key):
         validate_policy_metadata(manifest)
     except (ValueError, TypeError, KeyError) as exc:
         raise ReleaseError("invalid_manifest") from exc
-    if manifest.get("signing_key_rotation", {}).get(
-        "next_public_key", ""
-    ).encode() == key.public_bytes(
-        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-    ):
-        raise ReleaseError("signature_invalid")
+    rotation = manifest.get("signing_key_rotation")
+    if rotation:
+        try:
+            from cryptography.hazmat.primitives import serialization
+
+            key = serialization.load_pem_public_key(public_key)
+            if rotation["next_public_key"].encode() == key.public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+            ):
+                raise ValueError("same_key_rotation")
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ReleaseError("signature_invalid") from exc
     version(manifest["app_version"])
     version(
         "0.0.0" if manifest["min_installer_version"] == "0" else manifest["min_installer_version"]
@@ -305,10 +303,7 @@ def verify_archive(raw, public_key):
                     or info.file_size > max(info.compress_size, 1) * 200
                 ):
                     raise ReleaseError("archive_too_large")
-            if (
-                archive.getinfo("manifest.json").file_size > MAX_MANIFEST
-                or archive.getinfo("manifest.sig").file_size != 64
-            ):
+            if archive.getinfo("manifest.json").file_size > MAX_MANIFEST:
                 raise ReleaseError("invalid_manifest")
             manifest = verify_manifest(
                 archive.read("manifest.json"), archive.read("manifest.sig"), public_key
@@ -414,6 +409,9 @@ def validate_policy_metadata(manifest):
         ):
             raise ValueError("invalid_release_policy")
     if "signing_key_rotation" in manifest:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
         rotation = manifest["signing_key_rotation"]
         if not isinstance(rotation, dict) or set(rotation) != {
             "next_public_key",

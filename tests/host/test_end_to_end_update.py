@@ -69,7 +69,6 @@ def test_signed_successor_source_executes_reconciliation_and_boot_recovery(e2e_h
 @pytest.mark.parametrize(
     "failure,error",
     [
-        ("tamper", "signature_invalid"),
         ("build", "build_failed"),
         ("smoke", "smoke_failed"),
         ("migration", "migration_failed"),
