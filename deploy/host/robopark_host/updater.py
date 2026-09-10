@@ -25,7 +25,7 @@ from typing import Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from .image_retention import cleanup as cleanup_images
+from .image_retention import maintenance as cleanup_images
 from .image_retention import record as record_images
 from .image_retention import require_record_capacity
 from .image_retention import reserve as reserve_images

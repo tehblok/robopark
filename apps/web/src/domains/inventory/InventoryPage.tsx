@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, type InventoryComponent, type InventoryOverview, type InventoryPart } from '../../api'
 import { useParkScope } from '../../app/park/parkScope'
 import { Button } from '../../design-system/actions/Button'
@@ -68,12 +68,35 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
   const [data, setData] = useState<InventoryOverview | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [printParts, setPrintParts] = useState<InventoryPart[]>([])
+  const [printNotice, setPrintNotice] = useState('')
   const [componentId, setComponentId] = useState<'all' | number>('all')
-  const load = useCallback(() => { if (!selectedPark) return; setError(null); apiClient.inventory(selectedPark.id).then(setData).catch(setError) }, [apiClient, selectedPark])
-  useEffect(load, [load])
-  useEffect(() => { setComponentId('all') }, [selectedPark?.id])
+  const requestGeneration = useRef(0)
+  const load = useCallback(() => {
+    if (!selectedPark) return
+    const generation = ++requestGeneration.current
+    setError(null)
+    apiClient.inventory(selectedPark.id).then(value => {
+      if (generation === requestGeneration.current) setData(value)
+    }).catch(reason => {
+      if (generation === requestGeneration.current) setError(reason)
+    })
+  }, [apiClient, selectedPark?.id])
+  useLayoutEffect(() => {
+    requestGeneration.current += 1
+    setData(null)
+    setError(null)
+    setPrintParts([])
+    setPrintNotice('')
+    setComponentId('all')
+    load()
+  }, [load])
   const print = (parts: InventoryPart[]) => {
-    if (!parts.length) return
+    if (!parts.length) {
+      setPrintParts([])
+      setPrintNotice('Нет запчастей для печати.')
+      return
+    }
+    setPrintNotice('')
     setPrintParts(parts)
     globalThis.setTimeout(() => window.print(), 0)
   }
@@ -86,6 +109,7 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
       <CreateForms apiClient={apiClient} data={data} parkId={selectedPark.id} reload={load} />
       <label className="field inventory-component-filter"><span>Компонента</span><select value={componentId} onChange={event => setComponentId(event.target.value === 'all' ? 'all' : Number(event.target.value))}><option value="all">Все компоненты</option>{data.components.map(component => <option key={component.id} value={component.id}>{component.name}</option>)}</select></label>
       <Button onClick={() => print(visibleComponents(data, componentId).flatMap(component => component.parts))} variant="secondary">Печать этикеток</Button>
+      {printNotice ? <p role="alert">{printNotice}</p> : null}
       <div className="inventory-components">{visibleComponents(data, componentId).map(component => <Panel key={component.id} collapsible storageKey={`inventory-component-${component.id}`} title={component.name}>{component.has_photo ? <img alt={`Компонента ${component.name}`} className="inventory-component-photo" src={apiClient.inventoryComponentPhotoUrl(component.id)} /> : null}<div className="inventory-parts">{component.parts.map(part => <PartCard apiClient={apiClient} componentName={component.name} key={part.id} onPrint={part => print([part])} part={part} reload={load} />)}{!component.parts.length ? <p>Запчастей в этой компоненте пока нет.</p> : null}</div></Panel>)}{!data.components.length ? <EmptyState description="Добавьте первую компоненту и запчасть." icon="work" title="Склад пуст" /> : null}</div>
     </>}
     <InventoryLabels parts={printParts} />

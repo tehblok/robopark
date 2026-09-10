@@ -243,6 +243,51 @@ def test_scheduled_image_cleanup_respects_host_operation_owner(host):
     assert not runner.removed
 
 
+def test_scheduled_cleanup_shares_one_image_and_builder_command_budget(host, monkeypatch):
+    from robopark_host import image_retention
+
+    class ScheduledImages(Images):
+        def __init__(self, images):
+            super().__init__(images)
+            self.commands = []
+
+        def run(self, argv, **kwargs):
+            self.commands.append((argv, kwargs["timeout"]))
+            if argv[:3] == ["docker", "builder", "prune"]:
+                return b""
+            return super().run(argv, **kwargs)
+
+    _, inventory = obsolete_image(host)
+    runner = ScheduledImages(inventory)
+    monkeypatch.setattr(image_retention.shutil, "disk_usage", lambda _: SimpleNamespace(free=0))
+
+    result = image_retention.scheduled(host.paths, runner)
+
+    assert len(runner.commands) <= image_retention.MAX_COMMANDS
+    assert result["builder_cache"] == {"attempted": True, "blocked": False}
+    assert [command for command, _ in runner.commands if command[:3] == ["docker", "builder", "prune"]]
+
+
+def test_doctor_handler_reports_blocked_scheduled_builder_cleanup(host, monkeypatch):
+    from robopark_host import cli, image_retention
+    from robopark_host.checks import DiagnosticReport
+    from robopark_host.doctor import _artifact_check
+
+    monkeypatch.setattr(image_retention.shutil, "disk_usage", lambda _: SimpleNamespace(free=0))
+    monkeypatch.setattr("robopark_host.updater.SystemRunner", lambda: Builder(ValueError("docker failed")))
+    monkeypatch.setattr(
+        cli,
+        "run_doctor",
+        lambda paths, *_: DiagnosticReport([_artifact_check(paths, None)]),
+    )
+    reported = []
+    monkeypatch.setattr(cli, "_print", reported.append)
+
+    assert cli._doctor_handler(host.paths) == 2
+    assert reported[0]["checks"][0]["code"] == "diagnostic_artifacts"
+    assert reported[0]["checks"][0]["status"] == "failed"
+
+
 def test_interrupted_atomic_receipt_temporary_does_not_block_next_cleanup(host):
     from robopark_host.image_retention import cleanup
 

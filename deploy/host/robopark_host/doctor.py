@@ -502,11 +502,15 @@ def _artifact_check(paths: HostPaths, runner: Runner) -> CheckResult:
     usage = artifact_usage(paths)
     last = read_object(paths.state / "retention.json")
     images = read_object(paths.state / "image-retention.json")
+    builder_cache = read_object(paths.state / "builder-cache-retention.json")
     restore_cleanup = read_object(paths.state / "restore-retention.json")
+    image_builder = images.get("builder_cache")
     blocked = (
         usage["blocked"]
         or last.get("blocked")
         or images.get("blocked")
+        or isinstance(image_builder, dict) and image_builder.get("blocked")
+        or builder_cache.get("blocked")
         or restore_cleanup.get("blocked")
     )
     busy = last.get("busy") is True or images.get("pending") is True

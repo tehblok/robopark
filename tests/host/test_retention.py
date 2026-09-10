@@ -144,22 +144,21 @@ def test_scheduled_doctor_wires_retention_and_reports_actual_usage(host_paths, m
     assert not victim.exists()
 
 
-def test_terminal_and_scheduled_cleanup_run_builder_after_image_cleanup(host_paths, monkeypatch):
+def test_terminal_update_does_not_repeat_updater_image_cleanup(host_paths, monkeypatch):
     from robopark_host import cli, image_retention, retention
 
     calls = []
     monkeypatch.setattr(retention, "retain_artifacts", lambda paths: calls.append("artifacts"))
-    monkeypatch.setattr(image_retention, "cleanup", lambda paths, runner: calls.append("images") or {})
     monkeypatch.setattr(
         image_retention,
-        "cleanup_builder_cache",
-        lambda paths, runner: calls.append("builder") or {"attempted": False, "blocked": False},
+        "maintenance",
+        lambda paths, runner: calls.append("maintenance") or {"blocked": False, "builder_cache": {}},
     )
 
     cli._retain_after_terminal_update(host_paths, "current_healthy")
     image_retention.scheduled(host_paths, object())
 
-    assert calls == ["artifacts", "images", "builder", "images", "builder"]
+    assert calls == ["artifacts", "maintenance"]
 
 
 def test_compaction_crash_cannot_forget_identity(host_paths, monkeypatch):
