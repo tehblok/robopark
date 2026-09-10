@@ -300,7 +300,11 @@ def consume_commands(paths, runner, http, *, update_runner=None, github_http=Non
                 else:
                     _finish(paths, request, saved["result"])
                 return 0
-            if request["kind"] == "update" and _superseded_by_successful_update(paths, request):
+            if (
+                resumed
+                and request["kind"] == "update"
+                and _superseded_by_successful_update(paths, request)
+            ):
                 result = {
                     "job_id": request["job_id"],
                     "ok": False,

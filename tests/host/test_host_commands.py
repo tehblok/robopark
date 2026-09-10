@@ -157,6 +157,38 @@ def test_update_consumer_calls_launcher_once_without_doctor(host_paths, monkeypa
     assert calls == [command]
 
 
+def test_fresh_update_is_not_superseded_by_previous_success(host_paths, monkeypatch):
+    from robopark_host import commands
+    from robopark_host.state import atomic_write_json
+
+    previous = str(uuid4())
+    atomic_write_json(
+        host_paths.state / "updater-journal.json",
+        {"job_id": previous, "phase": "succeeded"},
+    )
+    atomic_write_json(
+        host_paths.ops / "public/rebuild.result",
+        {"job_id": previous, "ok": True, "error": None},
+        mode=0o644,
+    )
+    command = request(host_paths, "update", artifact="update-next.zip")
+    launched = []
+
+    def launcher(paths, path, runner):
+        launched.append(json.loads(path.read_text()))
+        atomic_write_json(
+            paths.ops / "public/rebuild.result",
+            {"job_id": command["job_id"], "ok": True, "error": None},
+            mode=0o644,
+        )
+        return 0
+
+    monkeypatch.setattr("robopark_host.launcher.launch_update", launcher)
+
+    assert commands.consume_commands(host_paths, None, None, update_runner=object()) == 0
+    assert launched == [command]
+
+
 def test_repair_does_not_reexecute_claimed_command_after_crash(host_paths, monkeypatch):
     from robopark_host import commands
     from robopark_host.state import atomic_write_json
