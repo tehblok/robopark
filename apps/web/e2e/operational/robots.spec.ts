@@ -97,8 +97,8 @@ test('a restored workspace tab is horizontally visible on a phone', async ({ pag
   await expect(tab).toHaveAttribute('aria-selected', 'true')
   await expect(page.locator('.rp-check-navigation').getByRole('tab')).toHaveText(['Состояние', 'Ошибки', 'Схема'])
   await expect(page.locator('.rp-check-navigation').getByRole('button', { name: 'Ещё', exact: true })).toBeVisible()
-  const summary = await page.getByRole('region', { name: 'Список' }).boundingBox()
-  const detail = await page.getByRole('region', { name: 'Детали' }).boundingBox()
+  const summary = await page.getByRole('region', { name: 'Состояние робота' }).boundingBox()
+  const detail = await page.locator('.rp-check-detail').boundingBox()
   expect(summary!.y + summary!.height).toBeLessThanOrEqual(detail!.y + 1)
   const bounds = await page.getByRole('tablist').boundingBox()
   const selected = await tab.boundingBox()
@@ -122,6 +122,8 @@ for (const reference of ['447', 'YASADR00000000447', 'https://robopark.example.i
     await page.getByRole('button', { name: 'Найти робота', exact: true }).click()
     await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7`)
     await expect(page.getByRole('heading', { name: 'Робот 447', exact: true })).toBeVisible()
+    await expect(page.getByText(snapshot.vin, { exact: true })).toBeHidden()
+    await page.getByText('VIN и координаты', { exact: true }).click()
     await expect(page.getByText(snapshot.vin, { exact: true })).toBeVisible()
     expect(resolved[0]).toBe(reference.startsWith('https:') ? '447' : reference)
     await selectSecondaryTab(page, 'Задачи')
@@ -132,19 +134,17 @@ for (const reference of ['447', 'YASADR00000000447', 'https://robopark.example.i
   })
 }
 
-test('short route canonicalizes and identity loads only the selected original photo', async ({ page }) => {
+test('short route canonicalizes to the compact summary without loading a competing identity photo', async ({ page }) => {
   const photos: string[] = []
   page.on('request', request => { if (request.resourceType() === 'image' && /\/assets\/robots\/.+\.png/.test(request.url())) photos.push(new URL(request.url()).pathname.split('/').at(-1)!) })
   await installOperational(page)
   await page.goto('/robots/447?park=7')
   await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7`)
-  const photo = page.getByRole('img', { name: 'Иллюстрация модели робота', exact: true })
-  await expect(photo).toBeVisible()
-  await expect(photo).toHaveAttribute('loading', 'lazy')
-  await expect.poll(() => photo.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(1962)
+  await expect(page.getByRole('region', { name: 'Состояние робота' })).toContainText('Заряд 84 %')
+  await expect(page.getByText(snapshot.vin, { exact: true })).toBeHidden()
   await settlePage(page)
-  expect(photos).toEqual(['isometric.png'])
-  await expect(page.locator('.rp-robot-identity img')).toHaveCount(1)
+  expect(photos).toEqual([])
+  await expect(page.locator('.rp-robot-identity')).toHaveCount(0)
 })
 
 test('recents expire at 48 hours and persist the pruned list after reload', async ({ page }) => {
@@ -345,7 +345,7 @@ test('all six original views load only on selection with correct visible wheel m
     await photo.scrollIntoViewIfNeeded()
     await expect(photo).toHaveCount(1)
     await expect.poll(() => photo.evaluate((element: HTMLImageElement) => [element.naturalWidth, element.naturalHeight])).toEqual([view.width, view.height])
-    expect(images).toEqual(Array.from(new Set(['isometric.png', ...views.slice(0, index + 1).map(item => item.file)])))
+    expect(images).toEqual(Array.from(new Set(views.slice(0, index + 1).map(item => item.file))))
     await expect(page.locator('.rp-check-wheel')).toHaveCount(0)
   }
   await selectSecondaryTab(page, 'Колёса')

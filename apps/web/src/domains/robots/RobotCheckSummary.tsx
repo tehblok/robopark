@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import type { EmergencySnapshot } from '../../api'
 import { Button } from '../../design-system/actions/Button'
 import { StaleBadge } from '../../design-system/feedback/AsyncState'
@@ -7,7 +8,12 @@ import { buildRobotDetailModel } from './robotDetailModel'
 import { RobotQrButton } from './RobotQrButton'
 
 export function RobotCheckSummary({ snapshot, online, failed, pending, onRefresh, onShowDiagnostic }: { snapshot: EmergencySnapshot; online: boolean; failed: boolean; pending: boolean; onRefresh: () => void; onShowDiagnostic: () => void }) {
-  const model = buildRobotDetailModel(snapshot, online)
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const clock = globalThis.setInterval(() => setNow(new Date()), 30_000)
+    return () => globalThis.clearInterval(clock)
+  }, [])
+  const model = buildRobotDetailModel(snapshot, online, now)
   const leading = leadingDiagnosticEvent(snapshot.diagnostic_events ?? [])
   const observed = new Date(snapshot.observed_at)
   const date = Number.isNaN(observed.getTime()) ? 'Дата неизвестна' : new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(observed).replace(/\s*г\.$/, '')

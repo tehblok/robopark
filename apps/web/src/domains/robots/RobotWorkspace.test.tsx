@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { api, ApiError, type EmergencySnapshot, type User } from '../../api'
+import { api, ApiError, type DiagnosticEvent, type EmergencySnapshot, type User } from '../../api'
 import { AuthContext } from '../../auth-context'
 import { ParkScopeContext } from '../../app/park/parkScope'
 import { resourceStore } from '../../lib/resource'
@@ -17,6 +17,9 @@ const snapshot: EmergencySnapshot = { vin: VIN, short_number: '447', observed_at
   online: true, speed: 1, charge_percent: 80, battery1_percent: 80, battery2_percent: 80, disk_percent: 20,
   mode: 'AUTO', icp_label: 'ICP', icp_ok: true, lte_label: 'LTE', lte_ok: true, connection: 'lte',
   error_banner: null, lat: null, lon: null, heading_deg: null, wheels_fault: ['fl'] }
+const leadingDiagnostic: DiagnosticEvent = { id: 'lidar', rule_id: 1, source_path: 'errors.0', source_segments: ['errors', 0],
+  raw_value: 'LIDAR_OFFLINE', title: 'Передний лидар недоступен', description: 'Проверьте питание и соединение лидара.',
+  severity: 'critical', sort_order: 0, part: 'Передний лидар', view: 'front', x: .25, y: .6, indicator: 'point' }
 function client() {
   return { emergencyResolve: vi.fn(async () => ({ vin: VIN, sections: [{ id: 'wheels', title: 'Колёса' }] })),
     emergencySnapshot: vi.fn(async () => snapshot),
@@ -61,6 +64,30 @@ it('exposes one identity, related tasks and diagnostics and keeps tabs in the ro
   expect(screen.getByLabelText('Адрес')).toHaveTextContent(`/robots/${VIN}?park=8&tab=telemetry`)
   expect(screen.queryByRole('link', { name: /Начать проверку|Карточка робота/ })).not.toBeInTheDocument()
   expect(apiClient.emergencyResolve).toHaveBeenCalledTimes(1)
+})
+
+it('uses the compact diagnostic summary in the production robot route', async () => {
+  const apiClient = client()
+  apiClient.emergencySnapshot.mockResolvedValue({ ...snapshot, lat: 55.75, lon: 37.62, diagnostic_events: [leadingDiagnostic] })
+  render(tree(apiClient, `/robots/${VIN}?park=8&tab=state`))
+
+  const summary = await screen.findByRole('region', { name: 'Состояние робота' })
+  expect(summary).toHaveTextContent('Робот 447')
+  expect(summary).toHaveTextContent('Робот на связи')
+  expect(summary).toHaveTextContent('Заряд 80 %')
+  expect(summary).toHaveTextContent('Данные актуальны')
+  expect(summary).toHaveTextContent(leadingDiagnostic.description)
+  const supplementary = within(summary).getByText('VIN и координаты').closest('details')!
+  expect(supplementary).not.toHaveAttribute('open')
+  expect(supplementary).toHaveTextContent(VIN)
+  expect(supplementary).toHaveTextContent('55.75, 37.62')
+  expect(screen.queryByText('Иллюстрация модели')).not.toBeInTheDocument()
+
+  fireEvent.click(within(summary).getByRole('button', { name: 'Показать неисправность' }))
+  await waitFor(() => expect(screen.getByLabelText('Адрес')).toHaveTextContent(`/robots/${VIN}?park=8&tab=scheme`))
+  expect(screen.getByRole('tabpanel')).toHaveAccessibleName('Схема')
+  expect(screen.getByRole('button', { name: 'Спереди', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(leadingDiagnostic.description)
 })
 
 it.each(['pending', 'failed'] as const)('loads direct related tasks while the Emergency snapshot is %s and keeps tabs usable', async state => {

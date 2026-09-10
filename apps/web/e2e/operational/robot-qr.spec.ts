@@ -49,6 +49,7 @@ for (const width of [320, 1440]) {
 test('robot card pre-fills its canonical VIN', async ({ page }) => {
   await installOperational(page, { role: 'mechanic' })
   await page.goto(`/robots/${snapshot.vin}?park=7`)
+  await page.getByText('VIN и координаты', { exact: true }).click()
   await page.getByRole('button', { name: 'QR и печать' }).click()
   await expect(page.getByLabel('Номер или VIN для QR')).toHaveValue(snapshot.vin)
   await expect(page.getByRole('img', { name: `QR: ${snapshot.vin}` })).toBeVisible()
