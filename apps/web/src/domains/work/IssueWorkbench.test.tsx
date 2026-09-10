@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  api,
   ApiError,
   type Park,
   type Paged,
@@ -236,10 +237,17 @@ function seedCurrentWork(currentUser = user, currentIssue = issue) {
 
 afterEach(() => {
   vi.restoreAllMocks()
-  vi.unstubAllGlobals()
   resourceStore.clearAll()
   resetCoalescingForTests()
   window.history.replaceState({}, '', '/')
+})
+
+beforeEach(() => {
+  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
+    matches: false,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  }))
 })
 
 describe('IssueWorkbench', () => {
@@ -263,6 +271,63 @@ describe('IssueWorkbench', () => {
     await screen.findByRole('heading', { name: currentIssue.summary })
     expect(screen.queryByText('Использовать запчасть')).not.toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Запчасти' })).not.toBeInTheDocument()
+  })
+
+  it('keeps a shiftmates task readable but hides mutations and robot diagnostics until takeover', async () => {
+    const mechanic: User = { ...user, role: 'mechanic', username: 'mech', tracker_login: null }
+    const claimedByShiftmate = { ...issue, assignee: { display: 'Сменщик', login: 'other' } }
+    renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedByShiftmate) }), currentUser: mechanic })
+
+    expect(await screen.findByRole('heading', { name: claimedByShiftmate.summary })).toBeInTheDocument()
+    expect(screen.getByText(/Для изменений возьмите задачу вместо сменщика/)).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'Проверка робота' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: ru.tracker.actions.close })).not.toBeInTheDocument()
+  })
+
+  it('resolves a direct robot-check link for a shiftmates task to task without Emergency reads', async () => {
+    const mechanic: User = { ...user, role: 'mechanic', username: 'mech', tracker_login: null }
+    const claimedByShiftmate = { ...issue, assignee: { display: 'Сменщик', login: 'other' } }
+    const emergencyResolve = vi.spyOn(api, 'emergencyResolve')
+    renderWorkbench({
+      client: apiClient({ trackerIssue: vi.fn(async () => claimedByShiftmate) }),
+      currentState: { ...state, detailTab: 'check' },
+      currentUser: mechanic,
+    })
+
+    expect(await screen.findByRole('heading', { name: claimedByShiftmate.summary })).toBeVisible()
+    expect(screen.getByRole('tabpanel', { name: 'Задача' })).toBeVisible()
+    expect(screen.queryByRole('tabpanel', { name: 'Проверка робота' })).not.toBeInTheDocument()
+    expect(emergencyResolve).not.toHaveBeenCalled()
+  })
+
+  it('keeps the phone task summary, owner, latest comment and composer before secondary disclosures', async () => {
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }))
+    const mechanic = { ...user, role: 'mechanic' as const }
+    const currentIssue = { ...issue, assignee: { display: 'Operator', login: 'operator' } }
+    const client = apiClient({
+      trackerIssue: vi.fn(async () => currentIssue),
+      trackerComments: vi.fn(async () => [
+        { id: 'old', text: 'Старый комментарий', author: 'Сменщик', created_at: '2026-09-01T09:00:00Z' },
+        { id: 'latest', text: 'Последняя важная деталь', author: 'Оператор', created_at: '2026-09-02T09:00:00Z' },
+      ]),
+    })
+
+    renderWorkbench({ client, currentUser: mechanic })
+
+    expect(await screen.findByRole('heading', { name: currentIssue.summary })).toBeVisible()
+    expect(screen.getAllByText(currentIssue.status).some(element => element.closest('.issue-detail'))).toBe(true)
+    expect(screen.getByText('Operator')).toBeVisible()
+    expect(screen.getByText('Последняя важная деталь')).toBeVisible()
+    expect(screen.queryByText('Старый комментарий')).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: ru.tracker.comments })).toBeVisible()
+    for (const name of ['Использовать запчасть', 'Статус задачи', 'Исполнитель', ru.tracker.history]) {
+      expect(screen.getByRole('button', { name })).toHaveAttribute('aria-expanded', 'false')
+    }
+    expect(screen.getByText('Передача смены').closest('details')).not.toHaveAttribute('open')
   })
 
   it('offers a collapse control for the selected issue detail', async () => {

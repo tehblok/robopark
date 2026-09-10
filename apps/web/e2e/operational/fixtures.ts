@@ -47,7 +47,7 @@ export const issue: TrackerIssueDetail = {
   key: 'ROBOPARK-42', summary: 'Проверить переднее левое колесо робота 447', status: 'Открыт', status_key: 'open',
   queue: 'ROBOPARK', robot: '447', created_at: FIXED_TIME, updated_at: FIXED_TIME, hours_created: '0',
   url: 'https://tracker.example.invalid/ROBOPARK-42', tags: ['north'], priority: 'normal', type: 'task',
-  assignee: { display: 'Механик смены', login: 'mechanic.test' }, resolution: null,
+  assignee: { display: 'Механик смены', login: 'mechanic-e2e' }, resolution: null,
   description: 'Проверить крепление и состояние переднего левого колеса перед выездом.',
   reporter: { display: 'Оператор смены', login: 'operator.test' }, components: ['Колёса'], attachments: [],
   capabilities: { comment: true, assign: true, unassign: true, transition: true, close: true, attach: true },

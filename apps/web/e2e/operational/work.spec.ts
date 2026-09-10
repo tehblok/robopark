@@ -60,6 +60,25 @@ test('attachment-only capabilities expose only the attachment mutation', async (
   await expect(actions.getByLabel('Логин исполнителя')).toHaveCount(0)
 })
 
+test('foreign mechanic detail-check link stays read-only without Emergency requests', async ({ page }) => {
+  const emergencyRequests: string[] = []
+  page.on('request', request => {
+    if (new URL(request.url()).pathname.startsWith('/api/emergency/')) emergencyRequests.push(request.url())
+  })
+  await installOperational(page, {
+    role: 'mechanic',
+    issue: { ...issue, assignee: { display: 'Сменщик', login: 'other-mechanic' } },
+  })
+
+  await page.goto('/work/ROBOPARK-42?park=7&view=check')
+
+  await expect(page.getByRole('tab', { name: 'Задача', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('tab', { name: 'Проверка робота', exact: true })).toHaveCount(0)
+  await expect(page.getByText(/Для изменений возьмите задачу вместо сменщика/)).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Закрыть тикет', exact: true })).toHaveCount(0)
+  expect(emergencyRequests).toEqual([])
+})
+
 test('close requires confirmation, preserves failure, then closes and refreshes local resources', async ({ page }) => {
   let closes = 0
   const reads: string[] = []
@@ -98,22 +117,21 @@ test('comment, assignment, transition and attachment use their complete action c
     const handler = route.handler
     route.handler = request => { actions.push(new URL(request.url).pathname.split('/').at(-1)!); return handler(request) }
   }
-  await installOperational(page, { routes })
+  await installOperational(page, { role: 'operator', routes })
   await page.goto('/work/ROBOPARK-42?park=7')
   await page.getByRole('textbox', { name: 'Комментарии', exact: true }).fill('Проверка колеса выполнена')
   await page.getByRole('button', { name: 'Отправить', exact: true }).click()
   await expect(page.getByText('Проверка колеса выполнена', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Назначить на себя', exact: true }).click()
   await expect.poll(() => actions).toContain('assign')
-  await page.getByRole('button', { name: 'Снять исполнителя', exact: true }).click()
-  await expect.poll(() => actions).toContain('unassign')
   await page.getByRole('button', { name: 'Решить', exact: true }).click()
   await expect(page.locator('.issue-detail').getByText('Закрыт', { exact: true })).toBeVisible()
   await page.locator('.issue-actions input[type=file]').setInputFiles({ name: 'wheel.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA/0AAAAASUVORK5CYII=', 'base64') })
   await page.getByRole('button', { name: 'Прикрепить', exact: true }).click()
-  await expect.poll(() => actions).toEqual(['comment', 'assign', 'unassign', 'transition', 'attachments'])
   await expect(page.locator('.issue-attachments')).toContainText('wheel.png')
   await expect(page.locator('.issue-attach-preview')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Снять исполнителя', exact: true }).click()
+  await expect.poll(() => actions).toEqual(['comment', 'assign', 'transition', 'attachments', 'unassign'])
 })
 
 test('empty 200 response offers filter recovery', async ({ page }) => {

@@ -2,6 +2,32 @@ import { expect, test } from '@playwright/test'
 import type { TrackerComment } from '../../src/api'
 import { FIXED_TIME, installOperational, issue, settlePage } from './fixtures'
 
+test('390px task keeps core context and composer ahead of collapsed secondary work', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 })
+  await installOperational(page, { routes: [
+    { method: 'GET', path: '/api/tracker/issues/ROBOPARK-42/comments', handler: () => ({ json: [
+      { id: 'old', text: 'Предыдущая запись смены', author: 'Сменщик', created_at: '2026-09-01T09:00:00Z' },
+      { id: 'latest', text: 'Последняя важная деталь', author: 'Механик смены', created_at: FIXED_TIME },
+    ] satisfies TrackerComment[] }) },
+  ] })
+
+  await page.goto('/work/ROBOPARK-42?park=7')
+
+  await expect(page.getByRole('heading', { name: issue.summary })).toBeVisible()
+  await expect(page.locator('.issue-detail').getByText(issue.status, { exact: true })).toBeVisible()
+  await expect(page.locator('.issue-detail').getByText('Механик смены', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('Последняя важная деталь', { exact: true })).toBeVisible()
+  await expect(page.getByText('Предыдущая запись смены', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('textbox', { name: 'Комментарии', exact: true })).toBeVisible()
+  for (const name of ['Использовать запчасть', 'Статус задачи', 'Исполнитель', 'История действий']) {
+    await expect(page.getByRole('button', { name, exact: true })).toHaveAttribute('aria-expanded', 'false')
+  }
+  await expect(page.getByText('Передача смены', { exact: true }).locator('..')).not.toHaveAttribute('open')
+
+  await page.getByRole('button', { name: 'История действий', exact: true }).click()
+  await expect(page.getByText('Предыдущая запись смены', { exact: true })).toBeVisible()
+})
+
 test('320px task controls, safe Markdown, persistent drafts and incoming comment navigation', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 320, height: 900 })
   const comments: TrackerComment[] = [{ id: 'old', text: '**Начальная** запись', author_login: 'operator.test', created_at: FIXED_TIME }]
@@ -29,20 +55,29 @@ test('320px task controls, safe Markdown, persistent drafts and incoming comment
   await page.getByRole('button', { name: 'Показать описание полностью' }).click()
   await expect(page.getByText(/Конец описания/)).toBeVisible()
   await page.getByRole('button', { name: 'Свернуть описание' }).click()
-  const controls = [
-    page.getByRole('link', { name: 'Открыть в Startrek', exact: true }),
-    page.getByRole('button', { name: 'Закрыть тикет', exact: true }),
-    page.getByRole('button', { name: 'Назначить', exact: true }),
-    page.getByRole('button', { name: 'Отправить', exact: true }),
-  ]
-  for (const control of controls) {
+  for (const control of [page.getByRole('button', { name: 'Отправить', exact: true })]) {
     const box = await control.boundingBox()
     expect(box?.width).toBeGreaterThan(140)
     expect(box?.height).toBeGreaterThanOrEqual(44)
     expect(box?.height).toBeLessThan(100)
   }
+  await expect(page.getByRole('button', { name: 'Статус задачи' })).toHaveAttribute('aria-expanded', 'false')
+  await expect(page.getByRole('button', { name: 'Исполнитель', exact: true })).toHaveAttribute('aria-expanded', 'false')
+  await page.getByRole('button', { name: 'Статус задачи' }).click()
+  for (const control of [
+    page.getByRole('link', { name: 'Открыть в Startrek', exact: true }),
+    page.getByRole('button', { name: 'Закрыть тикет', exact: true }),
+  ]) {
+    const box = await control.boundingBox()
+    expect(box?.width).toBeGreaterThan(140)
+    expect(box?.height).toBeGreaterThanOrEqual(44)
+    expect(box?.height).toBeLessThan(100)
+  }
+  await page.getByRole('button', { name: 'Исполнитель', exact: true }).click()
+  const assign = page.getByRole('button', { name: 'Назначить', exact: true })
+  expect((await assign.boundingBox())?.height).toBeGreaterThanOrEqual(44)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-  await page.locator('.issue-action-footer').scrollIntoViewIfNeeded()
+  await page.getByRole('button', { name: 'Исполнитель', exact: true }).scrollIntoViewIfNeeded()
   await page.screenshot({ path: testInfo.outputPath('task-controls-320.png') })
 
   const composer = page.getByRole('textbox', { name: 'Комментарии', exact: true })

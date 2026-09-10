@@ -1,5 +1,4 @@
 import { TaskCollaboration } from '../../components/tracker/TaskCollaboration'
-import { Panel } from '../../components/PageShell'
 import { attachmentIdentity, runTrackerSubmission } from '../../components/tracker/trackerReliability'
 import {
   type ReactNode,
@@ -17,14 +16,18 @@ import {
   type Park,
   type Paged,
   type TrackerIssue,
+  type TrackerComment,
   type TrackerIssueDetail,
   type User,
 } from '../../api'
 import { SyncStatus } from '../../design-system/status/SyncStatus'
 import { IssueActionsPanel } from '../../components/tracker/IssueActionsPanel'
 import { IssueDetailPanel } from '../../components/tracker/IssueDetailPanel'
-import { formatAge, personName, statusTone } from '../../components/tracker/issue-utils'
+import { IssueRichText } from '../../components/tracker/IssueRichText'
+import { sortCommentsChronologically, splitPlatformComment } from '../../components/tracker/commentChat'
+import { formatAge, formatDateTime, personName, statusTone } from '../../components/tracker/issue-utils'
 import { Button } from '../../design-system/actions/Button'
+import { ru } from '../../i18n/ru'
 import { EntityRow } from '../../design-system/data/EntityRow'
 import {
   EmptyState,
@@ -33,12 +36,15 @@ import {
   StaleBadge,
 } from '../../design-system/feedback/AsyncState'
 import { MasterDetail } from '../../design-system/layout/MasterDetail'
+import { Panel } from '../../design-system/layout/PageLayout'
+import { ResponsiveDisclosure, ResponsiveDisclosureGroup } from '../../design-system/layout/ResponsiveDisclosure'
 import { StatusBadge, type StatusTone } from '../../design-system/status/StatusBadge'
 import {
   classifyApiError,
   type DomainError,
 } from '../../shared/api/classifyApiError'
 import { resourceStore, useCachedResource } from '../../lib/resource'
+import { safeHttpUrl } from '../../lib/safeUrl'
 import { Tabs, TabPanel } from '../../design-system/navigation/Tabs'
 import { WorkRobotCheck } from './WorkRobotCheck'
 import { TaskPartsPanel } from '../inventory/TaskPartsPanel'
@@ -110,6 +116,38 @@ function mechanicOwnsIssue(user: User, issue: TrackerIssueDetail): boolean {
   return user.role === 'mechanic'
     && Boolean(expected)
     && issue.assignee?.login?.trim().toLocaleLowerCase() === expected
+}
+
+function significantComments(comments: TrackerComment[]): TrackerComment[] {
+  return sortCommentsChronologically(comments).filter(comment => (
+    splitPlatformComment(comment.text).body.length > 0 || (comment.attachments?.length ?? 0) > 0
+  ))
+}
+
+function WorkCommentHistory({ comments }: { comments: TrackerComment[] }) {
+  const sorted = sortCommentsChronologically(comments)
+  if (sorted.length === 0) return <p className="issue-muted">{ru.tracker.historyEmpty}</p>
+  return <ol className="rp-work-comment-history">
+    {sorted.map(comment => {
+      const { body, signature } = splitPlatformComment(comment.text)
+      return <li key={comment.id}>
+        <p className="rp-work-comment-history__meta">
+          <strong>{comment.author?.trim() || comment.author_login?.trim() || ru.tracker.fields.nobody}</strong>
+          {comment.created_at ? <time>{formatDateTime(comment.created_at)}</time> : null}
+        </p>
+        {body ? <IssueRichText text={body} /> : null}
+        {comment.attachments?.length ? <ul className="issue-attachments">
+          {comment.attachments.map(attachment => {
+            const url = safeHttpUrl(attachment.url)
+            return <li key={attachment.id}>
+              {url ? <a href={url} rel="noreferrer" target="_blank">{attachment.name}</a> : attachment.name}
+            </li>
+          })}
+        </ul> : null}
+        {signature ? <p className="issue-muted">{signature}</p> : null}
+      </li>
+    })}
+  </ol>
 }
 
 const RELATED_PAGE_SIZE = 10
@@ -474,7 +512,11 @@ function IssueWorkbenchOwner({
   }, [accessPrefix, commentsKey, detailFailure?.kind, detailKey, issueKey])
 
   const search = buildWorkSearch({ ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, selectedPark.id)
-  const activeTab = state.detailTab === 'parts' ? 'task' : state.detailTab ?? 'task'
+  const requestedTab = state.detailTab === 'parts' ? 'task' : state.detailTab ?? 'task'
+  const mechanicCanWork = Boolean(
+    detail.data && (user.role !== 'mechanic' || mechanicOwnsIssue(user, detail.data)),
+  )
+  const activeTab = requestedTab === 'check' && !mechanicCanWork ? 'task' : requestedTab
   const changeTab = (detailTab: 'task' | 'open' | 'closed' | 'check') => onStateChange({ ...state, detailTab }, { replace: false })
   const rootIssue = state.rootIssue ?? issueKey
   const rootHref = rootIssue ? workIssueHref(rootIssue, { ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, selectedPark.id) : ''
@@ -582,6 +624,7 @@ function IssueWorkbenchOwner({
   )
   const canRenderDetailActions = Boolean(
     detail.data
+      && mechanicCanWork
       && (
         !detailSideFailure
         || (
@@ -590,6 +633,11 @@ function IssueWorkbenchOwner({
         )
       ),
   )
+  const taskComments = comments.data ?? []
+  const latestSignificantComment = significantComments(taskComments).at(-1)
+  const previousTaskComments = latestSignificantComment
+    ? taskComments.filter(comment => comment.id !== latestSignificantComment.id)
+    : taskComments
 
   if (authorizationFailure) {
     return (
@@ -617,7 +665,7 @@ function IssueWorkbenchOwner({
       >
         <MasterDetail
           detail={<div className="rp-work-detail-pane">
-            <Panel collapsible storageKey="work-detail" title={issueKey ? `Задача ${issueKey}` : 'Детали задачи'}>
+            <Panel collapsible density="work" storageKey="work-detail" title={issueKey ? `Задача ${issueKey}` : 'Детали задачи'}>
             {!issueKey ? (
               <EmptyState
                 description="Выберите задачу в очереди, чтобы увидеть подробности."
@@ -643,7 +691,12 @@ function IssueWorkbenchOwner({
                         <Link to={rootHref}>К главному блокеру {rootIssue}</Link>
                       </nav>
                       <Tabs ariaLabel="Разделы задачи" value={activeTab}
-                        items={[{ id: 'task', label: 'Задача' }, { id: 'open', label: 'Открытые задачи' }, { id: 'closed', label: 'Закрытые задачи' }, { id: 'check', label: 'Проверка робота' }]}
+                        items={[
+                          { id: 'task', label: 'Задача' },
+                          { id: 'open', label: 'Открытые задачи' },
+                          { id: 'closed', label: 'Закрытые задачи' },
+                          ...(mechanicCanWork ? [{ id: 'check', label: 'Проверка робота' }] : []),
+                        ]}
                         onChange={tab => changeTab(tab as 'task' | 'open' | 'closed' | 'check')}
                         panelIdFor={tab => `work-panel-${tab}`} />
                     </> : null}
@@ -651,17 +704,20 @@ function IssueWorkbenchOwner({
                     <SyncStatus updatedAt={detail.updatedAt !== null && comments.updatedAt !== null ? Math.min(detail.updatedAt, comments.updatedAt) : null}
                       isRevalidating={detail.isRevalidating || comments.isRevalidating}
                       error={detail.error || comments.error} />
-                    {detail.data && <TaskCollaboration issueKey={detail.data.key} owner={user.username} active={activeTab === 'task'} canWrite={detail.data.capabilities.comment} onAuthorizationFailure={observeAuthorizationFailure} />}
                     <IssueDetailPanel
                       currentUser={user.tracker_login ?? user.username} accountKey={user.username}
                       commentsLoading={comments.isLoading && !comments.data}
-                      comments={comments.data ?? []} issue={detail.data ?? null}
+                      comments={latestSignificantComment ? [latestSignificantComment] : []} issue={detail.data ?? null}
                       loading={detail.isLoading && !detail.data} showRobotCheck={false}
                       onOpenRobotCheck={() => changeTab('check')}
                     />
-                    {detail.data && mechanicOwnsIssue(user, detail.data) ? <Panel collapsible defaultCollapsed storageKey={`work-task-parts-${detail.data.key}`} title="Использовать запчасть">
-                      <TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={selectedPark.id} />
-                    </Panel> : null}
+                    {detail.data && user.role === 'mechanic' && !mechanicCanWork ? (
+                      <p className="panel-hint" role="status">
+                        {detail.data.assignee
+                          ? `Задача сейчас у ${detail.data.assignee.display}. Для изменений возьмите задачу вместо сменщика в списке.`
+                          : 'Для изменений сначала возьмите задачу в работу в списке.'}
+                      </p>
+                    ) : null}
                     {canRenderDetailActions && detail.data ? (
                       <IssueActionsPanel
                         capabilities={detail.data.capabilities}
@@ -688,6 +744,21 @@ function IssueWorkbenchOwner({
                         transitions={transitions.data ?? []}
                       />
                     ) : null}
+                    {detail.data ? <ResponsiveDisclosureGroup label="Дополнительные разделы задачи">
+                      {user.role === 'mechanic' && mechanicCanWork ? (
+                        <ResponsiveDisclosure id="parts" title="Использовать запчасть">
+                          <div id="parts">
+                            <TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={selectedPark.id} />
+                          </div>
+                        </ResponsiveDisclosure>
+                      ) : null}
+                      <ResponsiveDisclosure id="history" title={ru.tracker.history}>
+                        <div id="history"><WorkCommentHistory comments={previousTaskComments} /></div>
+                      </ResponsiveDisclosure>
+                    </ResponsiveDisclosureGroup> : null}
+                    {detail.data ? <div id="handoff">
+                      <TaskCollaboration issueKey={detail.data.key} owner={user.username} active={activeTab === 'task'} canWrite={detail.data.capabilities.comment && mechanicCanWork} onAuthorizationFailure={observeAuthorizationFailure} />
+                    </div> : null}
                     </TabPanel>
                     {(['open', 'closed'] as const).map(kind => <TabPanel key={kind} id={`work-panel-${kind}`} labelledBy={`tab-${kind}`} active={activeTab === kind}>
                       {activeTab === kind && detail.data ? robotNumber && relatedPrefix && relatedQueue ? <RelatedTasksPanel
@@ -697,7 +768,7 @@ function IssueWorkbenchOwner({
                         resourcePrefix={relatedPrefix} robotNumber={robotNumber} queue={relatedQueue}
                       /> : <p>Робот в задаче не указан — связанные задачи недоступны.</p> : null}
                     </TabPanel>)}
-                    <TabPanel id="work-panel-check" labelledBy="tab-check" active={activeTab === 'check'}>
+                    {mechanicCanWork ? <TabPanel id="work-panel-check" labelledBy="tab-check" active={activeTab === 'check'}>
                       {activeTab === 'check' && detail.data ? robotNumber ? <WorkRobotCheck
                         key={relatedPrefix} robot={robotNumber} user={user} activeTab={state.checkTab}
                         onAuthorizationFailure={failure => {
@@ -706,7 +777,7 @@ function IssueWorkbenchOwner({
                         onOpenTasks={() => changeTab('open')}
                         onTabChange={checkTab => onStateChange({ ...state, checkTab }, { replace: true })}
                       /> : <p>Робот в задаче не указан — проверка недоступна.</p> : null}
-                    </TabPanel>
+                    </TabPanel> : null}
                   </>
                 )}
               </ResourceBoundary>

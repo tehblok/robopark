@@ -12,6 +12,16 @@
   width: auto;
   flex: 1 1 12rem;
 }
+.issue-action-primary,
+.issue-actions .rp-responsive-disclosure__content {
+  display: grid;
+  gap: var(--rp-space-3);
+  min-width: 0;
+}
+.issue-actions .rp-responsive-disclosure {
+  border-top: 1px solid var(--rp-border);
+  padding-top: var(--rp-space-3);
+}
 .issue-rich-text {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -46,6 +56,10 @@
 .issue-comment--new .issue-comment-body { border-inline-start: 3px solid var(--accent, #3164d5); }
 .issue-comment:focus { outline: 2px solid var(--accent, #3164d5); outline-offset: 4px; }
 @media (max-width: 599px) {
+  .issue-actions .rp-responsive-disclosure__trigger {
+    min-height: var(--rp-control-min-size);
+    width: 100%;
+  }
   .issue-actions .issue-action-row,
   .issue-actions .issue-action-footer,
   .issue-actions .issue-comment-actions,

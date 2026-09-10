@@ -303,6 +303,33 @@
   padding: 0;
 }
 
+.rp-work-comment-history {
+  display: grid;
+  gap: var(--rp-space-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rp-work-comment-history > li {
+  border-inline-start: 3px solid var(--rp-border);
+  min-width: 0;
+  padding-inline-start: var(--rp-space-3);
+}
+
+.rp-work-comment-history__meta {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rp-space-2);
+  margin: 0 0 var(--rp-space-2);
+}
+
+.rp-work-comment-history__meta time {
+  color: var(--rp-text-muted);
+  font-size: var(--rp-font-size-caption);
+}
+
 /* The embedded check fills the task pane instead of using the full-page split. */
 .rp-work-detail-pane .rp-check-workspace {
   grid-template-columns: minmax(0, 1fr);

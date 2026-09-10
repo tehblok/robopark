@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, ApiError, type TrackerIssueCapabilities } from '../../api'
 import { ru } from '../../i18n/ru'
 import { IssueActionsPanel } from './IssueActionsPanel'
@@ -55,9 +55,35 @@ const baseProps = {
 }
 
 describe('IssueActionsPanel', () => {
+  beforeEach(() => {
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }))
+  })
+
   afterEach(() => {
     vi.useRealTimers()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps the phone comment and photo composer visible while secondary actions stay collapsed', () => {
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }))
+
+    render(<IssueActionsPanel {...baseProps} onAttach={noop} />)
+
+    expect(screen.getByRole('textbox', { name: ru.tracker.comments })).toBeVisible()
+    expect(screen.getByText(ru.tracker.attachPhoto)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Статус задачи' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('button', { name: ru.tracker.fields.assignee })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('button', { name: 'Resolve' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: ru.tracker.actions.assign })).not.toBeInTheDocument()
   })
 
   it.each(['close', 'comment'] as const)('keeps safe %s failure copy and request ID in one alert', async action => {

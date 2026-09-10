@@ -7,6 +7,7 @@ import {
   type TrackerUserSuggestion,
 } from '../../api'
 import { Button } from '../../design-system/actions/Button'
+import { ResponsiveDisclosure, ResponsiveDisclosureGroup } from '../../design-system/layout/ResponsiveDisclosure'
 import { ConfirmDialog } from '../../design-system/overlays/ConfirmDialog'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
@@ -268,64 +269,97 @@ function IssueActionsPanelContent({
       {error && <p className="alert alert-error" role="alert">{error}</p>}
       {success && <p aria-live="polite">{success}</p>}
 
-      {effectiveCapabilities.attach && (
-        <AttachmentActions
-          busy={busy}
-          onAttach={onAttach}
-          onError={(message) => {
-            setError(message)
-            setSuccess('')
-          }}
-          run={run}
-        />
-      )}
-
-      {effectiveCapabilities.comment && (
-        <form className="issue-comment-form" onSubmit={submitComment}>
-          <textarea
-            aria-label={ru.tracker.comments}
-            onChange={(event) => setComment(event.target.value)}
-            placeholder={ru.tracker.commentPlaceholder}
-            rows={3}
-            value={comment}
+      <div className="issue-action-primary" id="comment">
+        {effectiveCapabilities.attach && (
+          <AttachmentActions
+            busy={busy}
+            onAttach={onAttach}
+            onError={(message) => {
+              setError(message)
+              setSuccess('')
+            }}
+            run={run}
           />
-          <div className="issue-comment-actions">
-            <span className="issue-muted">{ru.tracker.commentHint}</span>
-            <Button
-              busy={busy === 'comment'}
-              disabled={!comment.trim() || Boolean(busy)}
-              type="submit"
-            >
-              {busy === 'comment' ? ru.loading : ru.tracker.commentSubmit}
-            </Button>
-          </div>
-        </form>
-      )}
+        )}
 
-      {effectiveCapabilities.transition && transitions.length > 0 && (
-        <div className="issue-action-group">
-          <span className="issue-action-label">{ru.tracker.actions.transitions}</span>
-          <div className="issue-action-row">
-            {transitions.map((item) => (
+        {effectiveCapabilities.comment && (
+          <form className="issue-comment-form" onSubmit={submitComment}>
+            <textarea
+              aria-label={ru.tracker.comments}
+              onChange={(event) => setComment(event.target.value)}
+              placeholder={ru.tracker.commentPlaceholder}
+              rows={3}
+              value={comment}
+            />
+            <div className="issue-comment-actions">
+              <span className="issue-muted">{ru.tracker.commentHint}</span>
               <Button
-                busy={busy === `t-${item.id}`}
-                disabled={Boolean(busy)}
-                key={item.id}
-                onClick={() => void run(`t-${item.id}`, () => onTransition(item.id))}
-                type="button"
-                variant="secondary"
+                busy={busy === 'comment'}
+                disabled={!comment.trim() || Boolean(busy)}
+                type="submit"
               >
-                {busy === `t-${item.id}` ? ru.loading : item.display}
+                {busy === 'comment' ? ru.loading : ru.tracker.commentSubmit}
               </Button>
-            ))}
-          </div>
-        </div>
-      )}
+            </div>
+          </form>
+        )}
+      </div>
 
-      {(effectiveCapabilities.assign || effectiveCapabilities.unassign) && (
-        <div className="issue-action-group">
-          <span className="issue-action-label">{ru.tracker.fields.assignee}</span>
-          <div className="issue-action-row">
+      <ResponsiveDisclosureGroup label="Дополнительные действия задачи">
+        {(effectiveCapabilities.transition && transitions.length > 0) || issueUrl || effectiveCapabilities.close ? (
+          <ResponsiveDisclosure id="transition" title="Статус задачи">
+            <div id="transition">
+              {effectiveCapabilities.transition && transitions.length > 0 && (
+                <div className="issue-action-group">
+                  <span className="issue-action-label">{ru.tracker.actions.transitions}</span>
+                  <div className="issue-action-row">
+                    {transitions.map((item) => (
+                      <Button
+                        busy={busy === `t-${item.id}`}
+                        disabled={Boolean(busy)}
+                        key={item.id}
+                        onClick={() => void run(`t-${item.id}`, () => onTransition(item.id))}
+                        type="button"
+                        variant="secondary"
+                      >
+                        {busy === `t-${item.id}` ? ru.loading : item.display}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {(issueUrl || effectiveCapabilities.close) && (
+                <div className="issue-action-footer">
+                  {issueUrl && (
+                    <a className="btn btn-ghost" href={issueUrl} rel="noreferrer" target="_blank">
+                      {ru.tracker.actions.openInTracker}
+                    </a>
+                  )}
+                  {effectiveCapabilities.close && (
+                    <Button
+                      disabled={Boolean(busy)}
+                      onClick={() => {
+                        setError('')
+                        setSuccess('')
+                        setCloseError(null)
+                        setCloseOpen(true)
+                      }}
+                      type="button"
+                      variant="danger"
+                    >
+                      {ru.tracker.actions.close}
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          </ResponsiveDisclosure>
+        ) : null}
+
+        {(effectiveCapabilities.assign || effectiveCapabilities.unassign) && (
+          <ResponsiveDisclosure id="assignee" title={ru.tracker.fields.assignee}>
+            <div className="issue-action-group" id="assignee">
+              <div className="issue-action-row">
             {effectiveCapabilities.assign && (
               <>
                 <form className="issue-assign-form" onSubmit={submitAssign}>
@@ -373,34 +407,11 @@ function IssueActionsPanelContent({
                 {busy === 'unassign' ? ru.loading : ru.tracker.actions.unassign}
               </Button>
             )}
-          </div>
-        </div>
-      )}
-
-      {(issueUrl || effectiveCapabilities.close) && (
-        <div className="issue-action-footer">
-          {issueUrl && (
-            <a className="btn btn-ghost" href={issueUrl} rel="noreferrer" target="_blank">
-              {ru.tracker.actions.openInTracker}
-            </a>
-          )}
-          {effectiveCapabilities.close && (
-            <Button
-              disabled={Boolean(busy)}
-              onClick={() => {
-                setError('')
-                setSuccess('')
-                setCloseError(null)
-                setCloseOpen(true)
-              }}
-              type="button"
-              variant="danger"
-            >
-              {ru.tracker.actions.close}
-            </Button>
-          )}
-        </div>
-      )}
+              </div>
+            </div>
+          </ResponsiveDisclosure>
+        )}
+      </ResponsiveDisclosureGroup>
 
       <ConfirmDialog
         cancelLabel="Отмена"
