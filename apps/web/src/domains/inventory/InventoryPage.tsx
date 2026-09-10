@@ -71,6 +71,7 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
   const [componentId, setComponentId] = useState<'all' | number>('all')
   const load = useCallback(() => { if (!selectedPark) return; setError(null); apiClient.inventory(selectedPark.id).then(setData).catch(setError) }, [apiClient, selectedPark])
   useEffect(load, [load])
+  useEffect(() => { setComponentId('all') }, [selectedPark?.id])
   const print = (parts: InventoryPart[]) => {
     if (!parts.length) return
     setPrintParts(parts)
