@@ -41,6 +41,7 @@ const allPermissions = [
   'nav.emergency',
   'nav.analytics',
   'nav.reports',
+  'nav.inventory',
   'nav.admin',
   'nav.admin.tracker',
   'nav.admin.emergency',
@@ -151,6 +152,16 @@ describe('ROUTE_MANIFEST', () => {
         permission: 'nav.emergency',
         prerequisites: ['password-changed', 'approved', 'mechanic-has-park'],
         surface: 'shell',
+      },
+      {
+        id: 'inventory',
+        path: '/inventory',
+        label: 'Склад',
+        icon: 'work',
+        permission: 'nav.inventory',
+        prerequisites: ['password-changed', 'approved', 'mechanic-has-park'],
+        surface: 'shell',
+        nav: { group: 'operations', desktopOrder: 50 },
       },
       {
         id: 'reports',
@@ -315,21 +326,21 @@ describe('ROUTE_MANIFEST', () => {
 
 describe('navigation ordering', () => {
   const expectedDesktop = {
-    royal: ['overview', 'work', 'robots', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    admin: ['overview', 'work', 'robots', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    operator: ['overview', 'operator-parks', 'work', 'robots', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    mechanic: ['overview', 'work', 'robots', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    driver: ['overview', 'work', 'robots', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    field_lead: ['overview', 'work', 'robots', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
+    royal: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
+    admin: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
+    operator: ['overview', 'operator-parks', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
+    mechanic: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
+    driver: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
+    field_lead: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
   } as const
 
   const expectedMobile = {
-    royal: ['overview', 'admin', 'work', 'robots', 'reports', 'campaigns', 'analytics', 'admin-tracker', 'admin-robot-check'],
-    admin: ['admin', 'overview', 'work', 'robots', 'reports', 'campaigns', 'analytics', 'admin-tracker', 'admin-robot-check'],
-    operator: ['overview', 'operator-parks', 'work', 'robots', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    mechanic: ['work', 'robots', 'overview', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    driver: ['robots', 'overview', 'reports', 'work', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    field_lead: ['overview', 'work', 'robots', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
+    royal: ['overview', 'admin', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin-tracker', 'admin-robot-check'],
+    admin: ['admin', 'overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin-tracker', 'admin-robot-check'],
+    operator: ['overview', 'operator-parks', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
+    mechanic: ['work', 'robots', 'overview', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
+    driver: ['robots', 'overview', 'reports', 'work', 'inventory', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
+    field_lead: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
   } as const
 
   it.each(Object.entries(expectedDesktop))('keeps desktop order stable for %s', (role, expected) => {

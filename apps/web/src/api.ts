@@ -481,6 +481,14 @@ export type CampaignSubmission = {
   completed_at: string
 }
 
+export type InventoryPart = {
+  id: number; park_id: number; component_id: number; name: string; article: string
+  quantity: number; minimum_quantity: number; location: string; is_active: boolean; has_photo: boolean
+}
+export type InventoryComponent = { id: number; park_id: number; name: string; has_photo: boolean; parts: InventoryPart[] }
+export type InventoryOverview = { park_id: number; component_count: number; part_count: number; low_stock_count: number; out_of_stock_count: number; components: InventoryComponent[] }
+export type InventoryMovement = { id: number; part_id: number; park_id: number; actor_user_id: number; actor_username: string; kind: string; delta: number; balance_after: number; issue_key: string | null; note: string | null; created_at: string }
+
 export type HostCheck = {
   code: string
   status: 'ok' | 'warning' | 'failed'
@@ -1134,6 +1142,24 @@ export const api = {
       form,
     )
   },
+  inventory: (parkId: number) => request<InventoryOverview>(`/inventory?park_id=${parkId}`),
+  inventoryMovements: (parkId: number) => request<InventoryMovement[]>(`/inventory/movements?park_id=${parkId}`),
+  inventoryComponentPhotoUrl: (id: number) => `/api/inventory/components/${id}/photo`,
+  inventoryPartPhotoUrl: (id: number) => `/api/inventory/parts/${id}/photo`,
+  createInventoryComponent: (parkId: number, name: string, photo?: File | null) => {
+    const form = new FormData(); form.append('park_id', String(parkId)); form.append('name', name)
+    if (photo) form.append('photo', photo, photo.name)
+    return requestForm<InventoryComponent>('/inventory/components', form)
+  },
+  createInventoryPart: (payload: { park_id: number; component_id: number; name: string; article: string; quantity: number; minimum_quantity: number; location: string; photo?: File | null }) => {
+    const form = new FormData()
+    Object.entries(payload).forEach(([key, value]) => { if (key !== 'photo') form.append(key, String(value)) })
+    if (payload.photo) form.append('photo', payload.photo, payload.photo.name)
+    return requestForm<InventoryPart>('/inventory/parts', form)
+  },
+  updateInventoryPart: (id: number, payload: Partial<Pick<InventoryPart, 'name' | 'article' | 'component_id' | 'location' | 'minimum_quantity' | 'is_active'>>) => request<InventoryPart>(`/inventory/parts/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  moveInventoryStock: (id: number, kind: 'receipt' | 'writeoff' | 'adjustment', quantity: number, note?: string) => request<InventoryMovement>(`/inventory/parts/${id}/movements`, { method: 'POST', body: JSON.stringify({ kind, quantity, note }) }),
+  writeoffInventoryForTask: (issueKey: string, partId: number, quantity: number) => request<InventoryMovement>(`/inventory/tasks/${encodeURIComponent(issueKey)}/writeoff`, { method: 'POST', body: JSON.stringify({ part_id: partId, quantity }) }),
   reportsMine: () => request<Report[]>('/reports/mine'),
   reportsInbox: (parkId?: number) =>
     request<Report[]>(

@@ -101,6 +101,10 @@ function apiClient(
     trackerUnassign: vi.fn(async () => actionResult('unassign')),
     trackerTransition: vi.fn(async () => actionResult('transition')),
     trackerClose: vi.fn(async () => actionResult('close')),
+    inventory: vi.fn(async parkId => ({ park_id: parkId, component_count: 0, part_count: 0, low_stock_count: 0, out_of_stock_count: 0, components: [] })),
+    writeoffInventoryForTask: vi.fn(),
+    inventoryComponentPhotoUrl: vi.fn(id => `/api/inventory/components/${id}/photo`),
+    inventoryPartPhotoUrl: vi.fn(id => `/api/inventory/parts/${id}/photo`),
     ...overrides,
   }
 }

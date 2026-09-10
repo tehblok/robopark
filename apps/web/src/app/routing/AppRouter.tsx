@@ -29,6 +29,7 @@ import { OperatorRejected } from '../../pages/OperatorRejected'
 import { Register } from '../../pages/Register'
 import { Reports } from '../../pages/Reports'
 import { CampaignsPage } from '../../domains/campaigns/CampaignsPage'
+import { InventoryPage } from '../../domains/inventory/InventoryPage'
 import { LegacyEmergencyRedirect } from './LegacyEmergencyRedirect'
 import { landingPathForUser } from './accessPolicy'
 import { ROUTE_MANIFEST, type AppRouteId } from './routeManifest'
@@ -63,6 +64,7 @@ export const ROUTE_ELEMENTS: Record<AppRouteId, ReactElement> = {
   'reports': <Reports />,
   'campaigns': <CampaignsPage />,
   'campaign-detail': <CampaignsPage />,
+  'inventory': <InventoryPage />,
   'reports-new': <Reports />,
   'report-detail': <Reports />,
   'admin': <ManagementPage />,

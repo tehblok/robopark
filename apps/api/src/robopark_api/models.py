@@ -203,6 +203,66 @@ class CampaignSubmission(Base):
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class InventoryComponent(Base):
+    __tablename__ = "inventory_components"
+    __table_args__ = (UniqueConstraint("park_id", "name", name="uq_inventory_component_park_name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    photo_storage_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    photo_filename: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    photo_content_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class InventoryPart(Base):
+    __tablename__ = "inventory_parts"
+    __table_args__ = (
+        UniqueConstraint("park_id", "article", name="uq_inventory_part_park_article"),
+        CheckConstraint("quantity >= 0", name="ck_inventory_part_quantity"),
+        CheckConstraint("minimum_quantity >= 0", name="ck_inventory_part_minimum"),
+        Index("ix_inventory_parts_park_component", "park_id", "component_id", "name"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
+    component_id: Mapped[int] = mapped_column(
+        ForeignKey("inventory_components.id", ondelete="RESTRICT"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(128))
+    article: Mapped[str] = mapped_column(String(128))
+    quantity: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    minimum_quantity: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    location: Mapped[str] = mapped_column(String(256))
+    photo_storage_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    photo_filename: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    photo_content_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class InventoryMovement(Base):
+    __tablename__ = "inventory_movements"
+    __table_args__ = (Index("ix_inventory_movements_part_created", "part_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    part_id: Mapped[int] = mapped_column(
+        ForeignKey("inventory_parts.id", ondelete="CASCADE"), index=True
+    )
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    delta: Mapped[int] = mapped_column(Integer)
+    balance_after: Mapped[int] = mapped_column(Integer)
+    issue_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ParkBlockerHistory(Base):
     __tablename__ = "park_blocker_history"
     __table_args__ = (

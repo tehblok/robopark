@@ -30,6 +30,7 @@ from robopark_api.routers import (
     dashboard,
     emergency,
     health,
+    inventory,
     mechanic_emergency,
     mechanic_robots,
     mechanic_tasks,
@@ -202,6 +203,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(auth.router)
     app.include_router(campaigns.router)
+    app.include_router(inventory.router)
     app.include_router(health.router)
     app.include_router(parks.router)
     app.include_router(admin_roles.router)

@@ -9,7 +9,7 @@ export type WorkFilters = {
   ageHours?: number
 }
 
-export type WorkDetailTab = 'task' | 'open' | 'closed' | 'check'
+export type WorkDetailTab = 'task' | 'open' | 'closed' | 'check' | 'parts'
 
 export type WorkUrlState = {
   detailTab?: WorkDetailTab
@@ -68,7 +68,7 @@ export function parseWorkUrl(
   const root = text(params, 'blocker')
   const checkTab = text(params, 'check_tab')
   return {
-    ...(['open', 'closed', 'check'].includes(view ?? '') ? { detailTab: view as WorkDetailTab } : {}),
+    ...(['open', 'closed', 'check', 'parts'].includes(view ?? '') ? { detailTab: view as WorkDetailTab } : {}),
     ...(root && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(root) ? { rootIssue: root } : {}),
     ...(checkTab && /^[a-zA-Z0-9_-]{1,80}$/.test(checkTab) ? { checkTab } : {}),
     filters: {

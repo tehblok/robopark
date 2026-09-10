@@ -29,6 +29,7 @@ def _require_parks_reader(
         rbac.PERMISSION_NAV_ADMIN,
         rbac.PERMISSION_USERS_MANAGE,
         rbac.PERMISSION_PARKS_MANAGE,
+        rbac.PERMISSION_NAV_INVENTORY,
     }:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return user

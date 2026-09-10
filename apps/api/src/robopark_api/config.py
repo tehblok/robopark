@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     ops_max_upload_bytes: int = 512 * 1024 * 1024
     #: Report UI snapshots, device photos, and client logs.
     report_attachments_dir: str | None = None
+    #: Component and spare-part catalog photos.
+    inventory_photos_dir: str | None = None
 
     @model_validator(mode="after")
     def resolve_sqlite_database_path(self) -> "Settings":

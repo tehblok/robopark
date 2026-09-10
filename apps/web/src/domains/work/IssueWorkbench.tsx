@@ -41,6 +41,7 @@ import {
 import { resourceStore, useCachedResource } from '../../lib/resource'
 import { Tabs, TabPanel } from '../../design-system/navigation/Tabs'
 import { WorkRobotCheck } from './WorkRobotCheck'
+import { TaskPartsPanel } from '../inventory/TaskPartsPanel'
 import { WorkFilters } from './WorkFilters'
 import { loadWorkPage, oldestFirst } from './workData'
 import {
@@ -64,6 +65,10 @@ export type IssueWorkbenchApiClient = Pick<
   | 'trackerUnassign'
   | 'trackerTransition'
   | 'trackerClose'
+  | 'inventory'
+  | 'writeoffInventoryForTask'
+  | 'inventoryComponentPhotoUrl'
+  | 'inventoryPartPhotoUrl'
 >
 
 export type IssueWorkbenchProps = {
@@ -451,7 +456,7 @@ function IssueWorkbenchOwner({
 
   const search = buildWorkSearch({ ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, selectedPark.id)
   const activeTab = state.detailTab ?? 'task'
-  const changeTab = (detailTab: 'task' | 'open' | 'closed' | 'check') => onStateChange({ ...state, detailTab }, { replace: false })
+  const changeTab = (detailTab: 'task' | 'open' | 'closed' | 'check' | 'parts') => onStateChange({ ...state, detailTab }, { replace: false })
   const rootIssue = state.rootIssue ?? issueKey
   const rootHref = rootIssue ? workIssueHref(rootIssue, { ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, selectedPark.id) : ''
   const listDataAvailable = list.data !== undefined
@@ -619,8 +624,8 @@ function IssueWorkbenchOwner({
                         <Link to={rootHref}>К главному блокеру {rootIssue}</Link>
                       </nav>
                       <Tabs ariaLabel="Разделы задачи" value={activeTab}
-                        items={[{ id: 'task', label: 'Задача' }, { id: 'open', label: 'Открытые задачи' }, { id: 'closed', label: 'Закрытые задачи' }, { id: 'check', label: 'Проверка робота' }]}
-                        onChange={tab => changeTab(tab as 'task' | 'open' | 'closed' | 'check')}
+                        items={[{ id: 'task', label: 'Задача' }, ...(user.role === 'mechanic' ? [{ id: 'parts', label: 'Запчасти' }] : []), { id: 'open', label: 'Открытые задачи' }, { id: 'closed', label: 'Закрытые задачи' }, { id: 'check', label: 'Проверка робота' }]}
+                        onChange={tab => changeTab(tab as 'task' | 'open' | 'closed' | 'check' | 'parts')}
                         panelIdFor={tab => `work-panel-${tab}`} />
                     </> : null}
                     <TabPanel id="work-panel-task" labelledBy="tab-task" active={activeTab === 'task'} key={issueKey}>
@@ -661,6 +666,9 @@ function IssueWorkbenchOwner({
                         transitions={transitions.data ?? []}
                       />
                     ) : null}
+                    </TabPanel>
+                    <TabPanel id="work-panel-parts" labelledBy="tab-parts" active={activeTab === 'parts'}>
+                      {activeTab === 'parts' && detail.data && user.role === 'mechanic' ? <TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={selectedPark.id} /> : null}
                     </TabPanel>
                     {(['open', 'closed'] as const).map(kind => <TabPanel key={kind} id={`work-panel-${kind}`} labelledBy={`tab-${kind}`} active={activeTab === kind}>
                       {activeTab === kind && detail.data ? robotNumber && relatedPrefix && relatedQueue ? <RelatedTasksPanel

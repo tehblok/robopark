@@ -40,13 +40,16 @@ def test_metadata_has_required_tables():
         "campaigns",
         "campaign_parks",
         "campaign_submissions",
+        "inventory_components",
+        "inventory_parts",
+        "inventory_movements",
     }
 
 
-def test_alembic_head_is_campaigns():
+def test_alembic_head_is_inventory():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0023_campaigns"]
+    assert script.get_heads() == ["0024_inventory"]
 
 
 def test_diagnostic_rules_upgrade_from_previous_head(sqlite_database_url, monkeypatch):
@@ -393,7 +396,7 @@ def test_original_unit_upgrade_leaves_legacy_samples_unverified(sqlite_database_
         )
 
 
-def test_campaign_upgrade_preserves_existing_data(sqlite_database_url, monkeypatch):
+def test_inventory_upgrade_preserves_existing_data(sqlite_database_url, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
     config = Config(Path(__file__).parents[1] / "alembic.ini")
     command.upgrade(config, "0021_diagnostic_unknown_original")
@@ -404,7 +407,7 @@ def test_campaign_upgrade_preserves_existing_data(sqlite_database_url, monkeypat
                 "INSERT INTO parks (id, name, tag, is_active) VALUES (1, 'Existing', 'existing', 1)"
             )
         )
-    command.upgrade(config, "0023_campaigns")
+    command.upgrade(config, "0024_inventory")
     assert {
         "tracker_presence",
         "tracker_submissions",
@@ -412,6 +415,9 @@ def test_campaign_upgrade_preserves_existing_data(sqlite_database_url, monkeypat
         "campaigns",
         "campaign_parks",
         "campaign_submissions",
+        "inventory_components",
+        "inventory_parts",
+        "inventory_movements",
     } <= set(inspect(engine).get_table_names())
     with engine.connect() as connection:
         assert (
@@ -420,6 +426,7 @@ def test_campaign_upgrade_preserves_existing_data(sqlite_database_url, monkeypat
         assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
     command.downgrade(config, "0021_diagnostic_unknown_original")
     assert "campaigns" not in inspect(engine).get_table_names()
+    assert "inventory_parts" not in inspect(engine).get_table_names()
     assert "tracker_submissions" not in inspect(engine).get_table_names()
     with engine.connect() as connection:
         assert (
