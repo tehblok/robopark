@@ -65,6 +65,7 @@ function CreateForms({ data, parkId, apiClient, reload }: { data: InventoryOverv
 
 export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi }) {
   const { selectedPark, loading } = useParkScope()
+  const parkId = selectedPark?.id
   const [data, setData] = useState<InventoryOverview | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [printParts, setPrintParts] = useState<InventoryPart[]>([])
@@ -72,15 +73,15 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
   const [componentId, setComponentId] = useState<'all' | number>('all')
   const requestGeneration = useRef(0)
   const load = useCallback(() => {
-    if (!selectedPark) return
+    if (!parkId) return
     const generation = ++requestGeneration.current
     setError(null)
-    apiClient.inventory(selectedPark.id).then(value => {
+    apiClient.inventory(parkId).then(value => {
       if (generation === requestGeneration.current) setData(value)
     }).catch(reason => {
       if (generation === requestGeneration.current) setError(reason)
     })
-  }, [apiClient, selectedPark?.id])
+  }, [apiClient, parkId])
   useLayoutEffect(() => {
     requestGeneration.current += 1
     setData(null)
