@@ -90,3 +90,24 @@ it('preserves the selected disclosure while resizing', async () => {
   expect(screen.getByText('Beta')).toBeVisible()
   expect(screen.getByRole('button', { name: 'B' })).toHaveAttribute('aria-expanded', 'true')
 })
+
+it('does not change the mobile selection when a desktop trigger is clicked', async () => {
+  const viewport = matchMediaWidth(390)
+  const user = userEvent.setup()
+  render(
+    <ResponsiveDisclosureGroup initialOpenId="a" label="Actions">
+      <ResponsiveDisclosure id="a" title="A">Alpha</ResponsiveDisclosure>
+      <ResponsiveDisclosure id="b" title="B">Beta</ResponsiveDisclosure>
+    </ResponsiveDisclosureGroup>,
+  )
+
+  act(() => viewport.resize(600))
+  const trigger = screen.getByRole('button', { name: 'A' })
+  expect(trigger).toBeDisabled()
+  await user.click(trigger)
+  act(() => viewport.resize(390))
+
+  expect(screen.getByText('Alpha')).toBeVisible()
+  expect(screen.queryByText('Beta')).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'A' })).toBeEnabled()
+})

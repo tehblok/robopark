@@ -63,6 +63,25 @@ describe('Panel', () => {
     expect(screen.queryByText('Body')).not.toBeInTheDocument()
   })
 
+  it('persists an expanded preference when the fallback is collapsed', () => {
+    localStorage.removeItem('robopark:panel:secondary-expanded:collapsed')
+    const { unmount } = render(
+      <Panel collapsible defaultCollapsed storageKey="secondary-expanded" title="Secondary">
+        Body
+      </Panel>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Развернуть: Secondary' }))
+    unmount()
+    render(
+      <Panel collapsible defaultCollapsed storageKey="secondary-expanded" title="Secondary">
+        Body
+      </Panel>,
+    )
+
+    expect(screen.getByText('Body')).toBeVisible()
+  })
+
   it('exposes its content density', () => {
     render(<Panel density="dense">Body</Panel>)
 

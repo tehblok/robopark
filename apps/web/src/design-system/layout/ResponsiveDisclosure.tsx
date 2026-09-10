@@ -79,7 +79,12 @@ export function ResponsiveDisclosure({
           aria-controls={contentId}
           aria-expanded={isOpen}
           className="rp-responsive-disclosure__trigger"
-          onClick={() => context?.setOpenId(context.openId === id ? undefined : id)}
+          disabled={context ? !context.isPhone : undefined}
+          onClick={() => {
+            if (context?.isPhone) {
+              context.setOpenId(context.openId === id ? undefined : id)
+            }
+          }}
           type="button"
         >
           {title}

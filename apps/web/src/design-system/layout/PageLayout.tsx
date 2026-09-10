@@ -82,8 +82,7 @@ export function Panel({
     setCollapsed(next)
     try {
       if (storageKey) {
-        if (next) window.localStorage.setItem(panelStorageKey(storageKey), '1')
-        else window.localStorage.removeItem(panelStorageKey(storageKey))
+        window.localStorage.setItem(panelStorageKey(storageKey), next ? '1' : '0')
       }
     } catch {
       // Persistent storage can be unavailable in private or embedded contexts.
