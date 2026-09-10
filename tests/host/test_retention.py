@@ -344,7 +344,10 @@ def test_cleanup_reclaims_only_expired_exact_operation_residue(host_paths, tmp_p
     inactive = str(uuid4())
     active = str(uuid4())
     atomic = old(host_paths.state / "image-owned" / f".{inactive}.json.abcdefgh")
-    diagnostic = old(host_paths.var / "diagnostics" / ".doctor-abcdefgh")
+    receipt_atomic = old(
+        host_paths.state / "successful-releases" / f".{inactive}.json.abcdefgh"
+    )
+    diagnostic = old(host_paths.root / "var/log/robopark/.doctor-abcdefgh")
     fresh = old(
         host_paths.state / "image-owned" / f".{uuid4()}.json.abcdefgh", seconds=60
     )
@@ -353,12 +356,22 @@ def test_cleanup_reclaims_only_expired_exact_operation_residue(host_paths, tmp_p
     foreign = old(host_paths.state / "image-owned" / ".foreign.json.abcdefgh")
     business_photo = old(host_paths.var / "data/photos/keep.jpg")
     outside = old(tmp_path / "outside")
-    symlink = host_paths.var / "diagnostics/.doctor-hgfedcba"
+    wrong_directory = old(host_paths.var / "diagnostics/.doctor-abcdefgh")
+    symlink = host_paths.root / "var/log/robopark/.doctor-hgfedcba"
     symlink.symlink_to(outside)
 
     result = retain_artifacts(host_paths)
 
-    assert result["temporary_deleted"] == 2
-    assert not atomic.exists() and not diagnostic.exists()
+    assert result["staging_deleted"] == 0
+    assert result["atomic_deleted"] == 2
+    assert result["diagnostic_deleted"] == 1
+    assert result["temporary_deleted"] == 3
+    assert not atomic.exists() and not receipt_atomic.exists() and not diagnostic.exists()
     assert fresh.exists() and active_atomic.exists()
-    assert foreign.exists() and business_photo.exists() and outside.exists() and symlink.is_symlink()
+    assert (
+        foreign.exists()
+        and wrong_directory.exists()
+        and business_photo.exists()
+        and outside.exists()
+        and symlink.is_symlink()
+    )

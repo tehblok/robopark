@@ -448,7 +448,7 @@ def test_retention_keeps_three_successes_after_third_update(host):
     assert sorted(p.name for p in host.paths.releases.iterdir()) == sorted(
         ["1.0.0", second.name, host.paths.current.resolve().name]
     )
-    assert len(list((host.paths.ops / "rollbacks").iterdir())) == 1
+    assert len(list((host.paths.ops / "rollbacks").iterdir())) == 2
 
 
 def test_failure_after_partial_restore_is_recoverable(host, monkeypatch):

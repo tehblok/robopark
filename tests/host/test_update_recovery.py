@@ -136,7 +136,7 @@ def test_power_loss_resuming_third_release_still_finishes_retention(host, monkey
     result = recover_interrupted_update(host.paths, host.runner)
     assert result.state == "current_healthy"
     assert len(list(host.paths.releases.iterdir())) == 3
-    assert len(list((host.paths.ops / "rollbacks").iterdir())) == 1
+    assert len(list((host.paths.ops / "rollbacks").iterdir())) == 2
 
 
 def test_unknown_journal_phase_fails_closed(host):
@@ -238,6 +238,9 @@ def test_retention_keeps_current_and_two_newest_successful_releases(host):
         os.utime(receipt, ns=(timestamp, timestamp))
     host.paths.current.unlink()
     host.paths.previous.unlink(missing_ok=True)
+    import shutil
+
+    shutil.rmtree(host.paths.releases / "1.0.0")
     host.paths.current.symlink_to(host.paths.releases / current)
     host.paths.previous.symlink_to(host.paths.releases / prior_one)
 
@@ -246,11 +249,54 @@ def test_retention_keeps_current_and_two_newest_successful_releases(host):
         {"job_id": current.removeprefix("release-"), "previous_config": "compose/initial.json"},
     )
 
-    assert {path.name for path in host.paths.releases.iterdir()} >= {current, prior_one, prior_two}
+    assert {path.name for path in host.paths.releases.iterdir()} == {current, prior_one, prior_two}
     assert not (host.paths.releases / oldest).exists()
     assert not (host.paths.state / "compose" / f"{oldest.removeprefix('release-')}-production.json").exists()
     assert not (receipts / f"{oldest}.json").exists()
     assert not (rollback_root / oldest.removeprefix("release-")).exists()
+    for release in (current, prior_one, prior_two):
+        identifier = release.removeprefix("release-")
+        assert (host.paths.state / "compose" / f"{identifier}-production.json").exists()
+        assert (receipts / f"{release}.json").exists()
+        assert (rollback_root / identifier).exists()
+
+
+@pytest.mark.parametrize("name", ["..json", "...json"])
+def test_retention_never_treats_dot_receipt_as_a_release_path(host, monkeypatch, name):
+    receipts = host.paths.state / "successful-releases"
+    receipts.mkdir()
+    previous = host.paths.releases / "previous"
+    retained = host.paths.releases / "retained"
+    previous.mkdir()
+    retained.mkdir()
+    host.paths.previous.symlink_to(previous)
+    valid = receipts / "retained.json"
+    valid.write_text('{"successful": true}')
+    valid.chmod(0o600)
+    dot_receipt = receipts / name
+    dot_receipt.write_text('{"successful": true}')
+    dot_receipt.chmod(0o600)
+    os.utime(valid, ns=(2_000_000_000, 2_000_000_000))
+    os.utime(dot_receipt, ns=(1_000_000_000, 1_000_000_000))
+    monkeypatch.setattr(updater.shutil, "rmtree", lambda path: pytest.fail(f"unsafe removal: {path}"))
+
+    updater._retention(host.paths, {"job_id": str(uuid4()), "previous_config": "compose-1.0.0.json"})
+
+    assert dot_receipt.exists()
+
+
+def test_retention_scans_success_receipts_once(host, monkeypatch):
+    calls = 0
+    original = updater._successful_release_receipts
+
+    def receipts(paths):
+        nonlocal calls
+        calls += 1
+        return original(paths)
+
+    monkeypatch.setattr(updater, "_successful_release_receipts", receipts)
+    updater._retention(host.paths, {"job_id": str(uuid4()), "previous_config": "compose-1.0.0.json"})
+    assert calls == 1
 
 
 @pytest.mark.parametrize(
