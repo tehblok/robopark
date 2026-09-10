@@ -79,6 +79,31 @@ def test_production_metadata_is_signed_and_matches_both_verifiers(packaging, tmp
         assert json.loads(archive.read("manifest.json"))["update_notes"] == "Reviewed migration"
 
 
+def test_production_release_accepts_upgrade_from_0_1_18():
+    from robopark_host.release import check_compatibility
+
+    metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
+    candidate = {
+        **metadata,
+        "app_version": (ROOT / "VERSION").read_text().strip(),
+        "min_installer_version": "0",
+        "required_capabilities": [],
+        "files": {
+            "deploy/Dockerfile.api-tests": {},
+            "apps/api/Dockerfile": {},
+            "apps/api/uv.lock": {},
+            "apps/api/pyproject.toml": {},
+            "apps/web/Dockerfile": {},
+            "apps/web/package-lock.json": {},
+            "apps/web/package.json": {},
+            "scripts/verify.sh": {},
+        },
+    }
+    current = {"app_version": "0.1.18", "migration_head": "0022_tracker_collaboration"}
+
+    check_compatibility(candidate, current)
+
+
 @pytest.mark.parametrize(
     "metadata",
     [
