@@ -12,7 +12,7 @@ from robopark_api.services.ops.runner import OpsContext
 from robopark_api.services.ops.snapshot import sqlite_path_from_url
 
 _REPO_ROOT = _API_ROOT.parent.parent
-APP_VERSION = "0.1.23"
+APP_VERSION = "0.1.24"
 
 
 def resolved_ops_dir(settings: Settings | None = None) -> Path:

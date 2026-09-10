@@ -3,6 +3,7 @@
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select, text
@@ -19,7 +20,7 @@ from robopark_api.services import (
 )
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.ops import host_bridge
-from robopark_api.services.ops.jobs import load_job
+from robopark_api.services.ops.jobs import load_job, new_job, save_job
 
 
 @pytest.fixture
@@ -426,3 +427,74 @@ def test_generic_crash_after_reservation_is_recovered_by_polling(
     monkeypatch.setattr(os, "link", original)
     host_bridge.reconcile_host_job(ops, installed)
     assert json.loads((installed / "inbox/approved.json").read_text()) == saved
+
+
+def test_orphaned_dispatched_update_releases_api_operation_slot(installed, test_settings):
+    ops = Path(test_settings.ops_dir)
+    job = new_job("update", exempt_token_hash="session")
+    job.state = "running"
+    job.extra = {
+        "host_updater": True,
+        "host_dispatch": "dispatched",
+        "host_request": {
+            "job_id": job.id,
+            "kind": "update",
+            "actor_user_id": 7,
+            "created_at": job.created_at,
+        },
+    }
+    save_job(ops, job)
+    (installed / "public/command-claim.json").write_text(
+        json.dumps(
+            {
+                "job_id": str(uuid4()),
+                "kind": "update",
+                "actor_user_id": 7,
+                "active": False,
+            }
+        )
+    )
+
+    recovered = host_bridge.reconcile_host_job(ops, installed)
+
+    assert recovered.state == "failed"
+    assert recovered.error == "host_operation_orphaned"
+
+
+@pytest.mark.parametrize("active_marker", ["claim", "inbox", "command", "maintenance"])
+def test_dispatched_update_is_preserved_while_host_may_still_be_active(
+    installed, test_settings, active_marker
+):
+    ops = Path(test_settings.ops_dir)
+    job = new_job("update", exempt_token_hash="session")
+    job.state = "running"
+    request = {
+        "job_id": job.id,
+        "kind": "update",
+        "actor_user_id": 7,
+        "created_at": job.created_at,
+    }
+    job.extra = {
+        "host_updater": True,
+        "host_dispatch": "dispatched",
+        "host_request": request,
+    }
+    save_job(ops, job)
+    claim = {
+        "job_id": job.id,
+        "kind": "update",
+        "actor_user_id": 7,
+        "active": active_marker == "claim",
+    }
+    (installed / "public/command-claim.json").write_text(json.dumps(claim))
+    if active_marker == "inbox":
+        (installed / "inbox/approved.json").write_text(json.dumps(request))
+    elif active_marker == "command":
+        (installed / "state").mkdir()
+        (installed / "state/command-request.json").write_text(json.dumps(request))
+    elif active_marker == "maintenance":
+        enable(installed)
+
+    recovered = host_bridge.reconcile_host_job(ops, installed)
+
+    assert recovered.state == "running"

@@ -280,6 +280,29 @@ def _definitely_absent(path):
     return False
 
 
+def _host_definitely_idle(root):
+    """Require a root-written idle receipt and absence of every dispatch marker."""
+    if host_marker_active(root):
+        return False
+    if not all(
+        _definitely_absent(path)
+        for path in (
+            root / "inbox/approved.json",
+            root / "state/command-request.json",
+            root / "state/update-worker-request.json",
+        )
+    ):
+        return False
+    claim = read_json(root / "public/command-claim.json", 4096)
+    return (
+        set(claim) == {"job_id", "kind", "actor_user_id", "active"}
+        and isinstance(claim.get("job_id"), str)
+        and isinstance(claim.get("kind"), str)
+        and type(claim.get("actor_user_id")) is int
+        and claim.get("active") is False
+    )
+
+
 def _dispatch(ops, root, job):
     request = job.extra["host_request"]
     target = root / "inbox/approved.json"
@@ -432,6 +455,13 @@ def reconcile_host_job(ops, root):
         if result.get("job_id") != job.id:
             if job.kind in {"diagnostics", "repair"} and not host_marker_active(root):
                 _dispatch(ops, root, job)
+            elif update and _host_definitely_idle(root):
+                job.state = "failed"
+                job.phase = "failed"
+                job.error = "host_operation_orphaned"
+                job.log = "Хост свободен; зависшая операция обновления снята."
+                job.restart_required = False
+                _save_job_unlocked(ops, job)
             return job
         if update:
             if type(result.get("ok")) is not bool:
