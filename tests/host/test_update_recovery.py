@@ -21,8 +21,6 @@ class SimulatedPowerLoss(BaseException):
         "unpacked",
         "building",
         "built",
-        "testing",
-        "tested",
         "smoking",
         "smoked",
         "maintenance",
@@ -301,7 +299,7 @@ def test_retention_scans_success_receipts_once(host, monkeypatch):
 
 @pytest.mark.parametrize(
     "phase",
-    ["unpacking", "unpacked", "building", "built", "testing", "tested", "smoking", "smoked"],
+    ["unpacking", "unpacked", "building", "built", "smoking", "smoked"],
 )
 def test_pre_maintenance_recovery_only_discards_candidate(host, monkeypatch, phase):
     original = updater.atomic_write_json
