@@ -9,10 +9,26 @@ import { TaskPartsPanel } from './TaskPartsPanel'
 
 const park: Park = { id: 7, name: 'Север', tag: 'North', is_active: true }
 const stock: InventoryOverview = { park_id: 7, component_count: 1, part_count: 1, low_stock_count: 0, out_of_stock_count: 0, components: [{ id: 2, park_id: 7, name: 'Подвязка', has_photo: true, parts: [{ id: 3, park_id: 7, component_id: 2, name: 'Тяга', article: 'TY-001', quantity: 5, minimum_quantity: 2, location: 'Стеллаж A / полка 2', is_active: true, has_photo: true }] }] }
+const stockWithTwoComponents: InventoryOverview = { ...stock, component_count: 2, part_count: 2, components: [...stock.components, { id: 9, park_id: 7, name: 'Колесо', has_photo: false, parts: [{ id: 10, park_id: 7, component_id: 9, name: 'Шина', article: 'WH-001', quantity: 4, minimum_quantity: 1, location: 'Стеллаж B / полка 1', is_active: true, has_photo: true }] }] }
 
 function inventoryClient(overrides = {}) {
   return { ...api, inventory: vi.fn(async () => stock), ...overrides }
 }
+
+it('filters the compact catalog by component without another inventory request', async () => {
+  const client = inventoryClient({ inventory: vi.fn(async () => stockWithTwoComponents) })
+  render(<MemoryRouter><ParkScopeContext.Provider value={{ parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><InventoryPage apiClient={client} /></ParkScopeContext.Provider></MemoryRouter>)
+
+  expect(await screen.findByRole('heading', { name: 'Подвязка' })).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: 'Колесо' })).toBeInTheDocument()
+  expect(document.querySelectorAll('img.inventory-part__photo')).toHaveLength(2)
+
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Компонента' }), '9')
+
+  expect(screen.queryByRole('heading', { name: 'Подвязка' })).not.toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: 'Колесо' })).toBeInTheDocument()
+  expect(client.inventory).toHaveBeenCalledTimes(1)
+})
 
 it('shows stock location and prepares a printable shelf label', async () => {
   const print = vi.spyOn(window, 'print').mockImplementation(() => undefined)
