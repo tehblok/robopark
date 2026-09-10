@@ -429,6 +429,58 @@ export type ReportCreatePayload = {
   tracker_url?: string | null
 }
 
+export type CampaignKind = 'service_company' | 'wrapping'
+
+export type CampaignTicket = {
+  key: string
+  summary: string
+  status: string
+  park_id: number
+  park_name: string
+  robot: string | null
+  url: string
+  completed_at: string | null
+  completed_by: number | null
+  comment: string | null
+  report_id: number | null
+  review_status: string | null
+  tracker_transition: string | null
+}
+
+export type Campaign = {
+  id: number
+  kind: CampaignKind
+  name: string
+  tracker_tag: string
+  starts_on: string
+  due_on: string
+  is_active: boolean
+  park_ids: number[]
+  park_names: string[]
+  total_count: number
+  completed_count: number
+  pending_review_count: number
+  remaining_count: number
+  percent_complete: number
+  overdue: boolean
+}
+
+export type CampaignDetail = Campaign & {
+  open_tickets: CampaignTicket[]
+  closed_tickets: CampaignTicket[]
+}
+
+export type CampaignCreatePayload = Pick<Campaign, 'kind' | 'name' | 'tracker_tag' | 'starts_on' | 'due_on' | 'park_ids'>
+
+export type CampaignSubmission = {
+  id: number
+  issue_key: string
+  report_id: number
+  review_status: string
+  tracker_transition: string | null
+  completed_at: string
+}
+
 export type HostCheck = {
   code: string
   status: 'ok' | 'warning' | 'failed'
@@ -1065,6 +1117,23 @@ export const api = {
     request<DashboardHistory>(
       `/dashboard/history?park_id=${parkId}&days=${days}`,
     ),
+  campaigns: (parkId?: number) =>
+    request<Campaign[]>(parkId == null ? '/campaigns' : `/campaigns?park_id=${parkId}`),
+  campaign: (id: number) => request<CampaignDetail>(`/campaigns/${id}`),
+  createCampaign: (payload: CampaignCreatePayload) =>
+    request<Campaign>('/campaigns', { method: 'POST', body: JSON.stringify(payload) }),
+  updateCampaign: (id: number, payload: Partial<CampaignCreatePayload & { is_active: boolean }>) =>
+    request<Campaign>(`/campaigns/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  completeCampaignTicket: (campaignId: number, ticketKey: string, parkId: number, comment: string, photo: File) => {
+    const form = new FormData()
+    form.append('park_id', String(parkId))
+    form.append('comment', comment)
+    form.append('photo', photo, photo.name)
+    return requestForm<CampaignSubmission>(
+      `/campaigns/${campaignId}/tickets/${encodeURIComponent(ticketKey)}/complete`,
+      form,
+    )
+  },
   reportsMine: () => request<Report[]>('/reports/mine'),
   reportsInbox: (parkId?: number) =>
     request<Report[]>(

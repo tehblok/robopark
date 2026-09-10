@@ -1,0 +1,187 @@
+import { type CSSProperties, type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import {
+  api,
+  type Campaign,
+  type CampaignCreatePayload,
+  type CampaignDetail,
+  type CampaignTicket,
+} from '../../api'
+import { useParkScope } from '../../app/park/parkScope'
+import { useAuth } from '../../auth-context'
+import { ParkMultiSelect } from '../../components/admin/ParkMultiSelect'
+import { Button } from '../../design-system/actions/Button'
+import { MetricCard } from '../../design-system/data/MetricCard'
+import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
+import { PageLayout, Panel } from '../../design-system/layout/PageLayout'
+import { StatusBadge } from '../../design-system/status/StatusBadge'
+import { refreshReportsBadge } from '../../reports-badge'
+import { classifyApiError } from '../../shared/api/classifyApiError'
+import './campaigns.css'
+
+type CampaignApi = Pick<typeof api, 'campaigns' | 'campaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>
+
+const kindLabel = (kind: Campaign['kind']) => kind === 'service_company' ? 'Сервисная компания' : 'Оклейка'
+const dateLabel = (value: string) => new Intl.DateTimeFormat('ru-RU').format(new Date(`${value}T00:00:00`))
+
+function Progress({ value, label }: { value: number; label: string }) {
+  const safe = Math.max(0, Math.min(100, value))
+  return <div aria-label={`${label}: ${safe}%`} className="campaign-progress" role="img" style={{ '--campaign-progress': `${safe * 3.6}deg` } as CSSProperties}>
+    <strong>{safe}%</strong><span>выполнено</span>
+  </div>
+}
+
+export function CampaignMetrics({ campaign }: { campaign: Campaign }) {
+  return <div className="campaign-metrics">
+    <Progress label={campaign.name} value={campaign.percent_complete} />
+    <div className="stat-grid">
+      <MetricCard label="Всего тикетов" value={campaign.total_count} />
+      <MetricCard label="Выполнено" tone="success" value={campaign.completed_count} />
+      <MetricCard label="На проверке" tone="info" value={campaign.pending_review_count} />
+      <MetricCard label="Осталось" tone={campaign.overdue ? 'critical' : 'neutral'} value={campaign.remaining_count} />
+    </div>
+  </div>
+}
+
+export function CampaignOverviewSection({ parkId, apiClient = api }: { parkId: number; apiClient?: CampaignApi }) {
+  const [items, setItems] = useState<Campaign[] | null>(null)
+  const [error, setError] = useState<unknown>(null)
+  useEffect(() => {
+    let active = true
+    apiClient.campaigns(parkId).then((value) => { if (active) { setItems(value.filter(item => item.is_active)); setError(null) } })
+      .catch((reason) => { if (active) setError(reason) })
+    return () => { active = false }
+  }, [apiClient, parkId])
+  if (error) return null
+  if (!items?.length) return null
+  return <Panel collapsible storageKey={`overview-campaigns-${parkId}`} title="СК и оклейка">
+    <div className="campaign-overview-list">{items.map(item => <article className="campaign-overview-item" key={item.id}>
+      <div><StatusBadge tone={item.overdue ? 'critical' : 'info'}>{kindLabel(item.kind)}</StatusBadge><h3><Link to={`/campaigns/${item.id}`}>{item.name}</Link></h3><p>{item.park_names.join(', ')} · до {dateLabel(item.due_on)}</p></div>
+      <Progress label={item.name} value={item.percent_complete} />
+    </article>)}</div>
+  </Panel>
+}
+
+function CampaignCreateForm({ apiClient, onCreated }: { apiClient: CampaignApi; onCreated: (item: Campaign) => void }) {
+  const { parks } = useParkScope()
+  const today = new Date().toISOString().slice(0, 10)
+  const [payload, setPayload] = useState<CampaignCreatePayload>({ kind: 'service_company', name: '', tracker_tag: '', starts_on: today, due_on: today, park_ids: [] })
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    setBusy(true); setError(null)
+    try { onCreated(await apiClient.createCampaign(payload)) }
+    catch (reason) { setError(classifyApiError(reason, 'Не удалось создать кампанию.').description) }
+    finally { setBusy(false) }
+  }
+  return <Panel collapsible defaultCollapsed storageKey="campaign-create" title="Новая кампания">
+    <form className="form-grid campaign-create" onSubmit={submit}>
+      <label className="field"><span>Тип</span><select value={payload.kind} onChange={event => setPayload(current => ({ ...current, kind: event.target.value as Campaign['kind'] }))}><option value="service_company">Сервисная компания</option><option value="wrapping">Оклейка</option></select></label>
+      <label className="field"><span>Название</span><input required maxLength={128} value={payload.name} onChange={event => setPayload(current => ({ ...current, name: event.target.value }))} /></label>
+      <label className="field"><span>Тег в Tracker</span><input required maxLength={128} value={payload.tracker_tag} onChange={event => setPayload(current => ({ ...current, tracker_tag: event.target.value }))} /></label>
+      <label className="field"><span>Начало</span><input required type="date" value={payload.starts_on} onChange={event => setPayload(current => ({ ...current, starts_on: event.target.value }))} /></label>
+      <label className="field"><span>Срок</span><input required min={payload.starts_on} type="date" value={payload.due_on} onChange={event => setPayload(current => ({ ...current, due_on: event.target.value }))} /></label>
+      <ParkMultiSelect label="Парки кампании" onChange={park_ids => setPayload(current => ({ ...current, park_ids }))} parks={parks} value={payload.park_ids} />
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      <Button busy={busy} disabled={!payload.park_ids.length} type="submit">Создать кампанию</Button>
+    </form>
+  </Panel>
+}
+
+function CampaignList({ apiClient }: { apiClient: CampaignApi }) {
+  const { user } = useAuth()
+  const { selectedPark } = useParkScope()
+  const navigate = useNavigate()
+  const [items, setItems] = useState<Campaign[] | null>(null)
+  const [error, setError] = useState<unknown>(null)
+  const load = useCallback(() => {
+    setError(null)
+    apiClient.campaigns(selectedPark?.id).then(setItems).catch(setError)
+  }, [apiClient, selectedPark?.id])
+  useEffect(load, [load])
+  const manager = user?.role === 'admin' || user?.role === 'royal'
+  const failure = error ? classifyApiError(error, 'Не удалось загрузить кампании.') : null
+  return <PageLayout description="Прогресс сервисных компаний и оклейки по доступным паркам." title="СК и оклейка">
+    {manager ? <CampaignCreateForm apiClient={apiClient} onCreated={item => navigate(`/campaigns/${item.id}`)} /> : null}
+    {failure ? <ErrorState description={failure.description} onRetry={failure.retryable ? load : undefined} title={failure.title} />
+      : !items ? <LoadingState label="Загружаем кампании" variant="page" />
+        : !items.length ? <EmptyState description="Администратор ещё не добавил кампании для доступных парков." icon="work" title="Кампаний нет" />
+          : <div className="campaign-list">{items.map(item => <Panel className="campaign-card" key={item.id}>
+            <div className="campaign-card__heading"><div><StatusBadge tone={!item.is_active ? 'neutral' : item.overdue ? 'critical' : 'info'}>{kindLabel(item.kind)}</StatusBadge><h2><Link to={`/campaigns/${item.id}`}>{item.name}</Link></h2><p>{item.park_names.join(', ')} · {dateLabel(item.starts_on)} — {dateLabel(item.due_on)}</p></div><Progress label={item.name} value={item.percent_complete} /></div>
+            <CampaignMetrics campaign={item} />
+          </Panel>)}</div>}
+  </PageLayout>
+}
+
+function transitionLabel(value: string | null) {
+  if (value === 'review') return 'Tracker: Проверка'
+  if (value === 'diagnostics') return 'Tracker: Диагностика'
+  if (value === 'failed') return 'Не удалось сменить статус в Tracker'
+  if (value === 'unavailable') return 'Нет перехода в Проверку или Диагностику'
+  return null
+}
+
+function TicketCard({ ticket, campaign, apiClient, reload }: { ticket: CampaignTicket; campaign: CampaignDetail; apiClient: CampaignApi; reload: () => void }) {
+  const [editing, setEditing] = useState(false)
+  const [comment, setComment] = useState('')
+  const [photo, setPhoto] = useState<File | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!photo) return
+    setBusy(true); setError(null)
+    try {
+      await apiClient.completeCampaignTicket(campaign.id, ticket.key, ticket.park_id, comment, photo)
+      refreshReportsBadge(); reload()
+    } catch (reason) { setError(classifyApiError(reason, 'Не удалось отправить тикет оператору.').description) }
+    finally { setBusy(false) }
+  }
+  const trackerState = transitionLabel(ticket.tracker_transition)
+  const canSubmit = ticket.review_status == null || ticket.review_status === 'returned'
+  return <article className="campaign-ticket">
+    <div className="campaign-ticket__head"><div><a href={ticket.url} rel="noreferrer" target="_blank"><strong>{ticket.key}</strong></a><h3>{ticket.robot || 'Робот не указан'}</h3></div><StatusBadge tone={ticket.review_status === 'done' || ticket.review_status === 'tracker_closed' ? 'success' : ticket.review_status === 'returned' ? 'warning' : 'neutral'}>{ticket.status}</StatusBadge></div>
+    <p>{ticket.summary}</p><small>{ticket.park_name}</small>
+    {ticket.comment ? <blockquote>{ticket.comment}</blockquote> : null}
+    {trackerState ? <p className={ticket.tracker_transition === 'failed' || ticket.tracker_transition === 'unavailable' ? 'campaign-warning' : ''}>{trackerState}</p> : null}
+    {canSubmit ? <>{editing ? <form className="campaign-complete" onSubmit={submit}>
+      <label className="field"><span>Комментарий для оператора</span><textarea required maxLength={4000} value={comment} onChange={event => setComment(event.target.value)} /></label>
+      <label className="field"><span>Фото</span><input accept="image/jpeg,image/png,image/webp" required type="file" onChange={event => setPhoto(event.target.files?.[0] ?? null)} /></label>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      <div className="campaign-actions"><Button busy={busy} disabled={!photo || !comment.trim()} type="submit">Отправить оператору</Button><Button onClick={() => setEditing(false)} type="button" variant="ghost">Отмена</Button></div>
+    </form> : <Button onClick={() => setEditing(true)} variant="secondary">Заполнить и отправить на проверку</Button>}</> : null}
+    {ticket.review_status === 'open' && ticket.report_id ? <Link to={`/reports/${ticket.report_id}`}>Открыть проверку оператора</Link> : null}
+  </article>
+}
+
+function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; apiClient: CampaignApi }) {
+  const { user } = useAuth()
+  const [data, setData] = useState<CampaignDetail | null>(null)
+  const [error, setError] = useState<unknown>(null)
+  const [query, setQuery] = useState('')
+  const load = useCallback(() => { setError(null); apiClient.campaign(campaignId).then(setData).catch(setError) }, [apiClient, campaignId])
+  useEffect(load, [load])
+  const open = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase('ru')
+    return data?.open_tickets.filter(ticket => !needle || `${ticket.robot || ''} ${ticket.key} ${ticket.summary}`.toLocaleLowerCase('ru').includes(needle)) ?? []
+  }, [data, query])
+  const manager = user?.role === 'admin' || user?.role === 'royal'
+  const failure = error ? classifyApiError(error, 'Не удалось загрузить кампанию.') : null
+  if (failure) return <PageLayout title="СК и оклейка"><ErrorState description={failure.description} onRetry={failure.retryable ? load : undefined} title={failure.title} /></PageLayout>
+  if (!data) return <PageLayout title="СК и оклейка"><LoadingState label="Загружаем кампанию" variant="page" /></PageLayout>
+  return <PageLayout actions={manager ? <Button onClick={() => void apiClient.updateCampaign(data.id, { is_active: !data.is_active }).then(load)} variant="secondary">{data.is_active ? 'Завершить кампанию' : 'Возобновить кампанию'}</Button> : null} description={`${data.park_names.join(', ')} · тег ${data.tracker_tag} · ${dateLabel(data.starts_on)} — ${dateLabel(data.due_on)}`} eyebrow={<Link to="/campaigns">СК и оклейка</Link>} title={data.name}>
+    <CampaignMetrics campaign={data} />
+    <div className="campaign-columns">
+      <Panel title={`Открытые · ${data.open_tickets.length}`}><label className="field campaign-search"><span>Поиск по роботу</span><input onChange={event => setQuery(event.target.value)} placeholder="Номер робота или тикет" value={query} /></label>
+        <div className="campaign-tickets">{open.map(ticket => <TicketCard apiClient={apiClient} campaign={data} key={ticket.key} reload={load} ticket={ticket} />)}{!open.length ? <p>Открытые тикеты не найдены.</p> : null}</div>
+      </Panel>
+      <Panel title={`Закрытые · ${data.closed_tickets.length}`}><div className="campaign-tickets">{data.closed_tickets.map(ticket => <TicketCard apiClient={apiClient} campaign={data} key={ticket.key} reload={load} ticket={ticket} />)}{!data.closed_tickets.length ? <p>Закрытых тикетов пока нет.</p> : null}</div></Panel>
+    </div>
+  </PageLayout>
+}
+
+export function CampaignsPage({ apiClient = api }: { apiClient?: CampaignApi }) {
+  const raw = useParams().campaignId
+  return raw && /^\d+$/.test(raw) ? <CampaignDetailPage apiClient={apiClient} campaignId={Number(raw)} /> : <CampaignList apiClient={apiClient} />
+}

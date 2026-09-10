@@ -28,6 +28,7 @@ import { OperatorPending } from '../../pages/OperatorPending'
 import { OperatorRejected } from '../../pages/OperatorRejected'
 import { Register } from '../../pages/Register'
 import { Reports } from '../../pages/Reports'
+import { CampaignsPage } from '../../domains/campaigns/CampaignsPage'
 import { LegacyEmergencyRedirect } from './LegacyEmergencyRedirect'
 import { landingPathForUser } from './accessPolicy'
 import { ROUTE_MANIFEST, type AppRouteId } from './routeManifest'
@@ -60,6 +61,8 @@ export const ROUTE_ELEMENTS: Record<AppRouteId, ReactElement> = {
   'legacy-robot-check': <LegacyEmergencyRedirect />,
   'analytics': <Analytics />,
   'reports': <Reports />,
+  'campaigns': <CampaignsPage />,
+  'campaign-detail': <CampaignsPage />,
   'reports-new': <Reports />,
   'report-detail': <Reports />,
   'admin': <ManagementPage />,

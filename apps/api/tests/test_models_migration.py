@@ -37,13 +37,16 @@ def test_metadata_has_required_tables():
         "tracker_presence",
         "tracker_submissions",
         "tracker_handoffs",
+        "campaigns",
+        "campaign_parks",
+        "campaign_submissions",
     }
 
 
-def test_alembic_head_is_tracker_collaboration():
+def test_alembic_head_is_campaigns():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0022_tracker_collaboration"]
+    assert script.get_heads() == ["0023_campaigns"]
 
 
 def test_diagnostic_rules_upgrade_from_previous_head(sqlite_database_url, monkeypatch):
@@ -390,7 +393,7 @@ def test_original_unit_upgrade_leaves_legacy_samples_unverified(sqlite_database_
         )
 
 
-def test_tracker_collaboration_upgrade_preserves_existing_data(sqlite_database_url, monkeypatch):
+def test_campaign_upgrade_preserves_existing_data(sqlite_database_url, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
     config = Config(Path(__file__).parents[1] / "alembic.ini")
     command.upgrade(config, "0021_diagnostic_unknown_original")
@@ -401,16 +404,22 @@ def test_tracker_collaboration_upgrade_preserves_existing_data(sqlite_database_u
                 "INSERT INTO parks (id, name, tag, is_active) VALUES (1, 'Existing', 'existing', 1)"
             )
         )
-    command.upgrade(config, "0022_tracker_collaboration")
-    assert {"tracker_presence", "tracker_submissions", "tracker_handoffs"} <= set(
-        inspect(engine).get_table_names()
-    )
+    command.upgrade(config, "0023_campaigns")
+    assert {
+        "tracker_presence",
+        "tracker_submissions",
+        "tracker_handoffs",
+        "campaigns",
+        "campaign_parks",
+        "campaign_submissions",
+    } <= set(inspect(engine).get_table_names())
     with engine.connect() as connection:
         assert (
             connection.execute(text("SELECT name FROM parks WHERE id=1")).scalar_one() == "Existing"
         )
         assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
     command.downgrade(config, "0021_diagnostic_unknown_original")
+    assert "campaigns" not in inspect(engine).get_table_names()
     assert "tracker_submissions" not in inspect(engine).get_table_names()
     with engine.connect() as connection:
         assert (
