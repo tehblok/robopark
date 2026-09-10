@@ -16,6 +16,7 @@ import { AuthContext } from '../../auth-context'
 import { ParkScopeContext } from '../../app/park/parkScope'
 import { ParkScopeProvider } from '../../app/park/ParkScopeProvider'
 import { ru } from '../../i18n/ru'
+import { collaborationClient } from '../../components/tracker/collaborationClient'
 import { resetCoalescingForTests, resourceStore } from '../../lib/resource'
 import { IssueWorkbench, type IssueWorkbenchApiClient } from './IssueWorkbench'
 import { WorkPage } from './WorkPage'
@@ -237,6 +238,7 @@ function seedCurrentWork(currentUser = user, currentIssue = issue) {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.useRealTimers()
   resourceStore.clearAll()
   resetCoalescingForTests()
   window.history.replaceState({}, '', '/')
@@ -276,12 +278,29 @@ describe('IssueWorkbench', () => {
   it('keeps a shiftmates task readable but hides mutations and robot diagnostics until takeover', async () => {
     const mechanic: User = { ...user, role: 'mechanic', username: 'mech', tracker_login: null }
     const claimedByShiftmate = { ...issue, assignee: { display: 'Сменщик', login: 'other' } }
-    renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedByShiftmate) }), currentUser: mechanic })
+    const { onStateChange } = renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedByShiftmate) }), currentUser: mechanic })
 
     expect(await screen.findByRole('heading', { name: claimedByShiftmate.summary })).toBeInTheDocument()
     expect(screen.getByText(/Для изменений возьмите задачу вместо сменщика/)).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Проверка робота' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Проверить робота 447' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: ru.tracker.actions.close })).not.toBeInTheDocument()
+    expect(onStateChange).not.toHaveBeenCalled()
+  })
+
+  it('does not start presence polling for a shiftmates task', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    const presence = vi.spyOn(collaborationClient, 'presence').mockResolvedValue({ people: [] })
+    const mechanic: User = { ...user, role: 'mechanic', username: 'mech', tracker_login: null }
+    const claimedByShiftmate = { ...issue, assignee: { display: 'Сменщик', login: 'other' } }
+
+    renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedByShiftmate) }), currentUser: mechanic })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(screen.getByRole('heading', { name: claimedByShiftmate.summary })).toBeVisible()
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000) })
+
+    expect(presence).not.toHaveBeenCalled()
   })
 
   it('resolves a direct robot-check link for a shiftmates task to task without Emergency reads', async () => {
@@ -315,6 +334,9 @@ describe('IssueWorkbench', () => {
         { id: 'latest', text: 'Последняя важная деталь', author: 'Оператор', created_at: '2026-09-02T09:00:00Z' },
       ]),
     })
+    vi.spyOn(collaborationClient, 'handoff').mockResolvedValue({
+      revision: 0, done: '', remaining: '', obstacles: '', author: null, updated_at: null,
+    })
 
     renderWorkbench({ client, currentUser: mechanic })
 
@@ -327,7 +349,11 @@ describe('IssueWorkbench', () => {
     for (const name of ['Использовать запчасть', 'Статус задачи', 'Исполнитель', ru.tracker.history]) {
       expect(screen.getByRole('button', { name })).toHaveAttribute('aria-expanded', 'false')
     }
-    expect(screen.getByText('Передача смены').closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByRole('button', { name: 'Передача смены' })).toHaveAttribute('aria-expanded', 'false')
+    expect(document.querySelector('.issue-collaboration')).not.toBeInTheDocument()
+    expect(screen.queryByText('Загружаем передачу смены…')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Передача смены' }))
+    expect(document.querySelector('.issue-collaboration')).toBeInTheDocument()
   })
 
   it('offers a collapse control for the selected issue detail', async () => {

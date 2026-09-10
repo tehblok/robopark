@@ -5,9 +5,13 @@ test('handoff persists and a deliberate retry gets a fresh request key after rel
   await page.setViewportSize({ width: 390, height: 900 })
   await page.addInitScript(() => { Math.random = () => 0 })
   const requests: string[] = []
+  let presenceRequests = 0
   let handoff = { revision: 0, done: '', remaining: '', obstacles: '', author: null as string | null, updated_at: null as string | null }
   await installOperational(page, { role: 'mechanic', routes: [
-    { method: 'POST', path: '/api/tracker/issues/ROBOPARK-42/presence', handler: () => ({ json: { people: [{ username: 'Коллега' }] } }) },
+    { method: 'POST', path: '/api/tracker/issues/ROBOPARK-42/presence', handler: () => {
+      presenceRequests += 1
+      return { json: { people: [{ username: 'Коллега' }] } }
+    } },
     { method: 'GET', path: '/api/tracker/issues/ROBOPARK-42/handoff', handler: () => ({ json: handoff }) },
     { method: 'PUT', path: '/api/tracker/issues/ROBOPARK-42/handoff', handler: async request => {
       handoff = { ...await request.json(), revision: handoff.revision + 1, author: 'mechanic.test', updated_at: FIXED_TIME }
@@ -20,8 +24,10 @@ test('handoff persists and a deliberate retry gets a fresh request key after rel
     } },
   ] })
   await page.goto('/work/ROBOPARK-42?park=7')
-  await expect(page.getByText(/Сейчас в задаче: Коллега/)).toBeVisible()
+  expect(presenceRequests).toBe(0)
   await page.getByText('Передача смены', { exact: true }).click()
+  await expect(page.getByText(/Сейчас в задаче: Коллега/)).toBeVisible()
+  expect(presenceRequests).toBe(1)
   await page.getByRole('textbox', { name: 'Сделано', exact: true }).fill('Заменено колесо')
   await page.getByRole('textbox', { name: 'Осталось', exact: true }).fill('Проверить на маршруте')
   await page.getByRole('textbox', { name: 'Препятствия', exact: true }).fill('Нет заряженной батареи')

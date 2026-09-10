@@ -62,8 +62,11 @@ test('attachment-only capabilities expose only the attachment mutation', async (
 
 test('foreign mechanic detail-check link stays read-only without Emergency requests', async ({ page }) => {
   const emergencyRequests: string[] = []
+  const presenceRequests: string[] = []
   page.on('request', request => {
-    if (new URL(request.url()).pathname.startsWith('/api/emergency/')) emergencyRequests.push(request.url())
+    const path = new URL(request.url()).pathname
+    if (path.startsWith('/api/emergency/')) emergencyRequests.push(request.url())
+    if (path.endsWith('/presence')) presenceRequests.push(request.url())
   })
   await installOperational(page, {
     role: 'mechanic',
@@ -74,9 +77,12 @@ test('foreign mechanic detail-check link stays read-only without Emergency reque
 
   await expect(page.getByRole('tab', { name: 'Задача', exact: true })).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByRole('tab', { name: 'Проверка робота', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Проверить робота 447', exact: true })).toHaveCount(0)
   await expect(page.getByText(/Для изменений возьмите задачу вместо сменщика/)).toBeVisible()
   await expect(page.getByRole('button', { name: 'Закрыть тикет', exact: true })).toHaveCount(0)
+  await page.waitForTimeout(2_000)
   expect(emergencyRequests).toEqual([])
+  expect(presenceRequests).toEqual([])
 })
 
 test('close requires confirmation, preserves failure, then closes and refreshes local resources', async ({ page }) => {

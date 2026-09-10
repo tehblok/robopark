@@ -22,7 +22,7 @@ test('390px task keeps core context and composer ahead of collapsed secondary wo
   for (const name of ['Использовать запчасть', 'Статус задачи', 'Исполнитель', 'История действий']) {
     await expect(page.getByRole('button', { name, exact: true })).toHaveAttribute('aria-expanded', 'false')
   }
-  await expect(page.getByText('Передача смены', { exact: true }).locator('..')).not.toHaveAttribute('open')
+  await expect(page.getByRole('button', { name: 'Передача смены', exact: true })).toHaveAttribute('aria-expanded', 'false')
 
   await page.getByRole('button', { name: 'История действий', exact: true }).click()
   await expect(page.getByText('Предыдущая запись смены', { exact: true })).toBeVisible()

@@ -150,6 +150,20 @@ function WorkCommentHistory({ comments }: { comments: TrackerComment[] }) {
   </ol>
 }
 
+function EmbeddedTaskCollaboration(props: React.ComponentProps<typeof TaskCollaboration>) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const details = containerRef.current?.querySelector('details')
+    const summary = details?.querySelector('summary')
+    if (!details || !summary) return
+    details.open = true
+    details.dispatchEvent(new Event('toggle', { bubbles: true }))
+    summary.hidden = true
+    summary.textContent = ''
+  }, [])
+  return <div ref={containerRef}><TaskCollaboration {...props} /></div>
+}
+
 const RELATED_PAGE_SIZE = 10
 
 function normalizedRobotNumber(raw?: string | null): string | null {
@@ -638,6 +652,9 @@ function IssueWorkbenchOwner({
   const previousTaskComments = latestSignificantComment
     ? taskComments.filter(comment => comment.id !== latestSignificantComment.id)
     : taskComments
+  const readableDetail = detail.data && user.role === 'mechanic' && !mechanicCanWork
+    ? { ...detail.data, robot: null }
+    : detail.data
 
   if (authorizationFailure) {
     return (
@@ -707,7 +724,7 @@ function IssueWorkbenchOwner({
                     <IssueDetailPanel
                       currentUser={user.tracker_login ?? user.username} accountKey={user.username}
                       commentsLoading={comments.isLoading && !comments.data}
-                      comments={latestSignificantComment ? [latestSignificantComment] : []} issue={detail.data ?? null}
+                      comments={latestSignificantComment ? [latestSignificantComment] : []} issue={readableDetail ?? null}
                       loading={detail.isLoading && !detail.data} showRobotCheck={false}
                       onOpenRobotCheck={() => changeTab('check')}
                     />
@@ -755,10 +772,15 @@ function IssueWorkbenchOwner({
                       <ResponsiveDisclosure id="history" title={ru.tracker.history}>
                         <div id="history"><WorkCommentHistory comments={previousTaskComments} /></div>
                       </ResponsiveDisclosure>
+                      <ResponsiveDisclosure id="handoff" title="Передача смены">
+                        <div id="handoff">
+                          <EmbeddedTaskCollaboration issueKey={detail.data.key} owner={user.username}
+                            active={activeTab === 'task' && mechanicCanWork}
+                            canWrite={detail.data.capabilities.comment && mechanicCanWork}
+                            onAuthorizationFailure={observeAuthorizationFailure} />
+                        </div>
+                      </ResponsiveDisclosure>
                     </ResponsiveDisclosureGroup> : null}
-                    {detail.data ? <div id="handoff">
-                      <TaskCollaboration issueKey={detail.data.key} owner={user.username} active={activeTab === 'task'} canWrite={detail.data.capabilities.comment && mechanicCanWork} onAuthorizationFailure={observeAuthorizationFailure} />
-                    </div> : null}
                     </TabPanel>
                     {(['open', 'closed'] as const).map(kind => <TabPanel key={kind} id={`work-panel-${kind}`} labelledBy={`tab-${kind}`} active={activeTab === kind}>
                       {activeTab === kind && detail.data ? robotNumber && relatedPrefix && relatedQueue ? <RelatedTasksPanel
