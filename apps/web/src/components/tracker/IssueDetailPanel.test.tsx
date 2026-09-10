@@ -71,4 +71,33 @@ describe('IssueDetailPanel', () => {
     })
     expect(screen.getAllByRole('link', { name: 'Проверить робота 447' })).toHaveLength(2)
   })
+
+  it('uses a button for the robot when an in-context check callback is provided', () => {
+    const onOpenRobotCheck = vi.fn()
+    render(
+      <MemoryRouter>
+        <IssueDetailPanel comments={[]} issue={issue} onOpenRobotCheck={onOpenRobotCheck} />
+      </MemoryRouter>,
+    )
+
+    const robotField = screen.getByText(ru.tracker.fields.robot, { selector: 'dt' }).parentElement
+    const button = within(robotField!).getByRole('button', { name: 'Проверить робота 447' })
+    button.click()
+
+    expect(onOpenRobotCheck).toHaveBeenCalledOnce()
+    expect(within(robotField!).queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('renders the robot as plain text in read-only mode', () => {
+    render(
+      <MemoryRouter>
+        <IssueDetailPanel comments={[]} issue={issue} robotReadOnly />
+      </MemoryRouter>,
+    )
+
+    const robotField = screen.getByText(ru.tracker.fields.robot, { selector: 'dt' }).parentElement
+    expect(robotField).toHaveTextContent('447')
+    expect(within(robotField!).queryByRole('button')).not.toBeInTheDocument()
+    expect(within(robotField!).queryByRole('link')).not.toBeInTheDocument()
+  })
 })

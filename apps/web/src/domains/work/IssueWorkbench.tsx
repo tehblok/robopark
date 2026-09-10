@@ -652,10 +652,6 @@ function IssueWorkbenchOwner({
   const previousTaskComments = latestSignificantComment
     ? taskComments.filter(comment => comment.id !== latestSignificantComment.id)
     : taskComments
-  const readableDetail = detail.data && user.role === 'mechanic' && !mechanicCanWork
-    ? { ...detail.data, robot: null }
-    : detail.data
-
   if (authorizationFailure) {
     return (
       <ErrorState
@@ -724,9 +720,10 @@ function IssueWorkbenchOwner({
                     <IssueDetailPanel
                       currentUser={user.tracker_login ?? user.username} accountKey={user.username}
                       commentsLoading={comments.isLoading && !comments.data}
-                      comments={latestSignificantComment ? [latestSignificantComment] : []} issue={readableDetail ?? null}
+                      comments={latestSignificantComment ? [latestSignificantComment] : []} issue={detail.data ?? null}
                       loading={detail.isLoading && !detail.data} showRobotCheck={false}
-                      onOpenRobotCheck={() => changeTab('check')}
+                      robotReadOnly={!mechanicCanWork}
+                      onOpenRobotCheck={mechanicCanWork ? () => changeTab('check') : undefined}
                     />
                     {detail.data && user.role === 'mechanic' && !mechanicCanWork ? (
                       <p className="panel-hint" role="status">

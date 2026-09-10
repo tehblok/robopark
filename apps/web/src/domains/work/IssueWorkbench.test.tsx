@@ -1,6 +1,6 @@
 import { webcrypto } from 'node:crypto'
 import { Profiler, type ReactNode, useLayoutEffect, useState } from 'react'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -283,6 +283,10 @@ describe('IssueWorkbench', () => {
     expect(await screen.findByRole('heading', { name: claimedByShiftmate.summary })).toBeInTheDocument()
     expect(screen.getByText(/Для изменений возьмите задачу вместо сменщика/)).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Проверка робота' })).not.toBeInTheDocument()
+    const robotField = screen.getByText(ru.tracker.fields.robot, { selector: 'dt' }).parentElement
+    expect(robotField).toHaveTextContent('447')
+    expect(within(robotField!).queryByRole('button')).not.toBeInTheDocument()
+    expect(within(robotField!).queryByRole('link')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Проверить робота 447' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: ru.tracker.actions.close })).not.toBeInTheDocument()
     expect(onStateChange).not.toHaveBeenCalled()

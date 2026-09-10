@@ -77,6 +77,10 @@ test('foreign mechanic detail-check link stays read-only without Emergency reque
 
   await expect(page.getByRole('tab', { name: 'Задача', exact: true })).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByRole('tab', { name: 'Проверка робота', exact: true })).toHaveCount(0)
+  const robotField = page.getByText('Робот', { exact: true }).locator('..')
+  await expect(robotField).toContainText('447')
+  await expect(robotField.getByRole('button')).toHaveCount(0)
+  await expect(robotField.getByRole('link')).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Проверить робота 447', exact: true })).toHaveCount(0)
   await expect(page.getByText(/Для изменений возьмите задачу вместо сменщика/)).toBeVisible()
   await expect(page.getByRole('button', { name: 'Закрыть тикет', exact: true })).toHaveCount(0)

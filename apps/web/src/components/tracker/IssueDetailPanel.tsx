@@ -121,6 +121,7 @@ function IssueDetailPanelContent({
   commentsLoading = false,
   currentUser,
   accountKey,
+  robotReadOnly = false,
   showRobotCheck = true,
   onOpenRobotCheck,
   loading,
@@ -131,6 +132,7 @@ function IssueDetailPanelContent({
   commentsLoading?: boolean
   currentUser?: string
   accountKey?: string
+  robotReadOnly?: boolean
   showRobotCheck?: boolean
   onOpenRobotCheck?: () => void
   loading?: boolean
@@ -239,7 +241,7 @@ function IssueDetailPanelContent({
         </Field>
         {robotReference && (
           <Field label={ru.tracker.fields.robot}>
-            {onOpenRobotCheck ? <button className="rp-work-robot-link" type="button" onClick={onOpenRobotCheck}
+            {robotReadOnly ? <span>{robotReference}</span> : onOpenRobotCheck ? <button className="rp-work-robot-link" type="button" onClick={onOpenRobotCheck}
               aria-label={`${ru.tracker.robotCheck.open} ${robotReference}`}>{robotReference}</button> : <Link
               aria-label={`${ru.tracker.robotCheck.open} ${robotReference}`}
               className="rp-work-robot-link"
