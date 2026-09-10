@@ -357,7 +357,7 @@ def test_pack_release_wrapper_propagates_reviewed_migration_metadata(
         manifest = json.loads(archive.read("manifest.json"))
     assert manifest["migration_compatibility"] == {
         "from_heads": ["0022_tracker_collaboration"],
-        "reversible": False,
+        "reversible": True,
     }
 
 

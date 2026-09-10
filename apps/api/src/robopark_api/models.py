@@ -200,7 +200,9 @@ class CampaignSubmission(Base):
     author_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     report_id: Mapped[int] = mapped_column(ForeignKey("reports.id"), unique=True)
     tracker_transition: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class InventoryComponent(Base):

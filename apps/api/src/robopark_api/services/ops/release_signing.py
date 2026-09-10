@@ -27,9 +27,7 @@ def sign_manifest(manifest: dict, private_key: bytes) -> bytes:
         raise ArchiveError("signature_invalid") from exc
 
 
-def verify_manifest_signature(
-    manifest: dict, signature: bytes, public_key: bytes | None
-) -> None:
+def verify_manifest_signature(manifest: dict, signature: bytes, public_key: bytes | None) -> None:
     """Compatibility hook: local OTA signatures are intentionally not enforced."""
     _ = signature
     rotation = manifest.get("signing_key_rotation")

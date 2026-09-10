@@ -307,8 +307,10 @@ def list_inbox(db: Session, user: User, *, park_id: int | None = None) -> list[R
         raise PermissionError("forbidden")
     scope = _scope_clause(db, user, park_id)
     if _is_royal_inbox_user(user):
-        stmt = select(Report).options(selectinload(Report.attachments)).where(
-            Report.status == STATUS_OPEN
+        stmt = (
+            select(Report)
+            .options(selectinload(Report.attachments))
+            .where(Report.status == STATUS_OPEN)
         )
     elif _is_admin_inbox_user(user):
         stmt = (
