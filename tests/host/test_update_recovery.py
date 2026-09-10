@@ -1,4 +1,6 @@
 import json
+import os
+from uuid import uuid4
 
 import pytest
 import robopark_host.updater as updater
@@ -133,7 +135,7 @@ def test_power_loss_resuming_third_release_still_finishes_retention(host, monkey
     monkeypatch.setattr(updater, "atomic_write_json", original)
     result = recover_interrupted_update(host.paths, host.runner)
     assert result.state == "current_healthy"
-    assert len(list(host.paths.releases.iterdir())) == 2
+    assert len(list(host.paths.releases.iterdir())) == 3
     assert len(list((host.paths.ops / "rollbacks").iterdir())) == 1
 
 
@@ -212,8 +214,43 @@ def test_completed_updates_prune_old_compose_and_displaced_data(host):
         )
         apply_release(host.request(artifact), host.paths, host.runner)
         updater.reconcile_after_exit(host.paths, host.runner)
-    assert len(list((host.paths.state / "compose").iterdir())) == 2
+    assert len(list((host.paths.state / "compose").iterdir())) == 3
     assert not list(host.paths.var.glob(".displaced-*"))
+
+
+def test_retention_keeps_current_and_two_newest_successful_releases(host):
+    releases = [f"release-{uuid4()}" for _ in range(4)]
+    current, prior_one, prior_two, oldest = releases
+    receipts = host.paths.state / "successful-releases"
+    rollback_root = host.paths.ops / "rollbacks"
+    (host.paths.state / "compose").mkdir()
+    receipts.mkdir()
+    rollback_root.mkdir()
+    for offset, release in enumerate(releases):
+        (host.paths.releases / release).mkdir()
+        identifier = release.removeprefix("release-")
+        (host.paths.state / "compose" / f"{identifier}-production.json").write_text("{}")
+        (rollback_root / identifier / "data").mkdir(parents=True)
+        receipt = receipts / f"{release}.json"
+        receipt.write_text('{"successful": true}')
+        receipt.chmod(0o600)
+        timestamp = 1_000_000_000 + len(releases) - offset
+        os.utime(receipt, ns=(timestamp, timestamp))
+    host.paths.current.unlink()
+    host.paths.previous.unlink(missing_ok=True)
+    host.paths.current.symlink_to(host.paths.releases / current)
+    host.paths.previous.symlink_to(host.paths.releases / prior_one)
+
+    updater._retention(
+        host.paths,
+        {"job_id": current.removeprefix("release-"), "previous_config": "compose/initial.json"},
+    )
+
+    assert {path.name for path in host.paths.releases.iterdir()} >= {current, prior_one, prior_two}
+    assert not (host.paths.releases / oldest).exists()
+    assert not (host.paths.state / "compose" / f"{oldest.removeprefix('release-')}-production.json").exists()
+    assert not (receipts / f"{oldest}.json").exists()
+    assert not (rollback_root / oldest.removeprefix("release-")).exists()
 
 
 @pytest.mark.parametrize(

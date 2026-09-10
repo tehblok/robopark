@@ -436,7 +436,7 @@ def test_system_runner_cleanup_failure_does_not_replace_real_failure_log(
     assert log.read_text() == "real build failure\n"
 
 
-def test_retention_keeps_two_successes_after_third_update(host):
+def test_retention_keeps_three_successes_after_third_update(host):
     apply_release(host.request(), host.paths, host.runner)
     reconcile_after_exit(host.paths, host.runner)
     second = host.paths.current.resolve()
@@ -446,7 +446,7 @@ def test_retention_keeps_two_successes_after_third_update(host):
     reconcile_after_exit(host.paths, host.runner)
     assert host.paths.previous.resolve() == second
     assert sorted(p.name for p in host.paths.releases.iterdir()) == sorted(
-        [second.name, host.paths.current.resolve().name]
+        ["1.0.0", second.name, host.paths.current.resolve().name]
     )
     assert len(list((host.paths.ops / "rollbacks").iterdir())) == 1
 

@@ -407,6 +407,63 @@ def _release_target(paths, link):
     return target
 
 
+def _successful_release_receipts(paths):
+    """Return only regular, locally owned receipts for named successful releases."""
+    receipts = paths.state / "successful-releases"
+    try:
+        parent = os.open(receipts, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return []
+    try:
+        result = []
+        with os.scandir(parent) as listing:
+            for entry in listing:
+                if re.fullmatch(r"[A-Za-z0-9._+-]+\.json", entry.name) is None:
+                    continue
+                info = entry.stat(follow_symlinks=False)
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid not in {0, os.geteuid()}
+                    or info.st_nlink != 1
+                ):
+                    continue
+                try:
+                    descriptor = os.open(
+                        entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent
+                    )
+                    with os.fdopen(descriptor, "rb") as stream:
+                        current = os.fstat(stream.fileno())
+                        if (
+                            current.st_dev != info.st_dev
+                            or current.st_ino != info.st_ino
+                            or current.st_nlink != 1
+                            or current.st_size > 4096
+                            or json.loads(stream.read(4097), object_pairs_hook=unique_object)
+                            != {"successful": True}
+                        ):
+                            continue
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+                release = entry.name.removesuffix(".json")
+                target = paths.releases / release
+                if target.is_dir() and not target.is_symlink():
+                    result.append((release, receipts / entry.name, info.st_mtime_ns))
+        return result
+    finally:
+        os.close(parent)
+
+
+def _retained_successful_releases(paths, limit=3):
+    keep = {_release_target(paths, paths.current).name}
+    if paths.previous.is_symlink():
+        keep.add(_release_target(paths, paths.previous).name)
+    for release, _, _ in sorted(_successful_release_receipts(paths), key=lambda item: item[2], reverse=True):
+        if len(keep) >= limit:
+            break
+        keep.add(release)
+    return keep
+
+
 def _configuration_target(paths):
     link = paths.state / "current-compose.json"
     if not link.is_symlink():
@@ -572,15 +629,10 @@ def _cleanup_staging(paths, journal, runner, *, discard_displaced=True):
 
 
 def _retention(paths, journal):
-    keep = {_release_target(paths, paths.current).name}
-    if paths.previous.is_symlink():
-        keep.add(_release_target(paths, paths.previous).name)
+    keep = _retained_successful_releases(paths)
     # Only delete targets with root-owned success receipts. Never sweep unknown directories.
-    receipts = paths.state / "successful-releases"
-    receipts.mkdir(exist_ok=True)
-    for receipt in receipts.glob("*.json"):
-        name = receipt.stem
-        if name in keep or not re.fullmatch(r"[A-Za-z0-9._+-]+", name):
+    for name, receipt, _ in _successful_release_receipts(paths):
+        if name in keep:
             continue
         target = paths.releases / name
         if target.is_dir() and not target.is_symlink():
