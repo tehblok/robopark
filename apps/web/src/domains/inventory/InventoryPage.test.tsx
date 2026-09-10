@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -59,6 +59,22 @@ it('keeps the mobile catalog visible and opens inventory workflows on demand', a
 
   await userEvent.click(screen.getByRole('button', { name: 'Добавить запчасть' }))
   expect(screen.getByRole('textbox', { name: 'Название новой запчасти' })).toBeVisible()
+})
+
+it('keeps desktop part editors closed and exposes one primary action only for the selected part', async () => {
+  render(renderInventoryPage(park, inventoryClient({ inventory: vi.fn(async () => stockWithTwoComponents) })))
+
+  await screen.findByRole('heading', { name: 'Подвязка' })
+  const parts = Array.from(document.querySelectorAll<HTMLElement>('.inventory-part'))
+  expect(parts).toHaveLength(2)
+  expect(document.querySelectorAll('.inventory-parts .rp-button--primary')).toHaveLength(0)
+  expect(within(parts[0]).queryByRole('textbox', { name: 'Название' })).not.toBeInTheDocument()
+  expect(within(parts[1]).queryByRole('spinbutton', { name: 'Количество' })).not.toBeInTheDocument()
+
+  await userEvent.click(within(parts[0]).getByRole('button', { name: 'Открыть редактор' }))
+  expect(within(parts[0]).getByRole('textbox', { name: 'Название' })).toBeVisible()
+  expect(within(parts[1]).queryByRole('textbox', { name: 'Название' })).not.toBeInTheDocument()
+  expect(document.querySelectorAll('.inventory-parts .rp-button--primary')).toHaveLength(1)
 })
 
 it('filters the compact catalog by component without another inventory request', async () => {

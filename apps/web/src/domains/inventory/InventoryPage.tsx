@@ -12,6 +12,7 @@ import { InventoryLabels } from './InventoryLabels'
 import './inventory.css'
 
 type InventoryApi = Pick<typeof api, 'inventory' | 'createInventoryComponent' | 'createInventoryPart' | 'updateInventoryPart' | 'moveInventoryStock' | 'inventoryComponentPhotoUrl' | 'inventoryPartPhotoUrl'>
+type InventoryWorkflow = { partId: number; kind: 'edit' | 'movement' } | null
 
 function visibleComponents(data: InventoryOverview, componentId: 'all' | number): InventoryComponent[] {
   return componentId === 'all'
@@ -33,7 +34,7 @@ function StockEditor({ part, apiClient, reload }: { part: InventoryPart; apiClie
   return <form className="inventory-stock-editor" onSubmit={submit}><select aria-label="Операция" value={kind} onChange={event => setKind(event.target.value as 'receipt' | 'writeoff')}><option value="receipt">Приход</option><option value="writeoff">Списание</option></select><input aria-label="Количество" min={1} onChange={event => setQuantity(Number(event.target.value))} type="number" value={quantity} /><Button busy={busy} size="compact" type="submit">Провести</Button>{error ? <span className="form-error" role="alert">{error}</span> : null}</form>
 }
 
-function PartCard({ part, componentName, apiClient, reload, onPrint }: { part: InventoryPart; componentName: string; apiClient: InventoryApi; reload: () => void; onPrint: (part: InventoryPart) => void }) {
+function PartCard({ part, componentName, apiClient, reload, onPrint, workflow, onWorkflowChange }: { part: InventoryPart; componentName: string; apiClient: InventoryApi; reload: () => void; onPrint: (part: InventoryPart) => void; workflow: InventoryWorkflow; onWorkflowChange: (workflow: InventoryWorkflow) => void }) {
   const [name, setName] = useState(part.name)
   const [article, setArticle] = useState(part.article)
   const [location, setLocation] = useState(part.location)
@@ -46,8 +47,8 @@ function PartCard({ part, componentName, apiClient, reload, onPrint }: { part: I
       <p>Место: <strong>{part.location}</strong> · минимум {part.minimum_quantity}</p>
       <ResponsiveDisclosureGroup label={`Действия с запчастью ${part.name}`}>
         <ResponsiveDisclosure id="print" title="Печать"><div className="inventory-actions"><Button onClick={() => onPrint(part)} size="compact" variant="secondary">Распечатать этикетку</Button></div></ResponsiveDisclosure>
-        <ResponsiveDisclosure id="edit" title="Редактировать"><form className="form-grid inventory-edit" onSubmit={save}><label className="field"><span>Название</span><input required value={name} onChange={event => setName(event.target.value)} /></label><label className="field"><span>Артикул</span><input required value={article} onChange={event => setArticle(event.target.value)} /></label><label className="field"><span>Место</span><input required value={location} onChange={event => setLocation(event.target.value)} /></label><label className="field"><span>Минимум</span><input min={0} type="number" value={minimum} onChange={event => setMinimum(Number(event.target.value))} /></label><Button type="submit">Сохранить</Button></form></ResponsiveDisclosure>
-        <ResponsiveDisclosure id="movement" title="Движение остатков"><StockEditor apiClient={apiClient} part={part} reload={reload} /></ResponsiveDisclosure>
+        <ResponsiveDisclosure id="edit" title="Редактировать">{workflow?.partId === part.id && workflow.kind === 'edit' ? <form className="form-grid inventory-edit" onSubmit={save}><label className="field"><span>Название</span><input required value={name} onChange={event => setName(event.target.value)} /></label><label className="field"><span>Артикул</span><input required value={article} onChange={event => setArticle(event.target.value)} /></label><label className="field"><span>Место</span><input required value={location} onChange={event => setLocation(event.target.value)} /></label><label className="field"><span>Минимум</span><input min={0} type="number" value={minimum} onChange={event => setMinimum(Number(event.target.value))} /></label><Button type="submit">Сохранить</Button></form> : <Button onClick={() => onWorkflowChange({ partId: part.id, kind: 'edit' })} size="compact" variant="ghost">Открыть редактор</Button>}</ResponsiveDisclosure>
+        <ResponsiveDisclosure id="movement" title="Движение остатков">{workflow?.partId === part.id && workflow.kind === 'movement' ? <StockEditor apiClient={apiClient} part={part} reload={reload} /> : <Button onClick={() => onWorkflowChange({ partId: part.id, kind: 'movement' })} size="compact" variant="ghost">Изменить остаток</Button>}</ResponsiveDisclosure>
       </ResponsiveDisclosureGroup>
     </div>
     <span className="inventory-component-name">{componentName}</span>
@@ -73,6 +74,7 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
   const [printParts, setPrintParts] = useState<InventoryPart[]>([])
   const [printNotice, setPrintNotice] = useState('')
   const [componentId, setComponentId] = useState<'all' | number>('all')
+  const [workflow, setWorkflow] = useState<InventoryWorkflow>(null)
   const requestGeneration = useRef(0)
   const load = useCallback(() => {
     if (!parkId) return
@@ -91,6 +93,7 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
     setPrintParts([])
     setPrintNotice('')
     setComponentId('all')
+    setWorkflow(null)
     load()
   }, [load])
   const print = (parts: InventoryPart[]) => {
@@ -113,7 +116,7 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
       <label className="field inventory-component-filter"><span>Компонента</span><select value={componentId} onChange={event => setComponentId(event.target.value === 'all' ? 'all' : Number(event.target.value))}><option value="all">Все компоненты</option>{data.components.map(component => <option key={component.id} value={component.id}>{component.name}</option>)}</select></label>
       <ResponsiveDisclosureGroup label="Печать склада"><ResponsiveDisclosure id="labels" title="Параметры печати"><Button onClick={() => print(visibleComponents(data, componentId).flatMap(component => component.parts))} variant="secondary">Печать этикеток</Button></ResponsiveDisclosure></ResponsiveDisclosureGroup>
       {printNotice ? <p role="alert">{printNotice}</p> : null}
-      <div className="inventory-components">{visibleComponents(data, componentId).map(component => <Panel density="dense" key={component.id} collapsible storageKey={`inventory-component-${component.id}`} title={component.name}>{component.has_photo ? <img alt={`Компонента ${component.name}`} className="inventory-component-photo" height={72} src={apiClient.inventoryComponentPhotoUrl(component.id)} width={72} /> : null}<div className="inventory-parts">{component.parts.map(part => <PartCard apiClient={apiClient} componentName={component.name} key={part.id} onPrint={part => print([part])} part={part} reload={load} />)}{!component.parts.length ? <p>Запчастей в этой компоненте пока нет.</p> : null}</div></Panel>)}{!data.components.length ? <EmptyState description="Добавьте первую компоненту и запчасть." icon="work" title="Склад пуст" /> : null}</div>
+      <div className="inventory-components">{visibleComponents(data, componentId).map(component => <Panel density="dense" key={component.id} collapsible storageKey={`inventory-component-${component.id}`} title={component.name}>{component.has_photo ? <img alt={`Компонента ${component.name}`} className="inventory-component-photo" height={72} src={apiClient.inventoryComponentPhotoUrl(component.id)} width={72} /> : null}<div className="inventory-parts">{component.parts.map(part => <PartCard apiClient={apiClient} componentName={component.name} key={part.id} onPrint={part => print([part])} onWorkflowChange={setWorkflow} part={part} reload={load} workflow={workflow} />)}{!component.parts.length ? <p>Запчастей в этой компоненте пока нет.</p> : null}</div></Panel>)}{!data.components.length ? <EmptyState description="Добавьте первую компоненту и запчасть." icon="work" title="Склад пуст" /> : null}</div>
     </>}
     <InventoryLabels parts={printParts} />
   </PageLayout>

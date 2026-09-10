@@ -24,6 +24,10 @@ function renderPage(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'crea
   return render(<MemoryRouter initialEntries={['/campaigns/4']}><AuthContext.Provider value={{ user, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={apiClient} />} path="/campaigns/:campaignId" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>)
 }
 
+function renderList(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>) {
+  return render(<MemoryRouter initialEntries={['/campaigns']}><AuthContext.Provider value={{ user, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={apiClient} />} path="/campaigns" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>)
+}
+
 function useViewport(matches: boolean) {
   vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
     matches,
@@ -52,6 +56,20 @@ it('keeps mobile campaign search and ticket summary visible while deferring metr
 
   await userEvent.click(screen.getByRole('button', { name: 'Метрики' }))
   expect(screen.getByRole('img', { name: 'СК Альфа: 50%' })).toBeVisible()
+})
+
+it('labels active, completed and overdue campaigns with accessible text', async () => {
+  const campaigns = [
+    { ...detail, id: 1, name: 'Активная', is_active: true, overdue: false },
+    { ...detail, id: 2, name: 'Завершённая', is_active: false, overdue: false },
+    { ...detail, id: 3, name: 'Просроченная', is_active: true, overdue: true },
+  ]
+  renderList({ ...api, campaigns: vi.fn(async () => campaigns) })
+
+  expect(await screen.findByText('Активна')).toBeVisible()
+  expect(screen.getByText('Завершена')).toBeVisible()
+  expect(screen.getByText('Просрочена')).toBeVisible()
+  expect(screen.getAllByText('Сервисная компания')).toHaveLength(3)
 })
 
 it('shows progress, open and closed campaign tickets and filters by robot', async () => {

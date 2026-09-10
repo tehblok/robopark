@@ -1,5 +1,6 @@
 .campaign-list,.campaign-tickets,.campaign-overview-list { display:grid; gap:var(--rp-space-4); }
 .campaign-card__heading,.campaign-overview-item,.campaign-ticket__head,.campaign-actions { display:flex; align-items:flex-start; justify-content:space-between; gap:var(--rp-space-4); }
+.campaign-card__badges { display:flex; flex-wrap:wrap; gap:var(--rp-space-2); }
 .campaign-card h2,.campaign-overview-item h3,.campaign-ticket h3 { margin:.45rem 0 .2rem; }
 .campaign-card p,.campaign-overview-item p,.campaign-ticket p { margin:.25rem 0; color:var(--rp-text-muted); }
 .campaign-metrics { display:grid; grid-template-columns:auto 1fr; align-items:center; gap:var(--rp-space-5); }

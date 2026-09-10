@@ -57,3 +57,38 @@ Result: exit 0; no whitespace errors.
 - Vite retains its existing warning that some chunks exceed 500 kB after minification; the build succeeds.
 - One final Playwright attempt could not bind the local server inside the sandbox (`EPERM 127.0.0.1:4173`); the required escalated retry passed 26/26.
 - No package/version/release files, responsive PNG snapshots or unrelated E2E files are included.
+
+## Fix round 1/5
+
+STATUS: COMPLETE
+
+### Review findings
+
+- Restored a selected-part workflow gate inside inventory disclosures. Desktop cards mount neither edit nor stock forms until a specific part workflow is selected; selecting edit mounts exactly one primary action.
+- Campaign list cards retain the campaign-type badge and add visible status badges: `Активна`, `Завершена`, `Просрочена`.
+
+### RED
+
+`cd apps/web && npm test -- --run src/domains/inventory/InventoryPage.test.tsx src/domains/campaigns/CampaignsPage.test.tsx`
+
+Result: exit 1; 2 failed / 13 passed. Inventory had 4 primary actions before selection; campaign cards had no text status labels.
+
+### GREEN and verification
+
+`cd apps/web && npm test -- --run src/domains/inventory/InventoryPage.test.tsx src/domains/campaigns/CampaignsPage.test.tsx`
+
+Result: exit 0; 2 files passed, 15 tests passed.
+
+`cd apps/web && npm test -- --run src/domains/inventory src/pages/Reports.test.tsx src/components/reports src/domains/campaigns`
+
+Result: exit 0; 5 files passed, 51 tests passed.
+
+`cd apps/web && npm run build`
+
+Result: exit 0; 2181 modules transformed and production bundle built. Existing chunk-size warning remains.
+
+`cd apps/web && npm run lint -- src/domains/inventory/InventoryPage.tsx src/domains/inventory/InventoryPage.test.tsx src/domains/campaigns/CampaignsPage.tsx src/domains/campaigns/CampaignsPage.test.tsx`
+
+Result: exit 0; oxlint reported no findings.
+
+Report Playwright was not rerun because this round did not change report behavior.

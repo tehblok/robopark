@@ -23,6 +23,7 @@ import './campaigns.css'
 type CampaignApi = Pick<typeof api, 'campaigns' | 'campaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>
 
 const kindLabel = (kind: Campaign['kind']) => kind === 'service_company' ? 'Сервисная компания' : 'Оклейка'
+const campaignStatusLabel = (campaign: Campaign) => !campaign.is_active ? 'Завершена' : campaign.overdue ? 'Просрочена' : 'Активна'
 const dateLabel = (value: string) => new Intl.DateTimeFormat('ru-RU').format(new Date(`${value}T00:00:00`))
 
 function Progress({ value, label }: { value: number; label: string }) {
@@ -109,7 +110,7 @@ function CampaignList({ apiClient }: { apiClient: CampaignApi }) {
       : !items ? <LoadingState label="Загружаем кампании" variant="page" />
         : !items.length ? <EmptyState description="Администратор ещё не добавил кампании для доступных парков." icon="work" title="Кампаний нет" />
           : <div className="campaign-list">{items.map(item => <Panel className="campaign-card" density="dense" key={item.id}>
-            <div className="campaign-card__heading"><div><StatusBadge tone={!item.is_active ? 'neutral' : item.overdue ? 'critical' : 'info'}>{kindLabel(item.kind)}</StatusBadge><h2><Link to={`/campaigns/${item.id}`}>{item.name}</Link></h2><p>{item.park_names.join(', ')} · {dateLabel(item.starts_on)} — {dateLabel(item.due_on)}</p></div><Progress label={item.name} value={item.percent_complete} /></div>
+            <div className="campaign-card__heading"><div><div className="campaign-card__badges"><StatusBadge tone="neutral">{kindLabel(item.kind)}</StatusBadge><StatusBadge tone={!item.is_active ? 'neutral' : item.overdue ? 'critical' : 'info'}>{campaignStatusLabel(item)}</StatusBadge></div><h2><Link to={`/campaigns/${item.id}`}>{item.name}</Link></h2><p>{item.park_names.join(', ')} · {dateLabel(item.starts_on)} — {dateLabel(item.due_on)}</p></div><Progress label={item.name} value={item.percent_complete} /></div>
             <ResponsiveDisclosureGroup label={`Метрики ${item.name}`}><ResponsiveDisclosure id="metrics" summary={`${item.percent_complete}% выполнено`} title="Метрики"><CampaignMetrics campaign={item} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>
           </Panel>)}</div>}
   </PageLayout>
