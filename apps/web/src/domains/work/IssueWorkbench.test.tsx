@@ -210,6 +210,28 @@ afterEach(() => {
 })
 
 describe('IssueWorkbench', () => {
+  it('shows the write-off control in the main tab only to the mechanic assigned to the task', async () => {
+    const mechanic: User = { ...user, role: 'mechanic', username: 'mech', tracker_login: 'Mech.Login' }
+    const owned = { ...issue, assignee: { display: 'Mechanic', login: 'mech.login' } }
+    renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => owned) }), currentUser: mechanic })
+
+    expect(await screen.findByText('Использовать запчасть')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Задача' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('tab', { name: 'Запчасти' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    { label: 'unassigned task', currentUser: { ...user, role: 'mechanic' as const, username: 'mech', tracker_login: 'mech.login' }, currentIssue: { ...issue, assignee: null } },
+    { label: 'foreign-assigned task', currentUser: { ...user, role: 'mechanic' as const, username: 'mech', tracker_login: 'mech.login' }, currentIssue: { ...issue, assignee: { display: 'Other', login: 'other' } } },
+    { label: 'operator', currentUser: user, currentIssue: { ...issue, assignee: { display: 'Mechanic', login: 'mech.login' } } },
+  ])('does not show the write-off control for $label', async ({ currentUser, currentIssue }) => {
+    renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => currentIssue) }), currentUser })
+
+    await screen.findByRole('heading', { name: currentIssue.summary })
+    expect(screen.queryByText('Использовать запчасть')).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'Запчасти' })).not.toBeInTheDocument()
+  })
+
   it('offers a collapse control for the selected issue detail', async () => {
     renderWorkbench()
 

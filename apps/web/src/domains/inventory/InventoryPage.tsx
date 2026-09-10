@@ -12,7 +12,7 @@ import './inventory.css'
 
 type InventoryApi = Pick<typeof api, 'inventory' | 'createInventoryComponent' | 'createInventoryPart' | 'updateInventoryPart' | 'moveInventoryStock' | 'inventoryComponentPhotoUrl' | 'inventoryPartPhotoUrl'>
 
-export function visibleComponents(data: InventoryOverview, componentId: 'all' | number): InventoryComponent[] {
+function visibleComponents(data: InventoryOverview, componentId: 'all' | number): InventoryComponent[] {
   return componentId === 'all'
     ? data.components
     : data.components.filter(component => component.id === componentId)

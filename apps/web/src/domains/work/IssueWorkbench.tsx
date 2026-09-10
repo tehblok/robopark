@@ -105,6 +105,13 @@ function failureFor(error: unknown, fallback: string): DomainError | null {
   return error ? classifyApiError(error, fallback) : null
 }
 
+function mechanicOwnsIssue(user: User, issue: TrackerIssueDetail): boolean {
+  const expected = (user.tracker_login || user.username).trim().toLocaleLowerCase()
+  return user.role === 'mechanic'
+    && Boolean(expected)
+    && issue.assignee?.login?.trim().toLocaleLowerCase() === expected
+}
+
 const RELATED_PAGE_SIZE = 10
 
 function normalizedRobotNumber(raw?: string | null): string | null {
@@ -455,8 +462,8 @@ function IssueWorkbenchOwner({
   }, [accessPrefix, commentsKey, detailFailure?.kind, detailKey, issueKey])
 
   const search = buildWorkSearch({ ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, selectedPark.id)
-  const activeTab = state.detailTab ?? 'task'
-  const changeTab = (detailTab: 'task' | 'open' | 'closed' | 'check' | 'parts') => onStateChange({ ...state, detailTab }, { replace: false })
+  const activeTab = state.detailTab === 'parts' ? 'task' : state.detailTab ?? 'task'
+  const changeTab = (detailTab: 'task' | 'open' | 'closed' | 'check') => onStateChange({ ...state, detailTab }, { replace: false })
   const rootIssue = state.rootIssue ?? issueKey
   const rootHref = rootIssue ? workIssueHref(rootIssue, { ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, selectedPark.id) : ''
   const listDataAvailable = list.data !== undefined
@@ -624,8 +631,8 @@ function IssueWorkbenchOwner({
                         <Link to={rootHref}>К главному блокеру {rootIssue}</Link>
                       </nav>
                       <Tabs ariaLabel="Разделы задачи" value={activeTab}
-                        items={[{ id: 'task', label: 'Задача' }, ...(user.role === 'mechanic' ? [{ id: 'parts', label: 'Запчасти' }] : []), { id: 'open', label: 'Открытые задачи' }, { id: 'closed', label: 'Закрытые задачи' }, { id: 'check', label: 'Проверка робота' }]}
-                        onChange={tab => changeTab(tab as 'task' | 'open' | 'closed' | 'check' | 'parts')}
+                        items={[{ id: 'task', label: 'Задача' }, { id: 'open', label: 'Открытые задачи' }, { id: 'closed', label: 'Закрытые задачи' }, { id: 'check', label: 'Проверка робота' }]}
+                        onChange={tab => changeTab(tab as 'task' | 'open' | 'closed' | 'check')}
                         panelIdFor={tab => `work-panel-${tab}`} />
                     </> : null}
                     <TabPanel id="work-panel-task" labelledBy="tab-task" active={activeTab === 'task'} key={issueKey}>
@@ -640,6 +647,9 @@ function IssueWorkbenchOwner({
                       loading={detail.isLoading && !detail.data} showRobotCheck={false}
                       onOpenRobotCheck={() => changeTab('check')}
                     />
+                    {detail.data && mechanicOwnsIssue(user, detail.data) ? <Panel collapsible defaultCollapsed storageKey={`work-task-parts-${detail.data.key}`} title="Использовать запчасть">
+                      <TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={selectedPark.id} />
+                    </Panel> : null}
                     {canRenderDetailActions && detail.data ? (
                       <IssueActionsPanel
                         capabilities={detail.data.capabilities}
@@ -666,9 +676,6 @@ function IssueWorkbenchOwner({
                         transitions={transitions.data ?? []}
                       />
                     ) : null}
-                    </TabPanel>
-                    <TabPanel id="work-panel-parts" labelledBy="tab-parts" active={activeTab === 'parts'}>
-                      {activeTab === 'parts' && detail.data && user.role === 'mechanic' ? <TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={selectedPark.id} /> : null}
                     </TabPanel>
                     {(['open', 'closed'] as const).map(kind => <TabPanel key={kind} id={`work-panel-${kind}`} labelledBy={`tab-${kind}`} active={activeTab === kind}>
                       {activeTab === kind && detail.data ? robotNumber && relatedPrefix && relatedQueue ? <RelatedTasksPanel
