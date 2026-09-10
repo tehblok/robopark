@@ -30,6 +30,25 @@ it('filters the compact catalog by component without another inventory request',
   expect(client.inventory).toHaveBeenCalledTimes(1)
 })
 
+it('prints one label for every visible part and excludes filtered components', async () => {
+  const print = vi.spyOn(window, 'print').mockImplementation(() => undefined)
+  render(<MemoryRouter><ParkScopeContext.Provider value={{ parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><InventoryPage apiClient={inventoryClient({ inventory: vi.fn(async () => stockWithTwoComponents) })} /></ParkScopeContext.Provider></MemoryRouter>)
+
+  await screen.findByRole('heading', { name: 'Подвязка' })
+  await userEvent.click(screen.getByRole('button', { name: 'Печать этикеток' }))
+
+  expect(document.querySelectorAll('.inventory-print-label')).toHaveLength(2)
+  expect(document.querySelector('.inventory-print-sheet')).toHaveTextContent('TY-001')
+  await waitFor(() => expect(print).toHaveBeenCalledTimes(1))
+
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Компонента' }), '9')
+  await userEvent.click(screen.getByRole('button', { name: 'Печать этикеток' }))
+
+  expect(document.querySelectorAll('.inventory-print-label')).toHaveLength(1)
+  expect(document.querySelector('.inventory-print-sheet')).toHaveTextContent('WH-001')
+  await waitFor(() => expect(print).toHaveBeenCalledTimes(2))
+})
+
 it('shows stock location and prepares a printable shelf label', async () => {
   const print = vi.spyOn(window, 'print').mockImplementation(() => undefined)
   render(<MemoryRouter><ParkScopeContext.Provider value={{ parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><InventoryPage apiClient={inventoryClient()} /></ParkScopeContext.Provider></MemoryRouter>)
@@ -37,6 +56,7 @@ it('shows stock location and prepares a printable shelf label', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Распечатать этикетку' }))
   await waitFor(() => expect(print).toHaveBeenCalled())
   const label = document.querySelector('.inventory-print-label')!
+  expect(document.querySelectorAll('.inventory-print-label')).toHaveLength(1)
   expect(label).toHaveTextContent('Тяга')
   expect(label).toHaveTextContent('TY-001')
   expect(label).toHaveTextContent('Стеллаж A / полка 2')
