@@ -37,6 +37,32 @@ it('shows decision data before the active dynamic section and automatically refr
   vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange'))
   await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2))
 })
+it('summarizes charge and the leading diagnostic and opens it on the scheme', async () => {
+  const onTabChange = vi.fn()
+  const apiClient = client({ emergencySnapshot: vi.fn(async () => snapshot({
+    lat: 55.75,
+    lon: 37.62,
+    diagnostic_events: [battery, lidar],
+  })) })
+  const view = render(tree(apiClient, 'state', { onTabChange }))
+
+  await screen.findByRole('heading', { name: 'Робот 447' })
+  const summary = screen.getByRole('region', { name: 'Состояние робота' })
+  expect(summary).toHaveTextContent('Робот на связи')
+  expect(summary).toHaveTextContent('Заряд 80 %')
+  expect(summary).toHaveTextContent('Данные актуальны')
+  expect(summary).toHaveTextContent(lidar.description)
+  const supplementary = within(summary).getByText('VIN и координаты').closest('details')
+  expect(supplementary).not.toHaveAttribute('open')
+  expect(supplementary).toHaveTextContent(VIN)
+  expect(supplementary).toHaveTextContent('55.75, 37.62')
+
+  fireEvent.click(within(summary).getByRole('button', { name: 'Показать неисправность' }))
+  expect(onTabChange).toHaveBeenCalledWith('scheme')
+  view.rerender(tree(apiClient, 'scheme', { onTabChange }))
+  expect(screen.getByRole('button', { name: 'Спереди', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(lidar.description)
+})
 it('does not automatically load cold offline but permits a manual check', async () => {
   vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
   const apiClient = client(); render(tree(apiClient, 'map')); await act(async () => undefined)

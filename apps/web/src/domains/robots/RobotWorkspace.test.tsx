@@ -35,6 +35,10 @@ function tree(apiClient: ReturnType<typeof client>, entry = `/robots/${VIN}?park
         <Route path="/robots/:vin/check" element={<RobotCheckPage resolverClient={apiClient} checkClient={apiClient} />} /></Routes><Probe />
     </ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>
 }
+function selectSecondaryTab(name: string) {
+  fireEvent.click(screen.getByRole('button', { name: 'Ещё' }))
+  fireEvent.click(screen.getByRole('menuitem', { name }))
+}
 beforeEach(() => { resourceStore.clearAll(); vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true)
   vi.spyOn(api, 'operatorRobotTickets').mockResolvedValue({ query: VIN, items: [] }) })
 afterEach(() => { vi.restoreAllMocks(); resourceStore.clearAll() })
@@ -44,11 +48,14 @@ it('exposes one identity, related tasks and diagnostics and keeps tabs in the ro
   await screen.findByRole('heading', { name: 'Робот 447' })
   expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
   expect(screen.getAllByRole('heading', { name: 'Робот 447' })).toHaveLength(1)
-  for (const name of ['Состояние', 'Ошибки', 'Телеметрия', 'Карта', 'Задачи', 'История']) expect(screen.getByRole('tab', { name })).toBeVisible()
-  fireEvent.click(screen.getByRole('tab', { name: 'Задачи' }))
+  expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual(['Состояние', 'Ошибки', 'Схема', 'Карта'])
+  expect(screen.getByRole('button', { name: 'Ещё' })).toBeVisible()
+  selectSecondaryTab('Задачи')
+  expect(screen.getByRole('tab', { name: 'Задачи' })).toHaveAttribute('aria-selected', 'true')
   expect(screen.getByRole('tabpanel')).toHaveAccessibleName('Задачи')
   expect(await screen.findByRole('heading', { name: 'Связанные задачи' })).toBeVisible()
-  fireEvent.click(screen.getByRole('tab', { name: 'Телеметрия' }))
+  selectSecondaryTab('Телеметрия')
+  expect(screen.getByRole('tab', { name: 'Телеметрия' })).toHaveAttribute('aria-selected', 'true')
   expect(screen.getByRole('tabpanel')).toHaveAccessibleName('Телеметрия')
   expect(within(screen.getByRole('tabpanel')).getByText('Заряд').parentElement).toHaveTextContent('80 %')
   expect(screen.getByLabelText('Адрес')).toHaveTextContent(`/robots/${VIN}?park=8&tab=telemetry`)
@@ -66,9 +73,10 @@ it.each(['pending', 'failed'] as const)('loads direct related tasks while the Em
   expect(await screen.findByText('Связанных задач нет в доступной области.')).toBeVisible()
   expect(screen.getByRole('tabpanel')).toHaveAccessibleName('Задачи')
   expect(apiClient.operatorRobotTickets).toHaveBeenCalledWith(VIN)
-  fireEvent.click(screen.getByRole('tab', { name: 'Телеметрия' }))
+  selectSecondaryTab('Телеметрия')
   expect(screen.getByRole('tabpanel')).toHaveAccessibleName('Телеметрия')
-  fireEvent.click(screen.getByRole('tab', { name: 'Задачи' }))
+  selectSecondaryTab('Задачи')
+  expect(screen.getByRole('tab', { name: 'Задачи' })).toHaveAttribute('aria-selected', 'true')
   expect(await screen.findByText('Связанных задач нет в доступной области.')).toBeVisible()
 })
 
@@ -77,7 +85,8 @@ it('can enter related tasks after a cold snapshot error on another tab', async (
   apiClient.emergencySnapshot.mockRejectedValue(new ApiError(502, 'upstream_failed'))
   render(tree(apiClient, `/robots/${VIN}?park=8&tab=telemetry`))
   await screen.findByRole('alert')
-  fireEvent.click(screen.getByRole('tab', { name: 'Задачи' }))
+  selectSecondaryTab('Задачи')
+  expect(screen.getByRole('tab', { name: 'Задачи' })).toHaveAttribute('aria-selected', 'true')
   expect(await screen.findByText('Связанных задач нет в доступной области.')).toBeVisible()
 })
 

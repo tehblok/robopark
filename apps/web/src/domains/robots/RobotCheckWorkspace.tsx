@@ -9,7 +9,7 @@ import { MasterDetail } from '../../design-system/layout/MasterDetail'
 import type { DomainError } from '../../shared/api/classifyApiError'
 import { useOnlineStatus } from '../../shared/browser/useOnlineStatus'
 import { RobotCheckSummary } from './RobotCheckSummary'
-import { RobotCheckTabs } from './RobotCheckTabs'
+import { RobotCheckNavigation } from './RobotCheckNavigation'
 import { RobotDiagnosticDiagram } from './RobotDiagnosticDiagram'
 import { DiagnosticEventDetails } from './DiagnosticEventDetails'
 import { chooseAutomaticView, isLocalizedEvent, leadingDiagnosticEvent } from './diagnosticPresentation'
@@ -117,7 +117,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
   const section = details[tab.id]
   const sectionError = errors[tab.id]
   const identity = <div className="rp-check-first-level">
-      {snapshot ? renderSummary ? renderSummary(snapshot, snapshotError, refresh) : <RobotCheckSummary snapshot={snapshot} online={online} failed={Boolean(snapshotError)} pending={pending} onRefresh={refresh} />
+      {snapshot ? renderSummary ? renderSummary(snapshot, snapshotError, refresh) : <RobotCheckSummary snapshot={snapshot} online={online} failed={Boolean(snapshotError)} pending={pending} onRefresh={refresh} onShowDiagnostic={() => { showLeadingError(); onTabChange('scheme') }} />
         : <section className="rp-check-summary" aria-busy={pending}>
           {!online ? <p role="status">Нет сети на этом устройстве</p> : null}
           {!snapshotError && online ? <LoadingState label="Загружаем данные робота" /> : null}
@@ -127,7 +127,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
         {snapshotError.kind === 'not-found' ? <Link to="/robots">К поиску роботов</Link> : null}</div> : null}
     </div>
   const detail = <div className="rp-check-detail">
-      <RobotCheckTabs tabs={tabs} activeId={tab.id} onChange={onTabChange} />
+      <RobotCheckNavigation tabs={tabs} activeId={tab.id} onChange={onTabChange} />
       <section className="rp-check-panel" role="tabpanel" tabIndex={0} id={`robot-check-panel-${tab.id}`} aria-labelledby={`robot-check-tab-${tab.id}`}>
         {tab.kind === 'state' ? <dl className="rp-check-telemetry"><div><dt>Режим</dt><dd>{formatRobotMode(snapshot?.mode)}</dd></div><div><dt>Связь робота</dt><dd>{snapshot?.online == null ? 'Нет данных' : snapshot.online ? 'На связи' : 'Не в сети'}</dd></div><div><dt>Заряд</dt><dd>{snapshot?.charge_percent == null ? 'Нет данных' : `${snapshot.charge_percent} %`}</dd></div></dl> : null}
         {tab.kind === 'errors' ? <>

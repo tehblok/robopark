@@ -1,8 +1,15 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 import { FIXED_TIME, installOperational, settlePage, snapshot, userForRole } from './fixtures'
 
 // Exercise nonzero fleet jitter deterministically (first 15s, periodic 11s, resume 15s).
 test.beforeEach(async ({ page }) => { await page.addInitScript(() => { Math.random = () => 0.5 }) })
+
+async function selectSecondaryTab(page: Page, name: string) {
+  const navigation = page.locator('.rp-check-navigation')
+  await navigation.getByRole('button', { name: 'Ещё', exact: true }).click()
+  await navigation.getByRole('menuitem', { name, exact: true }).click()
+  await expect(page.getByRole('tab', { name, exact: true })).toHaveAttribute('aria-selected', 'true')
+}
 
 test('robot search stays first and makes no registry requests across reload and park changes', async ({ page }) => {
   const registryRequests: string[] = []
@@ -43,13 +50,13 @@ test('manual search survives reload and fetches Emergency only after opening a r
   expect(emergency).toEqual([])
   await page.getByRole('button', { name: 'Найти робота', exact: true }).click()
   await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7`)
-  await page.getByRole('tab', { name: 'Задачи', exact: true }).click()
+  await selectSecondaryTab(page, 'Задачи')
   await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7&tab=tasks`)
   await expect(page.getByRole('tab', { name: 'Задачи', exact: true })).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
   expect(emergency.length).toBeGreaterThan(0)
   await expect(page.locator('.rp-shell__desktop-nav').getByRole('link', { name: 'Роботы', exact: true })).toHaveAttribute('aria-current', 'page')
-  await page.getByRole('tab', { name: 'История', exact: true }).click()
+  await selectSecondaryTab(page, 'История')
   await expect(page.getByRole('tabpanel')).toContainText('История событий пока недоступна')
 })
 
@@ -63,9 +70,9 @@ for (const state of ['pending', 'failed'] as const) test(`direct robot tasks sta
   try {
     await page.goto(`/robots/${snapshot.vin}?park=7&tab=tasks`)
     await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
-    await page.getByRole('tab', { name: 'Телеметрия', exact: true }).click()
+    await selectSecondaryTab(page, 'Телеметрия')
     await expect(page.getByRole('tabpanel')).toHaveAccessibleName('Телеметрия')
-    await page.getByRole('tab', { name: 'Задачи', exact: true }).click()
+    await selectSecondaryTab(page, 'Задачи')
     await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
   } finally { release() }
 })
@@ -88,6 +95,11 @@ test('a restored workspace tab is horizontally visible on a phone', async ({ pag
   await page.goto(`/robots/${snapshot.vin}?park=7&tab=scheme`)
   const tab = page.getByRole('tab', { name: 'Схема', exact: true })
   await expect(tab).toHaveAttribute('aria-selected', 'true')
+  await expect(page.locator('.rp-check-navigation').getByRole('tab')).toHaveText(['Состояние', 'Ошибки', 'Схема'])
+  await expect(page.locator('.rp-check-navigation').getByRole('button', { name: 'Ещё', exact: true })).toBeVisible()
+  const summary = await page.getByRole('region', { name: 'Список' }).boundingBox()
+  const detail = await page.getByRole('region', { name: 'Детали' }).boundingBox()
+  expect(summary!.y + summary!.height).toBeLessThanOrEqual(detail!.y + 1)
   const bounds = await page.getByRole('tablist').boundingBox()
   const selected = await tab.boundingBox()
   // Fractional tab widths meet integer clientWidth and browser scroll rounding.
@@ -112,7 +124,7 @@ for (const reference of ['447', 'YASADR00000000447', 'https://robopark.example.i
     await expect(page.getByRole('heading', { name: 'Робот 447', exact: true })).toBeVisible()
     await expect(page.getByText(snapshot.vin, { exact: true })).toBeVisible()
     expect(resolved[0]).toBe(reference.startsWith('https:') ? '447' : reference)
-    await page.getByRole('tab', { name: 'Задачи', exact: true }).click()
+    await selectSecondaryTab(page, 'Задачи')
     await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
     await settlePage(page)
     expect(trackerRequests.length).toBeGreaterThan(0)
@@ -202,8 +214,11 @@ for (const route of [`/robots/${snapshot.vin}/check?tab=wheels&park=7`, '/emerge
     await expect(page.getByRole('tab', { name: 'Схема', exact: true })).toBeFocused()
     await expect(page.getByRole('tab', { name: 'Схема', exact: true })).toHaveAttribute('aria-selected', 'true')
     await page.keyboard.press('ArrowRight')
-    await expect(wheels).toBeFocused()
-    await page.keyboard.press('ArrowRight')
+    await expect(page.getByRole('tab', { name: 'Состояние', exact: true })).toBeFocused()
+    await expect(page.getByRole('tab', { name: 'Состояние', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(wheels).toHaveCount(0)
+    await selectSecondaryTab(page, 'Карта')
+    await page.getByRole('tab', { name: 'Карта', exact: true }).focus()
     await expect(page.getByRole('tab', { name: 'Карта', exact: true })).toBeFocused()
     await expect(page.getByRole('button', { name: 'Слежение включено', exact: true })).toBeVisible()
     await expect(page.locator('.leaflet-container')).toBeVisible()
@@ -235,7 +250,7 @@ test('driver canonical check loads sections, automatically refreshes, and reques
   await page.getByRole('tab', { name: 'Схема', exact: true }).click()
   await expect(page.getByRole('tab', { name: 'Схема', exact: true })).toHaveAttribute('aria-selected', 'true')
   await expect(page.locator('.rp-check-wheel-details')).toContainText('Неисправность: Переднее левое колесо')
-  await page.getByRole('tab', { name: 'Задачи', exact: true }).click()
+  await selectSecondaryTab(page, 'Задачи')
   await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
   await settlePage(page)
   expect(trackerRequests.length).toBeGreaterThan(0)
@@ -333,8 +348,7 @@ test('all six original views load only on selection with correct visible wheel m
     expect(images).toEqual(Array.from(new Set(['isometric.png', ...views.slice(0, index + 1).map(item => item.file)])))
     await expect(page.locator('.rp-check-wheel')).toHaveCount(0)
   }
-  await page.getByRole('tab', { name: 'Колёса', exact: true }).click()
-  await expect(page.getByRole('tab', { name: 'Колёса', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await selectSecondaryTab(page, 'Колёса')
 })
 
 test('photo failure uses neutral fallback and unknown faults never invent body or sensor markers', async ({ page }) => {

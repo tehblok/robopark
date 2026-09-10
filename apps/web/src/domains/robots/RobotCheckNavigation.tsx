@@ -1,0 +1,48 @@
+import { useId, useLayoutEffect, useRef, useState } from 'react'
+import { RobotCheckTabs } from './RobotCheckTabs'
+import type { RobotCheckTab } from './robotCheckUrl'
+
+// oxlint-disable-next-line react/only-export-components -- public navigation contract belongs with its consumer.
+export const PRIMARY_CHECK_TAB_IDS = ['state', 'errors', 'scheme'] as const
+type PrimaryCheckTabId = typeof PRIMARY_CHECK_TAB_IDS[number]
+
+function isPrimary(id: string): id is PrimaryCheckTabId {
+  return PRIMARY_CHECK_TAB_IDS.includes(id as PrimaryCheckTabId)
+}
+
+export function RobotCheckNavigation({ tabs, activeId, onChange }: {
+  tabs: RobotCheckTab[]
+  activeId: string
+  onChange: (id: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const menuId = useId()
+  const trigger = useRef<HTMLButtonElement | null>(null)
+  const firstItem = useRef<HTMLButtonElement | null>(null)
+  const primary = tabs.filter(tab => isPrimary(tab.id))
+  const secondary = tabs.filter(tab => !isPrimary(tab.id))
+  const activeSecondary = secondary.find(tab => tab.id === activeId)
+  const visible = activeSecondary ? [...primary, activeSecondary] : primary
+
+  useLayoutEffect(() => {
+    if (open) firstItem.current?.focus()
+  }, [open])
+
+  return <div className="rp-check-navigation">
+    <RobotCheckTabs tabs={visible} activeId={activeId} onChange={onChange} />
+    {secondary.length ? <div className="rp-check-more" onBlur={event => {
+      if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false)
+    }}>
+      <button type="button" ref={trigger} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
+        onClick={() => setOpen(value => !value)} onKeyDown={event => {
+          if (event.key === 'ArrowDown') { event.preventDefault(); setOpen(true) }
+        }}>Ещё</button>
+      {open ? <div className="rp-check-more-menu" id={menuId} role="menu" aria-label="Другие разделы" onKeyDown={event => {
+        if (event.key === 'Escape') { event.preventDefault(); setOpen(false); trigger.current?.focus() }
+      }}>
+        {secondary.map((tab, index) => <button key={tab.id} type="button" role="menuitem" ref={index === 0 ? firstItem : undefined}
+          onClick={() => { setOpen(false); onChange(tab.id) }}>{tab.title}</button>)}
+      </div> : null}
+    </div> : null}
+  </div>
+}
