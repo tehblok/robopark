@@ -1,5 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock, get_ident
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
@@ -20,7 +22,7 @@ from robopark_api.models import (
     UserPermission,
 )
 from robopark_api.security import hash_password
-from robopark_api.services import inventory_catalog
+from robopark_api.services import inventory_catalog, inventory_receipts
 
 
 def _user(db, slug, username, parks=()):
@@ -100,6 +102,7 @@ def test_receipt_lifecycle_normalizes_lines_and_post_is_idempotent(
     assert [(line["catalog_part_id"], line["quantity"]) for line in created["lines"]] == [
         (part.id, 5)
     ]
+    assert created["lines"][0]["note"] == "first\nsecond"
     listed = client.get(f"/inventory/parks/{seed_park_with_tracker.id}/receipts")
     assert listed.status_code == 200, listed.text
     assert [row["id"] for row in listed.json()["items"]] == [created["id"]]
@@ -250,6 +253,34 @@ def test_posted_receipt_reversal_requires_reason_and_preserves_original_history(
             select(func.count(AuditLog.id)).where(AuditLog.action == "inventory.receipt.reversed")
         )
         == 1
+    )
+
+
+def test_reverse_receipt_service_rejects_blank_reason(client, db_session, seed_park_with_tracker):
+    mechanic = _user(db_session, "mechanic", "receipt-service-reversal", [seed_park_with_tracker])
+    part = _part(db_session, mechanic, article="SERVICE-REV")
+    login_as(client, mechanic.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/receipts"
+    receipt = client.post(base, json=_payload(part.id)).json()
+    client.post(f"{base}/{receipt['id']}/post")
+
+    with pytest.raises(ValueError, match="inventory_receipt_reversal_reason_required"):
+        inventory_receipts.reverse_receipt(
+            db_session,
+            mechanic,
+            park_id=seed_park_with_tracker.id,
+            receipt_id=receipt["id"],
+            reason=" \t ",
+        )
+
+    assert db_session.scalar(select(InventoryParkStock.quantity)) == 5
+    assert (
+        db_session.scalar(
+            select(func.count(InventoryMovement.id)).where(
+                InventoryMovement.source_kind == "receipt_reversal"
+            )
+        )
+        == 0
     )
 
 
@@ -422,6 +453,161 @@ def test_receipt_list_is_paginated_and_loads_lines_in_one_query(
         created[0]["id"],
     ]
     assert len(line_queries) == 1
+
+
+def test_receipt_list_searches_supplier_and_document_number_case_insensitively(
+    client, db_session, seed_park_with_tracker
+):
+    mechanic = _user(db_session, "mechanic", "receipt-search", [seed_park_with_tracker])
+    part = _part(db_session, mechanic, article="SEARCH")
+    login_as(client, mechanic.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/receipts"
+    supplier_match = client.post(
+        base,
+        json=_payload(
+            part.id,
+            supplier="Northern Factory",
+            document_number="DOC-ONE",
+        ),
+    ).json()
+    document_match = client.post(
+        base,
+        json=_payload(part.id, supplier="Other", document_number="factory-42"),
+    ).json()
+    client.post(
+        base,
+        json=_payload(part.id, supplier="Unrelated", document_number="NO-MATCH"),
+    )
+    unicode_match = client.post(
+        base,
+        json=_payload(part.id, supplier="Северный Завод", document_number="RU-1"),
+    ).json()
+
+    first_page = client.get(base, params={"q": " FaCtOrY ", "limit": 1})
+    second_page = client.get(base, params={"q": "factory", "limit": 1, "offset": 1})
+
+    assert first_page.status_code == second_page.status_code == 200
+    assert first_page.json()["total"] == second_page.json()["total"] == 2
+    assert [row["id"] for row in first_page.json()["items"]] == [document_match["id"]]
+    assert [row["id"] for row in second_page.json()["items"]] == [supplier_match["id"]]
+    unicode_result = client.get(base, params={"q": "завод"})
+    assert unicode_result.status_code == 200
+    assert unicode_result.json()["total"] == 1
+    assert [row["id"] for row in unicode_result.json()["items"]] == [unicode_match["id"]]
+
+
+@pytest.mark.parametrize(
+    ("dialect_name", "expected_fragments"),
+    [
+        ("sqlite", []),
+        (
+            "postgresql",
+            [
+                "SELECT inventory_catalog_parts.id",
+                "ORDER BY inventory_catalog_parts.id",
+                "FOR UPDATE",
+            ],
+        ),
+    ],
+)
+def test_catalog_alias_stabilization_locks_postgresql_rows_in_global_order(
+    dialect_name, expected_fragments
+):
+    class Bind:
+        class Dialect:
+            name = dialect_name
+
+        dialect = Dialect()
+
+    class RecordingSession:
+        statements = []
+
+        def get_bind(self):
+            return Bind()
+
+        def scalars(self, statement):
+            self.statements.append(str(statement))
+            return []
+
+    db = RecordingSession()
+    inventory_receipts._stabilize_catalog_aliases(db)
+    if not expected_fragments:
+        assert db.statements == []
+    else:
+        assert len(db.statements) == 1
+        assert all(fragment in db.statements[0] for fragment in expected_fragments)
+
+
+def test_concurrent_alias_receipts_prelock_canonical_stocks_in_sorted_order(
+    client, db_engine, db_session, seed_park_with_tracker, monkeypatch
+):
+    admin = _user(db_session, "admin", "receipt-lock-order")
+    login_as(client, admin.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/receipts"
+    target_low = _part(db_session, admin, article="LOCK-TARGET-LOW")
+    target_high = _part(db_session, admin, article="LOCK-TARGET-HIGH")
+    sources = [_part(db_session, admin, article=f"LOCK-SOURCE-{index}") for index in range(4)]
+    first = client.post(
+        base,
+        json=_payload(
+            sources[0].id,
+            lines=[
+                {"catalog_part_id": sources[0].id, "quantity": 1},
+                {"catalog_part_id": sources[1].id, "quantity": 1},
+            ],
+        ),
+    ).json()
+    second = client.post(
+        base,
+        json=_payload(
+            sources[2].id,
+            lines=[
+                {"catalog_part_id": sources[2].id, "quantity": 1},
+                {"catalog_part_id": sources[3].id, "quantity": 1},
+            ],
+        ),
+    ).json()
+    inventory_catalog.merge_parts(db_session, admin, sources[0].id, target_high.id)
+    inventory_catalog.merge_parts(db_session, admin, sources[1].id, target_low.id)
+    inventory_catalog.merge_parts(db_session, admin, sources[2].id, target_low.id)
+    inventory_catalog.merge_parts(db_session, admin, sources[3].id, target_high.id)
+    admin_id = admin.id
+    park_id = seed_park_with_tracker.id
+    calls: dict[int, list[int]] = {}
+    calls_lock = Lock()
+    real_ensure_stock = inventory_receipts.inventory_stock.ensure_stock
+
+    def record_ensure_stock(db, *, park_id, catalog_part_id):
+        with calls_lock:
+            calls.setdefault(get_ident(), []).append(catalog_part_id)
+        return real_ensure_stock(db, park_id=park_id, catalog_part_id=catalog_part_id)
+
+    monkeypatch.setattr(inventory_receipts.inventory_stock, "ensure_stock", record_ensure_stock)
+
+    def post(receipt_id):
+        with Session(db_engine) as session:
+            return inventory_receipts.post_receipt(
+                session,
+                session.get(User, admin_id),
+                park_id=park_id,
+                receipt_id=receipt_id,
+            ).status
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = list(pool.map(post, [first["id"], second["id"]]))
+
+    assert statuses == ["posted", "posted"]
+    expected_order = [target_low.id, target_high.id]
+    assert len(calls) == 2
+    assert all(part_ids[:2] == expected_order for part_ids in calls.values())
+    db_session.expire_all()
+    assert dict(
+        db_session.execute(
+            select(InventoryParkStock.catalog_part_id, InventoryParkStock.quantity).where(
+                InventoryParkStock.catalog_part_id.in_(expected_order)
+            )
+        ).all()
+    ) == {target_low.id: 2, target_high.id: 2}
 
 
 def test_concurrent_receipt_post_retries_apply_each_line_once(

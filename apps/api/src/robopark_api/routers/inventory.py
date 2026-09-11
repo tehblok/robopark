@@ -71,6 +71,7 @@ async def _photo(upload: UploadFile | None):
 @router.get("/parks/{park_id}/receipts", response_model=InventoryReceiptListOut)
 def list_inventory_receipts(
     park_id: int,
+    q: str | None = None,
     limit: int = 50,
     offset: int = 0,
     user: User = Depends(require_user),
@@ -80,7 +81,7 @@ def list_inventory_receipts(
         raise HTTPException(422, "inventory_pagination_invalid")
     rows, total = _run(
         lambda: inventory_receipts.list_receipts(
-            db, user, park_id=park_id, limit=limit, offset=offset
+            db, user, park_id=park_id, query=q, limit=limit, offset=offset
         )
     )
     return {

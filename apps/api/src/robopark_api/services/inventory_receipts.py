@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from robopark_api.models import (
     AuditLog,
+    InventoryCatalogPart,
     InventoryMovement,
     InventoryReceipt,
     InventoryReceiptLine,
@@ -20,6 +21,19 @@ from robopark_api.services.rbac import PERMISSION_INVENTORY_DOCUMENTS_POST, has_
 
 def _clean_text(value: str | None) -> str | None:
     return (value or "").strip() or None
+
+
+def _combine_notes(current: str | None, additional: str | None) -> str | None:
+    clean = _clean_text(additional)
+    if clean is None:
+        return current
+    notes = current.split("\n") if current else []
+    if clean in notes:
+        return current
+    result = "\n".join([*notes, clean])
+    if len(result) > 500:
+        raise ValueError("inventory_receipt_note_too_long")
+    return result
 
 
 def _audit(db: Session, user: User, receipt: InventoryReceipt, action: str, fields) -> None:
@@ -96,6 +110,7 @@ def _normalized_lines(db: Session, values) -> list[dict]:
             existing["quantity"] += quantity
             if existing["quantity"] > 1_000_000:
                 raise ValueError("inventory_receipt_quantity_invalid")
+            existing["note"] = _combine_notes(existing["note"], data.get("note"))
     if not combined:
         raise ValueError("inventory_receipt_lines_required")
     return [combined[part_id] for part_id in sorted(combined)]
@@ -212,16 +227,57 @@ def update_receipt(
 
 
 def list_receipts(
-    db: Session, user: User, *, park_id: int, limit: int, offset: int
+    db: Session,
+    user: User,
+    *,
+    park_id: int,
+    query: str | None,
+    limit: int,
+    offset: int,
 ) -> tuple[list[InventoryReceipt], int]:
     inventory_access.require_park(db, user, park_id)
-    total = db.scalar(
-        select(func.count(InventoryReceipt.id)).where(InventoryReceipt.park_id == park_id)
-    )
+    filters = [InventoryReceipt.park_id == park_id]
+    clean_query = _clean_text(query)
+    if clean_query:
+        if db.get_bind().dialect.name == "sqlite":
+            driver_connection = db.connection().connection.driver_connection
+            driver_connection.create_function(
+                "inventory_casefold",
+                1,
+                lambda value: str(value or "").casefold(),
+                deterministic=True,
+            )
+            folded_query = clean_query.casefold()
+            filters.append(
+                or_(
+                    func.instr(
+                        func.inventory_casefold(func.coalesce(InventoryReceipt.supplier, "")),
+                        folded_query,
+                    )
+                    > 0,
+                    func.instr(
+                        func.inventory_casefold(
+                            func.coalesce(InventoryReceipt.document_number, "")
+                        ),
+                        folded_query,
+                    )
+                    > 0,
+                )
+            )
+        else:
+            escaped = clean_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped}%"
+            filters.append(
+                or_(
+                    InventoryReceipt.supplier.ilike(pattern, escape="\\"),
+                    InventoryReceipt.document_number.ilike(pattern, escape="\\"),
+                )
+            )
+    total = db.scalar(select(func.count(InventoryReceipt.id)).where(*filters))
     rows = list(
         db.scalars(
             select(InventoryReceipt)
-            .where(InventoryReceipt.park_id == park_id)
+            .where(*filters)
             .order_by(InventoryReceipt.created_at.desc(), InventoryReceipt.id.desc())
             .limit(limit)
             .offset(offset)
@@ -234,6 +290,32 @@ def _line_source_id(receipt: InventoryReceipt, line: InventoryReceiptLine) -> st
     return f"{receipt.id}:{line.id}"
 
 
+def _stabilize_catalog_aliases(db: Session) -> None:
+    if db.get_bind().dialect.name == "postgresql":
+        list(
+            db.scalars(
+                select(InventoryCatalogPart.id)
+                .order_by(InventoryCatalogPart.id)
+                .with_for_update(of=InventoryCatalogPart)
+            )
+        )
+
+
+def _canonical_line_groups(
+    db: Session, *, park_id: int, lines: list[InventoryReceiptLine]
+) -> list[tuple[int, list[InventoryReceiptLine]]]:
+    _stabilize_catalog_aliases(db)
+    groups: dict[int, list[InventoryReceiptLine]] = {}
+    for line in lines:
+        canonical_id = resolve_catalog_part(db, line.catalog_part_id).id
+        groups.setdefault(canonical_id, []).append(line)
+    result = []
+    for canonical_id in sorted(groups):
+        inventory_stock.ensure_stock(db, park_id=park_id, catalog_part_id=canonical_id)
+        result.append((canonical_id, sorted(groups[canonical_id], key=lambda line: line.id)))
+    return result
+
+
 def post_receipt(db: Session, user: User, *, park_id: int, receipt_id: int) -> InventoryReceipt:
     _require_document_post(db, user, park_id)
     try:
@@ -244,18 +326,20 @@ def post_receipt(db: Session, user: User, *, park_id: int, receipt_id: int) -> I
             return row
         if row.status != "draft":
             raise inventory_stock.InventoryConflict("inventory_receipt_not_draft")
-        for line in _lines(db, row.id):
-            inventory_stock.apply_stock_delta(
-                db,
-                user=user,
-                park_id=park_id,
-                catalog_part_id=line.catalog_part_id,
-                delta=line.quantity,
-                kind="receipt",
-                source_kind="receipt",
-                source_id=_line_source_id(row, line),
-                note=line.note,
-            )
+        groups = _canonical_line_groups(db, park_id=park_id, lines=_lines(db, row.id))
+        for canonical_id, lines in groups:
+            for line in lines:
+                inventory_stock.apply_stock_delta(
+                    db,
+                    user=user,
+                    park_id=park_id,
+                    catalog_part_id=canonical_id,
+                    delta=line.quantity,
+                    kind="receipt",
+                    source_kind="receipt",
+                    source_id=_line_source_id(row, line),
+                    note=line.note,
+                )
         row.status = "posted"
         row.posted_by = user.id
         row.posted_at = datetime.now(UTC)
@@ -291,6 +375,9 @@ def cancel_receipt(db: Session, user: User, *, park_id: int, receipt_id: int) ->
 def reverse_receipt(
     db: Session, user: User, *, park_id: int, receipt_id: int, reason: str
 ) -> InventoryReceipt:
+    clean_reason = _clean_text(reason)
+    if clean_reason is None:
+        raise ValueError("inventory_receipt_reversal_reason_required")
     _require_document_post(db, user, park_id)
     try:
         row = _receipt(db, park_id, receipt_id, lock=True)
@@ -309,18 +396,20 @@ def reverse_receipt(
             db.commit()
             db.refresh(row)
             return row
-        for line in lines:
-            inventory_stock.apply_stock_delta(
-                db,
-                user=user,
-                park_id=park_id,
-                catalog_part_id=line.catalog_part_id,
-                delta=-line.quantity,
-                kind="receipt_reversal",
-                source_kind="receipt_reversal",
-                source_id=_line_source_id(row, line),
-                note=reason,
-            )
+        groups = _canonical_line_groups(db, park_id=park_id, lines=lines)
+        for canonical_id, grouped_lines in groups:
+            for line in grouped_lines:
+                inventory_stock.apply_stock_delta(
+                    db,
+                    user=user,
+                    park_id=park_id,
+                    catalog_part_id=canonical_id,
+                    delta=-line.quantity,
+                    kind="receipt_reversal",
+                    source_kind="receipt_reversal",
+                    source_id=_line_source_id(row, line),
+                    note=clean_reason,
+                )
         _audit(db, user, row, "inventory.receipt.reversed", ["reason"])
         db.commit()
         db.refresh(row)
