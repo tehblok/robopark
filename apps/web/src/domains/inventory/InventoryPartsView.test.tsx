@@ -35,7 +35,7 @@ function deferred<T>() {
 function client(searchInventory: (params: InventorySearchParams) => Promise<InventoryPageEnvelope<InventoryCatalogSearchItem>> = vi.fn(async () => page())) {
   return {
     searchInventory,
-    inventoryCatalogComponents: vi.fn(async () => ({ items: [{ id: 4, name: 'Подвязка', is_active: true, has_photo: false }], limit: 200, offset: 0, total: 1 })),
+    inventoryCatalogComponents: vi.fn(async (_parkId: number, _params?: { limit?: number; offset?: number }) => ({ items: [{ id: 4, name: 'Подвязка', is_active: true, has_photo: false }], limit: 200, offset: 0, total: 1 })),
     updateInventoryStock: vi.fn(async (_parkId: number, catalogPartId: number): Promise<InventoryStockView> => ({ park_id: 1, catalog_part_id: catalogPartId, quantity: '5', minimum_quantity: '2', location: 'Полка A-1', is_active: true, version: '1' })),
     inventoryPartPhotoUrl: vi.fn((id: number) => `/parts/${id}/photo`),
   }
@@ -77,6 +77,18 @@ describe('InventoryPartsView', () => {
     render(<InventoryPartsView apiClient={apiClient} parkId={1} />)
     expect(await screen.findByRole('option', { name: 'Подвязка' })).toHaveValue('4')
     expect(apiClient.inventoryCatalogComponents).toHaveBeenCalledWith(1, { limit: 200, offset: 0 })
+  })
+
+  it('loads every component metadata page beyond the first 200 rows', async () => {
+    const components = Array.from({ length: 200 }, (_, index) => ({ id: index + 1, name: `Компонента ${index + 1}`, is_active: true, has_photo: false }))
+    const apiClient = client(vi.fn(async () => page([])))
+    apiClient.inventoryCatalogComponents = vi.fn(async (_parkId: number, { offset = 0 }: { limit?: number; offset?: number } = {}) => offset === 0
+      ? { items: components, limit: 200, offset: 0, total: 201 }
+      : { items: [{ id: 201, name: 'Последняя компонента', is_active: true, has_photo: false }], limit: 200, offset: 200, total: 201 })
+    render(<InventoryPartsView apiClient={apiClient} parkId={1} />)
+
+    expect(await screen.findByRole('option', { name: 'Последняя компонента' })).toHaveValue('201')
+    expect(apiClient.inventoryCatalogComponents).toHaveBeenLastCalledWith(1, { limit: 200, offset: 200 })
   })
 
   it('rejects values above signed int64 without a stock API call', async () => {
@@ -157,5 +169,33 @@ describe('InventoryPartsView', () => {
     expect(screen.queryByRole('form', { name: 'Настройки остатка' })).not.toBeInTheDocument()
     expect(document.querySelectorAll('.inventory-print-label')).toHaveLength(1)
     expect(document.querySelector('.inventory-print-label')).toHaveTextContent('Колесо')
+  })
+
+  it('prints every result on the current filtered page in one desktop action', async () => {
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined)
+    const second = { ...part, id: 32, name: 'Колесо', article: 'WH-01' }
+    render(<InventoryPartsView apiClient={client(vi.fn(async () => page([part, second])))} parkId={1} />)
+    await screen.findByRole('heading', { name: 'Колесо' })
+
+    await userEvent.click(screen.getByRole('button', { name: 'Выбрать текущую страницу' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Печатать выбранные (2)' }))
+
+    expect(document.querySelectorAll('.inventory-print-label')).toHaveLength(2)
+    await waitFor(() => expect(print).toHaveBeenCalledTimes(1))
+  })
+
+  it('keeps individually chosen labels together on mobile', async () => {
+    vi.mocked(matchMedia).mockReturnValue({ matches: true, media: '(max-width: 599px)', onchange: null, addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn() })
+    vi.spyOn(window, 'print').mockImplementation(() => undefined)
+    const second = { ...part, id: 32, name: 'Колесо', article: 'WH-01' }
+    render(<InventoryPartsView apiClient={client(vi.fn(async () => page([part, second])))} parkId={1} />)
+    await screen.findByRole('heading', { name: 'Колесо' })
+
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Выбрать для печати Тяга' }))
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Выбрать для печати Колесо' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Печатать выбранные (2)' }))
+
+    expect(document.querySelectorAll('.inventory-print-label')).toHaveLength(2)
+    expect(screen.queryByRole('form', { name: 'Настройки остатка' })).not.toBeInTheDocument()
   })
 })

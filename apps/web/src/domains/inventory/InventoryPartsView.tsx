@@ -7,9 +7,10 @@ import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { classifyApiError } from '../../shared/api/classifyApiError'
 import { InventoryLabels } from './InventoryLabels'
 import { inventoryInt64Compare, inventoryQuantityError, isInventoryQuantity } from './inventoryTypes'
+import { loadInventoryComponents } from './loadInventoryComponents'
 
 type InventoryPartsApi = Pick<typeof api, 'searchInventory' | 'inventoryCatalogComponents' | 'updateInventoryStock' | 'inventoryPartPhotoUrl'>
-type PartWorkflowKind = 'stock' | 'label'
+type PartWorkflowKind = 'stock'
 type PartWorkflow = { catalogPartId: number; kind: PartWorkflowKind } | null
 
 export type InventoryPartsViewProps = {
@@ -64,6 +65,7 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
   const [loading, setLoading] = useState(true)
   const [internalSelectedId, setInternalSelectedId] = useState<number | null>(null)
   const [workflow, setWorkflow] = useState<PartWorkflow>(null)
+  const [printParts, setPrintParts] = useState<Map<number, InventoryCatalogSearchItem>>(() => new Map())
   const generation = useRef(0)
   const activeParkId = useRef(parkId)
   useEffect(() => { activeParkId.current = parkId }, [parkId])
@@ -94,8 +96,8 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
 
   useEffect(() => {
     const requestedParkId = parkId
-    apiClient.inventoryCatalogComponents(parkId, { limit: 200, offset: 0 }).then(value => {
-      if (activeParkId.current === requestedParkId) setKnownComponents(value.items.map(item => ({ id: item.id, name: item.name })))
+    loadInventoryComponents(apiClient, parkId).then(value => {
+      if (activeParkId.current === requestedParkId) setKnownComponents(value.map(item => ({ id: item.id, name: item.name })))
     }).catch(() => { /* Search remains usable if metadata is unavailable. */ })
   }, [apiClient, parkId])
 
@@ -103,6 +105,7 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
     setOffset(0)
     setResult(null)
     setKnownComponents([])
+    setPrintParts(new Map())
     setWorkflow(null)
     select(null)
   // A park change starts a fresh, unselected catalog.
@@ -121,10 +124,22 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
     select(catalogPartId)
     setWorkflow({ catalogPartId, kind })
   }
-  const print = (item: InventoryCatalogSearchItem) => {
-    openWorkflow(item.id, 'label')
+  const print = (parts: InventoryCatalogSearchItem[]) => {
+    setWorkflow(null)
+    setPrintParts(new Map(parts.map(item => [item.id, item])))
     globalThis.setTimeout(() => window.print(), 0)
   }
+  const togglePrintPart = (item: InventoryCatalogSearchItem) => setPrintParts(current => {
+    const next = new Map(current)
+    if (next.has(item.id)) next.delete(item.id)
+    else next.set(item.id, item)
+    return next
+  })
+  const chooseCurrentPage = () => setPrintParts(current => {
+    const next = new Map(current)
+    result?.items.forEach(item => next.set(item.id, item))
+    return next
+  })
 
   return <section className="inventory-catalog-view">
     <FormField id="inventory-part-search" label="Найти запчасть"><input type="search" value={query} onChange={event => { setQuery(event.target.value); setOffset(0) }} /></FormField>
@@ -132,6 +147,7 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
       <FormField id="inventory-component-filter" label="Компонента"><select value={componentId ?? ''} onChange={event => { setComponentId(event.target.value ? Number(event.target.value) : undefined); setOffset(0) }}><option value="">Все компоненты</option>{knownComponents.map(component => <option key={component.id} value={component.id}>{component.name}</option>)}</select></FormField>
       <FormField id="inventory-stock-filter" label="Остаток"><select value={stockFilter ?? ''} onChange={event => { setStockFilter(event.target.value as InventoryStockFilter || undefined); setOffset(0) }}><option value="">Все остатки</option><option value="in_stock">Есть на складе</option><option value="below_minimum">Ниже минимума</option><option value="without_location">Без места</option></select></FormField>
     </div>
+    <div aria-label="Печать этикеток" className="inventory-label-actions" role="group"><Button disabled={!result?.items.length} onClick={chooseCurrentPage} size="compact" variant="secondary">Выбрать текущую страницу</Button><Button disabled={!printParts.size} onClick={() => print([...printParts.values()])} size="compact">Печатать выбранные ({printParts.size})</Button>{printParts.size ? <Button onClick={() => setPrintParts(new Map())} size="compact" variant="ghost">Очистить выбор</Button> : null}</div>
     {failure ? <ErrorState description={failure.description} title={failure.title} /> : null}
     {loading && !result ? <LoadingState label="Ищем запчасти" /> : null}
     {!loading && result && !result.items.length ? <EmptyState description="Измените запрос или фильтры." icon="work" title="Запчасти не найдены" /> : null}
@@ -142,12 +158,13 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
         {item.has_photo ? <img alt={item.name} className="inventory-search-card__photo" height={72} src={apiClient.inventoryPartPhotoUrl(-item.id)} width={72} /> : <div className="inventory-photo-placeholder inventory-search-card__photo">Нет фото</div>}
         <div className="inventory-search-card__body"><div className="inventory-search-card__heading"><div><h3>{item.name}</h3><p>{item.component_name} · <strong>{item.article}</strong></p></div><StatusBadge tone={item.quantity === '0' ? 'critical' : low ? 'warning' : 'success'}>{item.quantity} шт.</StatusBadge></div>
           <p className="inventory-search-card__location">{item.location || 'Место не указано'}</p>
-          <div className="inventory-card-actions"><Button onClick={() => openWorkflow(item.id, 'stock')} size="compact" variant={selected && workflow?.kind === 'stock' ? 'primary' : 'secondary'}>Настроить остаток</Button><Button onClick={() => print(item)} size="compact" variant="ghost">Печатать этикетку</Button></div>
+          <label className="inventory-label-choice"><input aria-label={`Выбрать для печати ${item.name}`} checked={printParts.has(item.id)} onChange={() => togglePrintPart(item)} type="checkbox" /> В печать</label>
+          <div className="inventory-card-actions"><Button onClick={() => openWorkflow(item.id, 'stock')} size="compact" variant={selected && workflow?.kind === 'stock' ? 'primary' : 'secondary'}>Настроить остаток</Button><Button onClick={() => { select(item.id); print([item]) }} size="compact" variant="ghost">Печатать этикетку</Button></div>
           {selected && workflow?.kind === 'stock' ? <StockForm apiClient={apiClient} onSaved={updateLocalStock} parkId={parkId} part={item} /> : null}
         </div>
       </article>
     })}</div>
     {result && result.total > result.limit ? <nav aria-label="Страницы запчастей" className="inventory-pagination"><Button disabled={offset === 0} onClick={() => setOffset(current => Math.max(0, current - 25))} size="compact" variant="secondary">Предыдущая страница</Button><span>{offset + 1}–{Math.min(offset + result.limit, result.total)} из {result.total}</span><Button disabled={offset + result.limit >= result.total} onClick={() => setOffset(current => current + 25)} size="compact" variant="secondary">Следующая страница</Button></nav> : null}
-    <InventoryLabels parts={workflow?.kind === 'label' ? result?.items.filter(item => item.id === workflow.catalogPartId) ?? [] : []} />
+    <InventoryLabels parts={[...printParts.values()]} />
   </section>
 }

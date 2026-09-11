@@ -3,9 +3,11 @@ import { api, inventoryErrorDetail, isInventoryDuplicateErrorDetail, type Invent
 import { Button } from '../../design-system/actions/Button'
 import { LoadingState } from '../../design-system/feedback/AsyncState'
 import { FormField } from '../../design-system/forms/FormField'
+import { ResponsiveDisclosure, ResponsiveDisclosureGroup } from '../../design-system/layout/ResponsiveDisclosure'
 import { ConfirmDialog } from '../../design-system/overlays/ConfirmDialog'
 import { classifyApiError } from '../../shared/api/classifyApiError'
 import { inventoryQuantityError, isInventoryQuantity } from './inventoryTypes'
+import { loadInventoryComponents } from './loadInventoryComponents'
 
 type InventoryManageApi = Pick<typeof api,
   | 'searchInventory'
@@ -81,6 +83,7 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
   const generation = useRef(0)
+  const operationGeneration = useRef(0)
   const activeParkId = useRef(parkId)
   const isSelectionControlled = selectedCatalogPartId !== undefined
   const selectedId = selectedCatalogPartId === undefined ? internalSelectedId : selectedCatalogPartId
@@ -116,8 +119,9 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
     setSelectedPart(null)
     setCatalogOffset(0)
     select(null)
-    apiClient.inventoryCatalogComponents(parkId, { limit: 200, offset: 0 }).then(value => {
-      if (activeParkId.current === parkId) setComponents(value.items.map(item => ({ id: item.id, name: item.name })))
+    operationGeneration.current += 1
+    loadInventoryComponents(apiClient, parkId).then(value => {
+      if (activeParkId.current === parkId) setComponents(value.map(item => ({ id: item.id, name: item.name })))
     }).catch(() => {})
     return () => { generation.current += 1 }
   }, [apiClient, parkId, select])
@@ -145,10 +149,11 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
     setError('')
     setNotice('')
     const requestedParkId = parkId
+    const requestGeneration = operationGeneration.current
     try {
       const created = await apiClient.createInventoryCatalogPart({ park_id: requestedParkId, component_id: componentId, name: draft.name, article: draft.article })
       const stock = await apiClient.updateInventoryStock(requestedParkId, created.id, { minimum_quantity: draft.minimum, location: draft.location, is_active: true })
-      if (activeParkId.current !== requestedParkId || stock.park_id !== requestedParkId) return
+      if (activeParkId.current !== requestedParkId || operationGeneration.current !== requestGeneration || stock.park_id !== requestedParkId) return
       const component = components.find(item => item.id === componentId)
       setItems(current => [...current.filter(item => item.id !== created.id), { ...created, component_name: component?.name ?? '', quantity: stock.quantity, minimum_quantity: stock.minimum_quantity, location: stock.location, stock_is_active: stock.is_active }])
       select(created.id)
@@ -156,15 +161,17 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
       setWorkflow('stock')
       setNotice('Позиция создана и добавлена в склад парка.')
     } catch (reason) {
+      if (activeParkId.current !== requestedParkId || operationGeneration.current !== requestGeneration) return
       const detail = inventoryErrorDetail(reason)
       if (isInventoryDuplicateErrorDetail(detail) && detail.code === 'inventory_article_exists') {
         if (!items.some(item => item.id === detail.existing_part_id)) {
           try {
-            const existing = await apiClient.getInventoryCatalogPart(parkId, detail.existing_part_id)
+            const existing = await apiClient.getInventoryCatalogPart(requestedParkId, detail.existing_part_id)
+            if (activeParkId.current !== requestedParkId || operationGeneration.current !== requestGeneration) return
             setItems(current => [...current.filter(item => item.id !== existing.id), existing])
             setSelectedPart(existing)
           } catch {
-            setError('Не удалось открыть существующую позицию.')
+            if (activeParkId.current === requestedParkId && operationGeneration.current === requestGeneration) setError('Не удалось открыть существующую позицию.')
             return
           }
         }
@@ -187,7 +194,7 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
       <div className="inventory-card-actions">
         {canCreate ? <><Button onClick={() => chooseWorkflow('create')} size="compact">Добавить позицию</Button><Button onClick={() => chooseWorkflow('component')} size="compact" variant="secondary">Добавить компоненту</Button></> : null}
         {selected ? <Button onClick={() => chooseWorkflow('stock')} size="compact" variant="secondary">Настроить остаток</Button> : null}
-        {canManageGlobal && selected ? <><Button onClick={() => chooseWorkflow('global-edit')} size="compact" variant="secondary">Редактировать глобально</Button><Button onClick={() => setArchiveOpen(true)} size="compact" variant="danger">Архивировать глобально</Button><Button onClick={() => chooseWorkflow('merge')} size="compact" variant="danger">Объединить глобально</Button></> : null}
+        {canManageGlobal && selected ? <ResponsiveDisclosureGroup label="Глобальные действия"><ResponsiveDisclosure id="inventory-global-actions" title="Глобальные действия"><div className="inventory-global-actions"><Button onClick={() => chooseWorkflow('global-edit')} size="compact" variant="secondary">Редактировать глобально</Button><Button onClick={() => setArchiveOpen(true)} size="compact" variant="danger">Архивировать глобально</Button><Button onClick={() => chooseWorkflow('merge')} size="compact" variant="danger">Объединить глобально</Button></div></ResponsiveDisclosure></ResponsiveDisclosureGroup> : null}
       </div>
     </div>
     {loading ? <LoadingState label="Загружаем каталог" /> : null}
@@ -219,11 +226,13 @@ function MergePartForm({ apiClient, onSaved, parkId, source }: { apiClient: Inve
   const [total, setTotal] = useState(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const generation = useRef(0)
   useEffect(() => {
+    const requestId = ++generation.current
     const timer = globalThis.setTimeout(() => {
-      apiClient.searchInventory({ parkId, query: query.trim() || undefined, limit: 25, offset }).then(value => { setTargets(value.items.filter(item => item.id !== source.id)); setTotal(value.total) }).catch(reason => setError(classifyApiError(reason, 'Не удалось загрузить целевые позиции.').description))
+      apiClient.searchInventory({ parkId, query: query.trim() || undefined, limit: 25, offset }).then(value => { if (requestId !== generation.current) return; setTargets(value.items.filter(item => item.id !== source.id)); setTotal(value.total) }).catch(reason => { if (requestId === generation.current) setError(classifyApiError(reason, 'Не удалось загрузить целевые позиции.').description) })
     }, query ? 200 : 0)
-    return () => globalThis.clearTimeout(timer)
+    return () => { globalThis.clearTimeout(timer); generation.current += 1 }
   }, [apiClient, offset, parkId, query, source.id])
   return <form aria-label="Объединение позиций" className="inventory-manage-form" onSubmit={async event => { event.preventDefault(); if (!targetId) return; setBusy(true); setError(''); try { await apiClient.mergeInventoryCatalogPart(source.id, Number(targetId)); await onSaved(Number(targetId)) } catch (reason) { setError(classifyApiError(reason, 'Не удалось объединить позиции.').description) } finally { setBusy(false) } }}><h3>Объединить «{source.name}»</h3><FormField id={`merge-search-${source.id}`} label="Найти целевую позицию"><input type="search" value={query} onChange={event => { setQuery(event.target.value); setOffset(0) }} /></FormField><FormField hint="Остатки и история перейдут в целевую позицию." id={`merge-target-${source.id}`} label="Целевая позиция" required><select value={targetId} onChange={event => setTargetId(event.target.value)}><option value="">Выберите</option>{targets.map(item => <option key={item.id} value={item.id}>{item.name} · {item.article}</option>)}</select></FormField>{total > 25 ? <div className="inventory-pagination"><Button disabled={offset === 0} onClick={() => setOffset(value => Math.max(0, value - 25))} size="compact" type="button" variant="secondary">Назад</Button><Button disabled={offset + 25 >= total} onClick={() => setOffset(value => value + 25)} size="compact" type="button" variant="secondary">Дальше</Button></div> : null}<Button busy={busy} disabled={!targetId} type="submit" variant="danger">Объединить</Button>{error ? <p className="form-error" role="alert">{error}</p> : null}</form>
 }

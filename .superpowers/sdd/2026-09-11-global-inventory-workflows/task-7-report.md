@@ -25,6 +25,16 @@ cd apps/web && npm test -- --run src/domains/inventory/InventoryTabs.test.tsx sr
 Test Files 4 passed (4); Tests 37 passed (37)
 ```
 
+Round 2 review RED/GREEN:
+
+```text
+cd apps/web && npm test -- --run src/domains/inventory/InventoryPartsView.test.tsx src/domains/inventory/InventoryManageView.test.tsx
+RED: Test Files 2 failed (2); Tests 7 failed | 15 passed
+GREEN: Test Files 2 passed (2); Tests 22 passed (22)
+```
+
+The seven RED assertions reproduce stale duplicate injection, incomplete component metadata after row 200, stale merge results, exposed mobile global actions, and missing desktop/mobile bulk label selection.
+
 Backend GREEN:
 
 ```text
@@ -42,15 +52,20 @@ cd apps/api && .venv/bin/pytest tests/test_inventory_catalog.py -q
 - Duplicate article recovery fetches `existing_part_id` directly, mounts settings only after a truthful match, and preserves the creation draft.
 - Global archive requires the design-system confirmation dialog; mechanic/operator DOM still contains no global destructive controls.
 - All quantity inputs reject non-digits and values above `9223372036854775807` inline without issuing an API request.
+- A shared component loader follows deterministic 200-row pages until total/exhaustion, deduplicates IDs, sorts consistently, and caps traversal at 20 pages.
+- Duplicate recovery captures the park operation generation across both the 409 and exact fetch; stale successes and failures are ignored after a park switch.
+- Merge-target requests use their own generation guard across park, source, query, and page changes.
+- Admin/royal global actions use the existing responsive disclosure: inline on desktop and one compact collapsed action on phones. Archive remains confirmation-gated.
+- Label selection supports one item, arbitrary chosen items across pages, or the entire current filtered page; the print portal renders all chosen labels on desktop and mobile.
 
 ## Verification
 
 ```text
 cd apps/web && npm test
-125 files passed; 1834 tests passed
+125 files passed; 1841 tests passed
 
 cd apps/web && npm run build
-exit 0; 2185 modules transformed (pre-existing chunk-size warning)
+exit 0; 2186 modules transformed (pre-existing chunk-size warning)
 
 cd apps/web && npm run lint
 exit 0; pre-existing warnings only, none in Task 7 files
