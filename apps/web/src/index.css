@@ -869,7 +869,7 @@ textarea {
 .stat-label {
   display: block;
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: var(--rp-font-size-body);
 }
 
 .stat-value {
