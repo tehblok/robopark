@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, type InventoryOverview, type Park } from '../../api'
 import { ParkScopeContext } from '../../app/park/parkScope'
@@ -24,8 +24,13 @@ function inventoryClient(overrides = {}) {
   return { ...api, inventory: vi.fn(async () => stock), ...overrides }
 }
 
-function renderInventoryPage(currentPark: Park, client = inventoryClient()) {
-  return <MemoryRouter><ParkScopeContext.Provider value={{ parkId: currentPark.id, selectedPark: currentPark, parks: [currentPark], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><InventoryPage apiClient={client} /></ParkScopeContext.Provider></MemoryRouter>
+function LocationProbe() {
+  const location = useLocation()
+  return <output aria-label="Адрес">{location.pathname}{location.search}</output>
+}
+
+function renderInventoryPage(currentPark: Park, client = inventoryClient(), path = '/inventory?view=parts') {
+  return <MemoryRouter initialEntries={[path]}><ParkScopeContext.Provider value={{ parkId: currentPark.id, selectedPark: currentPark, parks: [currentPark], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><InventoryPage apiClient={client} /><LocationProbe /></ParkScopeContext.Provider></MemoryRouter>
 }
 
 function useViewport(matches: boolean) {
@@ -44,6 +49,19 @@ function useViewport(matches: boolean) {
 beforeEach(() => useViewport(false))
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+it('keeps park identity and KPI cards above the selected workflow', async () => {
+  render(renderInventoryPage(park, inventoryClient(), '/inventory?park=7&view=export'))
+
+  expect(await screen.findByRole('heading', { name: 'Склад' })).toBeVisible()
+  expect(screen.getByText('Учёт запчастей парка «Север»')).toBeVisible()
+  expect(screen.getByText('Компоненты')).toBeVisible()
+  expect(screen.getAllByText('1')).toHaveLength(2)
+  const tabs = screen.getByRole('tablist', { name: 'Разделы склада' })
+  const metrics = document.querySelector('.stat-grid')!
+  expect(metrics.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(screen.getByRole('tabpanel')).toHaveTextContent('Выгрузка парка Север')
+})
 
 it('keeps the mobile catalog visible and opens inventory workflows on demand', async () => {
   useViewport(true)

@@ -1,4 +1,40 @@
 import type { AnalyticsBucket, HistoricalAnalytics } from './domains/analytics/analyticsModel'
+import type {
+  InventoryCatalogComponent,
+  InventoryCatalogPart,
+  InventoryCatalogSearchItem,
+  InventoryCount,
+  InventoryCountLineInput,
+  InventoryCountScope,
+  InventoryExportParams,
+  InventoryListParams,
+  InventoryPageEnvelope,
+  InventoryReceipt,
+  InventoryReceiptInput,
+  InventorySearchParams,
+  InventoryStockView,
+} from './domains/inventory/inventoryTypes'
+
+export type {
+  InventoryCatalogComponent,
+  InventoryCatalogPart,
+  InventoryCatalogSearchItem,
+  InventoryCount,
+  InventoryCountLine,
+  InventoryCountLineInput,
+  InventoryCountScope,
+  InventoryDocumentStatus,
+  InventoryExportParams,
+  InventoryListParams,
+  InventoryPageEnvelope,
+  InventoryReceipt,
+  InventoryReceiptInput,
+  InventoryReceiptLine,
+  InventoryReceiptLineInput,
+  InventorySearchParams,
+  InventoryStockFilter,
+  InventoryStockView,
+} from './domains/inventory/inventoryTypes'
 
 export type Park = {
   id: number
@@ -720,6 +756,56 @@ async function requestBlob(path: string): Promise<Blob> {
   )
 }
 
+const INVENTORY_EXPORT_MEDIA_TYPES = {
+  csv: 'text/csv',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+} as const
+
+async function downloadInventoryExport(options: InventoryExportParams): Promise<void> {
+  const query = new URLSearchParams()
+  if ('parkId' in options && options.parkId !== undefined) query.set('park_id', String(options.parkId))
+  else query.set('scope', 'all')
+  query.set('format', options.format)
+
+  return fetchWithTimeout(
+    `/api/inventory/export?${query.toString()}`,
+    { credentials: 'include' },
+    BLOB_TIMEOUT_MS,
+    async (response) => {
+      if (!response.ok) {
+        const detail = await readErrorDetail(response)
+        throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
+      }
+      const contentType = response.headers.get('Content-Type')?.split(';', 1)[0].trim().toLowerCase()
+      if (contentType !== INVENTORY_EXPORT_MEDIA_TYPES[options.format]) {
+        throw new ApiError(502, 'inventory_export_content_type_invalid', responseRequestId(response))
+      }
+
+      const objectUrl = URL.createObjectURL(await response.blob())
+      const anchor = document.createElement('a')
+      try {
+        anchor.href = objectUrl
+        anchor.download = `inventory.${options.format}`
+        anchor.hidden = true
+        document.body.append(anchor)
+        anchor.click()
+      } finally {
+        anchor.remove()
+        URL.revokeObjectURL(objectUrl)
+      }
+    },
+  )
+}
+
+function inventoryListQuery(params: InventoryListParams = {}): string {
+  const query = new URLSearchParams()
+  if (params.query) query.set('q', params.query)
+  if (params.limit !== undefined) query.set('limit', String(params.limit))
+  if (params.offset !== undefined) query.set('offset', String(params.offset))
+  const value = query.toString()
+  return value ? `?${value}` : ''
+}
+
 async function requestForm<T>(path: string, formData: FormData, headers?: Record<string, string>): Promise<T> {
   return fetchWithTimeout(
     `/api${path}`,
@@ -1143,6 +1229,50 @@ export const api = {
     )
   },
   inventory: (parkId: number) => request<InventoryOverview>(`/inventory?park_id=${parkId}`),
+  searchInventory: ({ parkId, query: search, componentId, stockFilter, limit, offset }: InventorySearchParams) => {
+    const query = new URLSearchParams({ park_id: String(parkId) })
+    if (search) query.set('q', search)
+    if (componentId !== undefined) query.set('component_id', String(componentId))
+    if (stockFilter) query.set('stock_filter', stockFilter)
+    if (limit !== undefined) query.set('limit', String(limit))
+    if (offset !== undefined) query.set('offset', String(offset))
+    return request<InventoryPageEnvelope<InventoryCatalogSearchItem>>(`/inventory/catalog/search?${query.toString()}`)
+  },
+  createInventoryCatalogComponent: (payload: { park_id: number; name: string }) =>
+    request<InventoryCatalogComponent>('/inventory/catalog/components', { method: 'POST', body: JSON.stringify(payload) }),
+  updateInventoryCatalogComponent: (id: number, payload: Partial<Pick<InventoryCatalogComponent, 'name' | 'is_active'>>) =>
+    request<InventoryCatalogComponent>(`/inventory/catalog/components/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  createInventoryCatalogPart: (payload: { park_id: number; component_id: number; name: string; article: string }) =>
+    request<InventoryCatalogPart>('/inventory/catalog/parts', { method: 'POST', body: JSON.stringify(payload) }),
+  updateInventoryCatalogPart: (id: number, payload: Partial<Pick<InventoryCatalogPart, 'component_id' | 'name' | 'article' | 'is_active'>>) =>
+    request<InventoryCatalogPart>(`/inventory/catalog/parts/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  mergeInventoryCatalogPart: (id: number, targetPartId: number) =>
+    request<InventoryCatalogPart>(`/inventory/catalog/parts/${id}/merge`, { method: 'POST', body: JSON.stringify({ target_part_id: targetPartId }) }),
+  updateInventoryStock: (parkId: number, partId: number, payload: Pick<InventoryStockView, 'minimum_quantity' | 'location' | 'is_active'>) =>
+    request<InventoryStockView>(`/inventory/parks/${parkId}/stocks/${partId}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  inventoryReceipts: (parkId: number, params?: InventoryListParams) =>
+    request<InventoryPageEnvelope<InventoryReceipt>>(`/inventory/parks/${parkId}/receipts${inventoryListQuery(params)}`),
+  createInventoryReceipt: (parkId: number, payload: InventoryReceiptInput) =>
+    request<InventoryReceipt>(`/inventory/parks/${parkId}/receipts`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateInventoryReceipt: (parkId: number, receiptId: number, payload: Partial<InventoryReceiptInput>) =>
+    request<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  postInventoryReceipt: (parkId: number, receiptId: number) =>
+    request<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}/post`, { method: 'POST' }),
+  cancelInventoryReceipt: (parkId: number, receiptId: number) =>
+    request<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}/cancel`, { method: 'POST' }),
+  reverseInventoryReceipt: (parkId: number, receiptId: number, reason: string) =>
+    request<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}/reverse`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  inventoryCounts: (parkId: number, params?: InventoryListParams) =>
+    request<InventoryPageEnvelope<InventoryCount>>(`/inventory/parks/${parkId}/counts${inventoryListQuery(params)}`),
+  createInventoryCount: (parkId: number, payload: { name: string; scope: InventoryCountScope }) =>
+    request<InventoryCount>(`/inventory/parks/${parkId}/counts`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateInventoryCount: (parkId: number, countId: number, lines: InventoryCountLineInput[]) =>
+    request<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}`, { method: 'PATCH', body: JSON.stringify({ lines }) }),
+  postInventoryCount: (parkId: number, countId: number) =>
+    request<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}/post`, { method: 'POST' }),
+  cancelInventoryCount: (parkId: number, countId: number) =>
+    request<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}/cancel`, { method: 'POST' }),
+  downloadInventoryExport,
   inventoryMovements: (parkId: number) => request<InventoryMovement[]>(`/inventory/movements?park_id=${parkId}`),
   inventoryComponentPhotoUrl: (id: number) => `/api/inventory/components/${id}/photo`,
   inventoryPartPhotoUrl: (id: number) => `/api/inventory/parts/${id}/photo`,

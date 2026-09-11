@@ -1,5 +1,6 @@
-import { type FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { type FormEvent, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, type InventoryComponent, type InventoryOverview, type InventoryPart } from '../../api'
+import { AuthContext } from '../../auth-context'
 import { useParkScope } from '../../app/park/parkScope'
 import { Button } from '../../design-system/actions/Button'
 import { MetricCard } from '../../design-system/data/MetricCard'
@@ -9,6 +10,7 @@ import { ResponsiveDisclosure, ResponsiveDisclosureGroup } from '../../design-sy
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { classifyApiError } from '../../shared/api/classifyApiError'
 import { InventoryLabels } from './InventoryLabels'
+import { InventoryTabs, type InventoryView } from './InventoryTabs'
 import './inventory.css'
 
 type InventoryApi = Pick<typeof api, 'inventory' | 'createInventoryComponent' | 'createInventoryPart' | 'updateInventoryPart' | 'moveInventoryStock' | 'inventoryComponentPhotoUrl' | 'inventoryPartPhotoUrl'>
@@ -68,6 +70,7 @@ function CreateForms({ data, parkId, apiClient, reload, activeDisclosure, onDisc
 
 export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi }) {
   const { selectedPark, loading } = useParkScope()
+  const role = useContext(AuthContext)?.user?.role
   const parkId = selectedPark?.id
   const [data, setData] = useState<InventoryOverview | null>(null)
   const [error, setError] = useState<unknown>(null)
@@ -116,15 +119,23 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
   if (loading) return <LoadingState label="Загружаем парк" variant="page" />
   if (!selectedPark) return <EmptyState description="Выберите парк." icon="parks" title="Парк не выбран" />
   const failure = error ? classifyApiError(error, 'Не удалось загрузить склад.') : null
+  const placeholder = (view: Exclude<InventoryView, 'parts'>) => {
+    if (view === 'receipts') return <section className="inventory-workflow-placeholder"><h2>Поставки</h2><p>Список и редактор поставок появятся здесь.</p></section>
+    if (view === 'counts') return <section className="inventory-workflow-placeholder"><h2>Инвентаризация</h2><p>Акты и фактические остатки появятся здесь.</p></section>
+    if (view === 'manage') return <section className="inventory-workflow-placeholder"><h2>Управление</h2><p>{role === 'admin' || role === 'royal' ? 'Глобальный каталог и настройки склада парка.' : 'Настройки склада парка.'}</p></section>
+    return <section className="inventory-workflow-placeholder"><h2>Выгрузка парка {selectedPark.name}</h2><p>Выбор формата и скачивание появятся здесь.</p></section>
+  }
   return <PageLayout description={`Учёт запчастей парка «${selectedPark.name}»`} title="Склад">
     {failure ? <ErrorState description={failure.description} onRetry={load} title={failure.title} /> : !data ? <LoadingState label="Загружаем склад" variant="page" /> : <>
       <div className="stat-grid"><MetricCard label="Компоненты" value={data.component_count} /><MetricCard label="Запчасти" value={data.part_count} /><MetricCard label="Ниже минимума" tone={data.low_stock_count ? 'warning' : 'neutral'} value={data.low_stock_count} /><MetricCard label="Нет на складе" tone={data.out_of_stock_count ? 'critical' : 'neutral'} value={data.out_of_stock_count} /></div>
-      <CreateForms activeDisclosure={activeDisclosure} apiClient={apiClient} data={data} onDisclosureChange={changeDisclosure} parkId={selectedPark.id} reload={load} />
-      <label className="field inventory-component-filter"><span>Компонента</span><select value={componentId} onChange={event => setComponentId(event.target.value === 'all' ? 'all' : Number(event.target.value))}><option value="all">Все компоненты</option>{data.components.map(component => <option key={component.id} value={component.id}>{component.name}</option>)}</select></label>
-      <ResponsiveDisclosureGroup controlledOpenId={activeDisclosure} label="Печать склада" onOpenIdChange={changeDisclosure}><ResponsiveDisclosure id="labels" title="Параметры печати"><Button onClick={() => print(visibleComponents(data, componentId).flatMap(component => component.parts))} variant="secondary">Печать этикеток</Button></ResponsiveDisclosure></ResponsiveDisclosureGroup>
-      {printNotice ? <p role="alert">{printNotice}</p> : null}
-      <div className="inventory-components">{visibleComponents(data, componentId).map(component => <Panel density="dense" key={component.id} collapsible storageKey={`inventory-component-${component.id}`} title={component.name}>{component.has_photo ? <img alt={`Компонента ${component.name}`} className="inventory-component-photo" height={72} src={apiClient.inventoryComponentPhotoUrl(component.id)} width={72} /> : null}<div className="inventory-parts">{component.parts.map(part => <PartCard activeDisclosure={activeDisclosure} apiClient={apiClient} componentName={component.name} key={part.id} onDisclosureChange={changeDisclosure} onPrint={part => print([part])} part={part} reload={load} workflow={workflow} />)}{!component.parts.length ? <p>Запчастей в этой компоненте пока нет.</p> : null}</div></Panel>)}{!data.components.length ? <EmptyState description="Добавьте первую компоненту и запчасть." icon="work" title="Склад пуст" /> : null}</div>
+      <InventoryTabs renderPanel={view => view === 'parts' ? <>
+        <CreateForms activeDisclosure={activeDisclosure} apiClient={apiClient} data={data} onDisclosureChange={changeDisclosure} parkId={selectedPark.id} reload={load} />
+        <label className="field inventory-component-filter"><span>Компонента</span><select value={componentId} onChange={event => setComponentId(event.target.value === 'all' ? 'all' : Number(event.target.value))}><option value="all">Все компоненты</option>{data.components.map(component => <option key={component.id} value={component.id}>{component.name}</option>)}</select></label>
+        <ResponsiveDisclosureGroup controlledOpenId={activeDisclosure} label="Печать склада" onOpenIdChange={changeDisclosure}><ResponsiveDisclosure id="labels" title="Параметры печати"><Button onClick={() => print(visibleComponents(data, componentId).flatMap(component => component.parts))} variant="secondary">Печать этикеток</Button></ResponsiveDisclosure></ResponsiveDisclosureGroup>
+        {printNotice ? <p role="alert">{printNotice}</p> : null}
+        <div className="inventory-components">{visibleComponents(data, componentId).map(component => <Panel density="dense" key={component.id} collapsible storageKey={`inventory-component-${component.id}`} title={component.name}>{component.has_photo ? <img alt={`Компонента ${component.name}`} className="inventory-component-photo" height={72} src={apiClient.inventoryComponentPhotoUrl(component.id)} width={72} /> : null}<div className="inventory-parts">{component.parts.map(part => <PartCard activeDisclosure={activeDisclosure} apiClient={apiClient} componentName={component.name} key={part.id} onDisclosureChange={changeDisclosure} onPrint={part => print([part])} part={part} reload={load} workflow={workflow} />)}{!component.parts.length ? <p>Запчастей в этой компоненте пока нет.</p> : null}</div></Panel>)}{!data.components.length ? <EmptyState description="Добавьте первую компоненту и запчасть." icon="work" title="Склад пуст" /> : null}</div>
+        <InventoryLabels parts={printParts} />
+      </> : placeholder(view)} />
     </>}
-    <InventoryLabels parts={printParts} />
   </PageLayout>
 }
