@@ -17,6 +17,9 @@ export function RobotCheckSummary({ snapshot, online, failed, pending, onRefresh
   const diagnosticEvents = snapshot.diagnostic_events ?? []
   const leading = leadingDiagnosticEvent(diagnosticEvents)
   const hasDiagnosticEvents = diagnosticEvents.length > 0
+  const canAssertClean = !failed
+    && model.connection.state === 'online'
+    && (model.freshness === 'live' || model.freshness === 'fresh')
   const observed = new Date(snapshot.observed_at)
   const date = Number.isNaN(observed.getTime()) ? 'Дата неизвестна' : new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(observed).replace(/\s*г\.$/, '')
   const time = Number.isNaN(observed.getTime()) ? '' : new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(observed)
@@ -36,7 +39,7 @@ export function RobotCheckSummary({ snapshot, online, failed, pending, onRefresh
     {!leading && hasDiagnosticEvents && !model.criticalReason
       ? <p role="status">Обнаружены активные ошибки. Откройте раздел «Ошибки».</p>
       : null}
-    {!failed && !leading && !hasDiagnosticEvents && !model.criticalReason
+    {canAssertClean && !leading && !hasDiagnosticEvents && !model.criticalReason
       ? <p role="status">Активных ошибок нет</p>
       : null}
     <details className="rp-check-supplementary"><summary>VIN и координаты</summary>

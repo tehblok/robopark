@@ -63,6 +63,16 @@ it('summarizes charge and the leading diagnostic and opens it on the scheme', as
   expect(screen.getByRole('button', { name: 'Спереди', pressed: true })).toBeInTheDocument()
   expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(lidar.description)
 })
+it('does not certify a stale clean snapshot as error-free', async () => {
+  const apiClient = client({ emergencySnapshot: vi.fn(async () => snapshot({
+    observed_at: '2026-09-02T08:59:00Z',
+    diagnostic_events: [],
+  })) })
+  render(tree(apiClient, 'state'))
+
+  await screen.findByText(/Данные устарели/)
+  expect(screen.queryByText('Активных ошибок нет')).not.toBeInTheDocument()
+})
 it('does not automatically load cold offline but permits a manual check', async () => {
   vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
   const apiClient = client(); render(tree(apiClient, 'map')); await act(async () => undefined)
