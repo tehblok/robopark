@@ -8,9 +8,11 @@ from robopark_api.models import (
     InventoryCatalogComponent,
     InventoryCatalogPart,
     InventoryParkStock,
+    InventoryPart,
     User,
 )
 from robopark_api.services import audit, inventory_access, inventory_stock
+from robopark_api.services.inventory_identity import lock_catalog_parts, resolve_catalog_part
 from robopark_api.services.inventory_stock import InventoryConflict
 
 
@@ -227,9 +229,10 @@ def update_component(db: Session, user: User, component_id: int, changes: dict):
 
 def update_part(db: Session, user: User, part_id: int, changes: dict, *, commit: bool = True):
     inventory_access.require_catalog_manage(db, user)
-    row = db.get(InventoryCatalogPart, part_id)
-    if row is None:
-        raise LookupError("inventory_part_not_found")
+    row = resolve_catalog_part(db, part_id, allow_archived=True, lock=True)
+    if row.id != part_id and not row.is_active:
+        raise LookupError("inventory_part_archived")
+    part_id = row.id
     if changes.get("component_id") is not None:
         component = db.get(InventoryCatalogComponent, changes["component_id"])
         if component is None or not component.is_active:
@@ -299,8 +302,9 @@ def merge_parts(db: Session, user: User, source_part_id: int, target_part_id: in
     inventory_access.require_catalog_manage(db, user)
     if source_part_id == target_part_id:
         raise ValueError("inventory_merge_same_part")
-    source = db.get(InventoryCatalogPart, source_part_id)
-    target = db.get(InventoryCatalogPart, target_part_id)
+    locked = lock_catalog_parts(db, [source_part_id, target_part_id])
+    source = locked.get(source_part_id)
+    target = locked.get(target_part_id)
     if source is None or target is None:
         raise LookupError("inventory_part_not_found")
     if not source.is_active or not target.is_active:
@@ -312,6 +316,7 @@ def merge_parts(db: Session, user: User, source_part_id: int, target_part_id: in
             .where(InventoryParkStock.catalog_part_id == source.id)
             .order_by(InventoryParkStock.park_id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
     )
     for source_stock in source_stocks:
@@ -322,6 +327,7 @@ def merge_parts(db: Session, user: User, source_part_id: int, target_part_id: in
                 InventoryParkStock.catalog_part_id == target.id,
             )
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         if target_stock is None:
             source_stock.catalog_part_id = target.id
@@ -355,6 +361,12 @@ def merge_parts(db: Session, user: User, source_part_id: int, target_part_id: in
         source_stock.updated_by = user.id
 
     source.is_active = False
+    # Bind imported legacy rows before freeing the article for reuse. Migrated
+    # rows already carry this durable identity from 0026.
+    for legacy in db.scalars(select(InventoryPart).where(InventoryPart.catalog_part_id.is_(None))):
+        if normalize_key(legacy.article) == source.normalized_article:
+            legacy.catalog_part_id = source.id
+    source.merged_into_part_id = target.id
     source.updated_by = user.id
     db.commit()
     db.refresh(target)

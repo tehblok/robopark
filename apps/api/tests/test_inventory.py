@@ -171,7 +171,7 @@ def test_task_writeoff_requires_owner_and_writes_technical_tracker_comment(
         "/inventory/tasks/RP-42/writeoff", json={"part_id": part["id"], "quantity": 1}
     )
     assert rejected.status_code == 403
-    catalog_part = db_session.get(InventoryCatalogPart, part["id"])
+    catalog_part = db_session.get(InventoryCatalogPart, part["catalog_part_id"])
     assert catalog_part is not None
     assert db_session.scalar(select(InventoryParkStock.quantity)) == 3
 
@@ -224,7 +224,7 @@ def test_legacy_movement_requires_park_when_global_part_has_multiple_accessible_
     db_session.add(
         InventoryParkStock(
             park_id=other.id,
-            catalog_part_id=part["id"],
+            catalog_part_id=part["catalog_part_id"],
             quantity=9,
             updated_by=operator.id,
         )
@@ -259,7 +259,7 @@ def test_legacy_movement_requires_park_when_global_part_has_multiple_accessible_
     quantities = dict(
         db_session.execute(
             select(InventoryParkStock.park_id, InventoryParkStock.quantity).where(
-                InventoryParkStock.catalog_part_id == part["id"]
+                InventoryParkStock.catalog_part_id == part["catalog_part_id"]
             )
         ).all()
     )
@@ -282,7 +282,7 @@ def test_task_writeoff_derives_claim_park_for_shared_global_part(
     db_session.add(
         InventoryParkStock(
             park_id=other.id,
-            catalog_part_id=part["id"],
+            catalog_part_id=part["catalog_part_id"],
             quantity=7,
             updated_by=mechanic.id,
         )
@@ -307,7 +307,7 @@ def test_task_writeoff_derives_claim_park_for_shared_global_part(
     quantities = dict(
         db_session.execute(
             select(InventoryParkStock.park_id, InventoryParkStock.quantity).where(
-                InventoryParkStock.catalog_part_id == part["id"]
+                InventoryParkStock.catalog_part_id == part["catalog_part_id"]
             )
         ).all()
     )
@@ -467,7 +467,7 @@ def test_legacy_adapter_disambiguates_catalog_id_from_colliding_legacy_id(
         for component in overview.json()["components"]
         for part in component["parts"]
     }
-    assert represented == {"GLOBAL-1": (-1, 1), "LEGACY-1": (1, 2)}
+    assert represented == {"GLOBAL-1": (-1, 1), "LEGACY-1": (-2, 2)}
     assert len({adapter_id for adapter_id, _ in represented.values()}) == 2
 
     global_move = client.post(
@@ -487,7 +487,7 @@ def test_legacy_adapter_disambiguates_catalog_id_from_colliding_legacy_id(
         json={"park_id": seed_park_with_tracker.id, "location": "M"},
     )
     assert migrated_update.status_code == 200, migrated_update.text
-    assert migrated_update.json()["id"] == legacy_part.id
+    assert migrated_update.json()["id"] == -migrated_catalog.id
     assert migrated_update.json()["catalog_part_id"] == migrated_catalog.id
 
     assert client.get("/inventory/parts/-1/photo").content == b"global"
@@ -501,7 +501,7 @@ def test_legacy_adapter_disambiguates_catalog_id_from_colliding_legacy_id(
         json={"kind": "receipt", "quantity": 1},
     )
     assert legacy_move.status_code == 201, legacy_move.text
-    assert legacy_move.json()["part_id"] == legacy_part.id
+    assert legacy_move.json()["part_id"] == -migrated_catalog.id
     assert legacy_move.json()["catalog_part_id"] == migrated_catalog.id
     quantities = dict(
         db_session.execute(

@@ -55,6 +55,11 @@ def _create_catalog_tables() -> None:
         sa.Column("normalized_name", sa.String(128), nullable=False),
         sa.Column("article", sa.String(128), nullable=False),
         sa.Column("normalized_article", sa.String(128), nullable=False),
+        sa.Column(
+            "merged_into_part_id",
+            sa.Integer(),
+            sa.ForeignKey("inventory_catalog_parts.id", ondelete="RESTRICT"),
+        ),
         sa.Column("photo_storage_key", sa.String(128)),
         sa.Column("photo_filename", sa.String(240)),
         sa.Column("photo_content_type", sa.String(64)),
@@ -335,6 +340,11 @@ def _backfill_catalog() -> None:
         canonical_component = component_by_id[canonical["component_id"]]["name"]
         for row in rows:
             part_ids[row["id"]] = catalog_part_id
+            bind.execute(
+                legacy_parts.update()
+                .where(legacy_parts.c.id == row["id"])
+                .values(catalog_part_id=catalog_part_id)
+            )
             row_component = component_by_id[row["component_id"]]["name"]
             for field_name, canonical_value, conflicting_value in (
                 ("name", canonical["name"], row["name"]),
@@ -537,6 +547,15 @@ def _materialize_legacy_inventory_for_downgrade() -> None:
 def upgrade():
     _create_catalog_tables()
     _create_workflow_tables()
+    with op.batch_alter_table("inventory_parts") as batch_op:
+        batch_op.add_column(sa.Column("catalog_part_id", sa.Integer()))
+        batch_op.create_foreign_key(
+            "fk_inventory_parts_catalog_part_id",
+            "inventory_catalog_parts",
+            ["catalog_part_id"],
+            ["id"],
+            ondelete="RESTRICT",
+        )
     with op.batch_alter_table("inventory_movements") as batch_op:
         batch_op.add_column(sa.Column("catalog_part_id", sa.Integer()))
         batch_op.add_column(sa.Column("source_kind", sa.String(32)))
@@ -592,5 +611,8 @@ def downgrade():
     op.drop_table("inventory_receipt_lines")
     op.drop_table("inventory_receipts")
     op.drop_table("inventory_park_stocks")
+    with op.batch_alter_table("inventory_parts") as batch_op:
+        batch_op.drop_constraint("fk_inventory_parts_catalog_part_id", type_="foreignkey")
+        batch_op.drop_column("catalog_part_id")
     op.drop_table("inventory_catalog_parts")
     op.drop_table("inventory_catalog_components")

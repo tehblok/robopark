@@ -119,6 +119,9 @@ def test_upgrade_deduplicates_articles_and_preserves_stock_and_movements(
         assert [(row.quantity, row.location) for row in stocks] == [(2, "A-1"), (7, "B-4")]
         assert set(session.scalars(select(InventoryMovement.catalog_part_id))) == {catalog_part.id}
         assert set(session.scalars(select(InventoryMovement.part_id))) == {100, 200}
+        assert list(
+            session.execute(text("SELECT id, catalog_part_id FROM inventory_parts ORDER BY id"))
+        ) == [(100, catalog_part.id), (200, catalog_part.id)]
 
 
 def test_upgrade_uses_earliest_metadata_and_records_conflicts(sqlite_database_url, monkeypatch):

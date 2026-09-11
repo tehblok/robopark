@@ -232,6 +232,9 @@ class InventoryPart(Base):
     component_id: Mapped[int] = mapped_column(
         ForeignKey("inventory_components.id", ondelete="RESTRICT"), index=True
     )
+    catalog_part_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inventory_catalog_parts.id", ondelete="RESTRICT"), nullable=True
+    )
     name: Mapped[str] = mapped_column(String(128))
     article: Mapped[str] = mapped_column(String(128))
     quantity: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -295,6 +298,9 @@ class InventoryCatalogPart(Base):
     normalized_name: Mapped[str] = mapped_column(String(128))
     article: Mapped[str] = mapped_column(String(128))
     normalized_article: Mapped[str] = mapped_column(String(128), index=True)
+    merged_into_part_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inventory_catalog_parts.id", ondelete="RESTRICT"), nullable=True
+    )
     photo_storage_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     photo_filename: Mapped[str | None] = mapped_column(String(240), nullable=True)
     photo_content_type: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -640,7 +640,7 @@ def test_merge_preserves_colliding_source_history_and_document_identity(
     assert any(
         row["id"] == document_movement.id
         and row["catalog_part_id"] == source.id
-        and row["part_id"] == source.id
+        and row["part_id"] == -target.id
         for row in history_response.json()
     )
     history = list(

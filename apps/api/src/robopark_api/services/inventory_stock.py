@@ -4,11 +4,11 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from robopark_api.models import (
-    InventoryCatalogPart,
     InventoryMovement,
     InventoryParkStock,
     User,
 )
+from robopark_api.services.inventory_identity import resolve_catalog_part
 
 
 class InventoryConflict(RuntimeError):
@@ -61,8 +61,7 @@ def stock_insert_if_missing_statement(dialect_name: str, *, park_id: int, catalo
 
 
 def ensure_stock(db: Session, *, park_id: int, catalog_part_id: int) -> InventoryParkStock:
-    if db.get(InventoryCatalogPart, catalog_part_id) is None:
-        raise LookupError("inventory_part_not_found")
+    catalog_part_id = resolve_catalog_part(db, catalog_part_id, lock=True).id
     insert_statement = stock_insert_if_missing_statement(
         db.get_bind().dialect.name,
         park_id=park_id,
@@ -77,6 +76,7 @@ def ensure_stock(db: Session, *, park_id: int, catalog_part_id: int) -> Inventor
             InventoryParkStock.catalog_part_id == catalog_part_id,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if stock is None:
         stock = InventoryParkStock(park_id=park_id, catalog_part_id=catalog_part_id)
@@ -101,6 +101,7 @@ def apply_stock_delta(
     if delta == 0:
         raise ValueError("inventory_quantity_invalid")
     stock = ensure_stock(db, park_id=park_id, catalog_part_id=catalog_part_id)
+    catalog_part_id = stock.catalog_part_id
     if db.get_bind().dialect.name == "sqlite":
         result = db.execute(
             update(InventoryParkStock)
