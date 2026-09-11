@@ -51,5 +51,5 @@
 @media (max-width: 420px) { .rp-analytics-age { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 599px) {
   .rp-analytics-controls { gap: var(--rp-space-2); }
-  .rp-analytics-controls label { font-size: var(--rp-font-size-caption); }
+  .rp-analytics-controls label { font-size: var(--rp-font-size-body); }
 }
