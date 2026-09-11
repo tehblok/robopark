@@ -13,7 +13,7 @@
 
 .rp-status-badge[data-tone='neutral'] {
   background: var(--rp-surface-sunken);
-  color: var(--rp-text-muted);
+  color: var(--rp-text);
 }
 
 .rp-status-badge[data-tone='info'] {

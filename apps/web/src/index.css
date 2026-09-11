@@ -1090,7 +1090,7 @@ textarea {
 }
 
 .issue-list-count {
-  font-size: 0.75rem;
+  font-size: var(--rp-font-size-body);
   color: var(--text-muted);
   padding-inline: 0.25rem;
 }
@@ -1180,7 +1180,7 @@ textarea {
 
 .issue-key {
   font-weight: 700;
-  font-size: 0.8125rem;
+  font-size: var(--rp-font-size-body);
   color: var(--rp-info);
   font-variant-numeric: tabular-nums;
 }
@@ -1220,7 +1220,12 @@ textarea {
   background: var(--surface-muted);
   color: var(--text-muted);
   border: 1px solid var(--border);
+  font-size: var(--rp-font-size-body);
   font-weight: 500;
+}
+
+.issue-status {
+  font-size: var(--rp-font-size-body);
 }
 
 .issue-chip--robot {
@@ -2169,7 +2174,7 @@ textarea {
 
 .empty-block-hint {
   margin: 0;
-  color: var(--text-muted);
+  color: var(--text);
   font-size: 0.875rem;
   max-width: 28rem;
 }
