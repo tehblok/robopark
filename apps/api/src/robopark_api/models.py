@@ -18,7 +18,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 
 class Base(DeclarativeBase):
@@ -380,16 +380,23 @@ class InventoryCount(Base):
     __tablename__ = "inventory_counts"
     __table_args__ = (
         CheckConstraint("status IN ('draft', 'posted', 'cancelled')", name="ck_count_status"),
+        Index("ix_inventory_counts_park_normalized_name", "park_id", "normalized_name"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(128))
+    normalized_name: Mapped[str] = mapped_column(String(384))
     status: Mapped[str] = mapped_column(String(16), default="draft", server_default="draft")
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     posted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @validates("name")
+    def normalize_name(self, _key: str, value: str) -> str:
+        self.normalized_name = value.casefold()
+        return value
 
 
 class InventoryCountLine(Base):

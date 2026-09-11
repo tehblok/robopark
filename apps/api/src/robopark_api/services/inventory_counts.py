@@ -139,18 +139,10 @@ def _snapshot(db: Session, *, park_id: int, component_id: int | None) -> list[tu
         if component is None or not component.is_active:
             raise LookupError("inventory_component_not_found")
     statement = (
-        select(
-            InventoryCatalogPart.id,
-            func.coalesce(InventoryParkStock.quantity, 0),
-        )
+        select(InventoryCatalogPart.id)
         .join(
             InventoryCatalogComponent,
             InventoryCatalogComponent.id == InventoryCatalogPart.component_id,
-        )
-        .outerjoin(
-            InventoryParkStock,
-            (InventoryParkStock.catalog_part_id == InventoryCatalogPart.id)
-            & (InventoryParkStock.park_id == park_id),
         )
         .where(
             InventoryCatalogPart.is_active.is_(True),
@@ -160,7 +152,18 @@ def _snapshot(db: Session, *, park_id: int, component_id: int | None) -> list[tu
     )
     if component_id is not None:
         statement = statement.where(InventoryCatalogPart.component_id == component_id)
-    return [(int(part_id), int(quantity)) for part_id, quantity in db.execute(statement)]
+    part_ids = list(db.scalars(statement))
+    return [
+        (
+            part_id,
+            inventory_stock.ensure_stock(
+                db,
+                park_id=park_id,
+                catalog_part_id=part_id,
+            ).quantity,
+        )
+        for part_id in part_ids
+    ]
 
 
 def create_count(db: Session, user: User, *, park_id: int, payload) -> InventoryCount:
@@ -168,10 +171,15 @@ def create_count(db: Session, user: User, *, park_id: int, payload) -> Inventory
     name = _clean_text(payload.name)
     if name is None:
         raise ValueError("inventory_count_name_required")
-    component_id = payload.scope.component_id if payload.scope.kind == "component" else None
-    snapshot = _snapshot(db, park_id=park_id, component_id=component_id)
-    row = InventoryCount(park_id=park_id, name=name, created_by=user.id)
     try:
+        inventory_catalog.acquire_alias_graph_read_lock(db)
+        component_id = payload.scope.component_id if payload.scope.kind == "component" else None
+        snapshot = _snapshot(db, park_id=park_id, component_id=component_id)
+        row = InventoryCount(
+            park_id=park_id,
+            name=name,
+            created_by=user.id,
+        )
         db.add(row)
         db.flush()
         db.add_all(
@@ -216,7 +224,7 @@ def update_count_lines(
         for value in values:
             line = rows[int(value["catalog_part_id"])]
             actual = int(value["actual_quantity"])
-            if not 0 <= actual <= 1_000_000:
+            if actual < 0:
                 raise ValueError("inventory_count_actual_invalid")
             line.actual_quantity = actual
             line.difference = actual - line.expected_quantity
@@ -243,25 +251,10 @@ def list_counts(
     filters = [InventoryCount.park_id == park_id]
     clean_query = _clean_text(query)
     if clean_query:
-        if db.get_bind().dialect.name == "sqlite":
-            driver_connection = db.connection().connection.driver_connection
-            driver_connection.create_function(
-                "inventory_casefold",
-                1,
-                lambda value: str(value or "").casefold(),
-                deterministic=True,
-            )
-            filters.append(
-                func.instr(func.inventory_casefold(InventoryCount.name), clean_query.casefold()) > 0
-            )
-        else:
-            escaped = clean_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            russian_upper = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
-            russian_lower = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
-            normalized_name = func.lower(
-                func.translate(InventoryCount.name, russian_upper, russian_lower)
-            )
-            filters.append(normalized_name.like(f"%{escaped.casefold()}%", escape="\\"))
+        escaped = (
+            clean_query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        filters.append(InventoryCount.normalized_name.like(f"%{escaped}%", escape="\\"))
     total = db.scalar(select(func.count(InventoryCount.id)).where(*filters))
     rows = list(
         db.scalars(

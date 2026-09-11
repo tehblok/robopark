@@ -186,6 +186,7 @@ def _create_workflow_tables() -> None:
             "park_id", sa.Integer(), sa.ForeignKey("parks.id", ondelete="CASCADE"), nullable=False
         ),
         sa.Column("name", sa.String(128), nullable=False),
+        sa.Column("normalized_name", sa.String(384), nullable=False),
         sa.Column("status", sa.String(16), nullable=False, server_default="draft"),
         sa.Column("created_by", sa.Integer(), sa.ForeignKey("users.id"), nullable=False),
         sa.Column("posted_by", sa.Integer(), sa.ForeignKey("users.id")),
@@ -197,6 +198,11 @@ def _create_workflow_tables() -> None:
     )
     op.create_index("ix_inventory_counts_park_id", "inventory_counts", ["park_id"])
     op.create_index("ix_inventory_counts_created_by", "inventory_counts", ["created_by"])
+    op.create_index(
+        "ix_inventory_counts_park_normalized_name",
+        "inventory_counts",
+        ["park_id", "normalized_name"],
+    )
     op.create_table(
         "inventory_count_lines",
         sa.Column("id", sa.Integer(), primary_key=True),

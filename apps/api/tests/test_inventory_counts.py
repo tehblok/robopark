@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from conftest import login_as, role_id_for
@@ -557,3 +558,174 @@ def test_count_alias_lock_precedes_document_and_sorted_canonical_stock_locks(
         == 200
     )
     assert events[:4] == ["alias", "document", f"stock:{low.id}", f"stock:{high.id}"]
+
+
+def test_count_materializes_missing_zero_stock_before_archive_and_authorizes_its_line_only(
+    client, db_session, seed_park_with_tracker
+):
+    admin = _user(db_session, "admin", "count-zero-archive")
+    component = _component(db_session, admin, "Zero archive component")
+    counted = _part(db_session, admin, component, article="COUNT-ZERO-ARCHIVE")
+    unrelated = _part(db_session, admin, component, article="COUNT-ZERO-UNRELATED")
+    login_as(client, admin.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/counts"
+
+    count = _create_count(
+        client,
+        seed_park_with_tracker,
+        scope={"kind": "component", "component_id": component.id},
+    ).json()
+    stocks_after_snapshot = dict(
+        db_session.execute(
+            select(InventoryParkStock.catalog_part_id, InventoryParkStock.quantity)
+        ).all()
+    )
+    assert stocks_after_snapshot == {counted.id: 0, unrelated.id: 0}
+    assert (
+        client.patch(
+            f"{base}/{count['id']}",
+            json={
+                "lines": [
+                    {"catalog_part_id": counted.id, "actual_quantity": 1},
+                    {"catalog_part_id": unrelated.id, "actual_quantity": 0},
+                ]
+            },
+        ).status_code
+        == 200
+    )
+    counted.is_active = False
+    unrelated.is_active = False
+    db_session.commit()
+
+    posted = client.post(f"{base}/{count['id']}/post")
+    retried = client.post(f"{base}/{count['id']}/post")
+
+    assert posted.status_code == retried.status_code == 200
+    db_session.expire_all()
+    assert dict(
+        db_session.execute(
+            select(InventoryParkStock.catalog_part_id, InventoryParkStock.quantity)
+        ).all()
+    ) == {counted.id: 1, unrelated.id: 0}
+    movements = list(
+        db_session.scalars(
+            select(InventoryMovement).where(InventoryMovement.source_kind == "count")
+        )
+    )
+    counted_line = next(line for line in count["lines"] if line["catalog_part_id"] == counted.id)
+    assert [(row.catalog_part_id, row.delta, row.source_id) for row in movements] == [
+        (counted.id, 1, f"{count['id']}:{counted_line['id']}")
+    ]
+
+
+def test_count_accepts_quantities_above_one_million_within_database_integer_capacity(
+    client, db_session, seed_park_with_tracker
+):
+    mechanic = _user(db_session, "mechanic", "count-large", [seed_park_with_tracker])
+    component = _component(db_session, mechanic, "Large quantity component")
+    unchanged = _part(db_session, mechanic, component, article="COUNT-LARGE-SAME")
+    increased = _part(db_session, mechanic, component, article="COUNT-LARGE-UP")
+    _stock(db_session, seed_park_with_tracker, unchanged, 1_000_001)
+    _stock(db_session, seed_park_with_tracker, increased, 0)
+    login_as(client, mechanic.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/counts"
+    count = _create_count(client, seed_park_with_tracker).json()
+
+    updated = client.patch(
+        f"{base}/{count['id']}",
+        json={
+            "lines": [
+                {"catalog_part_id": unchanged.id, "actual_quantity": 1_000_001},
+                {"catalog_part_id": increased.id, "actual_quantity": 2_000_000_000},
+            ]
+        },
+    )
+    posted = client.post(f"{base}/{count['id']}/post")
+
+    assert updated.status_code == 200, updated.text
+    assert posted.status_code == 200, posted.text
+    db_session.expire_all()
+    assert dict(
+        db_session.execute(
+            select(InventoryParkStock.catalog_part_id, InventoryParkStock.quantity)
+        ).all()
+    ) == {unchanged.id: 1_000_001, increased.id: 2_000_000_000}
+    assert [
+        row.delta
+        for row in db_session.scalars(
+            select(InventoryMovement).where(InventoryMovement.source_kind == "count")
+        )
+    ] == [2_000_000_000]
+
+
+def test_count_name_search_uses_persisted_python_casefold_on_all_dialects(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    mechanic = _user(db_session, "mechanic", "count-casefold", [seed_park_with_tracker])
+    login_as(client, mechanic.username, "secret")
+    created = _create_count(client, seed_park_with_tracker, name="Straße ος").json()
+
+    response = client.get(
+        f"/inventory/parks/{seed_park_with_tracker.id}/counts",
+        params={"q": "STRASSE ΟΣ"},
+    )
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [created["id"]]
+    assert db_session.get(InventoryCount, created["id"]).normalized_name == "strasse οσ"
+
+    class Bind:
+        dialect = postgresql.dialect()
+
+    class RecordingSession:
+        statements = []
+
+        def get_bind(self):
+            return Bind()
+
+        def scalar(self, statement):
+            self.statements.append(statement)
+            return 0
+
+        def scalars(self, statement):
+            self.statements.append(statement)
+            return []
+
+    from robopark_api.services import inventory_counts
+
+    db = RecordingSession()
+    monkeypatch.setattr(inventory_counts.inventory_access, "require_park", lambda *_args: None)
+    inventory_counts.list_counts(
+        db,
+        object(),
+        park_id=7,
+        query="STRASSE ΟΣ",
+        limit=10,
+        offset=0,
+    )
+    compiled = "\n".join(
+        str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+        for statement in db.statements
+    )
+    assert "inventory_counts.normalized_name" in compiled
+    assert "%strasse οσ%" in compiled
+    assert "translate(" not in compiled
+    assert "lower(" not in compiled
+
+
+def test_count_name_normalization_tracks_orm_updates(client, db_session, seed_park_with_tracker):
+    mechanic = _user(db_session, "mechanic", "count-casefold-update", [seed_park_with_tracker])
+    login_as(client, mechanic.username, "secret")
+    created = _create_count(client, seed_park_with_tracker, name="Original").json()
+    row = db_session.get(InventoryCount, created["id"])
+
+    row.name = "Weiße ος"
+    db_session.commit()
+
+    db_session.refresh(row)
+    assert row.normalized_name == "weisse οσ"
+    response = client.get(
+        f"/inventory/parks/{seed_park_with_tracker.id}/counts",
+        params={"q": "WEISSE ΟΣ"},
+    )
+    assert [item["id"] for item in response.json()["items"]] == [created["id"]]

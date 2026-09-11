@@ -441,6 +441,14 @@ def test_inventory_upgrade_preserves_existing_data(sqlite_database_url, monkeypa
         assert (
             connection.execute(text("SELECT name FROM parks WHERE id=1")).scalar_one() == "Existing"
         )
+        count_columns = {
+            column["name"] for column in inspect(connection).get_columns("inventory_counts")
+        }
+        count_indexes = {
+            index["name"] for index in inspect(connection).get_indexes("inventory_counts")
+        }
+        assert "normalized_name" in count_columns
+        assert "ix_inventory_counts_park_normalized_name" in count_indexes
         assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
     command.downgrade(config, "0021_diagnostic_unknown_original")
     assert "campaigns" not in inspect(engine).get_table_names()

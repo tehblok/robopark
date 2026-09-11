@@ -237,7 +237,7 @@ class InventoryCountCreateIn(BaseModel):
 
 class InventoryCountLineUpdateIn(BaseModel):
     catalog_part_id: int
-    actual_quantity: int = Field(ge=0, le=1_000_000)
+    actual_quantity: int = Field(ge=0)
     comment: str | None = Field(default=None, max_length=500)
 
 

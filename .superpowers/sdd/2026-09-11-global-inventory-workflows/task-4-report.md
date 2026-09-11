@@ -35,8 +35,8 @@ existing behavior.
 ## Implementation
 
 - Added create/update/list/post/cancel services and the five requested park-scoped API routes.
-- `all` and `component` creation scopes snapshot every active catalog part in scope, using the
-  park stock quantity or zero when the park has no stock row. Empty valid scopes remain valid.
+- `all` and `component` creation scopes snapshot every active catalog part in scope, materializing
+  and locking a zero park-stock row when needed. Empty valid scopes remain valid.
 - Draft line updates accept non-negative actual quantities, calculate and persist differences,
   reject duplicate or out-of-document part IDs, and require every line to be counted before post.
 - Lists return `{items, limit, offset, total}`, sort by creation and ID descending, load page lines
@@ -54,8 +54,8 @@ existing behavior.
 - A posted retry returns the existing posted document without movement or audit duplication.
 - Historical source IDs survive merges. Parts archived after snapshot are resolved deliberately
   with the archived/history path; an existing historical stock can be adjusted without restoring
-  the catalog part, while an absent archived zero/zero line remains a no-op rather than creating
-  stock.
+  the catalog part. Snapshot materialization guarantees that initially absent zero stock has the
+  same authorized correction path after archival as pre-existing zero stock.
 - Create, update, post, and cancel mutations write attributed, park-scoped audit records in the
   same transaction. Only drafts can be edited or cancelled.
 
@@ -84,3 +84,72 @@ existing behavior.
   covered by dialect-level tests; a live PostgreSQL contention environment was not available.
 - No known correctness blocker remains. The 21 full-suite warnings are the existing Starlette
   TestClient warning and SQLite datetime-adapter warnings from migration tests.
+
+## Fix round 1/5
+
+### Review findings and RED evidence
+
+All three Important findings and the normalized-name update coverage gap were reproduced before
+their corresponding production changes.
+
+Combined initial command:
+
+`cd apps/api && .venv/bin/pytest tests/test_inventory_counts.py::test_count_materializes_missing_zero_stock_before_archive_and_authorizes_its_line_only tests/test_inventory_counts.py::test_count_accepts_quantities_above_one_million_within_database_integer_capacity tests/test_inventory_counts.py::test_count_name_search_uses_persisted_python_casefold_on_all_dialects tests/test_models_migration.py::test_inventory_upgrade_preserves_existing_data -q`
+
+Result: `4 failed, 1 warning in 0.94s`.
+
+- Count creation left both scoped, initially absent park-stock rows missing.
+- Pydantic rejected `1_000_001` and `2_000_000_000` with HTTP 422.
+- `InventoryCount` had no `normalized_name`, and migration metadata lacked the field/index.
+
+The ORM update invariant received a separate test before its model validator:
+
+`cd apps/api && .venv/bin/pytest tests/test_inventory_counts.py::test_count_name_normalization_tracks_orm_updates -q`
+
+Result: `1 failed, 1 warning in 0.33s`; after changing `name`, normalized storage remained
+`original` instead of `weisse οσ`.
+
+### Fixes
+
+- Count creation now takes the shared alias-graph lock and calls the canonical stock writer for
+  every scoped active part in ascending part-ID order. This atomically materializes and locks zero
+  rows before snapshot lines are persisted. A missing-zero line can therefore be counted after its
+  part is archived, while no unrelated archived movement is enabled; the test proves retry
+  idempotency and a zero unrelated stock with no movement.
+- Removed the arbitrary one-million cap from both request validation and service validation.
+  Non-negative values within database integer capacity are accepted; the regression covers an
+  unchanged `1_000_001` line and a `2_000_000_000` positive adjustment.
+- Added required `InventoryCount.normalized_name` (`String(384)`) and the composite
+  `(park_id, normalized_name)` index to ORM metadata and the unshipped `0026` migration. The wider
+  field accommodates Python casefold expansions for a 128-character display name.
+- The ORM `name` validator stores exact Python `casefold()` output for both inserts and updates.
+  Both SQLite and PostgreSQL now query the persisted normalized field with the same escaped,
+  casefolded pattern; no locale-sensitive `lower`, `ILIKE`, or partial alphabet translation remains.
+- No data-backfill statement is needed inside `0026`: `inventory_counts` is first created by that
+  same unshipped revision, so there are no pre-revision count rows. Upgrade metadata and downgrade
+  roundtrip remain covered by `test_inventory_upgrade_preserves_existing_data`.
+
+### GREEN and final verification
+
+- Individual zero-stock/archive regression: `1 passed, 1 warning in 1.00s`.
+- Individual large-quantity regression: `1 passed, 1 warning in 0.29s`.
+- Persisted search plus migration metadata: `2 passed, 1 warning in 0.52s`.
+- ORM update normalization: `1 passed, 1 warning in 0.24s`.
+- Focused counts/receipts/migration/models/identity:
+  `94 passed, 21 warnings in 18.05s`.
+- Full API suite: `1437 passed, 21 warnings in 240.45s (0:04:00)`.
+- Final focused rerun: `94 passed, 21 warnings in 21.46s`.
+- Final Ruff check: `All checks passed!`; Ruff format check: `6 files already formatted`;
+  `git diff --check` exited zero.
+
+### Self-review and concerns
+
+- Snapshot stock creation, count lines, and audit share one transaction; any later failure rolls
+  back all three. The advisory lock precedes catalog resolution and sorted stock locking.
+- The archived correction remains source-bounded by immutable count line IDs and stable
+  `<count-id>:<line-id>` movement identities; ordinary archived-part movements still use the
+  default rejecting path.
+- Exact casefold behavior is tested with German sharp-s and Greek final sigma, and compiled
+  PostgreSQL SQL is asserted to use only `inventory_counts.normalized_name`.
+- No correctness blocker remains. Live PostgreSQL contention remains unavailable; locking and SQL
+  shape are verified through the existing dialect-level protocol tests.
