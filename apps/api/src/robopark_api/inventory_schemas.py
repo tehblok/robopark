@@ -1,7 +1,7 @@
-from datetime import datetime
-from typing import Literal
+from datetime import date, datetime
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 
 class InventoryPartOut(BaseModel):
@@ -149,3 +149,69 @@ class InventoryStockOut(BaseModel):
     location: str | None
     is_active: bool
     version: int
+
+
+class InventoryReceiptLineIn(BaseModel):
+    catalog_part_id: int
+    quantity: int = Field(gt=0, le=1_000_000)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class InventoryReceiptCreateIn(BaseModel):
+    supplier: str | None = Field(default=None, max_length=256)
+    document_number: str | None = Field(default=None, max_length=128)
+    received_on: date
+    comment: str | None = None
+    lines: list[InventoryReceiptLineIn] = Field(min_length=1)
+
+
+class InventoryReceiptUpdateIn(BaseModel):
+    supplier: str | None = Field(default=None, max_length=256)
+    document_number: str | None = Field(default=None, max_length=128)
+    received_on: date | None = None
+    comment: str | None = None
+    lines: list[InventoryReceiptLineIn] | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def reject_explicit_nulls(self):
+        if "received_on" in self.model_fields_set and self.received_on is None:
+            raise ValueError("inventory_receipt_date_required")
+        if "lines" in self.model_fields_set and self.lines is None:
+            raise ValueError("inventory_receipt_lines_required")
+        return self
+
+
+class InventoryReceiptLineOut(BaseModel):
+    id: int
+    catalog_part_id: int
+    quantity: int
+    note: str | None
+
+
+class InventoryReceiptOut(BaseModel):
+    id: int
+    park_id: int
+    supplier: str | None
+    document_number: str | None
+    received_on: date
+    comment: str | None
+    status: Literal["draft", "posted", "cancelled"]
+    created_by: int
+    posted_by: int | None
+    created_at: datetime
+    posted_at: datetime | None
+    lines: list[InventoryReceiptLineOut]
+
+
+class InventoryReceiptListOut(BaseModel):
+    items: list[InventoryReceiptOut]
+    limit: int
+    offset: int
+    total: int
+
+
+NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class InventoryReceiptReversalIn(BaseModel):
+    reason: NonEmptyStr = Field(max_length=500)

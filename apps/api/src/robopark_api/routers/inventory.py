@@ -22,13 +22,23 @@ from robopark_api.inventory_schemas import (
     InventoryOverviewOut,
     InventoryPartOut,
     InventoryPartUpdateIn,
+    InventoryReceiptCreateIn,
+    InventoryReceiptListOut,
+    InventoryReceiptOut,
+    InventoryReceiptReversalIn,
+    InventoryReceiptUpdateIn,
     InventoryStockOut,
     InventoryStockUpdateIn,
     InventoryTaskWriteoffIn,
 )
 from robopark_api.models import User
 from robopark_api.services import inventory as service
-from robopark_api.services import inventory_access, inventory_catalog, inventory_stock
+from robopark_api.services import (
+    inventory_access,
+    inventory_catalog,
+    inventory_receipts,
+    inventory_stock,
+)
 from robopark_api.services.tracker_client import MAX_ATTACHMENT_BYTES
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
@@ -56,6 +66,112 @@ async def _photo(upload: UploadFile | None):
     if upload is None:
         return None
     return upload.filename, await upload.read(MAX_ATTACHMENT_BYTES + 1), upload.content_type
+
+
+@router.get("/parks/{park_id}/receipts", response_model=InventoryReceiptListOut)
+def list_inventory_receipts(
+    park_id: int,
+    limit: int = 50,
+    offset: int = 0,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    if not 1 <= limit <= 200 or offset < 0:
+        raise HTTPException(422, "inventory_pagination_invalid")
+    rows, total = _run(
+        lambda: inventory_receipts.list_receipts(
+            db, user, park_id=park_id, limit=limit, offset=offset
+        )
+    )
+    return {
+        "items": inventory_receipts.receipts_out(db, rows),
+        "limit": limit,
+        "offset": offset,
+        "total": total,
+    }
+
+
+@router.post(
+    "/parks/{park_id}/receipts",
+    response_model=InventoryReceiptOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_inventory_receipt(
+    park_id: int,
+    payload: InventoryReceiptCreateIn,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    row = _run(
+        lambda: inventory_receipts.create_receipt(db, user, park_id=park_id, payload=payload)
+    )
+    return inventory_receipts.receipt_out(db, row)
+
+
+@router.patch("/parks/{park_id}/receipts/{receipt_id}", response_model=InventoryReceiptOut)
+def update_inventory_receipt(
+    park_id: int,
+    receipt_id: int,
+    payload: InventoryReceiptUpdateIn,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    row = _run(
+        lambda: inventory_receipts.update_receipt(
+            db,
+            user,
+            park_id=park_id,
+            receipt_id=receipt_id,
+            changes=payload.model_dump(exclude_unset=True),
+        )
+    )
+    return inventory_receipts.receipt_out(db, row)
+
+
+@router.post("/parks/{park_id}/receipts/{receipt_id}/post", response_model=InventoryReceiptOut)
+def post_inventory_receipt(
+    park_id: int,
+    receipt_id: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    row = _run(
+        lambda: inventory_receipts.post_receipt(db, user, park_id=park_id, receipt_id=receipt_id)
+    )
+    return inventory_receipts.receipt_out(db, row)
+
+
+@router.post("/parks/{park_id}/receipts/{receipt_id}/cancel", response_model=InventoryReceiptOut)
+def cancel_inventory_receipt(
+    park_id: int,
+    receipt_id: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    row = _run(
+        lambda: inventory_receipts.cancel_receipt(db, user, park_id=park_id, receipt_id=receipt_id)
+    )
+    return inventory_receipts.receipt_out(db, row)
+
+
+@router.post("/parks/{park_id}/receipts/{receipt_id}/reverse", response_model=InventoryReceiptOut)
+def reverse_inventory_receipt(
+    park_id: int,
+    receipt_id: int,
+    payload: InventoryReceiptReversalIn,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    row = _run(
+        lambda: inventory_receipts.reverse_receipt(
+            db,
+            user,
+            park_id=park_id,
+            receipt_id=receipt_id,
+            reason=payload.reason,
+        )
+    )
+    return inventory_receipts.receipt_out(db, row)
 
 
 @router.get("/catalog/search", response_model=InventoryCatalogSearchOut)
