@@ -302,15 +302,28 @@ def _stabilize_catalog_aliases(db: Session) -> None:
 
 
 def _canonical_line_groups(
-    db: Session, *, park_id: int, lines: list[InventoryReceiptLine]
+    db: Session,
+    *,
+    park_id: int,
+    lines: list[InventoryReceiptLine],
+    allow_archived: bool = False,
 ) -> list[tuple[int, list[InventoryReceiptLine]]]:
     groups: dict[int, list[InventoryReceiptLine]] = {}
     for line in lines:
-        canonical_id = resolve_catalog_part(db, line.catalog_part_id).id
+        canonical_id = resolve_catalog_part(
+            db,
+            line.catalog_part_id,
+            allow_archived=allow_archived,
+        ).id
         groups.setdefault(canonical_id, []).append(line)
     result = []
     for canonical_id in sorted(groups):
-        inventory_stock.ensure_stock(db, park_id=park_id, catalog_part_id=canonical_id)
+        inventory_stock.ensure_stock(
+            db,
+            park_id=park_id,
+            catalog_part_id=canonical_id,
+            allow_archived=allow_archived,
+        )
         result.append((canonical_id, sorted(groups[canonical_id], key=lambda line: line.id)))
     return result
 
@@ -397,7 +410,12 @@ def reverse_receipt(
             db.commit()
             db.refresh(row)
             return row
-        groups = _canonical_line_groups(db, park_id=park_id, lines=lines)
+        groups = _canonical_line_groups(
+            db,
+            park_id=park_id,
+            lines=lines,
+            allow_archived=True,
+        )
         for canonical_id, grouped_lines in groups:
             for line in grouped_lines:
                 inventory_stock.apply_stock_delta(
@@ -410,6 +428,7 @@ def reverse_receipt(
                     source_kind="receipt_reversal",
                     source_id=_line_source_id(row, line),
                     note=clean_reason,
+                    allow_archived=True,
                 )
         _audit(db, user, row, "inventory.receipt.reversed", ["reason"])
         db.commit()

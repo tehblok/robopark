@@ -61,15 +61,28 @@ def stock_insert_if_missing_statement(dialect_name: str, *, park_id: int, catalo
     return statement.on_conflict_do_nothing(index_elements=["park_id", "catalog_part_id"])
 
 
-def ensure_stock(db: Session, *, park_id: int, catalog_part_id: int) -> InventoryParkStock:
-    catalog_part_id = resolve_catalog_part(db, catalog_part_id, lock=True).id
-    insert_statement = stock_insert_if_missing_statement(
-        db.get_bind().dialect.name,
-        park_id=park_id,
-        catalog_part_id=catalog_part_id,
+def ensure_stock(
+    db: Session,
+    *,
+    park_id: int,
+    catalog_part_id: int,
+    allow_archived: bool = False,
+) -> InventoryParkStock:
+    part = resolve_catalog_part(
+        db,
+        catalog_part_id,
+        allow_archived=allow_archived,
+        lock=True,
     )
-    if insert_statement is not None:
-        db.execute(insert_statement)
+    catalog_part_id = part.id
+    if part.is_active:
+        insert_statement = stock_insert_if_missing_statement(
+            db.get_bind().dialect.name,
+            park_id=park_id,
+            catalog_part_id=catalog_part_id,
+        )
+        if insert_statement is not None:
+            db.execute(insert_statement)
     stock = db.scalar(
         select(InventoryParkStock)
         .where(
@@ -80,6 +93,8 @@ def ensure_stock(db: Session, *, park_id: int, catalog_part_id: int) -> Inventor
         .execution_options(populate_existing=True)
     )
     if stock is None:
+        if not part.is_active:
+            raise LookupError("inventory_stock_not_found")
         stock = InventoryParkStock(park_id=park_id, catalog_part_id=catalog_part_id)
         db.add(stock)
         db.flush()
@@ -98,10 +113,16 @@ def apply_stock_delta(
     source_id: str | None,
     note: str | None,
     issue_key: str | None = None,
+    allow_archived: bool = False,
 ) -> InventoryMovement:
     if delta == 0:
         raise ValueError("inventory_quantity_invalid")
-    stock = ensure_stock(db, park_id=park_id, catalog_part_id=catalog_part_id)
+    stock = ensure_stock(
+        db,
+        park_id=park_id,
+        catalog_part_id=catalog_part_id,
+        allow_archived=allow_archived,
+    )
     catalog_part_id = stock.catalog_part_id
     if source_kind is not None and source_id is not None:
         # ensure_stock holds the canonical catalog/stock locks (SQLite's writer

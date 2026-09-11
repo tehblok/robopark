@@ -284,6 +284,168 @@ def test_posted_receipt_reversal_requires_reason_and_preserves_original_history(
     )
 
 
+def test_posted_receipt_remains_reversible_after_its_part_is_archived(
+    client, db_session, seed_park_with_tracker
+):
+    admin = _user(db_session, "admin", "receipt-archived-reversal")
+    part = _part(db_session, admin, article="ARCHIVED-REVERSAL")
+    login_as(client, admin.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/receipts"
+    receipt = client.post(base, json=_payload(part.id)).json()
+    draft = client.post(
+        base,
+        json=_payload(part.id, document_number="ARCHIVED-DRAFT"),
+    ).json()
+    assert client.post(f"{base}/{receipt['id']}/post").status_code == 200
+    original = db_session.scalar(
+        select(InventoryMovement).where(InventoryMovement.source_kind == "receipt")
+    )
+    original_fields = (original.id, original.catalog_part_id, original.delta, original.source_id)
+
+    archived = client.patch(
+        f"/inventory/catalog/parts/{part.id}",
+        json={"is_active": False},
+    )
+    ordinary = client.post(
+        f"/inventory/parts/{part.id}/movements",
+        json={
+            "park_id": seed_park_with_tracker.id,
+            "kind": "receipt",
+            "quantity": 1,
+        },
+    )
+    ordinary_post = client.post(f"{base}/{draft['id']}/post")
+    reversed_response = client.post(
+        f"{base}/{receipt['id']}/reverse",
+        json={"reason": "archive correction"},
+    )
+    retried = client.post(
+        f"{base}/{receipt['id']}/reverse",
+        json={"reason": "archive correction retry"},
+    )
+
+    assert archived.status_code == 200, archived.text
+    assert ordinary.status_code == 404
+    assert ordinary.json()["detail"] == "inventory_part_archived"
+    assert ordinary_post.status_code == 404
+    assert ordinary_post.json()["detail"] == "inventory_part_archived"
+    assert reversed_response.status_code == retried.status_code == 200
+    db_session.expire_all()
+    stock = db_session.scalar(
+        select(InventoryParkStock).where(
+            InventoryParkStock.park_id == seed_park_with_tracker.id,
+            InventoryParkStock.catalog_part_id == part.id,
+        )
+    )
+    assert stock.quantity == 0
+    assert db_session.get(InventoryCatalogPart, part.id).is_active is False
+    original = db_session.get(InventoryMovement, original.id)
+    assert (
+        original.id,
+        original.catalog_part_id,
+        original.delta,
+        original.source_id,
+    ) == original_fields
+    reversals = list(
+        db_session.scalars(
+            select(InventoryMovement).where(InventoryMovement.source_kind == "receipt_reversal")
+        )
+    )
+    assert [(row.delta, row.note) for row in reversals] == [(-5, "archive correction")]
+    assert (
+        db_session.scalar(
+            select(func.count(AuditLog.id)).where(AuditLog.action == "inventory.receipt.reversed")
+        )
+        == 1
+    )
+
+
+def test_archived_receipt_reversal_rejects_insufficient_existing_stock_atomically(
+    client, db_session, seed_park_with_tracker
+):
+    admin = _user(db_session, "admin", "receipt-archived-insufficient")
+    part = _part(db_session, admin, article="ARCHIVED-INSUFFICIENT")
+    login_as(client, admin.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/receipts"
+    receipt = client.post(base, json=_payload(part.id)).json()
+    assert client.post(f"{base}/{receipt['id']}/post").status_code == 200
+    writeoff = client.post(
+        f"/inventory/parts/{part.id}/movements",
+        json={
+            "park_id": seed_park_with_tracker.id,
+            "kind": "writeoff",
+            "quantity": 3,
+        },
+    )
+    assert writeoff.status_code == 201, writeoff.text
+    assert (
+        client.patch(
+            f"/inventory/catalog/parts/{part.id}",
+            json={"is_active": False},
+        ).status_code
+        == 200
+    )
+
+    response = client.post(
+        f"{base}/{receipt['id']}/reverse",
+        json={"reason": "cannot overdraw"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "inventory_out_of_stock",
+        "current_quantity": 2,
+    }
+    db_session.expire_all()
+    assert db_session.scalar(select(InventoryParkStock.quantity)) == 2
+    assert (
+        db_session.scalar(
+            select(func.count(InventoryMovement.id)).where(
+                InventoryMovement.source_kind == "receipt_reversal"
+            )
+        )
+        == 0
+    )
+    assert (
+        db_session.scalar(
+            select(func.count(AuditLog.id)).where(AuditLog.action == "inventory.receipt.reversed")
+        )
+        == 0
+    )
+
+
+def test_archived_receipt_reversal_does_not_create_missing_stock(
+    client, db_session, seed_park_with_tracker
+):
+    admin = _user(db_session, "admin", "receipt-archived-missing-stock")
+    part = _part(db_session, admin, article="ARCHIVED-MISSING-STOCK")
+    login_as(client, admin.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/receipts"
+    receipt = client.post(base, json=_payload(part.id)).json()
+    assert client.post(f"{base}/{receipt['id']}/post").status_code == 200
+    stock = db_session.scalar(select(InventoryParkStock))
+    db_session.delete(stock)
+    part.is_active = False
+    db_session.commit()
+
+    response = client.post(
+        f"{base}/{receipt['id']}/reverse",
+        json={"reason": "missing historical stock"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "inventory_stock_not_found"
+    assert db_session.scalar(select(func.count(InventoryParkStock.id))) == 0
+    assert (
+        db_session.scalar(
+            select(func.count(InventoryMovement.id)).where(
+                InventoryMovement.source_kind == "receipt_reversal"
+            )
+        )
+        == 0
+    )
+
+
 def test_reverse_receipt_service_rejects_blank_reason(client, db_session, seed_park_with_tracker):
     mechanic = _user(db_session, "mechanic", "receipt-service-reversal", [seed_park_with_tracker])
     part = _part(db_session, mechanic, article="SERVICE-REV")
@@ -686,10 +848,15 @@ def test_concurrent_alias_receipts_prelock_canonical_stocks_in_sorted_order(
     calls_lock = Lock()
     real_ensure_stock = inventory_receipts.inventory_stock.ensure_stock
 
-    def record_ensure_stock(db, *, park_id, catalog_part_id):
+    def record_ensure_stock(db, *, park_id, catalog_part_id, allow_archived=False):
         with calls_lock:
             calls.setdefault(get_ident(), []).append(catalog_part_id)
-        return real_ensure_stock(db, park_id=park_id, catalog_part_id=catalog_part_id)
+        return real_ensure_stock(
+            db,
+            park_id=park_id,
+            catalog_part_id=catalog_part_id,
+            allow_archived=allow_archived,
+        )
 
     monkeypatch.setattr(inventory_receipts.inventory_stock, "ensure_stock", record_ensure_stock)
 
