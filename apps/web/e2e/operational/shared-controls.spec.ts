@@ -25,6 +25,7 @@ for (const theme of ['light', 'dark']) for (const width of [390, 1440]) {
       return { json: sections }
     } }] })
     await page.goto('/admin/emergency/config?park=7')
+    await page.getByRole('button', { name: 'Открыть раздел Статус' }).click()
     await expect(page.getByLabel('Путь поля 9')).toHaveValue('data.status')
     await settlePage(page)
     await assertNoSeriousA11yViolations(page)
@@ -33,8 +34,10 @@ for (const theme of ['light', 'dark']) for (const width of [390, 1440]) {
 
     await page.getByRole('tab', { name: 'Ошибки и индикация', exact: true }).click()
     await page.getByRole('tab', { name: 'Разделы и поля', exact: true }).click()
+    await page.getByRole('button', { name: 'Открыть раздел Статус' }).click()
     await expect(page.getByLabel('Путь поля 9')).toHaveValue('data.status')
     expect(reads).toBe(1)
+    await page.getByRole('button', { name: 'Новый раздел', exact: true }).click()
     await page.getByLabel('ID раздела', { exact: true }).fill('draft')
     await page.clock.setFixedTime(new Date('2026-09-02T09:08:00Z'))
     await page.evaluate(() => {

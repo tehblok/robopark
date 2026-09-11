@@ -18,7 +18,10 @@ test('light-theme related robot task link meets the WCAG AA contract', async ({ 
   await installOperational(page, { role: 'operator' })
   await page.goto(`/robots/${snapshot.vin}?park=7`)
 
-  await page.getByRole('tab', { name: 'Задачи' }).click()
+  const navigation = page.locator('.rp-check-navigation')
+  await navigation.getByRole('button', { name: 'Ещё', exact: true }).click()
+  await navigation.getByRole('menuitem', { name: 'Задачи', exact: true }).click()
+  await expect(page.getByRole('tab', { name: 'Задачи', exact: true })).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
   await settlePage(page)
   await assertNoSeriousA11yViolations(page)

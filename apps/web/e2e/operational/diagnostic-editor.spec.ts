@@ -203,6 +203,7 @@ for (const theme of ['light', 'dark'] as const) for (const width of [320, 390, 7
     await page.getByRole('button', { name: `Ниже: ${rule.title}` }).click()
     await expect(page.getByText('Порядок сохранён.')).toBeVisible()
     await page.getByRole('tab', { name: 'Разделы и поля' }).click()
+    await page.getByRole('button', { name: 'Открыть раздел Состояние робота' }).click()
     await expect(page.getByLabel('Путь поля 9')).toHaveValue('data.status')
     await expect(page).toHaveURL(/park=7/)
   })

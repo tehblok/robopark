@@ -21,6 +21,7 @@ for (const width of [390, 1440]) {
     await page.goto('/work/ROBOPARK-42?park=7')
     await expect(page.getByRole('heading', { name: issue.summary, exact: true })).toBeVisible()
     await settlePage(page)
+    if (width < 600) await page.getByRole('button', { name: 'Статус задачи', exact: true }).click()
     await page.getByRole('button', { name: 'Закрыть тикет', exact: true }).scrollIntoViewIfNeeded()
     expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(100)
     expect((await page.locator('.rp-shell__topbar').boundingBox())?.y).toBe(0)
