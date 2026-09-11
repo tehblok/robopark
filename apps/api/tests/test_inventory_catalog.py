@@ -1,13 +1,22 @@
+import json
+from concurrent.futures import ThreadPoolExecutor
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from conftest import login_as, role_id_for
 from robopark_api.models import (
+    AuditLog,
     InventoryCatalogComponent,
     InventoryCatalogPart,
+    InventoryMovement,
     InventoryParkStock,
     Park,
     User,
     UserPark,
 )
 from robopark_api.security import hash_password
+from robopark_api.services import inventory_stock
 
 
 def _user(db, slug, username, parks=()):
@@ -86,8 +95,7 @@ def test_catalog_search_exposes_exact_contract_zero_stock_and_mechanic_scope(
         "total": 1,
     }
     assert (
-        client.get("/inventory/catalog/search", params={"park_id": foreign.id}).status_code
-        == 403
+        client.get("/inventory/catalog/search", params={"park_id": foreign.id}).status_code == 403
     )
 
 
@@ -168,8 +176,7 @@ def test_mechanic_can_create_missing_catalog_but_only_admin_can_patch_existing(
     }
     part_id = part_response.json()["id"]
     assert (
-        client.patch(f"/inventory/catalog/parts/{part_id}", json={"name": "Нет"}).status_code
-        == 403
+        client.patch(f"/inventory/catalog/parts/{part_id}", json={"name": "Нет"}).status_code == 403
     )
 
     login_as(client, admin.username, "secret")
@@ -230,14 +237,20 @@ def test_stock_settings_reject_mismatched_park_part_and_never_accept_quantity(
         json={"minimum_quantity": 2, "location": "A-1", "is_active": True},
     )
     assert unknown.status_code == 404
-    assert client.put(
-        f"/inventory/parks/{foreign.id}/stocks/{part.id}",
-        json={"minimum_quantity": 2, "location": "A-1", "is_active": True},
-    ).status_code == 403
-    assert client.put(
-        f"/inventory/parks/{seed_park_with_tracker.id}/stocks/{part.id}",
-        json={"quantity": 100},
-    ).status_code == 422
+    assert (
+        client.put(
+            f"/inventory/parks/{foreign.id}/stocks/{part.id}",
+            json={"minimum_quantity": 2, "location": "A-1", "is_active": True},
+        ).status_code
+        == 403
+    )
+    assert (
+        client.put(
+            f"/inventory/parks/{seed_park_with_tracker.id}/stocks/{part.id}",
+            json={"quantity": 100},
+        ).status_code
+        == 422
+    )
     updated = client.put(
         f"/inventory/parks/{seed_park_with_tracker.id}/stocks/{part.id}",
         json={"minimum_quantity": 2, "location": "  A-1  ", "is_active": True},
@@ -252,3 +265,256 @@ def test_stock_settings_reject_mismatched_park_part_and_never_accept_quantity(
         "is_active": True,
         "version": 2,
     }
+
+
+def test_archived_component_hides_parts_and_conflicting_restores_return_409(
+    client, db_session, seed_park_with_tracker
+):
+    admin = _user(db_session, "admin", "restore-admin")
+    component, active = _catalog(db_session, admin, article="DUP-1")
+    archived_component = InventoryCatalogComponent(
+        name="  Подвязка  ",
+        normalized_name="подвязка",
+        is_active=False,
+        created_by=admin.id,
+        updated_by=admin.id,
+    )
+    archived_part = InventoryCatalogPart(
+        component_id=component.id,
+        name="Archived",
+        normalized_name="archived",
+        article=" dup-1 ",
+        normalized_article="dup-1",
+        is_active=False,
+        created_by=admin.id,
+        updated_by=admin.id,
+    )
+    hidden_component = InventoryCatalogComponent(
+        name="Hidden component",
+        normalized_name="hidden component",
+        is_active=False,
+        created_by=admin.id,
+        updated_by=admin.id,
+    )
+    db_session.add(hidden_component)
+    db_session.flush()
+    hidden_part = InventoryCatalogPart(
+        component_id=hidden_component.id,
+        name="Hidden part",
+        normalized_name="hidden part",
+        article="HIDDEN",
+        normalized_article="hidden",
+        created_by=admin.id,
+        updated_by=admin.id,
+    )
+    db_session.add_all([archived_component, archived_part, hidden_part])
+    db_session.commit()
+    login_as(client, admin.username, "secret")
+
+    searched = client.get(
+        "/inventory/catalog/search",
+        params={"park_id": seed_park_with_tracker.id, "q": "HIDDEN"},
+    )
+    assert searched.status_code == 200
+    assert searched.json()["items"] == []
+
+    component_restore = client.patch(
+        f"/inventory/catalog/components/{archived_component.id}", json={"is_active": True}
+    )
+    assert component_restore.status_code == 409
+    assert component_restore.json()["detail"] == {
+        "code": "inventory_component_exists",
+        "existing_component_id": component.id,
+    }
+    part_restore = client.patch(
+        f"/inventory/catalog/parts/{archived_part.id}", json={"is_active": True}
+    )
+    assert part_restore.status_code == 409
+    assert part_restore.json()["detail"] == {
+        "code": "inventory_article_exists",
+        "existing_part_id": active.id,
+    }
+
+
+def test_merge_transfers_stock_and_movement_history_and_archives_source(
+    client, db_session, seed_park_with_tracker
+):
+    other = Park(name="Other", tag="Other", is_active=True)
+    db_session.add(other)
+    db_session.commit()
+    admin = _user(db_session, "admin", "merge-admin")
+    component, target = _catalog(db_session, admin, name="Target", article="TARGET")
+    source = InventoryCatalogPart(
+        component_id=component.id,
+        name="Source",
+        normalized_name="source",
+        article="SOURCE",
+        normalized_article="source",
+        created_by=admin.id,
+        updated_by=admin.id,
+    )
+    db_session.add(source)
+    db_session.flush()
+    db_session.add_all(
+        [
+            InventoryParkStock(
+                park_id=seed_park_with_tracker.id,
+                catalog_part_id=target.id,
+                quantity=2,
+                updated_by=admin.id,
+            ),
+            InventoryParkStock(
+                park_id=seed_park_with_tracker.id,
+                catalog_part_id=source.id,
+                quantity=3,
+                updated_by=admin.id,
+            ),
+            InventoryParkStock(
+                park_id=other.id,
+                catalog_part_id=source.id,
+                quantity=4,
+                minimum_quantity=2,
+                location="B",
+                updated_by=admin.id,
+            ),
+            InventoryMovement(
+                catalog_part_id=source.id,
+                park_id=seed_park_with_tracker.id,
+                actor_user_id=admin.id,
+                kind="receipt",
+                delta=3,
+                balance_before=0,
+                balance_after=3,
+            ),
+        ]
+    )
+    db_session.commit()
+    login_as(client, admin.username, "secret")
+
+    response = client.post(
+        f"/inventory/catalog/parts/{source.id}/merge",
+        json={"target_part_id": target.id},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == target.id
+    db_session.refresh(source)
+    assert source.is_active is False
+    stocks = {
+        (row.park_id, row.catalog_part_id): (row.quantity, row.minimum_quantity, row.location)
+        for row in db_session.scalars(select(InventoryParkStock))
+    }
+    assert stocks[(seed_park_with_tracker.id, target.id)][0] == 5
+    assert stocks[(other.id, target.id)] == (4, 2, "B")
+    assert all(
+        row.catalog_part_id == target.id for row in db_session.scalars(select(InventoryMovement))
+    )
+    merge_audits = list(
+        db_session.scalars(
+            select(AuditLog).where(AuditLog.action == "inventory.catalog.part.merged")
+        )
+    )
+    assert {row.park_id for row in merge_audits} == {seed_park_with_tracker.id, other.id}
+    assert all(row.actor_user_id == admin.id and row.actor_role == "admin" for row in merge_audits)
+    assert all('"changed_fields"' in row.detail for row in merge_audits)
+
+
+def test_inventory_mutations_write_attributed_audit_entries(
+    client, db_session, seed_park_with_tracker
+):
+    admin = _user(db_session, "admin", "audit-admin")
+    _, part = _catalog(db_session, admin)
+    login_as(client, admin.username, "secret")
+
+    assert (
+        client.patch(f"/inventory/catalog/parts/{part.id}", json={"name": "Changed"}).status_code
+        == 200
+    )
+    assert (
+        client.put(
+            f"/inventory/parks/{seed_park_with_tracker.id}/stocks/{part.id}",
+            json={"minimum_quantity": 2, "location": "A", "is_active": True},
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            f"/inventory/parts/{part.id}/movements",
+            json={
+                "park_id": seed_park_with_tracker.id,
+                "kind": "receipt",
+                "quantity": 1,
+                "note": "delivery",
+            },
+        ).status_code
+        == 201
+    )
+    assert (
+        client.patch(f"/inventory/catalog/parts/{part.id}", json={"is_active": False}).status_code
+        == 200
+    )
+
+    rows = list(
+        db_session.scalars(
+            select(AuditLog).where(
+                AuditLog.actor_user_id == admin.id,
+                AuditLog.action.like("inventory.%"),
+            )
+        )
+    )
+    assert {row.action for row in rows} >= {
+        "inventory.catalog.part.updated",
+        "inventory.stock.configured",
+        "inventory.stock.moved",
+    }
+    assert all(row.actor_role == "admin" for row in rows)
+    assert all('"changed_fields"' in (row.detail or "") for row in rows)
+    stock_rows = [row for row in rows if row.action != "inventory.catalog.part.updated"]
+    assert all(row.park_id == seed_park_with_tracker.id for row in stock_rows)
+    movement_row = next(row for row in rows if row.action == "inventory.stock.moved")
+    assert json.loads(movement_row.detail)["changed_fields"] == [
+        "kind",
+        "note",
+        "quantity",
+    ]
+    assert any(
+        json.loads(row.detail)["changed_fields"] == ["is_active"]
+        for row in rows
+        if row.action == "inventory.catalog.part.updated"
+    )
+
+
+def test_concurrent_first_stock_deltas_are_not_lost(db_engine, db_session, seed_park_with_tracker):
+    mechanic = _user(db_session, "mechanic", "concurrent-mechanic", [seed_park_with_tracker])
+    _, part = _catalog(db_session, mechanic, article="CONCURRENT")
+    mechanic_id = mechanic.id
+    park_id = seed_park_with_tracker.id
+    part_id = part.id
+
+    def add_one(source_id):
+        with Session(db_engine) as session:
+            user = session.get(User, mechanic_id)
+            inventory_stock.apply_stock_delta(
+                session,
+                user=user,
+                park_id=park_id,
+                catalog_part_id=part_id,
+                delta=1,
+                kind="adjustment",
+                source_kind="manual",
+                source_id=source_id,
+                note=None,
+            )
+            session.commit()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(add_one, ["one", "two"]))
+
+    db_session.expire_all()
+    stock = db_session.scalar(select(InventoryParkStock))
+    assert stock.quantity == 2
+    movements = list(db_session.scalars(select(InventoryMovement)))
+    assert sorted((row.balance_before, row.balance_after) for row in movements) == [
+        (0, 1),
+        (1, 2),
+    ]

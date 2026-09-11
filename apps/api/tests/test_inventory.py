@@ -83,9 +83,7 @@ def test_mechanic_maintains_own_park_inventory_and_cannot_overdraw(
         "current_quantity": 6,
     }
     assert db_session.scalar(select(InventoryParkStock.quantity)) == 6
-    listed = client.get(
-        "/inventory/movements", params={"park_id": seed_park_with_tracker.id}
-    )
+    listed = client.get("/inventory/movements", params={"park_id": seed_park_with_tracker.id})
     assert listed.status_code == 200, listed.text
     assert [row["delta"] for row in listed.json()] == [-2, 3, 5]
 
@@ -208,3 +206,169 @@ def test_task_writeoff_does_not_comment_when_stock_is_insufficient(
     assert response.status_code == 409
     assert response.json()["detail"]["current_quantity"] == 5
     assert comments == []
+
+
+def test_legacy_movement_requires_park_when_global_part_has_multiple_accessible_stocks(
+    client, db_session, seed_park_with_tracker
+):
+    other = Park(name="Other", tag="Other", is_active=True)
+    db_session.add(other)
+    db_session.commit()
+    operator = _user(db_session, "operator", "ambiguous-operator")
+    login_as(client, operator.username, "secret")
+    _, part = _seed_part(client, seed_park_with_tracker.id)
+    db_session.add(
+        InventoryParkStock(
+            park_id=other.id,
+            catalog_part_id=part["id"],
+            quantity=9,
+            updated_by=operator.id,
+        )
+    )
+    db_session.commit()
+
+    ambiguous_update = client.patch(f"/inventory/parts/{part['id']}", json={"location": "C"})
+    assert ambiguous_update.status_code == 409
+    explicit_update = client.patch(
+        f"/inventory/parts/{part['id']}",
+        json={"park_id": seed_park_with_tracker.id, "location": "C"},
+    )
+    assert explicit_update.status_code == 200, explicit_update.text
+    assert explicit_update.json()["park_id"] == seed_park_with_tracker.id
+    assert explicit_update.json()["location"] == "C"
+
+    ambiguous = client.post(
+        f"/inventory/parts/{part['id']}/movements",
+        json={"kind": "receipt", "quantity": 1},
+    )
+    assert ambiguous.status_code == 409
+    assert ambiguous.json()["detail"] == {
+        "code": "inventory_park_required",
+        "park_ids": [seed_park_with_tracker.id, other.id],
+    }
+
+    explicit = client.post(
+        f"/inventory/parts/{part['id']}/movements",
+        json={"park_id": other.id, "kind": "receipt", "quantity": 1},
+    )
+    assert explicit.status_code == 201, explicit.text
+    quantities = dict(
+        db_session.execute(
+            select(InventoryParkStock.park_id, InventoryParkStock.quantity).where(
+                InventoryParkStock.catalog_part_id == part["id"]
+            )
+        ).all()
+    )
+    assert quantities == {seed_park_with_tracker.id: 5, other.id: 10}
+
+
+def test_task_writeoff_derives_claim_park_for_shared_global_part(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    other = Park(name="Other", tag="Other", is_active=True)
+    db_session.add(other)
+    db_session.commit()
+    mechanic = _user(db_session, "mechanic", "two-park-mechanic", [seed_park_with_tracker, other])
+    monkeypatch.setattr(inventory_svc.platform_settings, "get_tracker_token", lambda db: "token")
+    issue = {"key": "RP-44", "tags": [other.tag]}
+    monkeypatch.setattr(inventory_svc.tracker_cache, "get_issue", lambda **kwargs: issue)
+    monkeypatch.setattr(inventory_svc.tracker_client, "add_comment", lambda **kwargs: None)
+    login_as(client, mechanic.username, "secret")
+    _, part = _seed_part(client, seed_park_with_tracker.id)
+    db_session.add(
+        InventoryParkStock(
+            park_id=other.id,
+            catalog_part_id=part["id"],
+            quantity=7,
+            updated_by=mechanic.id,
+        )
+    )
+    db_session.commit()
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=mechanic,
+        owner=mechanic,
+        issue_key="RP-44",
+        park_id=other.id,
+    )
+
+    response = client.post(
+        "/inventory/tasks/RP-44/writeoff", json={"part_id": part["id"], "quantity": 2}
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["park_id"] == other.id
+    quantities = dict(
+        db_session.execute(
+            select(InventoryParkStock.park_id, InventoryParkStock.quantity).where(
+                InventoryParkStock.catalog_part_id == part["id"]
+            )
+        ).all()
+    )
+    assert quantities == {seed_park_with_tracker.id: 5, other.id: 5}
+
+
+def test_legacy_create_part_rolls_back_catalog_and_photo_on_late_failure(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    mechanic = _user(db_session, "mechanic", "rollback-mechanic", [seed_park_with_tracker])
+    login_as(client, mechanic.username, "secret")
+    component = client.post(
+        "/inventory/components", data={"park_id": seed_park_with_tracker.id, "name": "Wheel"}
+    ).json()
+    monkeypatch.setattr(
+        inventory_svc.inventory_stock,
+        "apply_stock_delta",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("late_failure")),
+    )
+    image = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+    existing_files = set(inventory_svc.photos_root().iterdir())
+
+    response = client.post(
+        "/inventory/parts",
+        data={
+            "park_id": seed_park_with_tracker.id,
+            "component_id": component["id"],
+            "name": "Disk",
+            "article": "ROLLBACK-1",
+            "quantity": 1,
+            "minimum_quantity": 0,
+            "location": "A",
+        },
+        files={"photo": ("disk.png", image, "image/png")},
+    )
+
+    assert response.status_code == 502
+    assert (
+        db_session.scalar(
+            select(InventoryCatalogPart).where(
+                InventoryCatalogPart.normalized_article == "rollback-1"
+            )
+        )
+        is None
+    )
+    assert set(inventory_svc.photos_root().iterdir()) == existing_files
+
+
+def test_legacy_overview_keeps_component_without_parts(client, db_session, seed_park_with_tracker):
+    mechanic = _user(db_session, "mechanic", "empty-component-mechanic", [seed_park_with_tracker])
+    login_as(client, mechanic.username, "secret")
+    component = client.post(
+        "/inventory/components",
+        data={"park_id": seed_park_with_tracker.id, "name": "Empty"},
+    ).json()
+
+    overview = client.get(f"/inventory?park_id={seed_park_with_tracker.id}")
+
+    assert overview.status_code == 200
+    assert overview.json()["components"] == [
+        {
+            "id": component["id"],
+            "park_id": seed_park_with_tracker.id,
+            "name": "Empty",
+            "has_photo": False,
+            "parts": [],
+        }
+    ]

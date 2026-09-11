@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from contextlib import suppress
@@ -30,7 +31,7 @@ from robopark_api.services import (
     tracker_signatures,
 )
 from robopark_api.services.report_attachments import sanitize_filename
-from robopark_api.services.tracker_claims import mechanic_owns_issue
+from robopark_api.services.tracker_claims import get_claim, mechanic_owns_issue
 from robopark_api.services.tracker_client import (
     ALLOWED_ATTACHMENT_MIMES,
     MAX_ATTACHMENT_BYTES,
@@ -105,6 +106,32 @@ def photo_path(storage_key: str | None) -> Path:
     return path
 
 
+def _remove_photo(storage_key: str | None) -> None:
+    if storage_key:
+        with suppress(OSError):
+            (photos_root().resolve() / storage_key).unlink()
+
+
+def audit_inventory_change(
+    db: Session,
+    user: User,
+    *,
+    action: str,
+    park_id: int | None,
+    target_id: int,
+    changed_fields,
+) -> None:
+    audit.record(
+        db,
+        action=action,
+        actor=user,
+        park_id=park_id,
+        target_type="inventory_part",
+        target_id=target_id,
+        detail=json.dumps({"changed_fields": sorted(changed_fields)}, ensure_ascii=False),
+    )
+
+
 @dataclass
 class LegacyComponentView:
     id: int
@@ -168,11 +195,10 @@ def overview(db: Session, user: User, park_id: int) -> dict:
         limit=1_000_000,
         offset=0,
     )
-    component_ids = {item["component_id"] for item in result["items"]}
     components = list(
         db.scalars(
             select(InventoryCatalogComponent)
-            .where(InventoryCatalogComponent.id.in_(component_ids))
+            .where(InventoryCatalogComponent.is_active.is_(True))
             .order_by(InventoryCatalogComponent.normalized_name, InventoryCatalogComponent.id)
         )
     )
@@ -197,9 +223,7 @@ def overview(db: Session, user: User, park_id: int) -> dict:
         "park_id": park_id,
         "component_count": len(components),
         "part_count": len(parts),
-        "low_stock_count": sum(
-            0 < part["quantity"] <= part["minimum_quantity"] for part in parts
-        ),
+        "low_stock_count": sum(0 < part["quantity"] <= part["minimum_quantity"] for part in parts),
         "out_of_stock_count": sum(part["quantity"] == 0 for part in parts),
         "components": [
             {
@@ -221,12 +245,30 @@ def create_component(
     name: str,
     photo: tuple[str | None, bytes, str | None] | None,
 ) -> LegacyComponentView:
-    component = inventory_catalog.create_component(db, user, park_id=park_id, name=name)
-    if photo:
-        component.photo_storage_key, component.photo_filename, component.photo_content_type = (
-            save_photo(*photo)
+    storage_key = None
+    try:
+        component = inventory_catalog.create_component(
+            db, user, park_id=park_id, name=name, commit=False
         )
+        if photo:
+            component.photo_storage_key, component.photo_filename, component.photo_content_type = (
+                save_photo(*photo)
+            )
+            storage_key = component.photo_storage_key
         db.commit()
+        db.refresh(component)
+    except Exception:
+        db.rollback()
+        _remove_photo(storage_key)
+        raise
+    audit_inventory_change(
+        db,
+        user,
+        action="inventory.catalog.component.created",
+        park_id=park_id,
+        target_id=component.id,
+        changed_fields=["name", *(["photo"] if photo else [])],
+    )
     return LegacyComponentView(component.id, park_id, component.name, component.photo_storage_key)
 
 
@@ -245,50 +287,70 @@ def create_part(
 ) -> LegacyPartView:
     if quantity < 0 or minimum_quantity < 0:
         raise ValueError("inventory_quantity_invalid")
-    part = inventory_catalog.create_part(
+    clean_location = _text(location, "inventory_location_required")
+    storage_key = None
+    try:
+        part = inventory_catalog.create_part(
+            db,
+            user,
+            park_id=park_id,
+            component_id=component_id,
+            name=name,
+            article=article,
+            commit=False,
+        )
+        if photo:
+            part.photo_storage_key, part.photo_filename, part.photo_content_type = save_photo(
+                *photo
+            )
+            storage_key = part.photo_storage_key
+        stock = inventory_stock.ensure_stock(db, park_id=park_id, catalog_part_id=part.id)
+        stock.minimum_quantity = minimum_quantity
+        stock.location = clean_location
+        stock.updated_by = user.id
+        if quantity:
+            inventory_stock.apply_stock_delta(
+                db,
+                user=user,
+                park_id=park_id,
+                catalog_part_id=part.id,
+                delta=quantity,
+                kind="receipt",
+                source_kind=None,
+                source_id=None,
+                note="Начальный остаток",
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        _remove_photo(storage_key)
+        raise
+    db.refresh(stock)
+    audit_inventory_change(
         db,
         user,
+        action="inventory.catalog.part.created",
         park_id=park_id,
-        component_id=component_id,
-        name=name,
-        article=article,
+        target_id=part.id,
+        changed_fields=[
+            "article",
+            "component_id",
+            "location",
+            "minimum_quantity",
+            "name",
+            "quantity",
+            *(["photo"] if photo else []),
+        ],
     )
-    if photo:
-        part.photo_storage_key, part.photo_filename, part.photo_content_type = save_photo(*photo)
-    stock = inventory_stock.ensure_stock(db, park_id=park_id, catalog_part_id=part.id)
-    stock.minimum_quantity = minimum_quantity
-    stock.location = _text(location, "inventory_location_required")
-    stock.updated_by = user.id
-    if quantity:
-        inventory_stock.apply_stock_delta(
-            db,
-            user=user,
-            park_id=park_id,
-            catalog_part_id=part.id,
-            delta=quantity,
-            kind="receipt",
-            source_kind=None,
-            source_id=None,
-            note="Начальный остаток",
-        )
-    db.commit()
-    db.refresh(stock)
     return _legacy_part_view(part, stock)
 
 
-def _part_and_stock(db: Session, user: User, part_id: int):
-    part = db.get(InventoryCatalogPart, part_id)
-    if part is not None:
-        stock = db.scalar(
-            select(InventoryParkStock).where(
-                InventoryParkStock.catalog_part_id == part.id,
-                InventoryParkStock.park_id.in_(accessible_park_ids(db, user)),
-            ).with_for_update()
-        )
-        if stock is not None:
-            return part, stock
+def _part_and_stock(db: Session, user: User, part_id: int, *, park_id: int | None = None):
     legacy = db.get(InventoryPart, part_id)
     if legacy is not None:
+        if park_id is not None and park_id != legacy.park_id:
+            raise inventory_stock.InventoryConflict("inventory_park_part_mismatch")
+        park_id = legacy.park_id
         require_park(db, user, legacy.park_id)
         part = db.scalar(
             select(InventoryCatalogPart).where(
@@ -296,15 +358,36 @@ def _part_and_stock(db: Session, user: User, part_id: int):
                 == inventory_catalog.normalize_key(legacy.article)
             )
         )
-        if part is not None:
-            return part, inventory_stock.ensure_stock(
-                db, park_id=legacy.park_id, catalog_part_id=part.id
+    else:
+        part = db.get(InventoryCatalogPart, part_id)
+    if part is None:
+        raise LookupError("inventory_part_not_found")
+    if park_id is not None:
+        inventory_access.require_park(db, user, park_id)
+        return part, inventory_stock.ensure_stock(db, park_id=park_id, catalog_part_id=part.id)
+    stocks = list(
+        db.scalars(
+            select(InventoryParkStock)
+            .where(
+                InventoryParkStock.catalog_part_id == part.id,
+                InventoryParkStock.park_id.in_(accessible_park_ids(db, user)),
             )
-    raise LookupError("inventory_part_not_found")
+            .order_by(InventoryParkStock.park_id)
+            .with_for_update()
+        )
+    )
+    if len(stocks) > 1:
+        raise inventory_stock.InventoryConflict(
+            "inventory_park_required", park_ids=[stock.park_id for stock in stocks]
+        )
+    if not stocks:
+        raise LookupError("inventory_stock_not_found")
+    return part, stocks[0]
 
 
 def update_part(db: Session, user: User, part_id: int, changes: dict) -> LegacyPartView:
-    part, stock = _part_and_stock(db, user, part_id)
+    park_id = changes.pop("park_id", None)
+    part, stock = _part_and_stock(db, user, part_id, park_id=park_id)
     catalog_changes = {
         key: changes[key] for key in ("component_id", "name", "article") if key in changes
     }
@@ -321,13 +404,28 @@ def update_part(db: Session, user: User, part_id: int, changes: dict) -> LegacyP
     stock.version += 1
     db.commit()
     db.refresh(stock)
+    audit_inventory_change(
+        db,
+        user,
+        action="inventory.stock.configured",
+        park_id=stock.park_id,
+        target_id=part.id,
+        changed_fields=changes,
+    )
     return _legacy_part_view(part, stock)
 
 
 def move_stock(
-    db: Session, user: User, part_id: int, *, kind: str, quantity: int, note: str | None = None
+    db: Session,
+    user: User,
+    part_id: int,
+    *,
+    park_id: int | None = None,
+    kind: str,
+    quantity: int,
+    note: str | None = None,
 ) -> InventoryMovement:
-    part, stock = _part_and_stock(db, user, part_id)
+    part, stock = _part_and_stock(db, user, part_id, park_id=park_id)
     inventory_access.require_park(db, user, stock.park_id, manage=True)
     if (
         quantity == 0
@@ -349,22 +447,31 @@ def move_stock(
     )
     db.commit()
     db.refresh(movement)
+    audit_inventory_change(
+        db,
+        user,
+        action="inventory.stock.moved",
+        park_id=stock.park_id,
+        target_id=part.id,
+        changed_fields=["kind", "quantity", *(["note"] if note else [])],
+    )
+    db.refresh(movement)
     return movement
 
 
 def task_writeoff(
-    db: Session, user: User, issue_key: str, part_id: int, quantity: int
+    db: Session,
+    user: User,
+    issue_key: str,
+    part_id: int,
+    quantity: int,
+    *,
+    park_id: int | None = None,
 ) -> InventoryMovement:
     if user.role != "mechanic":
         raise PermissionError("forbidden")
-    part, stock = _part_and_stock(db, user, part_id)
-    park = require_park(db, user, stock.park_id)
     if quantity <= 0:
         raise ValueError("inventory_quantity_invalid")
-    if stock.quantity < quantity:
-        raise inventory_stock.InventoryConflict(
-            "inventory_out_of_stock", current_quantity=stock.quantity
-        )
     token = platform_settings.get_tracker_token(db)
     if not token:
         raise RuntimeError("tracker_token_not_configured")
@@ -372,6 +479,17 @@ def task_writeoff(
         issue = tracker_cache.get_issue(token=token, key=issue_key)
     except tracker_client.TrackerError as exc:
         raise RuntimeError("tracker_upstream_error") from exc
+    claim = get_claim(db, issue_key)
+    if claim is None or claim.owner_user_id != user.id:
+        raise PermissionError("inventory_issue_not_owned")
+    if park_id is not None and park_id != claim.park_id:
+        raise inventory_stock.InventoryConflict("inventory_park_part_mismatch")
+    part, stock = _part_and_stock(db, user, part_id, park_id=claim.park_id)
+    park = require_park(db, user, stock.park_id)
+    if stock.quantity < quantity:
+        raise inventory_stock.InventoryConflict(
+            "inventory_out_of_stock", current_quantity=stock.quantity
+        )
     tags = {str(tag).strip().casefold() for tag in (issue or {}).get("tags") or []}
     if issue is None or park.tag.casefold() not in tags or not mechanic_owns_issue(db, user, issue):
         raise PermissionError("inventory_issue_not_owned")

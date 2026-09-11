@@ -12,6 +12,7 @@ from robopark_api.inventory_schemas import (
     InventoryCatalogComponentOut,
     InventoryCatalogComponentUpdateIn,
     InventoryCatalogPartCreateIn,
+    InventoryCatalogPartMergeIn,
     InventoryCatalogPartOut,
     InventoryCatalogPartUpdateIn,
     InventoryCatalogSearchOut,
@@ -155,6 +156,17 @@ def update_catalog_part(
     return inventory_catalog.part_out(row)
 
 
+@router.post("/catalog/parts/{part_id}/merge", response_model=InventoryCatalogPartOut)
+def merge_catalog_part(
+    part_id: int,
+    payload: InventoryCatalogPartMergeIn,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    row = _run(lambda: inventory_catalog.merge_parts(db, user, part_id, payload.target_part_id))
+    return inventory_catalog.part_out(row)
+
+
 @router.put("/parks/{park_id}/stocks/{part_id}", response_model=InventoryStockOut)
 def update_stock(
     park_id: int,
@@ -173,6 +185,14 @@ def update_stock(
         stock.version += 1
         db.commit()
         db.refresh(stock)
+        service.audit_inventory_change(
+            db,
+            user,
+            action="inventory.stock.configured",
+            park_id=park_id,
+            target_id=part_id,
+            changed_fields=payload.model_fields_set,
+        )
         return stock
 
     return _run(update)
@@ -260,7 +280,13 @@ def move_stock(
 ):
     row = _run(
         lambda: service.move_stock(
-            db, user, part_id, kind=payload.kind, quantity=payload.quantity, note=payload.note
+            db,
+            user,
+            part_id,
+            park_id=payload.park_id,
+            kind=payload.kind,
+            quantity=payload.quantity,
+            note=payload.note,
         )
     )
     return {
@@ -282,7 +308,14 @@ def task_writeoff(
     db: Session = Depends(get_db),
 ):
     row = _run(
-        lambda: service.task_writeoff(db, user, issue_key, payload.part_id, payload.quantity)
+        lambda: service.task_writeoff(
+            db,
+            user,
+            issue_key,
+            payload.part_id,
+            payload.quantity,
+            park_id=payload.park_id,
+        )
     )
     return {
         **row.__dict__,

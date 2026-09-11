@@ -1,13 +1,16 @@
-from sqlalchemy import func, or_, select
+import json
+
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from robopark_api.models import (
     InventoryCatalogComponent,
     InventoryCatalogPart,
+    InventoryMovement,
     InventoryParkStock,
     User,
 )
-from robopark_api.services import inventory_access
+from robopark_api.services import audit, inventory_access, inventory_stock
 from robopark_api.services.inventory_stock import InventoryConflict
 
 
@@ -42,7 +45,11 @@ def part_out(row: InventoryCatalogPart) -> dict:
     }
 
 
-def create_component(db: Session, user: User, *, park_id: int, name: str):
+def _audit_detail(fields) -> str:
+    return json.dumps({"changed_fields": sorted(fields)}, ensure_ascii=False)
+
+
+def create_component(db: Session, user: User, *, park_id: int, name: str, commit: bool = True):
     inventory_access.require_park(db, user, park_id, manage=True)
     clean_name = required_text(name, "inventory_component_name_required")
     normalized = normalize_key(clean_name)
@@ -58,13 +65,31 @@ def create_component(db: Session, user: User, *, park_id: int, name: str):
         name=clean_name, normalized_name=normalized, created_by=user.id, updated_by=user.id
     )
     db.add(row)
-    db.commit()
-    db.refresh(row)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(row)
+        audit.record(
+            db,
+            action="inventory.catalog.component.created",
+            actor=user,
+            park_id=park_id,
+            target_type="inventory_component",
+            target_id=row.id,
+            detail=_audit_detail(["name"]),
+        )
     return row
 
 
 def create_part(
-    db: Session, user: User, *, park_id: int, component_id: int, name: str, article: str
+    db: Session,
+    user: User,
+    *,
+    park_id: int,
+    component_id: int,
+    name: str,
+    article: str,
+    commit: bool = True,
 ):
     inventory_access.require_park(db, user, park_id, manage=True)
     component = db.get(InventoryCatalogComponent, component_id)
@@ -91,8 +116,19 @@ def create_part(
         updated_by=user.id,
     )
     db.add(row)
-    db.commit()
-    db.refresh(row)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(row)
+        audit.record(
+            db,
+            action="inventory.catalog.part.created",
+            actor=user,
+            park_id=park_id,
+            target_type="inventory_part",
+            target_id=row.id,
+            detail=_audit_detail(["article", "component_id", "name"]),
+        )
     return row
 
 
@@ -116,10 +152,30 @@ def update_component(db: Session, user: User, component_id: int, changes: dict):
         row.name = name
         row.normalized_name = normalized
     if changes.get("is_active") is not None:
+        if changes["is_active"] and not row.is_active:
+            existing = db.scalar(
+                select(InventoryCatalogComponent.id).where(
+                    InventoryCatalogComponent.id != row.id,
+                    InventoryCatalogComponent.normalized_name == row.normalized_name,
+                    InventoryCatalogComponent.is_active.is_(True),
+                )
+            )
+            if existing is not None:
+                raise InventoryConflict(
+                    "inventory_component_exists", existing_component_id=existing
+                )
         row.is_active = bool(changes["is_active"])
     row.updated_by = user.id
     db.commit()
     db.refresh(row)
+    audit.record(
+        db,
+        action="inventory.catalog.component.updated",
+        actor=user,
+        target_type="inventory_component",
+        target_id=row.id,
+        detail=_audit_detail(changes),
+    )
     return row
 
 
@@ -151,11 +207,111 @@ def update_part(db: Session, user: User, part_id: int, changes: dict):
         row.article = article
         row.normalized_article = normalized
     if changes.get("is_active") is not None:
+        if changes["is_active"] and not row.is_active:
+            existing = db.scalar(
+                select(InventoryCatalogPart.id).where(
+                    InventoryCatalogPart.id != row.id,
+                    InventoryCatalogPart.normalized_article == row.normalized_article,
+                    InventoryCatalogPart.is_active.is_(True),
+                )
+            )
+            if existing is not None:
+                raise InventoryConflict("inventory_article_exists", existing_part_id=existing)
         row.is_active = bool(changes["is_active"])
     row.updated_by = user.id
     db.commit()
     db.refresh(row)
+    audit.record(
+        db,
+        action="inventory.catalog.part.updated",
+        actor=user,
+        target_type="inventory_part",
+        target_id=row.id,
+        detail=_audit_detail(changes),
+    )
     return row
+
+
+def merge_parts(db: Session, user: User, source_part_id: int, target_part_id: int):
+    inventory_access.require_catalog_manage(db, user)
+    if source_part_id == target_part_id:
+        raise ValueError("inventory_merge_same_part")
+    source = db.get(InventoryCatalogPart, source_part_id)
+    target = db.get(InventoryCatalogPart, target_part_id)
+    if source is None or target is None:
+        raise LookupError("inventory_part_not_found")
+    if not source.is_active or not target.is_active:
+        raise InventoryConflict("inventory_merge_inactive_part")
+
+    source_stocks = list(
+        db.scalars(
+            select(InventoryParkStock)
+            .where(InventoryParkStock.catalog_part_id == source.id)
+            .order_by(InventoryParkStock.park_id)
+            .with_for_update()
+        )
+    )
+    for source_stock in source_stocks:
+        target_stock = db.scalar(
+            select(InventoryParkStock)
+            .where(
+                InventoryParkStock.park_id == source_stock.park_id,
+                InventoryParkStock.catalog_part_id == target.id,
+            )
+            .with_for_update()
+        )
+        if target_stock is None:
+            source_stock.catalog_part_id = target.id
+            source_stock.updated_by = user.id
+            source_stock.version += 1
+            continue
+        if source_stock.quantity:
+            inventory_stock.apply_stock_delta(
+                db,
+                user=user,
+                park_id=source_stock.park_id,
+                catalog_part_id=target.id,
+                delta=source_stock.quantity,
+                kind="merge",
+                source_kind="catalog_merge",
+                source_id=f"{source.id}:target",
+                note=f"Merged catalog part {source.id}",
+            )
+            inventory_stock.apply_stock_delta(
+                db,
+                user=user,
+                park_id=source_stock.park_id,
+                catalog_part_id=source.id,
+                delta=-source_stock.quantity,
+                kind="merge",
+                source_kind="catalog_merge",
+                source_id=f"{source.id}:source",
+                note=f"Merged into catalog part {target.id}",
+            )
+        source_stock.is_active = False
+        source_stock.updated_by = user.id
+
+    db.execute(
+        update(InventoryMovement)
+        .where(InventoryMovement.catalog_part_id == source.id)
+        .values(catalog_part_id=target.id)
+    )
+    source.is_active = False
+    source.updated_by = user.id
+    db.commit()
+    db.refresh(target)
+    affected_park_ids = {stock.park_id for stock in source_stocks}
+    for park_id in affected_park_ids or {None}:
+        audit.record(
+            db,
+            action="inventory.catalog.part.merged",
+            actor=user,
+            park_id=park_id,
+            target_type="inventory_part",
+            target_id=target.id,
+            detail=_audit_detail(["catalog_part_id", "is_active", "stock", "history"]),
+        )
+    return target
 
 
 def search_catalog(
@@ -174,12 +330,19 @@ def search_catalog(
     minimum = func.coalesce(InventoryParkStock.minimum_quantity, 0)
     statement = (
         select(InventoryCatalogPart, InventoryParkStock)
+        .join(
+            InventoryCatalogComponent,
+            InventoryCatalogComponent.id == InventoryCatalogPart.component_id,
+        )
         .outerjoin(
             InventoryParkStock,
             (InventoryParkStock.catalog_part_id == InventoryCatalogPart.id)
             & (InventoryParkStock.park_id == park_id),
         )
-        .where(InventoryCatalogPart.is_active.is_(True))
+        .where(
+            InventoryCatalogPart.is_active.is_(True),
+            InventoryCatalogComponent.is_active.is_(True),
+        )
     )
     if query:
         pattern = f"%{normalize_key(query)}%"

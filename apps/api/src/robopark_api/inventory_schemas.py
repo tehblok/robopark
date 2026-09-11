@@ -35,6 +35,7 @@ class InventoryOverviewOut(BaseModel):
 
 
 class InventoryPartUpdateIn(BaseModel):
+    park_id: int | None = None
     name: str | None = Field(default=None, min_length=1, max_length=128)
     article: str | None = Field(default=None, min_length=1, max_length=128)
     component_id: int | None = None
@@ -44,6 +45,7 @@ class InventoryPartUpdateIn(BaseModel):
 
 
 class InventoryMovementIn(BaseModel):
+    park_id: int | None = None
     kind: Literal["receipt", "writeoff", "adjustment"]
     quantity: int = Field(ge=-1_000_000, le=1_000_000)
     note: str | None = Field(default=None, max_length=500)
@@ -51,6 +53,7 @@ class InventoryMovementIn(BaseModel):
 
 class InventoryTaskWriteoffIn(BaseModel):
     part_id: int
+    park_id: int | None = None
     quantity: int = Field(gt=0, le=1_000_000)
 
 
@@ -106,6 +109,10 @@ class InventoryCatalogPartOut(BaseModel):
     article: str
     is_active: bool
     has_photo: bool
+
+
+class InventoryCatalogPartMergeIn(BaseModel):
+    target_part_id: int
 
 
 class InventoryCatalogSearchItem(InventoryCatalogPartOut):
