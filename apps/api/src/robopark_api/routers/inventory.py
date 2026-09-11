@@ -17,6 +17,10 @@ from robopark_api.inventory_schemas import (
     InventoryCatalogPartUpdateIn,
     InventoryCatalogSearchOut,
     InventoryComponentOut,
+    InventoryCountCreateIn,
+    InventoryCountListOut,
+    InventoryCountOut,
+    InventoryCountUpdateIn,
     InventoryMovementIn,
     InventoryMovementOut,
     InventoryOverviewOut,
@@ -36,6 +40,7 @@ from robopark_api.services import inventory as service
 from robopark_api.services import (
     inventory_access,
     inventory_catalog,
+    inventory_counts,
     inventory_receipts,
     inventory_stock,
 )
@@ -66,6 +71,87 @@ async def _photo(upload: UploadFile | None):
     if upload is None:
         return None
     return upload.filename, await upload.read(MAX_ATTACHMENT_BYTES + 1), upload.content_type
+
+
+@router.get("/parks/{park_id}/counts", response_model=InventoryCountListOut)
+def list_inventory_counts(
+    park_id: int,
+    q: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    if not 1 <= limit <= 200 or offset < 0:
+        raise HTTPException(422, "inventory_pagination_invalid")
+    rows, total = _run(
+        lambda: inventory_counts.list_counts(
+            db, user, park_id=park_id, query=q, limit=limit, offset=offset
+        )
+    )
+    return {
+        "items": inventory_counts.counts_out(db, rows),
+        "limit": limit,
+        "offset": offset,
+        "total": total,
+    }
+
+
+@router.post(
+    "/parks/{park_id}/counts",
+    response_model=InventoryCountOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_inventory_count(
+    park_id: int,
+    payload: InventoryCountCreateIn,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    row = _run(lambda: inventory_counts.create_count(db, user, park_id=park_id, payload=payload))
+    return inventory_counts.count_out(db, row)
+
+
+@router.patch("/parks/{park_id}/counts/{count_id}", response_model=InventoryCountOut)
+def update_inventory_count(
+    park_id: int,
+    count_id: int,
+    payload: InventoryCountUpdateIn,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    row = _run(
+        lambda: inventory_counts.update_count_lines(
+            db,
+            user,
+            park_id=park_id,
+            count_id=count_id,
+            lines=payload.lines,
+        )
+    )
+    return inventory_counts.count_out(db, row)
+
+
+@router.post("/parks/{park_id}/counts/{count_id}/post", response_model=InventoryCountOut)
+def post_inventory_count(
+    park_id: int,
+    count_id: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    row = _run(lambda: inventory_counts.post_count(db, user, park_id=park_id, count_id=count_id))
+    return inventory_counts.count_out(db, row)
+
+
+@router.post("/parks/{park_id}/counts/{count_id}/cancel", response_model=InventoryCountOut)
+def cancel_inventory_count(
+    park_id: int,
+    count_id: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    row = _run(lambda: inventory_counts.cancel_count(db, user, park_id=park_id, count_id=count_id))
+    return inventory_counts.count_out(db, row)
 
 
 @router.get("/parks/{park_id}/receipts", response_model=InventoryReceiptListOut)

@@ -215,3 +215,59 @@ NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length
 
 class InventoryReceiptReversalIn(BaseModel):
     reason: NonEmptyStr = Field(max_length=500)
+
+
+class InventoryCountScopeIn(BaseModel):
+    kind: Literal["all", "component"]
+    component_id: int | None = None
+
+    @model_validator(mode="after")
+    def validate_component_scope(self):
+        if self.kind == "component" and self.component_id is None:
+            raise ValueError("inventory_count_component_required")
+        if self.kind == "all" and self.component_id is not None:
+            raise ValueError("inventory_count_component_unexpected")
+        return self
+
+
+class InventoryCountCreateIn(BaseModel):
+    name: NonEmptyStr = Field(max_length=128)
+    scope: InventoryCountScopeIn
+
+
+class InventoryCountLineUpdateIn(BaseModel):
+    catalog_part_id: int
+    actual_quantity: int = Field(ge=0, le=1_000_000)
+    comment: str | None = Field(default=None, max_length=500)
+
+
+class InventoryCountUpdateIn(BaseModel):
+    lines: list[InventoryCountLineUpdateIn] = Field(min_length=1)
+
+
+class InventoryCountLineOut(BaseModel):
+    id: int
+    catalog_part_id: int
+    expected_quantity: int
+    actual_quantity: int | None
+    difference: int | None
+    comment: str | None
+
+
+class InventoryCountOut(BaseModel):
+    id: int
+    park_id: int
+    name: str
+    status: Literal["draft", "posted", "cancelled"]
+    created_by: int
+    posted_by: int | None
+    created_at: datetime
+    posted_at: datetime | None
+    lines: list[InventoryCountLineOut]
+
+
+class InventoryCountListOut(BaseModel):
+    items: list[InventoryCountOut]
+    limit: int
+    offset: int
+    total: int
