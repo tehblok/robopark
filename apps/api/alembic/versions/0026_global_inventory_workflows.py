@@ -442,21 +442,32 @@ def _materialize_legacy_inventory_for_downgrade() -> None:
         legacy_component_ids.setdefault(
             (row["park_id"], normalize_inventory_key(row["name"])), row["id"]
         )
-    legacy_part_ids: dict[tuple[int, str], int] = {}
-    legacy_part_ids_by_key: dict[tuple[int, str], list[int]] = defaultdict(list)
+    # Catalog bindings survive renames and article reuse. Never identify a
+    # bound legacy row by its old article: that can now name a different part.
+    legacy_part_ids: dict[tuple[int, int], int] = {}
+    legacy_part_ids_by_key: dict[tuple[int, int], list[int]] = defaultdict(list)
+    used_articles: set[tuple[int, str]] = set()
     for row in bind.execute(
         sa.select(legacy_parts).order_by(legacy_parts.c.created_at, legacy_parts.c.id)
     ).mappings():
-        normalized_article = normalize_inventory_key(row["article"])
-        if normalized_article:
-            key = (row["park_id"], normalized_article)
+        used_articles.add((row["park_id"], normalize_inventory_key(row["article"])))
+        if row["catalog_part_id"] is not None:
+            key = (row["park_id"], row["catalog_part_id"])
             legacy_part_ids.setdefault(key, row["id"])
             legacy_part_ids_by_key[key].append(row["id"])
+            if part_rows[row["catalog_part_id"]]["merged_into_part_id"] is not None:
+                # A merge may move the stock row itself to its target. In that
+                # branch there is no source stock left to zero the legacy copy.
+                bind.execute(
+                    legacy_parts.update()
+                    .where(legacy_parts.c.id == row["id"])
+                    .values(quantity=0, is_active=False)
+                )
 
     def ensure_legacy_part(park_id: int, catalog_part_id: int, stock=None) -> int:
         part = part_rows[catalog_part_id]
-        part_key = (park_id, part["normalized_article"])
-        legacy_part_id = legacy_part_ids.get(part_key) if part["normalized_article"] else None
+        part_key = (park_id, catalog_part_id)
+        legacy_part_id = legacy_part_ids.get(part_key)
         quantity = stock["quantity"] if stock is not None else 0
         minimum_quantity = stock["minimum_quantity"] if stock is not None else 0
         location = (stock["location"] if stock is not None else None) or ""
@@ -479,6 +490,13 @@ def _materialize_legacy_inventory_for_downgrade() -> None:
                 component_id = result.inserted_primary_key[0]
                 legacy_component_ids[component_key] = component_id
             article = part["article"] or f"__catalog_{catalog_part_id}"
+            # The old schema requires uniqueness even for archived rows. Keep
+            # both identities/history if an archived legacy article was reused.
+            suffix = 0
+            while (park_id, normalize_inventory_key(article)) in used_articles:
+                suffix += 1
+                article = f"__catalog_{catalog_part_id}_{suffix}"
+            used_articles.add((park_id, normalize_inventory_key(article)))
             result = bind.execute(
                 legacy_parts.insert().values(
                     park_id=park_id,
@@ -497,8 +515,7 @@ def _materialize_legacy_inventory_for_downgrade() -> None:
                 )
             )
             legacy_part_id = result.inserted_primary_key[0]
-            if part["normalized_article"]:
-                legacy_part_ids[part_key] = legacy_part_id
+            legacy_part_ids[part_key] = legacy_part_id
         elif stock is not None:
             bind.execute(
                 legacy_parts.update()

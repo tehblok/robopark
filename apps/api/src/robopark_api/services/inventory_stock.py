@@ -4,6 +4,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from robopark_api.models import (
+    InventoryCatalogPart,
     InventoryMovement,
     InventoryParkStock,
     User,
@@ -102,6 +103,34 @@ def apply_stock_delta(
         raise ValueError("inventory_quantity_invalid")
     stock = ensure_stock(db, park_id=park_id, catalog_part_id=catalog_part_id)
     catalog_part_id = stock.catalog_part_id
+    if source_kind is not None and source_id is not None:
+        # ensure_stock holds the canonical catalog/stock locks (SQLite's writer
+        # reservation). Merges and other sourced writes cannot change this family
+        # between the history lookup and the insert. Keep the immutable event on
+        # its original catalog row, including through transitive merge aliases.
+        family = (
+            select(InventoryCatalogPart.id)
+            .where(InventoryCatalogPart.id == catalog_part_id)
+            .cte("inventory_alias_family", recursive=True)
+        )
+        family = family.union(
+            select(InventoryCatalogPart.id).join(
+                family, InventoryCatalogPart.merged_into_part_id == family.c.id
+            )
+        )
+        existing = db.scalar(
+            select(InventoryMovement)
+            .where(
+                InventoryMovement.catalog_part_id.in_(select(family.c.id)),
+                InventoryMovement.park_id == park_id,
+                InventoryMovement.source_kind == source_kind,
+                InventoryMovement.source_id == source_id,
+            )
+            .order_by(InventoryMovement.created_at, InventoryMovement.id)
+            .limit(1)
+        )
+        if existing is not None:
+            return existing
     if db.get_bind().dialect.name == "sqlite":
         result = db.execute(
             update(InventoryParkStock)

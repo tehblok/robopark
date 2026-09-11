@@ -13,9 +13,142 @@ from robopark_api.models import (
     InventoryCatalogPart,
     InventoryMovement,
     InventoryParkStock,
+    User,
 )
+from robopark_api.services import inventory_catalog, inventory_stock
+from robopark_api.services.rbac_seed import ensure_rbac_catalog
 
 API_DIR = Path(__file__).parents[1]
+
+
+@pytest.mark.parametrize(
+    "target_quantity,legacy_target", [(None, False), (0, False), (2, False), (2, True)]
+)
+@pytest.mark.parametrize("transitive", [False, True])
+@pytest.mark.parametrize("reuse_article", [False, True])
+def test_runtime_merge_downgrade_preserves_total_and_legacy_history(
+    sqlite_database_url, monkeypatch, target_quantity, legacy_target, transitive, reuse_article
+):
+    config, engine = _upgrade_legacy_inventory(sqlite_database_url, monkeypatch)
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO inventory_components (id, park_id, name) VALUES (10, 1, 'Wheels')")
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_parts "
+                "(id, park_id, component_id, name, article, quantity, location) "
+                "VALUES (100, 1, 10, 'Source', 'SOURCE', 5, 'A-1')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_movements "
+                "(id, part_id, park_id, actor_user_id, kind, delta, balance_after, note) "
+                "VALUES (1000, 100, 1, 999, 'receipt', 5, 5, 'legacy source')"
+            )
+        )
+        if legacy_target:
+            connection.execute(
+                text(
+                    "INSERT INTO inventory_parts "
+                    "(id, park_id, component_id, name, article, quantity, location) "
+                    "VALUES (200, 1, 10, 'Target', 'TARGET', 2, 'B-1')"
+                )
+            )
+    command.upgrade(config, "0026_global_inventory_workflows")
+    with Session(engine) as session:
+        ensure_rbac_catalog(session)
+        actor = session.get(User, 999)
+        source = session.scalar(
+            select(InventoryCatalogPart).where(InventoryCatalogPart.article == "SOURCE")
+        )
+        source_id = source.id
+        if legacy_target:
+            target = session.scalar(
+                select(InventoryCatalogPart).where(InventoryCatalogPart.article == "TARGET")
+            )
+        else:
+            target = InventoryCatalogPart(
+                component_id=source.component_id,
+                name="Target",
+                normalized_name="target",
+                article="TARGET",
+                normalized_article="target",
+            )
+            session.add(target)
+            session.flush()
+            if target_quantity is not None:
+                session.add(
+                    InventoryParkStock(
+                        park_id=1,
+                        catalog_part_id=target.id,
+                        quantity=target_quantity,
+                    )
+                )
+        session.commit()
+        inventory_catalog.merge_parts(session, actor, source.id, target.id)
+        if transitive:
+            final = InventoryCatalogPart(
+                component_id=source.component_id,
+                name="Final",
+                normalized_name="final",
+                article="FINAL",
+                normalized_article="final",
+            )
+            session.add(final)
+            session.commit()
+            inventory_catalog.merge_parts(session, actor, target.id, final.id)
+            target = final
+        # Runtime writes and renamed/reused articles must follow persistent bindings.
+        inventory_catalog.update_part(session, actor, target.id, {"article": "RENAMED"})
+        replacement = InventoryCatalogPart(
+            component_id=source.component_id,
+            name="Replacement",
+            normalized_name="replacement",
+            article="SOURCE" if reuse_article else "REPLACEMENT",
+            normalized_article="source" if reuse_article else "replacement",
+        )
+        session.add(replacement)
+        session.flush()
+        inventory_stock.apply_stock_delta(
+            session,
+            user=actor,
+            park_id=1,
+            catalog_part_id=replacement.id,
+            delta=4,
+            kind="receipt",
+            source_kind="receipt",
+            source_id="new",
+            note="replacement",
+        )
+        session.commit()
+        movement_count = session.scalar(select(func.count(InventoryMovement.id)))
+        assert session.get(InventoryCatalogPart, source_id).merged_into_part_id is not None
+    command.downgrade(config, "0025_local_task_claims")
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT SUM(quantity) FROM inventory_parts")
+        ).scalar_one() == (9 + (target_quantity or 0))
+        assert connection.execute(
+            text("SELECT quantity, is_active FROM inventory_parts WHERE id = 100")
+        ).one() == (0, False)
+        assert connection.execute(
+            text(
+                "SELECT part_id, delta, balance_after, note FROM inventory_movements WHERE id = 1000"
+            )
+        ).one() == (100, 5, 5, "legacy source")
+        assert (
+            connection.execute(
+                text("SELECT COUNT(*) FROM inventory_movements WHERE part_id IS NOT NULL")
+            ).scalar_one()
+            == movement_count
+        )
+    command.upgrade(config, "0026_global_inventory_workflows")
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT SUM(quantity) FROM inventory_park_stocks")
+        ).scalar_one() == 9 + (target_quantity or 0)
 
 
 def _upgrade_legacy_inventory(database_url: str, monkeypatch):

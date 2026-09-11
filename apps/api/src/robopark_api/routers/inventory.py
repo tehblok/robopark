@@ -190,7 +190,7 @@ def update_stock(
             user,
             action="inventory.stock.configured",
             park_id=park_id,
-            target_id=part_id,
+            target_id=stock.catalog_part_id,
             changed_fields=payload.model_fields_set,
         )
         return stock
