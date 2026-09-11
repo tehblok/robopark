@@ -51,6 +51,13 @@ it('keeps historical filters independent of overview and compares only accessibl
   expect(screen.getByLabelText('URL')).not.toHaveTextContent('status=')
 })
 
+it('keeps the analytics park and period choices in one compact control row', async () => {
+  const client = { analytics: vi.fn(async () => fixture()) }
+  render(tree({ client }))
+  await screen.findByRole('heading', { name: 'Динамика процесса' })
+  expect(screen.getByRole('group', { name: 'Параметры аналитики' })).toHaveClass('rp-analytics-controls--single-row')
+})
+
 it('normalizes an unauthorized comparison without issuing its request', async () => {
   const client = { analytics: vi.fn(async () => fixture()) }
   render(tree({ client, user: makeUser({ parks: [park] }), url: '/analytics?park=7&compare=8&period=999&bucket=5m' }))

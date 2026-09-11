@@ -9,6 +9,14 @@ import { resourceStore } from '../../lib/resource'
 import { deferred, makeUser, park, snapshot } from '../insights/operations.test-support'
 import { OverviewPage } from './OverviewPage'
 
+function installMatchMedia(width = 1200) {
+  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
+    matches: width < 600, media: '(max-width: 599px)', onchange: null,
+    addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
+  }))
+}
+
 function Location() { return <output aria-label="URL">{useLocation().search}</output> }
 
 type TreeOptions = {
@@ -31,7 +39,8 @@ function tree({
   return <MemoryRouter initialEntries={[url]}><AuthContext.Provider value={{ user, loading: false, login: async () => user, refreshUser, logout: async () => {} }}><ParkScopeContext.Provider value={{ parkId: selectedPark?.id ?? null, selectedPark, parks, loading: false, locked: false, setParkId: vi.fn(), refreshParks: async () => {} }}><OverviewPage apiClient={client} /><Location /></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>
 }
 
-afterEach(() => { resourceStore.clearAll(); vi.restoreAllMocks() })
+beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0); installMatchMedia() })
+afterEach(() => { resourceStore.clearAll(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 it('composes the role-aware operational surfaces from the current overview response', async () => {
   const user = makeUser({ role: 'operator' })
@@ -43,6 +52,22 @@ it('composes the role-aware operational surfaces from the current overview respo
   expect(screen.getByRole('heading', { name: 'Поток задач: пришло / ушло' })).toBeVisible()
   expect(screen.getByRole('heading', { name: 'Очередь внимания' })).toBeVisible()
   expect(screen.getByText(/Пробелы не считаются нулями/)).toBeVisible()
+})
+
+it('places the attention queue before secondary operational KPIs', async () => {
+  render(tree())
+  await screen.findByRole('heading', { name: 'Очередь внимания' })
+  const headings = screen.getAllByRole('heading').map((node) => node.textContent)
+  expect(headings.indexOf('Статусы задач')).toBeLessThan(headings.indexOf('Очередь внимания'))
+  expect(headings.indexOf('Очередь внимания')).toBeLessThan(headings.indexOf('Поток задач: пришло / ушло'))
+})
+
+it('collapses secondary operational KPIs behind one phone disclosure', async () => {
+  installMatchMedia(390)
+  render(tree())
+  await screen.findByRole('heading', { name: 'Очередь внимания' })
+  expect(screen.getByRole('button', { name: 'Дополнительные показатели' })).toHaveAttribute('aria-expanded', 'false')
+  expect(screen.queryByRole('heading', { name: 'Поток задач: пришло / ушло' })).not.toBeInTheDocument()
 })
 
 it('shows unknown flow counts instead of treating no observed intervals as zero', async () => {
@@ -149,9 +174,6 @@ it('keeps a 401 session denial after park changes without retrying protected req
   expect(client.operationsOverview).toHaveBeenCalledTimes(1)
   expect(refreshUser).toHaveBeenCalledTimes(1)
 })
-
-// Keep lifecycle assertions deterministic; pollingCapacity tests exercise jitter.
-beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })
 
 it.each(['admin', 'royal', 'operator'])('shows every accessible park separately for %s', async role => {
   const user = makeUser({ role })

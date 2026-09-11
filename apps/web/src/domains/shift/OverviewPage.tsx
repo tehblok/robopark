@@ -7,6 +7,7 @@ import { useAuth } from '../../auth-context'
 import { Button } from '../../design-system/actions/Button'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { PageLayout } from '../../design-system/layout/PageLayout'
+import { ResponsiveDisclosure, ResponsiveDisclosureGroup } from '../../design-system/layout/ResponsiveDisclosure'
 import { resourceStore, useCachedResource } from '../../lib/resource'
 import { classifyApiError, type DomainError } from '../../shared/api/classifyApiError'
 import { canReadOperations, operationsAccessIdentity, operationsSearch, parseOperationsQuery, type OperationsApiClient, type OperationsQuery } from '../insights/operations'
@@ -38,12 +39,18 @@ function OverviewContent({ data, role, selectable, statusHref, allHref }: { data
   const model = buildOverviewModel(data, role)
 
   return <div className="rp-overview">
-    <OverviewAlerts alerts={model.alerts} />
     <OverviewStatusMonitoring allHref={allHref} selectable={selectable} statusCards={model.statusCards} statusHref={statusHref} />
-    <OverviewFlow flow={model.flow} />
     <OverviewAttentionQueue attentionQueue={model.attentionQueue} attentionTruncated={model.attentionTruncated} />
-    <OverviewWorkload workload={model.workload} />
-    <OverviewOperatorAccounts operatorAccounts={model.operatorAccounts} />
+    <OverviewAlerts alerts={model.alerts} />
+    <ResponsiveDisclosureGroup label="Вторичные показатели смены">
+      <ResponsiveDisclosure id="overview-secondary" summary="Поток, нагрузка и учётные записи" title="Дополнительные показатели">
+        <div className="rp-overview-secondary">
+          <OverviewFlow flow={model.flow} />
+          <OverviewWorkload workload={model.workload} />
+          <OverviewOperatorAccounts operatorAccounts={model.operatorAccounts} />
+        </div>
+      </ResponsiveDisclosure>
+    </ResponsiveDisclosureGroup>
   </div>
 }
 

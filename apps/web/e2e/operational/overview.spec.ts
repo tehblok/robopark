@@ -16,6 +16,10 @@ for (const viewport of ['desktop', 'phone'] as const) for (const role of roles) 
     const task = page.getByRole('link', { name: 'Открыть задачу ROBOPARK-42' })
     await expect(task).toBeVisible()
     await expect(task).toHaveAttribute('href', '/work/ROBOPARK-42?park=7')
+    if (viewport === 'phone' && role !== 'driver' && role !== 'mechanic') {
+      await expect(page.getByRole('heading', { name: 'Нагрузка по ответственным' })).toHaveCount(0)
+      await page.getByRole('button', { name: 'Дополнительные показатели' }).click()
+    }
     await expect(page.getByRole('heading', { name: 'Нагрузка по ответственным' })).toHaveCount(role === 'driver' || role === 'mechanic' ? 0 : 1)
     await settlePage(page)
     await assertNoSeriousA11yViolations(page)

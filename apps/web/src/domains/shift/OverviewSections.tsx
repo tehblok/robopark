@@ -22,7 +22,7 @@ export function OverviewAlerts({ alerts }: Pick<OperationalOverviewModel, 'alert
 }
 
 export function OverviewStatusMonitoring({ statusCards, statusHref, allHref, selectable }: Pick<OperationalOverviewModel, 'statusCards'> & { statusHref: (status: string) => string; allHref: string | null; selectable: boolean }) {
-  return <Panel title="Статусы задач" description={selectable ? 'Выберите статус, чтобы сузить очередь внимания до разрешённых вашей роли задач.' : 'Текущий состав разрешённых вашей роли задач.'}>
+  return <Panel density="summary" title="Статусы задач" description={selectable ? 'Выберите статус, чтобы сузить очередь внимания до разрешённых вашей роли задач.' : 'Текущий состав разрешённых вашей роли задач.'}>
     <div className="rp-overview-statuses" data-testid="overview-statuses">
       {allHref ? <Link aria-label="Все разрешённые задачи" className="rp-overview-status rp-overview-status--all" to={allHref}>Все разрешённые задачи</Link> : null}
       {statusCards.map((card) => selectable
@@ -37,7 +37,7 @@ export function OverviewStatusMonitoring({ statusCards, statusHref, allHref, sel
 }
 
 export function OverviewFlow({ flow }: Pick<OperationalOverviewModel, 'flow'>) {
-  return <Panel title="Поток задач: пришло / ушло" description="Компактный операционный срез: созданные и решённые задачи в наблюдаемых интервалах, не физические перемещения роботов.">
+  return <Panel density="dense" title="Поток задач: пришло / ушло" description="Компактный операционный срез: созданные и решённые задачи в наблюдаемых интервалах, не физические перемещения роботов.">
     <div aria-label="Сводка потока задач" className="rp-overview-flow">
       <MetricCard label="Пришло задач" value={taskCount(flow.arrivedTaskCount)} />
       <MetricCard label="Ушло задач" tone="success" value={taskCount(flow.leftTaskCount)} />

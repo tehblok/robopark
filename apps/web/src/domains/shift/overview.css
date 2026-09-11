@@ -8,6 +8,12 @@
   min-width: 0;
 }
 
+.rp-overview-secondary {
+  display: grid;
+  gap: var(--rp-density-gap);
+  min-width: 0;
+}
+
 .rp-overview-alert {
   align-items: center;
   background: var(--rp-surface);

@@ -187,7 +187,7 @@ function AnalyticsSession({ apiClient, user }: { apiClient: AnalyticsApiClient; 
   const update = (next: AnalyticsQuery) => setParams(analyticsSearch(params, next), { replace: true })
   const canRead = user.access_status === 'approved' && !user.must_change_password && ['nav.analytics', 'tracker.read'].every(permission => user.permissions?.includes(permission))
   return <PageLayout title="Аналитика" description="Как меняется процесс и на каких этапах накапливается задержка.">
-    {canRead ? <div className="rp-analytics-controls">
+    {canRead ? <div aria-label="Параметры аналитики" className="rp-analytics-controls rp-analytics-controls--single-row" role="group">
       <label>Период аналитики<select aria-label="Период аналитики" value={query.days} onChange={event => update({ ...query, days: Number(event.target.value) })}><option value="1">1 день</option><option value="7">7 дней</option><option value="30">30 дней</option></select></label>
       <label>Шаг графиков<select aria-label="Шаг графиков" value={query.bucket} onChange={event => update({ ...query, bucket: event.target.value as AnalyticsQuery['bucket'] })}><option value="1d">24 часа</option><option value="2h">2 часа</option></select></label>
       {!allParks ? <label>Сравнить с парком<select aria-label="Сравнить с парком" value={query.compare ?? ''} onChange={event => update({ ...query, compare: event.target.value ? Number(event.target.value) : null })}><option value="">Без сравнения</option>{available.filter(park => park.id !== selectedPark?.id).map(park => <option key={park.id} value={park.id}>{park.name}</option>)}</select></label> : null}

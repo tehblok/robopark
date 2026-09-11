@@ -62,6 +62,15 @@ describe('Admin Emergency cookie validation', () => {
     expect(screen.queryByRole('button', { name: 'Свернуть: Быстрые переходы' })).not.toBeInTheDocument()
   })
 
+  it('never includes integration secret names or values in collapsed summaries', async () => {
+    setup()
+    await screen.findByRole('button', { name: 'Свернуть: Секреты' })
+    fireEvent.click(screen.getByRole('button', { name: 'Свернуть: Секреты' }))
+    const summary = screen.getByRole('button', { name: 'Развернуть: Секреты' }).closest('.panel-head')
+    expect(summary).not.toHaveTextContent(/session_id|tracker_token|cookie|oauth-токен/i)
+    fireEvent.click(screen.getByRole('button', { name: 'Развернуть: Секреты' }))
+  })
+
   it('keeps the short new-park form expanded', async () => {
     setup({}, [{ id: 7, name: 'Северный', tag: 'north', is_active: true }], ['nav.admin', 'parks.manage'], '/admin/settings?park=7&tab=parks')
 

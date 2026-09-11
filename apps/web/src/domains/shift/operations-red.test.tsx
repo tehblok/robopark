@@ -7,6 +7,11 @@ import { ParkScopeContext } from '../../app/park/parkScope'
 import { OverviewPage } from './OverviewPage'
 
 it('driver receives the operations task queue and honest unconfigured SLA', async () => {
+  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
+    matches: false, media: '(max-width: 599px)', onchange: null,
+    addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
+  }))
   const park = { id: 7, name: 'Север', tag: 'north', tracker_queue: 'ROBOPARK' }
   const user = { id: 1, username: 'driver', role: 'driver', access_status: 'approved', parks: [park], permissions: ['nav.dashboard', 'nav.tasks', 'tracker.read'] }
   const client = {
