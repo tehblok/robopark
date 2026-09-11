@@ -578,23 +578,29 @@ def task_writeoff(
         actor_login=ctx.actor_login,
     )
     try:
+        movement = inventory_stock.apply_stock_delta(
+            db,
+            user=user,
+            park_id=stock.park_id,
+            catalog_part_id=part.id,
+            delta=-quantity,
+            kind="task_writeoff",
+            source_kind=None,
+            source_id=None,
+            issue_key=issue_key,
+            note=None,
+        )
+        movement.part_id = legacy_part_id
+        # Validate and flush every local write before the irreversible bot comment.
+        # Keep the stock transaction open so an upstream failure can roll it back.
+        db.flush()
         tracker_client.add_comment(token=token, key=issue_key, text=comment)
     except tracker_client.TrackerError as exc:
         db.rollback()
         raise RuntimeError("tracker_upstream_error") from exc
-    movement = inventory_stock.apply_stock_delta(
-        db,
-        user=user,
-        park_id=stock.park_id,
-        catalog_part_id=part.id,
-        delta=-quantity,
-        kind="task_writeoff",
-        source_kind=None,
-        source_id=None,
-        issue_key=issue_key,
-        note=None,
-    )
-    movement.part_id = legacy_part_id
+    except Exception:
+        db.rollback()
+        raise
     db.commit()
     tracker_cache.invalidate_issue(issue_key)
     audit.record(

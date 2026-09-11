@@ -276,3 +276,65 @@ Result: `7 failed, 1 warning in 2.14s` (the aggregate regression is parameterize
   PostgreSQL planner was not available.
 - Downgrade and subsequent re-upgrade preserve quantities/minimums and movement balances above
   signed int32. No correctness blocker remains.
+
+## Fix round 4/5
+
+### Review finding and RED evidence
+
+- Base HEAD: `f2b928bbc8787b64375243355581b7b1d312595d`.
+- Narrow owned changes: `services/inventory.py`, `tests/test_inventory.py`, and this report.
+- Reproduced the external-side-effect ordering finding before production changes:
+
+  `cd apps/api && .venv/bin/pytest tests/test_inventory.py::test_task_writeoff_version_overflow_rejects_before_tracker_comment tests/test_inventory.py::test_task_writeoff_flushes_before_tracker_and_commits_only_after_success -q`
+
+  Result: `3 failed, 1 warning in 1.45s`.
+- A valid assigned task with stock `1`, version `INT64_MAX`, and writeoff quantity `1` returned
+  controlled HTTP 422 but had already sent the technical Tracker comment.
+- Both normal-success and Tracker-failure cases reached the mocked external boundary while the
+  local stock was still `(quantity=1, version=1)`, proving the missing delta-before-comment ordering.
+
+### Fix and transaction coverage
+
+- Task writeoff now applies the shared stock delta, assigns the compatibility movement link, and
+  explicitly flushes every local write before calling Tracker. It commits only after the bot
+  comment succeeds. Tracker errors roll back and retain the existing controlled HTTP 502 mapping;
+  other errors inside local mutation/flush or the external call also roll back before propagating.
+- Audited all previously late stock errors: integer bounds, current-balance validation, stock
+  underflow, version overflow, alias/archive resolution, and movement persistence now happen before
+  the external side effect. Role, park, claim ownership, quantity, and signature preparation already
+  preceded the comment and retain their existing behavior.
+- The regression checks HTTP 422, no comment, unchanged quantity/version, and unchanged movement
+  and audit IDs for overflow. The success/failure test uses raw connection reads to prove the delta
+  and movement have been flushed, plus an independent connection that must still see the original
+  committed stock and no task movement while the external call is in progress.
+- After Tracker failure, both the ORM session and an independent reader see the original stock;
+  movement and audit IDs remain unchanged. Success persists the decrement and one attributed
+  `tracker.comment` audit entry. The platform bot token, technical text, issue key, and signed
+  mechanic identity are verified.
+
+### GREEN and verification evidence
+
+- New regression set: `3 passed, 1 warning in 0.85s`. An intermediate test-only assertion was
+  corrected to compare the stored canonical catalog ID: new global adapter IDs are negative and
+  deliberately have no legacy `InventoryPart` foreign key.
+- Focused inventory/catalog/identity/counts/receipts plus every Tracker module:
+
+  `cd apps/api && .venv/bin/pytest tests/test_inventory.py tests/test_inventory_catalog.py tests/test_inventory_identity.py tests/test_inventory_counts.py tests/test_inventory_receipts.py tests/test_tracker*.py -q`
+
+  Result: `234 passed, 1 warning in 39.72s`.
+- Full API suite: `cd apps/api && .venv/bin/pytest -q` ->
+  `1448 passed, 21 warnings in 258.95s (0:04:18)`.
+- Final Ruff check: `All checks passed!`; Ruff format check: `2 files already formatted`;
+  `git diff --check` exited zero. Warnings are the existing Starlette TestClient deprecation and
+  SQLite datetime-adapter migration warnings.
+
+### Self-review and concerns
+
+- Moving the comment above the delta fails the overflow and callback-state regressions. Committing
+  before Tracker fails the independent-reader assertions; omitting rollback fails the live-session
+  stock check; changing the bot identity, attribution, target, or persisted delta fails success checks.
+- After the external call there is no remaining stock validation: only commit, cache invalidation,
+  best-effort audit, and movement refresh. As explicitly accepted in the latest ledger ruling,
+  a DB commit failure after successful external publication can still require reconciliation; a
+  transactional outbox is outside this narrow fix. Live PostgreSQL was not available; SQLite tests
+  verify real transaction visibility and the existing cross-dialect stock implementation is reused.

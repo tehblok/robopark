@@ -303,6 +303,142 @@ def test_task_writeoff_does_not_comment_when_stock_is_insufficient(
     assert comments == []
 
 
+def test_task_writeoff_version_overflow_rejects_before_tracker_comment(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    mechanic = _user(db_session, "mechanic", "overflow-writeoff", [seed_park_with_tracker])
+    login_as(client, mechanic.username, "secret")
+    _, part = _seed_part(client, seed_park_with_tracker.id)
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=mechanic,
+        owner=mechanic,
+        issue_key="RP-OVERFLOW",
+        park_id=seed_park_with_tracker.id,
+    )
+    stock = db_session.scalar(select(InventoryParkStock))
+    stock.quantity = 1
+    stock.version = 2**63 - 1
+    db_session.commit()
+    movement_ids = list(db_session.scalars(select(InventoryMovement.id)))
+    audit_ids = list(db_session.scalars(select(AuditLog.id)))
+    monkeypatch.setattr(inventory_svc.platform_settings, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        inventory_svc.tracker_cache,
+        "get_issue",
+        lambda **kwargs: {
+            "key": "RP-OVERFLOW",
+            "tags": [seed_park_with_tracker.tag],
+            "assignee": {"login": mechanic.tracker_login},
+        },
+    )
+    comments = []
+    monkeypatch.setattr(
+        inventory_svc.tracker_client, "add_comment", lambda **kwargs: comments.append(kwargs)
+    )
+
+    response = client.post(
+        "/inventory/tasks/RP-OVERFLOW/writeoff", json={"part_id": part["id"], "quantity": 1}
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "inventory_version_overflow"
+    db_session.expire_all()
+    assert (stock.quantity, stock.version) == (1, 2**63 - 1)
+    assert list(db_session.scalars(select(InventoryMovement.id))) == movement_ids
+    assert list(db_session.scalars(select(AuditLog.id))) == audit_ids
+    assert comments == []
+
+
+@pytest.mark.parametrize("tracker_fails", [False, True], ids=["success", "tracker-failure"])
+def test_task_writeoff_flushes_before_tracker_and_commits_only_after_success(
+    client, db_session, db_engine, seed_park_with_tracker, monkeypatch, tracker_fails
+):
+    mechanic = _user(db_session, "mechanic", "transaction-writeoff", [seed_park_with_tracker])
+    login_as(client, mechanic.username, "secret")
+    _, part = _seed_part(client, seed_park_with_tracker.id)
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=mechanic,
+        owner=mechanic,
+        issue_key="RP-TRANSACTION",
+        park_id=seed_park_with_tracker.id,
+    )
+    stock = db_session.scalar(select(InventoryParkStock))
+    stock.quantity = 1
+    stock.version = 1
+    db_session.commit()
+    movement_ids = list(db_session.scalars(select(InventoryMovement.id)))
+    audit_ids = list(db_session.scalars(select(AuditLog.id)))
+    stock_state = select(InventoryParkStock.quantity, InventoryParkStock.version)
+    task_movement = select(
+        InventoryMovement.catalog_part_id, InventoryMovement.delta, InventoryMovement.balance_after
+    ).where(InventoryMovement.issue_key == "RP-TRANSACTION")
+    monkeypatch.setattr(
+        inventory_svc.platform_settings, "get_tracker_token", lambda db: "bot-token"
+    )
+    monkeypatch.setattr(
+        inventory_svc.tracker_cache,
+        "get_issue",
+        lambda **kwargs: {
+            "key": "RP-TRANSACTION",
+            "tags": [seed_park_with_tracker.tag],
+            "assignee": {"login": mechanic.tracker_login},
+        },
+    )
+    comments = []
+
+    def add_comment(**kwargs):
+        comments.append(kwargs)
+        # Raw connection reads cannot autoflush pending ORM changes for the service.
+        assert db_session.connection().execute(stock_state).one() == (0, 2)
+        assert db_session.connection().execute(task_movement).one() == (
+            part["catalog_part_id"],
+            -1,
+            0,
+        )
+        # A separate reader must still see the old committed inventory until Tracker succeeds.
+        with db_engine.connect() as reader:
+            assert reader.execute(stock_state).one() == (1, 1)
+            assert reader.execute(task_movement).all() == []
+            assert list(reader.scalars(select(AuditLog.id))) == audit_ids
+        if tracker_fails:
+            raise inventory_svc.tracker_client.TrackerError("tracker unavailable")
+
+    monkeypatch.setattr(inventory_svc.tracker_client, "add_comment", add_comment)
+
+    response = client.post(
+        "/inventory/tasks/RP-TRANSACTION/writeoff", json={"part_id": part["id"], "quantity": 1}
+    )
+
+    assert response.status_code == (502 if tracker_fails else 201), response.text
+    assert len(comments) == 1
+    assert comments[0]["token"] == "bot-token"
+    assert comments[0]["key"] == "RP-TRANSACTION"
+    assert "Техническое сообщение · Склад" in comments[0]["text"]
+    assert "Инициатор: transaction-writeoff" in comments[0]["text"]
+    db_session.expire_all()
+    assert (stock.quantity, stock.version) == ((1, 1) if tracker_fails else (0, 2))
+    with db_engine.connect() as reader:
+        assert reader.execute(stock_state).one() == ((1, 1) if tracker_fails else (0, 2))
+        if tracker_fails:
+            assert response.json()["detail"] == "tracker_upstream_error"
+            assert list(reader.scalars(select(InventoryMovement.id))) == movement_ids
+            assert list(reader.scalars(select(AuditLog.id))) == audit_ids
+        else:
+            assert reader.execute(task_movement).one() == (part["catalog_part_id"], -1, 0)
+            assert reader.execute(
+                select(AuditLog.action, AuditLog.actor_user_id, AuditLog.park_id).where(
+                    AuditLog.target_id == "RP-TRANSACTION",
+                    AuditLog.action == "tracker.comment",
+                )
+            ).one() == ("tracker.comment", mechanic.id, seed_park_with_tracker.id)
+
+
 def test_legacy_movement_requires_park_when_global_part_has_multiple_accessible_stocks(
     client, db_session, seed_park_with_tracker
 ):
