@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { api, ApiError, inventoryErrorDetail, type InventoryOverview, type Park, type User } from '../../api'
+import { api, ApiError, inventoryErrorDetail, isInventoryCountStaleErrorDetail, isInventoryDuplicateErrorDetail, type InventoryOverview, type Park, type User } from '../../api'
 import { AuthContext } from '../../auth-context'
 import { ParkScopeContext } from '../../app/park/parkScope'
 import { InventoryPage } from './InventoryPage'
@@ -64,13 +64,13 @@ describe('inventory URL tabs', () => {
     expect(screen.queryByText('Поставки будут')).not.toBeInTheDocument()
   })
 
-  it('renders non-parts workflows without requesting or depending on legacy overview', async () => {
+  it('renders non-parts workflows without depending on the optional legacy overview', async () => {
     const inventory = vi.fn(async () => { throw new ApiError(503, 'legacy_unavailable') })
     renderInventory('/inventory?park=7&view=receipts', 'mechanic', inventory)
 
     expect(await screen.findByRole('tabpanel')).toHaveTextContent('Поставки')
     expect(screen.getByRole('tablist', { name: 'Разделы склада' })).toBeVisible()
-    expect(inventory).not.toHaveBeenCalled()
+    expect(inventory).toHaveBeenCalledWith(7)
     expect(screen.queryByText('Сервис временно недоступен')).not.toBeInTheDocument()
   })
 
@@ -190,7 +190,21 @@ describe('inventory API contracts', () => {
       code: 'inventory_count_stale',
       conflicts: [{ catalog_part_id: 3, expected_quantity: '9007199254740993', current_quantity: '9223372036854775807' }],
     })
-    expect(inventoryErrorDetail(failure)?.code).toBe('inventory_count_stale')
+    const detail = inventoryErrorDetail(failure)
+    expect(isInventoryCountStaleErrorDetail(detail)).toBe(true)
+    if (!isInventoryCountStaleErrorDetail(detail)) throw new Error('expected stale count detail')
+    expect(detail.conflicts[0].current_quantity).toBe('9223372036854775807')
+  })
+
+  it('narrows duplicate inventory errors to their existing identifiers', () => {
+    const article = inventoryErrorDetail(new ApiError(409, { code: 'inventory_article_exists', existing_part_id: 91 }))
+    const component = inventoryErrorDetail(new ApiError(409, { code: 'inventory_component_exists', existing_component_id: 92 }))
+
+    expect(isInventoryDuplicateErrorDetail(article)).toBe(true)
+    expect(isInventoryDuplicateErrorDetail(component)).toBe(true)
+    if (!isInventoryDuplicateErrorDetail(article) || !isInventoryDuplicateErrorDetail(component)) throw new Error('expected duplicate detail')
+    expect(article.code === 'inventory_article_exists' ? article.existing_part_id : article.existing_component_id).toBe(91)
+    expect(component.code === 'inventory_component_exists' ? component.existing_component_id : component.existing_part_id).toBe(92)
   })
 
   it('keeps existing string error details compatible with current UX consumers', async () => {
@@ -245,5 +259,41 @@ describe('inventory API contracts', () => {
     expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({ minimum_quantity: '9223372036854775807', location: 'A-1', is_active: true })
     expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body)).lines[0].quantity).toBe('9223372036854775807')
     expect(JSON.parse(String(fetchMock.mock.calls[3][1]?.body)).lines[0].actual_quantity).toBe('9223372036854775807')
+  })
+
+  it('uses the lossless codec for legacy overview, movements, mutations, and task writeoff', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(
+        '{"park_id":7,"component_count":1,"part_count":1,"low_stock_count":0,"out_of_stock_count":0,"components":[{"id":2,"park_id":7,"name":"Wheel","has_photo":false,"parts":[{"id":3,"park_id":7,"component_id":2,"name":"Tyre","article":"WH-1","quantity":9007199254740993,"minimum_quantity":9223372036854775807,"location":"A-1","is_active":true,"has_photo":false}]}]}',
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ))
+      .mockResolvedValueOnce(new Response(
+        '[{"id":4,"part_id":3,"park_id":7,"actor_user_id":1,"actor_username":"mech","kind":"adjustment","delta":-9007199254740993,"balance_after":9223372036854775807,"issue_key":null,"note":null,"created_at":"2026-09-12T00:00:00Z"}]',
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ))
+      .mockResolvedValueOnce(new Response(
+        '{"id":3,"park_id":7,"component_id":2,"name":"Tyre","article":"WH-1","quantity":9007199254740993,"minimum_quantity":9223372036854775807,"location":"A-1","is_active":true,"has_photo":false}',
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ))
+      .mockImplementation(async () => new Response(
+        '{"id":4,"part_id":3,"park_id":7,"actor_user_id":1,"actor_username":"mech","kind":"adjustment","delta":9007199254740993,"balance_after":9223372036854775807,"issue_key":null,"note":null,"created_at":"2026-09-12T00:00:00Z"}',
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const overview = await api.inventory(7)
+    const movements = await api.inventoryMovements(7)
+    const updated = await api.updateInventoryPart(3, { minimum_quantity: '9223372036854775807' })
+    const moved = await api.moveInventoryStock(3, 'adjustment', '9007199254740993')
+    const writtenOff = await api.writeoffInventoryForTask('RP-42', 3, '9223372036854775807')
+
+    expect(overview.components[0].parts[0]).toMatchObject({ quantity: '9007199254740993', minimum_quantity: '9223372036854775807' })
+    expect(movements[0]).toMatchObject({ delta: '-9007199254740993', balance_after: '9223372036854775807' })
+    expect(updated.quantity).toBe('9007199254740993')
+    expect(moved.balance_after).toBe('9223372036854775807')
+    expect(writtenOff.balance_after).toBe('9223372036854775807')
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body)).minimum_quantity).toBe('9223372036854775807')
+    expect(JSON.parse(String(fetchMock.mock.calls[3][1]?.body)).quantity).toBe('9007199254740993')
+    expect(JSON.parse(String(fetchMock.mock.calls[4][1]?.body)).quantity).toBe('9223372036854775807')
   })
 })

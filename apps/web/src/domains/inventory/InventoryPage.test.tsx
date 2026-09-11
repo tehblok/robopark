@@ -9,9 +9,9 @@ import { TaskPartsPanel } from './TaskPartsPanel'
 
 const park: Park = { id: 7, name: 'Север', tag: 'North', is_active: true }
 const anotherPark: Park = { id: 8, name: 'Юг', tag: 'South', is_active: true }
-const stock: InventoryOverview = { park_id: 7, component_count: 1, part_count: 1, low_stock_count: 0, out_of_stock_count: 0, components: [{ id: 2, park_id: 7, name: 'Подвязка', has_photo: true, parts: [{ id: 3, park_id: 7, component_id: 2, name: 'Тяга', article: 'TY-001', quantity: 5, minimum_quantity: 2, location: 'Стеллаж A / полка 2', is_active: true, has_photo: true }] }] }
-const stockWithTwoComponents: InventoryOverview = { ...stock, component_count: 2, part_count: 2, components: [...stock.components, { id: 9, park_id: 7, name: 'Колесо', has_photo: false, parts: [{ id: 10, park_id: 7, component_id: 9, name: 'Шина', article: 'WH-001', quantity: 4, minimum_quantity: 1, location: 'Стеллаж B / полка 1', is_active: true, has_photo: true }] }] }
-const stockForAnotherPark: InventoryOverview = { ...stock, park_id: 8, components: [{ id: 12, park_id: 8, name: 'Батарея', has_photo: false, parts: [{ id: 13, park_id: 8, component_id: 12, name: 'Аккумулятор', article: 'BT-001', quantity: 2, minimum_quantity: 1, location: 'Стеллаж C / полка 3', is_active: true, has_photo: false }] }] }
+const stock: InventoryOverview = { park_id: 7, component_count: 1, part_count: 1, low_stock_count: 0, out_of_stock_count: 0, components: [{ id: 2, park_id: 7, name: 'Подвязка', has_photo: true, parts: [{ id: 3, park_id: 7, component_id: 2, name: 'Тяга', article: 'TY-001', quantity: '5', minimum_quantity: '2', location: 'Стеллаж A / полка 2', is_active: true, has_photo: true }] }] }
+const stockWithTwoComponents: InventoryOverview = { ...stock, component_count: 2, part_count: 2, components: [...stock.components, { id: 9, park_id: 7, name: 'Колесо', has_photo: false, parts: [{ id: 10, park_id: 7, component_id: 9, name: 'Шина', article: 'WH-001', quantity: '4', minimum_quantity: '1', location: 'Стеллаж B / полка 1', is_active: true, has_photo: true }] }] }
+const stockForAnotherPark: InventoryOverview = { ...stock, park_id: 8, components: [{ id: 12, park_id: 8, name: 'Батарея', has_photo: false, parts: [{ id: 13, park_id: 8, component_id: 12, name: 'Аккумулятор', article: 'BT-001', quantity: '2', minimum_quantity: '1', location: 'Стеллаж C / полка 3', is_active: true, has_photo: false }] }] }
 const emptyStock: InventoryOverview = { ...stock, component_count: 0, part_count: 0, low_stock_count: 0, out_of_stock_count: 0, components: [] }
 
 function deferred<T>() {
@@ -50,14 +50,26 @@ beforeEach(() => useViewport(false))
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-it('keeps park identity above a workflow that does not need legacy overview', async () => {
-  const client = inventoryClient({ inventory: vi.fn(async () => { throw new Error('legacy unavailable') }) })
+it('keeps park identity and KPI strip above export without coupling the workflow to overview success', async () => {
+  const client = inventoryClient()
   render(renderInventoryPage(park, client, '/inventory?park=7&view=export'))
 
   expect(await screen.findByRole('heading', { name: 'Склад' })).toBeVisible()
   expect(screen.getByText('Учёт запчастей парка «Север»')).toBeVisible()
+  expect(await screen.findByText('Компоненты')).toBeVisible()
   expect(screen.getByRole('tabpanel')).toHaveTextContent('Выгрузка парка Север')
-  expect(client.inventory).not.toHaveBeenCalled()
+  const metrics = document.querySelector('.inventory-kpis')!
+  const tabs = screen.getByRole('tablist', { name: 'Разделы склада' })
+  expect(metrics.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+})
+
+it('keeps tabs and export usable when the optional overview KPI request fails', async () => {
+  const client = inventoryClient({ inventory: vi.fn(async () => { throw new Error('legacy unavailable') }) })
+  render(renderInventoryPage(park, client, '/inventory?park=7&view=export'))
+
+  expect(await screen.findByRole('tabpanel')).toHaveTextContent('Выгрузка парка Север')
+  expect(screen.getByRole('tablist', { name: 'Разделы склада' })).toBeVisible()
+  expect(client.inventory).toHaveBeenCalledWith(7)
 })
 
 it('keeps the mobile catalog visible and opens inventory workflows on demand', async () => {
@@ -67,7 +79,7 @@ it('keeps the mobile catalog visible and opens inventory workflows on demand', a
   expect(await screen.findByRole('heading', { name: 'Подвязка' })).toBeVisible()
   expect(screen.getByRole('combobox', { name: 'Компонента' })).toBeVisible()
   expect(screen.queryByRole('textbox', { name: 'Название новой запчасти' })).not.toBeInTheDocument()
-  expect(screen.queryByRole('spinbutton', { name: 'Количество' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('textbox', { name: 'Количество' })).not.toBeInTheDocument()
   const thumbnail = screen.getByRole('img', { name: 'Тяга' })
   expect(thumbnail).toHaveAttribute('width', '72')
   expect(thumbnail).toHaveAttribute('height', '72')
@@ -84,7 +96,7 @@ it('opens a part editor with one disclosure click on a phone', async () => {
   await userEvent.click(within(part).getByRole('button', { name: 'Редактировать' }))
 
   expect(within(part).getByRole('textbox', { name: 'Название' })).toBeVisible()
-  expect(within(part).queryByRole('spinbutton', { name: 'Количество' })).not.toBeInTheDocument()
+  expect(within(part).queryByRole('textbox', { name: 'Количество' })).not.toBeInTheDocument()
 })
 
 it('opens stock movement with one phone disclosure click and replaces it with editing', async () => {
@@ -94,7 +106,7 @@ it('opens stock movement with one phone disclosure click and replaces it with ed
 
   await userEvent.click(within(part).getByRole('button', { name: 'Движение остатков' }))
   expect(within(part).getByRole('combobox', { name: 'Операция' })).toBeVisible()
-  expect(within(part).getByRole('spinbutton', { name: 'Количество' })).toBeVisible()
+  expect(within(part).getByRole('textbox', { name: 'Количество' })).toBeVisible()
 
   await userEvent.click(within(part).getByRole('button', { name: 'Редактировать' }))
   expect(within(part).getByRole('textbox', { name: 'Название' })).toBeVisible()
@@ -111,7 +123,7 @@ it('keeps only one massive inventory workflow open on a phone', async () => {
   await userEvent.click(within(part).getByRole('button', { name: 'Движение остатков' }))
 
   expect(screen.queryByRole('textbox', { name: 'Название новой запчасти' })).not.toBeInTheDocument()
-  expect(within(part).getByRole('spinbutton', { name: 'Количество' })).toBeVisible()
+  expect(within(part).getByRole('textbox', { name: 'Количество' })).toBeVisible()
 })
 
 it('moves the single phone workflow between parts', async () => {
@@ -137,7 +149,7 @@ it('keeps desktop part editors closed and exposes one primary action only for th
   expect(parts).toHaveLength(2)
   expect(document.querySelectorAll('.inventory-parts .rp-button--primary')).toHaveLength(0)
   expect(within(parts[0]).queryByRole('textbox', { name: 'Название' })).not.toBeInTheDocument()
-  expect(within(parts[1]).queryByRole('spinbutton', { name: 'Количество' })).not.toBeInTheDocument()
+  expect(within(parts[1]).queryByRole('textbox', { name: 'Количество' })).not.toBeInTheDocument()
 
   await userEvent.click(within(parts[0]).getByRole('button', { name: 'Открыть редактор' }))
   expect(within(parts[0]).getByRole('textbox', { name: 'Название' })).toBeVisible()
@@ -250,28 +262,29 @@ it('shows stock location and prepares a printable shelf label', async () => {
   expect(label).toHaveTextContent('Стеллаж A / полка 2')
 })
 
-it('writes a selected part off from the current task', async () => {
-  const writeoff = vi.fn(async () => ({ id: 1, part_id: 3, park_id: 7, actor_user_id: 4, actor_username: 'mech', kind: 'task_writeoff', delta: -2, balance_after: 3, issue_key: 'RP-42', note: null, created_at: '2026-09-10T10:00:00Z' }))
-  render(<TaskPartsPanel apiClient={inventoryClient({ writeoffInventoryForTask: writeoff })} issueKey="RP-42" parkId={7} />)
+it('writes a selected part off from the current task without rounding int64 input', async () => {
+  const largeStock: InventoryOverview = { ...stock, components: [{ ...stock.components[0], parts: [{ ...stock.components[0].parts[0], quantity: '9223372036854775807' }] }] }
+  const writeoff = vi.fn(async () => ({ id: 1, part_id: 3, park_id: 7, actor_user_id: 4, actor_username: 'mech', kind: 'task_writeoff', delta: '-2' as const, balance_after: '3' as const, issue_key: 'RP-42', note: null, created_at: '2026-09-10T10:00:00Z' }))
+  render(<TaskPartsPanel apiClient={inventoryClient({ inventory: vi.fn(async () => largeStock), writeoffInventoryForTask: writeoff })} issueKey="RP-42" parkId={7} />)
   await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Компонента' }), '2')
   await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Запчасть' }), '3')
-  await userEvent.clear(screen.getByRole('spinbutton', { name: 'Списать, шт.' }))
-  await userEvent.type(screen.getByRole('spinbutton', { name: 'Списать, шт.' }), '2')
+  await userEvent.clear(screen.getByRole('textbox', { name: 'Списать, шт.' }))
+  await userEvent.type(screen.getByRole('textbox', { name: 'Списать, шт.' }), '9007199254740993')
   await userEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
-  await waitFor(() => expect(writeoff).toHaveBeenCalledWith('RP-42', 3, 2))
+  await waitFor(() => expect(writeoff).toHaveBeenCalledWith('RP-42', 3, '9007199254740993'))
 })
 
 it('resets an invalid write-off quantity after inventory refresh', async () => {
-  const refreshedStock: InventoryOverview = { ...stock, components: [{ ...stock.components[0], parts: [{ ...stock.components[0].parts[0], quantity: 1 }] }] }
-  const client = inventoryClient({ inventory: vi.fn().mockResolvedValueOnce(stock).mockResolvedValueOnce(refreshedStock), writeoffInventoryForTask: vi.fn(async () => ({ id: 1, part_id: 3, park_id: 7, actor_user_id: 4, actor_username: 'mech', kind: 'task_writeoff', delta: -2, balance_after: 1, issue_key: 'RP-42', note: null, created_at: '2026-09-10T10:00:00Z' })) })
+  const refreshedStock: InventoryOverview = { ...stock, components: [{ ...stock.components[0], parts: [{ ...stock.components[0].parts[0], quantity: '1' }] }] }
+  const client = inventoryClient({ inventory: vi.fn().mockResolvedValueOnce(stock).mockResolvedValueOnce(refreshedStock), writeoffInventoryForTask: vi.fn(async () => ({ id: 1, part_id: 3, park_id: 7, actor_user_id: 4, actor_username: 'mech', kind: 'task_writeoff', delta: '-2' as const, balance_after: '1' as const, issue_key: 'RP-42', note: null, created_at: '2026-09-10T10:00:00Z' })) })
   render(<TaskPartsPanel apiClient={client} issueKey="RP-42" parkId={7} />)
 
   await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Компонента' }), '2')
   await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Запчасть' }), '3')
-  await userEvent.clear(screen.getByRole('spinbutton', { name: 'Списать, шт.' }))
-  await userEvent.type(screen.getByRole('spinbutton', { name: 'Списать, шт.' }), '2')
+  await userEvent.clear(screen.getByRole('textbox', { name: 'Списать, шт.' }))
+  await userEvent.type(screen.getByRole('textbox', { name: 'Списать, шт.' }), '2')
   await userEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
 
   await waitFor(() => expect(client.inventory).toHaveBeenCalledTimes(2))
-  expect(screen.getByRole('spinbutton', { name: 'Списать, шт.' })).toHaveValue(1)
+  expect(screen.getByRole('textbox', { name: 'Списать, шт.' })).toHaveValue('1')
 })

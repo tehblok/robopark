@@ -2,6 +2,24 @@ export type InventoryDocumentStatus = 'draft' | 'posted' | 'cancelled'
 export type InventoryStockFilter = 'in_stock' | 'below_minimum' | 'without_location'
 export type InventoryInt64 = `${bigint}`
 
+export function inventoryInt64Compare(left: InventoryInt64, right: InventoryInt64): number {
+  const leftValue = BigInt(left)
+  const rightValue = BigInt(right)
+  return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0
+}
+
+export function isInventoryInt64(value: string): value is InventoryInt64 {
+  return /^-?\d+$/.test(value)
+}
+
+export function isInventoryQuantity(value: string): value is InventoryInt64 {
+  return /^\d+$/.test(value)
+}
+
+export function isPositiveInventoryQuantity(value: string): value is InventoryInt64 {
+  return isInventoryQuantity(value) && BigInt(value) > 0n
+}
+
 export type InventoryCatalogComponent = {
   id: number
   name: string
@@ -126,17 +144,22 @@ export type InventoryExportParams =
   | { parkId: number; scope?: never; format: 'csv' | 'xlsx' }
   | { parkId?: never; scope: 'all'; format: 'csv' | 'xlsx' }
 
-export type InventoryApiErrorDetail =
+export type InventoryDuplicateErrorDetail =
   | { code: 'inventory_article_exists'; existing_part_id: number }
   | { code: 'inventory_component_exists'; existing_component_id: number }
+
+export type InventoryCountStaleErrorDetail = {
+  code: 'inventory_count_stale'
+  conflicts: Array<{
+    catalog_part_id: number
+    expected_quantity: InventoryInt64
+    current_quantity: InventoryInt64
+  }>
+}
+
+export type InventoryApiErrorDetail =
+  | InventoryDuplicateErrorDetail
   | { code: 'inventory_out_of_stock'; current_quantity: InventoryInt64 }
-  | {
-      code: 'inventory_count_stale'
-      conflicts: Array<{
-        catalog_part_id: number
-        expected_quantity: InventoryInt64
-        current_quantity: InventoryInt64
-      }>
-    }
+  | InventoryCountStaleErrorDetail
   | { code: 'inventory_park_required'; park_ids: number[] }
   | { code: string; [key: string]: unknown }

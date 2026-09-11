@@ -8,6 +8,9 @@ import type {
   InventoryCountScope,
   InventoryExportParams,
   InventoryApiErrorDetail,
+  InventoryCountStaleErrorDetail,
+  InventoryDuplicateErrorDetail,
+  InventoryInt64,
   InventoryListParams,
   InventoryPageEnvelope,
   InventoryReceipt,
@@ -23,8 +26,10 @@ export type {
   InventoryCount,
   InventoryCountLine,
   InventoryCountLineInput,
+  InventoryCountStaleErrorDetail,
   InventoryCountScope,
   InventoryDocumentStatus,
+  InventoryDuplicateErrorDetail,
   InventoryInt64,
   InventoryApiErrorDetail,
   InventoryExportParams,
@@ -522,11 +527,11 @@ export type CampaignSubmission = {
 
 export type InventoryPart = {
   id: number; park_id: number; component_id: number; name: string; article: string
-  quantity: number; minimum_quantity: number; location: string; is_active: boolean; has_photo: boolean
+  quantity: InventoryInt64; minimum_quantity: InventoryInt64; location: string; is_active: boolean; has_photo: boolean
 }
 export type InventoryComponent = { id: number; park_id: number; name: string; has_photo: boolean; parts: InventoryPart[] }
 export type InventoryOverview = { park_id: number; component_count: number; part_count: number; low_stock_count: number; out_of_stock_count: number; components: InventoryComponent[] }
-export type InventoryMovement = { id: number; part_id: number; park_id: number; actor_user_id: number; actor_username: string; kind: string; delta: number; balance_after: number; issue_key: string | null; note: string | null; created_at: string }
+export type InventoryMovement = { id: number; part_id: number; park_id: number; actor_user_id: number; actor_username: string; kind: string; delta: InventoryInt64; balance_after: InventoryInt64; issue_key: string | null; note: string | null; created_at: string }
 
 export type HostCheck = {
   code: string
@@ -809,11 +814,38 @@ async function inventoryRequest<T>(path: string, init?: RequestInit): Promise<T>
   )
 }
 
+async function inventoryFormRequest<T>(path: string, formData: FormData): Promise<T> {
+  return fetchWithTimeout(
+    `/api${path}`,
+    { credentials: 'include', method: 'POST', body: formData },
+    FORM_TIMEOUT_MS,
+    async (response) => {
+      const text = await response.text()
+      if (!response.ok) {
+        let detail: unknown = null
+        try { detail = parseInventoryJson<{ detail?: unknown }>(text).detail ?? null } catch { /* malformed error body */ }
+        throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
+      }
+      return parseInventoryJson<T>(text)
+    },
+  )
+}
+
 export function inventoryErrorDetail(error: unknown): InventoryApiErrorDetail | null {
   if (!(error instanceof ApiError) || !error.structuredDetail || Array.isArray(error.structuredDetail)) return null
   return typeof error.structuredDetail.code === 'string'
     ? error.structuredDetail as InventoryApiErrorDetail
     : null
+}
+
+export function isInventoryCountStaleErrorDetail(detail: InventoryApiErrorDetail | null): detail is InventoryCountStaleErrorDetail {
+  return detail?.code === 'inventory_count_stale' && Array.isArray(detail.conflicts)
+}
+
+export function isInventoryDuplicateErrorDetail(detail: InventoryApiErrorDetail | null): detail is InventoryDuplicateErrorDetail {
+  if (detail?.code === 'inventory_article_exists') return typeof detail.existing_part_id === 'number'
+  if (detail?.code === 'inventory_component_exists') return typeof detail.existing_component_id === 'number'
+  return false
 }
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -875,7 +907,9 @@ async function downloadInventoryExport(options: InventoryExportParams): Promise<
     BLOB_TIMEOUT_MS,
     async (response) => {
       if (!response.ok) {
-        const detail = await readErrorDetail(response)
+        const text = await response.text()
+        let detail: unknown = null
+        try { detail = parseInventoryJson<{ detail?: unknown }>(text).detail ?? null } catch { /* malformed error body */ }
         throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
       }
       const contentType = response.headers.get('Content-Type')?.split(';', 1)[0].trim().toLowerCase()
@@ -1330,7 +1364,7 @@ export const api = {
       form,
     )
   },
-  inventory: (parkId: number) => request<InventoryOverview>(`/inventory?park_id=${parkId}`),
+  inventory: (parkId: number) => inventoryRequest<InventoryOverview>(`/inventory?park_id=${parkId}`),
   searchInventory: ({ parkId, query: search, componentId, stockFilter, limit, offset }: InventorySearchParams) => {
     const query = new URLSearchParams({ park_id: String(parkId) })
     if (search) query.set('q', search)
@@ -1375,23 +1409,23 @@ export const api = {
   cancelInventoryCount: (parkId: number, countId: number) =>
     inventoryRequest<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}/cancel`, { method: 'POST' }),
   downloadInventoryExport,
-  inventoryMovements: (parkId: number) => request<InventoryMovement[]>(`/inventory/movements?park_id=${parkId}`),
+  inventoryMovements: (parkId: number) => inventoryRequest<InventoryMovement[]>(`/inventory/movements?park_id=${parkId}`),
   inventoryComponentPhotoUrl: (id: number) => `/api/inventory/components/${id}/photo`,
   inventoryPartPhotoUrl: (id: number) => `/api/inventory/parts/${id}/photo`,
   createInventoryComponent: (parkId: number, name: string, photo?: File | null) => {
     const form = new FormData(); form.append('park_id', String(parkId)); form.append('name', name)
     if (photo) form.append('photo', photo, photo.name)
-    return requestForm<InventoryComponent>('/inventory/components', form)
+    return inventoryFormRequest<InventoryComponent>('/inventory/components', form)
   },
-  createInventoryPart: (payload: { park_id: number; component_id: number; name: string; article: string; quantity: number; minimum_quantity: number; location: string; photo?: File | null }) => {
+  createInventoryPart: (payload: { park_id: number; component_id: number; name: string; article: string; quantity: InventoryInt64; minimum_quantity: InventoryInt64; location: string; photo?: File | null }) => {
     const form = new FormData()
     Object.entries(payload).forEach(([key, value]) => { if (key !== 'photo') form.append(key, String(value)) })
     if (payload.photo) form.append('photo', payload.photo, payload.photo.name)
-    return requestForm<InventoryPart>('/inventory/parts', form)
+    return inventoryFormRequest<InventoryPart>('/inventory/parts', form)
   },
-  updateInventoryPart: (id: number, payload: Partial<Pick<InventoryPart, 'name' | 'article' | 'component_id' | 'location' | 'minimum_quantity' | 'is_active'>>) => request<InventoryPart>(`/inventory/parts/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
-  moveInventoryStock: (id: number, kind: 'receipt' | 'writeoff' | 'adjustment', quantity: number, note?: string) => request<InventoryMovement>(`/inventory/parts/${id}/movements`, { method: 'POST', body: JSON.stringify({ kind, quantity, note }) }),
-  writeoffInventoryForTask: (issueKey: string, partId: number, quantity: number) => request<InventoryMovement>(`/inventory/tasks/${encodeURIComponent(issueKey)}/writeoff`, { method: 'POST', body: JSON.stringify({ part_id: partId, quantity }) }),
+  updateInventoryPart: (id: number, payload: Partial<Pick<InventoryPart, 'name' | 'article' | 'component_id' | 'location' | 'minimum_quantity' | 'is_active'>>) => inventoryRequest<InventoryPart>(`/inventory/parts/${id}`, { method: 'PATCH', body: inventoryStringify(payload) }),
+  moveInventoryStock: (id: number, kind: 'receipt' | 'writeoff' | 'adjustment', quantity: InventoryInt64, note?: string) => inventoryRequest<InventoryMovement>(`/inventory/parts/${id}/movements`, { method: 'POST', body: inventoryStringify({ kind, quantity, note }) }),
+  writeoffInventoryForTask: (issueKey: string, partId: number, quantity: InventoryInt64) => inventoryRequest<InventoryMovement>(`/inventory/tasks/${encodeURIComponent(issueKey)}/writeoff`, { method: 'POST', body: inventoryStringify({ part_id: partId, quantity }) }),
   reportsMine: () => request<Report[]>('/reports/mine'),
   reportsInbox: (parkId?: number) =>
     request<Report[]>(
