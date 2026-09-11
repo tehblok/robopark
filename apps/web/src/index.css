@@ -1224,7 +1224,8 @@ textarea {
   font-weight: 500;
 }
 
-.issue-status {
+.issue-status,
+.issue-badge {
   font-size: var(--rp-font-size-body);
 }
 
@@ -1369,7 +1370,7 @@ textarea {
 }
 
 .issue-field dt {
-  font-size: 0.75rem;
+  font-size: var(--rp-font-size-body);
   color: var(--text-muted);
 }
 
@@ -1393,7 +1394,7 @@ textarea {
 
 .issue-age {
   margin-left: 0.5rem;
-  font-size: 0.75rem;
+  font-size: var(--rp-font-size-body);
   color: var(--text-muted);
 }
 
@@ -1837,7 +1838,7 @@ textarea {
 }
 
 .issue-action-label {
-  font-size: 0.75rem;
+  font-size: var(--rp-font-size-body);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-muted);
