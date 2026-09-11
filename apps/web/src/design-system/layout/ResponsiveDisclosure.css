@@ -27,7 +27,7 @@
 
 .rp-responsive-disclosure__summary {
   color: var(--rp-text-muted);
-  font-size: var(--rp-font-size-caption);
+  font-size: var(--rp-font-size-body);
 }
 
 @media (min-width: 600px) {
