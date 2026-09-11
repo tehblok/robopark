@@ -34,12 +34,10 @@ def _clean_text(value: str | None) -> str | None:
     return (value or "").strip() or None
 
 
-def _prefix_upper_bound(value: str) -> str | None:
-    characters = list(value)
-    for index in range(len(characters) - 1, -1, -1):
-        codepoint = ord(characters[index])
-        if codepoint < 0x10FFFF:
-            return "".join([*characters[:index], chr(codepoint + 1)])
+def _prefix_upper_bound(value: bytes) -> bytes | None:
+    for index in range(len(value) - 1, -1, -1):
+        if value[index] < 0xFF:
+            return value[:index] + bytes([value[index] + 1])
     return None
 
 
@@ -261,14 +259,13 @@ def list_counts(
     filters = [InventoryCount.park_id == park_id]
     clean_query = _clean_text(query)
     if clean_query:
-        prefix = clean_query.casefold()
-        filters.append(InventoryCount.normalized_name >= prefix)
+        prefix = clean_query.casefold().encode("utf-8")
+        filters.append(InventoryCount.normalized_name_key >= prefix)
         upper_bound = _prefix_upper_bound(prefix)
         if upper_bound is not None:
-            filters.append(InventoryCount.normalized_name < upper_bound)
+            filters.append(InventoryCount.normalized_name_key < upper_bound)
         ordering = (
-            InventoryCount.normalized_name,
-            InventoryCount.created_at,
+            InventoryCount.normalized_name_key,
             InventoryCount.id,
         )
     else:
@@ -282,8 +279,8 @@ def list_counts(
     return rows, int(total or 0)
 
 
-def _line_source_id(count: InventoryCount, line: InventoryCountLine) -> str:
-    return f"{count.id}:{line.id}"
+def _group_source_id(count: InventoryCount, canonical_part_id: int) -> str:
+    return f"{count.id}:canonical:{canonical_part_id}"
 
 
 def _canonical_line_groups(
@@ -312,6 +309,8 @@ def _canonical_line_groups(
         except LookupError:
             expected = sum(line.expected_quantity for line in grouped_lines)
             actual = sum(int(line.actual_quantity or 0) for line in grouped_lines)
+            inventory_stock.require_int64(expected)
+            inventory_stock.require_int64(actual)
             if part.is_active or expected != 0 or actual != 0:
                 raise
             stock = None
@@ -337,6 +336,7 @@ def post_count(db: Session, user: User, *, park_id: int, count_id: int) -> Inven
         conflicts = []
         for canonical_id, stock, grouped_lines in groups:
             expected = sum(line.expected_quantity for line in grouped_lines)
+            inventory_stock.require_int64(expected)
             current = stock.quantity if stock is not None else 0
             if current != expected:
                 conflicts.append(
@@ -348,24 +348,25 @@ def post_count(db: Session, user: User, *, park_id: int, count_id: int) -> Inven
                 )
         if conflicts:
             raise InventoryCountConflict(conflicts)
-        changed_lines = [line for line in lines if line.difference]
-        changed_lines.sort(key=lambda line: (line.difference < 0, line.catalog_part_id, line.id))
-        canonical_by_line = {
-            line.id: canonical_id
-            for canonical_id, _stock, grouped_lines in groups
-            for line in grouped_lines
-        }
-        for line in changed_lines:
+        for canonical_id, _stock, grouped_lines in groups:
+            expected = sum(int(line.expected_quantity) for line in grouped_lines)
+            actual = sum(int(line.actual_quantity) for line in grouped_lines)
+            inventory_stock.require_int64(expected)
+            inventory_stock.require_int64(actual)
+            delta = actual - expected
+            if delta == 0:
+                continue
+            comments = [line.comment for line in grouped_lines if line.comment]
             inventory_stock.apply_stock_delta(
                 db,
                 user=user,
                 park_id=park_id,
-                catalog_part_id=canonical_by_line[line.id],
-                delta=int(line.difference),
+                catalog_part_id=canonical_id,
+                delta=delta,
                 kind="adjustment",
                 source_kind="count",
-                source_id=_line_source_id(row, line),
-                note=line.comment,
+                source_id=_group_source_id(row, canonical_id),
+                note="; ".join(comments)[:500] or None,
                 allow_archived=True,
             )
         row.status = "posted"

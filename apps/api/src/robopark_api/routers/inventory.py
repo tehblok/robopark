@@ -35,7 +35,7 @@ from robopark_api.inventory_schemas import (
     InventoryStockUpdateIn,
     InventoryTaskWriteoffIn,
 )
-from robopark_api.models import User
+from robopark_api.models import INVENTORY_INT64_MAX, User
 from robopark_api.services import inventory as service
 from robopark_api.services import (
     inventory_access,
@@ -387,7 +387,7 @@ def update_stock(
         stock.location = (payload.location or "").strip() or None
         stock.is_active = payload.is_active
         stock.updated_by = user.id
-        stock.version += 1
+        inventory_stock.increment_stock_version(stock)
         db.commit()
         db.refresh(stock)
         service.audit_inventory_change(
@@ -435,8 +435,8 @@ async def create_part(
     component_id: int = Form(...),
     name: str = Form(...),
     article: str = Form(...),
-    quantity: int = Form(0, ge=0),
-    minimum_quantity: int = Form(0, ge=0),
+    quantity: int = Form(0, ge=0, le=INVENTORY_INT64_MAX),
+    minimum_quantity: int = Form(0, ge=0, le=INVENTORY_INT64_MAX),
     location: str = Form(...),
     photo: UploadFile | None = File(None),
     user: User = Depends(require_user),

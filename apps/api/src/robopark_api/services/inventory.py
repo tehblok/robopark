@@ -301,6 +301,8 @@ def create_part(
 ) -> LegacyPartView:
     if quantity < 0 or minimum_quantity < 0:
         raise ValueError("inventory_quantity_invalid")
+    inventory_stock.require_int64(quantity)
+    inventory_stock.require_int64(minimum_quantity)
     clean_location = _text(location, "inventory_location_required")
     storage_key = None
     try:
@@ -430,11 +432,14 @@ def update_part(db: Session, user: User, part_id: int, changes: dict) -> LegacyP
         if clean_location is not None:
             stock.location = clean_location
         if changes.get("minimum_quantity") is not None:
-            stock.minimum_quantity = int(changes["minimum_quantity"])
+            minimum_quantity = int(changes["minimum_quantity"])
+            if minimum_quantity < 0:
+                raise ValueError("inventory_quantity_invalid")
+            stock.minimum_quantity = inventory_stock.require_int64(minimum_quantity)
         if changes.get("is_active") is not None:
             stock.is_active = bool(changes["is_active"])
         stock.updated_by = user.id
-        stock.version += 1
+        inventory_stock.increment_stock_version(stock)
         db.commit()
     except Exception:
         db.rollback()
@@ -531,6 +536,7 @@ def task_writeoff(
         raise PermissionError("forbidden")
     if quantity <= 0:
         raise ValueError("inventory_quantity_invalid")
+    inventory_stock.require_int64(quantity)
     token = platform_settings.get_tracker_token(db)
     if not token:
         raise RuntimeError("tracker_token_not_configured")

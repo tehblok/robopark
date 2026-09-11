@@ -213,3 +213,66 @@ Result: `5 failed, 1 warning in 2.71s`.
   to `0..INT64_MAX`. Zero deltas retain their count lines and still create no movement.
 - The query-plan test covers SQLite and SQL compilation covers PostgreSQL. A live PostgreSQL
   planner/overflow environment was not available; there is no known correctness blocker.
+
+## Fix round 3/5
+
+### Review findings and RED evidence
+
+The new regression set was run before production changes:
+
+`cd apps/api && .venv/bin/pytest tests/test_inventory.py::test_legacy_numeric_inputs_enforce_shared_int64_bounds_before_side_effects tests/test_inventory_counts.py::test_count_post_aggregates_compensating_alias_deltas_before_stock_mutation tests/test_inventory_counts.py::test_count_name_search_uses_persisted_python_casefold_on_all_dialects tests/test_inventory_counts.py::test_stock_version_rejects_signed_int64_overflow_without_mutation tests/test_inventory_migration.py::test_downgrade_preserves_global_values_above_signed_int32 tests/test_models_migration.py::test_global_inventory_accumulators_compile_as_postgresql_bigint -q`
+
+Result: `7 failed, 1 warning in 2.14s` (the aggregate regression is parameterized).
+
+- Multipart quantity/minimum values above int64 reached SQLite and raised an uncaught
+  `OverflowError`; direct legacy services also lacked equivalent guards.
+- Two count lines merged onto one canonical part were posted independently. At the high boundary
+  a compensating `+1/-1` failed with overflow, while the inverse case created two unnecessary
+  movements.
+- Count prefix ranges still compared collation-sensitive text, stock version remained 32-bit and
+  could increment past int64, and downgrade restored legacy columns to `INTEGER`.
+
+### Fixes
+
+- Legacy multipart create bounds are now `0..INT64_MAX`. Legacy create/update services repeat the
+  bounds for direct callers, and task write-off rejects an out-of-range quantity before reading
+  Tracker configuration or making an external comment. The audit confirmed movement, receipt,
+  stock configuration, task write-off, and count inputs all have schema and/or service guards.
+- Count posting resolves and locks canonical groups as before, collects every stale group before
+  mutation, then sums each group's expected and actual quantities and applies only the net delta.
+  A non-zero group uses one stable `<document>:canonical:<part>` source identity; a compensating
+  group writes no movement. Lines, comments, snapshots, historical alias resolution, and posted
+  retries remain intact.
+- `InventoryCount.normalized_name_key` persists exact Python `casefold().encode("utf-8")` bytes in
+  `LargeBinary` (`BYTEA`/`BLOB`). Prefix filters use bytewise lower/upper bounds and stable
+  `(normalized_name_key, id)` ordering backed by `(park_id, normalized_name_key, id)`. The text
+  normalized value remains only as useful display/debug metadata and is not used in range filters.
+- Migration `0026` widens legacy part quantities during upgrade, before either direction copies
+  inventory data, and deliberately leaves legacy part and movement quantity/balance columns as
+  `BIGINT` on downgrade. This is schema-compatible for the old application and avoids narrowing
+  valid global values.
+- Park-stock version is now `BigInteger`. Every runtime increment path uses a checked helper;
+  SQLite also includes the upper bound in its atomic conditional update. Overflow returns the
+  controlled `inventory_version_overflow` 422 without stock or movement mutation.
+
+### GREEN and verification evidence
+
+- Selected regressions and migration metadata after implementation: `9 passed, 1 warning in
+  2.04s` after correcting two test-only representation assertions.
+- Count module: `17 passed, 1 warning in 3.97s`.
+- Focused counts/receipts/catalog/identity/legacy/migration/models:
+  `131 passed, 21 warnings in 28.80s`.
+- Full API suite: `1445 passed, 21 warnings in 257.25s (0:04:17)`.
+- Final focused rerun: `131 passed, 21 warnings in 28.78s`.
+- Final Ruff check: `All checks passed!`; format check: `13 files already formatted`;
+  `git diff --check` exited zero.
+
+### Self-review and concerns
+
+- The high-boundary aggregate test proves the old transient overflow is gone; the inverse case
+  proves mutually compensating lines leave no count movement. Retry remains idempotent.
+- SQLite `EXPLAIN QUERY PLAN` requires the new binary composite index and no temporary sort.
+  PostgreSQL compilation asserts `BYTEA`/`BIGINT` model types and binary-key SQL shape; a live
+  PostgreSQL planner was not available.
+- Downgrade and subsequent re-upgrade preserve quantities/minimums and movement balances above
+  signed int32. No correctness blocker remains.

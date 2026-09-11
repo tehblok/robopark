@@ -175,6 +175,78 @@ def _upgrade_legacy_inventory(database_url: str, monkeypatch):
     return config, engine
 
 
+def test_downgrade_preserves_global_values_above_signed_int32(sqlite_database_url, monkeypatch):
+    config, engine = _upgrade_legacy_inventory(sqlite_database_url, monkeypatch)
+    command.upgrade(config, "0026_global_inventory_workflows")
+    large_quantity = 2**31 + 17
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO inventory_catalog_components "
+                "(id, name, normalized_name) VALUES (70, 'Large', 'large')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_catalog_parts "
+                "(id, component_id, name, normalized_name, article, normalized_article) "
+                "VALUES (70, 70, 'Large part', 'large part', 'LARGE-70', 'large-70')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_park_stocks "
+                "(id, park_id, catalog_part_id, quantity, minimum_quantity, version) "
+                "VALUES (70, 1, 70, :quantity, :minimum, 1)"
+            ),
+            {"quantity": large_quantity, "minimum": large_quantity - 1},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_movements "
+                "(part_id, catalog_part_id, park_id, actor_user_id, kind, delta, balance_before, "
+                "balance_after) VALUES (NULL, 70, 1, 999, 'receipt', :quantity, 0, :quantity)"
+            ),
+            {"quantity": large_quantity},
+        )
+
+    command.downgrade(config, "0025_local_task_claims")
+
+    with engine.connect() as connection:
+        part_types = {
+            column["name"]: type(column["type"]).__name__.upper()
+            for column in inspect(connection).get_columns("inventory_parts")
+        }
+        movement_types = {
+            column["name"]: type(column["type"]).__name__.upper()
+            for column in inspect(connection).get_columns("inventory_movements")
+        }
+        assert part_types["quantity"] in {"BIGINT", "BIGINTEGER"}
+        assert part_types["minimum_quantity"] in {"BIGINT", "BIGINTEGER"}
+        assert movement_types["delta"] in {"BIGINT", "BIGINTEGER"}
+        assert movement_types["balance_after"] in {"BIGINT", "BIGINTEGER"}
+        assert connection.execute(
+            text(
+                "SELECT quantity, minimum_quantity FROM inventory_parts WHERE article = 'LARGE-70'"
+            )
+        ).one() == (large_quantity, large_quantity - 1)
+        assert connection.execute(
+            text("SELECT delta, balance_after FROM inventory_movements WHERE delta = :quantity"),
+            {"quantity": large_quantity},
+        ).one() == (large_quantity, large_quantity)
+
+    command.upgrade(config, "0026_global_inventory_workflows")
+    with engine.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT stock.quantity, stock.minimum_quantity "
+                "FROM inventory_park_stocks AS stock "
+                "JOIN inventory_catalog_parts AS part ON part.id = stock.catalog_part_id "
+                "WHERE part.article = 'LARGE-70'"
+            )
+        ).one() == (large_quantity, large_quantity - 1)
+
+
 def _insert_catalog_stock(connection, *, quantity: int = 4, location: str = "C-3") -> None:
     connection.execute(
         text(

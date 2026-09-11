@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -242,8 +243,8 @@ class InventoryPart(Base):
     )
     name: Mapped[str] = mapped_column(String(128))
     article: Mapped[str] = mapped_column(String(128))
-    quantity: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    minimum_quantity: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    quantity: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    minimum_quantity: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     location: Mapped[str] = mapped_column(String(256))
     photo_storage_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     photo_filename: Mapped[str | None] = mapped_column(String(240), nullable=True)
@@ -337,7 +338,7 @@ class InventoryParkStock(Base):
     minimum_quantity: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     location: Mapped[str | None] = mapped_column(String(256), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
-    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    version: Mapped[int] = mapped_column(BigInteger, default=1, server_default="1")
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -386,10 +387,9 @@ class InventoryCount(Base):
     __table_args__ = (
         CheckConstraint("status IN ('draft', 'posted', 'cancelled')", name="ck_count_status"),
         Index(
-            "ix_inventory_counts_park_normalized_created_id",
+            "ix_inventory_counts_park_name_key_id",
             "park_id",
-            "normalized_name",
-            "created_at",
+            "normalized_name_key",
             "id",
         ),
         Index("ix_inventory_counts_park_created_id", "park_id", "created_at", "id"),
@@ -399,6 +399,7 @@ class InventoryCount(Base):
     park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(128))
     normalized_name: Mapped[str] = mapped_column(String(384))
+    normalized_name_key: Mapped[bytes] = mapped_column(LargeBinary(512))
     status: Mapped[str] = mapped_column(String(16), default="draft", server_default="draft")
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     posted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
@@ -408,6 +409,7 @@ class InventoryCount(Base):
     @validates("name")
     def normalize_name(self, _key: str, value: str) -> str:
         self.normalized_name = value.casefold()
+        self.normalized_name_key = self.normalized_name.encode("utf-8")
         return value
 
 

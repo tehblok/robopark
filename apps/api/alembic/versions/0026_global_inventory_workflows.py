@@ -113,7 +113,7 @@ def _create_workflow_tables() -> None:
         sa.Column("minimum_quantity", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("location", sa.String(256)),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
-        sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
+        sa.Column("version", sa.BigInteger(), nullable=False, server_default="1"),
         sa.Column("updated_by", sa.Integer(), sa.ForeignKey("users.id")),
         sa.Column(
             "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
@@ -187,6 +187,7 @@ def _create_workflow_tables() -> None:
         ),
         sa.Column("name", sa.String(128), nullable=False),
         sa.Column("normalized_name", sa.String(384), nullable=False),
+        sa.Column("normalized_name_key", sa.LargeBinary(512), nullable=False),
         sa.Column("status", sa.String(16), nullable=False, server_default="draft"),
         sa.Column("created_by", sa.Integer(), sa.ForeignKey("users.id"), nullable=False),
         sa.Column("posted_by", sa.Integer(), sa.ForeignKey("users.id")),
@@ -199,9 +200,9 @@ def _create_workflow_tables() -> None:
     op.create_index("ix_inventory_counts_park_id", "inventory_counts", ["park_id"])
     op.create_index("ix_inventory_counts_created_by", "inventory_counts", ["created_by"])
     op.create_index(
-        "ix_inventory_counts_park_normalized_created_id",
+        "ix_inventory_counts_park_name_key_id",
         "inventory_counts",
-        ["park_id", "normalized_name", "created_at", "id"],
+        ["park_id", "normalized_name_key", "id"],
     )
     op.create_index(
         "ix_inventory_counts_park_created_id",
@@ -577,6 +578,15 @@ def upgrade():
     _create_workflow_tables()
     with op.batch_alter_table("inventory_parts") as batch_op:
         batch_op.add_column(sa.Column("catalog_part_id", sa.Integer()))
+        batch_op.alter_column(
+            "quantity", existing_type=sa.Integer(), type_=sa.BigInteger(), existing_nullable=False
+        )
+        batch_op.alter_column(
+            "minimum_quantity",
+            existing_type=sa.Integer(),
+            type_=sa.BigInteger(),
+            existing_nullable=False,
+        )
         batch_op.create_foreign_key(
             "fk_inventory_parts_catalog_part_id",
             "inventory_catalog_parts",
@@ -630,6 +640,9 @@ def upgrade():
 
 
 def downgrade():
+    # Upgrade widened the legacy landing columns before global backfill. Keep
+    # them and movement balances as BIGINT so materialization cannot narrow any
+    # now-valid value; the previous application can read the wider SQL type.
     _materialize_legacy_inventory_for_downgrade()
     op.drop_index("uq_inventory_movements_source_identity", table_name="inventory_movements")
     op.drop_index("ix_inventory_movements_catalog_part_created", table_name="inventory_movements")
@@ -641,15 +654,8 @@ def downgrade():
         batch_op.drop_column("source_kind")
         batch_op.drop_column("catalog_part_id")
         batch_op.alter_column("part_id", existing_type=sa.Integer(), nullable=False)
-        batch_op.alter_column(
-            "delta", existing_type=sa.BigInteger(), type_=sa.Integer(), existing_nullable=False
-        )
-        batch_op.alter_column(
-            "balance_after",
-            existing_type=sa.BigInteger(),
-            type_=sa.Integer(),
-            existing_nullable=False,
-        )
+        # Keep delta/balance_after widened: new valid values may exceed int32,
+        # and the previous application can read BIGINT without a contract change.
 
     op.drop_table("inventory_migration_conflicts")
     op.drop_table("inventory_count_lines")

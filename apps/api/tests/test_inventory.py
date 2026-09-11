@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import select
 
 from conftest import login_as, role_id_for
@@ -15,6 +16,7 @@ from robopark_api.models import (
 )
 from robopark_api.security import hash_password
 from robopark_api.services import inventory as inventory_svc
+from robopark_api.services import inventory_stock
 
 
 def _user(db, slug, username, parks=()):
@@ -51,6 +53,95 @@ def _seed_part(client, park_id):
     )
     assert part.status_code == 201, part.text
     return component.json(), part.json()
+
+
+def test_legacy_numeric_inputs_enforce_shared_int64_bounds_before_side_effects(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    mechanic = _user(db_session, "mechanic", "legacy-int64", [seed_park_with_tracker])
+    login_as(client, mechanic.username, "secret")
+    component = client.post(
+        "/inventory/components",
+        data={"park_id": seed_park_with_tracker.id, "name": "Int64 legacy"},
+    ).json()
+    too_large = 2**63
+
+    for field in ("quantity", "minimum_quantity"):
+        payload = {
+            "park_id": seed_park_with_tracker.id,
+            "component_id": component["id"],
+            "name": f"Overflow {field}",
+            "article": f"OVERFLOW-{field}",
+            "quantity": 0,
+            "minimum_quantity": 0,
+            "location": "A",
+            field: too_large,
+        }
+        response = client.post("/inventory/parts", data=payload)
+        assert response.status_code == 422
+
+    with pytest.raises(inventory_stock.InventoryValidation, match="inventory_quantity_overflow"):
+        inventory_svc.create_part(
+            db_session,
+            mechanic,
+            park_id=seed_park_with_tracker.id,
+            component_id=component["id"],
+            name="Direct overflow",
+            article="DIRECT-OVERFLOW",
+            quantity=0,
+            minimum_quantity=too_large,
+            location="A",
+            photo=None,
+        )
+    assert (
+        db_session.scalar(
+            select(InventoryCatalogPart.id).where(
+                InventoryCatalogPart.normalized_article == "direct-overflow"
+            )
+        )
+        is None
+    )
+
+    valid = client.post(
+        "/inventory/parts",
+        data={
+            "park_id": seed_park_with_tracker.id,
+            "component_id": component["id"],
+            "name": "Valid",
+            "article": "VALID-INT64",
+            "quantity": 0,
+            "minimum_quantity": 1,
+            "location": "A",
+        },
+    ).json()
+    stock_id = db_session.scalar(
+        select(InventoryParkStock.id).where(
+            InventoryParkStock.catalog_part_id == valid["catalog_part_id"]
+        )
+    )
+    with pytest.raises(inventory_stock.InventoryValidation, match="inventory_quantity_overflow"):
+        inventory_svc.update_part(
+            db_session,
+            mechanic,
+            valid["id"],
+            {"minimum_quantity": too_large},
+        )
+    db_session.expire_all()
+    assert db_session.get(InventoryParkStock, stock_id).minimum_quantity == 1
+
+    monkeypatch.setattr(
+        inventory_svc.platform_settings,
+        "get_tracker_token",
+        lambda _db: pytest.fail("invalid quantity reached Tracker access"),
+    )
+    with pytest.raises(inventory_stock.InventoryValidation, match="inventory_quantity_overflow"):
+        inventory_svc.task_writeoff(
+            db_session,
+            mechanic,
+            "RP-INT64",
+            valid["id"],
+            too_large,
+        )
 
 
 def test_mechanic_maintains_own_park_inventory_and_cannot_overdraw(

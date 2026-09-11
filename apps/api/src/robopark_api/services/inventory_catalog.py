@@ -353,7 +353,7 @@ def merge_parts(db: Session, user: User, source_part_id: int, target_part_id: in
         if target_stock is None:
             source_stock.catalog_part_id = target.id
             source_stock.updated_by = user.id
-            source_stock.version += 1
+            inventory_stock.increment_stock_version(source_stock)
             continue
         if source_stock.quantity:
             inventory_stock.apply_stock_delta(

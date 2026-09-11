@@ -162,9 +162,8 @@ def test_count_component_snapshot_posts_signed_deltas_and_is_idempotent(
         (decrease.id, -4, "adjustment"),
     ]
     assert {row.source_id for row in movements} == {
-        f"{created['id']}:{line['id']}"
-        for line in created["lines"]
-        if line["catalog_part_id"] != unchanged.id
+        f"{created['id']}:canonical:{increase.id}",
+        f"{created['id']}:canonical:{decrease.id}",
     }
 
 
@@ -421,7 +420,7 @@ def test_count_list_has_unicode_search_stable_pagination_and_one_line_query(
         ).all()
     prefix_detail = " ".join(str(row[-1]) for row in prefix_plan)
     no_query_detail = " ".join(str(row[-1]) for row in no_query_plan)
-    assert "ix_inventory_counts_park_normalized_created_id" in prefix_detail
+    assert "ix_inventory_counts_park_name_key_id" in prefix_detail
     assert "ix_inventory_counts_park_created_id" in no_query_detail
     assert "USE TEMP B-TREE" not in prefix_detail
     assert "USE TEMP B-TREE" not in no_query_detail
@@ -479,10 +478,71 @@ def test_count_lines_survive_merge_and_archiving_before_post(
             select(InventoryMovement).where(InventoryMovement.source_kind == "count")
         )
     } == {
-        f"{count['id']}:{line['id']}"
-        for line in count["lines"]
-        if line["catalog_part_id"] in {source.id, target.id, archived.id}
+        f"{count['id']}:canonical:{target.id}",
+        f"{count['id']}:canonical:{archived.id}",
     }
+
+
+@pytest.mark.parametrize(
+    ("source_expected", "target_expected", "source_actual", "target_actual"),
+    [
+        (1, 2**63 - 2, 0, 2**63 - 1),
+        (0, 1, 1, 0),
+    ],
+)
+def test_count_post_aggregates_compensating_alias_deltas_before_stock_mutation(
+    client,
+    db_session,
+    seed_park_with_tracker,
+    source_expected,
+    target_expected,
+    source_actual,
+    target_actual,
+):
+    admin = _user(db_session, "admin", f"count-aggregate-{source_expected}")
+    component = _component(db_session, admin, f"Aggregate {source_expected}")
+    source = _part(db_session, admin, component, article=f"AGGREGATE-SOURCE-{source_expected}")
+    target = _part(db_session, admin, component, article=f"AGGREGATE-TARGET-{source_expected}")
+    _stock(db_session, seed_park_with_tracker, source, source_expected)
+    _stock(db_session, seed_park_with_tracker, target, target_expected)
+    login_as(client, admin.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/counts"
+    count = _create_count(client, seed_park_with_tracker).json()
+    assert (
+        client.patch(
+            f"{base}/{count['id']}",
+            json={
+                "lines": [
+                    {"catalog_part_id": source.id, "actual_quantity": source_actual},
+                    {"catalog_part_id": target.id, "actual_quantity": target_actual},
+                ]
+            },
+        ).status_code
+        == 200
+    )
+    inventory_catalog.merge_parts(db_session, admin, source.id, target.id)
+
+    response = client.post(f"{base}/{count['id']}/post")
+    retry = client.post(f"{base}/{count['id']}/post")
+
+    assert response.status_code == 200, response.text
+    assert retry.status_code == 200, retry.text
+    db_session.expire_all()
+    assert (
+        db_session.scalar(
+            select(InventoryParkStock.quantity).where(
+                InventoryParkStock.park_id == seed_park_with_tracker.id,
+                InventoryParkStock.catalog_part_id == target.id,
+            )
+        )
+        == source_actual + target_actual
+    )
+    assert (
+        db_session.scalar(
+            select(func.count(InventoryMovement.id)).where(InventoryMovement.source_kind == "count")
+        )
+        == 0
+    )
 
 
 def test_concurrent_count_post_retries_apply_each_line_once(
@@ -638,9 +698,8 @@ def test_count_materializes_missing_zero_stock_before_archive_and_authorizes_its
             select(InventoryMovement).where(InventoryMovement.source_kind == "count")
         )
     )
-    counted_line = next(line for line in count["lines"] if line["catalog_part_id"] == counted.id)
     assert [(row.catalog_part_id, row.delta, row.source_id) for row in movements] == [
-        (counted.id, 1, f"{count['id']}:{counted_line['id']}")
+        (counted.id, 1, f"{count['id']}:canonical:{counted.id}")
     ]
 
 
@@ -733,10 +792,10 @@ def test_count_name_search_uses_persisted_python_casefold_on_all_dialects(
         str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
         for statement in db.statements
     )
-    assert "inventory_counts.normalized_name" in compiled
-    assert "inventory_counts.normalized_name >= 'strasse οσ'" in compiled
-    assert "inventory_counts.normalized_name < 'strasse οτ'" in compiled
-    assert "ORDER BY inventory_counts.normalized_name" in compiled
+    assert "inventory_counts.normalized_name_key" in compiled
+    assert "inventory_counts.normalized_name >=" not in compiled
+    assert "inventory_counts.normalized_name <" not in compiled
+    assert "ORDER BY inventory_counts.normalized_name_key, inventory_counts.id" in compiled
     assert "LIKE" not in compiled.upper()
     assert "translate(" not in compiled
     assert "lower(" not in compiled
@@ -753,6 +812,7 @@ def test_count_name_normalization_tracks_orm_updates(client, db_session, seed_pa
 
     db_session.refresh(row)
     assert row.normalized_name == "weisse οσ"
+    assert row.normalized_name_key == "weisse οσ".encode()
     response = client.get(
         f"/inventory/parks/{seed_park_with_tracker.id}/counts",
         params={"q": "WEISSE ΟΣ"},
@@ -853,3 +913,26 @@ def test_receipt_post_rejects_int64_stock_overflow_and_rolls_back_every_line(
         )
         == 0
     )
+
+
+def test_stock_version_rejects_signed_int64_overflow_without_mutation(
+    client, db_session, seed_park_with_tracker
+):
+    mechanic = _user(db_session, "mechanic", "stock-version-overflow", [seed_park_with_tracker])
+    component = _component(db_session, mechanic, "Version component")
+    part = _part(db_session, mechanic, component, article="VERSION-OVERFLOW")
+    stock = _stock(db_session, seed_park_with_tracker, part, 1)
+    stock.version = 2**63 - 1
+    db_session.commit()
+    login_as(client, mechanic.username, "secret")
+
+    response = client.post(
+        f"/inventory/parts/{-part.id}/movements",
+        json={"park_id": seed_park_with_tracker.id, "kind": "receipt", "quantity": 1},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "inventory_version_overflow"
+    db_session.expire_all()
+    assert db_session.get(InventoryParkStock, stock.id).quantity == 1
+    assert db_session.get(InventoryParkStock, stock.id).version == 2**63 - 1

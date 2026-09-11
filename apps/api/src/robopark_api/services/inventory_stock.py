@@ -56,6 +56,13 @@ def require_int64(value: int) -> int:
     return value
 
 
+def increment_stock_version(stock: InventoryParkStock) -> None:
+    version = int(stock.version)
+    if version < 0 or version >= INVENTORY_INT64_MAX:
+        raise InventoryValidation("inventory_version_overflow")
+    stock.version = version + 1
+
+
 def stock_insert_if_missing_statement(dialect_name: str, *, park_id: int, catalog_part_id: int):
     values = {
         "park_id": park_id,
@@ -173,6 +180,9 @@ def apply_stock_delta(
         raise InventoryValidation("inventory_quantity_overflow")
     if delta < 0 and before < -delta:
         raise InventoryConflict("inventory_out_of_stock", current_quantity=before)
+    version = int(stock.version)
+    if version < 0 or version >= INVENTORY_INT64_MAX:
+        raise InventoryValidation("inventory_version_overflow")
     if db.get_bind().dialect.name == "sqlite":
         result = db.execute(
             update(InventoryParkStock)
@@ -180,6 +190,7 @@ def apply_stock_delta(
                 InventoryParkStock.id == stock.id,
                 InventoryParkStock.quantity + delta >= 0,
                 InventoryParkStock.quantity + delta <= INVENTORY_INT64_MAX,
+                InventoryParkStock.version < INVENTORY_INT64_MAX,
             )
             .values(
                 quantity=InventoryParkStock.quantity + delta,
@@ -194,13 +205,15 @@ def apply_stock_delta(
             current = int(stock.quantity)
             if delta > 0 and current > INVENTORY_INT64_MAX - delta:
                 raise InventoryValidation("inventory_quantity_overflow")
+            if int(stock.version) >= INVENTORY_INT64_MAX:
+                raise InventoryValidation("inventory_version_overflow")
             raise InventoryConflict("inventory_out_of_stock", current_quantity=current)
         before = int(result) - delta
         after = int(result)
         db.expire(stock)
     else:
         stock.quantity = before + delta
-        stock.version += 1
+        increment_stock_version(stock)
         stock.updated_by = user.id
         after = stock.quantity
     movement = InventoryMovement(
