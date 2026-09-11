@@ -1,7 +1,14 @@
 from sqlalchemy import select
 
 from conftest import login_as, role_id_for
-from robopark_api.models import InventoryMovement, InventoryPart, Park, User, UserPark
+from robopark_api.models import (
+    InventoryCatalogPart,
+    InventoryMovement,
+    InventoryParkStock,
+    Park,
+    User,
+    UserPark,
+)
 from robopark_api.security import hash_password
 from robopark_api.services import inventory as inventory_svc
 
@@ -60,12 +67,27 @@ def test_mechanic_maintains_own_park_inventory_and_cannot_overdraw(
     )
     assert receipt.status_code == 201
     assert receipt.json()["balance_after"] == 8
+    adjustment = client.post(
+        f"/inventory/parts/{part['id']}/movements",
+        json={"kind": "adjustment", "quantity": -2, "note": "Сверка"},
+    )
+    assert adjustment.status_code == 201
+    assert adjustment.json()["delta"] == -2
+    assert adjustment.json()["balance_after"] == 6
     rejected = client.post(
         f"/inventory/parts/{part['id']}/movements", json={"kind": "writeoff", "quantity": 9}
     )
-    assert rejected.status_code == 400
-    assert rejected.json()["detail"] == "inventory_out_of_stock"
-    assert db_session.get(InventoryPart, part["id"]).quantity == 8
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"] == {
+        "code": "inventory_out_of_stock",
+        "current_quantity": 6,
+    }
+    assert db_session.scalar(select(InventoryParkStock.quantity)) == 6
+    listed = client.get(
+        "/inventory/movements", params={"park_id": seed_park_with_tracker.id}
+    )
+    assert listed.status_code == 200, listed.text
+    assert [row["delta"] for row in listed.json()] == [-2, 3, 5]
 
 
 def test_inventory_component_photo_is_stored_outside_database(
@@ -147,4 +169,42 @@ def test_task_writeoff_requires_owner_and_writes_technical_tracker_comment(
         "/inventory/tasks/RP-42/writeoff", json={"part_id": part["id"], "quantity": 1}
     )
     assert rejected.status_code == 403
-    assert db_session.get(InventoryPart, part["id"]).quantity == 3
+    catalog_part = db_session.get(InventoryCatalogPart, part["id"])
+    assert catalog_part is not None
+    assert db_session.scalar(select(InventoryParkStock.quantity)) == 3
+
+
+def test_task_writeoff_does_not_comment_when_stock_is_insufficient(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    mechanic = _user(db_session, "mechanic", "empty-stock-mechanic", [seed_park_with_tracker])
+    monkeypatch.setattr(inventory_svc.platform_settings, "get_tracker_token", lambda db: "token")
+    issue = {
+        "key": "RP-43",
+        "tags": [seed_park_with_tracker.tag],
+        "assignee": {"login": mechanic.tracker_login},
+    }
+    monkeypatch.setattr(inventory_svc.tracker_cache, "get_issue", lambda **kwargs: issue)
+    comments = []
+    monkeypatch.setattr(
+        inventory_svc.tracker_client, "add_comment", lambda **kwargs: comments.append(kwargs)
+    )
+    login_as(client, mechanic.username, "secret")
+    _, part = _seed_part(client, seed_park_with_tracker.id)
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=mechanic,
+        owner=mechanic,
+        issue_key="RP-43",
+        park_id=seed_park_with_tracker.id,
+    )
+
+    response = client.post(
+        "/inventory/tasks/RP-43/writeoff", json={"part_id": part["id"], "quantity": 6}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["current_quantity"] == 5
+    assert comments == []

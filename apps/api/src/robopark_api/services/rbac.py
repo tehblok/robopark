@@ -47,6 +47,11 @@ PERMISSION_TRACKER_ATTACH = "tracker.attach"
 PERMISSION_REPORTS_CREATE = "reports.create"
 PERMISSION_REPORTS_RESOLVE = "reports.resolve"
 
+PERMISSION_INVENTORY_STOCK_MANAGE = "inventory.stock.manage"
+PERMISSION_INVENTORY_DOCUMENTS_POST = "inventory.documents.post"
+PERMISSION_INVENTORY_EXPORT = "inventory.export"
+PERMISSION_INVENTORY_CATALOG_MANAGE = "inventory.catalog.manage"
+
 PERMISSION_ROLES_MANAGE = "roles.manage"
 PERMISSION_USERS_MANAGE = "users.manage"
 PERMISSION_USERS_APPROVE = "users.approve"
@@ -71,6 +76,10 @@ ALL_PERMISSIONS: tuple[str, ...] = (
     PERMISSION_TRACKER_ATTACH,
     PERMISSION_REPORTS_CREATE,
     PERMISSION_REPORTS_RESOLVE,
+    PERMISSION_INVENTORY_STOCK_MANAGE,
+    PERMISSION_INVENTORY_DOCUMENTS_POST,
+    PERMISSION_INVENTORY_EXPORT,
+    PERMISSION_INVENTORY_CATALOG_MANAGE,
     PERMISSION_ROLES_MANAGE,
     PERMISSION_USERS_MANAGE,
     PERMISSION_USERS_APPROVE,
@@ -86,6 +95,7 @@ PRIVILEGED_PERMISSIONS: frozenset[str] = frozenset(
         PERMISSION_USERS_MANAGE,
         PERMISSION_USERS_APPROVE,
         PERMISSION_PARKS_MANAGE,
+        PERMISSION_INVENTORY_CATALOG_MANAGE,
     }
 )
 
@@ -135,6 +145,10 @@ PERMISSION_CATALOG: tuple[PermissionDef, ...] = (
     PermissionDef(PERMISSION_TRACKER_ATTACH, "action", "Фото во тикеты", 220),
     PermissionDef(PERMISSION_REPORTS_CREATE, "action", "Создание обращений", 230),
     PermissionDef(PERMISSION_REPORTS_RESOLVE, "action", "Закрытие обращений", 240),
+    PermissionDef(PERMISSION_INVENTORY_STOCK_MANAGE, "action", "Учёт склада", 250),
+    PermissionDef(PERMISSION_INVENTORY_DOCUMENTS_POST, "action", "Проведение складских документов", 260),
+    PermissionDef(PERMISSION_INVENTORY_EXPORT, "action", "Выгрузка склада", 270),
+    PermissionDef(PERMISSION_INVENTORY_CATALOG_MANAGE, "action", "Глобальный каталог склада", 280),
     PermissionDef(PERMISSION_ROLES_MANAGE, "action", "Управление ролями", 300),
     PermissionDef(PERMISSION_USERS_MANAGE, "action", "Управление пользователями", 310),
     PermissionDef(PERMISSION_USERS_APPROVE, "action", "Одобрение регистраций", 320),
@@ -159,6 +173,9 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             PERMISSION_TRACKER_ATTACH,
             PERMISSION_REPORTS_CREATE,
             PERMISSION_REPORTS_RESOLVE,
+            PERMISSION_INVENTORY_STOCK_MANAGE,
+            PERMISSION_INVENTORY_DOCUMENTS_POST,
+            PERMISSION_INVENTORY_EXPORT,
         }
     ),
     RoleSlug.MECHANIC: frozenset(
@@ -173,6 +190,9 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             PERMISSION_TRACKER_WRITE,
             PERMISSION_TRACKER_ATTACH,
             PERMISSION_REPORTS_CREATE,
+            PERMISSION_INVENTORY_STOCK_MANAGE,
+            PERMISSION_INVENTORY_DOCUMENTS_POST,
+            PERMISSION_INVENTORY_EXPORT,
         }
     ),
     RoleSlug.DRIVER: frozenset(

@@ -45,7 +45,7 @@ class InventoryPartUpdateIn(BaseModel):
 
 class InventoryMovementIn(BaseModel):
     kind: Literal["receipt", "writeoff", "adjustment"]
-    quantity: int = Field(gt=0, le=1_000_000)
+    quantity: int = Field(ge=-1_000_000, le=1_000_000)
     note: str | None = Field(default=None, max_length=500)
 
 
@@ -66,3 +66,74 @@ class InventoryMovementOut(BaseModel):
     issue_key: str | None
     note: str | None
     created_at: datetime
+
+
+class InventoryCatalogComponentCreateIn(BaseModel):
+    park_id: int
+    name: str = Field(min_length=1, max_length=128)
+
+
+class InventoryCatalogComponentOut(BaseModel):
+    id: int
+    name: str
+    is_active: bool
+    has_photo: bool
+
+
+class InventoryCatalogComponentUpdateIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    is_active: bool | None = None
+
+
+class InventoryCatalogPartCreateIn(BaseModel):
+    park_id: int
+    component_id: int
+    name: str = Field(min_length=1, max_length=128)
+    article: str = Field(min_length=1, max_length=128)
+
+
+class InventoryCatalogPartUpdateIn(BaseModel):
+    component_id: int | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    article: str | None = Field(default=None, min_length=1, max_length=128)
+    is_active: bool | None = None
+
+
+class InventoryCatalogPartOut(BaseModel):
+    id: int
+    component_id: int
+    name: str
+    article: str
+    is_active: bool
+    has_photo: bool
+
+
+class InventoryCatalogSearchItem(InventoryCatalogPartOut):
+    component_name: str
+    quantity: int
+    minimum_quantity: int
+    location: str | None
+    stock_is_active: bool
+
+
+class InventoryCatalogSearchOut(BaseModel):
+    items: list[InventoryCatalogSearchItem]
+    limit: int
+    offset: int
+    total: int
+
+
+class InventoryStockUpdateIn(BaseModel):
+    minimum_quantity: int = Field(ge=0, le=1_000_000)
+    location: str | None = Field(default=None, max_length=256)
+    is_active: bool
+
+
+class InventoryStockOut(BaseModel):
+    park_id: int
+    catalog_part_id: int
+    quantity: int
+    minimum_quantity: int
+    location: str | None
+    is_active: bool
+    version: int

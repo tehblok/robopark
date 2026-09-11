@@ -1,0 +1,45 @@
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from robopark_api.models import AccessStatus, Park, User, UserPark
+from robopark_api.services.rbac import (
+    PERMISSION_INVENTORY_CATALOG_MANAGE,
+    PERMISSION_INVENTORY_STOCK_MANAGE,
+    PERMISSION_NAV_INVENTORY,
+    has_permission,
+)
+
+
+def can_view_inventory(db: Session, user: User) -> bool:
+    return bool(
+        user.is_active
+        and user.access_status == AccessStatus.approved.value
+        and has_permission(db, user, PERMISSION_NAV_INVENTORY)
+    )
+
+
+def accessible_park_ids(db: Session, user: User) -> set[int]:
+    if not can_view_inventory(db, user):
+        return set()
+    statement = select(Park.id).where(Park.is_active.is_(True))
+    if user.role not in {"admin", "royal", "operator"}:
+        statement = statement.join(UserPark).where(UserPark.user_id == user.id)
+    return set(db.scalars(statement))
+
+
+def require_park(db: Session, user: User, park_id: int, *, manage: bool = False) -> Park:
+    if park_id not in accessible_park_ids(db, user):
+        raise PermissionError("forbidden")
+    if manage and not has_permission(db, user, PERMISSION_INVENTORY_STOCK_MANAGE):
+        raise PermissionError("forbidden")
+    park = db.get(Park, park_id)
+    if park is None or not park.is_active:
+        raise LookupError("park_not_found")
+    return park
+
+
+def require_catalog_manage(db: Session, user: User) -> None:
+    if not can_view_inventory(db, user) or not has_permission(
+        db, user, PERMISSION_INVENTORY_CATALOG_MANAGE
+    ):
+        raise PermissionError("forbidden")
