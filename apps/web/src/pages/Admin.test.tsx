@@ -71,16 +71,30 @@ describe('Admin Emergency cookie validation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Развернуть: Секреты' }))
   })
 
-  it('keeps the short new-park form expanded', async () => {
+  it('keeps the new-park form behind an explicit disclosure', async () => {
     setup({}, [{ id: 7, name: 'Северный', tag: 'north', is_active: true }], ['nav.admin', 'parks.manage'], '/admin/settings?park=7&tab=parks')
+    const create = await screen.findByRole('button', { name: 'Добавить парк' })
+    expect(screen.queryByRole('heading', { name: 'Новый парк' })).not.toBeInTheDocument()
+    fireEvent.click(create)
+    expect(screen.getByRole('heading', { name: 'Новый парк' })).toBeVisible()
+  })
 
-    expect(await screen.findByDisplayValue('Северный')).toBeVisible()
-    expect(screen.queryByRole('button', { name: 'Свернуть: Новый парк' })).not.toBeInTheDocument()
+  it('shows the park search and identities before opening any park editor at 390px', async () => {
+    installMatchMedia({ width: 390 })
+    setup({}, [{ id: 7, name: 'Северный', tag: 'north', is_active: true }], ['nav.admin', 'parks.manage'], '/admin/settings?park=7&tab=parks')
+    await screen.findByRole('searchbox', { name: 'Поиск парков' })
+    expect(screen.getByRole('searchbox', { name: 'Поиск парков' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Открыть парк Северный' })).toBeVisible()
+    expect(screen.queryByLabelText('Очередь Tracker')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Новый парк' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Открыть парк Северный' }))
+    expect(screen.getByLabelText('Очередь Tracker')).toBeVisible()
   })
 
   it('keeps an unsaved park draft when stale data could otherwise reload on focus', async () => {
     const parks = [{ id: 7, name: 'Северный', tag: 'north', is_active: true }]
     setup({}, parks, ['nav.admin', 'parks.manage'], '/admin/settings?park=7&tab=parks')
+    fireEvent.click(await screen.findByRole('button', { name: 'Открыть парк Северный' }))
     const input = await screen.findByDisplayValue('Северный')
     fireEvent.change(input, { target: { value: 'Название в работе' } })
     const calls = vi.mocked(api.adminParkRequests).mock.calls.length
@@ -296,6 +310,7 @@ describe('Admin Emergency cookie validation', () => {
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('park=7'))
     await actor.click(await screen.findByRole('button', { name: 'Проверить текущую' }))
     await actor.click(screen.getByRole('tab', { name: 'Парки' }))
+    await actor.click(await screen.findByRole('button', { name: 'Открыть парк Северный' }))
     const name = screen.getAllByLabelText('Название').at(-1)!
     await actor.clear(name)
     await actor.type(name, 'Новое название')

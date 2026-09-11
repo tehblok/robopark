@@ -44,6 +44,9 @@ function EmergencyFieldsConfig() {
   const [sectionId, setSectionId] = useState('')
   const [sectionTitle, setSectionTitle] = useState('')
   const [newFields, setNewFields] = useState<Record<string, { path: string; label: string }>>({})
+  const [search, setSearch] = useState('')
+  const [selectedSectionId, setSelectedSectionId] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
@@ -179,6 +182,10 @@ function EmergencyFieldsConfig() {
 
   return (
     <div className="page-body">
+      <Panel actions={<button className="btn btn-secondary" onClick={() => { setSelectedSectionId(null); setCreateOpen(true) }} type="button">Новый раздел</button>} hint="Найдите раздел и откройте его единственный редактор." title="Разделы">
+        <label className="field"><span className="field-label">Поиск</span><input aria-label="Поиск разделов" onChange={(event) => setSearch(event.target.value)} role="searchbox" value={search} /></label>
+        <ul className="card-list">{sections.filter((section) => `${section.title} ${section.id}`.toLowerCase().includes(search.trim().toLowerCase())).map((section) => <li className="card action-row" key={section.id}><div><div className="card-title">{section.title}</div><div className="card-meta">ID: {section.id}</div></div><button aria-label={`Открыть раздел ${section.title}`} className="btn btn-secondary" onClick={() => { setCreateOpen(false); setSelectedSectionId(section.id) }} type="button">Открыть</button></li>)}</ul>
+      </Panel>
       <div className="form-actions">
         <button className="btn btn-secondary" onClick={downloadExport} type="button">
           Скачать JSON
@@ -187,7 +194,7 @@ function EmergencyFieldsConfig() {
       {displayError && <Alert tone="error">{displayError}</Alert>}
       {message && <Alert tone="success">{message}</Alert>}
 
-      <Panel collapsible defaultCollapsed hint="ID можно задать только при создании." storageKey="admin-emergency-create" title="Новый раздел">
+      {createOpen ? <Panel actions={<button className="btn btn-ghost" onClick={() => setCreateOpen(false)} type="button">Закрыть</button>} hint="ID можно задать только при создании." title="Новый раздел">
         <form className="form-grid" onSubmit={createSection}>
           <label className="field">
             <span className="field-label">ID раздела</span>
@@ -214,7 +221,7 @@ function EmergencyFieldsConfig() {
             </button>
           </div>
         </form>
-      </Panel>
+      </Panel> : null}
 
       {sections.length === 0 ? (
         <EmptyBlock
@@ -223,16 +230,16 @@ function EmergencyFieldsConfig() {
           title="Разделы проверки робота ещё не настроены"
         />
       ) : (
-        sections.map((section, index) => {
+        sections.filter((section) => section.id === selectedSectionId).map((section) => {
+          const index = sections.findIndex((item) => item.id === section.id)
           const draft = newFields[section.id] ?? { path: '', label: '' }
           const canAddField = Boolean(draft.path.trim() && draft.label.trim())
           return (
             <Panel
-              collapsible
-              defaultCollapsed
               actions={(
                 <>
                   <Badge active={section.is_enabled} />
+                  <button className="btn btn-ghost" onClick={() => setSelectedSectionId(null)} type="button">Закрыть</button>
                   <button
                     aria-label="Выше"
                     className="btn btn-ghost"
@@ -267,8 +274,7 @@ function EmergencyFieldsConfig() {
               )}
               hint={`ID: ${section.id} · позиция ${index + 1}`}
               key={section.id}
-              storageKey={`admin-emergency-section-${section.id}`}
-              title={section.title || section.id}
+              title={`Редактор: ${section.title || section.id}`}
             >
               <div className="form-grid">
                 <label className="field">

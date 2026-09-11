@@ -200,6 +200,10 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
   const [trackerToken, setTrackerToken] = useState('')
   const [emergencyCookie, setEmergencyCookie] = useState('')
   const [emergencyRobot, setEmergencyRobot] = useState('')
+  const [parkSearch, setParkSearch] = useState('')
+  const [editingParkId, setEditingParkId] = useState<number | null>(null)
+  const [createParkOpen, setCreateParkOpen] = useState(false)
+  const [slaOpen, setSlaOpen] = useState(false)
   const [registrationPassword, setRegistrationPassword] = useState('')
   const [registrationSettings, setRegistrationSettings] =
     useState<RegistrationPasswordSettings | null>(null)
@@ -642,7 +646,11 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
 
       {canParks && (
       <TabPanel id="parks" active={tab === 'parks'}>
-        {user && parkId != null && <SlaPolicyEditor parkId={parkId} user={user} />}
+        <Panel actions={<><button className="btn btn-secondary" onClick={() => setCreateParkOpen(true)} type="button">Добавить парк</button>{user && parkId != null ? <button className="btn btn-secondary" onClick={() => setSlaOpen(true)} type="button">Настроить SLA</button> : null}</>} hint="Найдите парк и откройте его настройки." title="Парки">
+          <label className="field"><span className="field-label">Поиск</span><input aria-label="Поиск парков" onChange={(event) => setParkSearch(event.target.value)} role="searchbox" value={parkSearch} /></label>
+          <ul className="card-list">{parks.filter((park) => `${park.name} ${park.tag}`.toLowerCase().includes(parkSearch.trim().toLowerCase())).map((park) => <li className="card action-row" key={park.id}><div><div className="card-title">{park.name}</div><div className="card-meta">{park.tag}</div></div><button aria-label={`Открыть парк ${park.name}`} className="btn btn-secondary" onClick={() => setEditingParkId(park.id)} type="button">Открыть</button></li>)}</ul>
+        </Panel>
+        {user && parkId != null && slaOpen ? <><button className="btn btn-ghost" onClick={() => setSlaOpen(false)} type="button">Закрыть SLA</button><SlaPolicyEditor parkId={parkId} user={user} /></> : null}
         {parkRequests.length > 0 && (
         <Panel
           collapsible
@@ -691,7 +699,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
         </Panel>
         )}
 
-        <Panel hint="Тег используется в Tracker; очередь нужна для задач и поиска." title="Новый парк">
+        {createParkOpen ? <Panel actions={<button className="btn btn-ghost" onClick={() => setCreateParkOpen(false)} type="button">Закрыть</button>} hint="Тег используется в Tracker; очередь нужна для задач и поиска." title="Новый парк">
           <form className="form-grid" onSubmit={createPark}>
             <label className="field">
               <span className="field-label">Название</span>
@@ -715,7 +723,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
               </button>
             </div>
           </form>
-        </Panel>
+        </Panel> : null}
 
         {parks.length === 0 ? (
           <EmptyBlock
@@ -724,14 +732,11 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
             title="Парков пока нет"
           />
         ) : (
-          parks.map((park) => (
+          parks.filter((park) => park.id === editingParkId).map((park) => (
             <Panel
-              actions={<Badge active={park.is_active ?? true} />}
-              collapsible
-              defaultCollapsed
+              actions={<><Badge active={park.is_active ?? true} /><button className="btn btn-ghost" onClick={() => setEditingParkId(null)} type="button">Закрыть</button></>}
               key={park.id}
-              storageKey={`admin-park-${park.id}`}
-              title={park.name || `Парк #${park.id}`}
+              title={`Редактор: ${park.name || `Парк #${park.id}`}`}
             >
               <div className="form-grid">
                 <label className="field">

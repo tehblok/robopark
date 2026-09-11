@@ -10,6 +10,7 @@ export function AdminTrackerWorkspace() {
   const [policy, setPolicy] = useState<TrackerPolicySettings | null>(null)
   const [policyError, setPolicyError] = useState('')
   const [policyBusy, setPolicyBusy] = useState(false)
+  const [policyOpen, setPolicyOpen] = useState(false)
   const selected = parks.find((park) => park.id === parkId)
   const defaultQueue = (selected?.tracker_queue || 'SDCFLEETOPS').trim() || 'SDCFLEETOPS'
   const defaultPark = selected?.tag?.trim() || undefined
@@ -42,8 +43,17 @@ export function AdminTrackerWorkspace() {
     <PageShell backTo="/admin" title="Рабочий стол Startrek">
       {policyError && <Alert tone="error">{policyError}</Alert>}
 
-      {policy && (
+      <TrackerWorkspace
+        allowUntagged
+        canWrite
+        defaultPark={defaultPark}
+        defaultQueue={defaultQueue}
+      />
+
+      {policy && !policyOpen ? <button className="btn btn-secondary" onClick={() => setPolicyOpen(true)} type="button">Настроить политику Tracker</button> : null}
+      {policy && policyOpen && (
         <Panel
+          actions={<button className="btn btn-ghost" onClick={() => setPolicyOpen(false)} type="button">Закрыть</button>}
           hint="Политика записи механика во внутренний Tracker (st.yandex-team.ru)."
           title="Политика"
         >
@@ -58,12 +68,6 @@ export function AdminTrackerWorkspace() {
         </Panel>
       )}
 
-      <TrackerWorkspace
-        allowUntagged
-        canWrite
-        defaultPark={defaultPark}
-        defaultQueue={defaultQueue}
-      />
     </PageShell>
   )
 }

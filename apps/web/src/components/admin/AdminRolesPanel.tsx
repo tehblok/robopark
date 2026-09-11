@@ -167,7 +167,7 @@ function AdminRolesWorkspace({ onDenied }: { onDenied: (denied: boolean) => void
           ))}
         </ul>
       </Panel>
-      } detail={
+      } detail={detailOpen ?
       <Panel collapsible storageKey="admin-roles-editor" title={editing ? `Редактор: ${editing.name}` : 'Новая роль'}>
         {!editing && (
           <label className="field">
@@ -242,7 +242,7 @@ function AdminRolesWorkspace({ onDenied }: { onDenied: (denied: boolean) => void
             <button className="btn btn-danger" disabled={busy} onClick={() => void removeRole(editing)} type="button">Удалить роль</button>
           </section>
         )}
-      </Panel>
+      </Panel> : null
       } />
     </div>
   )
