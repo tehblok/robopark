@@ -19,3 +19,24 @@ it('does not mount a role editor before explicit selection', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Открыть роль Механик' }))
   expect(screen.getByRole('heading', { name: 'Редактор: Механик' })).toBeVisible()
 })
+
+it('closes a deleted custom-role editor and opens a clean creator only explicitly', async () => {
+  const role = { id: 2, slug: 'dispatcher', name: 'Диспетчер', description: 'Старый draft', is_system: false, is_active: true, permissions: [], user_count: 0 }
+  vi.spyOn(api, 'adminRoles').mockResolvedValueOnce([role]).mockResolvedValue([])
+  vi.spyOn(api, 'adminRolePermissionCatalog').mockResolvedValue([])
+  vi.spyOn(api, 'deleteAdminRole').mockResolvedValue(undefined)
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  const actor = { id: 1, username: 'admin', role: 'admin', access_status: 'approved', permissions: ['roles.manage'], parks: [] } as User
+  render(<AuthContext.Provider value={{ user: actor, loading: false, login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn() }}><AdminRolesPanel /></AuthContext.Provider>)
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Открыть роль Диспетчер' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Удалить роль' }))
+
+  expect(await screen.findByRole('heading', { name: 'Роли' })).toBeVisible()
+  expect(screen.queryByRole('heading', { name: 'Новая роль' })).not.toBeInTheDocument()
+  expect(screen.queryByDisplayValue('Старый draft')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Новая роль' }))
+  expect(screen.getByRole('heading', { name: 'Новая роль' })).toBeVisible()
+  expect(screen.getByLabelText('Название')).toHaveValue('')
+  expect(screen.getByLabelText('Slug (латиница)')).toHaveValue('')
+})

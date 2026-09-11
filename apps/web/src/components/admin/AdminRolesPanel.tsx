@@ -134,7 +134,12 @@ function AdminRolesWorkspace({ onDenied }: { onDenied: (denied: boolean) => void
       setRoles((rows) => rows.filter((row) => row.id !== role.id))
       resourceStore.invalidate(adminResourceKey('roles', user))
       void rolesResource.refresh()
-      if (editingId === role.id) setEditingId(null)
+      if (editingId === role.id) {
+        setEditingId(null)
+        setDetailOpen(false)
+        setNewSlug('')
+        setDraft({ name: '', description: '', permissions: new Set() })
+      }
     } catch (deleteError) {
       setError(mapApiError(deleteError) || 'Не удалось удалить роль')
     } finally {
