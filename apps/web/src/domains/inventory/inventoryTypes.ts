@@ -1,6 +1,7 @@
 export type InventoryDocumentStatus = 'draft' | 'posted' | 'cancelled'
 export type InventoryStockFilter = 'in_stock' | 'below_minimum' | 'without_location'
 export type InventoryInt64 = `${bigint}`
+export const INVENTORY_INT64_MAX = 9_223_372_036_854_775_807n
 
 export function inventoryInt64Compare(left: InventoryInt64, right: InventoryInt64): number {
   const leftValue = BigInt(left)
@@ -13,7 +14,13 @@ export function isInventoryInt64(value: string): value is InventoryInt64 {
 }
 
 export function isInventoryQuantity(value: string): value is InventoryInt64 {
-  return /^\d+$/.test(value)
+  return /^\d+$/.test(value) && BigInt(value) <= INVENTORY_INT64_MAX
+}
+
+export function inventoryQuantityError(value: string): string | undefined {
+  if (!/^\d+$/.test(value)) return 'Целое неотрицательное число'
+  if (BigInt(value) > INVENTORY_INT64_MAX) return 'Не больше 9223372036854775807'
+  return undefined
 }
 
 export function isPositiveInventoryQuantity(value: string): value is InventoryInt64 {

@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { InventoryCatalogSearchItem, InventoryPageEnvelope, InventorySearchParams } from '../../api'
+import type { InventoryCatalogSearchItem, InventoryPageEnvelope, InventorySearchParams, InventoryStockView } from '../../api'
 import { InventoryPartsView } from './InventoryPartsView'
 
 const part: InventoryCatalogSearchItem = {
@@ -35,7 +35,8 @@ function deferred<T>() {
 function client(searchInventory: (params: InventorySearchParams) => Promise<InventoryPageEnvelope<InventoryCatalogSearchItem>> = vi.fn(async () => page())) {
   return {
     searchInventory,
-    updateInventoryStock: vi.fn(async (_parkId: number, catalogPartId: number) => ({ park_id: 1, catalog_part_id: catalogPartId, quantity: '5' as const, minimum_quantity: '2' as const, location: 'Полка A-1', is_active: true, version: '1' as const })),
+    inventoryCatalogComponents: vi.fn(async () => ({ items: [{ id: 4, name: 'Подвязка', is_active: true, has_photo: false }], limit: 200, offset: 0, total: 1 })),
+    updateInventoryStock: vi.fn(async (_parkId: number, catalogPartId: number): Promise<InventoryStockView> => ({ park_id: 1, catalog_part_id: catalogPartId, quantity: '5', minimum_quantity: '2', location: 'Полка A-1', is_active: true, version: '1' })),
     inventoryPartPhotoUrl: vi.fn((id: number) => `/parts/${id}/photo`),
   }
 }
@@ -67,7 +68,44 @@ describe('InventoryPartsView', () => {
     expect(screen.getByText('5 шт.')).toBeVisible()
     expect(screen.getByRole('img', { name: 'Тяга' })).toHaveAttribute('width', '72')
     expect(screen.getByRole('img', { name: 'Тяга' })).toHaveAttribute('height', '72')
+    expect(apiClient.inventoryPartPhotoUrl).toHaveBeenCalledWith(-31)
     expect(screen.queryByRole('button', { name: 'Архивировать глобально' })).not.toBeInTheDocument()
+  })
+
+  it('loads component filters independently from the current result page', async () => {
+    const apiClient = client(vi.fn(async () => page([])))
+    render(<InventoryPartsView apiClient={apiClient} parkId={1} />)
+    expect(await screen.findByRole('option', { name: 'Подвязка' })).toHaveValue('4')
+    expect(apiClient.inventoryCatalogComponents).toHaveBeenCalledWith(1, { limit: 200, offset: 0 })
+  })
+
+  it('rejects values above signed int64 without a stock API call', async () => {
+    const apiClient = client()
+    render(<InventoryPartsView apiClient={apiClient} parkId={1} />)
+    const card = (await screen.findByRole('heading', { name: 'Тяга' })).closest('article')!
+    await userEvent.click(within(card).getByRole('button', { name: 'Настроить остаток' }))
+    const minimum = within(card).getByRole('textbox', { name: 'Минимум' })
+    await userEvent.clear(minimum)
+    await userEvent.type(minimum, '9223372036854775808')
+    expect(within(card).getByText('Не больше 9223372036854775807')).toBeVisible()
+    expect(within(card).getByRole('button', { name: 'Сохранить' })).toBeDisabled()
+    expect(apiClient.updateInventoryStock).not.toHaveBeenCalled()
+  })
+
+  it('ignores a stock response captured for a previous park', async () => {
+    const mutation = deferred<InventoryStockView>()
+    const searchInventory = vi.fn(({ parkId }: InventorySearchParams) => Promise.resolve(page([{ ...part, location: parkId === 1 ? 'Парк 1' : 'Парк 2' }])))
+    const apiClient = client(searchInventory)
+    apiClient.updateInventoryStock = vi.fn((_parkId: number, _partId: number) => mutation.promise)
+    const view = render(<InventoryPartsView apiClient={apiClient} parkId={1} />)
+    const card = (await screen.findByRole('heading', { name: 'Тяга' })).closest('article')!
+    await userEvent.click(within(card).getByRole('button', { name: 'Настроить остаток' }))
+    await userEvent.click(within(card).getByRole('button', { name: 'Сохранить' }))
+    view.rerender(<InventoryPartsView apiClient={apiClient} parkId={2} />)
+    expect(await screen.findByText('Парк 2')).toBeVisible()
+    await act(async () => mutation.resolve({ park_id: 1, catalog_part_id: 31, quantity: '5', minimum_quantity: '99', location: 'Старый парк', is_active: true, version: '2' }))
+    expect(screen.queryByText('Старый парк')).not.toBeInTheDocument()
+    expect(screen.getByText('Парк 2')).toBeVisible()
   })
 
   it('sends filters and pagination while keeping the search field before filters', async () => {

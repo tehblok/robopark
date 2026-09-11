@@ -141,6 +141,62 @@ def test_catalog_search_filters_and_sorts_by_normalized_values(
     assert [row["id"] for row in filtered["items"]] == [first.id]
 
 
+def test_catalog_component_metadata_and_exact_part_are_scoped_and_independent_of_search_page(
+    client, db_session, seed_park_with_tracker
+):
+    foreign = Park(name="Foreign metadata", tag="Foreign-metadata", is_active=True)
+    db_session.add(foreign)
+    db_session.commit()
+    mechanic = _user(db_session, "mechanic", "metadata-mechanic", [seed_park_with_tracker])
+    component, part = _catalog(db_session, mechanic)
+    db_session.add(
+        InventoryParkStock(
+            park_id=seed_park_with_tracker.id,
+            catalog_part_id=part.id,
+            quantity=7,
+            minimum_quantity=2,
+            location="A-7",
+            updated_by=mechanic.id,
+        )
+    )
+    db_session.commit()
+    login_as(client, mechanic.username, "secret")
+
+    components = client.get(
+        "/inventory/catalog/components",
+        params={"park_id": seed_park_with_tracker.id, "limit": 1, "offset": 0},
+    )
+    assert components.status_code == 200, components.text
+    assert components.json() == {
+        "items": [{"id": component.id, "name": "Подвязка", "is_active": True, "has_photo": False}],
+        "limit": 1,
+        "offset": 0,
+        "total": 1,
+    }
+
+    exact = client.get(
+        f"/inventory/catalog/parts/{part.id}",
+        params={"park_id": seed_park_with_tracker.id},
+    )
+    assert exact.status_code == 200, exact.text
+    assert exact.json() == {
+        "id": part.id,
+        "component_id": component.id,
+        "component_name": "Подвязка",
+        "name": "Тяга",
+        "article": "ABC-01",
+        "is_active": True,
+        "has_photo": False,
+        "quantity": 7,
+        "minimum_quantity": 2,
+        "location": "A-7",
+        "stock_is_active": True,
+    }
+    assert client.get(
+        f"/inventory/catalog/parts/{part.id}", params={"park_id": foreign.id}
+    ).status_code == 403
+
+
 def test_mechanic_can_create_missing_catalog_but_only_admin_can_patch_existing(
     client, db_session, seed_park_with_tracker
 ):

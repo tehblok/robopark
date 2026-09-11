@@ -90,6 +90,13 @@ class InventoryCatalogComponentOut(BaseModel):
     has_photo: bool
 
 
+class InventoryCatalogComponentListOut(BaseModel):
+    items: list[InventoryCatalogComponentOut]
+    limit: int
+    offset: int
+    total: int
+
+
 class InventoryCatalogComponentUpdateIn(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     is_active: bool | None = None

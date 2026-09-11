@@ -1,114 +1,16 @@
-import { type FormEvent, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { api, type InventoryComponent, type InventoryOverview, type InventoryPart } from '../../api'
+import { useCallback, useContext, useLayoutEffect, useRef, useState } from 'react'
+import { api, type InventoryOverview } from '../../api'
 import { AuthContext } from '../../auth-context'
 import { useParkScope } from '../../app/park/parkScope'
-import { Button } from '../../design-system/actions/Button'
 import { MetricCard } from '../../design-system/data/MetricCard'
-import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
-import { PageLayout, Panel } from '../../design-system/layout/PageLayout'
-import { ResponsiveDisclosure, ResponsiveDisclosureGroup } from '../../design-system/layout/ResponsiveDisclosure'
-import { StatusBadge } from '../../design-system/status/StatusBadge'
-import { classifyApiError } from '../../shared/api/classifyApiError'
-import { InventoryLabels } from './InventoryLabels'
+import { EmptyState, LoadingState } from '../../design-system/feedback/AsyncState'
+import { PageLayout } from '../../design-system/layout/PageLayout'
+import { InventoryManageView } from './InventoryManageView'
+import { InventoryPartsView } from './InventoryPartsView'
 import { InventoryTabs, type InventoryView } from './InventoryTabs'
-import { inventoryInt64Compare, isInventoryQuantity, isPositiveInventoryQuantity } from './inventoryTypes'
 import './inventory.css'
 
-type InventoryApi = Pick<typeof api, 'inventory' | 'createInventoryComponent' | 'createInventoryPart' | 'updateInventoryPart' | 'moveInventoryStock' | 'inventoryComponentPhotoUrl' | 'inventoryPartPhotoUrl'>
-type InventoryWorkflow = { partId: number; kind: 'edit' | 'movement' } | null
-
-function visibleComponents(data: InventoryOverview, componentId: 'all' | number): InventoryComponent[] {
-  return componentId === 'all'
-    ? data.components
-    : data.components.filter(component => component.id === componentId)
-}
-
-function StockEditor({ part, apiClient, reload }: { part: InventoryPart; apiClient: InventoryApi; reload: () => void }) {
-  const [kind, setKind] = useState<'receipt' | 'writeoff'>('receipt')
-  const [quantity, setQuantity] = useState('1')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const submit = async (event: FormEvent) => {
-    event.preventDefault(); if (!isPositiveInventoryQuantity(quantity)) return; setBusy(true); setError('')
-    try { await apiClient.moveInventoryStock(part.id, kind, quantity); reload() }
-    catch (reason) { setError(classifyApiError(reason, 'Не удалось изменить остаток.').description) }
-    finally { setBusy(false) }
-  }
-  return <form className="inventory-stock-editor" onSubmit={submit}><select aria-label="Операция" value={kind} onChange={event => setKind(event.target.value as 'receipt' | 'writeoff')}><option value="receipt">Приход</option><option value="writeoff">Списание</option></select><input aria-label="Количество" inputMode="numeric" onChange={event => setQuantity(event.target.value)} pattern="[0-9]*" value={quantity} /><Button busy={busy} disabled={!isPositiveInventoryQuantity(quantity)} size="compact" type="submit">Провести</Button>{error ? <span className="form-error" role="alert">{error}</span> : null}</form>
-}
-
-function PartCard({ part, componentName, apiClient, reload, onPrint, workflow, activeDisclosure, onDisclosureChange }: { part: InventoryPart; componentName: string; apiClient: InventoryApi; reload: () => void; onPrint: (part: InventoryPart) => void; workflow: InventoryWorkflow; activeDisclosure: string | null; onDisclosureChange: (id: string | undefined) => void }) {
-  const [name, setName] = useState(part.name)
-  const [article, setArticle] = useState(part.article)
-  const [location, setLocation] = useState(part.location)
-  const [minimum, setMinimum] = useState<string>(part.minimum_quantity)
-  const low = inventoryInt64Compare(part.quantity, part.minimum_quantity) <= 0
-  const save = async (event: FormEvent) => { event.preventDefault(); if (!isInventoryQuantity(minimum)) return; await apiClient.updateInventoryPart(part.id, { name, article, location, minimum_quantity: minimum }); reload() }
-  return <article className="inventory-part">
-    {part.has_photo ? <img alt={part.name} className="inventory-part__photo" height={72} src={apiClient.inventoryPartPhotoUrl(part.id)} width={72} /> : <div className="inventory-photo-placeholder">Нет фото</div>}
-    <div className="inventory-part__body"><div className="inventory-part__head"><div><h3>{part.name}</h3><p>Артикул: <strong>{part.article}</strong></p></div><StatusBadge tone={part.quantity === '0' ? 'critical' : low ? 'warning' : 'success'}>{part.quantity === '0' ? 'Нет на складе' : `${part.quantity} шт.`}</StatusBadge></div>
-      <p>Место: <strong>{part.location}</strong> · минимум {part.minimum_quantity}</p>
-      <ResponsiveDisclosureGroup controlledOpenId={activeDisclosure} label={`Действия с запчастью ${part.name}`} onOpenIdChange={onDisclosureChange}>
-        <ResponsiveDisclosure id={`part-${part.id}-print`} title="Печать"><div className="inventory-actions"><Button onClick={() => onPrint(part)} size="compact" variant="secondary">Распечатать этикетку</Button></div></ResponsiveDisclosure>
-        <ResponsiveDisclosure id={`part-${part.id}-edit`} title="Редактировать">{workflow?.partId === part.id && workflow.kind === 'edit' ? <form className="form-grid inventory-edit" onSubmit={save}><label className="field"><span>Название</span><input required value={name} onChange={event => setName(event.target.value)} /></label><label className="field"><span>Артикул</span><input required value={article} onChange={event => setArticle(event.target.value)} /></label><label className="field"><span>Место</span><input required value={location} onChange={event => setLocation(event.target.value)} /></label><label className="field"><span>Минимум</span><input inputMode="numeric" pattern="[0-9]*" value={minimum} onChange={event => setMinimum(event.target.value)} /></label><Button disabled={!isInventoryQuantity(minimum)} type="submit">Сохранить</Button></form> : <Button onClick={() => onDisclosureChange(`part-${part.id}-edit`)} size="compact" variant="ghost">Открыть редактор</Button>}</ResponsiveDisclosure>
-        <ResponsiveDisclosure id={`part-${part.id}-movement`} title="Движение остатков">{workflow?.partId === part.id && workflow.kind === 'movement' ? <StockEditor apiClient={apiClient} part={part} reload={reload} /> : <Button onClick={() => onDisclosureChange(`part-${part.id}-movement`)} size="compact" variant="ghost">Изменить остаток</Button>}</ResponsiveDisclosure>
-      </ResponsiveDisclosureGroup>
-    </div>
-    <span className="inventory-component-name">{componentName}</span>
-  </article>
-}
-
-function CreateForms({ data, parkId, apiClient, reload, activeDisclosure, onDisclosureChange }: { data: InventoryOverview; parkId: number; apiClient: InventoryApi; reload: () => void; activeDisclosure: string | null; onDisclosureChange: (id: string | undefined) => void }) {
-  const [componentName, setComponentName] = useState('')
-  const [componentPhoto, setComponentPhoto] = useState<File | null>(null)
-  const [componentId, setComponentId] = useState(data.components[0]?.id ?? 0)
-  const [part, setPart] = useState({ name: '', article: '', quantity: '0', minimum: '0', location: '' })
-  const [partPhoto, setPartPhoto] = useState<File | null>(null)
-  useEffect(() => { if (!componentId && data.components[0]) setComponentId(data.components[0].id) }, [componentId, data.components])
-  return <ResponsiveDisclosureGroup controlledOpenId={activeDisclosure} label="Создание позиций склада" onOpenIdChange={onDisclosureChange}><div className="inventory-create-grid"><ResponsiveDisclosure id="component-create" title="Добавить компоненту"><form className="form-grid" onSubmit={async event => { event.preventDefault(); await apiClient.createInventoryComponent(parkId, componentName, componentPhoto); setComponentName(''); reload() }}><label className="field"><span>Название, например «Подвязка»</span><input required value={componentName} onChange={event => setComponentName(event.target.value)} /></label><label className="field"><span>Общее фото</span><input accept="image/*" type="file" onChange={event => setComponentPhoto(event.target.files?.[0] ?? null)} /></label><Button type="submit">Добавить</Button></form></ResponsiveDisclosure>
-    <ResponsiveDisclosure id="part-create" title="Добавить запчасть"><form className="form-grid" onSubmit={async event => { event.preventDefault(); if (!isInventoryQuantity(part.quantity) || !isInventoryQuantity(part.minimum)) return; await apiClient.createInventoryPart({ park_id: parkId, component_id: componentId, name: part.name, article: part.article, quantity: part.quantity, minimum_quantity: part.minimum, location: part.location, photo: partPhoto }); setPart({ name: '', article: '', quantity: '0', minimum: '0', location: '' }); reload() }}><label className="field"><span>Компонента запчасти</span><select required value={componentId || ''} onChange={event => setComponentId(Number(event.target.value))}><option value="">Выберите</option>{data.components.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>{(['name', 'article', 'location'] as const).map(field => <label className="field" key={field}><span>{{ name: 'Название новой запчасти', article: 'Артикул', location: 'Место хранения' }[field]}</span><input required value={part[field]} onChange={event => setPart(current => ({ ...current, [field]: event.target.value }))} /></label>)}<label className="field"><span>Начальное количество</span><input inputMode="numeric" pattern="[0-9]*" value={part.quantity} onChange={event => setPart(current => ({ ...current, quantity: event.target.value }))} /></label><label className="field"><span>Минимальное количество</span><input inputMode="numeric" pattern="[0-9]*" value={part.minimum} onChange={event => setPart(current => ({ ...current, minimum: event.target.value }))} /></label><label className="field"><span>Фото запчасти</span><input accept="image/*" type="file" onChange={event => setPartPhoto(event.target.files?.[0] ?? null)} /></label><Button disabled={!componentId || !isInventoryQuantity(part.quantity) || !isInventoryQuantity(part.minimum)} type="submit">Завести</Button></form></ResponsiveDisclosure></div></ResponsiveDisclosureGroup>
-}
-
-function InventoryPartsWorkflow({ parkId, apiClient, data, error, reload }: { parkId: number; apiClient: InventoryApi; data: InventoryOverview | null; error: unknown; reload: () => void }) {
-  const [printParts, setPrintParts] = useState<InventoryPart[]>([])
-  const [printNotice, setPrintNotice] = useState('')
-  const [componentId, setComponentId] = useState<'all' | number>('all')
-  const [workflow, setWorkflow] = useState<InventoryWorkflow>(null)
-  const [activeDisclosure, setActiveDisclosure] = useState<string | null>(null)
-  useLayoutEffect(() => {
-    setPrintParts([])
-    setPrintNotice('')
-    setComponentId('all')
-    setWorkflow(null)
-    setActiveDisclosure(null)
-  }, [apiClient, parkId])
-  const print = (parts: InventoryPart[]) => {
-    if (!parts.length) {
-      setPrintParts([])
-      setPrintNotice('Нет запчастей для печати.')
-      return
-    }
-    setPrintNotice('')
-    setPrintParts(parts)
-    globalThis.setTimeout(() => window.print(), 0)
-  }
-  const changeDisclosure = (id: string | undefined) => {
-    setActiveDisclosure(id ?? null)
-    const match = id?.match(/^part-(\d+)-(edit|movement)$/)
-    setWorkflow(match ? { partId: Number(match[1]), kind: match[2] as 'edit' | 'movement' } : null)
-  }
-  const failure = error ? classifyApiError(error, 'Не удалось загрузить склад.') : null
-  if (failure) return <ErrorState description={failure.description} onRetry={reload} title={failure.title} />
-  if (!data) return <LoadingState label="Загружаем склад" variant="page" />
-  return <>
-        <CreateForms activeDisclosure={activeDisclosure} apiClient={apiClient} data={data} onDisclosureChange={changeDisclosure} parkId={parkId} reload={reload} />
-        <label className="field inventory-component-filter"><span>Компонента</span><select value={componentId} onChange={event => setComponentId(event.target.value === 'all' ? 'all' : Number(event.target.value))}><option value="all">Все компоненты</option>{data.components.map(component => <option key={component.id} value={component.id}>{component.name}</option>)}</select></label>
-        <ResponsiveDisclosureGroup controlledOpenId={activeDisclosure} label="Печать склада" onOpenIdChange={changeDisclosure}><ResponsiveDisclosure id="labels" title="Параметры печати"><Button onClick={() => print(visibleComponents(data, componentId).flatMap(component => component.parts))} variant="secondary">Печать этикеток</Button></ResponsiveDisclosure></ResponsiveDisclosureGroup>
-        {printNotice ? <p role="alert">{printNotice}</p> : null}
-        <div className="inventory-components">{visibleComponents(data, componentId).map(component => <Panel density="dense" key={component.id} collapsible storageKey={`inventory-component-${component.id}`} title={component.name}>{component.has_photo ? <img alt={`Компонента ${component.name}`} className="inventory-component-photo" height={72} src={apiClient.inventoryComponentPhotoUrl(component.id)} width={72} /> : null}<div className="inventory-parts">{component.parts.map(part => <PartCard activeDisclosure={activeDisclosure} apiClient={apiClient} componentName={component.name} key={part.id} onDisclosureChange={changeDisclosure} onPrint={part => print([part])} part={part} reload={reload} workflow={workflow} />)}{!component.parts.length ? <p>Запчастей в этой компоненте пока нет.</p> : null}</div></Panel>)}{!data.components.length ? <EmptyState description="Добавьте первую компоненту и запчасть." icon="work" title="Склад пуст" /> : null}</div>
-        <InventoryLabels parts={printParts} />
-  </>
-}
+type InventoryApi = Pick<typeof api, 'inventory' | 'inventoryPartPhotoUrl' | 'searchInventory' | 'inventoryCatalogComponents' | 'getInventoryCatalogPart' | 'createInventoryCatalogComponent' | 'createInventoryCatalogPart' | 'updateInventoryCatalogPart' | 'mergeInventoryCatalogPart' | 'updateInventoryStock'>
 
 function InventoryWorkflowPlaceholder({ view, parkName, role }: { view: Exclude<InventoryView, 'parts'>; parkName: string; role?: string }) {
   if (view === 'receipts') return <section className="inventory-workflow-placeholder"><h2>Поставки</h2><p>Список и редактор поставок появятся здесь.</p></section>
@@ -121,23 +23,18 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
   const { selectedPark, loading } = useParkScope()
   const role = useContext(AuthContext)?.user?.role
   const [overview, setOverview] = useState<InventoryOverview | null>(null)
-  const [overviewError, setOverviewError] = useState<unknown>(null)
   const requestGeneration = useRef(0)
   const parkId = selectedPark?.id
   const loadOverview = useCallback(() => {
     if (!parkId) return
     const generation = ++requestGeneration.current
-    setOverviewError(null)
     apiClient.inventory(parkId).then(value => {
       if (generation === requestGeneration.current) setOverview(value)
-    }).catch(reason => {
-      if (generation === requestGeneration.current) setOverviewError(reason)
-    })
+    }).catch(() => { /* Optional KPI data never blocks workflow navigation. */ })
   }, [apiClient, parkId])
   useLayoutEffect(() => {
     requestGeneration.current += 1
     setOverview(null)
-    setOverviewError(null)
     loadOverview()
     return () => { requestGeneration.current += 1 }
   }, [loadOverview])
@@ -147,7 +44,9 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
   return <PageLayout description={`Учёт запчастей парка «${selectedPark.name}»`} title="Склад">
     {overview ? <div className="stat-grid inventory-kpis"><MetricCard label="Компоненты" value={overview.component_count} /><MetricCard label="Запчасти" value={overview.part_count} /><MetricCard label="Ниже минимума" tone={overview.low_stock_count ? 'warning' : 'neutral'} value={overview.low_stock_count} /><MetricCard label="Нет на складе" tone={overview.out_of_stock_count ? 'critical' : 'neutral'} value={overview.out_of_stock_count} /></div> : null}
     <InventoryTabs renderPanel={view => view === 'parts'
-      ? <InventoryPartsWorkflow apiClient={apiClient} data={overview} error={overviewError} parkId={selectedPark.id} reload={loadOverview} />
-      : <InventoryWorkflowPlaceholder parkName={selectedPark.name} role={role} view={view} />} />
+      ? <InventoryPartsView apiClient={apiClient} parkId={selectedPark.id} />
+      : view === 'manage'
+        ? <InventoryManageView apiClient={apiClient} parkId={selectedPark.id} role={role} />
+        : <InventoryWorkflowPlaceholder parkName={selectedPark.name} role={role} view={view} />} />
   </PageLayout>
 }

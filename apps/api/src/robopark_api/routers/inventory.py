@@ -10,12 +10,14 @@ from robopark_api.db import get_db
 from robopark_api.deps import require_user
 from robopark_api.inventory_schemas import (
     InventoryCatalogComponentCreateIn,
+    InventoryCatalogComponentListOut,
     InventoryCatalogComponentOut,
     InventoryCatalogComponentUpdateIn,
     InventoryCatalogPartCreateIn,
     InventoryCatalogPartMergeIn,
     InventoryCatalogPartOut,
     InventoryCatalogPartUpdateIn,
+    InventoryCatalogSearchItem,
     InventoryCatalogSearchOut,
     InventoryComponentOut,
     InventoryCountCreateIn,
@@ -337,6 +339,19 @@ def create_catalog_component(
     return inventory_catalog.component_out(row)
 
 
+@router.get("/catalog/components", response_model=InventoryCatalogComponentListOut)
+def list_catalog_components(
+    park_id: int,
+    limit: int = 200,
+    offset: int = 0,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    if not 1 <= limit <= 200 or offset < 0:
+        raise HTTPException(422, "inventory_pagination_invalid")
+    return _run(lambda: inventory_catalog.list_components(db, user, park_id=park_id, limit=limit, offset=offset))
+
+
 @router.patch("/catalog/components/{component_id}", response_model=InventoryCatalogComponentOut)
 def update_catalog_component(
     component_id: int,
@@ -388,6 +403,16 @@ def update_catalog_part(
         )
     )
     return inventory_catalog.part_out(row)
+
+
+@router.get("/catalog/parts/{part_id}", response_model=InventoryCatalogSearchItem)
+def get_catalog_part(
+    part_id: int,
+    park_id: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    return _run(lambda: inventory_catalog.catalog_item(db, user, park_id=park_id, part_id=part_id))
 
 
 @router.post("/catalog/parts/{part_id}/merge", response_model=InventoryCatalogPartOut)

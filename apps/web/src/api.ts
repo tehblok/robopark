@@ -1374,6 +1374,10 @@ export const api = {
     if (offset !== undefined) query.set('offset', String(offset))
     return inventoryRequest<InventoryPageEnvelope<InventoryCatalogSearchItem>>(`/inventory/catalog/search?${query.toString()}`)
   },
+  inventoryCatalogComponents: (parkId: number, params?: InventoryListParams) =>
+    inventoryRequest<InventoryPageEnvelope<InventoryCatalogComponent>>(`/inventory/catalog/components?${new URLSearchParams({ park_id: String(parkId), ...(params?.limit !== undefined ? { limit: String(params.limit) } : {}), ...(params?.offset !== undefined ? { offset: String(params.offset) } : {}) }).toString()}`),
+  getInventoryCatalogPart: (parkId: number, partId: number) =>
+    inventoryRequest<InventoryCatalogSearchItem>(`/inventory/catalog/parts/${partId}?park_id=${parkId}`),
   createInventoryCatalogComponent: (payload: { park_id: number; name: string }) =>
     inventoryRequest<InventoryCatalogComponent>('/inventory/catalog/components', { method: 'POST', body: inventoryStringify(payload) }),
   updateInventoryCatalogComponent: (id: number, payload: Partial<Pick<InventoryCatalogComponent, 'name' | 'is_active'>>) =>

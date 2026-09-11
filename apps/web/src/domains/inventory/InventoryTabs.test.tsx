@@ -27,7 +27,7 @@ function LocationProbe() {
   return <output aria-label="Адрес">{location.pathname}{location.search}</output>
 }
 
-function renderInventory(path: string, role: User['role'] = 'mechanic', inventory = vi.fn(async () => overview)) {
+function renderInventory(path: string, role: User['role'] = 'mechanic', inventory: (parkId: number) => Promise<InventoryOverview> = vi.fn(async () => overview)) {
   const user: User = {
     id: 1,
     username: role,
@@ -36,12 +36,20 @@ function renderInventory(path: string, role: User['role'] = 'mechanic', inventor
     permissions: ['nav.inventory'],
     parks: [park],
   }
-  const client = { inventory }
+  const client = {
+    ...api,
+    inventory,
+    searchInventory: vi.fn(async ({ parkId }: { parkId: number }) => {
+      await inventory(parkId)
+      return { items: [], limit: 25, offset: 0, total: 0 }
+    }),
+    inventoryCatalogComponents: vi.fn(async () => ({ items: [], limit: 200, offset: 0, total: 0 })),
+  }
   return render(
     <MemoryRouter initialEntries={[path]}>
       <AuthContext.Provider value={{ user, loading: false, login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn() }}>
         <ParkScopeContext.Provider value={{ parkId: park.id, selectedPark: park, parks: [park], loading: false, locked: role === 'mechanic', setParkId: vi.fn(), refreshParks: vi.fn() }}>
-          <InventoryPage apiClient={client as never} />
+          <InventoryPage apiClient={client} />
           <LocationProbe />
         </ParkScopeContext.Provider>
       </AuthContext.Provider>
@@ -77,7 +85,7 @@ describe('inventory URL tabs', () => {
   it('keeps parts loading failures inside the active panel while tabs stay usable', async () => {
     renderInventory('/inventory?park=7&view=parts', 'mechanic', vi.fn(async () => { throw new ApiError(503) }))
 
-    expect(await screen.findByRole('tabpanel')).toHaveTextContent('Сервис временно недоступен')
+    await waitFor(() => expect(screen.getByRole('tabpanel')).toHaveTextContent('Сервис временно недоступен'))
     await userEvent.click(screen.getByRole('tab', { name: 'Выгрузка' }))
     expect(screen.getByRole('tabpanel')).toHaveTextContent('Выгрузка парка Север')
   })
@@ -93,9 +101,9 @@ describe('inventory URL tabs', () => {
     renderInventory('/inventory?park=7&view=manage', role)
 
     expect(await screen.findAllByRole('tab')).toHaveLength(5)
-    expect(screen.getByRole('tabpanel')).toHaveTextContent(
+    await waitFor(() => expect(screen.getByRole('tabpanel')).toHaveTextContent(
       role === 'admin' || role === 'royal' ? 'Глобальный каталог' : 'Настройки склада парка',
-    )
+    ))
     if (role === 'mechanic' || role === 'operator') {
       expect(screen.queryByText('Все парки')).not.toBeInTheDocument()
     }
@@ -125,6 +133,8 @@ describe('inventory API contracts', () => {
     }))
     vi.stubGlobal('fetch', fetchMock)
     await api.searchInventory({ parkId: 7, query: 'ABC', componentId: 2, stockFilter: 'below_minimum', limit: 25, offset: 0 })
+    await api.inventoryCatalogComponents(7, { limit: 200, offset: 0 })
+    await api.getInventoryCatalogPart(7, 91)
     await api.updateInventoryStock(7, 3, { minimum_quantity: '2', location: 'A-1', is_active: true })
     await api.inventoryReceipts(7, { query: 'DOC', limit: 25, offset: 0 })
     await api.reverseInventoryReceipt(7, 11, 'duplicate')
@@ -133,14 +143,16 @@ describe('inventory API contracts', () => {
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       '/api/inventory/catalog/search?park_id=7&q=ABC&component_id=2&stock_filter=below_minimum&limit=25&offset=0',
+      '/api/inventory/catalog/components?park_id=7&limit=200&offset=0',
+      '/api/inventory/catalog/parts/91?park_id=7',
       '/api/inventory/parks/7/stocks/3',
       '/api/inventory/parks/7/receipts?q=DOC&limit=25&offset=0',
       '/api/inventory/parks/7/receipts/11/reverse',
       '/api/inventory/parks/7/counts?q=September&limit=25&offset=0',
       '/api/inventory/parks/7/counts',
     ])
-    expect(JSON.parse(String(fetchMock.mock.calls[3][1]?.body))).toEqual({ reason: 'duplicate' })
-    expect(JSON.parse(String(fetchMock.mock.calls[5][1]?.body))).toEqual({ name: 'September', scope: { kind: 'component', component_id: 2 } })
+    expect(JSON.parse(String(fetchMock.mock.calls[5][1]?.body))).toEqual({ reason: 'duplicate' })
+    expect(JSON.parse(String(fetchMock.mock.calls[7][1]?.body))).toEqual({ name: 'September', scope: { kind: 'component', component_id: 2 } })
   })
 
   it('downloads only the requested export content type and always revokes its object URL', async () => {
