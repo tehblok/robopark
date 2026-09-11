@@ -61,6 +61,31 @@ it('keeps the mobile catalog visible and opens inventory workflows on demand', a
   expect(screen.getByRole('textbox', { name: 'Название новой запчасти' })).toBeVisible()
 })
 
+it('opens a part editor with one disclosure click on a phone', async () => {
+  useViewport(true)
+  render(renderInventoryPage(park))
+  const part = (await screen.findByRole('heading', { name: 'Тяга' })).closest('article')!
+
+  await userEvent.click(within(part).getByRole('button', { name: 'Редактировать' }))
+
+  expect(within(part).getByRole('textbox', { name: 'Название' })).toBeVisible()
+  expect(within(part).queryByRole('spinbutton', { name: 'Количество' })).not.toBeInTheDocument()
+})
+
+it('opens stock movement with one phone disclosure click and replaces it with editing', async () => {
+  useViewport(true)
+  render(renderInventoryPage(park))
+  const part = (await screen.findByRole('heading', { name: 'Тяга' })).closest('article')!
+
+  await userEvent.click(within(part).getByRole('button', { name: 'Движение остатков' }))
+  expect(within(part).getByRole('combobox', { name: 'Операция' })).toBeVisible()
+  expect(within(part).getByRole('spinbutton', { name: 'Количество' })).toBeVisible()
+
+  await userEvent.click(within(part).getByRole('button', { name: 'Редактировать' }))
+  expect(within(part).getByRole('textbox', { name: 'Название' })).toBeVisible()
+  expect(within(part).queryByRole('combobox', { name: 'Операция' })).not.toBeInTheDocument()
+})
+
 it('keeps desktop part editors closed and exposes one primary action only for the selected part', async () => {
   render(renderInventoryPage(park, inventoryClient({ inventory: vi.fn(async () => stockWithTwoComponents) })))
 

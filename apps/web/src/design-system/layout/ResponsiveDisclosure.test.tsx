@@ -58,6 +58,17 @@ it('opens only one disclosure on a phone', async () => {
   expect(screen.getByText('Beta')).toBeVisible()
 })
 
+it('notifies a phone workflow when its disclosure opens and closes', async () => {
+  matchMediaWidth(390)
+  const onOpenChange = vi.fn()
+  render(<ResponsiveDisclosureGroup label="Actions"><ResponsiveDisclosure id="a" onOpenChange={onOpenChange} title="A">Alpha</ResponsiveDisclosure></ResponsiveDisclosureGroup>)
+
+  await userEvent.click(screen.getByRole('button', { name: 'A' }))
+  await userEvent.click(screen.getByRole('button', { name: 'A' }))
+
+  expect(onOpenChange.mock.calls).toEqual([[true], [false]])
+})
+
 it('shows every disclosure on wider screens', () => {
   matchMediaWidth(600)
   render(

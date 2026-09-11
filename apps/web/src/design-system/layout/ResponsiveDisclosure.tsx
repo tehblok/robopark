@@ -1,8 +1,10 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useId,
+  useRef,
   useState,
   type ReactElement,
   type ReactNode,
@@ -14,7 +16,8 @@ const PHONE_MEDIA_QUERY = '(max-width: 599px)'
 type DisclosureContextValue = {
   isPhone: boolean
   openId: string | undefined
-  setOpenId: (id: string | undefined) => void
+  changeOpenId: (id: string | undefined) => void
+  registerOpenChange: (id: string, callback: (open: boolean) => void) => () => void
 }
 
 const DisclosureContext = createContext<DisclosureContextValue | null>(null)
@@ -36,6 +39,17 @@ export function ResponsiveDisclosureGroup({
 }: ResponsiveDisclosureGroupProps): ReactElement {
   const [isPhone, setIsPhone] = useState(readIsPhone)
   const [openId, setOpenId] = useState<string | undefined>(initialOpenId)
+  const callbacks = useRef(new Map<string, (open: boolean) => void>())
+  const registerOpenChange = useCallback((id: string, callback: (open: boolean) => void) => {
+    callbacks.current.set(id, callback)
+    return () => { if (callbacks.current.get(id) === callback) callbacks.current.delete(id) }
+  }, [])
+  const changeOpenId = (nextId: string | undefined) => {
+    if (nextId === openId) return
+    if (openId) callbacks.current.get(openId)?.(false)
+    if (nextId) callbacks.current.get(nextId)?.(true)
+    setOpenId(nextId)
+  }
 
   useEffect(() => {
     const media = window.matchMedia(PHONE_MEDIA_QUERY)
@@ -46,7 +60,7 @@ export function ResponsiveDisclosureGroup({
   }, [])
 
   return (
-    <DisclosureContext.Provider value={{ isPhone, openId, setOpenId }}>
+    <DisclosureContext.Provider value={{ isPhone, openId, changeOpenId, registerOpenChange }}>
       <div aria-label={label} className="rp-responsive-disclosure-group" role="group">
         {children}
       </div>
@@ -57,6 +71,7 @@ export function ResponsiveDisclosureGroup({
 export type ResponsiveDisclosureProps = {
   children: ReactNode
   id: string
+  onOpenChange?: (open: boolean) => void
   summary?: ReactNode
   title: ReactNode
 }
@@ -64,6 +79,7 @@ export type ResponsiveDisclosureProps = {
 export function ResponsiveDisclosure({
   children,
   id,
+  onOpenChange,
   summary,
   title,
 }: ResponsiveDisclosureProps): ReactElement {
@@ -71,6 +87,10 @@ export function ResponsiveDisclosure({
   const generatedId = useId()
   const contentId = `rp-responsive-disclosure-${id}-${generatedId}`
   const isOpen = !context?.isPhone || context.openId === id
+  useEffect(() => {
+    if (!context || !onOpenChange) return
+    return context.registerOpenChange(id, onOpenChange)
+  }, [context, id, onOpenChange])
 
   return (
     <section className="rp-responsive-disclosure">
@@ -82,7 +102,8 @@ export function ResponsiveDisclosure({
           disabled={context ? !context.isPhone : undefined}
           onClick={() => {
             if (context?.isPhone) {
-              context.setOpenId(context.openId === id ? undefined : id)
+              const nextOpen = context.openId !== id
+              context.changeOpenId(nextOpen ? id : undefined)
             }
           }}
           type="button"

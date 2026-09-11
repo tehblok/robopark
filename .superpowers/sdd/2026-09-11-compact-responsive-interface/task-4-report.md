@@ -92,3 +92,38 @@ Result: exit 0; 2181 modules transformed and production bundle built. Existing c
 Result: exit 0; oxlint reported no findings.
 
 Report Playwright was not rerun because this round did not change report behavior.
+
+## Fix round 2/5
+
+STATUS: COMPLETE
+
+### Review finding
+
+- Added a backward-compatible `onOpenChange` callback to `ResponsiveDisclosure`. The group notifies both the disclosure being closed and the one being opened.
+- Inventory uses that callback to select edit or stock movement in the same phone tap. Switching disclosures unmounts the previous form; desktop still requires the compact in-content selector and mounts at most one primary workflow.
+
+### RED
+
+`cd apps/web && npm test -- --run src/design-system/layout/ResponsiveDisclosure.test.tsx src/domains/inventory/InventoryPage.test.tsx`
+
+Result: exit 1; 3 failed / 15 passed. The callback was never invoked, and both phone disclosures mounted only their intermediate selector rather than the requested form.
+
+### GREEN and verification
+
+`cd apps/web && npm test -- --run src/design-system/layout/ResponsiveDisclosure.test.tsx src/domains/inventory/InventoryPage.test.tsx`
+
+Result: exit 0; 2 files passed, 18 tests passed.
+
+`cd apps/web && npm test -- --run src/domains/inventory src/pages/Reports.test.tsx src/components/reports src/domains/campaigns src/design-system/layout/ResponsiveDisclosure.test.tsx`
+
+Result: exit 0; 6 files passed, 58 tests passed.
+
+`cd apps/web && npm run build`
+
+Result: exit 0; 2181 modules transformed and production bundle built. Existing chunk-size warning remains.
+
+`cd apps/web && npm run lint -- src/design-system/layout/ResponsiveDisclosure.tsx src/design-system/layout/ResponsiveDisclosure.test.tsx src/domains/inventory/InventoryPage.tsx src/domains/inventory/InventoryPage.test.tsx`
+
+Result: exit 0; oxlint reported no findings.
+
+Report Playwright was not rerun because this round did not change report behavior.
