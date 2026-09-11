@@ -4,6 +4,50 @@ from robopark_api.models import Permission, Role, RolePermission
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
 
 
+def test_existing_role_receives_only_new_default_permissions(db_session):
+    mechanic = db_session.scalar(select(Role).where(Role.slug == "mechanic"))
+    assert mechanic is not None
+    new_keys = {
+        "inventory.stock.manage",
+        "inventory.documents.post",
+        "inventory.export",
+        "inventory.catalog.manage",
+    }
+    new_permission_ids = list(
+        db_session.scalars(select(Permission.id).where(Permission.key.in_(new_keys)))
+    )
+    revoked_old = db_session.scalar(select(Permission).where(Permission.key == "tracker.write"))
+    assert revoked_old is not None
+    db_session.execute(
+        delete(RolePermission).where(RolePermission.permission_id.in_(new_permission_ids))
+    )
+    db_session.execute(delete(Permission).where(Permission.id.in_(new_permission_ids)))
+    db_session.execute(
+        delete(RolePermission).where(
+            RolePermission.role_id == mechanic.id,
+            RolePermission.permission_id == revoked_old.id,
+        )
+    )
+    db_session.commit()
+
+    ensure_rbac_catalog(db_session)
+
+    keys = set(
+        db_session.scalars(
+            select(Permission.key)
+            .join(RolePermission, RolePermission.permission_id == Permission.id)
+            .where(RolePermission.role_id == mechanic.id)
+        )
+    )
+    assert {
+        "inventory.stock.manage",
+        "inventory.documents.post",
+        "inventory.export",
+    } <= keys
+    assert "inventory.catalog.manage" not in keys
+    assert "tracker.write" not in keys
+
+
 def test_ensure_rbac_catalog_does_not_wipe_custom_role_permissions(db_session):
     operator = db_session.scalar(select(Role).where(Role.slug == "operator"))
     extra = db_session.scalar(select(Permission).where(Permission.key == "nav.map"))

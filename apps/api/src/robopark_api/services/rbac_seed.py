@@ -28,6 +28,8 @@ def ensure_rbac_catalog(db: Session) -> None:
     # 0013 creates roles before the app's first startup. An empty permission
     # catalog identifies that bootstrap, not a role whose owner revoked grants.
     initial_catalog = db.scalar(select(Permission.id).limit(1)) is None
+    existing_permission_keys = set(db.scalars(select(Permission.key)))
+    new_permission_keys = {item.key for item in PERMISSION_CATALOG} - existing_permission_keys
     perm_by_key: dict[str, Permission] = {}
     for item in PERMISSION_CATALOG:
         row = db.scalar(select(Permission).where(Permission.key == item.key))
@@ -59,9 +61,6 @@ def ensure_rbac_catalog(db: Session) -> None:
             )
             db.add(role)
             db.flush()
-        if not is_new_role and not initial_catalog:
-            continue
-
         existing_keys = set(
             db.scalars(
                 select(Permission.key)
@@ -70,7 +69,8 @@ def ensure_rbac_catalog(db: Session) -> None:
             )
         )
         desired = DEFAULT_ROLE_PERMISSIONS.get(slug, frozenset())
-        for key in desired:
+        keys_to_seed = desired if is_new_role or initial_catalog else desired & new_permission_keys
+        for key in keys_to_seed:
             if key in existing_keys:
                 continue
             perm = perm_by_key.get(key)
