@@ -1,9 +1,9 @@
 import { expect, type Page } from '@playwright/test'
-import type { Report, User } from '../../src/api'
+import type { AdminRole, AdminUser, Campaign, CampaignDetail, InventoryOverview, ParkRequest, PermissionCatalogItem, Report, User } from '../../src/api'
 import { ROUTE_MANIFEST, type AppRouteId, type RouteManifestItem } from '../../src/app/routing/routeManifest'
 import { analyticsFixture } from '../../src/domains/analytics/analytics.test-support'
 import type { MockRoute } from '../support/mockApi'
-import { installOperational } from './fixtures'
+import { installOperational, parkNorth, parkSouth } from './fixtures'
 
 const routeReport: Report = {
   id: 1, kind: 'mechanic_problem', status: 'open', park_id: 7, author_user_id: 101,
@@ -12,23 +12,50 @@ const routeReport: Report = {
   return_comment: null, created_at: '2026-09-02T09:00:00Z', updated_at: '2026-09-02T09:00:00Z', resolved_at: null,
 }
 
+const routeCampaign: Campaign = {
+  id: 4, kind: 'service_company', name: 'Осенняя сервисная кампания', tracker_tag: 'service-2026',
+  starts_on: '2026-09-01', due_on: '2026-10-01', is_active: true, park_ids: [7], park_names: ['Северный парк'],
+  total_count: 2, completed_count: 1, pending_review_count: 0, remaining_count: 1, percent_complete: 50, overdue: false,
+}
+const routeCampaignDetail: CampaignDetail = {
+  ...routeCampaign,
+  open_tickets: [{ key: 'ROBOPARK-42', summary: 'Проверить колесо после сервиса', status: 'Открыт', park_id: 7, park_name: 'Северный парк', robot: '447', url: 'https://tracker.example.invalid/ROBOPARK-42', completed_at: null, completed_by: null, comment: null, report_id: null, review_status: null, tracker_transition: null }],
+  closed_tickets: [],
+}
+const routeRequests: ParkRequest[] = [{ id: 5, user_id: 101, park_id: 8, status: 'pending', created_at: '2026-09-02T09:00:00Z', resolved_at: null, resolved_by: null, username: 'operator-e2e' }]
+const routeRoles: AdminRole[] = [{ id: 1, slug: 'mechanic', name: 'Механик', description: 'Работа с задачами', is_system: true, is_active: true, permissions: ['nav.inventory'], user_count: 1 }]
+const routeCatalog: PermissionCatalogItem[] = [{ key: 'nav.inventory', category: 'nav', label: 'Склад', sort_order: 75 }]
+const routeUsers: AdminUser[] = [{ id: 101, username: 'route-admin', role: 'admin', role_id: 1, access_status: 'approved', is_active: true, tracker_login: 'admin.test', must_change_password: false, parks: [parkNorth], permissions: ['nav.admin'], role_permissions: ['nav.admin'] }]
+const routeInventory: InventoryOverview = {
+  park_id: 7, component_count: 1, part_count: 1, low_stock_count: 0, out_of_stock_count: 0,
+  components: [{ id: 71, park_id: 7, name: 'route-inventory-component', has_photo: false, parts: [{ id: 701, park_id: 7, component_id: 71, name: 'route-inventory-part', article: 'ROUTE-701', quantity: 3, minimum_quantity: 1, location: 'A-7', is_active: true, has_photo: false }] }],
+}
+
 function routeMockRoutes(): MockRoute[] {
   return [
     { method: 'GET', path: '/api/analytics', handler: request => {
       const params = new URL(request.url).searchParams
       return { json: analyticsFixture(Number(params.get('park_id')), Number(params.get('days')), params.get('bucket') === '2h' ? '2h' : '1d') }
     } },
+    { method: 'GET', path: '/api/operator/parks', handler: () => ({ json: [parkNorth] }) },
+    { method: 'GET', path: '/api/operator/available-parks', handler: () => ({ json: [parkSouth] }) },
+    { method: 'GET', path: '/api/operator/park-requests', handler: () => ({ json: routeRequests }) },
+    { method: 'GET', path: '/api/campaigns', handler: () => ({ json: [routeCampaign] }) },
+    { method: 'GET', path: '/api/campaigns/4', handler: () => ({ json: routeCampaignDetail }) },
+    { method: 'GET', path: '/api/inventory', handler: () => ({ json: routeInventory }) },
     { method: 'GET', path: '/api/reports/mine', handler: () => ({ json: [routeReport] }) },
     { method: 'GET', path: '/api/reports/inbox', handler: () => ({ json: [routeReport] }) },
     { method: 'GET', path: '/api/reports/1', handler: () => ({ json: routeReport }) },
     { method: 'GET', path: '/api/reports/badge', handler: () => ({ json: { count: 1 } }) },
-    { method: 'GET', path: '/api/admin/roles', handler: () => ({ json: [] }) },
-    { method: 'GET', path: '/api/admin/roles/permissions/catalog', handler: () => ({ json: [] }) },
-    { method: 'GET', path: '/api/admin/emergency/sections', handler: () => ({ json: [] }) },
-    { method: 'GET', path: '/api/admin/park-requests', handler: () => ({ json: [] }) },
-    { method: 'GET', path: '/api/admin/settings/integrations', handler: () => ({ json: {} }) },
-    { method: 'GET', path: '/api/admin/settings/tracker-policy', handler: () => ({ json: {} }) },
-    { method: 'GET', path: '/api/admin/settings/screenshot-guard', handler: () => ({ json: {} }) },
+    { method: 'GET', path: '/api/admin/users', handler: () => ({ json: routeUsers }) },
+    { method: 'GET', path: '/api/admin/roles', handler: () => ({ json: routeRoles }) },
+    { method: 'GET', path: '/api/admin/roles/permissions/catalog', handler: () => ({ json: routeCatalog }) },
+    { method: 'GET', path: '/api/admin/emergency/sections', handler: () => ({ json: [{ id: 'wheels', title: 'Колёса', fields: [] }] }) },
+    { method: 'GET', path: '/api/admin/park-requests', handler: () => ({ json: routeRequests }) },
+    { method: 'GET', path: '/api/admin/settings/integrations', handler: () => ({ json: { tracker_token_masked: 'set', tracker_token_updated_at: '2026-09-02T09:00:00Z', emergency_cookie_masked: 'set', emergency_cookie_updated_at: '2026-09-02T09:00:00Z', emergency_cookie_valid: true, emergency_cookie_status: 'valid', emergency_cookie_checked_at: '2026-09-02T09:00:00Z', emergency_cookie_checked_robot: '447' } }) },
+    { method: 'GET', path: '/api/admin/settings/tracker-policy', handler: () => ({ json: { operator_show_untagged: true, operator_show_raw: false, operator_show_firmware_profile: false, mechanic_can_write: true } }) },
+    { method: 'GET', path: '/api/admin/settings/screenshot-guard', handler: () => ({ json: { operator: false, mechanic: false, admin: false, royal: false, driver: false } }) },
+    { method: 'GET', path: '/api/admin/settings/registration-password', handler: () => ({ json: { configured: true, password_masked: 'set', updated_at: '2026-09-02T09:00:00Z' } }) },
     { method: 'GET', path: '/api/admin/ops/job', handler: () => ({ json: { id: '', state: 'idle' } }) },
     { method: 'GET', path: '/api/admin/ops/system-health', handler: () => ({ json: { generated_at: '2026-09-02T09:00:00Z', services: [] } }) },
     { method: 'GET', path: '/api/admin/ops/available-update', handler: () => ({ json: { state: 'disabled', checked_at: null, release: null } }) },
@@ -63,18 +90,19 @@ function routeReadyMarker(page: Page, routeId: AppRouteId) {
     case 'robot-detail': return page.getByRole('heading', { name: 'Робот 447', exact: true })
     case 'robot-check': return page.getByRole('tabpanel', { name: 'Состояние' })
     case 'legacy-robot-check': return page.locator('.rp-robots-search-panel')
-    case 'campaigns': return page.getByRole('heading', { name: 'СК и оклейка', exact: true })
-    case 'campaign-detail': return page.getByRole('heading', { name: 'СК и оклейка', exact: true })
-    case 'reports': return page.getByRole('heading', { name: 'Репорты', exact: true })
-    case 'reports-new': return page.getByRole('heading', { name: 'Создать репорт', exact: true })
-    case 'report-detail': return page.getByRole('heading').first()
-    case 'analytics': return page.getByRole('heading', { name: 'Динамика процесса' })
-    case 'admin': return page.getByRole('heading', { name: 'Управление', exact: true, level: 1 })
-    case 'admin-settings': return page.locator('.rp-management').first()
-    case 'admin-users': return page.getByRole('heading', { name: 'Пользователи', exact: true })
-    case 'admin-roles': return page.getByRole('heading', { name: 'Роли и доступы', exact: true })
+    case 'inventory': return page.getByText('route-inventory-part', { exact: true })
+    case 'campaigns': return page.getByRole('heading', { name: routeCampaign.name, exact: true })
+    case 'campaign-detail': return page.getByRole('heading', { name: routeCampaignDetail.name, exact: true })
+    case 'reports': return page.getByRole('button', { name: `Открыть репорт ${routeReport.title}`, exact: true })
+    case 'reports-new': return page.getByRole('textbox', { name: 'Заголовок *', exact: true })
+    case 'report-detail': return page.getByText(routeReport.body, { exact: true })
+    case 'analytics': return page.locator('.rp-analytics-park .rp-analytics-value').filter({ hasText: '2 задач' }).first()
+    case 'admin': return page.getByRole('link', { name: 'Настройки', exact: true })
+    case 'admin-settings': return page.getByText('Tracker OAuth', { exact: true })
+    case 'admin-users': return page.getByRole('button', { name: 'Открыть аккаунт route-admin', exact: true })
+    case 'admin-roles': return page.getByText('Механик', { exact: true })
     case 'admin-tracker': return page.getByRole('heading', { name: 'Рабочий стол Startrek', exact: true })
-    case 'admin-robot-check': return page.getByRole('heading', { name: 'Настройки проверки робота', exact: true })
+    case 'admin-robot-check': return page.getByRole('button', { name: 'Открыть раздел Колёса', exact: true })
     default: return page.locator('main')
   }
 }

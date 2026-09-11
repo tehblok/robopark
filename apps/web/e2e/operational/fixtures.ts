@@ -14,7 +14,7 @@ export type OperationalRole = typeof roles[number]
 
 const allPermissions = [
   'nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.map',
-  'nav.analytics', 'nav.reports', 'nav.learning', 'nav.help', 'nav.admin',
+  'nav.analytics', 'nav.reports', 'nav.inventory', 'nav.learning', 'nav.help', 'nav.admin',
   'nav.admin.tracker', 'nav.admin.emergency', 'tracker.read', 'tracker.write',
   'tracker.attach', 'reports.create', 'reports.resolve', 'roles.manage',
   'users.manage', 'users.approve', 'parks.manage',
@@ -22,8 +22,8 @@ const allPermissions = [
 
 const rolePermissions: Record<OperationalRole, string[]> = {
   driver: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.reports', 'tracker.read', 'reports.create'],
-  mechanic: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.reports', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create'],
-  operator: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.analytics', 'nav.reports', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create', 'reports.resolve'],
+  mechanic: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.reports', 'nav.inventory', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create'],
+  operator: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.analytics', 'nav.reports', 'nav.inventory', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create', 'reports.resolve'],
   admin: allPermissions.filter((permission) => permission !== 'users.approve'),
   royal: allPermissions,
 }
