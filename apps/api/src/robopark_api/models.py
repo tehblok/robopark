@@ -247,19 +247,204 @@ class InventoryPart(Base):
     )
 
 
-class InventoryMovement(Base):
-    __tablename__ = "inventory_movements"
-    __table_args__ = (Index("ix_inventory_movements_part_created", "part_id", "created_at"),)
+class InventoryCatalogComponent(Base):
+    __tablename__ = "inventory_catalog_components"
+    __table_args__ = (
+        Index(
+            "uq_inventory_catalog_components_active_name",
+            "normalized_name",
+            unique=True,
+            sqlite_where=text("is_active = 1 AND normalized_name <> ''"),
+            postgresql_where=text("is_active AND normalized_name <> ''"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    part_id: Mapped[int] = mapped_column(
-        ForeignKey("inventory_parts.id", ondelete="CASCADE"), index=True
+    name: Mapped[str] = mapped_column(String(128))
+    normalized_name: Mapped[str] = mapped_column(String(128))
+    photo_storage_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    photo_filename: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    photo_content_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class InventoryCatalogPart(Base):
+    __tablename__ = "inventory_catalog_parts"
+    __table_args__ = (
+        Index(
+            "uq_inventory_catalog_parts_active_article",
+            "normalized_article",
+            unique=True,
+            sqlite_where=text("is_active = 1 AND normalized_article <> ''"),
+            postgresql_where=text("is_active AND normalized_article <> ''"),
+        ),
+        Index("ix_inventory_catalog_parts_component_name", "component_id", "normalized_name"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    component_id: Mapped[int] = mapped_column(
+        ForeignKey("inventory_catalog_components.id", ondelete="RESTRICT"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(128))
+    normalized_name: Mapped[str] = mapped_column(String(128))
+    article: Mapped[str] = mapped_column(String(128))
+    normalized_article: Mapped[str] = mapped_column(String(128), index=True)
+    photo_storage_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    photo_filename: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    photo_content_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    component: Mapped[InventoryCatalogComponent] = relationship(lazy="joined")
+
+
+class InventoryParkStock(Base):
+    __tablename__ = "inventory_park_stocks"
+    __table_args__ = (
+        UniqueConstraint("park_id", "catalog_part_id", name="uq_inventory_park_stock_part"),
+        CheckConstraint("quantity >= 0", name="ck_inventory_park_stock_quantity"),
+        CheckConstraint("minimum_quantity >= 0", name="ck_inventory_park_stock_minimum"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
+    catalog_part_id: Mapped[int] = mapped_column(
+        ForeignKey("inventory_catalog_parts.id", ondelete="RESTRICT"), index=True
+    )
+    quantity: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    minimum_quantity: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    location: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class InventoryReceipt(Base):
+    __tablename__ = "inventory_receipts"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'cancelled')", name="ck_receipt_status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
+    supplier: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    document_number: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    receipt_date: Mapped[date] = mapped_column()
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="draft", server_default="draft")
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    posted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class InventoryReceiptLine(Base):
+    __tablename__ = "inventory_receipt_lines"
+    __table_args__ = (
+        UniqueConstraint("receipt_id", "catalog_part_id", name="uq_inventory_receipt_line_part"),
+        CheckConstraint("quantity > 0", name="ck_inventory_receipt_line_quantity"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    receipt_id: Mapped[int] = mapped_column(
+        ForeignKey("inventory_receipts.id", ondelete="CASCADE"), index=True
+    )
+    catalog_part_id: Mapped[int] = mapped_column(
+        ForeignKey("inventory_catalog_parts.id", ondelete="RESTRICT"), index=True
+    )
+    quantity: Mapped[int] = mapped_column(Integer)
+    note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class InventoryCount(Base):
+    __tablename__ = "inventory_counts"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'cancelled')", name="ck_count_status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(16), default="draft", server_default="draft")
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    posted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class InventoryCountLine(Base):
+    __tablename__ = "inventory_count_lines"
+    __table_args__ = (
+        UniqueConstraint("count_id", "catalog_part_id", name="uq_inventory_count_line_part"),
+        CheckConstraint("expected_quantity >= 0", name="ck_inventory_count_line_expected"),
+        CheckConstraint(
+            "actual_quantity IS NULL OR actual_quantity >= 0",
+            name="ck_inventory_count_line_actual",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    count_id: Mapped[int] = mapped_column(
+        ForeignKey("inventory_counts.id", ondelete="CASCADE"), index=True
+    )
+    catalog_part_id: Mapped[int] = mapped_column(
+        ForeignKey("inventory_catalog_parts.id", ondelete="RESTRICT"), index=True
+    )
+    expected_quantity: Mapped[int] = mapped_column(Integer)
+    actual_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    difference: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class InventoryMigrationConflict(Base):
+    __tablename__ = "inventory_migration_conflicts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    normalized_article: Mapped[str] = mapped_column(String(128), index=True)
+    canonical_legacy_part_id: Mapped[int] = mapped_column(Integer)
+    conflicting_legacy_part_id: Mapped[int] = mapped_column(Integer)
+    field_name: Mapped[str] = mapped_column(String(32))
+    canonical_value: Mapped[str] = mapped_column(String(256))
+    conflicting_value: Mapped[str] = mapped_column(String(256))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class InventoryMovement(Base):
+    __tablename__ = "inventory_movements"
+    __table_args__ = (
+        Index("ix_inventory_movements_part_created", "part_id", "created_at"),
+        Index("ix_inventory_movements_catalog_part_created", "catalog_part_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    part_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inventory_parts.id", ondelete="CASCADE"), index=True, nullable=True
+    )
+    catalog_part_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inventory_catalog_parts.id", ondelete="RESTRICT"), index=True, nullable=True
     )
     park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
     actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     kind: Mapped[str] = mapped_column(String(32))
     delta: Mapped[int] = mapped_column(Integer)
+    balance_before: Mapped[int | None] = mapped_column(Integer, nullable=True)
     balance_after: Mapped[int] = mapped_column(Integer)
+    source_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     issue_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     note: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

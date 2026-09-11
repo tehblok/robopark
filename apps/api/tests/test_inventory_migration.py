@@ -1,0 +1,173 @@
+from datetime import datetime
+from pathlib import Path
+
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, func, inspect, select, text
+from sqlalchemy.orm import Session
+
+from robopark_api.models import (
+    InventoryCatalogComponent,
+    InventoryCatalogPart,
+    InventoryMovement,
+    InventoryParkStock,
+)
+
+API_DIR = Path(__file__).parents[1]
+
+
+def _upgrade_legacy_inventory(database_url: str, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    config = Config(API_DIR / "alembic.ini")
+    command.upgrade(config, "0025_local_task_claims")
+    engine = create_engine(database_url, future=True)
+    with engine.begin() as connection:
+        role_id = connection.execute(text("SELECT id FROM roles WHERE slug = 'admin'")).scalar_one()
+        connection.execute(
+            text(
+                "INSERT INTO users "
+                "(id, username, password_hash, role_id, access_status, must_change_password, is_active) "
+                "VALUES (999, 'migration-user', 'hash', :role_id, 'approved', 0, 1)"
+            ),
+            {"role_id": role_id},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO parks (id, name, tag, is_active) VALUES "
+                "(1, 'Park A', 'park-a', 1), (2, 'Park B', 'park-b', 1)"
+            )
+        )
+    return config, engine
+
+
+def test_upgrade_deduplicates_articles_and_preserves_stock_and_movements(
+    sqlite_database_url, monkeypatch
+):
+    config, engine = _upgrade_legacy_inventory(sqlite_database_url, monkeypatch)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO inventory_components "
+                "(id, park_id, name, photo_storage_key, created_at) VALUES "
+                "(10, 1, 'Wheels', 'component-first', :first), "
+                "(20, 2, '  wheels  ', 'component-later', :later)"
+            ),
+            {"first": datetime(2026, 1, 1), "later": datetime(2026, 1, 2)},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_parts "
+                "(id, park_id, component_id, name, article, quantity, minimum_quantity, "
+                "location, photo_storage_key, photo_filename, photo_content_type, created_at) "
+                "VALUES "
+                "(100, 1, 10, 'Front wheel', ' ART-42 ', 2, 1, 'A-1', "
+                "'part-first', 'first.jpg', 'image/jpeg', :first), "
+                "(200, 2, 20, 'Front wheel', 'art-42', 7, 3, 'B-4', "
+                "'part-later', 'later.png', 'image/png', :later)"
+            ),
+            {"first": datetime(2026, 1, 1), "later": datetime(2026, 1, 2)},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_movements "
+                "(id, part_id, park_id, actor_user_id, kind, delta, balance_after, note, created_at) "
+                "VALUES (1000, 100, 1, 999, 'receipt', 2, 2, 'legacy A', :first), "
+                "(2000, 200, 2, 999, 'receipt', 7, 7, 'legacy B', :later)"
+            ),
+            {"first": datetime(2026, 1, 1), "later": datetime(2026, 1, 2)},
+        )
+
+    command.upgrade(config, "0026_global_inventory_workflows")
+
+    with Session(engine) as session:
+        assert session.scalar(select(func.count(InventoryCatalogComponent.id))) == 1
+        assert session.scalar(select(func.count(InventoryCatalogPart.id))) == 1
+        catalog_part = session.scalar(select(InventoryCatalogPart))
+        assert catalog_part is not None
+        assert catalog_part.photo_storage_key == "part-first"
+        assert catalog_part.photo_filename == "first.jpg"
+        assert catalog_part.photo_content_type == "image/jpeg"
+        stocks = session.scalars(
+            select(InventoryParkStock).order_by(InventoryParkStock.park_id)
+        ).all()
+        assert [(row.quantity, row.location) for row in stocks] == [(2, "A-1"), (7, "B-4")]
+        assert set(session.scalars(select(InventoryMovement.catalog_part_id))) == {catalog_part.id}
+        assert set(session.scalars(select(InventoryMovement.part_id))) == {100, 200}
+
+
+def test_upgrade_uses_earliest_metadata_and_records_conflicts(sqlite_database_url, monkeypatch):
+    config, engine = _upgrade_legacy_inventory(sqlite_database_url, monkeypatch)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO inventory_components (id, park_id, name, created_at) VALUES "
+                "(20, 2, 'Later component', :later), (10, 1, 'First component', :first)"
+            ),
+            {"first": datetime(2026, 1, 1), "later": datetime(2026, 1, 2)},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_parts "
+                "(id, park_id, component_id, name, article, quantity, minimum_quantity, "
+                "location, created_at) VALUES "
+                "(200, 2, 20, 'Later name', 'DUP-1', 7, 0, 'B-4', :later), "
+                "(100, 1, 10, 'First name', ' dup-1 ', 2, 0, 'A-1', :first)"
+            ),
+            {"first": datetime(2026, 1, 1), "later": datetime(2026, 1, 2)},
+        )
+
+    command.upgrade(config, "0026_global_inventory_workflows")
+
+    with Session(engine) as session:
+        catalog_part = session.scalar(select(InventoryCatalogPart))
+        assert catalog_part is not None
+        assert catalog_part.name == "First name"
+        assert catalog_part.component.name == "First component"
+        conflicts = session.execute(
+            text(
+                "SELECT field_name, canonical_value, conflicting_value "
+                "FROM inventory_migration_conflicts ORDER BY field_name"
+            )
+        ).all()
+        assert conflicts == [
+            ("component", "First component", "Later component"),
+            ("name", "First name", "Later name"),
+        ]
+
+
+def test_downgrade_keeps_legacy_inventory_readable(sqlite_database_url, monkeypatch):
+    config, engine = _upgrade_legacy_inventory(sqlite_database_url, monkeypatch)
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO inventory_components (id, park_id, name) VALUES (10, 1, 'Wheels')")
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_parts "
+                "(id, park_id, component_id, name, article, quantity, minimum_quantity, location) "
+                "VALUES (100, 1, 10, 'Front wheel', 'ART-42', 2, 1, 'A-1')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_movements "
+                "(id, part_id, park_id, actor_user_id, kind, delta, balance_after) "
+                "VALUES (1000, 100, 1, 999, 'receipt', 2, 2)"
+            )
+        )
+
+    command.upgrade(config, "0026_global_inventory_workflows")
+    command.downgrade(config, "0025_local_task_claims")
+
+    assert {
+        "inventory_components",
+        "inventory_parts",
+        "inventory_movements",
+    } <= set(inspect(engine).get_table_names())
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT name, quantity, location FROM inventory_parts WHERE id = 100")
+        ).one() == ("Front wheel", 2, "A-1")
+        assert connection.execute(
+            text("SELECT part_id, delta, balance_after FROM inventory_movements WHERE id = 1000")
+        ).one() == (100, 2, 2)
