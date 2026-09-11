@@ -284,6 +284,7 @@ def move_stock(
             user,
             part_id,
             park_id=payload.park_id,
+            catalog_part_id=payload.catalog_part_id,
             kind=payload.kind,
             quantity=payload.quantity,
             note=payload.note,
@@ -292,6 +293,7 @@ def move_stock(
     return {
         **row.__dict__,
         "part_id": row.part_id or row.catalog_part_id,
+        "catalog_part_id": row.catalog_part_id,
         "actor_username": user.username,
     }
 
@@ -315,11 +317,13 @@ def task_writeoff(
             payload.part_id,
             payload.quantity,
             park_id=payload.park_id,
+            catalog_part_id=payload.catalog_part_id,
         )
     )
     return {
         **row.__dict__,
         "part_id": row.part_id or row.catalog_part_id,
+        "catalog_part_id": row.catalog_part_id,
         "actor_username": user.username,
     }
 

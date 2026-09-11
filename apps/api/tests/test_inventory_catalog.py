@@ -1,7 +1,9 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 from sqlalchemy import select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from conftest import login_as, role_id_for
@@ -16,7 +18,7 @@ from robopark_api.models import (
     UserPark,
 )
 from robopark_api.security import hash_password
-from robopark_api.services import inventory_stock
+from robopark_api.services import inventory_catalog, inventory_stock
 
 
 def _user(db, slug, username, parks=()):
@@ -518,3 +520,163 @@ def test_concurrent_first_stock_deltas_are_not_lost(db_engine, db_session, seed_
         (0, 1),
         (1, 2),
     ]
+
+
+def test_merge_rekeys_colliding_source_identity_without_losing_history(
+    client, db_session, seed_park_with_tracker
+):
+    admin = _user(db_session, "admin", "merge-source-admin")
+    component, target = _catalog(db_session, admin, name="Target", article="MERGE-TARGET")
+    source = InventoryCatalogPart(
+        component_id=component.id,
+        name="Source",
+        normalized_name="source",
+        article="MERGE-SOURCE",
+        normalized_article="merge-source",
+        created_by=admin.id,
+        updated_by=admin.id,
+    )
+    db_session.add(source)
+    db_session.flush()
+    db_session.add_all(
+        [
+            InventoryParkStock(
+                park_id=seed_park_with_tracker.id,
+                catalog_part_id=target.id,
+                quantity=2,
+                updated_by=admin.id,
+            ),
+            InventoryParkStock(
+                park_id=seed_park_with_tracker.id,
+                catalog_part_id=source.id,
+                quantity=3,
+                updated_by=admin.id,
+            ),
+            InventoryMovement(
+                catalog_part_id=target.id,
+                park_id=seed_park_with_tracker.id,
+                actor_user_id=admin.id,
+                kind="receipt",
+                delta=2,
+                balance_before=0,
+                balance_after=2,
+                source_kind="receipt",
+                source_id="receipt-line-7",
+            ),
+            InventoryMovement(
+                catalog_part_id=source.id,
+                park_id=seed_park_with_tracker.id,
+                actor_user_id=admin.id,
+                kind="receipt",
+                delta=3,
+                balance_before=0,
+                balance_after=3,
+                source_kind="receipt",
+                source_id="receipt-line-7",
+                note="x" * 490,
+            ),
+        ]
+    )
+    db_session.commit()
+    login_as(client, admin.username, "secret")
+
+    response = client.post(
+        f"/inventory/catalog/parts/{source.id}/merge",
+        json={"target_part_id": target.id},
+    )
+
+    assert response.status_code == 200, response.text
+    db_session.expire_all()
+    stock = db_session.scalar(
+        select(InventoryParkStock).where(InventoryParkStock.catalog_part_id == target.id)
+    )
+    assert stock.quantity == 5
+    history = list(
+        db_session.scalars(
+            select(InventoryMovement)
+            .where(InventoryMovement.catalog_part_id == target.id)
+            .order_by(InventoryMovement.id)
+        )
+    )
+    assert len(history) == 4
+    assert sum(row.delta for row in history if row.kind == "receipt") == 5
+    assert history[0].balance_before == 0
+    assert all(
+        previous.balance_after == current.balance_before
+        for previous, current in zip(history[:-1], history[1:], strict=True)
+    )
+    assert history[-1].balance_after == stock.quantity
+    assert all(row.balance_after - row.balance_before == row.delta for row in history)
+    assert (
+        sum(row.source_kind == "receipt" and row.source_id == "receipt-line-7" for row in history)
+        == 1
+    )
+    rekeyed = next(row for row in history if row.source_kind == "catalog_merge_history")
+    assert rekeyed.source_id == f"{source.id}:{rekeyed.id}"
+    assert "receipt:receipt-line-7" in rekeyed.note
+    assert len(rekeyed.note) <= 500
+
+
+@pytest.mark.parametrize("kind", ["component", "part"])
+def test_catalog_create_stale_uniqueness_precheck_returns_existing_id(
+    db_session, seed_park_with_tracker, monkeypatch, kind
+):
+    admin = _user(db_session, "admin", f"race-{kind}-admin")
+    component, part = _catalog(db_session, admin, article="RACE-1")
+    original_scalar = db_session.scalar
+    skipped = False
+
+    def stale_precheck(statement, *args, **kwargs):
+        nonlocal skipped
+        sql = str(statement)
+        marker = (
+            "inventory_catalog_components.normalized_name"
+            if kind == "component"
+            else "inventory_catalog_parts.normalized_article"
+        )
+        if not skipped and marker in sql and "is_active" in sql:
+            skipped = True
+            return None
+        return original_scalar(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "scalar", stale_precheck)
+    with pytest.raises(inventory_stock.InventoryConflict) as raised:
+        if kind == "component":
+            inventory_catalog.create_component(
+                db_session,
+                admin,
+                park_id=seed_park_with_tracker.id,
+                name="  Подвязка ",
+            )
+        else:
+            inventory_catalog.create_part(
+                db_session,
+                admin,
+                park_id=seed_park_with_tracker.id,
+                component_id=component.id,
+                name="Duplicate",
+                article=" race-1 ",
+            )
+
+    assert raised.value.code == (
+        "inventory_component_exists" if kind == "component" else "inventory_article_exists"
+    )
+    assert (
+        raised.value.existing_component_id if kind == "component" else raised.value.existing_part_id
+    ) == (component.id if kind == "component" else part.id)
+
+
+def test_postgresql_first_stock_creation_uses_conflict_safe_insert():
+    statement = inventory_stock.stock_insert_if_missing_statement(
+        "postgresql", park_id=7, catalog_part_id=11
+    )
+
+    compiled = str(
+        statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+    assert compiled == (
+        "INSERT INTO inventory_park_stocks (park_id, catalog_part_id, quantity, "
+        "minimum_quantity, is_active, version) VALUES (7, 11, 0, 0, true, 1) "
+        "ON CONFLICT (park_id, catalog_part_id) DO NOTHING RETURNING "
+        "inventory_park_stocks.id"
+    )

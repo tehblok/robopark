@@ -143,6 +143,7 @@ class LegacyComponentView:
 @dataclass
 class LegacyPartView:
     id: int
+    catalog_part_id: int
     park_id: int
     component_id: int
     name: str
@@ -154,9 +155,15 @@ class LegacyPartView:
     photo_storage_key: str | None
 
 
-def _legacy_part_view(part: InventoryCatalogPart, stock: InventoryParkStock) -> LegacyPartView:
+def _legacy_part_view(
+    part: InventoryCatalogPart,
+    stock: InventoryParkStock,
+    *,
+    legacy_part_id: int | None = None,
+) -> LegacyPartView:
     return LegacyPartView(
-        id=part.id,
+        id=legacy_part_id or part.id,
+        catalog_part_id=part.id,
         park_id=stock.park_id,
         component_id=part.component_id,
         name=part.name,
@@ -172,6 +179,7 @@ def _legacy_part_view(part: InventoryCatalogPart, stock: InventoryParkStock) -> 
 def part_out(part: InventoryPart | LegacyPartView) -> dict:
     return {
         "id": part.id,
+        "catalog_part_id": getattr(part, "catalog_part_id", part.id),
         "park_id": part.park_id,
         "component_id": part.component_id,
         "name": part.name,
@@ -195,6 +203,13 @@ def overview(db: Session, user: User, park_id: int) -> dict:
         limit=1_000_000,
         offset=0,
     )
+    legacy_part_ids: dict[str, int] = {}
+    for legacy_part in db.scalars(
+        select(InventoryPart).where(InventoryPart.park_id == park_id).order_by(InventoryPart.id)
+    ):
+        legacy_part_ids.setdefault(
+            inventory_catalog.normalize_key(legacy_part.article), legacy_part.id
+        )
     components = list(
         db.scalars(
             select(InventoryCatalogComponent)
@@ -206,7 +221,10 @@ def overview(db: Session, user: User, park_id: int) -> dict:
     for item in result["items"]:
         grouped[item["component_id"]].append(
             {
-                "id": item["id"],
+                "id": legacy_part_ids.get(
+                    inventory_catalog.normalize_key(item["article"]), item["id"]
+                ),
+                "catalog_part_id": item["id"],
                 "park_id": park_id,
                 "component_id": item["component_id"],
                 "name": item["name"],
@@ -345,9 +363,18 @@ def create_part(
     return _legacy_part_view(part, stock)
 
 
-def _part_and_stock(db: Session, user: User, part_id: int, *, park_id: int | None = None):
-    legacy = db.get(InventoryPart, part_id)
-    if legacy is not None:
+def _part_and_stock(
+    db: Session,
+    user: User,
+    part_id: int,
+    *,
+    park_id: int | None = None,
+    catalog_part_id: int | None = None,
+):
+    legacy = None if catalog_part_id is not None else db.get(InventoryPart, part_id)
+    if catalog_part_id is not None:
+        part = db.get(InventoryCatalogPart, catalog_part_id)
+    elif legacy is not None:
         if park_id is not None and park_id != legacy.park_id:
             raise inventory_stock.InventoryConflict("inventory_park_part_mismatch")
         park_id = legacy.park_id
@@ -364,7 +391,11 @@ def _part_and_stock(db: Session, user: User, part_id: int, *, park_id: int | Non
         raise LookupError("inventory_part_not_found")
     if park_id is not None:
         inventory_access.require_park(db, user, park_id)
-        return part, inventory_stock.ensure_stock(db, park_id=park_id, catalog_part_id=part.id)
+        return (
+            part,
+            inventory_stock.ensure_stock(db, park_id=park_id, catalog_part_id=part.id),
+            legacy.id if legacy is not None else None,
+        )
     stocks = list(
         db.scalars(
             select(InventoryParkStock)
@@ -382,28 +413,52 @@ def _part_and_stock(db: Session, user: User, part_id: int, *, park_id: int | Non
         )
     if not stocks:
         raise LookupError("inventory_stock_not_found")
-    return part, stocks[0]
+    return part, stocks[0], legacy.id if legacy is not None else None
 
 
 def update_part(db: Session, user: User, part_id: int, changes: dict) -> LegacyPartView:
     park_id = changes.pop("park_id", None)
-    part, stock = _part_and_stock(db, user, part_id, park_id=park_id)
+    catalog_part_id = changes.pop("catalog_part_id", None)
+    part, stock, legacy_part_id = _part_and_stock(
+        db,
+        user,
+        part_id,
+        park_id=park_id,
+        catalog_part_id=catalog_part_id,
+    )
     catalog_changes = {
         key: changes[key] for key in ("component_id", "name", "article") if key in changes
     }
-    if catalog_changes:
-        part = inventory_catalog.update_part(db, user, part.id, catalog_changes)
     inventory_access.require_park(db, user, stock.park_id, manage=True)
+    clean_location = None
     if changes.get("location") is not None:
-        stock.location = _text(changes["location"], "inventory_location_required")
-    if changes.get("minimum_quantity") is not None:
-        stock.minimum_quantity = int(changes["minimum_quantity"])
-    if changes.get("is_active") is not None:
-        stock.is_active = bool(changes["is_active"])
-    stock.updated_by = user.id
-    stock.version += 1
-    db.commit()
+        clean_location = _text(changes["location"], "inventory_location_required")
+    try:
+        if catalog_changes:
+            part = inventory_catalog.update_part(db, user, part.id, catalog_changes, commit=False)
+        if clean_location is not None:
+            stock.location = clean_location
+        if changes.get("minimum_quantity") is not None:
+            stock.minimum_quantity = int(changes["minimum_quantity"])
+        if changes.get("is_active") is not None:
+            stock.is_active = bool(changes["is_active"])
+        stock.updated_by = user.id
+        stock.version += 1
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(part)
     db.refresh(stock)
+    if catalog_changes:
+        audit.record(
+            db,
+            action="inventory.catalog.part.updated",
+            actor=user,
+            target_type="inventory_part",
+            target_id=part.id,
+            detail=json.dumps({"changed_fields": sorted(catalog_changes)}, ensure_ascii=False),
+        )
     audit_inventory_change(
         db,
         user,
@@ -412,7 +467,7 @@ def update_part(db: Session, user: User, part_id: int, changes: dict) -> LegacyP
         target_id=part.id,
         changed_fields=changes,
     )
-    return _legacy_part_view(part, stock)
+    return _legacy_part_view(part, stock, legacy_part_id=legacy_part_id)
 
 
 def move_stock(
@@ -421,11 +476,18 @@ def move_stock(
     part_id: int,
     *,
     park_id: int | None = None,
+    catalog_part_id: int | None = None,
     kind: str,
     quantity: int,
     note: str | None = None,
 ) -> InventoryMovement:
-    part, stock = _part_and_stock(db, user, part_id, park_id=park_id)
+    part, stock, legacy_part_id = _part_and_stock(
+        db,
+        user,
+        part_id,
+        park_id=park_id,
+        catalog_part_id=catalog_part_id,
+    )
     inventory_access.require_park(db, user, stock.park_id, manage=True)
     if (
         quantity == 0
@@ -445,6 +507,7 @@ def move_stock(
         source_id=None,
         note=(note or "").strip() or None,
     )
+    movement.part_id = legacy_part_id
     db.commit()
     db.refresh(movement)
     audit_inventory_change(
@@ -467,6 +530,7 @@ def task_writeoff(
     quantity: int,
     *,
     park_id: int | None = None,
+    catalog_part_id: int | None = None,
 ) -> InventoryMovement:
     if user.role != "mechanic":
         raise PermissionError("forbidden")
@@ -484,7 +548,13 @@ def task_writeoff(
         raise PermissionError("inventory_issue_not_owned")
     if park_id is not None and park_id != claim.park_id:
         raise inventory_stock.InventoryConflict("inventory_park_part_mismatch")
-    part, stock = _part_and_stock(db, user, part_id, park_id=claim.park_id)
+    part, stock, legacy_part_id = _part_and_stock(
+        db,
+        user,
+        part_id,
+        park_id=claim.park_id,
+        catalog_part_id=catalog_part_id,
+    )
     park = require_park(db, user, stock.park_id)
     if stock.quantity < quantity:
         raise inventory_stock.InventoryConflict(
@@ -523,6 +593,7 @@ def task_writeoff(
         issue_key=issue_key,
         note=None,
     )
+    movement.part_id = legacy_part_id
     db.commit()
     tracker_cache.invalidate_issue(issue_key)
     audit.record(
@@ -551,6 +622,7 @@ def movements(db: Session, user: User, park_id: int, limit: int = 100) -> list[d
         {
             "id": row.id,
             "part_id": row.part_id or row.catalog_part_id,
+            "catalog_part_id": row.catalog_part_id,
             "park_id": row.park_id,
             "actor_user_id": row.actor_user_id,
             "actor_username": username,

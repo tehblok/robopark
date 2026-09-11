@@ -1,4 +1,5 @@
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -41,15 +42,34 @@ class InventoryConflict(RuntimeError):
         return result
 
 
+def stock_insert_if_missing_statement(dialect_name: str, *, park_id: int, catalog_part_id: int):
+    values = {
+        "park_id": park_id,
+        "catalog_part_id": catalog_part_id,
+        "quantity": 0,
+        "minimum_quantity": 0,
+        "is_active": True,
+        "version": 1,
+    }
+    if dialect_name == "sqlite":
+        statement = sqlite_insert(InventoryParkStock).values(**values)
+    elif dialect_name == "postgresql":
+        statement = postgresql_insert(InventoryParkStock).values(**values)
+    else:
+        return None
+    return statement.on_conflict_do_nothing(index_elements=["park_id", "catalog_part_id"])
+
+
 def ensure_stock(db: Session, *, park_id: int, catalog_part_id: int) -> InventoryParkStock:
     if db.get(InventoryCatalogPart, catalog_part_id) is None:
         raise LookupError("inventory_part_not_found")
-    if db.get_bind().dialect.name == "sqlite":
-        db.execute(
-            sqlite_insert(InventoryParkStock)
-            .values(park_id=park_id, catalog_part_id=catalog_part_id)
-            .on_conflict_do_nothing(index_elements=["park_id", "catalog_part_id"])
-        )
+    insert_statement = stock_insert_if_missing_statement(
+        db.get_bind().dialect.name,
+        park_id=park_id,
+        catalog_part_id=catalog_part_id,
+    )
+    if insert_statement is not None:
+        db.execute(insert_statement)
     stock = db.scalar(
         select(InventoryParkStock)
         .where(

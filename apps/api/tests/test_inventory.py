@@ -2,9 +2,13 @@ from sqlalchemy import select
 
 from conftest import login_as, role_id_for
 from robopark_api.models import (
+    AuditLog,
+    InventoryCatalogComponent,
     InventoryCatalogPart,
+    InventoryComponent,
     InventoryMovement,
     InventoryParkStock,
+    InventoryPart,
     Park,
     User,
     UserPark,
@@ -372,3 +376,134 @@ def test_legacy_overview_keeps_component_without_parts(client, db_session, seed_
             "parts": [],
         }
     ]
+
+
+def test_legacy_adapter_disambiguates_catalog_id_from_colliding_legacy_id(
+    client, db_session, seed_park_with_tracker
+):
+    operator = _user(db_session, "operator", "collision-operator")
+    legacy_component = InventoryComponent(
+        id=50,
+        park_id=seed_park_with_tracker.id,
+        name="Legacy component",
+    )
+    catalog_component = InventoryCatalogComponent(
+        id=60,
+        name="Catalog component",
+        normalized_name="catalog component",
+        created_by=operator.id,
+        updated_by=operator.id,
+    )
+    db_session.add_all([legacy_component, catalog_component])
+    db_session.flush()
+    direct_catalog = InventoryCatalogPart(
+        id=1,
+        component_id=catalog_component.id,
+        name="Global one",
+        normalized_name="global one",
+        article="GLOBAL-1",
+        normalized_article="global-1",
+        created_by=operator.id,
+        updated_by=operator.id,
+    )
+    migrated_catalog = InventoryCatalogPart(
+        id=2,
+        component_id=catalog_component.id,
+        name="Migrated legacy",
+        normalized_name="migrated legacy",
+        article="LEGACY-1",
+        normalized_article="legacy-1",
+        created_by=operator.id,
+        updated_by=operator.id,
+    )
+    legacy_part = InventoryPart(
+        id=1,
+        park_id=seed_park_with_tracker.id,
+        component_id=legacy_component.id,
+        name="Migrated legacy",
+        article="LEGACY-1",
+        quantity=7,
+        minimum_quantity=0,
+        location="L",
+    )
+    db_session.add_all([direct_catalog, migrated_catalog, legacy_part])
+    db_session.flush()
+    db_session.add_all(
+        [
+            InventoryParkStock(
+                park_id=seed_park_with_tracker.id,
+                catalog_part_id=direct_catalog.id,
+                quantity=5,
+                updated_by=operator.id,
+            ),
+            InventoryParkStock(
+                park_id=seed_park_with_tracker.id,
+                catalog_part_id=migrated_catalog.id,
+                quantity=7,
+                updated_by=operator.id,
+            ),
+        ]
+    )
+    db_session.commit()
+    login_as(client, operator.username, "secret")
+
+    overview = client.get(f"/inventory?park_id={seed_park_with_tracker.id}")
+    assert overview.status_code == 200
+    assert {
+        (part["article"], part["id"], part["catalog_part_id"])
+        for component in overview.json()["components"]
+        for part in component["parts"]
+    } == {("GLOBAL-1", 1, 1), ("LEGACY-1", 1, 2)}
+
+    global_move = client.post(
+        "/inventory/parts/1/movements",
+        json={
+            "park_id": seed_park_with_tracker.id,
+            "catalog_part_id": direct_catalog.id,
+            "kind": "receipt",
+            "quantity": 1,
+        },
+    )
+    assert global_move.status_code == 201, global_move.text
+    assert global_move.json()["catalog_part_id"] == direct_catalog.id
+
+    legacy_move = client.post(
+        "/inventory/parts/1/movements",
+        json={"kind": "receipt", "quantity": 1},
+    )
+    assert legacy_move.status_code == 201, legacy_move.text
+    assert legacy_move.json()["part_id"] == legacy_part.id
+    assert legacy_move.json()["catalog_part_id"] == migrated_catalog.id
+    quantities = dict(
+        db_session.execute(
+            select(InventoryParkStock.catalog_part_id, InventoryParkStock.quantity)
+        ).all()
+    )
+    assert quantities == {direct_catalog.id: 6, migrated_catalog.id: 8}
+
+
+def test_legacy_mixed_patch_rolls_back_catalog_when_park_fields_are_invalid(
+    client, db_session, seed_park_with_tracker
+):
+    admin = _user(db_session, "admin", "mixed-patch-admin")
+    login_as(client, admin.username, "secret")
+    _, part = _seed_part(client, seed_park_with_tracker.id)
+    audit_count = len(
+        list(db_session.scalars(select(AuditLog).where(AuditLog.action.like("inventory.%"))))
+    )
+
+    response = client.patch(
+        f"/inventory/parts/{part['id']}",
+        json={"name": "Must roll back", "location": "   "},
+    )
+
+    assert response.status_code == 400
+    db_session.expire_all()
+    catalog = db_session.get(InventoryCatalogPart, part["catalog_part_id"])
+    stock = db_session.scalar(select(InventoryParkStock))
+    assert catalog.name == "Тяга"
+    assert stock.location == "Стеллаж A / полка 2"
+    assert (
+        len(list(db_session.scalars(select(AuditLog).where(AuditLog.action.like("inventory.%")))))
+        == audit_count
+    )
