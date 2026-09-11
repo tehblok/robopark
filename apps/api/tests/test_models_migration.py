@@ -5,9 +5,18 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import BigInteger, create_engine, inspect, text
+from sqlalchemy.dialects import postgresql
 
-from robopark_api.models import AuthSession, Base, User
+from robopark_api.models import (
+    AuthSession,
+    Base,
+    InventoryCountLine,
+    InventoryMovement,
+    InventoryParkStock,
+    InventoryReceiptLine,
+    User,
+)
 
 
 def test_metadata_has_required_tables():
@@ -53,6 +62,23 @@ def test_metadata_has_required_tables():
         "inventory_count_lines",
         "inventory_migration_conflicts",
     }
+
+
+def test_global_inventory_accumulators_compile_as_postgresql_bigint():
+    columns = [
+        InventoryParkStock.quantity,
+        InventoryParkStock.minimum_quantity,
+        InventoryMovement.delta,
+        InventoryMovement.balance_before,
+        InventoryMovement.balance_after,
+        InventoryReceiptLine.quantity,
+        InventoryCountLine.expected_quantity,
+        InventoryCountLine.actual_quantity,
+        InventoryCountLine.difference,
+    ]
+
+    assert all(isinstance(column.type, BigInteger) for column in columns)
+    assert all(column.type.compile(dialect=postgresql.dialect()) == "BIGINT" for column in columns)
 
 
 def test_alembic_head_is_global_inventory_workflows():
@@ -448,7 +474,10 @@ def test_inventory_upgrade_preserves_existing_data(sqlite_database_url, monkeypa
             index["name"] for index in inspect(connection).get_indexes("inventory_counts")
         }
         assert "normalized_name" in count_columns
-        assert "ix_inventory_counts_park_normalized_name" in count_indexes
+        assert {
+            "ix_inventory_counts_park_normalized_created_id",
+            "ix_inventory_counts_park_created_id",
+        } <= count_indexes
         assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
     command.downgrade(config, "0021_diagnostic_unknown_original")
     assert "campaigns" not in inspect(engine).get_table_names()

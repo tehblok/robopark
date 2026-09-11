@@ -4,6 +4,7 @@ from datetime import date, datetime
 from enum import StrEnum
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -23,6 +24,10 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,
 
 class Base(DeclarativeBase):
     pass
+
+
+INVENTORY_INT64_MIN = -(2**63)
+INVENTORY_INT64_MAX = 2**63 - 1
 
 
 class AccessStatus(StrEnum):
@@ -328,8 +333,8 @@ class InventoryParkStock(Base):
     catalog_part_id: Mapped[int] = mapped_column(
         ForeignKey("inventory_catalog_parts.id", ondelete="RESTRICT"), index=True
     )
-    quantity: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    minimum_quantity: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    quantity: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    minimum_quantity: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     location: Mapped[str | None] = mapped_column(String(256), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
     version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
@@ -372,7 +377,7 @@ class InventoryReceiptLine(Base):
     catalog_part_id: Mapped[int] = mapped_column(
         ForeignKey("inventory_catalog_parts.id", ondelete="RESTRICT"), index=True
     )
-    quantity: Mapped[int] = mapped_column(Integer)
+    quantity: Mapped[int] = mapped_column(BigInteger)
     note: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
@@ -380,7 +385,14 @@ class InventoryCount(Base):
     __tablename__ = "inventory_counts"
     __table_args__ = (
         CheckConstraint("status IN ('draft', 'posted', 'cancelled')", name="ck_count_status"),
-        Index("ix_inventory_counts_park_normalized_name", "park_id", "normalized_name"),
+        Index(
+            "ix_inventory_counts_park_normalized_created_id",
+            "park_id",
+            "normalized_name",
+            "created_at",
+            "id",
+        ),
+        Index("ix_inventory_counts_park_created_id", "park_id", "created_at", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -417,9 +429,9 @@ class InventoryCountLine(Base):
     catalog_part_id: Mapped[int] = mapped_column(
         ForeignKey("inventory_catalog_parts.id", ondelete="RESTRICT"), index=True
     )
-    expected_quantity: Mapped[int] = mapped_column(Integer)
-    actual_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    difference: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    expected_quantity: Mapped[int] = mapped_column(BigInteger)
+    actual_quantity: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    difference: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
@@ -467,9 +479,9 @@ class InventoryMovement(Base):
     park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
     actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     kind: Mapped[str] = mapped_column(String(32))
-    delta: Mapped[int] = mapped_column(Integer)
-    balance_before: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    balance_after: Mapped[int] = mapped_column(Integer)
+    delta: Mapped[int] = mapped_column(BigInteger)
+    balance_before: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    balance_after: Mapped[int] = mapped_column(BigInteger)
     source_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     source_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     issue_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)

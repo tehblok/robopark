@@ -4,6 +4,8 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from robopark_api.models import (
+    INVENTORY_INT64_MAX,
+    INVENTORY_INT64_MIN,
     InventoryCatalogPart,
     InventoryMovement,
     InventoryParkStock,
@@ -41,6 +43,17 @@ class InventoryConflict(RuntimeError):
         if self.park_ids is not None:
             result["park_ids"] = self.park_ids
         return result
+
+
+class InventoryValidation(ValueError):
+    pass
+
+
+def require_int64(value: int) -> int:
+    value = int(value)
+    if not INVENTORY_INT64_MIN <= value <= INVENTORY_INT64_MAX:
+        raise InventoryValidation("inventory_quantity_overflow")
+    return value
 
 
 def stock_insert_if_missing_statement(dialect_name: str, *, park_id: int, catalog_part_id: int):
@@ -115,6 +128,7 @@ def apply_stock_delta(
     issue_key: str | None = None,
     allow_archived: bool = False,
 ) -> InventoryMovement:
+    delta = require_int64(delta)
     if delta == 0:
         raise ValueError("inventory_quantity_invalid")
     stock = ensure_stock(
@@ -152,12 +166,20 @@ def apply_stock_delta(
         )
         if existing is not None:
             return existing
+    before = int(stock.quantity)
+    if not 0 <= before <= INVENTORY_INT64_MAX:
+        raise InventoryValidation("inventory_quantity_overflow")
+    if delta > 0 and before > INVENTORY_INT64_MAX - delta:
+        raise InventoryValidation("inventory_quantity_overflow")
+    if delta < 0 and before < -delta:
+        raise InventoryConflict("inventory_out_of_stock", current_quantity=before)
     if db.get_bind().dialect.name == "sqlite":
         result = db.execute(
             update(InventoryParkStock)
             .where(
                 InventoryParkStock.id == stock.id,
                 InventoryParkStock.quantity + delta >= 0,
+                InventoryParkStock.quantity + delta <= INVENTORY_INT64_MAX,
             )
             .values(
                 quantity=InventoryParkStock.quantity + delta,
@@ -169,14 +191,14 @@ def apply_stock_delta(
         ).scalar_one_or_none()
         if result is None:
             db.refresh(stock)
-            raise InventoryConflict("inventory_out_of_stock", current_quantity=stock.quantity)
+            current = int(stock.quantity)
+            if delta > 0 and current > INVENTORY_INT64_MAX - delta:
+                raise InventoryValidation("inventory_quantity_overflow")
+            raise InventoryConflict("inventory_out_of_stock", current_quantity=current)
         before = int(result) - delta
         after = int(result)
         db.expire(stock)
     else:
-        before = stock.quantity
-        if before + delta < 0:
-            raise InventoryConflict("inventory_out_of_stock", current_quantity=before)
         stock.quantity = before + delta
         stock.version += 1
         stock.updated_by = user.id

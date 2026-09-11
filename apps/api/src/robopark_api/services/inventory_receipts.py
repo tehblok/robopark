@@ -95,6 +95,7 @@ def _normalized_lines(db: Session, values) -> list[dict]:
         quantity = int(data["quantity"])
         if quantity <= 0:
             raise ValueError("inventory_receipt_quantity_invalid")
+        inventory_stock.require_int64(quantity)
         existing = combined.get(part.id)
         if existing is None:
             notes_by_part[part.id] = []
@@ -105,8 +106,7 @@ def _normalized_lines(db: Session, values) -> list[dict]:
             }
         else:
             existing["quantity"] += quantity
-            if existing["quantity"] > 1_000_000:
-                raise ValueError("inventory_receipt_quantity_invalid")
+            inventory_stock.require_int64(existing["quantity"])
             _append_note(notes_by_part[part.id], data.get("note"))
     if not combined:
         raise ValueError("inventory_receipt_lines_required")

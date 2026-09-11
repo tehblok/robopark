@@ -34,6 +34,15 @@ def _clean_text(value: str | None) -> str | None:
     return (value or "").strip() or None
 
 
+def _prefix_upper_bound(value: str) -> str | None:
+    characters = list(value)
+    for index in range(len(characters) - 1, -1, -1):
+        codepoint = ord(characters[index])
+        if codepoint < 0x10FFFF:
+            return "".join([*characters[:index], chr(codepoint + 1)])
+    return None
+
+
 def _audit(db: Session, user: User, count: InventoryCount, action: str, fields) -> None:
     db.add(
         AuditLog(
@@ -226,6 +235,7 @@ def update_count_lines(
             actual = int(value["actual_quantity"])
             if actual < 0:
                 raise ValueError("inventory_count_actual_invalid")
+            inventory_stock.require_int64(actual)
             line.actual_quantity = actual
             line.difference = actual - line.expected_quantity
             line.comment = _clean_text(value.get("comment"))
@@ -251,18 +261,22 @@ def list_counts(
     filters = [InventoryCount.park_id == park_id]
     clean_query = _clean_text(query)
     if clean_query:
-        escaped = (
-            clean_query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        prefix = clean_query.casefold()
+        filters.append(InventoryCount.normalized_name >= prefix)
+        upper_bound = _prefix_upper_bound(prefix)
+        if upper_bound is not None:
+            filters.append(InventoryCount.normalized_name < upper_bound)
+        ordering = (
+            InventoryCount.normalized_name,
+            InventoryCount.created_at,
+            InventoryCount.id,
         )
-        filters.append(InventoryCount.normalized_name.like(f"%{escaped}%", escape="\\"))
+    else:
+        ordering = (InventoryCount.created_at.desc(), InventoryCount.id.desc())
     total = db.scalar(select(func.count(InventoryCount.id)).where(*filters))
     rows = list(
         db.scalars(
-            select(InventoryCount)
-            .where(*filters)
-            .order_by(InventoryCount.created_at.desc(), InventoryCount.id.desc())
-            .limit(limit)
-            .offset(offset)
+            select(InventoryCount).where(*filters).order_by(*ordering).limit(limit).offset(offset)
         )
     )
     return rows, int(total or 0)

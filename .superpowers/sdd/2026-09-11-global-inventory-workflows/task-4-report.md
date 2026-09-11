@@ -153,3 +153,63 @@ Result: `1 failed, 1 warning in 0.33s`; after changing `name`, normalized storag
   PostgreSQL SQL is asserted to use only `inventory_counts.normalized_name`.
 - No correctness blocker remains. Live PostgreSQL contention remains unavailable; locking and SQL
   shape are verified through the existing dialect-level protocol tests.
+
+## Fix round 2/5
+
+### Review findings and RED evidence
+
+Both Important findings were reproduced before production changes with:
+
+`cd apps/api && .venv/bin/pytest tests/test_inventory_counts.py::test_count_list_has_unicode_search_stable_pagination_and_one_line_query tests/test_inventory_counts.py::test_count_name_search_uses_persisted_python_casefold_on_all_dialects tests/test_inventory_counts.py::test_count_actual_rejects_values_above_signed_int64_without_mutating_draft tests/test_inventory_counts.py::test_receipt_post_rejects_int64_stock_overflow_and_rolls_back_every_line tests/test_models_migration.py::test_global_inventory_accumulators_compile_as_postgresql_bigint -q`
+
+Result: `5 failed, 1 warning in 2.71s`.
+
+- Count search still used a leading-wildcard `LIKE`, kept recent-first ordering, and had no
+  covering composite indexes for either the searched or unfiltered page.
+- `2**63` reached SQLite from both count line updates and receipt posting as an uncaught
+  `OverflowError`; an overflowing second receipt line could therefore fail at movement insert.
+- Every new workflow accumulator still compiled as PostgreSQL `INTEGER`, including park stock,
+  receipt/count quantities, and movement balances.
+
+### Fixes
+
+- Defined shared signed 64-bit inventory bounds (`-2**63` through `2**63 - 1`). All new global
+  inventory accumulators use SQLAlchemy `BigInteger`; migration `0026` creates new values as
+  `BIGINT` and widens the pre-existing movement delta/final-balance columns during upgrade.
+- Count actual quantities accept `0..INT64_MAX` in both Pydantic and the service boundary. Direct
+  service calls outside that range raise `InventoryValidation`; the router maps it to controlled
+  HTTP 422 instead of leaking a driver error. Values above one million remain supported.
+- Receipt normalization validates each quantity and the sum of duplicate lines against int64.
+  Stock mutation validates the input delta and current balance, then rejects positive overflow or
+  negative underflow before persistence. SQLite's conditional update repeats both limits inside
+  the atomic statement; the regression proves an earlier line, its movement, and document status
+  all roll back when a later line overflows.
+- Count `q` semantics are now documented and tested as Unicode Python-casefolded **prefix** search.
+  The query uses explicit `normalized_name >= prefix` and `< successor` range predicates, never
+  locale-sensitive `LIKE`, `lower`, or `ILIKE`. Search pages sort by normalized name, creation,
+  and ID; unfiltered pages retain creation/ID descending order.
+- Added `(park_id, normalized_name, created_at, id)` and `(park_id, created_at, id)` indexes to the
+  model and migration. SQLite `EXPLAIN QUERY PLAN` regressions prove the representative page scans
+  the corresponding composite index without a temporary sort; compiled PostgreSQL SQL asserts the
+  same range-predicate/order shape.
+
+### GREEN and verification evidence
+
+- Selected RED set plus migration upgrade after implementation:
+  `6 passed, 1 warning in 1.15s` (an intermediate metadata comparison caught two accidental legacy
+  field widenings; restoring those pre-global fields yielded `2 passed, 1 warning in 0.32s`).
+- Focused counts/receipts/catalog/identity/legacy/migration/models:
+  `126 passed, 21 warnings in 27.37s`.
+- Full API suite: `1440 passed, 21 warnings in 255.26s (0:04:15)`.
+- Final focused rerun after self-review: `126 passed, 21 warnings in 25.43s`.
+- Ruff check: `All checks passed!`; Ruff formatting reformatted two owned files and subsequent
+  format check reported `9 files already formatted`; `git diff --check` exited zero.
+
+### Self-review and concerns
+
+- Idempotency lookup deliberately precedes new balance validation: replaying an already-written
+  sourced movement returns that immutable event without trying to apply its delta again.
+- Count differences remain signed-int64-safe because both expected and actual balances are bounded
+  to `0..INT64_MAX`. Zero deltas retain their count lines and still create no movement.
+- The query-plan test covers SQLite and SQL compilation covers PostgreSQL. A live PostgreSQL
+  planner/overflow environment was not available; there is no known correctness blocker.

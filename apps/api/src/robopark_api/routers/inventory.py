@@ -53,6 +53,8 @@ T = TypeVar("T")
 def _run(fn: Callable[[], T]) -> T:
     try:
         return fn()
+    except inventory_stock.InventoryValidation as exc:
+        raise HTTPException(422, str(exc)) from exc
     except inventory_stock.InventoryConflict as exc:
         raise HTTPException(409, exc.detail) from exc
     except ValueError as exc:

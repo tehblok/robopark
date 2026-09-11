@@ -3,6 +3,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
+from robopark_api.models import INVENTORY_INT64_MAX, INVENTORY_INT64_MIN
+
 
 class InventoryPartOut(BaseModel):
     id: int
@@ -42,7 +44,7 @@ class InventoryPartUpdateIn(BaseModel):
     article: str | None = Field(default=None, min_length=1, max_length=128)
     component_id: int | None = None
     location: str | None = Field(default=None, min_length=1, max_length=256)
-    minimum_quantity: int | None = Field(default=None, ge=0, le=1_000_000)
+    minimum_quantity: int | None = Field(default=None, ge=0, le=INVENTORY_INT64_MAX)
     is_active: bool | None = None
 
 
@@ -50,7 +52,7 @@ class InventoryMovementIn(BaseModel):
     park_id: int | None = None
     catalog_part_id: int | None = None
     kind: Literal["receipt", "writeoff", "adjustment"]
-    quantity: int = Field(ge=-1_000_000, le=1_000_000)
+    quantity: int = Field(ge=INVENTORY_INT64_MIN, le=INVENTORY_INT64_MAX)
     note: str | None = Field(default=None, max_length=500)
 
 
@@ -58,7 +60,7 @@ class InventoryTaskWriteoffIn(BaseModel):
     part_id: int
     catalog_part_id: int | None = None
     park_id: int | None = None
-    quantity: int = Field(gt=0, le=1_000_000)
+    quantity: int = Field(gt=0, le=INVENTORY_INT64_MAX)
 
 
 class InventoryMovementOut(BaseModel):
@@ -136,7 +138,7 @@ class InventoryCatalogSearchOut(BaseModel):
 
 
 class InventoryStockUpdateIn(BaseModel):
-    minimum_quantity: int = Field(ge=0, le=1_000_000)
+    minimum_quantity: int = Field(ge=0, le=INVENTORY_INT64_MAX)
     location: str | None = Field(default=None, max_length=256)
     is_active: bool
 
@@ -153,7 +155,7 @@ class InventoryStockOut(BaseModel):
 
 class InventoryReceiptLineIn(BaseModel):
     catalog_part_id: int
-    quantity: int = Field(gt=0, le=1_000_000)
+    quantity: int = Field(gt=0, le=INVENTORY_INT64_MAX)
     note: str | None = Field(default=None, max_length=500)
 
 
@@ -237,7 +239,7 @@ class InventoryCountCreateIn(BaseModel):
 
 class InventoryCountLineUpdateIn(BaseModel):
     catalog_part_id: int
-    actual_quantity: int = Field(ge=0)
+    actual_quantity: int = Field(ge=0, le=INVENTORY_INT64_MAX)
     comment: str | None = Field(default=None, max_length=500)
 
 

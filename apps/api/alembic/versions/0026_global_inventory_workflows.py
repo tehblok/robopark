@@ -109,8 +109,8 @@ def _create_workflow_tables() -> None:
             sa.ForeignKey("inventory_catalog_parts.id", ondelete="RESTRICT"),
             nullable=False,
         ),
-        sa.Column("quantity", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("minimum_quantity", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("quantity", sa.BigInteger(), nullable=False, server_default="0"),
+        sa.Column("minimum_quantity", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("location", sa.String(256)),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
         sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
@@ -165,7 +165,7 @@ def _create_workflow_tables() -> None:
             sa.ForeignKey("inventory_catalog_parts.id", ondelete="RESTRICT"),
             nullable=False,
         ),
-        sa.Column("quantity", sa.Integer(), nullable=False),
+        sa.Column("quantity", sa.BigInteger(), nullable=False),
         sa.Column("note", sa.String(500)),
         sa.CheckConstraint("quantity > 0", name="ck_inventory_receipt_line_quantity"),
         sa.UniqueConstraint("receipt_id", "catalog_part_id", name="uq_inventory_receipt_line_part"),
@@ -199,9 +199,14 @@ def _create_workflow_tables() -> None:
     op.create_index("ix_inventory_counts_park_id", "inventory_counts", ["park_id"])
     op.create_index("ix_inventory_counts_created_by", "inventory_counts", ["created_by"])
     op.create_index(
-        "ix_inventory_counts_park_normalized_name",
+        "ix_inventory_counts_park_normalized_created_id",
         "inventory_counts",
-        ["park_id", "normalized_name"],
+        ["park_id", "normalized_name", "created_at", "id"],
+    )
+    op.create_index(
+        "ix_inventory_counts_park_created_id",
+        "inventory_counts",
+        ["park_id", "created_at", "id"],
     )
     op.create_table(
         "inventory_count_lines",
@@ -218,9 +223,9 @@ def _create_workflow_tables() -> None:
             sa.ForeignKey("inventory_catalog_parts.id", ondelete="RESTRICT"),
             nullable=False,
         ),
-        sa.Column("expected_quantity", sa.Integer(), nullable=False),
-        sa.Column("actual_quantity", sa.Integer()),
-        sa.Column("difference", sa.Integer()),
+        sa.Column("expected_quantity", sa.BigInteger(), nullable=False),
+        sa.Column("actual_quantity", sa.BigInteger()),
+        sa.Column("difference", sa.BigInteger()),
         sa.Column("comment", sa.String(500)),
         sa.CheckConstraint("expected_quantity >= 0", name="ck_inventory_count_line_expected"),
         sa.CheckConstraint(
@@ -583,7 +588,7 @@ def upgrade():
         batch_op.add_column(sa.Column("catalog_part_id", sa.Integer()))
         batch_op.add_column(sa.Column("source_kind", sa.String(32)))
         batch_op.add_column(sa.Column("source_id", sa.String(128)))
-        batch_op.add_column(sa.Column("balance_before", sa.Integer()))
+        batch_op.add_column(sa.Column("balance_before", sa.BigInteger()))
         batch_op.create_foreign_key(
             "fk_inventory_movements_catalog_part_id",
             "inventory_catalog_parts",
@@ -592,6 +597,15 @@ def upgrade():
             ondelete="RESTRICT",
         )
         batch_op.alter_column("part_id", existing_type=sa.Integer(), nullable=True)
+        batch_op.alter_column(
+            "delta", existing_type=sa.Integer(), type_=sa.BigInteger(), existing_nullable=False
+        )
+        batch_op.alter_column(
+            "balance_after",
+            existing_type=sa.Integer(),
+            type_=sa.BigInteger(),
+            existing_nullable=False,
+        )
     op.create_index(
         "ix_inventory_movements_catalog_part_id", "inventory_movements", ["catalog_part_id"]
     )
@@ -627,6 +641,15 @@ def downgrade():
         batch_op.drop_column("source_kind")
         batch_op.drop_column("catalog_part_id")
         batch_op.alter_column("part_id", existing_type=sa.Integer(), nullable=False)
+        batch_op.alter_column(
+            "delta", existing_type=sa.BigInteger(), type_=sa.Integer(), existing_nullable=False
+        )
+        batch_op.alter_column(
+            "balance_after",
+            existing_type=sa.BigInteger(),
+            type_=sa.Integer(),
+            existing_nullable=False,
+        )
 
     op.drop_table("inventory_migration_conflicts")
     op.drop_table("inventory_count_lines")

@@ -1,5 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
@@ -10,8 +12,10 @@ from robopark_api.models import (
     InventoryCatalogComponent,
     InventoryCatalogPart,
     InventoryCount,
+    InventoryCountLine,
     InventoryMovement,
     InventoryParkStock,
+    InventoryReceipt,
     Park,
     Permission,
     User,
@@ -374,13 +378,16 @@ def test_count_list_has_unicode_search_stable_pagination_and_one_line_query(
     login_as(client, mechanic.username, "secret")
     created = [
         _create_count(client, seed_park_with_tracker, name=name).json()
-        for name in ["Северный склад", "Other", "склад Южный"]
+        for name in ["Склад Северный", "Other", "склад Южный"]
     ]
     line_queries = []
+    count_page_queries = []
 
-    def capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+    def capture(_conn, _cursor, statement, parameters, _context, _executemany):
         if "FROM inventory_count_lines" in statement:
             line_queries.append(statement)
+        if "FROM inventory_counts" in statement and "ORDER BY" in statement:
+            count_page_queries.append((statement, parameters))
 
     from sqlalchemy import event
 
@@ -390,6 +397,10 @@ def test_count_list_has_unicode_search_stable_pagination_and_one_line_query(
             f"/inventory/parks/{seed_park_with_tracker.id}/counts",
             params={"q": " СКЛАД ", "limit": 1, "offset": 1},
         )
+        no_query = client.get(
+            f"/inventory/parks/{seed_park_with_tracker.id}/counts",
+            params={"limit": 2},
+        )
     finally:
         event.remove(db_engine, "before_cursor_execute", capture)
 
@@ -397,8 +408,23 @@ def test_count_list_has_unicode_search_stable_pagination_and_one_line_query(
     assert response.json()["total"] == 2
     assert response.json()["limit"] == 1
     assert response.json()["offset"] == 1
-    assert [row["id"] for row in response.json()["items"]] == [created[0]["id"]]
-    assert len(line_queries) == 1
+    assert [row["id"] for row in response.json()["items"]] == [created[2]["id"]]
+    assert no_query.status_code == 200
+    assert len(line_queries) == 2
+    assert len(count_page_queries) == 2
+    with db_engine.connect() as connection:
+        prefix_plan = connection.exec_driver_sql(
+            f"EXPLAIN QUERY PLAN {count_page_queries[0][0]}", count_page_queries[0][1]
+        ).all()
+        no_query_plan = connection.exec_driver_sql(
+            f"EXPLAIN QUERY PLAN {count_page_queries[1][0]}", count_page_queries[1][1]
+        ).all()
+    prefix_detail = " ".join(str(row[-1]) for row in prefix_plan)
+    no_query_detail = " ".join(str(row[-1]) for row in no_query_plan)
+    assert "ix_inventory_counts_park_normalized_created_id" in prefix_detail
+    assert "ix_inventory_counts_park_created_id" in no_query_detail
+    assert "USE TEMP B-TREE" not in prefix_detail
+    assert "USE TEMP B-TREE" not in no_query_detail
     assert (
         client.get(
             f"/inventory/parks/{seed_park_with_tracker.id}/counts", params={"limit": 0}
@@ -708,7 +734,10 @@ def test_count_name_search_uses_persisted_python_casefold_on_all_dialects(
         for statement in db.statements
     )
     assert "inventory_counts.normalized_name" in compiled
-    assert "%strasse οσ%" in compiled
+    assert "inventory_counts.normalized_name >= 'strasse οσ'" in compiled
+    assert "inventory_counts.normalized_name < 'strasse οτ'" in compiled
+    assert "ORDER BY inventory_counts.normalized_name" in compiled
+    assert "LIKE" not in compiled.upper()
     assert "translate(" not in compiled
     assert "lower(" not in compiled
 
@@ -729,3 +758,98 @@ def test_count_name_normalization_tracks_orm_updates(client, db_session, seed_pa
         params={"q": "WEISSE ΟΣ"},
     )
     assert [item["id"] for item in response.json()["items"]] == [created["id"]]
+
+
+def test_count_actual_rejects_values_above_signed_int64_without_mutating_draft(
+    client, db_session, seed_park_with_tracker
+):
+    mechanic = _user(db_session, "mechanic", "count-int64", [seed_park_with_tracker])
+    component = _component(db_session, mechanic, "Int64 component")
+    part = _part(db_session, mechanic, component, article="COUNT-INT64")
+    login_as(client, mechanic.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/counts"
+    count = _create_count(client, seed_park_with_tracker).json()
+    too_large = 2**63
+
+    response = client.patch(
+        f"{base}/{count['id']}",
+        json={"lines": [{"catalog_part_id": part.id, "actual_quantity": too_large}]},
+    )
+
+    assert response.status_code == 422
+    db_session.expire_all()
+    line = db_session.scalar(
+        select(InventoryCountLine).where(InventoryCountLine.count_id == count["id"])
+    )
+    assert line.actual_quantity is None
+    assert line.difference is None
+    from robopark_api.services import inventory_counts, inventory_stock
+
+    with pytest.raises(inventory_stock.InventoryValidation, match="inventory_quantity_overflow"):
+        inventory_counts.update_count_lines(
+            db_session,
+            mechanic,
+            park_id=seed_park_with_tracker.id,
+            count_id=count["id"],
+            lines=[
+                SimpleNamespace(
+                    model_dump=lambda: {
+                        "catalog_part_id": part.id,
+                        "actual_quantity": too_large,
+                        "comment": None,
+                    }
+                )
+            ],
+        )
+    assert (
+        db_session.scalar(
+            select(InventoryCountLine.actual_quantity).where(
+                InventoryCountLine.count_id == count["id"]
+            )
+        )
+        is None
+    )
+
+
+def test_receipt_post_rejects_int64_stock_overflow_and_rolls_back_every_line(
+    client, db_session, seed_park_with_tracker
+):
+    mechanic = _user(db_session, "mechanic", "stock-int64-overflow", [seed_park_with_tracker])
+    component = _component(db_session, mechanic, "Overflow component")
+    first = _part(db_session, mechanic, component, article="OVERFLOW-FIRST")
+    overflowing = _part(db_session, mechanic, component, article="OVERFLOW-SECOND")
+    _stock(db_session, seed_park_with_tracker, first, 0)
+    _stock(db_session, seed_park_with_tracker, overflowing, 2**63 - 1)
+    login_as(client, mechanic.username, "secret")
+    receipt = client.post(
+        f"/inventory/parks/{seed_park_with_tracker.id}/receipts",
+        json={
+            "received_on": "2026-09-11",
+            "lines": [
+                {"catalog_part_id": first.id, "quantity": 1},
+                {"catalog_part_id": overflowing.id, "quantity": 1},
+            ],
+        },
+    ).json()
+
+    response = client.post(
+        f"/inventory/parks/{seed_park_with_tracker.id}/receipts/{receipt['id']}/post"
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "inventory_quantity_overflow"
+    db_session.expire_all()
+    assert dict(
+        db_session.execute(
+            select(InventoryParkStock.catalog_part_id, InventoryParkStock.quantity)
+        ).all()
+    ) == {first.id: 0, overflowing.id: 2**63 - 1}
+    assert db_session.get(InventoryReceipt, receipt["id"]).status == "draft"
+    assert (
+        db_session.scalar(
+            select(func.count(InventoryMovement.id)).where(
+                InventoryMovement.source_kind == "receipt"
+            )
+        )
+        == 0
+    )
