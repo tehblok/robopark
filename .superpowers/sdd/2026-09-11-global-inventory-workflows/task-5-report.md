@@ -123,3 +123,45 @@ comments were truncated instead of continued, and XLSX had no spooled backing/pr
 
 The warnings remain the existing Starlette TestClient and SQLite datetime-adapter deprecations.
 No known correctness blocker remains; XLSX intentionally uses disk-backed spooling above 8 MiB.
+
+## Fix round 2/5
+
+Review range: `19f61fd..7c22d5e`. This round addressed the false shared alias/export budget,
+COUNT/stream races, alias/history snapshot races, and XML-invalid XLSX strings.
+
+### TDD RED
+
+Before the service change:
+
+`cd apps/api && .venv/bin/pytest tests/test_inventory_exports.py -q`
+
+Result: `3 failed, 11 passed, 1 warning in 4.16s`.
+
+The failures showed that no independent `MAX_ALIAS_ROWS` existed, no identity snapshot/shared alias
+lock contract existed, and NUL/vertical-tab content raised openpyxl `IllegalCharacterError`.
+
+### Fix implementation
+
+- Exported rows and alias graph edges now have independent 100,000-row bounds. A regression fixture
+  captures exactly 50,001 export identities alongside 100 alias identities successfully.
+- CSV and all four XLSX queries capture only ordered primary-key tuples with `LIMIT remaining + 1`.
+  Payload values remain database-batched and streamed from those captured IDs, so later inserts are
+  excluded without materializing payload rows.
+- The Task 3 shared alias advisory lock is acquired before the alias map and every stock,
+  movement, receipt-line, and count-line identity snapshot. A rollback releases the transaction lock
+  only after aliases and exported identities are fixed; history canonical IDs use that alias map.
+  SQLite explicitly begins the equivalent consistent read transaction before its first snapshot
+  query instead of relying on the driver's legacy implicit transaction behavior.
+- XLSX strings replace XML-invalid code points with deterministic visible `\\uXXXX` sequences before
+  continuation chunking and formula neutralization. The write-only spooled workbook and exact
+  exported-row/chunk cap remain unchanged.
+
+### GREEN and verification
+
+- Export regression module: `16 passed, 1 warning in 3.97s`.
+- Required focused export + legacy inventory: `31 passed, 1 warning in 6.47s`.
+- Full API: `1464 passed, 21 warnings in 254.26s (0:04:14)`.
+
+Warnings remain the existing Starlette TestClient and SQLite datetime-adapter deprecations. The
+bounded identity snapshot intentionally retains at most 100,000 small primary-key tuples per export;
+no payload row list is retained.

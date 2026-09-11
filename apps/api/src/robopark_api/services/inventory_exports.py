@@ -4,11 +4,12 @@ import csv
 import io
 import tempfile
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
-from sqlalchemy import func, select, true
+from sqlalchemy import and_, func, or_, select, true, tuple_
 from sqlalchemy.orm import Session, aliased
 
 from robopark_api.models import (
@@ -23,10 +24,11 @@ from robopark_api.models import (
     Park,
     User,
 )
-from robopark_api.services import inventory_access
+from robopark_api.services import inventory_access, inventory_catalog
 from robopark_api.services.rbac import PERMISSION_INVENTORY_EXPORT, has_permission
 
 MAX_EXPORT_ROWS = 100_000
+MAX_ALIAS_ROWS = 100_000
 MAX_XLSX_SIGNIFICANT_DIGITS = 15
 XLSX_TEXT_CHUNK_SIZE = 32_766
 XLSX_SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
@@ -108,6 +110,22 @@ COUNT_HEADERS = (
     "Комментарий",
 )
 CONTINUATION_HEADERS = ("Часть текста", "Всего частей")
+SNAPSHOT_BATCH_SIZE = 400
+
+
+@dataclass(frozen=True)
+class ExportQuery:
+    title: str
+    headers: tuple[str, ...]
+    statement: object
+    identity_statement: object
+
+
+@dataclass(frozen=True)
+class ExportSnapshot:
+    identities: dict[str, list[tuple[int, ...]]]
+    canonical_ids: dict[int, int]
+    exported_rows: int
 
 
 def _park_ids(db: Session, user: User, *, park_id: int | None, all_parks: bool) -> list[int]:
@@ -166,6 +184,24 @@ def _stock_statement(park_ids: list[int]):
     )
 
 
+def _stock_identity_statement(park_ids: list[int]):
+    return (
+        select(Park.id, InventoryCatalogPart.id)
+        .select_from(Park)
+        .join(InventoryCatalogPart, true())
+        .join(
+            InventoryCatalogComponent,
+            InventoryCatalogComponent.id == InventoryCatalogPart.component_id,
+        )
+        .where(
+            Park.id.in_(park_ids),
+            InventoryCatalogPart.is_active.is_(True),
+            InventoryCatalogComponent.is_active.is_(True),
+        )
+        .order_by(Park.id, InventoryCatalogPart.normalized_name, InventoryCatalogPart.id)
+    )
+
+
 def _movement_statement(park_ids: list[int]):
     return (
         select(
@@ -199,6 +235,14 @@ def _movement_statement(park_ids: list[int]):
             InventoryCatalogComponent.id == InventoryCatalogPart.component_id,
         )
         .join(User, User.id == InventoryMovement.actor_user_id)
+        .where(InventoryMovement.park_id.in_(park_ids))
+        .order_by(InventoryMovement.created_at, InventoryMovement.id)
+    )
+
+
+def _movement_identity_statement(park_ids: list[int]):
+    return (
+        select(InventoryMovement.id)
         .where(InventoryMovement.park_id.in_(park_ids))
         .order_by(InventoryMovement.created_at, InventoryMovement.id)
     )
@@ -248,6 +292,16 @@ def _receipt_statement(park_ids: list[int]):
     )
 
 
+def _receipt_identity_statement(park_ids: list[int]):
+    return (
+        select(InventoryReceipt.id, InventoryReceiptLine.id)
+        .select_from(InventoryReceipt)
+        .outerjoin(InventoryReceiptLine, InventoryReceiptLine.receipt_id == InventoryReceipt.id)
+        .where(InventoryReceipt.park_id.in_(park_ids))
+        .order_by(InventoryReceipt.created_at, InventoryReceipt.id, InventoryReceiptLine.id)
+    )
+
+
 def _count_statement(park_ids: list[int]):
     creator = aliased(User)
     poster = aliased(User)
@@ -291,6 +345,46 @@ def _count_statement(park_ids: list[int]):
     )
 
 
+def _count_identity_statement(park_ids: list[int]):
+    return (
+        select(InventoryCount.id, InventoryCountLine.id)
+        .select_from(InventoryCount)
+        .outerjoin(InventoryCountLine, InventoryCountLine.count_id == InventoryCount.id)
+        .where(InventoryCount.park_id.in_(park_ids))
+        .order_by(InventoryCount.created_at, InventoryCount.id, InventoryCountLine.id)
+    )
+
+
+def _stock_query(park_ids: list[int]) -> ExportQuery:
+    return ExportQuery(
+        "Остатки", STOCK_HEADERS, _stock_statement(park_ids), _stock_identity_statement(park_ids)
+    )
+
+
+def _xlsx_queries(park_ids: list[int]) -> tuple[ExportQuery, ...]:
+    return (
+        _stock_query(park_ids),
+        ExportQuery(
+            "Движения",
+            MOVEMENT_HEADERS,
+            _movement_statement(park_ids),
+            _movement_identity_statement(park_ids),
+        ),
+        ExportQuery(
+            "Поставки",
+            RECEIPT_HEADERS,
+            _receipt_statement(park_ids),
+            _receipt_identity_statement(park_ids),
+        ),
+        ExportQuery(
+            "Инвентаризации",
+            COUNT_HEADERS,
+            _count_statement(park_ids),
+            _count_identity_statement(park_ids),
+        ),
+    )
+
+
 def _safe_cell(value):
     if isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
         return f"'{value}"
@@ -314,7 +408,8 @@ def _csv_chunks(rows) -> Iterator[bytes]:
 
 
 def _xlsx_cell(value):
-    value = _safe_cell(value)
+    if isinstance(value, str):
+        value = _safe_cell(_sanitize_xlsx_text(value))
     if (
         isinstance(value, int)
         and not isinstance(value, bool)
@@ -350,36 +445,113 @@ def _resolve_aliases(links: Mapping[int, int | None]) -> dict[int, int]:
     return resolved
 
 
-def _row_count(db: Session, statement) -> int:
-    count_statement = select(func.count()).select_from(statement.order_by(None).subquery())
-    return int(db.scalar(count_statement) or 0)
-
-
-def _preflight_row_counts(db: Session, statements) -> int:
-    total = 0
-    for _title, _headers, statement in statements:
-        total += _row_count(db, statement)
-        if total > MAX_EXPORT_ROWS:
-            raise OverflowError("inventory_export_too_large")
-    return total
-
-
-def _load_aliases(db: Session, *, remaining: int) -> dict[int, int]:
+def _load_aliases(db: Session) -> dict[int, int]:
     links: dict[int, int | None] = {}
     statement = (
         select(InventoryCatalogPart.id, InventoryCatalogPart.merged_into_part_id)
         .order_by(InventoryCatalogPart.id)
-        .limit(remaining + 1)
+        .limit(MAX_ALIAS_ROWS + 1)
     )
     for part_id, target_id in db.execute(statement):
         links[part_id] = target_id
-        if len(links) > remaining:
+        if len(links) > MAX_ALIAS_ROWS:
             raise OverflowError("inventory_export_too_large")
     return _resolve_aliases(links)
 
 
+def _begin_sqlite_snapshot(db: Session) -> None:
+    if db.get_bind().dialect.name != "sqlite":
+        return
+    connection = db.connection()
+    driver_connection = getattr(connection.connection, "driver_connection", connection.connection)
+    if not driver_connection.in_transaction:
+        cursor = driver_connection.cursor()
+        try:
+            cursor.execute("BEGIN")
+        finally:
+            cursor.close()
+
+
+def _capture_export_snapshot(
+    db: Session, queries: tuple[ExportQuery, ...], *, include_aliases: bool
+) -> ExportSnapshot:
+    inventory_catalog.acquire_alias_graph_read_lock(db)
+    try:
+        _begin_sqlite_snapshot(db)
+        canonical_ids = _load_aliases(db) if include_aliases else {}
+        identities: dict[str, list[tuple[int, ...]]] = {}
+        exported_rows = 0
+        for query in queries:
+            remaining = MAX_EXPORT_ROWS - exported_rows
+            rows = list(db.execute(query.identity_statement.limit(remaining + 1)).tuples())
+            exported_rows += len(rows)
+            if exported_rows > MAX_EXPORT_ROWS:
+                raise OverflowError("inventory_export_too_large")
+            identities[query.title] = [tuple(row) for row in rows]
+        return ExportSnapshot(identities, canonical_ids, exported_rows)
+    finally:
+        # Releases the transaction-scoped advisory lock (or SQLite read snapshot)
+        # after every exported identity and alias edge has been fixed in memory.
+        db.rollback()
+
+
+def _snapshot_filter(query: ExportQuery, identities: list[tuple[int, ...]]):
+    if query.title == "Остатки":
+        return tuple_(Park.id, InventoryCatalogPart.id).in_(identities)
+    if query.title == "Движения":
+        return InventoryMovement.id.in_(identity[0] for identity in identities)
+    if query.title == "Поставки":
+        line_ids = [line_id for _receipt_id, line_id in identities if line_id is not None]
+        empty_receipt_ids = [receipt_id for receipt_id, line_id in identities if line_id is None]
+        return or_(
+            InventoryReceiptLine.id.in_(line_ids),
+            and_(
+                InventoryReceiptLine.id.is_(None),
+                InventoryReceipt.id.in_(empty_receipt_ids),
+            ),
+        )
+    line_ids = [line_id for _count_id, line_id in identities if line_id is not None]
+    empty_count_ids = [count_id for count_id, line_id in identities if line_id is None]
+    return or_(
+        InventoryCountLine.id.in_(line_ids),
+        and_(InventoryCountLine.id.is_(None), InventoryCount.id.in_(empty_count_ids)),
+    )
+
+
+def _snapshot_payload_rows(
+    db: Session, query: ExportQuery, identities: list[tuple[int, ...]]
+) -> Iterator:
+    for offset in range(0, len(identities), SNAPSHOT_BATCH_SIZE):
+        batch = identities[offset : offset + SNAPSHOT_BATCH_SIZE]
+        result = db.execute(
+            query.statement.where(_snapshot_filter(query, batch)).execution_options(yield_per=1_000)
+        )
+        try:
+            yield from result
+        finally:
+            result.close()
+
+
+def _sanitize_xlsx_text(value: str) -> str:
+    escaped = []
+    for char in value:
+        codepoint = ord(char)
+        if (
+            char in "\t\n\r"
+            or 0x20 <= codepoint <= 0xD7FF
+            or 0xE000 <= codepoint <= 0xFFFD
+            or 0x10000 <= codepoint <= 0x10FFFF
+        ):
+            escaped.append(char)
+        elif codepoint <= 0xFFFF:
+            escaped.append(f"\\u{codepoint:04X}")
+        else:
+            escaped.append(f"\\U{codepoint:08X}")
+    return "".join(escaped)
+
+
 def _expanded_xlsx_rows(raw_row) -> Iterator[list]:
-    values = list(raw_row)
+    values = [_sanitize_xlsx_text(value) if isinstance(value, str) else value for value in raw_row]
     part_counts = [
         max(1, (len(value) + XLSX_TEXT_CHUNK_SIZE - 1) // XLSX_TEXT_CHUNK_SIZE)
         if isinstance(value, str)
@@ -400,42 +572,40 @@ def _expanded_xlsx_rows(raw_row) -> Iterator[list]:
         yield row
 
 
-def _build_xlsx(db: Session, statements, *, canonical_ids: dict[int, int]):
+def _build_xlsx(db: Session, queries: tuple[ExportQuery, ...], snapshot: ExportSnapshot):
     # Ownership is transferred to _file_chunks, which closes after streaming.
     spool = tempfile.SpooledTemporaryFile(  # noqa: SIM115
         max_size=XLSX_SPOOL_MEMORY_BYTES, mode="w+b"
     )
     book = Workbook(write_only=True)
     sheets = []
-    for title, headers, _statement in statements:
-        sheet = book.create_sheet(title)
-        sheet.append((*headers, *CONTINUATION_HEADERS))
+    for query in queries:
+        sheet = book.create_sheet(query.title)
+        sheet.append((*query.headers, *CONTINUATION_HEADERS))
         sheets.append(sheet)
 
     overflow = False
     actual_rows = 0
-    for (title, headers, statement), sheet in zip(statements, sheets, strict=True):
+    for query, sheet in zip(queries, sheets, strict=True):
         sheet_rows = 0
-        for raw_row in db.execute(statement.execution_options(yield_per=1_000)):
+        for raw_row in _snapshot_payload_rows(db, query, snapshot.identities[query.title]):
             row = list(raw_row)
-            if title == "Движения" and row[3] is not None:
-                row[4] = canonical_ids.get(row[3], row[3])
-            elif title == "Поставки" and row[13] is not None:
-                row[14] = canonical_ids.get(row[13], row[13])
-            elif title == "Инвентаризации" and row[10] is not None:
-                row[11] = canonical_ids.get(row[10], row[10])
+            if query.title == "Движения" and row[3] is not None:
+                row[4] = snapshot.canonical_ids.get(row[3], row[3])
+            elif query.title == "Поставки" and row[13] is not None:
+                row[14] = snapshot.canonical_ids.get(row[13], row[13])
+            elif query.title == "Инвентаризации" and row[10] is not None:
+                row[11] = snapshot.canonical_ids.get(row[10], row[10])
             for expanded in _expanded_xlsx_rows(row):
                 actual_rows += 1
-                if len(canonical_ids) + actual_rows > MAX_EXPORT_ROWS:
+                if actual_rows > MAX_EXPORT_ROWS:
                     overflow = True
                     break
                 sheet.append(expanded)
                 sheet_rows += 1
             if overflow:
                 break
-        sheet.auto_filter.ref = (
-            f"A1:{get_column_letter(len(headers) + len(CONTINUATION_HEADERS))}{sheet_rows + 1}"
-        )
+        sheet.auto_filter.ref = f"A1:{get_column_letter(len(query.headers) + len(CONTINUATION_HEADERS))}{sheet_rows + 1}"
         if overflow:
             break
 
@@ -468,29 +638,19 @@ def build_inventory_export(
     park_ids = _park_ids(db, user, park_id=park_id, all_parks=all_parks)
     if format not in {"csv", "xlsx"}:
         raise ValueError("inventory_export_format_invalid")
-    stock_statement = _stock_statement(park_ids)
+    stock_query = _stock_query(park_ids)
     if format == "csv":
-        if _row_count(db, stock_statement) > MAX_EXPORT_ROWS:
-            raise OverflowError("inventory_export_too_large")
+        queries = (stock_query,)
+        snapshot = _capture_export_snapshot(db, queries, include_aliases=False)
     else:
-        statements = [
-            ("Остатки", STOCK_HEADERS, stock_statement),
-            ("Движения", MOVEMENT_HEADERS, _movement_statement(park_ids)),
-            ("Поставки", RECEIPT_HEADERS, _receipt_statement(park_ids)),
-            ("Инвентаризации", COUNT_HEADERS, _count_statement(park_ids)),
-        ]
-        row_count = _preflight_row_counts(db, statements)
-        canonical_ids = _load_aliases(db, remaining=MAX_EXPORT_ROWS - row_count)
-        spool = _build_xlsx(
-            db,
-            statements,
-            canonical_ids=canonical_ids,
-        )
+        queries = _xlsx_queries(park_ids)
+        snapshot = _capture_export_snapshot(db, queries, include_aliases=True)
+        spool = _build_xlsx(db, queries, snapshot)
     suffix = "all" if all_parks else f"park-{park_ids[0]}"
     if format == "csv":
         return (
             "text/csv; charset=utf-8",
             f"Склад-{suffix}.csv",
-            _csv_chunks(db.execute(stock_statement.execution_options(yield_per=1_000))),
+            _csv_chunks(_snapshot_payload_rows(db, stock_query, snapshot.identities["Остатки"])),
         )
     return XLSX_MEDIA_TYPE, f"Склад-{suffix}.xlsx", _file_chunks(spool)

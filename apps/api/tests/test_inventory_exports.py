@@ -596,7 +596,7 @@ def test_alias_resolution_is_bounded_linear_and_cycles_fail_controlled(
             )
         )
     db_session.commit()
-    monkeypatch.setattr(inventory_exports, "MAX_EXPORT_ROWS", 2)
+    monkeypatch.setattr(inventory_exports, "MAX_ALIAS_ROWS", 2)
     login_as(client, royal.username, "secret")
 
     response = client.get(
@@ -653,7 +653,7 @@ def test_xlsx_chunks_long_comments_without_duplicate_numeric_values_and_counts_t
     assert capped.json() == {"detail": "inventory_export_too_large"}
 
 
-def test_xlsx_preflights_counts_and_uses_closed_spooled_backing(
+def test_xlsx_captures_bounded_ids_without_counts_and_uses_closed_spooled_backing(
     client, db_session, db_engine, seed_park_with_tracker, monkeypatch
 ):
     royal = _user(db_session, "royal", "spooled-royal")
@@ -682,5 +682,232 @@ def test_xlsx_preflights_counts_and_uses_closed_spooled_backing(
         event.remove(db_engine, "before_cursor_execute", record_statement)
 
     assert response.status_code == 200, response.text
-    assert len([statement for statement in sql[:4] if "count(" in statement]) == 4
+    assert not any("count(" in statement for statement in sql)
+    assert len([statement for statement in sql[:5] if " limit " in statement]) == 5
     assert spools and all(spool.closed for spool in spools)
+
+
+def test_xlsx_export_row_cap_is_independent_from_alias_working_set(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    royal = _user(db_session, "royal", "independent-cap-royal")
+    active_component = InventoryCatalogComponent(
+        name="Only exported component",
+        normalized_name="only exported component",
+        created_by=royal.id,
+        updated_by=royal.id,
+    )
+    archived_component = InventoryCatalogComponent(
+        name="Alias-only component",
+        normalized_name="alias-only component",
+        is_active=False,
+        created_by=royal.id,
+        updated_by=royal.id,
+    )
+    db_session.add_all([active_component, archived_component])
+    db_session.flush()
+    db_session.add(
+        InventoryCatalogPart(
+            component_id=active_component.id,
+            name="Only exported part",
+            normalized_name="only exported part",
+            article="EXPORTED-ONE",
+            normalized_article="exported-one",
+            created_by=royal.id,
+            updated_by=royal.id,
+        )
+    )
+    for index in range(3):
+        db_session.add(
+            InventoryCatalogPart(
+                component_id=archived_component.id,
+                name=f"Working alias {index}",
+                normalized_name=f"working alias {index}",
+                article=f"WORKING-ALIAS-{index}",
+                normalized_article=f"working-alias-{index}",
+                is_active=False,
+                created_by=royal.id,
+                updated_by=royal.id,
+            )
+        )
+    db_session.commit()
+    monkeypatch.setattr(inventory_exports, "MAX_EXPORT_ROWS", 1)
+    monkeypatch.setattr(inventory_exports, "MAX_ALIAS_ROWS", 10)
+    login_as(client, royal.username, "secret")
+
+    response = client.get(
+        "/inventory/export",
+        params={"park_id": seed_park_with_tracker.id, "format": "xlsx"},
+    )
+
+    assert response.status_code == 200, response.text
+    book = load_workbook(io.BytesIO(response.content), read_only=True)
+    assert len(list(book["Остатки"].values)) == 2
+
+
+def test_snapshot_accepts_exactly_50001_export_rows_with_separate_alias_budget(monkeypatch):
+    class Rows(list):
+        def tuples(self):
+            return self
+
+    class SnapshotSession:
+        def __init__(self):
+            self.responses = iter(
+                (
+                    Rows((part_id, None) for part_id in range(100)),
+                    Rows((1, part_id) for part_id in range(50_001)),
+                )
+            )
+            self.rolled_back = False
+
+        def get_bind(self):
+            return type("Bind", (), {"dialect": type("Dialect", (), {"name": "postgresql"})()})()
+
+        def execute(self, _statement):
+            return next(self.responses)
+
+        def rollback(self):
+            self.rolled_back = True
+
+    session = SnapshotSession()
+    monkeypatch.setattr(
+        inventory_exports.inventory_catalog,
+        "acquire_alias_graph_read_lock",
+        lambda _db: None,
+    )
+    monkeypatch.setattr(inventory_exports, "MAX_EXPORT_ROWS", 50_001)
+    monkeypatch.setattr(inventory_exports, "MAX_ALIAS_ROWS", 100)
+
+    snapshot = inventory_exports._capture_export_snapshot(
+        session,
+        (inventory_exports._stock_query([1]),),
+        include_aliases=True,
+    )
+
+    assert snapshot.exported_rows == 50_001
+    assert len(snapshot.identities["Остатки"]) == 50_001
+    assert len(snapshot.canonical_ids) == 100
+    assert session.rolled_back is True
+
+
+def test_sqlite_export_snapshot_explicitly_starts_a_consistent_read_transaction(monkeypatch):
+    events = []
+
+    class DriverConnection:
+        in_transaction = False
+
+        class Cursor:
+            def execute(self, statement):
+                events.append(statement)
+
+            def close(self):
+                return None
+
+        def cursor(self):
+            return self.Cursor()
+
+    class Connection:
+        connection = type("ConnectionFairy", (), {"driver_connection": DriverConnection()})()
+
+    class Bind:
+        dialect = type("Dialect", (), {"name": "sqlite"})()
+
+    class Rows(list):
+        def tuples(self):
+            return self
+
+    class SnapshotSession:
+        def get_bind(self):
+            return Bind()
+
+        def connection(self):
+            return Connection()
+
+        def execute(self, _statement):
+            events.append("snapshot-select")
+            return Rows()
+
+        def rollback(self):
+            events.append("rollback")
+
+    monkeypatch.setattr(
+        inventory_exports.inventory_catalog,
+        "acquire_alias_graph_read_lock",
+        lambda _db: events.append("alias-lock"),
+    )
+
+    inventory_exports._capture_export_snapshot(
+        SnapshotSession(),
+        (inventory_exports._stock_query([1]),),
+        include_aliases=False,
+    )
+
+    assert events == ["alias-lock", "BEGIN", "snapshot-select", "rollback"]
+
+
+def test_export_snapshot_holds_alias_lock_and_excludes_later_rows(
+    db_session, seed_park_with_tracker, monkeypatch
+):
+    events = []
+    monkeypatch.setattr(
+        inventory_exports.inventory_catalog,
+        "acquire_alias_graph_read_lock",
+        lambda _db: events.append("alias-lock"),
+    )
+    queries = inventory_exports._xlsx_queries([seed_park_with_tracker.id])
+
+    snapshot = inventory_exports._capture_export_snapshot(db_session, queries, include_aliases=True)
+    events.append("snapshot-fixed")
+    actor = _user(db_session, "royal", "snapshot-race-royal")
+    late = InventoryMovement(
+        park_id=seed_park_with_tracker.id,
+        actor_user_id=actor.id,
+        kind="adjustment",
+        delta=0,
+        balance_before=0,
+        balance_after=0,
+    )
+    db_session.add(late)
+    db_session.commit()
+
+    movement_query = next(query for query in queries if query.title == "Движения")
+    rows = list(
+        inventory_exports._snapshot_payload_rows(
+            db_session,
+            movement_query,
+            snapshot.identities["Движения"],
+        )
+    )
+
+    assert events == ["alias-lock", "snapshot-fixed"]
+    assert late.id not in [row[0] for row in rows]
+    assert snapshot.exported_rows == sum(len(ids) for ids in snapshot.identities.values())
+
+
+def test_xlsx_escapes_xml_invalid_controls_before_formula_safety_and_chunking(
+    client, db_session, seed_park_with_tracker
+):
+    royal = _user(db_session, "royal", "xml-control-royal")
+    comment = "=before\x00middle\x0bafter"
+    db_session.add(
+        InventoryReceipt(
+            park_id=seed_park_with_tracker.id,
+            supplier="Controls",
+            receipt_date=date(2026, 9, 11),
+            comment=comment,
+            status="draft",
+            created_by=royal.id,
+        )
+    )
+    db_session.commit()
+    login_as(client, royal.username, "secret")
+
+    response = client.get(
+        "/inventory/export",
+        params={"park_id": seed_park_with_tracker.id, "format": "xlsx"},
+    )
+
+    assert response.status_code == 200, response.text
+    book = load_workbook(io.BytesIO(response.content), read_only=True)
+    exported = list(book["Поставки"].values)[1][7]
+    assert exported == "'=before\\u0000middle\\u000Bafter"
