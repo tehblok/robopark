@@ -1,9 +1,11 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock, get_ident
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event, func, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from conftest import login_as, role_id_for
@@ -128,6 +130,32 @@ def test_receipt_lifecycle_normalizes_lines_and_post_is_idempotent(
         )
     )
     assert [(row.delta, row.kind) for row in movements] == [(5, "receipt")]
+
+
+def test_receipt_duplicate_multiline_notes_are_deduplicated_as_whole_notes(
+    client, db_session, seed_park_with_tracker
+):
+    mechanic = _user(db_session, "mechanic", "receipt-multiline-note", [seed_park_with_tracker])
+    part = _part(db_session, mechanic, article="MULTILINE-NOTE")
+    login_as(client, mechanic.username, "secret")
+    multiline_note = "outer box\ninner sleeve"
+
+    response = client.post(
+        f"/inventory/parks/{seed_park_with_tracker.id}/receipts",
+        json=_payload(
+            part.id,
+            lines=[
+                {"catalog_part_id": part.id, "quantity": 2, "note": multiline_note},
+                {"catalog_part_id": part.id, "quantity": 3, "note": multiline_note},
+            ],
+        ),
+    )
+
+    assert response.status_code == 201, response.text
+    line = response.json()["lines"][0]
+    assert line["quantity"] == 5
+    assert line["note"] == multiline_note
+    assert len(line["note"]) <= 500
 
 
 def test_receipt_validates_lines_and_active_catalog_parts(
@@ -496,22 +524,58 @@ def test_receipt_list_searches_supplier_and_document_number_case_insensitively(
     assert [row["id"] for row in unicode_result.json()["items"]] == [unicode_match["id"]]
 
 
+def test_postgresql_receipt_search_normalizes_russian_without_locale_dependent_ilike(
+    monkeypatch,
+):
+    class Bind:
+        class Dialect:
+            name = "postgresql"
+
+        dialect = Dialect()
+
+    class RecordingSession:
+        statements = []
+
+        def get_bind(self):
+            return Bind()
+
+        def scalar(self, statement):
+            self.statements.append(statement)
+            return 0
+
+        def scalars(self, statement):
+            self.statements.append(statement)
+            return []
+
+    monkeypatch.setattr(inventory_receipts.inventory_access, "require_park", lambda *_args: None)
+    db = RecordingSession()
+
+    inventory_receipts.list_receipts(
+        db,
+        object(),
+        park_id=7,
+        query="ЗАВОД",
+        limit=10,
+        offset=0,
+    )
+
+    compiled = "\n".join(
+        str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+        for statement in db.statements
+    )
+    assert "translate(" in compiled
+    assert "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ" in compiled
+    assert "абвгдеёжзийклмнопрстуфхцчшщъыьэюя" in compiled
+    assert "%завод%" in compiled
+    assert "ILIKE" not in compiled.upper()
+
+
 @pytest.mark.parametrize(
-    ("dialect_name", "expected_fragments"),
-    [
-        ("sqlite", []),
-        (
-            "postgresql",
-            [
-                "SELECT inventory_catalog_parts.id",
-                "ORDER BY inventory_catalog_parts.id",
-                "FOR UPDATE",
-            ],
-        ),
-    ],
+    ("dialect_name", "expected_sql"),
+    [("sqlite", None), ("postgresql", "pg_advisory_xact_lock_shared")],
 )
-def test_catalog_alias_stabilization_locks_postgresql_rows_in_global_order(
-    dialect_name, expected_fragments
+def test_receipt_alias_stabilization_uses_shared_postgresql_advisory_lock(
+    dialect_name, expected_sql
 ):
     class Bind:
         class Dialect:
@@ -525,17 +589,62 @@ def test_catalog_alias_stabilization_locks_postgresql_rows_in_global_order(
         def get_bind(self):
             return Bind()
 
-        def scalars(self, statement):
+        def execute(self, statement):
             self.statements.append(str(statement))
-            return []
 
     db = RecordingSession()
     inventory_receipts._stabilize_catalog_aliases(db)
-    if not expected_fragments:
+    if expected_sql is None:
         assert db.statements == []
     else:
         assert len(db.statements) == 1
-        assert all(fragment in db.statements[0] for fragment in expected_fragments)
+        assert expected_sql in db.statements[0]
+        assert "inventory_catalog_parts" not in db.statements[0]
+
+
+def test_postgresql_receipt_acquires_alias_lock_before_receipt_row_lock(monkeypatch):
+    events = []
+
+    class Bind:
+        class Dialect:
+            name = "postgresql"
+
+        dialect = Dialect()
+
+    class RecordingSession:
+        def get_bind(self):
+            return Bind()
+
+        def execute(self, statement):
+            events.append(str(statement))
+
+        def commit(self):
+            return None
+
+        def refresh(self, _row):
+            return None
+
+        def rollback(self):
+            return None
+
+    monkeypatch.setattr(inventory_receipts, "_require_document_post", lambda *_args: None)
+
+    def record_receipt_row_lock(*_args, **_kwargs):
+        events.append("receipt-row-lock")
+        return SimpleNamespace(status="posted")
+
+    monkeypatch.setattr(inventory_receipts, "_receipt", record_receipt_row_lock)
+
+    inventory_receipts.post_receipt(
+        RecordingSession(),
+        object(),
+        park_id=7,
+        receipt_id=11,
+    )
+
+    assert len(events) == 2
+    assert "pg_advisory_xact_lock_shared" in events[0]
+    assert events[1] == "receipt-row-lock"
 
 
 def test_concurrent_alias_receipts_prelock_canonical_stocks_in_sorted_order(

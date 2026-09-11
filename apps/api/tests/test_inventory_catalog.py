@@ -422,6 +422,43 @@ def test_merge_transfers_stock_and_movement_history_and_archives_source(
     assert all('"changed_fields"' in row.detail for row in merge_audits)
 
 
+def test_postgresql_merge_acquires_exclusive_alias_lock_before_catalog_rows(monkeypatch):
+    events = []
+
+    class Bind:
+        class Dialect:
+            name = "postgresql"
+
+        dialect = Dialect()
+
+    class RecordingSession:
+        def get_bind(self):
+            return Bind()
+
+        def execute(self, statement):
+            events.append(str(statement))
+
+    monkeypatch.setattr(
+        inventory_catalog.inventory_access,
+        "require_catalog_manage",
+        lambda *_args: None,
+    )
+
+    def record_catalog_row_lock(_db, _part_ids):
+        events.append("catalog-row-lock")
+        return {}
+
+    monkeypatch.setattr(inventory_catalog, "lock_catalog_parts", record_catalog_row_lock)
+
+    with pytest.raises(LookupError, match="inventory_part_not_found"):
+        inventory_catalog.merge_parts(RecordingSession(), object(), 10, 20)
+
+    assert len(events) == 2
+    assert "pg_advisory_xact_lock" in events[0]
+    assert "pg_advisory_xact_lock_shared" not in events[0]
+    assert events[1] == "catalog-row-lock"
+
+
 def test_inventory_mutations_write_attributed_audit_entries(
     client, db_session, seed_park_with_tracker
 ):

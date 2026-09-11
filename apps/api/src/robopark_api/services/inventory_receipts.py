@@ -8,13 +8,12 @@ from sqlalchemy.orm import Session
 
 from robopark_api.models import (
     AuditLog,
-    InventoryCatalogPart,
     InventoryMovement,
     InventoryReceipt,
     InventoryReceiptLine,
     User,
 )
-from robopark_api.services import inventory_access, inventory_stock
+from robopark_api.services import inventory_access, inventory_catalog, inventory_stock
 from robopark_api.services.inventory_identity import resolve_catalog_part
 from robopark_api.services.rbac import PERMISSION_INVENTORY_DOCUMENTS_POST, has_permission
 
@@ -23,17 +22,13 @@ def _clean_text(value: str | None) -> str | None:
     return (value or "").strip() or None
 
 
-def _combine_notes(current: str | None, additional: str | None) -> str | None:
+def _append_note(notes: list[str], additional: str | None) -> None:
     clean = _clean_text(additional)
-    if clean is None:
-        return current
-    notes = current.split("\n") if current else []
-    if clean in notes:
-        return current
-    result = "\n".join([*notes, clean])
-    if len(result) > 500:
+    if clean is None or clean in notes:
+        return
+    if len("\n".join([*notes, clean])) > 500:
         raise ValueError("inventory_receipt_note_too_long")
-    return result
+    notes.append(clean)
 
 
 def _audit(db: Session, user: User, receipt: InventoryReceipt, action: str, fields) -> None:
@@ -90,6 +85,7 @@ def _lines(db: Session, receipt_id: int) -> list[InventoryReceiptLine]:
 
 def _normalized_lines(db: Session, values) -> list[dict]:
     combined: dict[int, dict] = {}
+    notes_by_part: dict[int, list[str]] = {}
     for value in values:
         data = value.model_dump() if hasattr(value, "model_dump") else dict(value)
         try:
@@ -101,18 +97,21 @@ def _normalized_lines(db: Session, values) -> list[dict]:
             raise ValueError("inventory_receipt_quantity_invalid")
         existing = combined.get(part.id)
         if existing is None:
+            notes_by_part[part.id] = []
+            _append_note(notes_by_part[part.id], data.get("note"))
             combined[part.id] = {
                 "catalog_part_id": part.id,
                 "quantity": quantity,
-                "note": _clean_text(data.get("note")),
             }
         else:
             existing["quantity"] += quantity
             if existing["quantity"] > 1_000_000:
                 raise ValueError("inventory_receipt_quantity_invalid")
-            existing["note"] = _combine_notes(existing["note"], data.get("note"))
+            _append_note(notes_by_part[part.id], data.get("note"))
     if not combined:
         raise ValueError("inventory_receipt_lines_required")
+    for part_id, line in combined.items():
+        line["note"] = "\n".join(notes_by_part[part_id]) or None
     return [combined[part_id] for part_id in sorted(combined)]
 
 
@@ -266,11 +265,19 @@ def list_receipts(
             )
         else:
             escaped = clean_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            pattern = f"%{escaped}%"
+            pattern = f"%{escaped.casefold()}%"
+            russian_upper = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
+            russian_lower = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
+
+            def normalized_text(column):
+                return func.lower(
+                    func.translate(func.coalesce(column, ""), russian_upper, russian_lower)
+                )
+
             filters.append(
                 or_(
-                    InventoryReceipt.supplier.ilike(pattern, escape="\\"),
-                    InventoryReceipt.document_number.ilike(pattern, escape="\\"),
+                    normalized_text(InventoryReceipt.supplier).like(pattern, escape="\\"),
+                    normalized_text(InventoryReceipt.document_number).like(pattern, escape="\\"),
                 )
             )
     total = db.scalar(select(func.count(InventoryReceipt.id)).where(*filters))
@@ -291,20 +298,12 @@ def _line_source_id(receipt: InventoryReceipt, line: InventoryReceiptLine) -> st
 
 
 def _stabilize_catalog_aliases(db: Session) -> None:
-    if db.get_bind().dialect.name == "postgresql":
-        list(
-            db.scalars(
-                select(InventoryCatalogPart.id)
-                .order_by(InventoryCatalogPart.id)
-                .with_for_update(of=InventoryCatalogPart)
-            )
-        )
+    inventory_catalog.acquire_alias_graph_read_lock(db)
 
 
 def _canonical_line_groups(
     db: Session, *, park_id: int, lines: list[InventoryReceiptLine]
 ) -> list[tuple[int, list[InventoryReceiptLine]]]:
-    _stabilize_catalog_aliases(db)
     groups: dict[int, list[InventoryReceiptLine]] = {}
     for line in lines:
         canonical_id = resolve_catalog_part(db, line.catalog_part_id).id
@@ -319,6 +318,7 @@ def _canonical_line_groups(
 def post_receipt(db: Session, user: User, *, park_id: int, receipt_id: int) -> InventoryReceipt:
     _require_document_post(db, user, park_id)
     try:
+        _stabilize_catalog_aliases(db)
         row = _receipt(db, park_id, receipt_id, lock=True)
         if row.status == "posted":
             db.commit()
@@ -380,6 +380,7 @@ def reverse_receipt(
         raise ValueError("inventory_receipt_reversal_reason_required")
     _require_document_post(db, user, park_id)
     try:
+        _stabilize_catalog_aliases(db)
         row = _receipt(db, park_id, receipt_id, lock=True)
         if row.status != "posted":
             raise inventory_stock.InventoryConflict("inventory_receipt_not_posted")

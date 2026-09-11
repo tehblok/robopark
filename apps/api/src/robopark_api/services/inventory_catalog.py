@@ -15,6 +15,26 @@ from robopark_api.services import audit, inventory_access, inventory_stock
 from robopark_api.services.inventory_identity import lock_catalog_parts, resolve_catalog_part
 from robopark_api.services.inventory_stock import InventoryConflict
 
+# One transaction-scoped PostgreSQL reader/writer lock protects the alias graph:
+# receipts share it while resolving aliases and merges hold it exclusively while
+# changing an alias. The fixed signed-bigint key is private to this application.
+_ALIAS_GRAPH_ADVISORY_LOCK_KEY = 7_262_625_726_568_766_785
+
+
+def _acquire_alias_graph_lock(db: Session, *, shared: bool) -> None:
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    lock_function = func.pg_advisory_xact_lock_shared if shared else func.pg_advisory_xact_lock
+    db.execute(select(lock_function(_ALIAS_GRAPH_ADVISORY_LOCK_KEY)))
+
+
+def acquire_alias_graph_read_lock(db: Session) -> None:
+    _acquire_alias_graph_lock(db, shared=True)
+
+
+def acquire_alias_graph_write_lock(db: Session) -> None:
+    _acquire_alias_graph_lock(db, shared=False)
+
 
 def normalize_key(value: str) -> str:
     return " ".join(str(value or "").strip().casefold().split())
@@ -302,6 +322,7 @@ def merge_parts(db: Session, user: User, source_part_id: int, target_part_id: in
     inventory_access.require_catalog_manage(db, user)
     if source_part_id == target_part_id:
         raise ValueError("inventory_merge_same_part")
+    acquire_alias_graph_write_lock(db)
     locked = lock_catalog_parts(db, [source_part_id, target_part_id])
     source = locked.get(source_part_id)
     target = locked.get(target_part_id)
