@@ -408,9 +408,10 @@ def test_merge_transfers_stock_and_movement_history_and_archives_source(
     }
     assert stocks[(seed_park_with_tracker.id, target.id)][0] == 5
     assert stocks[(other.id, target.id)] == (4, 2, "B")
-    assert all(
-        row.catalog_part_id == target.id for row in db_session.scalars(select(InventoryMovement))
+    historical_receipt = db_session.scalar(
+        select(InventoryMovement).where(InventoryMovement.kind == "receipt")
     )
+    assert historical_receipt.catalog_part_id == source.id
     merge_audits = list(
         db_session.scalars(
             select(AuditLog).where(AuditLog.action == "inventory.catalog.part.merged")
@@ -522,7 +523,7 @@ def test_concurrent_first_stock_deltas_are_not_lost(db_engine, db_session, seed_
     ]
 
 
-def test_merge_rekeys_colliding_source_identity_without_losing_history(
+def test_merge_preserves_colliding_source_history_and_document_identity(
     client, db_session, seed_park_with_tracker
 ):
     admin = _user(db_session, "admin", "merge-source-admin")
@@ -578,6 +579,24 @@ def test_merge_rekeys_colliding_source_identity_without_losing_history(
         ]
     )
     db_session.commit()
+    historical = list(
+        db_session.scalars(
+            select(InventoryMovement)
+            .where(InventoryMovement.kind == "receipt")
+            .order_by(InventoryMovement.id)
+        )
+    )
+    before = {
+        row.id: (
+            row.catalog_part_id,
+            row.source_kind,
+            row.source_id,
+            row.note,
+            row.balance_before,
+            row.balance_after,
+        )
+        for row in historical
+    }
     login_as(client, admin.username, "secret")
 
     response = client.post(
@@ -591,30 +610,53 @@ def test_merge_rekeys_colliding_source_identity_without_losing_history(
         select(InventoryParkStock).where(InventoryParkStock.catalog_part_id == target.id)
     )
     assert stock.quantity == 5
+    after = {
+        row.id: (
+            row.catalog_part_id,
+            row.source_kind,
+            row.source_id,
+            row.note,
+            row.balance_before,
+            row.balance_after,
+        )
+        for row in db_session.scalars(
+            select(InventoryMovement).where(InventoryMovement.id.in_(before))
+        )
+    }
+    assert after == before
+    document_movement = db_session.scalar(
+        select(InventoryMovement).where(
+            InventoryMovement.catalog_part_id == source.id,
+            InventoryMovement.park_id == seed_park_with_tracker.id,
+            InventoryMovement.source_kind == "receipt",
+            InventoryMovement.source_id == "receipt-line-7",
+        )
+    )
+    assert document_movement is not None
+    history_response = client.get(
+        "/inventory/movements", params={"park_id": seed_park_with_tracker.id}
+    )
+    assert history_response.status_code == 200, history_response.text
+    assert any(
+        row["id"] == document_movement.id
+        and row["catalog_part_id"] == source.id
+        and row["part_id"] == source.id
+        for row in history_response.json()
+    )
     history = list(
         db_session.scalars(
             select(InventoryMovement)
-            .where(InventoryMovement.catalog_part_id == target.id)
+            .where(InventoryMovement.catalog_part_id.in_([source.id, target.id]))
             .order_by(InventoryMovement.id)
         )
     )
     assert len(history) == 4
     assert sum(row.delta for row in history if row.kind == "receipt") == 5
-    assert history[0].balance_before == 0
-    assert all(
-        previous.balance_after == current.balance_before
-        for previous, current in zip(history[:-1], history[1:], strict=True)
-    )
-    assert history[-1].balance_after == stock.quantity
     assert all(row.balance_after - row.balance_before == row.delta for row in history)
     assert (
         sum(row.source_kind == "receipt" and row.source_id == "receipt-line-7" for row in history)
-        == 1
+        == 2
     )
-    rekeyed = next(row for row in history if row.source_kind == "catalog_merge_history")
-    assert rekeyed.source_id == f"{source.id}:{rekeyed.id}"
-    assert "receipt:receipt-line-7" in rekeyed.note
-    assert len(rekeyed.note) <= 500
 
 
 @pytest.mark.parametrize("kind", ["component", "part"])
@@ -664,6 +706,79 @@ def test_catalog_create_stale_uniqueness_precheck_returns_existing_id(
     assert (
         raised.value.existing_component_id if kind == "component" else raised.value.existing_part_id
     ) == (component.id if kind == "component" else part.id)
+
+
+@pytest.mark.parametrize(
+    ("kind", "operation"),
+    [
+        ("component", "rename"),
+        ("component", "restore"),
+        ("part", "rename"),
+        ("part", "restore"),
+    ],
+)
+def test_catalog_update_stale_uniqueness_precheck_returns_409_with_existing_id(
+    client, db_session, seed_park_with_tracker, monkeypatch, kind, operation
+):
+    admin = _user(db_session, "admin", f"update-race-{kind}-{operation}")
+    component, part = _catalog(db_session, admin, article="RACE-1")
+    if kind == "component":
+        conflicting = InventoryCatalogComponent(
+            name="Source component",
+            normalized_name=("source component" if operation == "rename" else "подвязка"),
+            is_active=operation == "rename",
+            created_by=admin.id,
+            updated_by=admin.id,
+        )
+        db_session.add(conflicting)
+        db_session.commit()
+        path = f"/inventory/catalog/components/{conflicting.id}"
+        payload = {"name": "  Подвязка "} if operation == "rename" else {"is_active": True}
+        marker = "inventory_catalog_components.normalized_name"
+        expected_detail = {
+            "code": "inventory_component_exists",
+            "existing_component_id": component.id,
+        }
+    else:
+        conflicting = InventoryCatalogPart(
+            component_id=component.id,
+            name="Source part",
+            normalized_name="source part",
+            article="RACE-2" if operation == "rename" else "race-1",
+            normalized_article="race-2" if operation == "rename" else "race-1",
+            is_active=operation == "rename",
+            created_by=admin.id,
+            updated_by=admin.id,
+        )
+        db_session.add(conflicting)
+        db_session.commit()
+        path = f"/inventory/catalog/parts/{conflicting.id}"
+        payload = {"article": " race-1 "} if operation == "rename" else {"is_active": True}
+        marker = "inventory_catalog_parts.normalized_article"
+        expected_detail = {
+            "code": "inventory_article_exists",
+            "existing_part_id": part.id,
+        }
+
+    login_as(client, admin.username, "secret")
+    original_scalar = db_session.scalar
+    skipped = False
+
+    def stale_precheck(statement, *args, **kwargs):
+        nonlocal skipped
+        sql = str(statement)
+        if not skipped and marker in sql and "is_active" in sql and "!=" in sql:
+            skipped = True
+            return None
+        return original_scalar(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "scalar", stale_precheck)
+
+    response = client.patch(path, json=payload)
+
+    assert skipped is True
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == expected_detail
 
 
 def test_postgresql_first_stock_creation_uses_conflict_safe_insert():

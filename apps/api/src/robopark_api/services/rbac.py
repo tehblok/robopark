@@ -146,7 +146,9 @@ PERMISSION_CATALOG: tuple[PermissionDef, ...] = (
     PermissionDef(PERMISSION_REPORTS_CREATE, "action", "Создание обращений", 230),
     PermissionDef(PERMISSION_REPORTS_RESOLVE, "action", "Закрытие обращений", 240),
     PermissionDef(PERMISSION_INVENTORY_STOCK_MANAGE, "action", "Учёт склада", 250),
-    PermissionDef(PERMISSION_INVENTORY_DOCUMENTS_POST, "action", "Проведение складских документов", 260),
+    PermissionDef(
+        PERMISSION_INVENTORY_DOCUMENTS_POST, "action", "Проведение складских документов", 260
+    ),
     PermissionDef(PERMISSION_INVENTORY_EXPORT, "action", "Выгрузка склада", 270),
     PermissionDef(PERMISSION_INVENTORY_CATALOG_MANAGE, "action", "Глобальный каталог склада", 280),
     PermissionDef(PERMISSION_ROLES_MANAGE, "action", "Управление ролями", 300),

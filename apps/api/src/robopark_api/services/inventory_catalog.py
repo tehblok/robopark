@@ -1,13 +1,12 @@
 import json
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from robopark_api.models import (
     InventoryCatalogComponent,
     InventoryCatalogPart,
-    InventoryMovement,
     InventoryParkStock,
     User,
 )
@@ -179,7 +178,7 @@ def update_component(db: Session, user: User, component_id: int, changes: dict):
             )
         )
         if existing is not None:
-            raise InventoryConflict("inventory_component_exists")
+            raise InventoryConflict("inventory_component_exists", existing_component_id=existing)
         row.name = name
         row.normalized_name = normalized
     if changes.get("is_active") is not None:
@@ -197,7 +196,23 @@ def update_component(db: Session, user: User, component_id: int, changes: dict):
                 )
         row.is_active = bool(changes["is_active"])
     row.updated_by = user.id
-    db.commit()
+    intended_normalized_name = row.normalized_name
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        existing = db.scalar(
+            select(InventoryCatalogComponent.id).where(
+                InventoryCatalogComponent.id != component_id,
+                InventoryCatalogComponent.normalized_name == intended_normalized_name,
+                InventoryCatalogComponent.is_active.is_(True),
+            )
+        )
+        if existing is not None:
+            raise InventoryConflict(
+                "inventory_component_exists", existing_component_id=existing
+            ) from exc
+        raise
     db.refresh(row)
     audit.record(
         db,
@@ -250,9 +265,24 @@ def update_part(db: Session, user: User, part_id: int, changes: dict, *, commit:
                 raise InventoryConflict("inventory_article_exists", existing_part_id=existing)
         row.is_active = bool(changes["is_active"])
     row.updated_by = user.id
-    db.flush()
+    intended_normalized_article = row.normalized_article
+    try:
+        db.flush()
+        if commit:
+            db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        existing = db.scalar(
+            select(InventoryCatalogPart.id).where(
+                InventoryCatalogPart.id != part_id,
+                InventoryCatalogPart.normalized_article == intended_normalized_article,
+                InventoryCatalogPart.is_active.is_(True),
+            )
+        )
+        if existing is not None:
+            raise InventoryConflict("inventory_article_exists", existing_part_id=existing) from exc
+        raise
     if commit:
-        db.commit()
         db.refresh(row)
         audit.record(
             db,
@@ -275,32 +305,6 @@ def merge_parts(db: Session, user: User, source_part_id: int, target_part_id: in
         raise LookupError("inventory_part_not_found")
     if not source.is_active or not target.is_active:
         raise InventoryConflict("inventory_merge_inactive_part")
-
-    target_source_identities = set(
-        db.execute(
-            select(
-                InventoryMovement.source_kind,
-                InventoryMovement.source_id,
-                InventoryMovement.park_id,
-            ).where(
-                InventoryMovement.catalog_part_id == target.id,
-                InventoryMovement.source_kind.is_not(None),
-                InventoryMovement.source_id.is_not(None),
-            )
-        ).all()
-    )
-    source_movements = list(
-        db.scalars(select(InventoryMovement).where(InventoryMovement.catalog_part_id == source.id))
-    )
-    for movement in source_movements:
-        identity = (movement.source_kind, movement.source_id, movement.park_id)
-        if identity not in target_source_identities:
-            continue
-        original_identity = f"{movement.source_kind}:{movement.source_id}"
-        detail = f"Original source identity: {original_identity}"
-        movement.source_kind = "catalog_merge_history"
-        movement.source_id = f"{source.id}:{movement.id}"
-        movement.note = f"{detail}; {movement.note}"[:500] if movement.note else detail
 
     source_stocks = list(
         db.scalars(
@@ -350,34 +354,6 @@ def merge_parts(db: Session, user: User, source_part_id: int, target_part_id: in
         source_stock.is_active = False
         source_stock.updated_by = user.id
 
-    db.execute(
-        update(InventoryMovement)
-        .where(InventoryMovement.catalog_part_id == source.id)
-        .values(catalog_part_id=target.id)
-    )
-    db.flush()
-    for park_id in {stock.park_id for stock in source_stocks}:
-        target_stock = db.scalar(
-            select(InventoryParkStock).where(
-                InventoryParkStock.park_id == park_id,
-                InventoryParkStock.catalog_part_id == target.id,
-            )
-        )
-        history = list(
-            db.scalars(
-                select(InventoryMovement)
-                .where(
-                    InventoryMovement.park_id == park_id,
-                    InventoryMovement.catalog_part_id == target.id,
-                )
-                .order_by(InventoryMovement.created_at, InventoryMovement.id)
-            )
-        )
-        balance = target_stock.quantity - sum(movement.delta for movement in history)
-        for movement in history:
-            movement.balance_before = balance
-            balance += movement.delta
-            movement.balance_after = balance
     source.is_active = False
     source.updated_by = user.id
     db.commit()

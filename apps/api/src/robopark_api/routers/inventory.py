@@ -292,7 +292,7 @@ def move_stock(
     )
     return {
         **row.__dict__,
-        "part_id": row.part_id or row.catalog_part_id,
+        "part_id": service.part_adapter_id(db, row.catalog_part_id, legacy_part_id=row.part_id),
         "catalog_part_id": row.catalog_part_id,
         "actor_username": user.username,
     }
@@ -322,7 +322,7 @@ def task_writeoff(
     )
     return {
         **row.__dict__,
-        "part_id": row.part_id or row.catalog_part_id,
+        "part_id": service.part_adapter_id(db, row.catalog_part_id, legacy_part_id=row.part_id),
         "catalog_part_id": row.catalog_part_id,
         "actor_username": user.username,
     }

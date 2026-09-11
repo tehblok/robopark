@@ -155,14 +155,28 @@ class LegacyPartView:
     photo_storage_key: str | None
 
 
+def part_adapter_id(db: Session, catalog_part_id: int, *, legacy_part_id: int | None = None) -> int:
+    if legacy_part_id is not None:
+        return legacy_part_id
+    collision = db.get(InventoryPart, catalog_part_id)
+    if collision is None:
+        return catalog_part_id
+    catalog_part = db.get(InventoryCatalogPart, catalog_part_id)
+    if catalog_part is not None and inventory_catalog.normalize_key(
+        collision.article
+    ) == inventory_catalog.normalize_key(catalog_part.article):
+        return collision.id
+    return -catalog_part_id
+
+
 def _legacy_part_view(
     part: InventoryCatalogPart,
     stock: InventoryParkStock,
     *,
-    legacy_part_id: int | None = None,
+    adapter_part_id: int | None = None,
 ) -> LegacyPartView:
     return LegacyPartView(
-        id=legacy_part_id or part.id,
+        id=adapter_part_id if adapter_part_id is not None else part.id,
         catalog_part_id=part.id,
         park_id=stock.park_id,
         component_id=part.component_id,
@@ -219,11 +233,10 @@ def overview(db: Session, user: User, park_id: int) -> dict:
     )
     grouped = {component.id: [] for component in components}
     for item in result["items"]:
+        legacy_part_id = legacy_part_ids.get(inventory_catalog.normalize_key(item["article"]))
         grouped[item["component_id"]].append(
             {
-                "id": legacy_part_ids.get(
-                    inventory_catalog.normalize_key(item["article"]), item["id"]
-                ),
+                "id": part_adapter_id(db, item["id"], legacy_part_id=legacy_part_id),
                 "catalog_part_id": item["id"],
                 "park_id": park_id,
                 "component_id": item["component_id"],
@@ -360,7 +373,7 @@ def create_part(
             *(["photo"] if photo else []),
         ],
     )
-    return _legacy_part_view(part, stock)
+    return _legacy_part_view(part, stock, adapter_part_id=part_adapter_id(db, part.id))
 
 
 def _part_and_stock(
@@ -371,10 +384,12 @@ def _part_and_stock(
     park_id: int | None = None,
     catalog_part_id: int | None = None,
 ):
-    legacy = None if catalog_part_id is not None else db.get(InventoryPart, part_id)
+    legacy = None
     if catalog_part_id is not None:
         part = db.get(InventoryCatalogPart, catalog_part_id)
-    elif legacy is not None:
+    elif part_id < 0:
+        part = db.get(InventoryCatalogPart, -part_id)
+    elif (legacy := db.get(InventoryPart, part_id)) is not None:
         if park_id is not None and park_id != legacy.park_id:
             raise inventory_stock.InventoryConflict("inventory_park_part_mismatch")
         park_id = legacy.park_id
@@ -467,7 +482,11 @@ def update_part(db: Session, user: User, part_id: int, changes: dict) -> LegacyP
         target_id=part.id,
         changed_fields=changes,
     )
-    return _legacy_part_view(part, stock, legacy_part_id=legacy_part_id)
+    return _legacy_part_view(
+        part,
+        stock,
+        adapter_part_id=part_adapter_id(db, part.id, legacy_part_id=legacy_part_id),
+    )
 
 
 def move_stock(
@@ -621,7 +640,7 @@ def movements(db: Session, user: User, park_id: int, limit: int = 100) -> list[d
     return [
         {
             "id": row.id,
-            "part_id": row.part_id or row.catalog_part_id,
+            "part_id": part_adapter_id(db, row.catalog_part_id, legacy_part_id=row.part_id),
             "catalog_part_id": row.catalog_part_id,
             "park_id": row.park_id,
             "actor_user_id": row.actor_user_id,
@@ -651,7 +670,17 @@ def component_photo(db: Session, user: User, component_id: int) -> tuple[Path, s
 
 
 def part_photo(db: Session, user: User, part_id: int) -> tuple[Path, str, str]:
-    row = db.get(InventoryCatalogPart, part_id)
+    legacy = db.get(InventoryPart, part_id) if part_id >= 0 else None
+    if legacy is not None:
+        require_park(db, user, legacy.park_id)
+        row = db.scalar(
+            select(InventoryCatalogPart).where(
+                InventoryCatalogPart.normalized_article
+                == inventory_catalog.normalize_key(legacy.article)
+            )
+        )
+    else:
+        row = db.get(InventoryCatalogPart, -part_id if part_id < 0 else part_id)
     if row is None:
         raise LookupError("inventory_part_not_found")
     if not accessible_park_ids(db, user):

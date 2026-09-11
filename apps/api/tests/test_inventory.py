@@ -379,7 +379,7 @@ def test_legacy_overview_keeps_component_without_parts(client, db_session, seed_
 
 
 def test_legacy_adapter_disambiguates_catalog_id_from_colliding_legacy_id(
-    client, db_session, seed_park_with_tracker
+    client, db_session, seed_park_with_tracker, monkeypatch, tmp_path
 ):
     operator = _user(db_session, "operator", "collision-operator")
     legacy_component = InventoryComponent(
@@ -403,6 +403,8 @@ def test_legacy_adapter_disambiguates_catalog_id_from_colliding_legacy_id(
         normalized_name="global one",
         article="GLOBAL-1",
         normalized_article="global-1",
+        photo_storage_key="global-photo",
+        photo_content_type="image/png",
         created_by=operator.id,
         updated_by=operator.id,
     )
@@ -413,6 +415,8 @@ def test_legacy_adapter_disambiguates_catalog_id_from_colliding_legacy_id(
         normalized_name="migrated legacy",
         article="LEGACY-1",
         normalized_article="legacy-1",
+        photo_storage_key="legacy-photo",
+        photo_content_type="image/jpeg",
         created_by=operator.id,
         updated_by=operator.id,
     )
@@ -446,26 +450,51 @@ def test_legacy_adapter_disambiguates_catalog_id_from_colliding_legacy_id(
     )
     db_session.commit()
     login_as(client, operator.username, "secret")
+    global_photo = tmp_path / "global.png"
+    global_photo.write_bytes(b"global")
+    legacy_photo = tmp_path / "legacy.jpg"
+    legacy_photo.write_bytes(b"legacy")
+    monkeypatch.setattr(
+        inventory_svc,
+        "photo_path",
+        lambda key: {"global-photo": global_photo, "legacy-photo": legacy_photo}[key],
+    )
 
     overview = client.get(f"/inventory?park_id={seed_park_with_tracker.id}")
     assert overview.status_code == 200
-    assert {
-        (part["article"], part["id"], part["catalog_part_id"])
+    represented = {
+        part["article"]: (part["id"], part["catalog_part_id"])
         for component in overview.json()["components"]
         for part in component["parts"]
-    } == {("GLOBAL-1", 1, 1), ("LEGACY-1", 1, 2)}
+    }
+    assert represented == {"GLOBAL-1": (-1, 1), "LEGACY-1": (1, 2)}
+    assert len({adapter_id for adapter_id, _ in represented.values()}) == 2
 
     global_move = client.post(
-        "/inventory/parts/1/movements",
+        "/inventory/parts/-1/movements",
         json={
             "park_id": seed_park_with_tracker.id,
-            "catalog_part_id": direct_catalog.id,
             "kind": "receipt",
             "quantity": 1,
         },
     )
     assert global_move.status_code == 201, global_move.text
+    assert global_move.json()["part_id"] == -direct_catalog.id
     assert global_move.json()["catalog_part_id"] == direct_catalog.id
+
+    migrated_update = client.patch(
+        "/inventory/parts/1",
+        json={"park_id": seed_park_with_tracker.id, "location": "M"},
+    )
+    assert migrated_update.status_code == 200, migrated_update.text
+    assert migrated_update.json()["id"] == legacy_part.id
+    assert migrated_update.json()["catalog_part_id"] == migrated_catalog.id
+
+    assert client.get("/inventory/parts/-1/photo").content == b"global"
+    assert client.get("/inventory/parts/1/photo").content == b"legacy"
+    legacy_photo_response = client.get("/inventory/parts/1/photo")
+    assert legacy_photo_response.status_code == 200
+    assert legacy_photo_response.content == b"legacy"
 
     legacy_move = client.post(
         "/inventory/parts/1/movements",
