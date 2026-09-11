@@ -16,6 +16,7 @@ dependencies = [
   "yandex-tracker-client>=2.8",
   "importlib-metadata>=9.0.0",
   "regex>=2026.9.3",
+  "openpyxl==3.1.5",
 ]
 
 [project.scripts]

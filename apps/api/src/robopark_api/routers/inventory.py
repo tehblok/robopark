@@ -1,8 +1,9 @@
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Literal, TypeVar
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
@@ -41,6 +42,7 @@ from robopark_api.services import (
     inventory_access,
     inventory_catalog,
     inventory_counts,
+    inventory_exports,
     inventory_receipts,
     inventory_stock,
 )
@@ -73,6 +75,33 @@ async def _photo(upload: UploadFile | None):
     if upload is None:
         return None
     return upload.filename, await upload.read(MAX_ATTACHMENT_BYTES + 1), upload.content_type
+
+
+@router.get("/export")
+def export_inventory(
+    park_id: int | None = None,
+    scope: Literal["all"] | None = None,
+    format: Literal["csv", "xlsx"] = "xlsx",
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        media_type, filename, body = _run(
+            lambda: inventory_exports.build_inventory_export(
+                db,
+                user,
+                park_id=park_id,
+                all_parks=scope == "all",
+                format=format,
+            )
+        )
+    except OverflowError as exc:
+        raise HTTPException(413, str(exc)) from exc
+    safe_filename = f"inventory-{'all' if scope == 'all' else f'park-{park_id}'}.{format}"
+    disposition = f"attachment; filename=\"{safe_filename}\"; filename*=UTF-8''{quote(filename)}"
+    return StreamingResponse(
+        body, media_type=media_type, headers={"Content-Disposition": disposition}
+    )
 
 
 @router.get("/parks/{park_id}/counts", response_model=InventoryCountListOut)
