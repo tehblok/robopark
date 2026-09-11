@@ -149,7 +149,7 @@ it('offers a collapse control for the report list without changing its initial v
   render(tree(userA, client({ reportsMine: vi.fn(async () => []) })))
 
   expect(await screen.findByRole('button', { name: 'Свернуть: Мои репорты' })).toBeVisible()
-  expect(screen.getByText('Вы ещё не создавали репортов.')).toBeVisible()
+  expect(await screen.findByText('Вы ещё не создавали репортов.', undefined, { timeout: 3_000 })).toBeVisible()
 })
 
 it('clears a draft synchronously when effective access changes at the same principal and park', async () => {

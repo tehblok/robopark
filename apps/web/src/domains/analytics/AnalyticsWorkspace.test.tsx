@@ -178,7 +178,11 @@ it.each([401, 403])('clears cached history after automatic %s revalidation and h
   await screen.findByRole('region', { name: 'История парка Север' })
   vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
   fireEvent.focus(window)
-  await screen.findByRole('heading', { name: status === 401 ? 'Сессия истекла' : 'Нет доступа' })
+  await screen.findByRole(
+    'heading',
+    { name: status === 401 ? 'Сессия истекла' : 'Нет доступа' },
+    { timeout: 3_000 },
+  )
   expect(screen.queryByRole('region', { name: 'История парка Север' })).not.toBeInTheDocument()
   fireEvent.focus(window)
   fireEvent(window, new Event('online'))

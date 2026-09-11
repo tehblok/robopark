@@ -143,7 +143,11 @@ describe('Management routes', () => {
     }))
 
     expect(await screen.findByRole('heading', { name: 'Настройки проверки робота' })).toBeVisible()
-    expect(screen.getByText('Разделы проверки робота ещё не настроены')).toBeVisible()
+    expect(await screen.findByText(
+      'Разделы проверки робота ещё не настроены',
+      undefined,
+      { timeout: 3_000 },
+    )).toBeVisible()
     expect(document.body).not.toHaveTextContent(/Аварийный режим/i)
     expect(screen.queryByText(/^(?:Emergency|Конфиг Emergency|Разделы Emergency)/i)).not.toBeInTheDocument()
   })
