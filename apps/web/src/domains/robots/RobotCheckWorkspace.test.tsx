@@ -79,6 +79,7 @@ it('retains the last snapshot offline and after partial failures, with local ret
   vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange'))
   await screen.findByText(/snap-id/)
   expect(screen.getByText(/Данные устарели/)).toBeInTheDocument()
+  expect(screen.queryByText('Активных ошибок нет')).not.toBeInTheDocument()
   expect(screen.getByText('Секция получена')).toBeInTheDocument()
   vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false); fireEvent(window, new Event('offline'))
   expect(screen.getByText(VIN)).toBeInTheDocument()

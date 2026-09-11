@@ -33,7 +33,7 @@ export function RobotCheckNavigation({ tabs, activeId, onChange }: {
     if (pendingFocus.current !== activeId) return
     document.getElementById(`robot-check-tab-${activeId}`)?.focus()
     pendingFocus.current = null
-  }, [activeId])
+  }, [activeId, open])
 
   return <div className="rp-check-navigation">
     <RobotCheckTabs tabs={visible} activeId={activeId} onChange={onChange} />

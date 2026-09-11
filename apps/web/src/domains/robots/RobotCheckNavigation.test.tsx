@@ -48,3 +48,13 @@ it('supports complete keyboard navigation in More and restores focus to the sele
   await actor.keyboard('{Home}{ArrowDown}{Enter}')
   expect(screen.getByRole('tab', { name: 'Телеметрия' })).toHaveFocus()
 })
+
+it('restores focus when the already active secondary tab is selected again', async () => {
+  const actor = userEvent.setup()
+  render(<RobotCheckNavigation activeId="telemetry" onChange={vi.fn()} tabs={tabs} />)
+
+  await actor.click(screen.getByRole('button', { name: 'Ещё' }))
+  await actor.click(screen.getByRole('menuitem', { name: 'Телеметрия' }))
+
+  expect(screen.getByRole('tab', { name: 'Телеметрия' })).toHaveFocus()
+})

@@ -14,7 +14,9 @@ export function RobotCheckSummary({ snapshot, online, failed, pending, onRefresh
     return () => globalThis.clearInterval(clock)
   }, [])
   const model = buildRobotDetailModel(snapshot, online, now)
-  const leading = leadingDiagnosticEvent(snapshot.diagnostic_events ?? [])
+  const diagnosticEvents = snapshot.diagnostic_events ?? []
+  const leading = leadingDiagnosticEvent(diagnosticEvents)
+  const hasDiagnosticEvents = diagnosticEvents.length > 0
   const observed = new Date(snapshot.observed_at)
   const date = Number.isNaN(observed.getTime()) ? 'Дата неизвестна' : new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(observed).replace(/\s*г\.$/, '')
   const time = Number.isNaN(observed.getTime()) ? '' : new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(observed)
@@ -31,7 +33,12 @@ export function RobotCheckSummary({ snapshot, online, failed, pending, onRefresh
       <Button variant="secondary" onClick={onShowDiagnostic}>Показать неисправность</Button>
     </div> : null}
     {model.criticalReason ? <p className="rp-check-critical" role="status">{model.criticalReason}</p> : null}
-    {!leading && !model.criticalReason ? <p role="status">Активных ошибок нет</p> : null}
+    {!leading && hasDiagnosticEvents && !model.criticalReason
+      ? <p role="status">Обнаружены активные ошибки. Откройте раздел «Ошибки».</p>
+      : null}
+    {!failed && !leading && !hasDiagnosticEvents && !model.criticalReason
+      ? <p role="status">Активных ошибок нет</p>
+      : null}
     <details className="rp-check-supplementary"><summary>VIN и координаты</summary>
       <p className="rp-check-vin">{snapshot.vin}</p>
       <p>{snapshot.lat != null && snapshot.lon != null ? `${snapshot.lat}, ${snapshot.lon}` : 'Координаты не получены'}</p>

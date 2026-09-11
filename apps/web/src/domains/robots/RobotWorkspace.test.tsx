@@ -104,6 +104,21 @@ it('states the clean diagnostic verdict in the compact summary', async () => {
     .toHaveTextContent('Активных ошибок нет')
 })
 
+it('never calls an unlocalized diagnostic event a clean result', async () => {
+  const apiClient = client()
+  apiClient.emergencySnapshot.mockResolvedValue({
+    ...snapshot,
+    diagnostic_events: [{ ...leadingDiagnostic, id: 'unknown', part: null, view: null, x: null, y: null, indicator: null }],
+    error_banner: null,
+    wheels_fault: [],
+  })
+  render(tree(apiClient, `/robots/${VIN}?park=8&tab=state`))
+
+  const summary = await screen.findByRole('region', { name: 'Состояние робота' })
+  expect(summary).toHaveTextContent('Обнаружены активные ошибки')
+  expect(summary).not.toHaveTextContent('Активных ошибок нет')
+})
+
 it.each(['pending', 'failed'] as const)('loads direct related tasks while the Emergency snapshot is %s and keeps tabs usable', async state => {
   const apiClient = client()
   let rejectSnapshot!: (error: unknown) => void
