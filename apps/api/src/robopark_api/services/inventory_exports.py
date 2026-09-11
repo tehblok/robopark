@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import csv
 import io
-from collections.abc import Iterator
+import tempfile
+from collections.abc import Iterator, Mapping
 from datetime import datetime
 
 from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session, aliased
 
@@ -25,6 +27,9 @@ from robopark_api.services import inventory_access
 from robopark_api.services.rbac import PERMISSION_INVENTORY_EXPORT, has_permission
 
 MAX_EXPORT_ROWS = 100_000
+MAX_XLSX_SIGNIFICANT_DIGITS = 15
+XLSX_TEXT_CHUNK_SIZE = 32_766
+XLSX_SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 STOCK_HEADERS = (
@@ -102,6 +107,7 @@ COUNT_HEADERS = (
     "Расхождение",
     "Комментарий",
 )
+CONTINUATION_HEADERS = ("Часть текста", "Всего частей")
 
 
 def _park_ids(db: Session, user: User, *, park_id: int | None, all_parks: bool) -> list[int]:
@@ -114,9 +120,14 @@ def _park_ids(db: Session, user: User, *, park_id: int | None, all_parks: bool) 
             raise ValueError("inventory_export_scope_ambiguous")
         if user.role not in {"admin", "royal"}:
             raise PermissionError("forbidden")
-        return list(db.scalars(select(Park.id).where(Park.is_active.is_(True)).order_by(Park.id)))
+        return list(db.scalars(select(Park.id).order_by(Park.id)))
     if park_id is None:
         raise ValueError("inventory_export_scope_required")
+    if user.role in {"admin", "royal"}:
+        park = db.get(Park, park_id)
+        if park is None:
+            raise LookupError("park_not_found")
+        return [park.id]
     inventory_access.require_park(db, user, park_id)
     return [park_id]
 
@@ -287,61 +298,125 @@ def _safe_cell(value):
 
 
 def _csv_chunks(rows) -> Iterator[bytes]:
-    yield b"\xef\xbb\xbf"
-    buffer = io.StringIO(newline="")
-    writer = csv.writer(buffer)
-    writer.writerow(STOCK_HEADERS)
-    yield buffer.getvalue().encode("utf-8")
-    for row in rows:
-        buffer.seek(0)
-        buffer.truncate(0)
-        writer.writerow(_safe_cell(value) for value in row)
+    try:
+        yield b"\xef\xbb\xbf"
+        buffer = io.StringIO(newline="")
+        writer = csv.writer(buffer)
+        writer.writerow(STOCK_HEADERS)
         yield buffer.getvalue().encode("utf-8")
+        for row in rows:
+            buffer.seek(0)
+            buffer.truncate(0)
+            writer.writerow(_safe_cell(value) for value in row)
+            yield buffer.getvalue().encode("utf-8")
+    finally:
+        rows.close()
 
 
 def _xlsx_cell(value):
     value = _safe_cell(value)
-    if isinstance(value, int) and not -(2**53 - 1) <= value <= 2**53 - 1:
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and len(str(abs(value))) > MAX_XLSX_SIGNIFICANT_DIGITS
+    ):
         return str(value)
     if isinstance(value, datetime):
         return value.isoformat()
     return value
 
 
-def _canonical_ids(db: Session) -> dict[int, int]:
-    links = dict(
-        db.execute(select(InventoryCatalogPart.id, InventoryCatalogPart.merged_into_part_id))
-        .tuples()
-        .all()
-    )
+def _resolve_aliases(links: Mapping[int, int | None]) -> dict[int, int]:
     resolved: dict[int, int] = {}
-    for source_id in links:
-        current = source_id
-        seen: set[int] = set()
-        while links.get(current) is not None and current not in seen:
-            seen.add(current)
-            current = links[current]
-        resolved[source_id] = current
+    for start in links:
+        if start in resolved:
+            continue
+        path: list[int] = []
+        positions: set[int] = set()
+        current = start
+        while current not in resolved:
+            if current in positions:
+                raise ValueError("inventory_alias_cycle")
+            positions.add(current)
+            path.append(current)
+            target = links.get(current)
+            if target is None:
+                resolved[current] = current
+                break
+            current = target
+        canonical_id = resolved[current]
+        for alias_id in reversed(path):
+            resolved[alias_id] = canonical_id
     return resolved
 
 
-def _build_xlsx(db: Session, statements) -> io.BytesIO:
-    canonical_ids = _canonical_ids(db)
-    row_count = 0
-    collected = []
-    for title, headers, statement in statements:
-        remaining = MAX_EXPORT_ROWS - row_count
-        rows = list(db.execute(statement.limit(remaining + 1)))
-        row_count += len(rows)
-        if row_count > MAX_EXPORT_ROWS:
-            raise OverflowError("inventory_export_too_large")
-        collected.append((title, headers, rows))
+def _row_count(db: Session, statement) -> int:
+    count_statement = select(func.count()).select_from(statement.order_by(None).subquery())
+    return int(db.scalar(count_statement) or 0)
 
+
+def _preflight_row_counts(db: Session, statements) -> int:
+    total = 0
+    for _title, _headers, statement in statements:
+        total += _row_count(db, statement)
+        if total > MAX_EXPORT_ROWS:
+            raise OverflowError("inventory_export_too_large")
+    return total
+
+
+def _load_aliases(db: Session, *, remaining: int) -> dict[int, int]:
+    links: dict[int, int | None] = {}
+    statement = (
+        select(InventoryCatalogPart.id, InventoryCatalogPart.merged_into_part_id)
+        .order_by(InventoryCatalogPart.id)
+        .limit(remaining + 1)
+    )
+    for part_id, target_id in db.execute(statement):
+        links[part_id] = target_id
+        if len(links) > remaining:
+            raise OverflowError("inventory_export_too_large")
+    return _resolve_aliases(links)
+
+
+def _expanded_xlsx_rows(raw_row) -> Iterator[list]:
+    values = list(raw_row)
+    part_counts = [
+        max(1, (len(value) + XLSX_TEXT_CHUNK_SIZE - 1) // XLSX_TEXT_CHUNK_SIZE)
+        if isinstance(value, str)
+        else 1
+        for value in values
+    ]
+    part_count = max(part_counts, default=1)
+    for part_index in range(part_count):
+        row = []
+        for value, value_part_count in zip(values, part_counts, strict=True):
+            if isinstance(value, str):
+                offset = part_index * XLSX_TEXT_CHUNK_SIZE
+                chunk = value[offset : offset + XLSX_TEXT_CHUNK_SIZE]
+                row.append(_safe_cell(chunk) if part_index < value_part_count else None)
+            else:
+                row.append(_xlsx_cell(value) if part_index == 0 else None)
+        row.extend((part_index + 1, part_count))
+        yield row
+
+
+def _build_xlsx(db: Session, statements, *, canonical_ids: dict[int, int]):
+    # Ownership is transferred to _file_chunks, which closes after streaming.
+    spool = tempfile.SpooledTemporaryFile(  # noqa: SIM115
+        max_size=XLSX_SPOOL_MEMORY_BYTES, mode="w+b"
+    )
     book = Workbook(write_only=True)
-    for title, headers, rows in collected:
+    sheets = []
+    for title, headers, _statement in statements:
         sheet = book.create_sheet(title)
-        sheet.append(headers)
-        for raw_row in rows:
+        sheet.append((*headers, *CONTINUATION_HEADERS))
+        sheets.append(sheet)
+
+    overflow = False
+    actual_rows = 0
+    for (title, headers, statement), sheet in zip(statements, sheets, strict=True):
+        sheet_rows = 0
+        for raw_row in db.execute(statement.execution_options(yield_per=1_000)):
             row = list(raw_row)
             if title == "Движения" and row[3] is not None:
                 row[4] = canonical_ids.get(row[3], row[3])
@@ -349,16 +424,37 @@ def _build_xlsx(db: Session, statements) -> io.BytesIO:
                 row[14] = canonical_ids.get(row[13], row[13])
             elif title == "Инвентаризации" and row[10] is not None:
                 row[11] = canonical_ids.get(row[10], row[10])
-            sheet.append([_xlsx_cell(value) for value in row])
-    buffer = io.BytesIO()
-    book.save(buffer)
-    buffer.seek(0)
-    return buffer
+            for expanded in _expanded_xlsx_rows(row):
+                actual_rows += 1
+                if len(canonical_ids) + actual_rows > MAX_EXPORT_ROWS:
+                    overflow = True
+                    break
+                sheet.append(expanded)
+                sheet_rows += 1
+            if overflow:
+                break
+        sheet.auto_filter.ref = (
+            f"A1:{get_column_letter(len(headers) + len(CONTINUATION_HEADERS))}{sheet_rows + 1}"
+        )
+        if overflow:
+            break
+
+    if overflow:
+        # Saving finalizes write-only worksheet XML and prevents leaked generators.
+        book.save(spool)
+        spool.close()
+        raise OverflowError("inventory_export_too_large")
+    book.save(spool)
+    spool.seek(0)
+    return spool
 
 
-def _buffer_chunks(buffer: io.BytesIO) -> Iterator[bytes]:
-    while chunk := buffer.read(64 * 1024):
-        yield chunk
+def _file_chunks(file_obj) -> Iterator[bytes]:
+    try:
+        while chunk := file_obj.read(64 * 1024):
+            yield chunk
+    finally:
+        file_obj.close()
 
 
 def build_inventory_export(
@@ -374,8 +470,7 @@ def build_inventory_export(
         raise ValueError("inventory_export_format_invalid")
     stock_statement = _stock_statement(park_ids)
     if format == "csv":
-        rows = list(db.execute(stock_statement.limit(MAX_EXPORT_ROWS + 1)))
-        if len(rows) > MAX_EXPORT_ROWS:
+        if _row_count(db, stock_statement) > MAX_EXPORT_ROWS:
             raise OverflowError("inventory_export_too_large")
     else:
         statements = [
@@ -384,12 +479,18 @@ def build_inventory_export(
             ("Поставки", RECEIPT_HEADERS, _receipt_statement(park_ids)),
             ("Инвентаризации", COUNT_HEADERS, _count_statement(park_ids)),
         ]
-        buffer = _build_xlsx(db, statements)
+        row_count = _preflight_row_counts(db, statements)
+        canonical_ids = _load_aliases(db, remaining=MAX_EXPORT_ROWS - row_count)
+        spool = _build_xlsx(
+            db,
+            statements,
+            canonical_ids=canonical_ids,
+        )
     suffix = "all" if all_parks else f"park-{park_ids[0]}"
     if format == "csv":
         return (
             "text/csv; charset=utf-8",
             f"Склад-{suffix}.csv",
-            _csv_chunks(rows),
+            _csv_chunks(db.execute(stock_statement.execution_options(yield_per=1_000))),
         )
-    return XLSX_MEDIA_TYPE, f"Склад-{suffix}.xlsx", _buffer_chunks(buffer)
+    return XLSX_MEDIA_TYPE, f"Склад-{suffix}.xlsx", _file_chunks(spool)

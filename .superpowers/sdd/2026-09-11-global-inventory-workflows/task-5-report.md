@@ -48,9 +48,10 @@ Further RED cycles covered specific behavior before each implementation incremen
   avoiding alias duplication or inflated totals.
 - Strings beginning with `=`, `+`, `-`, or `@` receive an apostrophe in both formats. XLSX stores
   integers outside Excel's exact numeric range as decimal text, preserving signed-int64 values.
-- Each response is a `StreamingResponse` with no temporary file, a safe ASCII fallback filename,
-  and an RFC 5987 UTF-8 filename. Each data export is bounded to 100,000 rows before response
-  construction; overflow returns controlled HTTP 413 `inventory_export_too_large`.
+- Each response is a `StreamingResponse` with a safe ASCII fallback filename and an RFC 5987 UTF-8
+  filename. CSV rows stream from the database; XLSX uses bounded spooled backing and rolls over to
+  disk above 8 MiB. Each data export is bounded to 100,000 rows before response construction;
+  overflow returns controlled HTTP 413 `inventory_export_too_large`.
 
 ## Verification evidence
 
@@ -73,8 +74,52 @@ used `uv sync --frozen --extra dev`, which restored the locked dev group without
 - Mutation review covers missing BOM, unsanitized formula text, unauthorized all/foreign scope,
   scope checks after a domain query, missing alias canonicalization, duplicate current alias stock,
   wrong sheet order, lossy int64 XLSX cells, and row-cap bypass.
-- The workbook is built in write-only mode into an in-memory ZIP before its bytes are streamed.
-  This is deliberate: it keeps the 100,000-row cap and workbook errors controlled before response
-  headers are sent, while avoiding temporary files. Memory use is bounded by the row cap.
+- The workbook is built in write-only mode into a bounded `SpooledTemporaryFile` before its bytes
+  are streamed. This keeps workbook and row-cap errors controlled before response headers are sent,
+  while allowing large workbooks to roll over to disk instead of growing an unbounded `BytesIO`.
 - Existing warnings are the Starlette TestClient deprecation and SQLite datetime-adapter warnings
   from migration tests. No known correctness blocker remains.
+
+## Fix round 1/5
+
+Review range: `2946240..19f61fd`. The round addressed all six findings: privileged archived-park
+history scope, Excel 15-digit integer precision, bounded linear alias resolution, lossless long-text
+continuations, bounded export memory, and worksheet filters.
+
+### TDD RED
+
+After adding the regression tests, before changing the service:
+
+`cd apps/api && .venv/bin/pytest tests/test_inventory_exports.py -q`
+
+Result: `5 failed, 6 passed, 1 warning in 2.11s`.
+
+The failures demonstrated that privileged users received 403 for an inactive park, a
+`1_000_000_000_000_001` value remained numeric in XLSX, no bounded alias resolver existed, long
+comments were truncated instead of continued, and XLSX had no spooled backing/preflight contract.
+
+### Fix implementation
+
+- Admin and royal selected/all scopes now include inactive parks and their history. Operator and
+  mechanic access remains active-only through the shared park guard, including mechanic assignment;
+  denials happen before inventory-domain queries.
+- XLSX serializes every integer wider than 15 decimal digits as text, including signed-int64 bounds;
+  formula-looking strings remain inert.
+- Alias loading is capped at the remaining export budget and counts against 100,000. Canonical
+  resolution memoizes and path-compresses chains in linear work and reports cycles as a controlled
+  client error.
+- Text over Excel's 32,767-character cell limit is split into deterministic continuation rows with
+  part/total markers. Continuation rows do not repeat numeric identifiers and count toward the cap.
+- All four statements receive COUNT preflights. CSV consumes the database result incrementally;
+  write-only XLSX consumes `yield_per` results into an 8 MiB spooled file and completes before
+  headers are returned. Every worksheet receives an exact auto-filter range.
+
+### GREEN and verification
+
+- Export regression module: `11 passed, 1 warning in 2.40s`.
+- Required focused export + legacy inventory: `26 passed, 1 warning in 5.58s`.
+- Broad inventory regression: `128 passed, 21 warnings in 26.40s`.
+- Full API: `1459 passed, 21 warnings in 241.56s (0:04:01)`.
+
+The warnings remain the existing Starlette TestClient and SQLite datetime-adapter deprecations.
+No known correctness blocker remains; XLSX intentionally uses disk-backed spooling above 8 MiB.

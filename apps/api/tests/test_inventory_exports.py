@@ -4,11 +4,13 @@ from datetime import date, datetime
 
 import pytest
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 from sqlalchemy import event
 
 from conftest import login_as, role_id_for
 from robopark_api.models import (
     INVENTORY_INT64_MAX,
+    INVENTORY_INT64_MIN,
     InventoryCatalogComponent,
     InventoryCatalogPart,
     InventoryCount,
@@ -386,3 +388,299 @@ def test_export_rejects_missing_ambiguous_and_invalid_parameters(
     assert ambiguous.json() == {"detail": "inventory_export_scope_ambiguous"}
     assert invalid.status_code == 422
     assert invalid_scope.status_code == 422
+
+
+def test_admin_and_royal_export_inactive_parks_while_operator_and_mechanic_cannot(
+    client, db_session, db_engine, seed_park_with_tracker
+):
+    inactive = Park(name="Archived", tag="Archived", is_active=False)
+    db_session.add(inactive)
+    db_session.commit()
+    royal = _user(db_session, "royal", "inactive-royal")
+    admin = _user(db_session, "admin", "inactive-admin")
+    operator = _user(db_session, "operator", "inactive-operator")
+    mechanic = _user(db_session, "mechanic", "inactive-mechanic", [inactive])
+    component = InventoryCatalogComponent(
+        name="Inactive park component",
+        normalized_name="inactive park component",
+        created_by=royal.id,
+        updated_by=royal.id,
+    )
+    db_session.add(component)
+    db_session.flush()
+    part = InventoryCatalogPart(
+        component_id=component.id,
+        name="Inactive park part",
+        normalized_name="inactive park part",
+        article="INACTIVE-PARK",
+        normalized_article="inactive-park",
+        created_by=royal.id,
+        updated_by=royal.id,
+    )
+    db_session.add(part)
+    db_session.flush()
+    db_session.add_all(
+        [
+            InventoryParkStock(
+                park_id=inactive.id,
+                catalog_part_id=part.id,
+                quantity=9,
+                minimum_quantity=2,
+                location="ARCHIVE",
+                updated_by=royal.id,
+            ),
+            InventoryMovement(
+                park_id=inactive.id,
+                catalog_part_id=part.id,
+                actor_user_id=royal.id,
+                kind="receipt",
+                delta=9,
+                balance_before=0,
+                balance_after=9,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    for privileged in (admin, royal):
+        login_as(client, privileged.username, "secret")
+        selected = client.get("/inventory/export", params={"park_id": inactive.id, "format": "csv"})
+        assert selected.status_code == 200, selected.text
+        assert list(csv.reader(io.StringIO(selected.content.decode("utf-8-sig"))))[1][0] == str(
+            inactive.id
+        )
+
+    login_as(client, royal.username, "secret")
+    all_result = client.get("/inventory/export", params={"scope": "all", "format": "xlsx"})
+    assert all_result.status_code == 200, all_result.text
+    book = load_workbook(io.BytesIO(all_result.content), read_only=False)
+    assert inactive.id in [row[0] for row in list(book["Остатки"].values)[1:]]
+    assert inactive.id in [row[1] for row in list(book["Движения"].values)[1:]]
+    for sheet in book.worksheets:
+        assert sheet.auto_filter.ref == (
+            f"A1:{get_column_letter(sheet.max_column)}{max(sheet.max_row, 1)}"
+        )
+
+    domain_queries = []
+
+    def record_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if "inventory_" in statement.casefold():
+            domain_queries.append(statement)
+
+    event.listen(db_engine, "before_cursor_execute", record_statement)
+    try:
+        for restricted in (operator, mechanic):
+            login_as(client, restricted.username, "secret")
+            domain_queries.clear()
+            denied = client.get(
+                "/inventory/export", params={"park_id": inactive.id, "format": "xlsx"}
+            )
+            assert denied.status_code == 403
+            assert domain_queries == []
+    finally:
+        event.remove(db_engine, "before_cursor_execute", record_statement)
+
+
+def test_xlsx_stringifies_integers_beyond_excel_fifteen_digits(
+    client, db_session, seed_park_with_tracker
+):
+    royal = _user(db_session, "royal", "precision-royal")
+    component = InventoryCatalogComponent(
+        name="Precision component",
+        normalized_name="precision component",
+        created_by=royal.id,
+        updated_by=royal.id,
+    )
+    db_session.add(component)
+    db_session.flush()
+    part = InventoryCatalogPart(
+        component_id=component.id,
+        name="Precision part",
+        normalized_name="precision part",
+        article="PRECISION",
+        normalized_article="precision",
+        created_by=royal.id,
+        updated_by=royal.id,
+    )
+    db_session.add(part)
+    db_session.flush()
+    db_session.add(
+        InventoryParkStock(
+            park_id=seed_park_with_tracker.id,
+            catalog_part_id=part.id,
+            quantity=1_000_000_000_000_001,
+            minimum_quantity=999_999_999_999_999,
+            updated_by=royal.id,
+        )
+    )
+    db_session.add_all(
+        [
+            InventoryMovement(
+                park_id=seed_park_with_tracker.id,
+                catalog_part_id=part.id,
+                actor_user_id=royal.id,
+                kind="adjustment",
+                delta=INVENTORY_INT64_MAX,
+                balance_before=0,
+                balance_after=INVENTORY_INT64_MAX,
+            ),
+            InventoryMovement(
+                park_id=seed_park_with_tracker.id,
+                catalog_part_id=part.id,
+                actor_user_id=royal.id,
+                kind="adjustment",
+                delta=INVENTORY_INT64_MIN,
+                balance_before=INVENTORY_INT64_MAX,
+                balance_after=0,
+            ),
+        ]
+    )
+    db_session.commit()
+    login_as(client, royal.username, "secret")
+
+    response = client.get(
+        "/inventory/export",
+        params={"park_id": seed_park_with_tracker.id, "format": "xlsx"},
+    )
+
+    assert response.status_code == 200, response.text
+    book = load_workbook(io.BytesIO(response.content), read_only=True)
+    stock = list(book["Остатки"].values)[1]
+    assert stock[6] == "1000000000000001"
+    assert stock[7] == 999_999_999_999_999
+    movements = list(book["Движения"].values)[1:]
+    assert [row[9] for row in movements] == [str(INVENTORY_INT64_MAX), str(INVENTORY_INT64_MIN)]
+
+
+def test_alias_resolution_is_bounded_linear_and_cycles_fail_controlled(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    class CountingLinks(dict):
+        get_calls = 0
+
+        def get(self, key, default=None):
+            self.get_calls += 1
+            return super().get(key, default)
+
+    chain_length = 2_000
+    links = CountingLinks({index: index + 1 for index in range(chain_length - 1)})
+    links[chain_length - 1] = None
+    resolved = inventory_exports._resolve_aliases(links)
+    assert resolved[0] == chain_length - 1
+    assert resolved[chain_length // 2] == chain_length - 1
+    assert links.get_calls <= chain_length * 5
+    with pytest.raises(ValueError, match="inventory_alias_cycle"):
+        inventory_exports._resolve_aliases({1: 2, 2: 1})
+
+    royal = _user(db_session, "royal", "alias-cap-royal")
+    component = InventoryCatalogComponent(
+        name="Alias cap component",
+        normalized_name="alias cap component",
+        is_active=False,
+        created_by=royal.id,
+        updated_by=royal.id,
+    )
+    db_session.add(component)
+    db_session.flush()
+    for index in range(3):
+        db_session.add(
+            InventoryCatalogPart(
+                component_id=component.id,
+                name=f"Alias {index}",
+                normalized_name=f"alias {index}",
+                article=f"ALIAS-{index}",
+                normalized_article=f"alias-{index}",
+                is_active=False,
+                created_by=royal.id,
+                updated_by=royal.id,
+            )
+        )
+    db_session.commit()
+    monkeypatch.setattr(inventory_exports, "MAX_EXPORT_ROWS", 2)
+    login_as(client, royal.username, "secret")
+
+    response = client.get(
+        "/inventory/export",
+        params={"park_id": seed_park_with_tracker.id, "format": "xlsx"},
+    )
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "inventory_export_too_large"}
+
+
+def test_xlsx_chunks_long_comments_without_duplicate_numeric_values_and_counts_them(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    royal = _user(db_session, "royal", "long-comment-royal")
+    long_comment = "=" + "Я" * 32_765 + "+" + "Ю" * 32_765 + "@" + "Э" * 4_468
+    db_session.add(
+        InventoryReceipt(
+            park_id=seed_park_with_tracker.id,
+            supplier="Factory",
+            receipt_date=date(2026, 9, 11),
+            comment=long_comment,
+            status="draft",
+            created_by=royal.id,
+        )
+    )
+    db_session.commit()
+    login_as(client, royal.username, "secret")
+
+    response = client.get(
+        "/inventory/export",
+        params={"park_id": seed_park_with_tracker.id, "format": "xlsx"},
+    )
+
+    assert response.status_code == 200, response.text
+    book = load_workbook(io.BytesIO(response.content), read_only=True)
+    rows = list(book["Поставки"].values)
+    assert rows[0][-2:] == ("Часть текста", "Всего частей")
+    assert len(rows) == 4
+    assert [row[-2:] for row in rows[1:]] == [(1, 3), (2, 3), (3, 3)]
+    comment_parts = [row[7] for row in rows[1:]]
+    assert [part[:2] for part in comment_parts] == ["'=", "'+", "'@"]
+    reconstructed = "".join(part[1:] for part in comment_parts)
+    assert reconstructed == long_comment
+    assert rows[1][0] is not None
+    assert all(row[0] is None for row in rows[2:])
+
+    monkeypatch.setattr(inventory_exports, "MAX_EXPORT_ROWS", 1)
+    capped = client.get(
+        "/inventory/export",
+        params={"park_id": seed_park_with_tracker.id, "format": "xlsx"},
+    )
+    assert capped.status_code == 413
+    assert capped.json() == {"detail": "inventory_export_too_large"}
+
+
+def test_xlsx_preflights_counts_and_uses_closed_spooled_backing(
+    client, db_session, db_engine, seed_park_with_tracker, monkeypatch
+):
+    royal = _user(db_session, "royal", "spooled-royal")
+    sql = []
+    spools = []
+    original_factory = inventory_exports.tempfile.SpooledTemporaryFile
+
+    def tracked_spool(*args, **kwargs):
+        spool = original_factory(*args, **kwargs)
+        spools.append(spool)
+        return spool
+
+    def record_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if "inventory_" in statement.casefold():
+            sql.append(statement.casefold())
+
+    monkeypatch.setattr(inventory_exports.tempfile, "SpooledTemporaryFile", tracked_spool)
+    event.listen(db_engine, "before_cursor_execute", record_statement)
+    try:
+        login_as(client, royal.username, "secret")
+        response = client.get(
+            "/inventory/export",
+            params={"park_id": seed_park_with_tracker.id, "format": "xlsx"},
+        )
+    finally:
+        event.remove(db_engine, "before_cursor_execute", record_statement)
+
+    assert response.status_code == 200, response.text
+    assert len([statement for statement in sql[:4] if "count(" in statement]) == 4
+    assert spools and all(spool.closed for spool in spools)
