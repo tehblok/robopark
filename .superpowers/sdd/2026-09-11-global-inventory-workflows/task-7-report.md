@@ -35,6 +35,16 @@ GREEN: Test Files 2 passed (2); Tests 22 passed (22)
 
 The seven RED assertions reproduce stale duplicate injection, incomplete component metadata after row 200, stale merge results, exposed mobile global actions, and missing desktop/mobile bulk label selection.
 
+Round 3 review RED/GREEN:
+
+```text
+cd apps/web && npm test -- --run src/domains/inventory/InventoryPartsView.test.tsx src/domains/inventory/InventoryManageView.test.tsx
+RED: Test Files 2 failed (2); Tests 4 failed | 22 passed
+GREEN: Test Files 2 passed (2); Tests 26 passed (26)
+```
+
+The four RED assertions cover a component-create response crossing parks, component 4001 being silently omitted, a repeated metadata page failing invisibly, and selected labels retaining stale stock fields.
+
 Backend GREEN:
 
 ```text
@@ -57,12 +67,15 @@ cd apps/api && .venv/bin/pytest tests/test_inventory_catalog.py -q
 - Merge-target requests use their own generation guard across park, source, query, and page changes.
 - Admin/royal global actions use the existing responsive disclosure: inline on desktop and one compact collapsed action on phones. Archive remains confirmation-gated.
 - Label selection supports one item, arbitrary chosen items across pages, or the entire current filtered page; the print portal renders all chosen labels on desktop and mobile.
+- Component creation captures the active park operation generation; a stale completion cannot open another park's editor or issue an old-park reload.
+- Component pagination now follows the reported total without a row cap and rejects empty/repeated pages with a visible incomplete-metadata error.
+- Label selection stores IDs only. Search and stock saves refresh the part cache, and printable objects are resolved from that cache at print time.
 
 ## Verification
 
 ```text
 cd apps/web && npm test
-125 files passed; 1841 tests passed
+125 files passed; 1845 tests passed
 
 cd apps/web && npm run build
 exit 0; 2186 modules transformed (pre-existing chunk-size warning)

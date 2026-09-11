@@ -92,6 +92,28 @@ describe('InventoryManageView', () => {
     expect(apiClient.updateInventoryStock).toHaveBeenCalledWith(1, 32, { minimum_quantity: '9007199254740993', location: 'Полка B-2', is_active: true })
   })
 
+  it('ignores a component created for a park that is no longer active', async () => {
+    const created = deferred<{ id: number; name: string; is_active: boolean; has_photo: boolean }>()
+    const apiClient = client({
+      createInventoryCatalogComponent: vi.fn(() => created.promise),
+      searchInventory: vi.fn(async ({ parkId }: { parkId: number }) => ({ items: [{ ...part, location: `Парк ${parkId}` }], limit: 25, offset: 0, total: 1 })),
+    })
+    const view = render(<InventoryManageView apiClient={apiClient} parkId={1} role="mechanic" />)
+    await screen.findByRole('option', { name: 'Тяга · ABC-01' })
+    await userEvent.click(screen.getByRole('button', { name: 'Добавить компоненту' }))
+    const form = screen.getByRole('form', { name: 'Новая компонента' })
+    await userEvent.type(within(form).getByRole('textbox', { name: 'Название' }), 'Старая компонента')
+    await userEvent.click(within(form).getByRole('button', { name: 'Создать' }))
+    await waitFor(() => expect(apiClient.createInventoryCatalogComponent).toHaveBeenCalledWith({ park_id: 1, name: 'Старая компонента' }))
+
+    view.rerender(<InventoryManageView apiClient={apiClient} parkId={2} role="mechanic" />)
+    await waitFor(() => expect(apiClient.searchInventory).toHaveBeenLastCalledWith(expect.objectContaining({ parkId: 2 })))
+    await act(async () => created.resolve({ id: 88, name: 'Старая компонента', is_active: true, has_photo: false }))
+
+    expect(screen.queryByRole('form', { name: 'Новая позиция' })).not.toBeInTheDocument()
+    expect(apiClient.searchInventory).not.toHaveBeenLastCalledWith(expect.objectContaining({ parkId: 1 }))
+  })
+
   it('selects a duplicate existing part, opens park settings and preserves the draft', async () => {
     const apiClient = client({
       createInventoryCatalogPart: vi.fn(async () => { throw new ApiError(409, { code: 'inventory_article_exists', existing_part_id: 31 }) }),

@@ -91,6 +91,29 @@ describe('InventoryPartsView', () => {
     expect(apiClient.inventoryCatalogComponents).toHaveBeenLastCalledWith(1, { limit: 200, offset: 200 })
   })
 
+  it('continues component metadata pagination beyond 4000 rows', async () => {
+    const apiClient = client(vi.fn(async () => page([])))
+    apiClient.inventoryCatalogComponents = vi.fn(async (_parkId: number, { offset = 0 }: { limit?: number; offset?: number } = {}) => ({
+      items: Array.from({ length: Math.min(200, 4001 - offset) }, (_, index) => ({ id: offset + index + 1, name: offset + index === 4000 ? 'Компонента 4001' : `Компонента ${offset + index + 1}`, is_active: true, has_photo: false })),
+      limit: 200,
+      offset,
+      total: 4001,
+    }))
+    render(<InventoryPartsView apiClient={apiClient} parkId={1} />)
+
+    expect(await screen.findByRole('option', { name: 'Компонента 4001' }, { timeout: 10_000 })).toHaveValue('4001')
+    expect(apiClient.inventoryCatalogComponents).toHaveBeenLastCalledWith(1, { limit: 200, offset: 4000 })
+  })
+
+  it('shows a component metadata error when the server repeats a page without progress', async () => {
+    const components = Array.from({ length: 200 }, (_, index) => ({ id: index + 1, name: `Компонента ${index + 1}`, is_active: true, has_photo: false }))
+    const apiClient = client(vi.fn(async () => page([])))
+    apiClient.inventoryCatalogComponents = vi.fn(async (_parkId: number, { offset = 0 }: { limit?: number; offset?: number } = {}) => ({ items: components, limit: 200, offset, total: 201 }))
+    render(<InventoryPartsView apiClient={apiClient} parkId={1} />)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось полностью загрузить список компонент')
+  })
+
   it('rejects values above signed int64 without a stock API call', async () => {
     const apiClient = client()
     render(<InventoryPartsView apiClient={apiClient} parkId={1} />)
@@ -197,5 +220,22 @@ describe('InventoryPartsView', () => {
 
     expect(document.querySelectorAll('.inventory-print-label')).toHaveLength(2)
     expect(screen.queryByRole('form', { name: 'Настройки остатка' })).not.toBeInTheDocument()
+  })
+
+  it('prints the latest saved fields for a previously selected label ID', async () => {
+    vi.spyOn(window, 'print').mockImplementation(() => undefined)
+    const apiClient = client()
+    apiClient.updateInventoryStock = vi.fn(async () => ({ park_id: 1, catalog_part_id: 31, quantity: '5', minimum_quantity: '2', location: 'Новая полка', is_active: true, version: '2' }))
+    render(<InventoryPartsView apiClient={apiClient} parkId={1} />)
+    const card = (await screen.findByRole('heading', { name: 'Тяга' })).closest('article')!
+    await userEvent.click(within(card).getByRole('checkbox', { name: 'Выбрать для печати Тяга' }))
+    await userEvent.click(within(card).getByRole('button', { name: 'Настроить остаток' }))
+    await userEvent.click(within(card).getByRole('button', { name: 'Сохранить' }))
+    await waitFor(() => expect(card).toHaveTextContent('Новая полка'))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Печатать выбранные (1)' }))
+
+    expect(document.querySelector('.inventory-print-label')).toHaveTextContent('Новая полка')
+    expect(document.querySelector('.inventory-print-label')).not.toHaveTextContent('Полка A-1')
   })
 })

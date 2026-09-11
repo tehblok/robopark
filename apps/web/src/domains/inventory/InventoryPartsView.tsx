@@ -7,7 +7,7 @@ import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { classifyApiError } from '../../shared/api/classifyApiError'
 import { InventoryLabels } from './InventoryLabels'
 import { inventoryInt64Compare, inventoryQuantityError, isInventoryQuantity } from './inventoryTypes'
-import { loadInventoryComponents } from './loadInventoryComponents'
+import { INVENTORY_COMPONENTS_INCOMPLETE, loadInventoryComponents } from './loadInventoryComponents'
 
 type InventoryPartsApi = Pick<typeof api, 'searchInventory' | 'inventoryCatalogComponents' | 'updateInventoryStock' | 'inventoryPartPhotoUrl'>
 type PartWorkflowKind = 'stock'
@@ -62,10 +62,13 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
   const [result, setResult] = useState<InventoryPageEnvelope<InventoryCatalogSearchItem> | null>(null)
   const [knownComponents, setKnownComponents] = useState<Array<{ id: number; name: string }>>([])
   const [error, setError] = useState<unknown>(null)
+  const [componentError, setComponentError] = useState('')
   const [loading, setLoading] = useState(true)
   const [internalSelectedId, setInternalSelectedId] = useState<number | null>(null)
   const [workflow, setWorkflow] = useState<PartWorkflow>(null)
-  const [printParts, setPrintParts] = useState<Map<number, InventoryCatalogSearchItem>>(() => new Map())
+  const [selectedLabelIds, setSelectedLabelIds] = useState<Set<number>>(() => new Set())
+  const [labelsToPrint, setLabelsToPrint] = useState<InventoryCatalogSearchItem[]>([])
+  const partsById = useRef(new Map<number, InventoryCatalogSearchItem>())
   const generation = useRef(0)
   const activeParkId = useRef(parkId)
   useEffect(() => { activeParkId.current = parkId }, [parkId])
@@ -83,6 +86,7 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
     const timer = globalThis.setTimeout(() => {
       apiClient.searchInventory(params).then(value => {
         if (requestId !== generation.current) return
+        value.items.forEach(item => partsById.current.set(item.id, item))
         setResult(value)
         setLoading(false)
       }).catch(reason => {
@@ -96,16 +100,19 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
 
   useEffect(() => {
     const requestedParkId = parkId
+    setComponentError('')
     loadInventoryComponents(apiClient, parkId).then(value => {
       if (activeParkId.current === requestedParkId) setKnownComponents(value.map(item => ({ id: item.id, name: item.name })))
-    }).catch(() => { /* Search remains usable if metadata is unavailable. */ })
+    }).catch(() => { if (activeParkId.current === requestedParkId) setComponentError(INVENTORY_COMPONENTS_INCOMPLETE) })
   }, [apiClient, parkId])
 
   useEffect(() => {
     setOffset(0)
     setResult(null)
     setKnownComponents([])
-    setPrintParts(new Map())
+    setSelectedLabelIds(new Set())
+    setLabelsToPrint([])
+    partsById.current.clear()
     setWorkflow(null)
     select(null)
   // A park change starts a fresh, unselected catalog.
@@ -115,29 +122,31 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
   const failure = error ? classifyApiError(error, 'Не удалось загрузить запчасти.') : null
   const updateLocalStock = (stock: InventoryStockView, requestedParkId: number) => {
     if (requestedParkId !== activeParkId.current || stock.park_id !== requestedParkId) return
-    setResult(current => current ? {
-    ...current,
-    items: current.items.map(item => item.id === stock.catalog_part_id ? { ...item, minimum_quantity: stock.minimum_quantity, location: stock.location, stock_is_active: stock.is_active } : item),
-    } : current)
+    setResult(current => {
+      if (!current) return current
+      const items = current.items.map(item => item.id === stock.catalog_part_id ? { ...item, minimum_quantity: stock.minimum_quantity, location: stock.location, stock_is_active: stock.is_active } : item)
+      items.forEach(item => partsById.current.set(item.id, item))
+      return { ...current, items }
+    })
   }
   const openWorkflow = (catalogPartId: number, kind: PartWorkflowKind) => {
     select(catalogPartId)
     setWorkflow({ catalogPartId, kind })
   }
-  const print = (parts: InventoryCatalogSearchItem[]) => {
+  const print = (ids: number[]) => {
     setWorkflow(null)
-    setPrintParts(new Map(parts.map(item => [item.id, item])))
+    setLabelsToPrint(ids.map(id => partsById.current.get(id)).filter((item): item is InventoryCatalogSearchItem => Boolean(item)))
     globalThis.setTimeout(() => window.print(), 0)
   }
-  const togglePrintPart = (item: InventoryCatalogSearchItem) => setPrintParts(current => {
-    const next = new Map(current)
-    if (next.has(item.id)) next.delete(item.id)
-    else next.set(item.id, item)
+  const togglePrintPart = (id: number) => setSelectedLabelIds(current => {
+    const next = new Set(current)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
     return next
   })
-  const chooseCurrentPage = () => setPrintParts(current => {
-    const next = new Map(current)
-    result?.items.forEach(item => next.set(item.id, item))
+  const chooseCurrentPage = () => setSelectedLabelIds(current => {
+    const next = new Set(current)
+    result?.items.forEach(item => next.add(item.id))
     return next
   })
 
@@ -147,7 +156,8 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
       <FormField id="inventory-component-filter" label="Компонента"><select value={componentId ?? ''} onChange={event => { setComponentId(event.target.value ? Number(event.target.value) : undefined); setOffset(0) }}><option value="">Все компоненты</option>{knownComponents.map(component => <option key={component.id} value={component.id}>{component.name}</option>)}</select></FormField>
       <FormField id="inventory-stock-filter" label="Остаток"><select value={stockFilter ?? ''} onChange={event => { setStockFilter(event.target.value as InventoryStockFilter || undefined); setOffset(0) }}><option value="">Все остатки</option><option value="in_stock">Есть на складе</option><option value="below_minimum">Ниже минимума</option><option value="without_location">Без места</option></select></FormField>
     </div>
-    <div aria-label="Печать этикеток" className="inventory-label-actions" role="group"><Button disabled={!result?.items.length} onClick={chooseCurrentPage} size="compact" variant="secondary">Выбрать текущую страницу</Button><Button disabled={!printParts.size} onClick={() => print([...printParts.values()])} size="compact">Печатать выбранные ({printParts.size})</Button>{printParts.size ? <Button onClick={() => setPrintParts(new Map())} size="compact" variant="ghost">Очистить выбор</Button> : null}</div>
+    <div aria-label="Печать этикеток" className="inventory-label-actions" role="group"><Button disabled={!result?.items.length} onClick={chooseCurrentPage} size="compact" variant="secondary">Выбрать текущую страницу</Button><Button disabled={!selectedLabelIds.size} onClick={() => print([...selectedLabelIds])} size="compact">Печатать выбранные ({selectedLabelIds.size})</Button>{selectedLabelIds.size ? <Button onClick={() => { setSelectedLabelIds(new Set()); setLabelsToPrint([]) }} size="compact" variant="ghost">Очистить выбор</Button> : null}</div>
+    {componentError ? <p className="form-error" role="alert">{componentError}</p> : null}
     {failure ? <ErrorState description={failure.description} title={failure.title} /> : null}
     {loading && !result ? <LoadingState label="Ищем запчасти" /> : null}
     {!loading && result && !result.items.length ? <EmptyState description="Измените запрос или фильтры." icon="work" title="Запчасти не найдены" /> : null}
@@ -158,13 +168,13 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
         {item.has_photo ? <img alt={item.name} className="inventory-search-card__photo" height={72} src={apiClient.inventoryPartPhotoUrl(-item.id)} width={72} /> : <div className="inventory-photo-placeholder inventory-search-card__photo">Нет фото</div>}
         <div className="inventory-search-card__body"><div className="inventory-search-card__heading"><div><h3>{item.name}</h3><p>{item.component_name} · <strong>{item.article}</strong></p></div><StatusBadge tone={item.quantity === '0' ? 'critical' : low ? 'warning' : 'success'}>{item.quantity} шт.</StatusBadge></div>
           <p className="inventory-search-card__location">{item.location || 'Место не указано'}</p>
-          <label className="inventory-label-choice"><input aria-label={`Выбрать для печати ${item.name}`} checked={printParts.has(item.id)} onChange={() => togglePrintPart(item)} type="checkbox" /> В печать</label>
-          <div className="inventory-card-actions"><Button onClick={() => openWorkflow(item.id, 'stock')} size="compact" variant={selected && workflow?.kind === 'stock' ? 'primary' : 'secondary'}>Настроить остаток</Button><Button onClick={() => { select(item.id); print([item]) }} size="compact" variant="ghost">Печатать этикетку</Button></div>
+          <label className="inventory-label-choice"><input aria-label={`Выбрать для печати ${item.name}`} checked={selectedLabelIds.has(item.id)} onChange={() => togglePrintPart(item.id)} type="checkbox" /> В печать</label>
+          <div className="inventory-card-actions"><Button onClick={() => openWorkflow(item.id, 'stock')} size="compact" variant={selected && workflow?.kind === 'stock' ? 'primary' : 'secondary'}>Настроить остаток</Button><Button onClick={() => { select(item.id); print([item.id]) }} size="compact" variant="ghost">Печатать этикетку</Button></div>
           {selected && workflow?.kind === 'stock' ? <StockForm apiClient={apiClient} onSaved={updateLocalStock} parkId={parkId} part={item} /> : null}
         </div>
       </article>
     })}</div>
     {result && result.total > result.limit ? <nav aria-label="Страницы запчастей" className="inventory-pagination"><Button disabled={offset === 0} onClick={() => setOffset(current => Math.max(0, current - 25))} size="compact" variant="secondary">Предыдущая страница</Button><span>{offset + 1}–{Math.min(offset + result.limit, result.total)} из {result.total}</span><Button disabled={offset + result.limit >= result.total} onClick={() => setOffset(current => current + 25)} size="compact" variant="secondary">Следующая страница</Button></nav> : null}
-    <InventoryLabels parts={[...printParts.values()]} />
+    <InventoryLabels parts={labelsToPrint} />
   </section>
 }

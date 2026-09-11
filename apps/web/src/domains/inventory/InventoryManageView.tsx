@@ -7,7 +7,7 @@ import { ResponsiveDisclosure, ResponsiveDisclosureGroup } from '../../design-sy
 import { ConfirmDialog } from '../../design-system/overlays/ConfirmDialog'
 import { classifyApiError } from '../../shared/api/classifyApiError'
 import { inventoryQuantityError, isInventoryQuantity } from './inventoryTypes'
-import { loadInventoryComponents } from './loadInventoryComponents'
+import { INVENTORY_COMPONENTS_INCOMPLETE, loadInventoryComponents } from './loadInventoryComponents'
 
 type InventoryManageApi = Pick<typeof api,
   | 'searchInventory'
@@ -80,6 +80,7 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
   const [componentName, setComponentName] = useState('')
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
+  const [componentError, setComponentError] = useState('')
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
   const generation = useRef(0)
@@ -120,9 +121,11 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
     setCatalogOffset(0)
     select(null)
     operationGeneration.current += 1
+    setBusy(false)
+    setComponentError('')
     loadInventoryComponents(apiClient, parkId).then(value => {
       if (activeParkId.current === parkId) setComponents(value.map(item => ({ id: item.id, name: item.name })))
-    }).catch(() => {})
+    }).catch(() => { if (activeParkId.current === parkId) setComponentError(INVENTORY_COMPONENTS_INCOMPLETE) })
     return () => { generation.current += 1 }
   }, [apiClient, parkId, select])
 
@@ -141,6 +144,25 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
     } : item))
   }
   const chooseWorkflow = (next: ManageWorkflow) => { setError(''); setNotice(''); setWorkflow(next) }
+  const createComponent = async (event: FormEvent) => {
+    event.preventDefault()
+    const requestedParkId = parkId
+    const requestGeneration = operationGeneration.current
+    setBusy(true)
+    setError('')
+    try {
+      const created = await apiClient.createInventoryCatalogComponent({ park_id: requestedParkId, name: componentName })
+      if (activeParkId.current !== requestedParkId || operationGeneration.current !== requestGeneration) return
+      setDraft(current => ({ ...current, componentId: String(created.id) }))
+      setComponentName('')
+      setWorkflow('create')
+      await load()
+    } catch (reason) {
+      if (activeParkId.current === requestedParkId && operationGeneration.current === requestGeneration) setError(classifyApiError(reason, 'Не удалось создать компоненту.').description)
+    } finally {
+      if (activeParkId.current === requestedParkId && operationGeneration.current === requestGeneration) setBusy(false)
+    }
+  }
   const createPart = async (event: FormEvent) => {
     event.preventDefault()
     const componentId = Number(draft.componentId)
@@ -200,8 +222,9 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
     {loading ? <LoadingState label="Загружаем каталог" /> : null}
     {catalogTotal > 25 ? <nav aria-label="Страницы каталога" className="inventory-pagination"><Button disabled={catalogOffset === 0} onClick={() => setCatalogOffset(value => Math.max(0, value - 25))} size="compact" variant="secondary">Предыдущая страница каталога</Button><Button disabled={catalogOffset + 25 >= catalogTotal} onClick={() => setCatalogOffset(value => value + 25)} size="compact" variant="secondary">Следующая страница каталога</Button></nav> : null}
     {notice ? <p className="inventory-notice" role="status">{notice}</p> : null}
+    {componentError ? <p className="form-error" role="alert">{componentError}</p> : null}
     {error ? <p className="form-error" role="alert">{error}</p> : null}
-    {workflow === 'component' ? <form aria-label="Новая компонента" className="inventory-manage-form" onSubmit={async event => { event.preventDefault(); setBusy(true); setError(''); try { const created = await apiClient.createInventoryCatalogComponent({ park_id: parkId, name: componentName }); setDraft(current => ({ ...current, componentId: String(created.id) })); setComponentName(''); setWorkflow('create'); await load() } catch (reason) { setError(classifyApiError(reason, 'Не удалось создать компоненту.').description) } finally { setBusy(false) } }}><h3>Новая компонента</h3><FormField id="inventory-new-component" label="Название" required><input value={componentName} onChange={event => setComponentName(event.target.value)} /></FormField><Button busy={busy} disabled={!componentName.trim()} type="submit">Создать</Button></form> : null}
+    {workflow === 'component' ? <form aria-label="Новая компонента" className="inventory-manage-form" onSubmit={createComponent}><h3>Новая компонента</h3><FormField id="inventory-new-component" label="Название" required><input value={componentName} onChange={event => setComponentName(event.target.value)} /></FormField><Button busy={busy} disabled={!componentName.trim()} type="submit">Создать</Button></form> : null}
     {workflow === 'create' ? <form aria-label="Новая позиция" className="inventory-manage-form" onSubmit={createPart}><h3>Новая позиция</h3><FormField id="inventory-new-part-component" label="Компонента" required><select value={draft.componentId} onChange={event => setDraft(current => ({ ...current, componentId: event.target.value }))}><option value="">Выберите</option>{components.map(component => <option key={component.id} value={component.id}>{component.name}</option>)}</select></FormField><FormField id="inventory-new-part-name" label="Название" required><input value={draft.name} onChange={event => setDraft(current => ({ ...current, name: event.target.value }))} /></FormField><FormField id="inventory-new-part-article" label="Артикул" required><input value={draft.article} onChange={event => setDraft(current => ({ ...current, article: event.target.value }))} /></FormField><FormField id="inventory-new-part-location" label="Место"><input value={draft.location} onChange={event => setDraft(current => ({ ...current, location: event.target.value }))} /></FormField><FormField error={inventoryQuantityError(draft.minimum)} id="inventory-new-part-minimum" label="Минимум"><input inputMode="numeric" pattern="[0-9]*" value={draft.minimum} onChange={event => setDraft(current => ({ ...current, minimum: event.target.value }))} /></FormField><Button busy={busy} disabled={!draft.componentId || !draft.name.trim() || !draft.article.trim() || !isInventoryQuantity(draft.minimum)} type="submit">Создать</Button></form> : null}
     {workflow === 'stock' && selected ? <ParkStockForm apiClient={apiClient} onSaved={updateStockItem} parkId={parkId} part={selected} /> : null}
     {workflow === 'global-edit' && selected && canManageGlobal ? <GlobalPartForm apiClient={apiClient} onSaved={async () => { await load(); setWorkflow(null) }} part={selected} /> : null}
