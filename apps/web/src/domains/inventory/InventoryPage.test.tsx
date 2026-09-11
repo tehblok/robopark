@@ -86,6 +86,25 @@ it('opens stock movement with one phone disclosure click and replaces it with ed
   expect(within(part).queryByRole('combobox', { name: 'Операция' })).not.toBeInTheDocument()
 })
 
+it('does not clear another part workflow when closing an older phone disclosure', async () => {
+  useViewport(true)
+  render(renderInventoryPage(park, inventoryClient({ inventory: vi.fn(async () => stockWithTwoComponents) })))
+  const firstPart = (await screen.findByRole('heading', { name: 'Тяга' })).closest('article')!
+  const secondPart = screen.getByRole('heading', { name: 'Шина' }).closest('article')!
+
+  await userEvent.click(within(firstPart).getByRole('button', { name: 'Редактировать' }))
+  await userEvent.click(within(secondPart).getByRole('button', { name: 'Движение остатков' }))
+  const quantity = within(secondPart).getByRole('spinbutton', { name: 'Количество' })
+  await userEvent.clear(quantity)
+  await userEvent.type(quantity, '7')
+
+  await userEvent.click(within(firstPart).getByRole('button', { name: 'Редактировать' }))
+
+  expect(within(secondPart).getByRole('combobox', { name: 'Операция' })).toBeVisible()
+  expect(within(secondPart).getByRole('spinbutton', { name: 'Количество' })).toHaveValue(7)
+  expect(document.querySelectorAll('.inventory-parts .rp-button--primary')).toHaveLength(1)
+})
+
 it('keeps desktop part editors closed and exposes one primary action only for the selected part', async () => {
   render(renderInventoryPage(park, inventoryClient({ inventory: vi.fn(async () => stockWithTwoComponents) })))
 

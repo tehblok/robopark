@@ -127,3 +127,46 @@ Result: exit 0; 2181 modules transformed and production bundle built. Existing c
 Result: exit 0; oxlint reported no findings.
 
 Report Playwright was not rerun because this round did not change report behavior.
+
+## Fix round 3/5
+
+STATUS: COMPLETE
+
+### Review finding
+
+- Inventory disclosure close callbacks now clear the shared workflow only when the active workflow belongs to the same part and action. Closing an older card cannot unmount another card's editor or discard its in-progress quantity.
+
+### RED
+
+`cd apps/web && npm test -- --run src/domains/inventory/InventoryPage.test.tsx`
+
+Result: exit 1; 1 file failed, 1 failed / 13 passed. After opening edit on part A, entering quantity `7` in movement on part B, and closing A, part B's operation and quantity fields were unmounted.
+
+### GREEN and verification
+
+`cd apps/web && npm test -- --run src/design-system/layout/ResponsiveDisclosure.test.tsx src/domains/inventory/InventoryPage.test.tsx`
+
+Result: exit 0; 2 files passed, 19 tests passed.
+
+`cd apps/web && npm test -- --run src/domains/inventory src/pages/Reports.test.tsx src/components/reports src/domains/campaigns src/design-system/layout/ResponsiveDisclosure.test.tsx`
+
+Result: exit 0; 6 files passed, 59 tests passed.
+
+`cd apps/web && npm run build`
+
+Result: exit 0; 2181 modules transformed and production bundle built. Existing chunk-size warning remains.
+
+`cd apps/web && npm run lint -- src/design-system/layout/ResponsiveDisclosure.tsx src/design-system/layout/ResponsiveDisclosure.test.tsx src/domains/inventory/InventoryPage.tsx src/domains/inventory/InventoryPage.test.tsx`
+
+Result: exit 0; oxlint reported no findings.
+
+Report Playwright was not rerun because this round did not change report behavior.
+
+### Commit
+
+`git commit -m "fix: preserve selected inventory workflow"`
+
+### Concerns
+
+- Vite retains its existing warning that some chunks exceed 500 kB after minification; the build succeeds.
+- Unrelated dirty package/version/API/release files and responsive visual snapshots remain untouched and unstaged.
