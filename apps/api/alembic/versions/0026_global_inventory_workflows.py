@@ -433,12 +433,15 @@ def _materialize_legacy_inventory_for_downgrade() -> None:
             (row["park_id"], normalize_inventory_key(row["name"])), row["id"]
         )
     legacy_part_ids: dict[tuple[int, str], int] = {}
+    legacy_part_ids_by_key: dict[tuple[int, str], list[int]] = defaultdict(list)
     for row in bind.execute(
         sa.select(legacy_parts).order_by(legacy_parts.c.created_at, legacy_parts.c.id)
     ).mappings():
         normalized_article = normalize_inventory_key(row["article"])
         if normalized_article:
-            legacy_part_ids.setdefault((row["park_id"], normalized_article), row["id"])
+            key = (row["park_id"], normalized_article)
+            legacy_part_ids.setdefault(key, row["id"])
+            legacy_part_ids_by_key[key].append(row["id"])
 
     def ensure_legacy_part(park_id: int, catalog_part_id: int, stock=None) -> int:
         part = part_rows[catalog_part_id]
@@ -498,6 +501,17 @@ def _materialize_legacy_inventory_for_downgrade() -> None:
                     updated_at=stock["updated_at"],
                 )
             )
+            duplicate_ids = [
+                part_id
+                for part_id in legacy_part_ids_by_key.get(part_key, [])
+                if part_id != legacy_part_id
+            ]
+            if duplicate_ids:
+                bind.execute(
+                    legacy_parts.update()
+                    .where(legacy_parts.c.id.in_(duplicate_ids))
+                    .values(quantity=0, is_active=False, updated_at=stock["updated_at"])
+                )
         return legacy_part_id
 
     legacy_part_by_stock: dict[tuple[int, int], int] = {}

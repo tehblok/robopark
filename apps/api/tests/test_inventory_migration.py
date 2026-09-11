@@ -360,3 +360,62 @@ def test_upgrade_records_same_park_location_conflict(sqlite_database_url, monkey
                 "WHERE field_name = 'location'"
             )
         ).one() == (100, 200, "L1", "L2")
+
+
+def test_round_trip_reconciles_same_park_legacy_duplicates_without_losing_history(
+    sqlite_database_url, monkeypatch
+):
+    config, engine = _upgrade_legacy_inventory(sqlite_database_url, monkeypatch)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO inventory_components (id, park_id, name) VALUES "
+                "(10, 1, 'Wheels'), (20, 1, 'Tyres')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_parts "
+                "(id, park_id, component_id, name, article, quantity, minimum_quantity, "
+                "location, is_active, created_at) VALUES "
+                "(100, 1, 10, 'First', 'DUP-3', 2, 0, 'L1', 1, :first), "
+                "(200, 1, 20, 'Second', ' dup-3 ', 3, 0, 'L2', 1, :later)"
+            ),
+            {"first": datetime(2026, 1, 1), "later": datetime(2026, 1, 2)},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_movements "
+                "(id, part_id, park_id, actor_user_id, kind, delta, balance_after, created_at) "
+                "VALUES (1000, 100, 1, 999, 'receipt', 2, 2, :first), "
+                "(2000, 200, 1, 999, 'receipt', 3, 3, :later)"
+            ),
+            {"first": datetime(2026, 1, 1), "later": datetime(2026, 1, 2)},
+        )
+
+    command.upgrade(config, "0026_global_inventory_workflows")
+    command.downgrade(config, "0025_local_task_claims")
+
+    with engine.connect() as connection:
+        legacy_parts = connection.execute(
+            text("SELECT article, quantity, is_active FROM inventory_parts ORDER BY id")
+        ).all()
+        duplicates = [
+            row
+            for row in legacy_parts
+            if " ".join(row.article.strip().casefold().split()) == "dup-3"
+        ]
+        assert sum(row.quantity for row in duplicates) == 5
+        assert sum(row.is_active for row in duplicates) == 1
+        assert (
+            connection.execute(text("SELECT count(*) FROM inventory_movements")).scalar_one() == 2
+        )
+
+    command.upgrade(config, "0026_global_inventory_workflows")
+    with engine.connect() as connection:
+        assert (
+            connection.execute(text("SELECT quantity FROM inventory_park_stocks")).scalar_one() == 5
+        )
+        assert (
+            connection.execute(text("SELECT count(*) FROM inventory_movements")).scalar_one() == 2
+        )
