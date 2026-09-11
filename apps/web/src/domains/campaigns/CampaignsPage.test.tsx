@@ -98,3 +98,24 @@ it('sends a comment and photo to operator review', async () => {
   await waitFor(() => expect(complete).toHaveBeenCalledWith(4, 'RP-1', 7, 'Всё готово', photo))
   expect(campaign).toHaveBeenCalledTimes(2)
 })
+
+it('keeps only one ticket completion form open on a phone', async () => {
+  useViewport(true)
+  const twoOpen = {
+    ...detail,
+    open_tickets: [
+      detail.open_tickets[0],
+      { ...detail.open_tickets[0], key: 'RP-3', robot: 'A103' },
+    ],
+  }
+  renderPage({ ...api, campaign: vi.fn(async () => twoOpen) })
+  const actions = await screen.findAllByRole('button', { name: 'Заполнить и отправить на проверку' })
+
+  await userEvent.click(actions[0])
+  expect(screen.getAllByRole('textbox', { name: 'Комментарий для оператора' })).toHaveLength(1)
+  await userEvent.click(screen.getByRole('button', { name: 'Заполнить и отправить на проверку' }))
+
+  expect(screen.getAllByRole('textbox', { name: 'Комментарий для оператора' })).toHaveLength(1)
+  expect(screen.getByRole('textbox', { name: 'Комментарий для оператора' }).closest('article'))
+    .toHaveTextContent('A103')
+})

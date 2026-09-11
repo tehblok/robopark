@@ -238,6 +238,7 @@ function seedCurrentWork(currentUser = user, currentIssue = issue) {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   vi.useRealTimers()
   resourceStore.clearAll()
   resetCoalescingForTests()

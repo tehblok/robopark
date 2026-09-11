@@ -31,6 +31,7 @@ export function RobotCheckSummary({ snapshot, online, failed, pending, onRefresh
       <Button variant="secondary" onClick={onShowDiagnostic}>Показать неисправность</Button>
     </div> : null}
     {model.criticalReason ? <p className="rp-check-critical" role="status">{model.criticalReason}</p> : null}
+    {!leading && !model.criticalReason ? <p role="status">Активных ошибок нет</p> : null}
     <details className="rp-check-supplementary"><summary>VIN и координаты</summary>
       <p className="rp-check-vin">{snapshot.vin}</p>
       <p>{snapshot.lat != null && snapshot.lon != null ? `${snapshot.lat}, ${snapshot.lon}` : 'Координаты не получены'}</p>

@@ -90,6 +90,20 @@ it('uses the compact diagnostic summary in the production robot route', async ()
   expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(leadingDiagnostic.description)
 })
 
+it('states the clean diagnostic verdict in the compact summary', async () => {
+  const apiClient = client()
+  apiClient.emergencySnapshot.mockResolvedValue({
+    ...snapshot,
+    diagnostic_events: [],
+    error_banner: null,
+    wheels_fault: [],
+  })
+  render(tree(apiClient, `/robots/${VIN}?park=8&tab=state`))
+
+  expect(await screen.findByRole('region', { name: 'Состояние робота' }))
+    .toHaveTextContent('Активных ошибок нет')
+})
+
 it.each(['pending', 'failed'] as const)('loads direct related tasks while the Emergency snapshot is %s and keeps tabs usable', async state => {
   const apiClient = client()
   let rejectSnapshot!: (error: unknown) => void

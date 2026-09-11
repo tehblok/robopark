@@ -24,8 +24,10 @@ const DisclosureContext = createContext<DisclosureContextValue | null>(null)
 
 export type ResponsiveDisclosureGroupProps = {
   children: ReactNode
+  controlledOpenId?: string | null
   initialOpenId?: string
   label: string
+  onOpenIdChange?: (id: string | undefined) => void
 }
 
 function readIsPhone(): boolean {
@@ -34,11 +36,14 @@ function readIsPhone(): boolean {
 
 export function ResponsiveDisclosureGroup({
   children,
+  controlledOpenId,
   initialOpenId,
   label,
+  onOpenIdChange,
 }: ResponsiveDisclosureGroupProps): ReactElement {
   const [isPhone, setIsPhone] = useState(readIsPhone)
-  const [openId, setOpenId] = useState<string | undefined>(initialOpenId)
+  const [internalOpenId, setInternalOpenId] = useState<string | undefined>(initialOpenId)
+  const openId = controlledOpenId === undefined ? internalOpenId : controlledOpenId ?? undefined
   const callbacks = useRef(new Map<string, (open: boolean) => void>())
   const registerOpenChange = useCallback((id: string, callback: (open: boolean) => void) => {
     callbacks.current.set(id, callback)
@@ -48,7 +53,8 @@ export function ResponsiveDisclosureGroup({
     if (nextId === openId) return
     if (openId) callbacks.current.get(openId)?.(false)
     if (nextId) callbacks.current.get(nextId)?.(true)
-    setOpenId(nextId)
+    if (controlledOpenId === undefined) setInternalOpenId(nextId)
+    onOpenIdChange?.(nextId)
   }
 
   useEffect(() => {

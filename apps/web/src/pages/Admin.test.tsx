@@ -41,6 +41,7 @@ function setup(validation: Partial<IntegrationSettings> = {}, parks: Park[] = []
     operator: false, mechanic: false, admin: false, royal: false, driver: false,
   })
   vi.spyOn(api, 'adminUsers').mockResolvedValue([])
+  vi.spyOn(api, 'operationsSlaPolicy').mockResolvedValue({ park_id: 7, target_hours: 4 })
   return renderApp(route, testUser({ role: 'admin', permissions, parks }))
 }
 
@@ -76,6 +77,15 @@ describe('Admin Emergency cookie validation', () => {
     const create = await screen.findByRole('button', { name: 'Добавить парк' })
     expect(screen.queryByRole('heading', { name: 'Новый парк' })).not.toBeInTheDocument()
     fireEvent.click(create)
+    expect(screen.getByRole('heading', { name: 'Новый парк' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Открыть парк Северный' }))
+    expect(screen.queryByRole('heading', { name: 'Новый парк' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Очередь Tracker')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Настроить SLA' }))
+    expect(screen.queryByLabelText('Очередь Tracker')).not.toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Норматив SLA' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить парк' }))
+    expect(screen.queryByRole('heading', { name: 'Норматив SLA' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Новый парк' })).toBeVisible()
   })
 

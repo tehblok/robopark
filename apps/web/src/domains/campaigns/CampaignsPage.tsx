@@ -124,8 +124,7 @@ function transitionLabel(value: string | null) {
   return null
 }
 
-function TicketCard({ ticket, campaign, apiClient, reload }: { ticket: CampaignTicket; campaign: CampaignDetail; apiClient: CampaignApi; reload: () => void }) {
-  const [editing, setEditing] = useState(false)
+function TicketCard({ ticket, campaign, apiClient, reload, editing, onEditingChange }: { ticket: CampaignTicket; campaign: CampaignDetail; apiClient: CampaignApi; reload: () => void; editing: boolean; onEditingChange: (editing: boolean) => void }) {
   const [comment, setComment] = useState('')
   const [photo, setPhoto] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
@@ -151,8 +150,8 @@ function TicketCard({ ticket, campaign, apiClient, reload }: { ticket: CampaignT
       <label className="field"><span>Комментарий для оператора</span><textarea required maxLength={4000} value={comment} onChange={event => setComment(event.target.value)} /></label>
       <label className="field"><span>Фото</span><input accept="image/jpeg,image/png,image/webp" required type="file" onChange={event => setPhoto(event.target.files?.[0] ?? null)} /></label>
       {error ? <p className="form-error" role="alert">{error}</p> : null}
-      <div className="campaign-actions"><Button busy={busy} disabled={!photo || !comment.trim()} type="submit">Отправить оператору</Button><Button onClick={() => setEditing(false)} type="button" variant="ghost">Отмена</Button></div>
-    </form> : <Button onClick={() => setEditing(true)} variant="secondary">Заполнить и отправить на проверку</Button>}</> : null}
+      <div className="campaign-actions"><Button busy={busy} disabled={!photo || !comment.trim()} type="submit">Отправить оператору</Button><Button onClick={() => onEditingChange(false)} type="button" variant="ghost">Отмена</Button></div>
+    </form> : <Button onClick={() => onEditingChange(true)} variant="secondary">Заполнить и отправить на проверку</Button>}</> : null}
     {ticket.review_status === 'open' && ticket.report_id ? <Link to={`/reports/${ticket.report_id}`}>Открыть проверку оператора</Link> : null}
   </article>
 }
@@ -162,6 +161,7 @@ function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; api
   const [data, setData] = useState<CampaignDetail | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [query, setQuery] = useState('')
+  const [editingTicketKey, setEditingTicketKey] = useState<string | null>(null)
   const load = useCallback(() => { setError(null); apiClient.campaign(campaignId).then(setData).catch(setError) }, [apiClient, campaignId])
   useEffect(load, [load])
   const open = useMemo(() => {
@@ -176,9 +176,9 @@ function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; api
     <ResponsiveDisclosureGroup label="Разделы кампании"><ResponsiveDisclosure id="metrics" summary={`${data.percent_complete}% · ${data.completed_count} из ${data.total_count}`} title="Метрики"><CampaignMetrics campaign={data} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>
     <div className="campaign-columns">
       <Panel density="dense" title={`Открытые · ${data.open_tickets.length}`}><label className="field campaign-search"><span>Поиск по роботу</span><input onChange={event => setQuery(event.target.value)} placeholder="Номер робота или тикет" value={query} /></label>
-        <div className="campaign-tickets">{open.map(ticket => <TicketCard apiClient={apiClient} campaign={data} key={ticket.key} reload={load} ticket={ticket} />)}{!open.length ? <p>Открытые тикеты не найдены.</p> : null}</div>
+        <div className="campaign-tickets">{open.map(ticket => <TicketCard apiClient={apiClient} campaign={data} editing={editingTicketKey === ticket.key} key={ticket.key} onEditingChange={editing => setEditingTicketKey(editing ? ticket.key : null)} reload={load} ticket={ticket} />)}{!open.length ? <p>Открытые тикеты не найдены.</p> : null}</div>
       </Panel>
-      <Panel density="dense"><ResponsiveDisclosureGroup label="История кампании"><ResponsiveDisclosure id="closed" summary={`${data.closed_tickets.length} тикетов`} title={`Закрытые · ${data.closed_tickets.length}`}><div className="campaign-tickets">{data.closed_tickets.map(ticket => <TicketCard apiClient={apiClient} campaign={data} key={ticket.key} reload={load} ticket={ticket} />)}{!data.closed_tickets.length ? <p>Закрытых тикетов пока нет.</p> : null}</div></ResponsiveDisclosure></ResponsiveDisclosureGroup></Panel>
+      <Panel density="dense"><ResponsiveDisclosureGroup label="История кампании"><ResponsiveDisclosure id="closed" summary={`${data.closed_tickets.length} тикетов`} title={`Закрытые · ${data.closed_tickets.length}`}><div className="campaign-tickets">{data.closed_tickets.map(ticket => <TicketCard apiClient={apiClient} campaign={data} editing={editingTicketKey === ticket.key} key={ticket.key} onEditingChange={editing => setEditingTicketKey(editing ? ticket.key : null)} reload={load} ticket={ticket} />)}{!data.closed_tickets.length ? <p>Закрытых тикетов пока нет.</p> : null}</div></ResponsiveDisclosure></ResponsiveDisclosureGroup></Panel>
     </div>
   </PageLayout>
 }

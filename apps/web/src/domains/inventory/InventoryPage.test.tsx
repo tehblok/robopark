@@ -86,7 +86,20 @@ it('opens stock movement with one phone disclosure click and replaces it with ed
   expect(within(part).queryByRole('combobox', { name: 'Операция' })).not.toBeInTheDocument()
 })
 
-it('does not clear another part workflow when closing an older phone disclosure', async () => {
+it('keeps only one massive inventory workflow open on a phone', async () => {
+  useViewport(true)
+  render(renderInventoryPage(park))
+  const part = (await screen.findByRole('heading', { name: 'Тяга' })).closest('article')!
+
+  await userEvent.click(screen.getByRole('button', { name: 'Добавить запчасть' }))
+  expect(screen.getByRole('textbox', { name: 'Название новой запчасти' })).toBeVisible()
+  await userEvent.click(within(part).getByRole('button', { name: 'Движение остатков' }))
+
+  expect(screen.queryByRole('textbox', { name: 'Название новой запчасти' })).not.toBeInTheDocument()
+  expect(within(part).getByRole('spinbutton', { name: 'Количество' })).toBeVisible()
+})
+
+it('moves the single phone workflow between parts', async () => {
   useViewport(true)
   render(renderInventoryPage(park, inventoryClient({ inventory: vi.fn(async () => stockWithTwoComponents) })))
   const firstPart = (await screen.findByRole('heading', { name: 'Тяга' })).closest('article')!
@@ -94,14 +107,10 @@ it('does not clear another part workflow when closing an older phone disclosure'
 
   await userEvent.click(within(firstPart).getByRole('button', { name: 'Редактировать' }))
   await userEvent.click(within(secondPart).getByRole('button', { name: 'Движение остатков' }))
-  const quantity = within(secondPart).getByRole('spinbutton', { name: 'Количество' })
-  await userEvent.clear(quantity)
-  await userEvent.type(quantity, '7')
-
   await userEvent.click(within(firstPart).getByRole('button', { name: 'Редактировать' }))
 
-  expect(within(secondPart).getByRole('combobox', { name: 'Операция' })).toBeVisible()
-  expect(within(secondPart).getByRole('spinbutton', { name: 'Количество' })).toHaveValue(7)
+  expect(within(firstPart).getByRole('textbox', { name: 'Название' })).toBeVisible()
+  expect(within(secondPart).queryByRole('combobox', { name: 'Операция' })).not.toBeInTheDocument()
   expect(document.querySelectorAll('.inventory-parts .rp-button--primary')).toHaveLength(1)
 })
 
