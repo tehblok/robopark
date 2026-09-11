@@ -80,7 +80,15 @@ export async function openRouteFixture(page: Page, routeId: AppRouteId, user: Us
   await expect(routeReadyMarker(page, routeId)).toBeVisible()
   if (routeId === 'operator-parks') {
     await expect(page.getByText('Парк #8', { exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Запросить парк', exact: true }).first()).toBeEnabled()
+    const availableParkPanel = page.locator('section.panel').filter({
+      has: page.getByRole('heading', { name: 'Запросить парк', exact: true, level: 2 }),
+    })
+    await availableParkPanel.getByRole('button', { name: 'Запросить парк', exact: true }).click()
+    const requestDialog = page.getByRole('dialog', { name: 'Запросить парк' })
+    await expect(requestDialog.getByRole('option', { name: 'Южный парк (south)', exact: true })).toHaveText('Южный парк (south)')
+    await expect(requestDialog.getByLabel('Парк', { exact: true })).toHaveValue('8')
+    await requestDialog.getByRole('button', { name: 'Закрыть', exact: true }).filter({ hasText: 'Закрыть' }).click()
+    await expect(requestDialog).toBeHidden()
   }
 }
 

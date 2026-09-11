@@ -28,19 +28,31 @@ test('operator overview exposes the loaded secondary summary before its strict l
 test('route fixtures prove loaded operator, campaign, report-detail and administration workflows', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 })
   let releaseParks!: () => void
+  let releaseAvailableParks!: () => void
   const parksGate = new Promise<void>((resolve) => { releaseParks = resolve })
+  const availableParksGate = new Promise<void>((resolve) => { releaseAvailableParks = resolve })
   const parksReady = openRouteFixture(page, 'operator-parks', userForRole('operator'), {
-    routes: [{ method: 'GET', path: '/api/operator/parks', handler: async () => {
-      await parksGate
-      return { json: [parkNorth] }
-    } }],
+    routes: [
+      { method: 'GET', path: '/api/operator/parks', handler: async () => {
+        await parksGate
+        return { json: [parkNorth] }
+      } },
+      { method: 'GET', path: '/api/operator/available-parks', handler: async () => {
+        await availableParksGate
+        return { json: [{ ...parkNorth, id: 8, name: 'Южный парк', tag: 'south' }] }
+      } },
+    ],
   })
   await expect(page.getByRole('heading', { name: 'Мои парки', exact: true, level: 1 })).toBeVisible()
   expect(await Promise.race([parksReady.then(() => true), new Promise<false>((resolve) => setTimeout(() => resolve(false), 250))])).toBe(false)
   releaseParks()
-  await parksReady
   await expect(page.locator('.park-card-title', { hasText: 'Северный парк' })).toBeVisible()
-  await page.getByRole('button', { name: 'Запросить парк', exact: true }).first().click()
+  await expect(page.getByText('Парк #8', { exact: true })).toBeVisible()
+  expect(await Promise.race([parksReady.then(() => true), new Promise<false>((resolve) => setTimeout(() => resolve(false), 1000))])).toBe(false)
+  releaseAvailableParks()
+  await parksReady
+  const availableParkPanel = page.locator('section.panel').filter({ has: page.getByRole('heading', { name: 'Запросить парк', exact: true, level: 2 }) })
+  await availableParkPanel.getByRole('button', { name: 'Запросить парк', exact: true }).click()
   await expect(page.getByRole('dialog', { name: 'Запросить парк' }).getByLabel('Парк', { exact: true })).toHaveValue('8')
   await expect(page.getByText('operator-e2e', { exact: true })).toBeVisible()
 
