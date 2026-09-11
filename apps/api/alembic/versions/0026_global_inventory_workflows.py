@@ -312,6 +312,7 @@ def _backfill_catalog() -> None:
 
     part_ids: dict[int, int] = {}
     stock_values: dict[tuple[int, int], dict] = {}
+    stock_canonical_part_ids: dict[tuple[int, int], int] = {}
     for rows in groups.values():
         canonical = rows[0]
         normalized_article = normalize_inventory_key(canonical["article"])
@@ -365,7 +366,19 @@ def _backfill_catalog() -> None:
                     "is_active": row["is_active"],
                     "updated_at": row["updated_at"],
                 }
+                stock_canonical_part_ids[stock_key] = row["id"]
             else:
+                if current["location"] != row["location"]:
+                    bind.execute(
+                        conflicts.insert().values(
+                            normalized_article=normalized_article,
+                            canonical_legacy_part_id=stock_canonical_part_ids[stock_key],
+                            conflicting_legacy_part_id=row["id"],
+                            field_name="location",
+                            canonical_value=current["location"],
+                            conflicting_value=row["location"],
+                        )
+                    )
                 current["quantity"] += row["quantity"]
                 current["minimum_quantity"] = max(
                     current["minimum_quantity"], row["minimum_quantity"]
@@ -375,14 +388,135 @@ def _backfill_catalog() -> None:
     if stock_values:
         bind.execute(park_stocks.insert(), list(stock_values.values()))
 
-    for row in bind.execute(sa.select(legacy_movements)).mappings():
+    movement_groups: dict[tuple[int, int], list] = defaultdict(list)
+    for row in bind.execute(
+        sa.select(legacy_movements).order_by(legacy_movements.c.created_at, legacy_movements.c.id)
+    ).mappings():
+        catalog_part_id = part_ids[row["part_id"]]
+        movement_groups[(row["park_id"], catalog_part_id)].append(row)
+
+    for stock_key, rows in movement_groups.items():
+        balance = stock_values[stock_key]["quantity"] - sum(row["delta"] for row in rows)
+        for row in rows:
+            balance_before = balance
+            balance += row["delta"]
+            bind.execute(
+                legacy_movements.update()
+                .where(legacy_movements.c.id == row["id"])
+                .values(
+                    catalog_part_id=stock_key[1],
+                    balance_before=balance_before,
+                    balance_after=balance,
+                )
+            )
+
+
+def _materialize_legacy_inventory_for_downgrade() -> None:
+    bind = op.get_bind()
+    legacy_components, legacy_parts, legacy_movements = _legacy_tables()
+    metadata = sa.MetaData()
+    catalog_components = sa.Table("inventory_catalog_components", metadata, autoload_with=bind)
+    catalog_parts = sa.Table("inventory_catalog_parts", metadata, autoload_with=bind)
+    park_stocks = sa.Table("inventory_park_stocks", metadata, autoload_with=bind)
+
+    component_rows = {
+        row["id"]: row for row in bind.execute(sa.select(catalog_components)).mappings()
+    }
+    part_rows = {row["id"]: row for row in bind.execute(sa.select(catalog_parts)).mappings()}
+    legacy_component_ids: dict[tuple[int, str], int] = {}
+    for row in bind.execute(
+        sa.select(legacy_components).order_by(
+            legacy_components.c.created_at, legacy_components.c.id
+        )
+    ).mappings():
+        legacy_component_ids.setdefault(
+            (row["park_id"], normalize_inventory_key(row["name"])), row["id"]
+        )
+    legacy_part_ids: dict[tuple[int, str], int] = {}
+    for row in bind.execute(
+        sa.select(legacy_parts).order_by(legacy_parts.c.created_at, legacy_parts.c.id)
+    ).mappings():
+        normalized_article = normalize_inventory_key(row["article"])
+        if normalized_article:
+            legacy_part_ids.setdefault((row["park_id"], normalized_article), row["id"])
+
+    def ensure_legacy_part(park_id: int, catalog_part_id: int, stock=None) -> int:
+        part = part_rows[catalog_part_id]
+        part_key = (park_id, part["normalized_article"])
+        legacy_part_id = legacy_part_ids.get(part_key) if part["normalized_article"] else None
+        quantity = stock["quantity"] if stock is not None else 0
+        minimum_quantity = stock["minimum_quantity"] if stock is not None else 0
+        location = (stock["location"] if stock is not None else None) or ""
+        is_active = stock["is_active"] if stock is not None else part["is_active"]
+        if legacy_part_id is None:
+            component = component_rows[part["component_id"]]
+            component_key = (park_id, component["normalized_name"])
+            component_id = legacy_component_ids.get(component_key)
+            if component_id is None:
+                result = bind.execute(
+                    legacy_components.insert().values(
+                        park_id=park_id,
+                        name=component["name"],
+                        photo_storage_key=component["photo_storage_key"],
+                        photo_filename=component["photo_filename"],
+                        photo_content_type=component["photo_content_type"],
+                        created_at=component["created_at"],
+                    )
+                )
+                component_id = result.inserted_primary_key[0]
+                legacy_component_ids[component_key] = component_id
+            article = part["article"] or f"__catalog_{catalog_part_id}"
+            result = bind.execute(
+                legacy_parts.insert().values(
+                    park_id=park_id,
+                    component_id=component_id,
+                    name=part["name"],
+                    article=article,
+                    quantity=quantity,
+                    minimum_quantity=minimum_quantity,
+                    location=location,
+                    photo_storage_key=part["photo_storage_key"],
+                    photo_filename=part["photo_filename"],
+                    photo_content_type=part["photo_content_type"],
+                    is_active=is_active,
+                    created_at=part["created_at"],
+                    updated_at=stock["updated_at"] if stock is not None else part["updated_at"],
+                )
+            )
+            legacy_part_id = result.inserted_primary_key[0]
+            if part["normalized_article"]:
+                legacy_part_ids[part_key] = legacy_part_id
+        elif stock is not None:
+            bind.execute(
+                legacy_parts.update()
+                .where(legacy_parts.c.id == legacy_part_id)
+                .values(
+                    quantity=quantity,
+                    minimum_quantity=minimum_quantity,
+                    location=location,
+                    is_active=is_active,
+                    updated_at=stock["updated_at"],
+                )
+            )
+        return legacy_part_id
+
+    legacy_part_by_stock: dict[tuple[int, int], int] = {}
+    for stock in bind.execute(sa.select(park_stocks)).mappings():
+        stock_key = (stock["park_id"], stock["catalog_part_id"])
+        legacy_part_by_stock[stock_key] = ensure_legacy_part(*stock_key, stock=stock)
+
+    for movement in bind.execute(
+        sa.select(legacy_movements).where(legacy_movements.c.part_id.is_(None))
+    ).mappings():
+        stock_key = (movement["park_id"], movement["catalog_part_id"])
+        legacy_part_id = legacy_part_by_stock.get(stock_key)
+        if legacy_part_id is None:
+            legacy_part_id = ensure_legacy_part(*stock_key)
+            legacy_part_by_stock[stock_key] = legacy_part_id
         bind.execute(
             legacy_movements.update()
-            .where(legacy_movements.c.id == row["id"])
-            .values(
-                catalog_part_id=part_ids[row["part_id"]],
-                balance_before=row["balance_after"] - row["delta"],
-            )
+            .where(legacy_movements.c.id == movement["id"])
+            .values(part_id=legacy_part_id)
         )
 
 
@@ -410,10 +544,24 @@ def upgrade():
         "inventory_movements",
         ["catalog_part_id", "created_at"],
     )
+    op.create_index(
+        "uq_inventory_movements_source_identity",
+        "inventory_movements",
+        ["source_kind", "source_id", "park_id", "catalog_part_id"],
+        unique=True,
+        sqlite_where=sa.text(
+            "source_kind IS NOT NULL AND source_id IS NOT NULL AND catalog_part_id IS NOT NULL"
+        ),
+        postgresql_where=sa.text(
+            "source_kind IS NOT NULL AND source_id IS NOT NULL AND catalog_part_id IS NOT NULL"
+        ),
+    )
     _backfill_catalog()
 
 
 def downgrade():
+    _materialize_legacy_inventory_for_downgrade()
+    op.drop_index("uq_inventory_movements_source_identity", table_name="inventory_movements")
     op.drop_index("ix_inventory_movements_catalog_part_created", table_name="inventory_movements")
     op.drop_index("ix_inventory_movements_catalog_part_id", table_name="inventory_movements")
     with op.batch_alter_table("inventory_movements") as batch_op:

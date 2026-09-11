@@ -428,6 +428,20 @@ class InventoryMovement(Base):
     __table_args__ = (
         Index("ix_inventory_movements_part_created", "part_id", "created_at"),
         Index("ix_inventory_movements_catalog_part_created", "catalog_part_id", "created_at"),
+        Index(
+            "uq_inventory_movements_source_identity",
+            "source_kind",
+            "source_id",
+            "park_id",
+            "catalog_part_id",
+            unique=True,
+            sqlite_where=text(
+                "source_kind IS NOT NULL AND source_id IS NOT NULL AND catalog_part_id IS NOT NULL"
+            ),
+            postgresql_where=text(
+                "source_kind IS NOT NULL AND source_id IS NOT NULL AND catalog_part_id IS NOT NULL"
+            ),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

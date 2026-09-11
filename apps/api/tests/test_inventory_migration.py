@@ -1,9 +1,11 @@
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, func, inspect, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from robopark_api.models import (
@@ -38,6 +40,30 @@ def _upgrade_legacy_inventory(database_url: str, monkeypatch):
             )
         )
     return config, engine
+
+
+def _insert_catalog_stock(connection, *, quantity: int = 4, location: str = "C-3") -> None:
+    connection.execute(
+        text(
+            "INSERT INTO inventory_catalog_components "
+            "(id, name, normalized_name) VALUES (1, 'Brakes', 'brakes')"
+        )
+    )
+    connection.execute(
+        text(
+            "INSERT INTO inventory_catalog_parts "
+            "(id, component_id, name, normalized_name, article, normalized_article) "
+            "VALUES (1, 1, 'Brake pad', 'brake pad', 'BP-1', 'bp-1')"
+        )
+    )
+    connection.execute(
+        text(
+            "INSERT INTO inventory_park_stocks "
+            "(id, park_id, catalog_part_id, quantity, minimum_quantity, location) "
+            "VALUES (1, 1, 1, :quantity, 1, :location)"
+        ),
+        {"quantity": quantity, "location": location},
+    )
 
 
 def test_upgrade_deduplicates_articles_and_preserves_stock_and_movements(
@@ -171,3 +197,166 @@ def test_downgrade_keeps_legacy_inventory_readable(sqlite_database_url, monkeypa
         assert connection.execute(
             text("SELECT part_id, delta, balance_after FROM inventory_movements WHERE id = 1000")
         ).one() == (100, 2, 2)
+
+
+def test_downgrade_materializes_legacy_part_for_catalog_only_movement(
+    sqlite_database_url, monkeypatch
+):
+    config, engine = _upgrade_legacy_inventory(sqlite_database_url, monkeypatch)
+    command.upgrade(config, "0026_global_inventory_workflows")
+    with engine.begin() as connection:
+        _insert_catalog_stock(connection)
+        connection.execute(
+            text(
+                "INSERT INTO inventory_movements "
+                "(id, part_id, catalog_part_id, park_id, actor_user_id, kind, delta, "
+                "balance_before, balance_after, source_kind, source_id, note) "
+                "VALUES (1000, NULL, 1, 1, 999, 'receipt', 4, 0, 4, "
+                "'receipt', 'new-1', 'catalog-only')"
+            )
+        )
+
+    command.downgrade(config, "0025_local_task_claims")
+
+    with engine.connect() as connection:
+        legacy_part = connection.execute(
+            text(
+                "SELECT inventory_parts.id, inventory_components.name, inventory_parts.name, "
+                "inventory_parts.article, inventory_parts.quantity, inventory_parts.location "
+                "FROM inventory_parts JOIN inventory_components "
+                "ON inventory_components.id = inventory_parts.component_id"
+            )
+        ).one()
+        assert legacy_part[1:] == ("Brakes", "Brake pad", "BP-1", 4, "C-3")
+        assert connection.execute(
+            text(
+                "SELECT part_id, delta, balance_after, note "
+                "FROM inventory_movements WHERE id = 1000"
+            )
+        ).one() == (legacy_part.id, 4, 4, "catalog-only")
+
+
+def test_upgrade_rebases_same_park_duplicate_movement_history(sqlite_database_url, monkeypatch):
+    config, engine = _upgrade_legacy_inventory(sqlite_database_url, monkeypatch)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO inventory_components (id, park_id, name) VALUES "
+                "(10, 1, 'Wheels'), (20, 1, 'Tyres')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_parts "
+                "(id, park_id, component_id, name, article, quantity, minimum_quantity, "
+                "location, created_at) VALUES "
+                "(100, 1, 10, 'First', 'DUP-2', 2, 0, 'L1', :first), "
+                "(200, 1, 20, 'Second', ' dup-2 ', 3, 0, 'L2', :later)"
+            ),
+            {"first": datetime(2026, 1, 1), "later": datetime(2026, 1, 2)},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_movements "
+                "(id, part_id, park_id, actor_user_id, kind, delta, balance_after, created_at) "
+                "VALUES (2000, 200, 1, 999, 'receipt', 3, 3, :movement_time), "
+                "(1000, 100, 1, 999, 'receipt', 2, 2, :movement_time)"
+            ),
+            {"movement_time": datetime(2026, 1, 3)},
+        )
+
+    command.upgrade(config, "0026_global_inventory_workflows")
+
+    with engine.connect() as connection:
+        history = connection.execute(
+            text(
+                "SELECT balance_before, balance_after, delta FROM inventory_movements "
+                "ORDER BY created_at, id"
+            )
+        ).all()
+        assert history == [(0, 2, 2), (2, 5, 3)]
+        assert all(after - before == delta for before, after, delta in history)
+        assert (
+            connection.execute(text("SELECT quantity FROM inventory_park_stocks")).scalar_one()
+            == history[-1].balance_after
+        )
+
+
+def test_movement_source_identity_is_idempotent_but_manual_sources_are_repeatable(
+    sqlite_database_url, monkeypatch
+):
+    config, engine = _upgrade_legacy_inventory(sqlite_database_url, monkeypatch)
+    command.upgrade(config, "0026_global_inventory_workflows")
+    with engine.begin() as connection:
+        _insert_catalog_stock(connection)
+        connection.execute(
+            text(
+                "INSERT INTO inventory_movements "
+                "(part_id, catalog_part_id, park_id, actor_user_id, kind, delta, "
+                "balance_before, balance_after, source_kind, source_id) "
+                "VALUES (NULL, 1, 1, 999, 'receipt', 4, 0, 4, 'receipt', 'receipt-1')"
+            )
+        )
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO inventory_movements "
+                "(part_id, catalog_part_id, park_id, actor_user_id, kind, delta, "
+                "balance_before, balance_after, source_kind, source_id) "
+                "VALUES (NULL, 1, 1, 999, 'receipt', 4, 0, 4, "
+                "'receipt', 'receipt-1')"
+            )
+        )
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO inventory_movements "
+                "(part_id, catalog_part_id, park_id, actor_user_id, kind, delta, "
+                "balance_before, balance_after, source_kind, source_id) VALUES "
+                "(NULL, 1, 1, 999, 'manual', 0, 4, 4, 'manual', NULL), "
+                "(NULL, 1, 1, 999, 'manual', 0, 4, 4, 'manual', NULL)"
+            )
+        )
+    with engine.connect() as connection:
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM inventory_movements WHERE source_id IS NULL")
+            ).scalar_one()
+            == 2
+        )
+
+
+def test_upgrade_records_same_park_location_conflict(sqlite_database_url, monkeypatch):
+    config, engine = _upgrade_legacy_inventory(sqlite_database_url, monkeypatch)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO inventory_components (id, park_id, name) VALUES "
+                "(10, 1, 'Wheels'), (20, 1, ' wheels ')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_parts "
+                "(id, park_id, component_id, name, article, quantity, minimum_quantity, "
+                "location, created_at) VALUES "
+                "(100, 1, 10, 'Wheel', 'LOC-1', 2, 0, 'L1', :first), "
+                "(200, 1, 20, 'Wheel', ' loc-1 ', 3, 0, 'L2', :later)"
+            ),
+            {"first": datetime(2026, 1, 1), "later": datetime(2026, 1, 2)},
+        )
+
+    command.upgrade(config, "0026_global_inventory_workflows")
+
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT quantity, location FROM inventory_park_stocks")
+        ).one() == (5, "L1")
+        assert connection.execute(
+            text(
+                "SELECT canonical_legacy_part_id, conflicting_legacy_part_id, "
+                "canonical_value, conflicting_value FROM inventory_migration_conflicts "
+                "WHERE field_name = 'location'"
+            )
+        ).one() == (100, 200, "L1", "L2")
