@@ -71,19 +71,23 @@ export function fixturePath(route: RouteManifestItem): string {
   return `${route.path}${route.surface === 'shell' ? '?park=7' : ''}`
 }
 
-export async function openRouteFixture(page: Page, routeId: AppRouteId, user: User): Promise<void> {
+export async function openRouteFixture(page: Page, routeId: AppRouteId, user: User, options: { routes?: MockRoute[] } = {}): Promise<void> {
   const route = ROUTE_MANIFEST.find(item => item.id === routeId)
   if (!route) throw new Error(`Unknown route fixture: ${routeId}`)
-  await installOperational(page, { user, routes: routeMockRoutes() })
+  await installOperational(page, { user, routes: [...(options.routes ?? []), ...routeMockRoutes()] })
   await page.goto(fixturePath(route))
   await expect(page.locator('main')).toBeVisible()
   await expect(routeReadyMarker(page, routeId)).toBeVisible()
+  if (routeId === 'operator-parks') {
+    await expect(page.getByText('Парк #8', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Запросить парк', exact: true }).first()).toBeEnabled()
+  }
 }
 
 function routeReadyMarker(page: Page, routeId: AppRouteId) {
   switch (routeId) {
     case 'overview': return page.getByRole('heading', { name: 'Очередь внимания' })
-    case 'operator-parks': return page.getByRole('heading', { name: 'Мои парки', level: 1 })
+    case 'operator-parks': return page.locator('.park-card-title', { hasText: 'Северный парк' })
     case 'work': return page.locator('.rp-work-entities').first()
     case 'work-issue': return page.getByRole('heading', { name: 'Задача ROBOPARK-42', exact: true })
     case 'robots': return page.locator('.rp-robots-search-panel')
@@ -101,7 +105,7 @@ function routeReadyMarker(page: Page, routeId: AppRouteId) {
     case 'admin-settings': return page.getByText('Tracker OAuth', { exact: true })
     case 'admin-users': return page.getByRole('button', { name: 'Открыть аккаунт route-admin', exact: true })
     case 'admin-roles': return page.getByText('Механик', { exact: true })
-    case 'admin-tracker': return page.getByRole('heading', { name: 'Рабочий стол Startrek', exact: true })
+    case 'admin-tracker': return page.getByRole('button', { name: 'Настроить политику Tracker', exact: true })
     case 'admin-robot-check': return page.getByRole('button', { name: 'Открыть раздел Колёса', exact: true })
     default: return page.locator('main')
   }
