@@ -7,6 +7,7 @@ import type {
   InventoryCountLineInput,
   InventoryCountScope,
   InventoryExportParams,
+  InventoryApiErrorDetail,
   InventoryListParams,
   InventoryPageEnvelope,
   InventoryReceipt,
@@ -24,6 +25,8 @@ export type {
   InventoryCountLineInput,
   InventoryCountScope,
   InventoryDocumentStatus,
+  InventoryInt64,
+  InventoryApiErrorDetail,
   InventoryExportParams,
   InventoryListParams,
   InventoryPageEnvelope,
@@ -586,14 +589,23 @@ export type OpsMaintenance = {
 export class ApiError extends Error {
   status: number
   detail: string | null
+  structuredDetail: Record<string, unknown> | unknown[] | null
   requestId?: string
   retryAfterMs?: number
 
-  constructor(status: number, detail: string | null = null, requestId?: string, retryAfterMs?: number) {
-    super(detail ?? String(status))
+  constructor(status: number, detail: unknown = null, requestId?: string, retryAfterMs?: number) {
+    const stringDetail = typeof detail === 'string'
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map(String).join('; ')
+        : null
+    super(stringDetail ?? String(status))
     this.name = 'ApiError'
     this.status = status
-    this.detail = detail
+    this.detail = stringDetail
+    this.structuredDetail = detail !== null && typeof detail === 'object'
+      ? detail as Record<string, unknown> | unknown[]
+      : null
     this.retryAfterMs = retryAfterMs
     this.requestId = requestId
   }
@@ -703,15 +715,105 @@ function responseRequestId(response: Response): string | undefined {
   return response.headers.get('X-Request-ID')?.trim() || undefined
 }
 
-async function readErrorDetail(response: Response): Promise<string | null> {
+async function readErrorDetail(response: Response): Promise<unknown> {
   try {
     const body = await response.json() as { detail?: unknown }
-    if (typeof body.detail === 'string') return body.detail
-    if (Array.isArray(body.detail)) return body.detail.map(String).join('; ')
+    return body.detail ?? null
   } catch {
     return null
   }
-  return null
+}
+
+const INVENTORY_INT64_FIELDS = new Set([
+  'actual_quantity',
+  'balance_after',
+  'current_quantity',
+  'delta',
+  'difference',
+  'expected_quantity',
+  'minimum_quantity',
+  'quantity',
+  'version',
+])
+
+function quoteInventoryInt64Values(text: string): string {
+  let result = ''
+  let index = 0
+  let valueKey: string | null = null
+
+  while (index < text.length) {
+    const character = text[index]
+    if (character === '"') {
+      let end = index + 1
+      while (end < text.length) {
+        if (text[end] === '\\') end += 2
+        else if (text[end] === '"') { end += 1; break }
+        else end += 1
+      }
+      const token = text.slice(index, end)
+      let next = end
+      while (next < text.length && ' \n\r\t'.includes(text[next])) next += 1
+      valueKey = text[next] === ':' ? JSON.parse(token) as string : null
+      result += token
+      index = end
+      continue
+    }
+
+    if (character === '-' || (character >= '0' && character <= '9')) {
+      let end = index + 1
+      while (end < text.length && '0123456789.eE+-'.includes(text[end])) end += 1
+      const token = text.slice(index, end)
+      result += valueKey && INVENTORY_INT64_FIELDS.has(valueKey) && !token.includes('.') && !token.includes('e') && !token.includes('E')
+        ? JSON.stringify(token)
+        : token
+      valueKey = null
+      index = end
+      continue
+    }
+
+    if (character === ',' || character === '{' || character === '['
+      || character === 't' || character === 'f' || character === 'n') valueKey = null
+    result += character
+    index += 1
+  }
+  return result
+}
+
+function parseInventoryJson<T>(text: string): T {
+  return JSON.parse(quoteInventoryInt64Values(text)) as T
+}
+
+function inventoryStringify(value: unknown): string {
+  return quoteInventoryInt64Values(JSON.stringify(value))
+}
+
+async function inventoryRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  return fetchWithTimeout(
+    `/api${path}`,
+    {
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      ...init,
+    },
+    JSON_TIMEOUT_MS,
+    async (response) => {
+      const text = await response.text()
+      if (!response.ok) {
+        let detail: unknown = null
+        try { detail = parseInventoryJson<{ detail?: unknown }>(text).detail ?? null } catch { /* malformed error body */ }
+        throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
+      }
+      if (response.status === 204) return undefined as T
+      return parseInventoryJson<T>(text)
+    },
+  )
+}
+
+export function inventoryErrorDetail(error: unknown): InventoryApiErrorDetail | null {
+  if (!(error instanceof ApiError) || !error.structuredDetail || Array.isArray(error.structuredDetail)) return null
+  return typeof error.structuredDetail.code === 'string'
+    ? error.structuredDetail as InventoryApiErrorDetail
+    : null
 }
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -1236,42 +1338,42 @@ export const api = {
     if (stockFilter) query.set('stock_filter', stockFilter)
     if (limit !== undefined) query.set('limit', String(limit))
     if (offset !== undefined) query.set('offset', String(offset))
-    return request<InventoryPageEnvelope<InventoryCatalogSearchItem>>(`/inventory/catalog/search?${query.toString()}`)
+    return inventoryRequest<InventoryPageEnvelope<InventoryCatalogSearchItem>>(`/inventory/catalog/search?${query.toString()}`)
   },
   createInventoryCatalogComponent: (payload: { park_id: number; name: string }) =>
-    request<InventoryCatalogComponent>('/inventory/catalog/components', { method: 'POST', body: JSON.stringify(payload) }),
+    inventoryRequest<InventoryCatalogComponent>('/inventory/catalog/components', { method: 'POST', body: inventoryStringify(payload) }),
   updateInventoryCatalogComponent: (id: number, payload: Partial<Pick<InventoryCatalogComponent, 'name' | 'is_active'>>) =>
-    request<InventoryCatalogComponent>(`/inventory/catalog/components/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+    inventoryRequest<InventoryCatalogComponent>(`/inventory/catalog/components/${id}`, { method: 'PATCH', body: inventoryStringify(payload) }),
   createInventoryCatalogPart: (payload: { park_id: number; component_id: number; name: string; article: string }) =>
-    request<InventoryCatalogPart>('/inventory/catalog/parts', { method: 'POST', body: JSON.stringify(payload) }),
+    inventoryRequest<InventoryCatalogPart>('/inventory/catalog/parts', { method: 'POST', body: inventoryStringify(payload) }),
   updateInventoryCatalogPart: (id: number, payload: Partial<Pick<InventoryCatalogPart, 'component_id' | 'name' | 'article' | 'is_active'>>) =>
-    request<InventoryCatalogPart>(`/inventory/catalog/parts/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+    inventoryRequest<InventoryCatalogPart>(`/inventory/catalog/parts/${id}`, { method: 'PATCH', body: inventoryStringify(payload) }),
   mergeInventoryCatalogPart: (id: number, targetPartId: number) =>
-    request<InventoryCatalogPart>(`/inventory/catalog/parts/${id}/merge`, { method: 'POST', body: JSON.stringify({ target_part_id: targetPartId }) }),
+    inventoryRequest<InventoryCatalogPart>(`/inventory/catalog/parts/${id}/merge`, { method: 'POST', body: inventoryStringify({ target_part_id: targetPartId }) }),
   updateInventoryStock: (parkId: number, partId: number, payload: Pick<InventoryStockView, 'minimum_quantity' | 'location' | 'is_active'>) =>
-    request<InventoryStockView>(`/inventory/parks/${parkId}/stocks/${partId}`, { method: 'PUT', body: JSON.stringify(payload) }),
+    inventoryRequest<InventoryStockView>(`/inventory/parks/${parkId}/stocks/${partId}`, { method: 'PUT', body: inventoryStringify(payload) }),
   inventoryReceipts: (parkId: number, params?: InventoryListParams) =>
-    request<InventoryPageEnvelope<InventoryReceipt>>(`/inventory/parks/${parkId}/receipts${inventoryListQuery(params)}`),
+    inventoryRequest<InventoryPageEnvelope<InventoryReceipt>>(`/inventory/parks/${parkId}/receipts${inventoryListQuery(params)}`),
   createInventoryReceipt: (parkId: number, payload: InventoryReceiptInput) =>
-    request<InventoryReceipt>(`/inventory/parks/${parkId}/receipts`, { method: 'POST', body: JSON.stringify(payload) }),
+    inventoryRequest<InventoryReceipt>(`/inventory/parks/${parkId}/receipts`, { method: 'POST', body: inventoryStringify(payload) }),
   updateInventoryReceipt: (parkId: number, receiptId: number, payload: Partial<InventoryReceiptInput>) =>
-    request<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+    inventoryRequest<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}`, { method: 'PATCH', body: inventoryStringify(payload) }),
   postInventoryReceipt: (parkId: number, receiptId: number) =>
-    request<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}/post`, { method: 'POST' }),
+    inventoryRequest<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}/post`, { method: 'POST' }),
   cancelInventoryReceipt: (parkId: number, receiptId: number) =>
-    request<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}/cancel`, { method: 'POST' }),
+    inventoryRequest<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}/cancel`, { method: 'POST' }),
   reverseInventoryReceipt: (parkId: number, receiptId: number, reason: string) =>
-    request<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}/reverse`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    inventoryRequest<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}/reverse`, { method: 'POST', body: inventoryStringify({ reason }) }),
   inventoryCounts: (parkId: number, params?: InventoryListParams) =>
-    request<InventoryPageEnvelope<InventoryCount>>(`/inventory/parks/${parkId}/counts${inventoryListQuery(params)}`),
+    inventoryRequest<InventoryPageEnvelope<InventoryCount>>(`/inventory/parks/${parkId}/counts${inventoryListQuery(params)}`),
   createInventoryCount: (parkId: number, payload: { name: string; scope: InventoryCountScope }) =>
-    request<InventoryCount>(`/inventory/parks/${parkId}/counts`, { method: 'POST', body: JSON.stringify(payload) }),
+    inventoryRequest<InventoryCount>(`/inventory/parks/${parkId}/counts`, { method: 'POST', body: inventoryStringify(payload) }),
   updateInventoryCount: (parkId: number, countId: number, lines: InventoryCountLineInput[]) =>
-    request<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}`, { method: 'PATCH', body: JSON.stringify({ lines }) }),
+    inventoryRequest<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}`, { method: 'PATCH', body: inventoryStringify({ lines }) }),
   postInventoryCount: (parkId: number, countId: number) =>
-    request<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}/post`, { method: 'POST' }),
+    inventoryRequest<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}/post`, { method: 'POST' }),
   cancelInventoryCount: (parkId: number, countId: number) =>
-    request<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}/cancel`, { method: 'POST' }),
+    inventoryRequest<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}/cancel`, { method: 'POST' }),
   downloadInventoryExport,
   inventoryMovements: (parkId: number) => request<InventoryMovement[]>(`/inventory/movements?park_id=${parkId}`),
   inventoryComponentPhotoUrl: (id: number) => `/api/inventory/components/${id}/photo`,

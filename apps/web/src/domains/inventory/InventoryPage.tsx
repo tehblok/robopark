@@ -68,10 +68,7 @@ function CreateForms({ data, parkId, apiClient, reload, activeDisclosure, onDisc
     <ResponsiveDisclosure id="part-create" title="Добавить запчасть"><form className="form-grid" onSubmit={async event => { event.preventDefault(); await apiClient.createInventoryPart({ park_id: parkId, component_id: componentId, name: part.name, article: part.article, quantity: part.quantity, minimum_quantity: part.minimum, location: part.location, photo: partPhoto }); setPart({ name: '', article: '', quantity: 0, minimum: 0, location: '' }); reload() }}><label className="field"><span>Компонента запчасти</span><select required value={componentId || ''} onChange={event => setComponentId(Number(event.target.value))}><option value="">Выберите</option>{data.components.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>{(['name', 'article', 'location'] as const).map(field => <label className="field" key={field}><span>{{ name: 'Название новой запчасти', article: 'Артикул', location: 'Место хранения' }[field]}</span><input required value={part[field]} onChange={event => setPart(current => ({ ...current, [field]: event.target.value }))} /></label>)}<label className="field"><span>Начальное количество</span><input min={0} type="number" value={part.quantity} onChange={event => setPart(current => ({ ...current, quantity: Number(event.target.value) }))} /></label><label className="field"><span>Минимальное количество</span><input min={0} type="number" value={part.minimum} onChange={event => setPart(current => ({ ...current, minimum: Number(event.target.value) }))} /></label><label className="field"><span>Фото запчасти</span><input accept="image/*" type="file" onChange={event => setPartPhoto(event.target.files?.[0] ?? null)} /></label><Button disabled={!componentId} type="submit">Завести</Button></form></ResponsiveDisclosure></div></ResponsiveDisclosureGroup>
 }
 
-export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi }) {
-  const { selectedPark, loading } = useParkScope()
-  const role = useContext(AuthContext)?.user?.role
-  const parkId = selectedPark?.id
+function InventoryPartsWorkflow({ parkId, apiClient }: { parkId: number; apiClient: InventoryApi }) {
   const [data, setData] = useState<InventoryOverview | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [printParts, setPrintParts] = useState<InventoryPart[]>([])
@@ -81,7 +78,6 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
   const [activeDisclosure, setActiveDisclosure] = useState<string | null>(null)
   const requestGeneration = useRef(0)
   const load = useCallback(() => {
-    if (!parkId) return
     const generation = ++requestGeneration.current
     setError(null)
     apiClient.inventory(parkId).then(value => {
@@ -100,6 +96,7 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
     setWorkflow(null)
     setActiveDisclosure(null)
     load()
+    return () => { requestGeneration.current += 1 }
   }, [load])
   const print = (parts: InventoryPart[]) => {
     if (!parts.length) {
@@ -116,26 +113,36 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
     const match = id?.match(/^part-(\d+)-(edit|movement)$/)
     setWorkflow(match ? { partId: Number(match[1]), kind: match[2] as 'edit' | 'movement' } : null)
   }
-  if (loading) return <LoadingState label="Загружаем парк" variant="page" />
-  if (!selectedPark) return <EmptyState description="Выберите парк." icon="parks" title="Парк не выбран" />
   const failure = error ? classifyApiError(error, 'Не удалось загрузить склад.') : null
-  const placeholder = (view: Exclude<InventoryView, 'parts'>) => {
-    if (view === 'receipts') return <section className="inventory-workflow-placeholder"><h2>Поставки</h2><p>Список и редактор поставок появятся здесь.</p></section>
-    if (view === 'counts') return <section className="inventory-workflow-placeholder"><h2>Инвентаризация</h2><p>Акты и фактические остатки появятся здесь.</p></section>
-    if (view === 'manage') return <section className="inventory-workflow-placeholder"><h2>Управление</h2><p>{role === 'admin' || role === 'royal' ? 'Глобальный каталог и настройки склада парка.' : 'Настройки склада парка.'}</p></section>
-    return <section className="inventory-workflow-placeholder"><h2>Выгрузка парка {selectedPark.name}</h2><p>Выбор формата и скачивание появятся здесь.</p></section>
-  }
-  return <PageLayout description={`Учёт запчастей парка «${selectedPark.name}»`} title="Склад">
-    {failure ? <ErrorState description={failure.description} onRetry={load} title={failure.title} /> : !data ? <LoadingState label="Загружаем склад" variant="page" /> : <>
+  if (failure) return <ErrorState description={failure.description} onRetry={load} title={failure.title} />
+  if (!data) return <LoadingState label="Загружаем склад" variant="page" />
+  return <>
       <div className="stat-grid"><MetricCard label="Компоненты" value={data.component_count} /><MetricCard label="Запчасти" value={data.part_count} /><MetricCard label="Ниже минимума" tone={data.low_stock_count ? 'warning' : 'neutral'} value={data.low_stock_count} /><MetricCard label="Нет на складе" tone={data.out_of_stock_count ? 'critical' : 'neutral'} value={data.out_of_stock_count} /></div>
-      <InventoryTabs renderPanel={view => view === 'parts' ? <>
-        <CreateForms activeDisclosure={activeDisclosure} apiClient={apiClient} data={data} onDisclosureChange={changeDisclosure} parkId={selectedPark.id} reload={load} />
+        <CreateForms activeDisclosure={activeDisclosure} apiClient={apiClient} data={data} onDisclosureChange={changeDisclosure} parkId={parkId} reload={load} />
         <label className="field inventory-component-filter"><span>Компонента</span><select value={componentId} onChange={event => setComponentId(event.target.value === 'all' ? 'all' : Number(event.target.value))}><option value="all">Все компоненты</option>{data.components.map(component => <option key={component.id} value={component.id}>{component.name}</option>)}</select></label>
         <ResponsiveDisclosureGroup controlledOpenId={activeDisclosure} label="Печать склада" onOpenIdChange={changeDisclosure}><ResponsiveDisclosure id="labels" title="Параметры печати"><Button onClick={() => print(visibleComponents(data, componentId).flatMap(component => component.parts))} variant="secondary">Печать этикеток</Button></ResponsiveDisclosure></ResponsiveDisclosureGroup>
         {printNotice ? <p role="alert">{printNotice}</p> : null}
         <div className="inventory-components">{visibleComponents(data, componentId).map(component => <Panel density="dense" key={component.id} collapsible storageKey={`inventory-component-${component.id}`} title={component.name}>{component.has_photo ? <img alt={`Компонента ${component.name}`} className="inventory-component-photo" height={72} src={apiClient.inventoryComponentPhotoUrl(component.id)} width={72} /> : null}<div className="inventory-parts">{component.parts.map(part => <PartCard activeDisclosure={activeDisclosure} apiClient={apiClient} componentName={component.name} key={part.id} onDisclosureChange={changeDisclosure} onPrint={part => print([part])} part={part} reload={load} workflow={workflow} />)}{!component.parts.length ? <p>Запчастей в этой компоненте пока нет.</p> : null}</div></Panel>)}{!data.components.length ? <EmptyState description="Добавьте первую компоненту и запчасть." icon="work" title="Склад пуст" /> : null}</div>
         <InventoryLabels parts={printParts} />
-      </> : placeholder(view)} />
-    </>}
+  </>
+}
+
+function InventoryWorkflowPlaceholder({ view, parkName, role }: { view: Exclude<InventoryView, 'parts'>; parkName: string; role?: string }) {
+  if (view === 'receipts') return <section className="inventory-workflow-placeholder"><h2>Поставки</h2><p>Список и редактор поставок появятся здесь.</p></section>
+  if (view === 'counts') return <section className="inventory-workflow-placeholder"><h2>Инвентаризация</h2><p>Акты и фактические остатки появятся здесь.</p></section>
+  if (view === 'manage') return <section className="inventory-workflow-placeholder"><h2>Управление</h2><p>{role === 'admin' || role === 'royal' ? 'Глобальный каталог и настройки склада парка.' : 'Настройки склада парка.'}</p></section>
+  return <section className="inventory-workflow-placeholder"><h2>Выгрузка парка {parkName}</h2><p>Выбор формата и скачивание появятся здесь.</p></section>
+}
+
+export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi }) {
+  const { selectedPark, loading } = useParkScope()
+  const role = useContext(AuthContext)?.user?.role
+  if (loading) return <LoadingState label="Загружаем парк" variant="page" />
+  if (!selectedPark) return <EmptyState description="Выберите парк." icon="parks" title="Парк не выбран" />
+
+  return <PageLayout description={`Учёт запчастей парка «${selectedPark.name}»`} title="Склад">
+    <InventoryTabs renderPanel={view => view === 'parts'
+      ? <InventoryPartsWorkflow apiClient={apiClient} parkId={selectedPark.id} />
+      : <InventoryWorkflowPlaceholder parkName={selectedPark.name} role={role} view={view} />} />
   </PageLayout>
 }

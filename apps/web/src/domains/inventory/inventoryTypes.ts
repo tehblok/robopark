@@ -1,5 +1,6 @@
 export type InventoryDocumentStatus = 'draft' | 'posted' | 'cancelled'
 export type InventoryStockFilter = 'in_stock' | 'below_minimum' | 'without_location'
+export type InventoryInt64 = `${bigint}`
 
 export type InventoryCatalogComponent = {
   id: number
@@ -19,8 +20,8 @@ export type InventoryCatalogPart = {
 
 export type InventoryCatalogSearchItem = InventoryCatalogPart & {
   component_name: string
-  quantity: number
-  minimum_quantity: number
+  quantity: InventoryInt64
+  minimum_quantity: InventoryInt64
   location: string | null
   stock_is_active: boolean
 }
@@ -35,16 +36,16 @@ export type InventoryPageEnvelope<T> = {
 export type InventoryStockView = {
   park_id: number
   catalog_part_id: number
-  quantity: number
-  minimum_quantity: number
+  quantity: InventoryInt64
+  minimum_quantity: InventoryInt64
   location: string | null
   is_active: boolean
-  version: number
+  version: InventoryInt64
 }
 
 export type InventoryReceiptLineInput = {
   catalog_part_id: number
-  quantity: number
+  quantity: InventoryInt64
   note?: string | null
 }
 
@@ -59,7 +60,7 @@ export type InventoryReceiptInput = {
 export type InventoryReceiptLine = {
   id: number
   catalog_part_id: number
-  quantity: number
+  quantity: InventoryInt64
   note: string | null
 }
 
@@ -84,16 +85,16 @@ export type InventoryCountScope =
 
 export type InventoryCountLineInput = {
   catalog_part_id: number
-  actual_quantity: number
+  actual_quantity: InventoryInt64
   comment?: string | null
 }
 
 export type InventoryCountLine = {
   id: number
   catalog_part_id: number
-  expected_quantity: number
-  actual_quantity: number | null
-  difference: number | null
+  expected_quantity: InventoryInt64
+  actual_quantity: InventoryInt64 | null
+  difference: InventoryInt64 | null
   comment: string | null
 }
 
@@ -124,3 +125,18 @@ export type InventorySearchParams = InventoryListParams & {
 export type InventoryExportParams =
   | { parkId: number; scope?: never; format: 'csv' | 'xlsx' }
   | { parkId?: never; scope: 'all'; format: 'csv' | 'xlsx' }
+
+export type InventoryApiErrorDetail =
+  | { code: 'inventory_article_exists'; existing_part_id: number }
+  | { code: 'inventory_component_exists'; existing_component_id: number }
+  | { code: 'inventory_out_of_stock'; current_quantity: InventoryInt64 }
+  | {
+      code: 'inventory_count_stale'
+      conflicts: Array<{
+        catalog_part_id: number
+        expected_quantity: InventoryInt64
+        current_quantity: InventoryInt64
+      }>
+    }
+  | { code: 'inventory_park_required'; park_ids: number[] }
+  | { code: string; [key: string]: unknown }

@@ -36,7 +36,6 @@ export function InventoryTabs({ renderPanel }: { renderPanel: (view: InventoryVi
     setSearchParams(next, { replace: true })
   }, [activeView, rawView, searchParams, setSearchParams])
 
-  const panelId = `inventory-panel-${activeView}`
   return (
     <section className="inventory-workflows">
       <Tabs
@@ -46,9 +45,12 @@ export function InventoryTabs({ renderPanel }: { renderPanel: (view: InventoryVi
         panelIdFor={view => `inventory-panel-${view}`}
         value={activeView}
       />
-      <TabPanel active id={panelId} labelledBy={`tab-${activeView}`}>
-        {renderPanel(activeView)}
-      </TabPanel>
+      {tabItems.map(item => {
+        const active = item.id === activeView
+        return <TabPanel active={active} id={`inventory-panel-${item.id}`} key={item.id} labelledBy={`tab-${item.id}`}>
+          {active ? <div data-inventory-workflow={item.id}>{renderPanel(item.id)}</div> : null}
+        </TabPanel>
+      })}
     </section>
   )
 }

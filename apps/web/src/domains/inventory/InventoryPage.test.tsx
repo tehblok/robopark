@@ -50,17 +50,14 @@ beforeEach(() => useViewport(false))
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-it('keeps park identity and KPI cards above the selected workflow', async () => {
-  render(renderInventoryPage(park, inventoryClient(), '/inventory?park=7&view=export'))
+it('keeps park identity above a workflow that does not need legacy overview', async () => {
+  const client = inventoryClient({ inventory: vi.fn(async () => { throw new Error('legacy unavailable') }) })
+  render(renderInventoryPage(park, client, '/inventory?park=7&view=export'))
 
   expect(await screen.findByRole('heading', { name: 'Склад' })).toBeVisible()
   expect(screen.getByText('Учёт запчастей парка «Север»')).toBeVisible()
-  expect(screen.getByText('Компоненты')).toBeVisible()
-  expect(screen.getAllByText('1')).toHaveLength(2)
-  const tabs = screen.getByRole('tablist', { name: 'Разделы склада' })
-  const metrics = document.querySelector('.stat-grid')!
-  expect(metrics.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   expect(screen.getByRole('tabpanel')).toHaveTextContent('Выгрузка парка Север')
+  expect(client.inventory).not.toHaveBeenCalled()
 })
 
 it('keeps the mobile catalog visible and opens inventory workflows on demand', async () => {
