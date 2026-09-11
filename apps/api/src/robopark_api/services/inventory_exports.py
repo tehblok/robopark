@@ -4,6 +4,7 @@ import csv
 import io
 import tempfile
 from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -391,22 +392,6 @@ def _safe_cell(value):
     return value
 
 
-def _csv_chunks(rows) -> Iterator[bytes]:
-    try:
-        yield b"\xef\xbb\xbf"
-        buffer = io.StringIO(newline="")
-        writer = csv.writer(buffer)
-        writer.writerow(STOCK_HEADERS)
-        yield buffer.getvalue().encode("utf-8")
-        for row in rows:
-            buffer.seek(0)
-            buffer.truncate(0)
-            writer.writerow(_safe_cell(value) for value in row)
-            yield buffer.getvalue().encode("utf-8")
-    finally:
-        rows.close()
-
-
 def _xlsx_cell(value):
     if isinstance(value, str):
         value = _safe_cell(_sanitize_xlsx_text(value))
@@ -476,23 +461,33 @@ def _capture_export_snapshot(
     db: Session, queries: tuple[ExportQuery, ...], *, include_aliases: bool
 ) -> ExportSnapshot:
     inventory_catalog.acquire_alias_graph_read_lock(db)
+    _begin_sqlite_snapshot(db)
+    canonical_ids = _load_aliases(db) if include_aliases else {}
+    identities: dict[str, list[tuple[int, ...]]] = {}
+    exported_rows = 0
+    for query in queries:
+        remaining = MAX_EXPORT_ROWS - exported_rows
+        rows = list(db.execute(query.identity_statement.limit(remaining + 1)).tuples())
+        exported_rows += len(rows)
+        if exported_rows > MAX_EXPORT_ROWS:
+            raise OverflowError("inventory_export_too_large")
+        identities[query.title] = [tuple(row) for row in rows]
+    return ExportSnapshot(identities, canonical_ids, exported_rows)
+
+
+@contextmanager
+def _export_session(request_db: Session) -> Iterator[Session]:
+    bind = request_db.get_bind()
+    connection = bind.connect()
+    if bind.dialect.name == "postgresql":
+        connection = connection.execution_options(isolation_level="REPEATABLE READ")
+    snapshot_db = Session(bind=connection)
     try:
-        _begin_sqlite_snapshot(db)
-        canonical_ids = _load_aliases(db) if include_aliases else {}
-        identities: dict[str, list[tuple[int, ...]]] = {}
-        exported_rows = 0
-        for query in queries:
-            remaining = MAX_EXPORT_ROWS - exported_rows
-            rows = list(db.execute(query.identity_statement.limit(remaining + 1)).tuples())
-            exported_rows += len(rows)
-            if exported_rows > MAX_EXPORT_ROWS:
-                raise OverflowError("inventory_export_too_large")
-            identities[query.title] = [tuple(row) for row in rows]
-        return ExportSnapshot(identities, canonical_ids, exported_rows)
+        yield snapshot_db
     finally:
-        # Releases the transaction-scoped advisory lock (or SQLite read snapshot)
-        # after every exported identity and alias edge has been fixed in memory.
-        db.rollback()
+        snapshot_db.rollback()
+        snapshot_db.close()
+        connection.close()
 
 
 def _snapshot_filter(query: ExportQuery, identities: list[tuple[int, ...]]):
@@ -619,6 +614,26 @@ def _build_xlsx(db: Session, queries: tuple[ExportQuery, ...], snapshot: ExportS
     return spool
 
 
+def _build_csv(db: Session, query: ExportQuery, snapshot: ExportSnapshot):
+    spool = tempfile.SpooledTemporaryFile(  # noqa: SIM115
+        max_size=XLSX_SPOOL_MEMORY_BYTES, mode="w+b"
+    )
+    text = io.TextIOWrapper(spool, encoding="utf-8", newline="", write_through=True)
+    try:
+        text.write("\ufeff")
+        writer = csv.writer(text)
+        writer.writerow(STOCK_HEADERS)
+        for row in _snapshot_payload_rows(db, query, snapshot.identities[query.title]):
+            writer.writerow(_safe_cell(value) for value in row)
+        text.flush()
+        text.detach()
+        spool.seek(0)
+        return spool
+    except Exception:
+        spool.close()
+        raise
+
+
 def _file_chunks(file_obj) -> Iterator[bytes]:
     try:
         while chunk := file_obj.read(64 * 1024):
@@ -639,18 +654,23 @@ def build_inventory_export(
     if format not in {"csv", "xlsx"}:
         raise ValueError("inventory_export_format_invalid")
     stock_query = _stock_query(park_ids)
-    if format == "csv":
-        queries = (stock_query,)
-        snapshot = _capture_export_snapshot(db, queries, include_aliases=False)
-    else:
-        queries = _xlsx_queries(park_ids)
-        snapshot = _capture_export_snapshot(db, queries, include_aliases=True)
-        spool = _build_xlsx(db, queries, snapshot)
+    # Scope is now immutable integer data; release the authorization read
+    # transaction before opening the dedicated export snapshot connection.
+    db.rollback()
+    with _export_session(db) as snapshot_db:
+        if format == "csv":
+            queries = (stock_query,)
+            snapshot = _capture_export_snapshot(snapshot_db, queries, include_aliases=False)
+            spool = _build_csv(snapshot_db, stock_query, snapshot)
+        else:
+            queries = _xlsx_queries(park_ids)
+            snapshot = _capture_export_snapshot(snapshot_db, queries, include_aliases=True)
+            spool = _build_xlsx(snapshot_db, queries, snapshot)
     suffix = "all" if all_parks else f"park-{park_ids[0]}"
     if format == "csv":
         return (
             "text/csv; charset=utf-8",
             f"Склад-{suffix}.csv",
-            _csv_chunks(_snapshot_payload_rows(db, stock_query, snapshot.identities["Остатки"])),
+            _file_chunks(spool),
         )
     return XLSX_MEDIA_TYPE, f"Склад-{suffix}.xlsx", _file_chunks(spool)

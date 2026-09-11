@@ -6,6 +6,7 @@ import pytest
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from sqlalchemy import event
+from sqlalchemy.orm import Session as OrmSession
 
 from conftest import login_as, role_id_for
 from robopark_api.models import (
@@ -787,7 +788,7 @@ def test_snapshot_accepts_exactly_50001_export_rows_with_separate_alias_budget(m
     assert snapshot.exported_rows == 50_001
     assert len(snapshot.identities["Остатки"]) == 50_001
     assert len(snapshot.canonical_ids) == 100
-    assert session.rolled_back is True
+    assert session.rolled_back is False
 
 
 def test_sqlite_export_snapshot_explicitly_starts_a_consistent_read_transaction(monkeypatch):
@@ -842,7 +843,7 @@ def test_sqlite_export_snapshot_explicitly_starts_a_consistent_read_transaction(
         include_aliases=False,
     )
 
-    assert events == ["alias-lock", "BEGIN", "snapshot-select", "rollback"]
+    assert events == ["alias-lock", "BEGIN", "snapshot-select"]
 
 
 def test_export_snapshot_holds_alias_lock_and_excludes_later_rows(
@@ -857,6 +858,7 @@ def test_export_snapshot_holds_alias_lock_and_excludes_later_rows(
     queries = inventory_exports._xlsx_queries([seed_park_with_tracker.id])
 
     snapshot = inventory_exports._capture_export_snapshot(db_session, queries, include_aliases=True)
+    db_session.rollback()
     events.append("snapshot-fixed")
     actor = _user(db_session, "royal", "snapshot-race-royal")
     late = InventoryMovement(
@@ -911,3 +913,148 @@ def test_xlsx_escapes_xml_invalid_controls_before_formula_safety_and_chunking(
     book = load_workbook(io.BytesIO(response.content), read_only=True)
     exported = list(book["Поставки"].values)[1][7]
     assert exported == "'=before\\u0000middle\\u000Bafter"
+
+
+def test_postgresql_export_session_uses_repeatable_read_and_closes_before_stream(monkeypatch):
+    events = []
+
+    class Connection:
+        def execution_options(self, **options):
+            events.append(("isolation", options))
+            return self
+
+        def close(self):
+            events.append("connection-close")
+
+    connection = Connection()
+
+    class Engine:
+        dialect = type("Dialect", (), {"name": "postgresql"})()
+
+        def connect(self):
+            events.append("connect")
+            return connection
+
+    class RequestDB:
+        def get_bind(self):
+            events.append("authorized-bind")
+            return Engine()
+
+    class SnapshotSession:
+        def rollback(self):
+            events.append("snapshot-rollback")
+
+        def close(self):
+            events.append("snapshot-close")
+
+    monkeypatch.setattr(
+        inventory_exports,
+        "Session",
+        lambda *, bind: events.append(("session", bind)) or SnapshotSession(),
+    )
+
+    with inventory_exports._export_session(RequestDB()) as snapshot_db:
+        assert isinstance(snapshot_db, SnapshotSession)
+        events.append("payload-spooled")
+
+    assert events == [
+        "authorized-bind",
+        "connect",
+        ("isolation", {"isolation_level": "REPEATABLE READ"}),
+        ("session", connection),
+        "payload-spooled",
+        "snapshot-rollback",
+        "snapshot-close",
+        "connection-close",
+    ]
+
+
+def test_xlsx_receipt_snapshot_is_not_mixed_when_post_replaces_draft_line(
+    client, db_session, db_engine, seed_park_with_tracker, monkeypatch
+):
+    with db_engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+    royal = _user(db_session, "royal", "export-cutoff-royal")
+    component = InventoryCatalogComponent(
+        name="Cutoff component",
+        normalized_name="cutoff component",
+        created_by=royal.id,
+        updated_by=royal.id,
+    )
+    db_session.add(component)
+    db_session.flush()
+    old_part = InventoryCatalogPart(
+        component_id=component.id,
+        name="Old draft part",
+        normalized_name="old draft part",
+        article="OLD-CUTOFF",
+        normalized_article="old-cutoff",
+        created_by=royal.id,
+        updated_by=royal.id,
+    )
+    new_part = InventoryCatalogPart(
+        component_id=component.id,
+        name="New posted part",
+        normalized_name="new posted part",
+        article="NEW-CUTOFF",
+        normalized_article="new-cutoff",
+        created_by=royal.id,
+        updated_by=royal.id,
+    )
+    db_session.add_all([old_part, new_part])
+    db_session.flush()
+    receipt = InventoryReceipt(
+        park_id=seed_park_with_tracker.id,
+        supplier="Snapshot supplier",
+        receipt_date=date(2026, 9, 12),
+        status="draft",
+        created_by=royal.id,
+    )
+    db_session.add(receipt)
+    db_session.flush()
+    old_line = InventoryReceiptLine(
+        receipt_id=receipt.id,
+        catalog_part_id=old_part.id,
+        quantity=3,
+    )
+    db_session.add(old_line)
+    db_session.commit()
+    old_line_id = old_line.id
+    receipt_id = receipt.id
+    new_part_id = new_part.id
+    original_capture = inventory_exports._capture_export_snapshot
+
+    def capture_then_replace(snapshot_db, queries, *, include_aliases):
+        snapshot = original_capture(snapshot_db, queries, include_aliases=include_aliases)
+        with OrmSession(bind=db_engine) as writer:
+            writer_receipt = writer.get(InventoryReceipt, receipt_id)
+            writer_receipt.status = "posted"
+            writer_receipt.posted_by = royal.id
+            writer_receipt.posted_at = datetime(2026, 9, 12, 12, 0)
+            writer.delete(writer.get(InventoryReceiptLine, old_line_id))
+            writer.add(
+                InventoryReceiptLine(
+                    receipt_id=receipt_id,
+                    catalog_part_id=new_part_id,
+                    quantity=7,
+                )
+            )
+            writer.commit()
+        return snapshot
+
+    monkeypatch.setattr(inventory_exports, "_capture_export_snapshot", capture_then_replace)
+    login_as(client, royal.username, "secret")
+
+    response = client.get(
+        "/inventory/export",
+        params={"park_id": seed_park_with_tracker.id, "format": "xlsx"},
+    )
+
+    assert response.status_code == 200, response.text
+    rows = list(load_workbook(io.BytesIO(response.content), read_only=True)["Поставки"].values)
+    exported = [row for row in rows[1:] if row[0] == receipt_id]
+    assert len(exported) == 1
+    assert exported[0][3] == "draft"
+    assert exported[0][12] == old_line_id
+    assert exported[0][17] == "OLD-CUTOFF"
+    assert exported[0][18] == 3

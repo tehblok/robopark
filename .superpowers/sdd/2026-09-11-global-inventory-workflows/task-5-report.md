@@ -165,3 +165,42 @@ lock contract existed, and NUL/vertical-tab content raised openpyxl `IllegalChar
 Warnings remain the existing Starlette TestClient and SQLite datetime-adapter deprecations. The
 bounded identity snapshot intentionally retains at most 100,000 small primary-key tuples per export;
 no payload row list is retained.
+
+## Fix round 3/5
+
+Review range: `7c22d5e..6c47444`. Both P1 findings had one root cause: round 2 ended its read
+snapshot after capturing IDs, then loaded mutable payload in later transactions.
+
+### TDD RED
+
+`cd apps/api && .venv/bin/pytest tests/test_inventory_exports.py::test_postgresql_export_session_uses_repeatable_read_and_closes_before_stream tests/test_inventory_exports.py::test_xlsx_receipt_snapshot_is_not_mixed_when_post_replaces_draft_line -q`
+
+Result: `2 failed, 1 warning in 0.31s`. No dedicated export session existed, and simulating a
+concurrent receipt post plus draft-line replacement between ID capture and payload produced a
+missing receipt row instead of one coherent cutoff.
+
+### Fix implementation
+
+- RBAC and park scope remain on the request session and complete before the export connection is
+  opened. The authorization read transaction is then released.
+- Each export uses a dedicated connection/session. PostgreSQL sets `REPEATABLE READ` before the
+  session's first statement; SQLite begins its configured WAL read transaction explicitly.
+- The shared alias lock, bounded alias map, all ordered primary-key snapshots, payload reads,
+  canonical-ID projection, continuation expansion, and final CSV/XLSX construction now occur inside
+  that one transaction. A concurrent post/delete/recreate therefore yields the complete old or new
+  state, never a mixed or missing document.
+- CSV and write-only XLSX are fully written to an 8 MiB `SpooledTemporaryFile` before snapshot
+  rollback/session/connection close. The response iterator reads only that file, so database
+  resources are never retained during network streaming. Export rows/chunks remain capped at
+  100,000 independently from the alias cap, with HTTP 413 before response headers.
+
+### GREEN and verification
+
+- New snapshot/isolation regressions: `2 passed, 1 warning in 0.25s`.
+- Export regression module: `18 passed, 1 warning in 3.08s`.
+- Required focused export + legacy inventory: `33 passed, 1 warning in 6.03s`.
+- Full API: `1466 passed, 21 warnings in 230.31s (0:03:50)`.
+
+Warnings remain the existing Starlette TestClient and SQLite datetime-adapter deprecations. The
+intentional cost is holding one repeatable-read database snapshot while bounded payload is written
+to the spool; the connection is closed before any response byte is yielded.
