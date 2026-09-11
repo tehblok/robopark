@@ -166,6 +166,7 @@ it.each(['park', 'auth'] as const)('retires pending lists when the %s owner chan
 
 it('keeps the old Emergency fields available and preserves park while opening and backing out of rule detail', async () => {
   render(tree(user, '/admin/emergency/config?park=7'))
+  fireEvent.click(await screen.findByRole('button', { name: 'Открыть раздел Состояние' }))
   expect(await screen.findByLabelText('Путь поля 9')).toHaveValue('data.status')
   fireEvent.click(screen.getByRole('tab', { name: 'Ошибки и индикация' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Открыть правило Лидар' }))
@@ -173,12 +174,14 @@ it('keeps the old Emergency fields available and preserves park while opening an
   expect(screen.getByLabelText('Адрес')).toHaveTextContent('park=7&tab=indication')
   expect(screen.getByLabelText('Адрес')).not.toHaveTextContent('rule=')
   fireEvent.click(screen.getByRole('tab', { name: 'Разделы и поля' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Открыть раздел Состояние' }))
   expect(await screen.findByLabelText('Путь поля 9')).toHaveValue('data.status')
 })
 
 it('does not expose the rule editor to a custom role with settings navigation permission', async () => {
   render(tree({ ...user, role: 'field_lead' }))
   expect(screen.queryByRole('tab', { name: 'Ошибки и индикация' })).not.toBeInTheDocument()
+  fireEvent.click(await screen.findByRole('button', { name: 'Открыть раздел Состояние' }))
   await screen.findByLabelText('Путь поля 9')
   expect(requests.some(request => request.path.startsWith('/api/admin/diagnostic-rules'))).toBe(false)
 })

@@ -128,6 +128,7 @@ describe('Management routes', () => {
     })
     await screen.findByText('Не проверена')
     fireEvent.click(within(screen.getByRole('navigation', { name: 'Разделы управления' })).getByRole('link', { name: 'Парки' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Добавить парк' }))
     expect(await screen.findByRole('heading', { name: 'Новый парк' })).toBeVisible()
     expect(screen.getByTestId('location')).toHaveTextContent('/admin/settings?park=7&tab=parks')
     fireEvent.click(within(screen.getByRole('navigation', { name: 'Разделы управления' })).getByRole('link', { name: 'Настройки' }))
