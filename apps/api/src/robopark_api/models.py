@@ -270,7 +270,7 @@ class InventoryCatalogComponent(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(128))
-    normalized_name: Mapped[str] = mapped_column(String(128))
+    normalized_name: Mapped[str] = mapped_column(String(384))
     photo_storage_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     photo_filename: Mapped[str | None] = mapped_column(String(240), nullable=True)
     photo_content_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -301,9 +301,9 @@ class InventoryCatalogPart(Base):
         ForeignKey("inventory_catalog_components.id", ondelete="RESTRICT"), index=True
     )
     name: Mapped[str] = mapped_column(String(128))
-    normalized_name: Mapped[str] = mapped_column(String(128))
+    normalized_name: Mapped[str] = mapped_column(String(384))
     article: Mapped[str] = mapped_column(String(128))
-    normalized_article: Mapped[str] = mapped_column(String(128), index=True)
+    normalized_article: Mapped[str] = mapped_column(String(384), index=True)
     merged_into_part_id: Mapped[int | None] = mapped_column(
         ForeignKey("inventory_catalog_parts.id", ondelete="RESTRICT"), nullable=True
     )
@@ -441,7 +441,7 @@ class InventoryMigrationConflict(Base):
     __tablename__ = "inventory_migration_conflicts"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    normalized_article: Mapped[str] = mapped_column(String(128), index=True)
+    normalized_article: Mapped[str] = mapped_column(String(384), index=True)
     canonical_legacy_part_id: Mapped[int] = mapped_column(Integer)
     conflicting_legacy_part_id: Mapped[int] = mapped_column(Integer)
     field_name: Mapped[str] = mapped_column(String(32))
@@ -469,6 +469,13 @@ class InventoryMovement(Base):
                 "source_kind IS NOT NULL AND source_id IS NOT NULL AND catalog_part_id IS NOT NULL"
             ),
         ),
+        Index(
+            "uq_inventory_movements_idempotency_key",
+            "idempotency_key",
+            unique=True,
+            sqlite_where=text("idempotency_key IS NOT NULL"),
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -486,6 +493,7 @@ class InventoryMovement(Base):
     balance_after: Mapped[int] = mapped_column(BigInteger)
     source_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     source_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     issue_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     note: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

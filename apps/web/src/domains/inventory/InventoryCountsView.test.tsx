@@ -13,6 +13,7 @@ function client(overrides = {}) {
     inventoryCatalogComponents: vi.fn(async () => ({ items: [{ id: 4, name: 'Подвязка', is_active: true, has_photo: false }], limit: 200, offset: 0, total: 1 })),
     createInventoryCount: vi.fn(async () => count),
     updateInventoryCount: vi.fn(async (_park: number, _id: number, lines: InventoryCountLineInput[]): Promise<InventoryCount> => ({ ...count, lines: [{ ...count.lines[0], actual_quantity: lines[0].actual_quantity, difference: '3' }] })),
+    refreshInventoryCount: vi.fn(async () => ({ ...count, lines: [{ ...count.lines[0], expected_quantity: '6' as const, actual_quantity: '8' as const, difference: '2' as const }] })),
     postInventoryCount: vi.fn(async () => ({ ...count, status: 'posted' as const })),
     cancelInventoryCount: vi.fn(async () => ({ ...count, status: 'cancelled' as const })),
     ...overrides,
@@ -20,9 +21,13 @@ function client(overrides = {}) {
 }
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-it('shows differences and retains actual quantities beside stale conflicts for retry', async () => {
+it('explicitly refreshes a stale snapshot and then sends exactly one new post', async () => {
   const stale = new ApiError(409, { code: 'inventory_count_stale', conflicts: [{ catalog_part_id: 31, expected_quantity: '5', current_quantity: '6', affected_lines: [{ count_line_id: 1, catalog_part_id: 31 }] }] })
-  const apiClient = client({ postInventoryCount: vi.fn().mockRejectedValueOnce(stale).mockResolvedValueOnce({ ...count, status: 'posted' }) })
+  const refreshed = { ...count, lines: [{ ...count.lines[0], expected_quantity: '6' as const, actual_quantity: '9' as const, difference: '3' as const }] }
+  const apiClient = client({
+    refreshInventoryCount: vi.fn(async () => refreshed),
+    postInventoryCount: vi.fn().mockRejectedValueOnce(stale).mockResolvedValueOnce({ ...refreshed, status: 'posted' }),
+  })
   const user = userEvent.setup()
   render(<InventoryCountsView apiClient={apiClient} parkId={7} permissions={['inventory.stock.manage', 'inventory.documents.post']} />)
   await user.click(await screen.findByRole('button', { name: 'Новая инвентаризация' }))
@@ -36,9 +41,16 @@ it('shows differences and retains actual quantities beside stale conflicts for r
   await user.click(await screen.findByRole('button', { name: 'Подтвердить проведение' }))
   expect(await screen.findByText('Ожидалось 5, сейчас 6')).toBeVisible()
   expect(actual).toHaveValue('8')
-  await user.click(screen.getByRole('button', { name: 'Повторить проведение' }))
+  await user.clear(actual)
+  await user.type(actual, '9')
+  await user.click(screen.getByRole('button', { name: 'Обновить остатки и провести' }))
   await user.click(await screen.findByRole('button', { name: 'Подтвердить проведение' }))
+  await waitFor(() => expect(apiClient.refreshInventoryCount).toHaveBeenCalledWith(7, 71))
   await waitFor(() => expect(apiClient.postInventoryCount).toHaveBeenCalledTimes(2))
+  expect(apiClient.updateInventoryCount).toHaveBeenLastCalledWith(7, 71, [expect.objectContaining({ actual_quantity: '9' })])
+  expect(apiClient.updateInventoryCount.mock.invocationCallOrder[1]).toBeLessThan(apiClient.refreshInventoryCount.mock.invocationCallOrder[0])
+  expect(apiClient.refreshInventoryCount.mock.invocationCallOrder[0]).toBeLessThan(apiClient.postInventoryCount.mock.invocationCallOrder[1])
+  expect(apiClient.updateInventoryCount).toHaveBeenCalledTimes(2)
 })
 
 it('pages and searches counts on the server', async () => {

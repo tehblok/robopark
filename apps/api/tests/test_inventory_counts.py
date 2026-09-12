@@ -259,6 +259,61 @@ def test_count_collects_every_stale_conflict_before_any_mutation(
     )
 
 
+def test_stale_count_can_refresh_snapshot_then_post_one_atomic_adjustment(
+    client, db_session, seed_park_with_tracker
+):
+    mechanic = _user(db_session, "mechanic", "count-refresh", [seed_park_with_tracker])
+    component = _component(db_session, mechanic, "Refresh component")
+    part = _part(db_session, mechanic, component, article="REFRESH-1")
+    _stock(db_session, seed_park_with_tracker, part, 5)
+    login_as(client, mechanic.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/counts"
+    count = _create_count(client, seed_park_with_tracker).json()
+    assert client.patch(
+        f"{base}/{count['id']}",
+        json={"lines": [{"catalog_part_id": part.id, "actual_quantity": 8}]},
+    ).status_code == 200
+    inventory_stock.apply_stock_delta(
+        db_session,
+        user=mechanic,
+        park_id=seed_park_with_tracker.id,
+        catalog_part_id=part.id,
+        delta=1,
+        kind="receipt",
+        source_kind=None,
+        source_id=None,
+        note=None,
+    )
+    db_session.commit()
+
+    assert client.post(f"{base}/{count['id']}/post").status_code == 409
+    refreshed = client.post(f"{base}/{count['id']}/refresh")
+
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["lines"][0] | {
+        "expected_quantity": 6,
+        "actual_quantity": 8,
+        "difference": 2,
+    } == refreshed.json()["lines"][0]
+    posted = client.post(f"{base}/{count['id']}/post")
+    assert posted.status_code == 200, posted.text
+    db_session.expire_all()
+    assert db_session.scalar(
+        select(InventoryParkStock.quantity).where(
+            InventoryParkStock.park_id == seed_park_with_tracker.id,
+            InventoryParkStock.catalog_part_id == part.id,
+        )
+    ) == 8
+    adjustments = list(
+        db_session.scalars(
+            select(InventoryMovement).where(InventoryMovement.source_kind == "count")
+        )
+    )
+    assert [(row.delta, row.balance_before, row.balance_after) for row in adjustments] == [
+        (2, 6, 8)
+    ]
+
+
 def test_count_validates_scope_lines_and_draft_only_mutations(
     client, db_session, seed_park_with_tracker
 ):
@@ -367,6 +422,7 @@ def test_count_cancel_access_post_permission_and_audit(client, db_session, seed_
     db_session.add(UserPermission(user_id=mechanic.id, permission_id=permission_id, granted=False))
     db_session.commit()
     assert client.post(f"{own_base}/{count['id']}/post").status_code == 403
+    assert client.post(f"{own_base}/{count['id']}/refresh").status_code == 403
 
     audits = list(
         db_session.scalars(select(AuditLog).where(AuditLog.target_type == "inventory_count"))

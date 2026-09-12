@@ -153,6 +153,7 @@ export type InventorySearchParams = InventoryListParams & {
   parkId: number
   componentId?: number
   stockFilter?: InventoryStockFilter
+  mode?: 'active' | 'archived' | 'all'
 }
 
 export type InventoryExportParams =

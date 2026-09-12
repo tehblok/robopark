@@ -176,6 +176,21 @@ def post_inventory_count(
     return inventory_counts.count_out(db, row)
 
 
+@router.post("/parks/{park_id}/counts/{count_id}/refresh", response_model=InventoryCountOut)
+def refresh_inventory_count(
+    park_id: int,
+    count_id: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    row = _run(
+        lambda: inventory_counts.refresh_count_snapshot(
+            db, user, park_id=park_id, count_id=count_id
+        )
+    )
+    return inventory_counts.count_out(db, row)
+
+
 @router.post("/parks/{park_id}/counts/{count_id}/cancel", response_model=InventoryCountOut)
 def cancel_inventory_count(
     park_id: int,
@@ -300,6 +315,7 @@ def search_catalog(
     q: str | None = None,
     component_id: int | None = None,
     stock_filter: str | None = None,
+    mode: Literal["active", "archived", "all"] = "active",
     limit: int = 50,
     offset: int = 0,
     user: User = Depends(require_user),
@@ -315,6 +331,7 @@ def search_catalog(
             query=q,
             component_id=component_id,
             stock_filter=stock_filter,
+            mode=mode,
             limit=limit,
             offset=offset,
         )
@@ -581,6 +598,7 @@ def task_writeoff(
             payload.quantity,
             park_id=payload.park_id,
             catalog_part_id=payload.catalog_part_id,
+            idempotency_key=payload.idempotency_key,
         )
     )
     return {

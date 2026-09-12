@@ -61,6 +61,9 @@ class InventoryTaskWriteoffIn(BaseModel):
     catalog_part_id: int | None = None
     park_id: int | None = None
     quantity: int = Field(gt=0, le=INVENTORY_INT64_MAX)
+    idempotency_key: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] = Field(
+        max_length=128
+    )
 
 
 class InventoryMovementOut(BaseModel):

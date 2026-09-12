@@ -329,6 +329,48 @@ def test_upgrade_deduplicates_articles_and_preserves_stock_and_movements(
         ) == [(100, catalog_part.id), (200, catalog_part.id)]
 
 
+def test_upgrade_normalizes_blank_locations_and_expanding_unicode_keys(
+    sqlite_database_url, monkeypatch
+):
+    config, engine = _upgrade_legacy_inventory(sqlite_database_url, monkeypatch)
+    expanding = "ß" * 128
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO inventory_components (id, park_id, name) VALUES (10, 1, :name)"),
+            {"name": expanding},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_parts "
+                "(id, park_id, component_id, name, article, quantity, minimum_quantity, location) "
+                "VALUES (100, 1, 10, :name, :article, 1, 0, '   ')"
+            ),
+            {"name": expanding, "article": expanding},
+        )
+
+    command.upgrade(config, "0026_global_inventory_workflows")
+
+    with Session(engine) as session:
+        ensure_rbac_catalog(session)
+        stock = session.scalar(select(InventoryParkStock))
+        part = session.scalar(select(InventoryCatalogPart))
+        actor = session.get(User, 999)
+        assert stock.location is None
+        assert part.normalized_name == "ss" * 128
+        assert part.normalized_article == "ss" * 128
+        filtered = inventory_catalog.search_catalog(
+            session,
+            actor,
+            park_id=1,
+            query="SS" * 128,
+            component_id=None,
+            stock_filter="without_location",
+            limit=50,
+            offset=0,
+        )
+        assert [item["id"] for item in filtered["items"]] == [part.id]
+
+
 def test_upgrade_uses_earliest_metadata_and_records_conflicts(sqlite_database_url, monkeypatch):
     config, engine = _upgrade_legacy_inventory(sqlite_database_url, monkeypatch)
     with engine.begin() as connection:

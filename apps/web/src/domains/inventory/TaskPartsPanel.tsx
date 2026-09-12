@@ -23,8 +23,9 @@ export function TaskPartsPanel({ parkId, issueKey, apiClient = api, onWritten }:
   const [nextOffset, setNextOffset] = useState(0)
   const [loadingMore, setLoadingMore] = useState(false)
   const loadGeneration = useRef(0)
+  const idempotencyKey = useRef<string | null>(null)
   const load = useCallback(async (offset = 0, append = false) => {
-    if (parkId == null) return
+    if (parkId == null) return false
     const generation = ++loadGeneration.current
     if (append) setLoadingMore(true)
     try {
@@ -57,12 +58,14 @@ export function TaskPartsPanel({ parkId, issueKey, apiClient = api, onWritten }:
         setTotal(result.total)
         setNextOffset(result.offset + result.items.length)
         setError(null)
-        return
+        return true
       }
       const value = await apiClient.inventory(parkId)
       if (generation === loadGeneration.current) { setData(value); setGlobalCatalog(false); setTotal(value.part_count); setNextOffset(value.part_count); setError(null) }
+      return true
     } catch (reason) {
       if (generation === loadGeneration.current) setError(reason)
+      return false
     } finally {
       if (generation === loadGeneration.current) setLoadingMore(false)
     }
@@ -87,7 +90,13 @@ export function TaskPartsPanel({ parkId, issueKey, apiClient = api, onWritten }:
   }, [componentId, currentData, partId, quantity])
   const submit = async (event: FormEvent) => {
     event.preventDefault(); if (!part || !isPositiveInventoryQuantity(quantity)) return; setBusy(true); setError(null)
-    try { await apiClient.writeoffInventoryForTask(issueKey, globalCatalog ? -part.id : part.id, quantity); await load(0, false); onWritten?.() }
+    try {
+      idempotencyKey.current ??= globalThis.crypto.randomUUID()
+      await apiClient.writeoffInventoryForTask(issueKey, globalCatalog ? -part.id : part.id, quantity, idempotencyKey.current)
+      if (!await load(0, false)) return
+      idempotencyKey.current = null
+      onWritten?.()
+    }
     catch (reason) { setError(reason) }
     finally { setBusy(false) }
   }
@@ -96,10 +105,10 @@ export function TaskPartsPanel({ parkId, issueKey, apiClient = api, onWritten }:
   const failure = error ? classifyApiError(error, 'Не удалось списать запчасть.') : null
   return <div className="task-parts"><p>Выберите компоненту и запчасть. После списания в Tracker появится техническое сообщение.</p>
     {failure ? <ErrorState description={failure.description} title={failure.title} /> : null}
-    {currentData ? <form className="form-grid" onSubmit={submit}><label className="field"><span>Компонента</span><select required value={componentId || ''} onChange={event => { setComponentId(Number(event.target.value)); setPartId(0) }}><option value="">Выберите</option>{currentData.components.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+    {currentData ? <form className="form-grid" onSubmit={submit}><label className="field"><span>Компонента</span><select required value={componentId || ''} onChange={event => { idempotencyKey.current = null; setComponentId(Number(event.target.value)); setPartId(0) }}><option value="">Выберите</option>{currentData.components.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       {component?.has_photo ? <img alt={component.name} className="task-parts__component-photo" src={apiClient.inventoryComponentPhotoUrl(component.id)} /> : null}
-      {component ? <label className="field"><span>Запчасть</span><select required value={partId || ''} onChange={event => setPartId(Number(event.target.value))}><option value="">Выберите</option>{component.parts.map(item => <option key={item.id} value={item.id}>{item.name} · {item.article} · {item.quantity} шт.</option>)}</select></label> : null}
+      {component ? <label className="field"><span>Запчасть</span><select required value={partId || ''} onChange={event => { idempotencyKey.current = null; setPartId(Number(event.target.value)) }}><option value="">Выберите</option>{component.parts.map(item => <option key={item.id} value={item.id}>{item.name} · {item.article} · {item.quantity} шт.</option>)}</select></label> : null}
       {part ? <article className="task-part-preview">{part.has_photo ? <img alt={part.name} src={apiClient.inventoryPartPhotoUrl(globalCatalog ? -part.id : part.id)} /> : null}<div><h3>{part.name}</h3><p>Артикул: {part.article}</p><p>Место: <strong>{part.location}</strong></p><StatusBadge tone={part.quantity !== '0' ? 'success' : 'critical'}>{part.quantity !== '0' ? `На складе: ${part.quantity}` : 'Нет на складе'}</StatusBadge></div></article> : null}
-      {part ? <label className="field"><span>Списать, шт.</span><input inputMode="numeric" onChange={event => setQuantity(event.target.value)} pattern="[0-9]*" value={quantity} /></label> : null}{globalCatalog && nextOffset < total ? <Button busy={loadingMore} onClick={() => void load(nextOffset, true)} type="button" variant="secondary">Загрузить ещё</Button> : null}<Button busy={busy} disabled={!part || part.quantity === '0' || !isPositiveInventoryQuantity(quantity) || inventoryInt64Compare(quantity, part.quantity) > 0} type="submit">Списать в задачу</Button></form> : null}
+      {part ? <label className="field"><span>Списать, шт.</span><input inputMode="numeric" onChange={event => { idempotencyKey.current = null; setQuantity(event.target.value) }} pattern="[0-9]*" value={quantity} /></label> : null}{globalCatalog && nextOffset < total ? <Button busy={loadingMore} onClick={() => void load(nextOffset, true)} type="button" variant="secondary">Загрузить ещё</Button> : null}<Button busy={busy} disabled={!part || part.quantity === '0' || !isPositiveInventoryQuantity(quantity) || inventoryInt64Compare(quantity, part.quantity) > 0} type="submit">Списать в задачу</Button></form> : null}
   </div>
 }

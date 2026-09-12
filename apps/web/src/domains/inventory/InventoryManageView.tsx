@@ -70,6 +70,7 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
   const [items, setItems] = useState<InventoryCatalogSearchItem[]>([])
   const [components, setComponents] = useState<Array<{ id: number; name: string }>>([])
   const [catalogQuery, setCatalogQuery] = useState('')
+  const [catalogMode, setCatalogMode] = useState<'active' | 'archived' | 'all'>('active')
   const [catalogOffset, setCatalogOffset] = useState(0)
   const [catalogTotal, setCatalogTotal] = useState(0)
   const [selectedPart, setSelectedPart] = useState<InventoryCatalogSearchItem | null>(null)
@@ -100,7 +101,7 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
     setLoading(true)
     setError('')
     try {
-      const value = await apiClient.searchInventory({ parkId, query: catalogQuery.trim() || undefined, limit: 25, offset: catalogOffset })
+      const value = await apiClient.searchInventory({ parkId, query: catalogQuery.trim() || undefined, mode: catalogMode, limit: 25, offset: catalogOffset })
       if (requestId !== generation.current) return
       setItems(value.items)
       setCatalogTotal(value.total)
@@ -111,7 +112,7 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
       setError(classifyApiError(reason, 'Не удалось загрузить каталог.').description)
       setLoading(false)
     }
-  }, [apiClient, catalogOffset, catalogQuery, parkId])
+  }, [apiClient, catalogMode, catalogOffset, catalogQuery, parkId])
 
   useEffect(() => {
     setItems([])
@@ -119,6 +120,7 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
     setWorkflow(null)
     setSelectedPart(null)
     setCatalogOffset(0)
+    setCatalogMode('active')
     select(null)
     operationGeneration.current += 1
     setBusy(false)
@@ -213,11 +215,12 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
     <header className="inventory-manage-heading"><h2>{canManageGlobal ? 'Глобальный каталог' : 'Настройки склада парка'}</h2><p>{canManageGlobal ? 'Глобальные позиции и настройки склада выбранного парка.' : 'Параметры остатков выбранного парка.'}</p></header>
     <div className="inventory-manage-toolbar">
       <FormField id="inventory-manage-search" label="Найти позицию каталога"><input type="search" value={catalogQuery} onChange={event => { setCatalogQuery(event.target.value); setCatalogOffset(0) }} /></FormField>
+      {canManageGlobal ? <FormField id="inventory-manage-mode" label="Состояние каталога"><select value={catalogMode} onChange={event => { setCatalogMode(event.target.value as 'active' | 'archived' | 'all'); setCatalogOffset(0); select(null); setSelectedPart(null); setWorkflow(null) }}><option value="active">Активные</option><option value="archived">Архивные</option><option value="all">Все</option></select></FormField> : null}
       <FormField id="inventory-manage-part" label="Позиция каталога"><select value={selectedId ?? ''} onChange={event => { const id = event.target.value ? Number(event.target.value) : null; select(id); setSelectedPart(items.find(item => item.id === id) ?? null); setWorkflow(null) }}><option value="">Выберите</option>{selected && !items.some(item => item.id === selected.id) ? <option value={selected.id}>{selected.name} · {selected.article}</option> : null}{items.map(item => <option key={item.id} value={item.id}>{item.name} · {item.article}</option>)}</select></FormField>
       <div className="inventory-card-actions">
         {canCreate ? <><Button onClick={() => chooseWorkflow('create')} size="compact">Добавить позицию</Button><Button onClick={() => chooseWorkflow('component')} size="compact" variant="secondary">Добавить компоненту</Button></> : null}
         {selected ? <Button onClick={() => chooseWorkflow('stock')} size="compact" variant="secondary">Настроить остаток</Button> : null}
-        {canManageGlobal && selected ? <ResponsiveDisclosureGroup label="Глобальные действия"><ResponsiveDisclosure id="inventory-global-actions" title="Глобальные действия"><div className="inventory-global-actions"><Button onClick={() => chooseWorkflow('global-edit')} size="compact" variant="secondary">Редактировать глобально</Button><Button onClick={() => setArchiveOpen(true)} size="compact" variant="danger">Архивировать глобально</Button><Button onClick={() => chooseWorkflow('merge')} size="compact" variant="danger">Объединить глобально</Button></div></ResponsiveDisclosure></ResponsiveDisclosureGroup> : null}
+        {canManageGlobal && selected ? <ResponsiveDisclosureGroup label="Глобальные действия"><ResponsiveDisclosure id="inventory-global-actions" title="Глобальные действия"><div className="inventory-global-actions"><Button onClick={() => chooseWorkflow('global-edit')} size="compact" variant="secondary">Редактировать глобально</Button>{selected.is_active ? <><Button onClick={() => setArchiveOpen(true)} size="compact" variant="danger">Архивировать глобально</Button><Button onClick={() => chooseWorkflow('merge')} size="compact" variant="danger">Объединить глобально</Button></> : <Button onClick={async () => { setBusy(true); setError(''); try { await apiClient.updateInventoryCatalogPart(selected.id, { is_active: true }); select(null); setSelectedPart(null); setNotice('Позиция восстановлена.'); await load() } catch (reason) { setError(classifyApiError(reason, 'Не удалось восстановить позицию.').description) } finally { setBusy(false) } }} size="compact" variant="secondary">Восстановить глобально</Button>}</div></ResponsiveDisclosure></ResponsiveDisclosureGroup> : null}
       </div>
     </div>
     {loading ? <LoadingState label="Загружаем каталог" /> : null}

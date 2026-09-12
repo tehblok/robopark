@@ -392,6 +392,13 @@ def merge_parts(db: Session, user: User, source_part_id: int, target_part_id: in
             source_stock.updated_by = user.id
             inventory_stock.increment_stock_version(source_stock)
             continue
+        target_stock.minimum_quantity = max(
+            target_stock.minimum_quantity, source_stock.minimum_quantity
+        )
+        if not (target_stock.location or "").strip():
+            target_stock.location = (source_stock.location or "").strip() or None
+        target_stock.is_active = target_stock.is_active or source_stock.is_active
+        target_stock.updated_by = user.id
         if source_stock.quantity:
             inventory_stock.apply_stock_delta(
                 db,
@@ -415,6 +422,8 @@ def merge_parts(db: Session, user: User, source_part_id: int, target_part_id: in
                 source_id=f"{source.id}:source",
                 note=f"Merged into catalog part {target.id}",
             )
+        else:
+            inventory_stock.increment_stock_version(target_stock)
         source_stock.is_active = False
         source_stock.updated_by = user.id
 
@@ -452,8 +461,13 @@ def search_catalog(
     stock_filter: str | None,
     limit: int,
     offset: int,
+    mode: str = "active",
 ) -> dict:
     inventory_access.require_park(db, user, park_id)
+    if mode not in {"active", "archived", "all"}:
+        raise ValueError("inventory_catalog_mode_invalid")
+    if mode != "active":
+        inventory_access.require_catalog_manage(db, user)
     quantity = func.coalesce(InventoryParkStock.quantity, 0)
     minimum = func.coalesce(InventoryParkStock.minimum_quantity, 0)
     statement = (
@@ -467,11 +481,19 @@ def search_catalog(
             (InventoryParkStock.catalog_part_id == InventoryCatalogPart.id)
             & (InventoryParkStock.park_id == park_id),
         )
-        .where(
+    )
+    if mode == "active":
+        statement = statement.where(
             InventoryCatalogPart.is_active.is_(True),
             InventoryCatalogComponent.is_active.is_(True),
         )
-    )
+    elif mode == "archived":
+        statement = statement.where(
+            InventoryCatalogPart.is_active.is_(False),
+            InventoryCatalogPart.merged_into_part_id.is_(None),
+        )
+    else:
+        statement = statement.where(InventoryCatalogPart.merged_into_part_id.is_(None))
     if query:
         pattern = f"%{normalize_key(query)}%"
         statement = statement.where(
@@ -488,7 +510,10 @@ def search_catalog(
         statement = statement.where(quantity < minimum)
     elif stock_filter == "without_location":
         statement = statement.where(
-            or_(InventoryParkStock.id.is_(None), InventoryParkStock.location.is_(None))
+            or_(
+                InventoryParkStock.id.is_(None),
+                func.trim(func.coalesce(InventoryParkStock.location, "")) == "",
+            )
         )
     elif stock_filter not in {None, ""}:
         raise ValueError("inventory_stock_filter_invalid")

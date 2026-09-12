@@ -51,6 +51,24 @@ describe('InventoryManageView', () => {
     await waitFor(() => expect(apiClient.updateInventoryCatalogPart).toHaveBeenCalledWith(31, { is_active: false }))
   })
 
+  it.each(['admin', 'royal'] as const)('lets %s reload, find and restore an archived item', async role => {
+    const archived = { ...part, is_active: false }
+    const searchInventory = vi.fn(async ({ mode }: { mode?: string }) => ({
+      items: mode === 'archived' ? [archived] : [], limit: 25, offset: 0, total: mode === 'archived' ? 1 : 0,
+    }))
+    const updateInventoryCatalogPart = vi.fn(async () => ({ ...archived, is_active: true }))
+    render(<InventoryManageView apiClient={client({ searchInventory, updateInventoryCatalogPart })} parkId={1} role={role} />)
+
+    await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Состояние каталога' }), 'archived')
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Найти позицию каталога' }), 'ABC-01')
+    await waitFor(() => expect(searchInventory).toHaveBeenCalledWith(expect.objectContaining({ parkId: 1, query: 'ABC-01', mode: 'archived' })))
+    await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Позиция каталога' }), '31')
+    await userEvent.click(screen.getByRole('button', { name: 'Восстановить глобально' }))
+
+    await waitFor(() => expect(updateInventoryCatalogPart).toHaveBeenCalledWith(31, { is_active: true }))
+    await waitFor(() => expect(searchInventory).toHaveBeenLastCalledWith(expect.objectContaining({ mode: 'archived' })))
+  })
+
   it('puts mobile global mutations behind one compact action disclosure', async () => {
     vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true, media: '(max-width: 599px)', onchange: null, addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn() }))
     render(<InventoryManageView apiClient={client()} parkId={1} role="admin" />)

@@ -20,7 +20,7 @@ def _create_catalog_tables() -> None:
         "inventory_catalog_components",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("name", sa.String(128), nullable=False),
-        sa.Column("normalized_name", sa.String(128), nullable=False),
+        sa.Column("normalized_name", sa.String(384), nullable=False),
         sa.Column("photo_storage_key", sa.String(128)),
         sa.Column("photo_filename", sa.String(240)),
         sa.Column("photo_content_type", sa.String(64)),
@@ -52,9 +52,9 @@ def _create_catalog_tables() -> None:
             nullable=False,
         ),
         sa.Column("name", sa.String(128), nullable=False),
-        sa.Column("normalized_name", sa.String(128), nullable=False),
+        sa.Column("normalized_name", sa.String(384), nullable=False),
         sa.Column("article", sa.String(128), nullable=False),
-        sa.Column("normalized_article", sa.String(128), nullable=False),
+        sa.Column("normalized_article", sa.String(384), nullable=False),
         sa.Column(
             "merged_into_part_id",
             sa.Integer(),
@@ -245,7 +245,7 @@ def _create_workflow_tables() -> None:
     op.create_table(
         "inventory_migration_conflicts",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("normalized_article", sa.String(128), nullable=False),
+        sa.Column("normalized_article", sa.String(384), nullable=False),
         sa.Column("canonical_legacy_part_id", sa.Integer(), nullable=False),
         sa.Column("conflicting_legacy_part_id", sa.Integer(), nullable=False),
         sa.Column("field_name", sa.String(32), nullable=False),
@@ -384,21 +384,22 @@ def _backfill_catalog() -> None:
                     "catalog_part_id": catalog_part_id,
                     "quantity": row["quantity"],
                     "minimum_quantity": row["minimum_quantity"],
-                    "location": row["location"],
+                    "location": (row["location"] or "").strip() or None,
                     "is_active": row["is_active"],
                     "updated_at": row["updated_at"],
                 }
                 stock_canonical_part_ids[stock_key] = row["id"]
             else:
-                if current["location"] != row["location"]:
+                normalized_location = (row["location"] or "").strip() or None
+                if current["location"] != normalized_location:
                     bind.execute(
                         conflicts.insert().values(
                             normalized_article=normalized_article,
                             canonical_legacy_part_id=stock_canonical_part_ids[stock_key],
                             conflicting_legacy_part_id=row["id"],
                             field_name="location",
-                            canonical_value=current["location"],
-                            conflicting_value=row["location"],
+                            canonical_value=current["location"] or "",
+                            conflicting_value=normalized_location or "",
                         )
                     )
                 current["quantity"] += row["quantity"]
@@ -598,6 +599,7 @@ def upgrade():
         batch_op.add_column(sa.Column("catalog_part_id", sa.Integer()))
         batch_op.add_column(sa.Column("source_kind", sa.String(32)))
         batch_op.add_column(sa.Column("source_id", sa.String(128)))
+        batch_op.add_column(sa.Column("idempotency_key", sa.String(128)))
         batch_op.add_column(sa.Column("balance_before", sa.BigInteger()))
         batch_op.create_foreign_key(
             "fk_inventory_movements_catalog_part_id",
@@ -636,6 +638,14 @@ def upgrade():
             "source_kind IS NOT NULL AND source_id IS NOT NULL AND catalog_part_id IS NOT NULL"
         ),
     )
+    op.create_index(
+        "uq_inventory_movements_idempotency_key",
+        "inventory_movements",
+        ["idempotency_key"],
+        unique=True,
+        sqlite_where=sa.text("idempotency_key IS NOT NULL"),
+        postgresql_where=sa.text("idempotency_key IS NOT NULL"),
+    )
     _backfill_catalog()
 
 
@@ -644,6 +654,7 @@ def downgrade():
     # them and movement balances as BIGINT so materialization cannot narrow any
     # now-valid value; the previous application can read the wider SQL type.
     _materialize_legacy_inventory_for_downgrade()
+    op.drop_index("uq_inventory_movements_idempotency_key", table_name="inventory_movements")
     op.drop_index("uq_inventory_movements_source_identity", table_name="inventory_movements")
     op.drop_index("ix_inventory_movements_catalog_part_created", table_name="inventory_movements")
     op.drop_index("ix_inventory_movements_catalog_part_id", table_name="inventory_movements")
@@ -651,6 +662,7 @@ def downgrade():
         batch_op.drop_constraint("fk_inventory_movements_catalog_part_id", type_="foreignkey")
         batch_op.drop_column("balance_before")
         batch_op.drop_column("source_id")
+        batch_op.drop_column("idempotency_key")
         batch_op.drop_column("source_kind")
         batch_op.drop_column("catalog_part_id")
         batch_op.alter_column("part_id", existing_type=sa.Integer(), nullable=False)

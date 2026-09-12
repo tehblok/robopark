@@ -133,6 +133,7 @@ def apply_stock_delta(
     source_id: str | None,
     note: str | None,
     issue_key: str | None = None,
+    idempotency_key: str | None = None,
     allow_archived: bool = False,
 ) -> InventoryMovement:
     delta = require_int64(delta)
@@ -226,6 +227,7 @@ def apply_stock_delta(
         balance_after=after,
         source_kind=source_kind,
         source_id=source_id,
+        idempotency_key=idempotency_key,
         issue_key=issue_key,
         note=(note or "").strip() or None,
     )

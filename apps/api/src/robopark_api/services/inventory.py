@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
@@ -531,19 +532,14 @@ def task_writeoff(
     *,
     park_id: int | None = None,
     catalog_part_id: int | None = None,
+    idempotency_key: str,
 ) -> InventoryMovement:
     if user.role != "mechanic":
         raise PermissionError("forbidden")
     if quantity <= 0:
         raise ValueError("inventory_quantity_invalid")
     inventory_stock.require_int64(quantity)
-    token = platform_settings.get_tracker_token(db)
-    if not token:
-        raise RuntimeError("tracker_token_not_configured")
-    try:
-        issue = tracker_cache.get_issue(token=token, key=issue_key)
-    except tracker_client.TrackerError as exc:
-        raise RuntimeError("tracker_upstream_error") from exc
+    idempotency_key = _text(idempotency_key, "inventory_idempotency_key_required")
     claim = get_claim(db, issue_key)
     if claim is None or claim.owner_user_id != user.id:
         raise PermissionError("inventory_issue_not_owned")
@@ -556,7 +552,34 @@ def task_writeoff(
         park_id=claim.park_id,
         catalog_part_id=catalog_part_id,
     )
+    resolved_park_id = stock.park_id
+    resolved_part_id = part.id
     park = require_park(db, user, stock.park_id)
+    existing = db.scalar(
+        select(InventoryMovement).where(
+            InventoryMovement.idempotency_key == idempotency_key
+        )
+    )
+    if existing is not None:
+        existing_part = resolve_catalog_part(
+            db, existing.catalog_part_id, allow_archived=True
+        )
+        if (
+            existing.actor_user_id != user.id
+            or existing.issue_key != issue_key
+            or existing.park_id != resolved_park_id
+            or existing_part.id != resolved_part_id
+            or existing.delta != -quantity
+        ):
+            raise inventory_stock.InventoryConflict("inventory_idempotency_conflict")
+        return existing
+    token = platform_settings.get_tracker_token(db)
+    if not token:
+        raise RuntimeError("tracker_token_not_configured")
+    try:
+        issue = tracker_cache.get_issue(token=token, key=issue_key)
+    except tracker_client.TrackerError as exc:
+        raise RuntimeError("tracker_upstream_error") from exc
     if stock.quantity < quantity:
         raise inventory_stock.InventoryConflict(
             "inventory_out_of_stock", current_quantity=stock.quantity
@@ -585,9 +608,10 @@ def task_writeoff(
             catalog_part_id=part.id,
             delta=-quantity,
             kind="task_writeoff",
-            source_kind=None,
-            source_id=None,
+            source_kind="task_writeoff",
+            source_id=idempotency_key,
             issue_key=issue_key,
+            idempotency_key=idempotency_key,
             note=None,
         )
         movement.part_id = legacy_part_id
@@ -598,20 +622,46 @@ def task_writeoff(
     except tracker_client.TrackerError as exc:
         db.rollback()
         raise RuntimeError("tracker_upstream_error") from exc
+    except IntegrityError:
+        db.rollback()
+        existing = db.scalar(
+            select(InventoryMovement).where(
+                InventoryMovement.idempotency_key == idempotency_key
+            )
+        )
+        if existing is None:
+            raise
+        existing_part = resolve_catalog_part(
+            db, existing.catalog_part_id, allow_archived=True
+        )
+        if (
+            existing.actor_user_id != user.id
+            or existing.issue_key != issue_key
+            or existing.park_id != resolved_park_id
+            or existing_part.id != resolved_part_id
+            or existing.delta != -quantity
+        ):
+            raise inventory_stock.InventoryConflict(
+                "inventory_idempotency_conflict"
+            ) from None
+        return existing
     except Exception:
         db.rollback()
         raise
     db.commit()
     tracker_cache.invalidate_issue(issue_key)
-    audit.record(
-        db,
-        action=audit.ACTION_TRACKER_COMMENT,
-        actor=user,
-        park_id=park.id,
-        target_type="tracker_issue",
-        target_id=issue_key,
-        detail=f"inventory {part.article} x{quantity}",
-    )
+    try:
+        audit.record(
+            db,
+            action=audit.ACTION_TRACKER_COMMENT,
+            actor=user,
+            park_id=park.id,
+            target_type="tracker_issue",
+            target_id=issue_key,
+            detail=f"inventory {part.article} x{quantity}",
+        )
+    except Exception:
+        db.rollback()
     db.refresh(movement)
     return movement
 

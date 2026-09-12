@@ -140,6 +140,7 @@ describe('inventory API contracts', () => {
     await api.reverseInventoryReceipt(7, 11, 'duplicate')
     await api.inventoryCounts(7, { query: 'September', limit: 25, offset: 0 })
     await api.createInventoryCount(7, { name: 'September', scope: { kind: 'component', component_id: 2 } })
+    await api.refreshInventoryCount(7, 21)
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       '/api/inventory/catalog/search?park_id=7&q=ABC&component_id=2&stock_filter=below_minimum&limit=25&offset=0',
@@ -150,6 +151,7 @@ describe('inventory API contracts', () => {
       '/api/inventory/parks/7/receipts/11/reverse',
       '/api/inventory/parks/7/counts?q=September&limit=25&offset=0',
       '/api/inventory/parks/7/counts',
+      '/api/inventory/parks/7/counts/21/refresh',
     ])
     expect(JSON.parse(String(fetchMock.mock.calls[5][1]?.body))).toEqual({ reason: 'duplicate' })
     expect(JSON.parse(String(fetchMock.mock.calls[7][1]?.body))).toEqual({ name: 'September', scope: { kind: 'component', component_id: 2 } })
@@ -306,7 +308,7 @@ describe('inventory API contracts', () => {
     const movements = await api.inventoryMovements(7)
     const updated = await api.updateInventoryPart(3, { minimum_quantity: '9223372036854775807' })
     const moved = await api.moveInventoryStock(3, 'adjustment', '9007199254740993')
-    const writtenOff = await api.writeoffInventoryForTask('RP-42', 3, '9223372036854775807')
+    const writtenOff = await api.writeoffInventoryForTask('RP-42', 3, '9223372036854775807', 'writeoff-key')
 
     expect(overview.components[0].parts[0]).toMatchObject({ quantity: '9007199254740993', minimum_quantity: '9223372036854775807' })
     expect(movements[0]).toMatchObject({ delta: '-9007199254740993', balance_after: '9223372036854775807' })
@@ -316,5 +318,6 @@ describe('inventory API contracts', () => {
     expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body)).minimum_quantity).toBe('9223372036854775807')
     expect(JSON.parse(String(fetchMock.mock.calls[3][1]?.body)).quantity).toBe('9007199254740993')
     expect(JSON.parse(String(fetchMock.mock.calls[4][1]?.body)).quantity).toBe('9223372036854775807')
+    expect(JSON.parse(String(fetchMock.mock.calls[4][1]?.body)).idempotency_key).toBe('writeoff-key')
   })
 })

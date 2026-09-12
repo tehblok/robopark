@@ -104,7 +104,7 @@ it('writes a selected part off from the current task without rounding int64 inpu
   await userEvent.clear(screen.getByRole('textbox', { name: 'Списать, шт.' }))
   await userEvent.type(screen.getByRole('textbox', { name: 'Списать, шт.' }), '9007199254740993')
   await userEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
-  await waitFor(() => expect(writeoff).toHaveBeenCalledWith('RP-42', 3, '9007199254740993'))
+  await waitFor(() => expect(writeoff).toHaveBeenCalledWith('RP-42', 3, '9007199254740993', expect.any(String)))
 })
 
 it('resets an invalid write-off quantity after inventory refresh', async () => {

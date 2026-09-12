@@ -355,6 +355,34 @@ def _canonical_line_groups(
     return result
 
 
+def refresh_count_snapshot(
+    db: Session, user: User, *, park_id: int, count_id: int
+) -> InventoryCount:
+    _require_document_post(db, user, park_id)
+    try:
+        inventory_catalog.acquire_alias_graph_read_lock(db)
+        row = _count(db, park_id, count_id, lock=True)
+        if row.status != "draft":
+            raise inventory_stock.InventoryConflict("inventory_count_not_draft")
+        groups = _canonical_line_groups(db, park_id=park_id, lines=_lines(db, row.id))
+        for _canonical_id, stock, grouped_lines in groups:
+            current = stock.quantity if stock is not None else 0
+            for index, line in enumerate(grouped_lines):
+                line.expected_quantity = current if index == 0 else 0
+                line.difference = (
+                    None
+                    if line.actual_quantity is None
+                    else line.actual_quantity - line.expected_quantity
+                )
+        _audit(db, user, row, "inventory.count.refreshed", ["expected_quantity"])
+        db.commit()
+        db.refresh(row)
+        return row
+    except Exception:
+        db.rollback()
+        raise
+
+
 def post_count(db: Session, user: User, *, park_id: int, count_id: int) -> InventoryCount:
     _require_document_post(db, user, park_id)
     try:

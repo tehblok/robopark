@@ -1,5 +1,5 @@
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from conftest import login_as, role_id_for
 from robopark_api.models import (
@@ -141,6 +141,7 @@ def test_legacy_numeric_inputs_enforce_shared_int64_bounds_before_side_effects(
             "RP-INT64",
             valid["id"],
             too_large,
+            idempotency_key="direct-overflow",
         )
 
 
@@ -244,7 +245,8 @@ def test_task_writeoff_requires_owner_and_writes_technical_tracker_comment(
     )
 
     response = client.post(
-        "/inventory/tasks/RP-42/writeoff", json={"part_id": part["id"], "quantity": 2}
+        "/inventory/tasks/RP-42/writeoff",
+        json={"part_id": part["id"], "quantity": 2, "idempotency_key": "writeoff-rp42"},
     )
     assert response.status_code == 201, response.text
     assert response.json()["balance_after"] == 3
@@ -259,12 +261,116 @@ def test_task_writeoff_requires_owner_and_writes_technical_tracker_comment(
     assert movement.issue_key == "RP-42"
     release_claim(db_session, "RP-42")
     rejected = client.post(
-        "/inventory/tasks/RP-42/writeoff", json={"part_id": part["id"], "quantity": 1}
+        "/inventory/tasks/RP-42/writeoff",
+        json={"part_id": part["id"], "quantity": 1, "idempotency_key": "writeoff-rejected"},
     )
     assert rejected.status_code == 403
     catalog_part = db_session.get(InventoryCatalogPart, part["catalog_part_id"])
     assert catalog_part is not None
     assert db_session.scalar(select(InventoryParkStock.quantity)) == 3
+
+
+def test_task_writeoff_idempotency_key_has_one_movement_decrement_comment_and_audit(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    mechanic = _user(db_session, "mechanic", "idempotent-writeoff", [seed_park_with_tracker])
+    login_as(client, mechanic.username, "secret")
+    _, part = _seed_part(client, seed_park_with_tracker.id)
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=mechanic,
+        owner=mechanic,
+        issue_key="RP-IDEMPOTENT",
+        park_id=seed_park_with_tracker.id,
+    )
+    monkeypatch.setattr(inventory_svc.platform_settings, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        inventory_svc.tracker_cache,
+        "get_issue",
+        lambda **kwargs: {
+            "key": "RP-IDEMPOTENT",
+            "tags": [seed_park_with_tracker.tag],
+            "assignee": {"login": mechanic.tracker_login},
+        },
+    )
+    comments = []
+    monkeypatch.setattr(
+        inventory_svc.tracker_client, "add_comment", lambda **kwargs: comments.append(kwargs)
+    )
+    payload = {"part_id": part["id"], "quantity": 2, "idempotency_key": "retry-42"}
+
+    first = client.post("/inventory/tasks/RP-IDEMPOTENT/writeoff", json=payload)
+    retried = client.post("/inventory/tasks/RP-IDEMPOTENT/writeoff", json=payload)
+
+    assert first.status_code == retried.status_code == 201
+    assert first.json()["id"] == retried.json()["id"]
+    db_session.expire_all()
+    assert db_session.scalar(select(InventoryParkStock.quantity)) == 3
+    assert db_session.scalar(
+        select(func.count(InventoryMovement.id)).where(
+            InventoryMovement.kind == "task_writeoff"
+        )
+    ) == 1
+    assert len(comments) == 1
+    assert db_session.scalar(
+        select(func.count(AuditLog.id)).where(
+            AuditLog.action == "tracker.comment", AuditLog.target_id == "RP-IDEMPOTENT"
+        )
+    ) == 1
+
+    mismatch = client.post(
+        "/inventory/tasks/RP-IDEMPOTENT/writeoff",
+        json={"part_id": part["id"], "quantity": 1, "idempotency_key": "retry-42"},
+    )
+    assert mismatch.status_code == 409
+    assert mismatch.json()["detail"]["code"] == "inventory_idempotency_conflict"
+    assert len(comments) == 1
+
+
+def test_task_writeoff_audit_failure_does_not_make_committed_operation_retryable(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    mechanic = _user(db_session, "mechanic", "writeoff-audit-failure", [seed_park_with_tracker])
+    login_as(client, mechanic.username, "secret")
+    _, part = _seed_part(client, seed_park_with_tracker.id)
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=mechanic,
+        owner=mechanic,
+        issue_key="RP-AUDIT-FAIL",
+        park_id=seed_park_with_tracker.id,
+    )
+    monkeypatch.setattr(inventory_svc.platform_settings, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        inventory_svc.tracker_cache,
+        "get_issue",
+        lambda **kwargs: {
+            "key": "RP-AUDIT-FAIL",
+            "tags": [seed_park_with_tracker.tag],
+            "assignee": {"login": mechanic.tracker_login},
+        },
+    )
+    comments = []
+    monkeypatch.setattr(
+        inventory_svc.tracker_client, "add_comment", lambda **kwargs: comments.append(kwargs)
+    )
+    monkeypatch.setattr(
+        inventory_svc.audit, "record", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("audit"))
+    )
+    payload = {"part_id": part["id"], "quantity": 2, "idempotency_key": "audit-failure"}
+
+    first = client.post("/inventory/tasks/RP-AUDIT-FAIL/writeoff", json=payload)
+    retried = client.post("/inventory/tasks/RP-AUDIT-FAIL/writeoff", json=payload)
+
+    assert first.status_code == retried.status_code == 201
+    assert first.json()["id"] == retried.json()["id"]
+    db_session.expire_all()
+    assert db_session.scalar(select(InventoryParkStock.quantity)) == 3
+    assert len(comments) == 1
 
 
 def test_task_writeoff_does_not_comment_when_stock_is_insufficient(
@@ -295,7 +401,8 @@ def test_task_writeoff_does_not_comment_when_stock_is_insufficient(
     )
 
     response = client.post(
-        "/inventory/tasks/RP-43/writeoff", json={"part_id": part["id"], "quantity": 6}
+        "/inventory/tasks/RP-43/writeoff",
+        json={"part_id": part["id"], "quantity": 6, "idempotency_key": "insufficient"},
     )
 
     assert response.status_code == 409
@@ -340,7 +447,8 @@ def test_task_writeoff_version_overflow_rejects_before_tracker_comment(
     )
 
     response = client.post(
-        "/inventory/tasks/RP-OVERFLOW/writeoff", json={"part_id": part["id"], "quantity": 1}
+        "/inventory/tasks/RP-OVERFLOW/writeoff",
+        json={"part_id": part["id"], "quantity": 1, "idempotency_key": "overflow"},
     )
 
     assert response.status_code == 422, response.text
@@ -412,7 +520,8 @@ def test_task_writeoff_flushes_before_tracker_and_commits_only_after_success(
     monkeypatch.setattr(inventory_svc.tracker_client, "add_comment", add_comment)
 
     response = client.post(
-        "/inventory/tasks/RP-TRANSACTION/writeoff", json={"part_id": part["id"], "quantity": 1}
+        "/inventory/tasks/RP-TRANSACTION/writeoff",
+        json={"part_id": part["id"], "quantity": 1, "idempotency_key": f"transaction-{tracker_fails}"},
     )
 
     assert response.status_code == (502 if tracker_fails else 201), response.text
@@ -526,7 +635,8 @@ def test_task_writeoff_derives_claim_park_for_shared_global_part(
     )
 
     response = client.post(
-        "/inventory/tasks/RP-44/writeoff", json={"part_id": part["id"], "quantity": 2}
+        "/inventory/tasks/RP-44/writeoff",
+        json={"part_id": part["id"], "quantity": 2, "idempotency_key": "claim-park"},
     )
 
     assert response.status_code == 201, response.text

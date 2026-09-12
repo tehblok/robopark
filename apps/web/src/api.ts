@@ -1379,11 +1379,12 @@ export const api = {
     )
   },
   inventory: (parkId: number) => inventoryRequest<InventoryOverview>(`/inventory?park_id=${parkId}`),
-  searchInventory: ({ parkId, query: search, componentId, stockFilter, limit, offset }: InventorySearchParams) => {
+  searchInventory: ({ parkId, query: search, componentId, stockFilter, mode, limit, offset }: InventorySearchParams) => {
     const query = new URLSearchParams({ park_id: String(parkId) })
     if (search) query.set('q', search)
     if (componentId !== undefined) query.set('component_id', String(componentId))
     if (stockFilter) query.set('stock_filter', stockFilter)
+    if (mode) query.set('mode', mode)
     if (limit !== undefined) query.set('limit', String(limit))
     if (offset !== undefined) query.set('offset', String(offset))
     return inventoryRequest<InventoryPageEnvelope<InventoryCatalogSearchItem>>(`/inventory/catalog/search?${query.toString()}`)
@@ -1424,6 +1425,8 @@ export const api = {
     inventoryRequest<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}`, { method: 'PATCH', body: inventoryStringify({ lines }) }),
   postInventoryCount: (parkId: number, countId: number) =>
     inventoryRequest<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}/post`, { method: 'POST' }),
+  refreshInventoryCount: (parkId: number, countId: number) =>
+    inventoryRequest<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}/refresh`, { method: 'POST' }),
   cancelInventoryCount: (parkId: number, countId: number) =>
     inventoryRequest<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}/cancel`, { method: 'POST' }),
   downloadInventoryExport,
@@ -1443,7 +1446,7 @@ export const api = {
   },
   updateInventoryPart: (id: number, payload: Partial<Pick<InventoryPart, 'name' | 'article' | 'component_id' | 'location' | 'minimum_quantity' | 'is_active'>>) => inventoryRequest<InventoryPart>(`/inventory/parts/${id}`, { method: 'PATCH', body: inventoryStringify(payload) }),
   moveInventoryStock: (id: number, kind: 'receipt' | 'writeoff' | 'adjustment', quantity: InventoryInt64, note?: string) => inventoryRequest<InventoryMovement>(`/inventory/parts/${id}/movements`, { method: 'POST', body: inventoryStringify({ kind, quantity, note }) }),
-  writeoffInventoryForTask: (issueKey: string, partId: number, quantity: InventoryInt64) => inventoryRequest<InventoryMovement>(`/inventory/tasks/${encodeURIComponent(issueKey)}/writeoff`, { method: 'POST', body: inventoryStringify({ part_id: partId, quantity }) }),
+  writeoffInventoryForTask: (issueKey: string, partId: number, quantity: InventoryInt64, idempotencyKey: string) => inventoryRequest<InventoryMovement>(`/inventory/tasks/${encodeURIComponent(issueKey)}/writeoff`, { method: 'POST', body: inventoryStringify({ part_id: partId, quantity, idempotency_key: idempotencyKey }) }),
   reportsMine: () => request<Report[]>('/reports/mine'),
   reportsInbox: (parkId?: number) =>
     request<Report[]>(

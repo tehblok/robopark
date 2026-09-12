@@ -11,6 +11,8 @@ from sqlalchemy.dialects import postgresql
 from robopark_api.models import (
     AuthSession,
     Base,
+    InventoryCatalogComponent,
+    InventoryCatalogPart,
     InventoryCount,
     InventoryCountLine,
     InventoryMovement,
@@ -88,6 +90,9 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCount.normalized_name_key.type.compile(dialect=postgresql.dialect()).startswith(
         "BYTEA"
     )
+    assert InventoryCatalogComponent.normalized_name.type.length >= 384
+    assert InventoryCatalogPart.normalized_name.type.length >= 384
+    assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
 def test_alembic_head_is_global_inventory_workflows():

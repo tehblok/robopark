@@ -177,7 +177,7 @@ it('displays and writes task parts from the backend claim park despite tag and u
 
   expect(searchInventory).toHaveBeenCalledWith({ parkId: 7, stockFilter: 'in_stock', limit: 200, offset: 0 })
   expect(searchInventory).not.toHaveBeenCalledWith(expect.objectContaining({ parkId: 8 }))
-  await waitFor(() => expect(writeoffInventoryForTask).toHaveBeenCalledWith(issue.key, -91, '1'))
+  await waitFor(() => expect(writeoffInventoryForTask).toHaveBeenCalledWith(issue.key, -91, '1', expect.any(String)))
 })
 
 it('disables task parts when the backend claim is missing', async () => {

@@ -13,7 +13,7 @@ import { InventoryExportView } from './InventoryExportView'
 import { InventoryTabs } from './InventoryTabs'
 import './inventory.css'
 
-type InventoryApi = Pick<typeof api, 'inventory' | 'inventoryPartPhotoUrl' | 'searchInventory' | 'inventoryCatalogComponents' | 'getInventoryCatalogPart' | 'createInventoryCatalogComponent' | 'createInventoryCatalogPart' | 'updateInventoryCatalogPart' | 'mergeInventoryCatalogPart' | 'updateInventoryStock' | 'inventoryReceipts' | 'createInventoryReceipt' | 'updateInventoryReceipt' | 'postInventoryReceipt' | 'cancelInventoryReceipt' | 'reverseInventoryReceipt' | 'inventoryCounts' | 'createInventoryCount' | 'updateInventoryCount' | 'postInventoryCount' | 'cancelInventoryCount' | 'downloadInventoryExport'>
+type InventoryApi = Pick<typeof api, 'inventory' | 'inventoryPartPhotoUrl' | 'searchInventory' | 'inventoryCatalogComponents' | 'getInventoryCatalogPart' | 'createInventoryCatalogComponent' | 'createInventoryCatalogPart' | 'updateInventoryCatalogPart' | 'mergeInventoryCatalogPart' | 'updateInventoryStock' | 'inventoryReceipts' | 'createInventoryReceipt' | 'updateInventoryReceipt' | 'postInventoryReceipt' | 'cancelInventoryReceipt' | 'reverseInventoryReceipt' | 'inventoryCounts' | 'createInventoryCount' | 'updateInventoryCount' | 'refreshInventoryCount' | 'postInventoryCount' | 'cancelInventoryCount' | 'downloadInventoryExport'>
 
 export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi }) {
   const { selectedPark, parks, loading } = useParkScope()

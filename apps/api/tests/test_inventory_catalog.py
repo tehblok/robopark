@@ -141,6 +141,67 @@ def test_catalog_search_filters_and_sorts_by_normalized_values(
     assert [row["id"] for row in filtered["items"]] == [first.id]
 
 
+def test_catalog_archived_mode_is_admin_only_and_supports_restore(
+    client, db_session, seed_park_with_tracker
+):
+    admin = _user(db_session, "admin", "archive-browser-admin")
+    mechanic = _user(
+        db_session, "mechanic", "archive-browser-mechanic", [seed_park_with_tracker]
+    )
+    component, part = _catalog(db_session, admin, article="ARCHIVE-FIND")
+    login_as(client, admin.username, "secret")
+    assert client.patch(
+        f"/inventory/catalog/parts/{part.id}", json={"is_active": False}
+    ).status_code == 200
+
+    active = client.get(
+        "/inventory/catalog/search",
+        params={"park_id": seed_park_with_tracker.id, "q": "ARCHIVE-FIND"},
+    )
+    archived = client.get(
+        "/inventory/catalog/search",
+        params={
+            "park_id": seed_park_with_tracker.id,
+            "q": "ARCHIVE-FIND",
+            "mode": "archived",
+        },
+    )
+    all_rows = client.get(
+        "/inventory/catalog/search",
+        params={"park_id": seed_park_with_tracker.id, "mode": "all"},
+    )
+    assert active.json()["items"] == []
+    assert [row["id"] for row in archived.json()["items"]] == [part.id]
+    assert part.id in [row["id"] for row in all_rows.json()["items"]]
+
+    assert client.patch(
+        f"/inventory/catalog/components/{component.id}", json={"is_active": False}
+    ).status_code == 200
+    assert [row["id"] for row in client.get(
+        "/inventory/catalog/search",
+        params={"park_id": seed_park_with_tracker.id, "mode": "archived"},
+    ).json()["items"]] == [part.id]
+
+    login_as(client, mechanic.username, "secret")
+    assert client.get(
+        "/inventory/catalog/search",
+        params={"park_id": seed_park_with_tracker.id, "mode": "archived"},
+    ).status_code == 403
+
+    login_as(client, admin.username, "secret")
+    assert client.patch(
+        f"/inventory/catalog/components/{component.id}", json={"is_active": True}
+    ).status_code == 200
+    restored = client.patch(
+        f"/inventory/catalog/parts/{part.id}", json={"is_active": True}
+    )
+    assert restored.status_code == 200, restored.text
+    assert client.get(
+        "/inventory/catalog/search",
+        params={"park_id": seed_park_with_tracker.id, "q": "ARCHIVE-FIND"},
+    ).json()["items"][0]["id"] == part.id
+
+
 def test_catalog_component_metadata_and_exact_part_are_scoped_and_independent_of_search_page(
     client, db_session, seed_park_with_tracker
 ):
@@ -283,6 +344,38 @@ def test_duplicate_active_article_returns_existing_part(client, db_session, seed
     }
 
 
+def test_catalog_api_accepts_max_length_values_whose_casefold_expands(
+    client, db_session, seed_park_with_tracker
+):
+    mechanic = _user(db_session, "mechanic", "expanding-casefold", [seed_park_with_tracker])
+    login_as(client, mechanic.username, "secret")
+    expanding = "ß" * 128
+    component = client.post(
+        "/inventory/catalog/components",
+        json={"park_id": seed_park_with_tracker.id, "name": expanding},
+    )
+    assert component.status_code == 201, component.text
+    part = client.post(
+        "/inventory/catalog/parts",
+        json={
+            "park_id": seed_park_with_tracker.id,
+            "component_id": component.json()["id"],
+            "name": expanding,
+            "article": expanding,
+        },
+    )
+    assert part.status_code == 201, part.text
+    db_session.expire_all()
+    stored = db_session.get(InventoryCatalogPart, part.json()["id"])
+    assert stored.normalized_name == "ss" * 128
+    assert stored.normalized_article == "ss" * 128
+    found = client.get(
+        "/inventory/catalog/search",
+        params={"park_id": seed_park_with_tracker.id, "q": "SS" * 128},
+    )
+    assert [item["id"] for item in found.json()["items"]] == [part.json()["id"]]
+
+
 def test_stock_settings_reject_mismatched_park_part_and_never_accept_quantity(
     client, db_session, seed_park_with_tracker
 ):
@@ -422,12 +515,26 @@ def test_merge_transfers_stock_and_movement_history_and_archives_source(
                 park_id=seed_park_with_tracker.id,
                 catalog_part_id=target.id,
                 quantity=2,
+                minimum_quantity=1,
+                location=None,
+                is_active=False,
                 updated_by=admin.id,
             ),
             InventoryParkStock(
                 park_id=seed_park_with_tracker.id,
                 catalog_part_id=source.id,
                 quantity=3,
+                minimum_quantity=7,
+                location="Source shelf",
+                is_active=True,
+                updated_by=admin.id,
+            ),
+            InventoryParkStock(
+                park_id=other.id,
+                catalog_part_id=target.id,
+                quantity=0,
+                minimum_quantity=9,
+                location="Target B",
                 updated_by=admin.id,
             ),
             InventoryParkStock(
@@ -465,8 +572,20 @@ def test_merge_transfers_stock_and_movement_history_and_archives_source(
         (row.park_id, row.catalog_part_id): (row.quantity, row.minimum_quantity, row.location)
         for row in db_session.scalars(select(InventoryParkStock))
     }
-    assert stocks[(seed_park_with_tracker.id, target.id)][0] == 5
-    assert stocks[(other.id, target.id)] == (4, 2, "B")
+    assert stocks[(seed_park_with_tracker.id, target.id)] == (5, 7, "Source shelf")
+    merged_target_stock = db_session.scalar(
+        select(InventoryParkStock).where(
+            InventoryParkStock.park_id == seed_park_with_tracker.id,
+            InventoryParkStock.catalog_part_id == target.id,
+        )
+    )
+    assert merged_target_stock.is_active is True
+    assert stocks[(other.id, target.id)] == (4, 9, "Target B")
+    archived = client.get(
+        "/inventory/catalog/search",
+        params={"park_id": seed_park_with_tracker.id, "mode": "archived"},
+    )
+    assert source.id not in [row["id"] for row in archived.json()["items"]]
     historical_receipt = db_session.scalar(
         select(InventoryMovement).where(InventoryMovement.kind == "receipt")
     )
