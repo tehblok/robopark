@@ -27,6 +27,7 @@ const EMPTY_PARKS: Park[] = []
 type ParkLoadState = {
   user: User | null
   fleetScope: boolean
+  includeInactive: boolean
   parks: Park[]
   loading: boolean
 }
@@ -46,10 +47,11 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
     && ['/overview', '/analytics'].includes(pathname.replace(/\/$/, '')))
   const selectionContext = allowAllParks ? `insights:${searchParams.get(PARK_QUERY_KEY) ?? 'all'}` : 'single'
   const inventoryFleetScope = Boolean(user?.role === 'operator' && pathname.replace(/\/$/, '') === '/inventory')
+  const includeInactiveInventoryParks = Boolean(user && ['admin', 'royal'].includes(user.role) && pathname.replace(/\/$/, '') === '/inventory')
   const fleetScope = Boolean(user && (hasFleetParkScope(user) || inventoryFleetScope))
   const [loadState, setLoadState] = useState<ParkLoadState | null>(null)
   const [selectionState, setSelectionState] = useState<ParkSelectionState | null>(null)
-  const currentLoadState = loadState?.user === user && loadState.fleetScope === fleetScope
+  const currentLoadState = loadState?.user === user && loadState.fleetScope === fleetScope && loadState.includeInactive === includeInactiveInventoryParks
     ? loadState
     : null
   const currentSelectionState =
@@ -57,7 +59,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
       ? selectionState
       : null
   const loadGeneration = useRef(0)
-  const currentScope = useRef({ user, fleetScope })
+  const currentScope = useRef({ user, fleetScope, includeInactive: includeInactiveInventoryParks })
   const loadedParks = !user
     ? EMPTY_PARKS
     : fleetScope
@@ -76,18 +78,20 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
   const locked = user?.role === 'mechanic' && parks.length <= 1
 
   useLayoutEffect(() => {
-    currentScope.current = { user, fleetScope }
-  }, [fleetScope, user])
+    currentScope.current = { user, fleetScope, includeInactive: includeInactiveInventoryParks }
+  }, [fleetScope, includeInactiveInventoryParks, user])
 
   const beginLoad = useCallback((
     requestUser: User | null,
     requestFleetScope: boolean,
+    requestIncludeInactive: boolean,
     currentParks: Park[],
   ) => {
     const generation = ++loadGeneration.current
     setLoadState({
       user: requestUser,
       fleetScope: requestFleetScope,
+      includeInactive: requestIncludeInactive,
       parks: currentParks,
       loading: true,
     })
@@ -98,17 +102,20 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
     generation: number,
     requestUser: User | null,
     requestFleetScope: boolean,
+    requestIncludeInactive: boolean,
     nextParks: Park[],
   ) => {
     if (
       generation !== loadGeneration.current
       || requestUser !== currentScope.current.user
       || requestFleetScope !== currentScope.current.fleetScope
+      || requestIncludeInactive !== currentScope.current.includeInactive
     ) return
 
     setLoadState({
       user: requestUser,
       fleetScope: requestFleetScope,
+      includeInactive: requestIncludeInactive,
       parks: nextParks,
       loading: false,
     })
@@ -121,16 +128,16 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!user || !fleetScope) return
 
-    const generation = beginLoad(user, true, [])
+    const generation = beginLoad(user, true, includeInactiveInventoryParks, [])
     void api
       .parks()
       .then((nextParks) => {
-        commitLoad(generation, user, true, activeParks(nextParks))
+        commitLoad(generation, user, true, includeInactiveInventoryParks, includeInactiveInventoryParks ? nextParks : activeParks(nextParks))
       })
       .catch(() => {
-        commitLoad(generation, user, true, [])
+        commitLoad(generation, user, true, includeInactiveInventoryParks, [])
       })
-  }, [beginLoad, commitLoad, fleetScope, user])
+  }, [beginLoad, commitLoad, fleetScope, includeInactiveInventoryParks, user])
 
   const writeSelection = useCallback(
     (nextParkId: number | null, replace: boolean) => {
@@ -177,14 +184,17 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
   const refreshParks = useCallback(async () => {
     const requestUser = user
     const requestFleetScope = Boolean(requestUser && (hasFleetParkScope(requestUser) || inventoryFleetScope))
-    const generation = beginLoad(requestUser, requestFleetScope, parks)
+    const requestIncludeInactive = includeInactiveInventoryParks
+    const generation = beginLoad(requestUser, requestFleetScope, requestIncludeInactive, parks)
     try {
       if (requestFleetScope) {
+        const nextParks = await api.parks()
         commitLoad(
           generation,
           requestUser,
           requestFleetScope,
-          activeParks(await api.parks()),
+          requestIncludeInactive,
+          requestIncludeInactive ? nextParks : activeParks(nextParks),
         )
         return
       }
@@ -194,13 +204,14 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
         generation,
         requestUser,
         requestFleetScope,
+        requestIncludeInactive,
         refreshedUser.parks,
       )
     } catch (error) {
-      commitLoad(generation, requestUser, requestFleetScope, parks)
+      commitLoad(generation, requestUser, requestFleetScope, requestIncludeInactive, parks)
       throw error
     }
-  }, [beginLoad, commitLoad, inventoryFleetScope, parks, refreshUser, user])
+  }, [beginLoad, commitLoad, includeInactiveInventoryParks, inventoryFleetScope, parks, refreshUser, user])
 
   const selectedPark = parks.find((park) => park.id === parkId) ?? null
   const value = useMemo(

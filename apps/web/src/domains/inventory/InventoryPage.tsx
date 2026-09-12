@@ -9,18 +9,14 @@ import { InventoryManageView } from './InventoryManageView'
 import { InventoryPartsView } from './InventoryPartsView'
 import { InventoryReceiptsView } from './InventoryReceiptsView'
 import { InventoryCountsView } from './InventoryCountsView'
-import { InventoryTabs, type InventoryView } from './InventoryTabs'
+import { InventoryExportView } from './InventoryExportView'
+import { InventoryTabs } from './InventoryTabs'
 import './inventory.css'
 
-type InventoryApi = Pick<typeof api, 'inventory' | 'inventoryPartPhotoUrl' | 'searchInventory' | 'inventoryCatalogComponents' | 'getInventoryCatalogPart' | 'createInventoryCatalogComponent' | 'createInventoryCatalogPart' | 'updateInventoryCatalogPart' | 'mergeInventoryCatalogPart' | 'updateInventoryStock' | 'inventoryReceipts' | 'createInventoryReceipt' | 'updateInventoryReceipt' | 'postInventoryReceipt' | 'cancelInventoryReceipt' | 'reverseInventoryReceipt' | 'inventoryCounts' | 'createInventoryCount' | 'updateInventoryCount' | 'postInventoryCount' | 'cancelInventoryCount'>
-
-function InventoryWorkflowPlaceholder({ view, parkName, role }: { view: Exclude<InventoryView, 'parts' | 'receipts' | 'counts'>; parkName: string; role?: string }) {
-  if (view === 'manage') return <section className="inventory-workflow-placeholder"><h2>Управление</h2><p>{role === 'admin' || role === 'royal' ? 'Глобальный каталог и настройки склада парка.' : 'Настройки склада парка.'}</p></section>
-  return <section className="inventory-workflow-placeholder"><h2>Выгрузка парка {parkName}</h2><p>Выбор формата и скачивание появятся здесь.</p></section>
-}
+type InventoryApi = Pick<typeof api, 'inventory' | 'inventoryPartPhotoUrl' | 'searchInventory' | 'inventoryCatalogComponents' | 'getInventoryCatalogPart' | 'createInventoryCatalogComponent' | 'createInventoryCatalogPart' | 'updateInventoryCatalogPart' | 'mergeInventoryCatalogPart' | 'updateInventoryStock' | 'inventoryReceipts' | 'createInventoryReceipt' | 'updateInventoryReceipt' | 'postInventoryReceipt' | 'cancelInventoryReceipt' | 'reverseInventoryReceipt' | 'inventoryCounts' | 'createInventoryCount' | 'updateInventoryCount' | 'postInventoryCount' | 'cancelInventoryCount' | 'downloadInventoryExport'>
 
 export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi }) {
-  const { selectedPark, loading } = useParkScope()
+  const { selectedPark, parks, loading } = useParkScope()
   const role = useContext(AuthContext)?.user?.role
   const permissions = useContext(AuthContext)?.user?.permissions
   const [overview, setOverview] = useState<InventoryOverview | null>(null)
@@ -52,6 +48,6 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
           ? <InventoryCountsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} permissions={permissions} />
       : view === 'manage'
         ? <InventoryManageView apiClient={apiClient} parkId={selectedPark.id} role={role} />
-        : <InventoryWorkflowPlaceholder parkName={selectedPark.name} role={role} view={view} />} />
+        : <InventoryExportView apiClient={apiClient} parks={parks} permissions={permissions} role={role} selectedPark={selectedPark} />} />
   </PageLayout>
 }

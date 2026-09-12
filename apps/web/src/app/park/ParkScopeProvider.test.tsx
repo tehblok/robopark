@@ -177,6 +177,36 @@ afterEach(() => {
 })
 
 describe('ParkScopeProvider', () => {
+  it.each(['admin', 'royal'] as const)('loads active and inactive fleet parks for %s inventory export', async role => {
+    vi.spyOn(api, 'parks').mockResolvedValue([park(7), { ...park(9), is_active: false }])
+
+    renderScope('/inventory?view=export&park=9', { ...scopeUser('operator', []), role })
+
+    await waitFor(() => expect(screen.getByTestId('park-id')).toHaveTextContent('9'))
+    expect(screen.getByTestId('parks')).toHaveTextContent('7,9')
+    expect(screen.getByTestId('location')).toHaveTextContent('view=export&park=9')
+  })
+
+  it('loads only active fleet parks for operator inventory selection', async () => {
+    vi.spyOn(api, 'parks').mockResolvedValue([park(7), { ...park(9), is_active: false }])
+
+    renderScope('/inventory?view=export&park=9', scopeUser('operator', [park(7)]))
+
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('view=export&park=7'))
+    expect(screen.getByTestId('parks')).toHaveTextContent('7')
+    expect(screen.getByTestId('park-id')).toHaveTextContent('7')
+  })
+
+  it('keeps a mechanic restricted to assigned parks on inventory', async () => {
+    const parksRequest = vi.spyOn(api, 'parks')
+
+    renderScope('/inventory?view=export&park=9', scopeUser('mechanic', [park(7), park(9)]))
+
+    expect(await screen.findByTestId('park-id')).toHaveTextContent('9')
+    expect(screen.getByTestId('parks')).toHaveTextContent('7,9')
+    expect(parksRequest).not.toHaveBeenCalled()
+  })
+
   it('prefers a valid park from the URL over session storage', async () => {
     sessionStorage.setItem(PARK_STORAGE_KEY, '7')
 
