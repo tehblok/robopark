@@ -75,14 +75,29 @@ def list_components(db: Session, user: User, *, park_id: int, limit: int, offset
     inventory_access.require_park(db, user, park_id)
     base = select(InventoryCatalogComponent).where(InventoryCatalogComponent.is_active.is_(True))
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
-    rows = list(db.scalars(base.order_by(InventoryCatalogComponent.normalized_name, InventoryCatalogComponent.id).limit(limit).offset(offset)))
-    return {"items": [component_out(row) for row in rows], "limit": limit, "offset": offset, "total": total}
+    rows = list(
+        db.scalars(
+            base.order_by(InventoryCatalogComponent.normalized_name, InventoryCatalogComponent.id)
+            .limit(limit)
+            .offset(offset)
+        )
+    )
+    return {
+        "items": [component_out(row) for row in rows],
+        "limit": limit,
+        "offset": offset,
+        "total": total,
+    }
 
 
 def catalog_item(db: Session, user: User, *, park_id: int, part_id: int) -> dict:
     inventory_access.require_park(db, user, park_id)
     part = resolve_catalog_part(db, part_id)
-    stock = db.scalar(select(InventoryParkStock).where(InventoryParkStock.park_id == park_id, InventoryParkStock.catalog_part_id == part.id))
+    stock = db.scalar(
+        select(InventoryParkStock).where(
+            InventoryParkStock.park_id == park_id, InventoryParkStock.catalog_part_id == part.id
+        )
+    )
     return {
         **part_out(part),
         "component_name": part.component.name,

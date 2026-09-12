@@ -192,9 +192,12 @@ def test_catalog_component_metadata_and_exact_part_are_scoped_and_independent_of
         "location": "A-7",
         "stock_is_active": True,
     }
-    assert client.get(
-        f"/inventory/catalog/parts/{part.id}", params={"park_id": foreign.id}
-    ).status_code == 403
+    assert (
+        client.get(
+            f"/inventory/catalog/parts/{part.id}", params={"park_id": foreign.id}
+        ).status_code
+        == 403
+    )
 
 
 def test_mechanic_can_create_missing_catalog_but_only_admin_can_patch_existing(

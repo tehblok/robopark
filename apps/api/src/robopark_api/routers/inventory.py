@@ -349,7 +349,11 @@ def list_catalog_components(
 ):
     if not 1 <= limit <= 200 or offset < 0:
         raise HTTPException(422, "inventory_pagination_invalid")
-    return _run(lambda: inventory_catalog.list_components(db, user, park_id=park_id, limit=limit, offset=offset))
+    return _run(
+        lambda: inventory_catalog.list_components(
+            db, user, park_id=park_id, limit=limit, offset=offset
+        )
+    )
 
 
 @router.patch("/catalog/components/{component_id}", response_model=InventoryCatalogComponentOut)

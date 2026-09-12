@@ -356,7 +356,11 @@ def test_pack_release_wrapper_propagates_reviewed_migration_metadata(
     with zipfile.ZipFile(output) as archive:
         manifest = json.loads(archive.read("manifest.json"))
     assert manifest["migration_compatibility"] == {
-        "from_heads": ["0025_local_task_claims"],
+        "from_heads": [
+            "0022_tracker_collaboration",
+            "0024_inventory",
+            "0025_local_task_claims",
+        ],
         "reversible": True,
     }
 
