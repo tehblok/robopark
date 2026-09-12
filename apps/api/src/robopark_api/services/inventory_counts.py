@@ -344,6 +344,13 @@ def post_count(db: Session, user: User, *, park_id: int, count_id: int) -> Inven
                         "catalog_part_id": canonical_id,
                         "expected_quantity": expected,
                         "current_quantity": current,
+                        "affected_lines": [
+                            {
+                                "count_line_id": line.id,
+                                "catalog_part_id": line.catalog_part_id,
+                            }
+                            for line in grouped_lines
+                        ],
                     }
                 )
         if conflicts:

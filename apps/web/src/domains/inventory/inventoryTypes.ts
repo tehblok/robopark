@@ -161,6 +161,7 @@ export type InventoryCountStaleErrorDetail = {
     catalog_part_id: number
     expected_quantity: InventoryInt64
     current_quantity: InventoryInt64
+    affected_lines: Array<{ count_line_id: number; catalog_part_id: number }>
   }>
 }
 

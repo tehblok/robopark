@@ -1,7 +1,7 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
-import type { InventoryCatalogSearchItem, InventoryReceipt } from '../../api'
+import { ApiError, type InventoryCatalogSearchItem, type InventoryReceipt } from '../../api'
 import { InventoryReceiptsView } from './InventoryReceiptsView'
 
 const part: InventoryCatalogSearchItem = { id: 31, component_id: 4, component_name: 'Подвязка', name: 'Тяга', article: 'ABC-1', is_active: true, has_photo: false, quantity: '5', minimum_quantity: '2', location: 'А-1', stock_is_active: true }
@@ -50,4 +50,50 @@ it('uses a single mobile editor and returns to the document list', async () => {
   expect(screen.queryByRole('article', { name: 'Поставка №91' })).not.toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name: 'Назад к поставкам' }))
   expect(await screen.findByRole('article', { name: 'Поставка №91' })).toBeVisible()
+})
+
+it('preserves server draft lines when another catalog part is added', async () => {
+  const other = { ...part, id: 32, article: 'NEW-2', name: 'Новая' }
+  render(<InventoryReceiptsView apiClient={client({ inventoryReceipts: vi.fn(async () => ({ items: [receipt], limit: 25, offset: 0, total: 1 })), searchInventory: vi.fn(async () => ({ items: [other], limit: 25, offset: 0, total: 1 })) })} parkId={7} />)
+  await userEvent.click(within(await screen.findByRole('article', { name: 'Поставка №91' })).getByRole('button', { name: 'Открыть' }))
+  await userEvent.type(screen.getByRole('searchbox', { name: 'Найти запчасть для поставки' }), 'NEW')
+  await userEvent.click(await screen.findByRole('button', { name: 'Добавить NEW-2' }))
+  expect(screen.getByRole('textbox', { name: 'Количество #31' })).toHaveValue('10')
+  expect(screen.getByRole('textbox', { name: 'Количество NEW-2' })).toHaveValue('1')
+})
+
+it('keeps the created receipt id for a failed post retry and blocks duplicate confirmation', async () => {
+  let rejectPost!: (reason: unknown) => void
+  const firstPost = new Promise<InventoryReceipt>((_resolve, reject) => { rejectPost = reject })
+  const postInventoryReceipt = vi.fn().mockImplementationOnce(() => firstPost).mockResolvedValueOnce({ ...receipt, status: 'posted' })
+  const apiClient = client({ postInventoryReceipt })
+  render(<InventoryReceiptsView apiClient={apiClient} parkId={7} />)
+  await userEvent.click(await screen.findByRole('button', { name: 'Новая поставка' }))
+  await userEvent.type(screen.getByLabelText('Поставщик или завод'), 'Завод')
+  await userEvent.type(screen.getByRole('searchbox', { name: 'Найти запчасть для поставки' }), 'ABC')
+  await userEvent.click(await screen.findByRole('button', { name: 'Добавить ABC-1' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Провести поставку' })); const confirm = await screen.findByRole('button', { name: 'Подтвердить проведение' }); await userEvent.dblClick(confirm)
+  await waitFor(() => expect(postInventoryReceipt).toHaveBeenCalledTimes(1))
+  await act(async () => rejectPost(new ApiError(500, null)))
+  expect(await screen.findByText('Не удалось изменить поставку.')).toBeVisible()
+  expect(apiClient.createInventoryReceipt).toHaveBeenCalledTimes(1)
+  expect(screen.getByRole('heading', { name: 'Поставка №91' })).toBeVisible()
+  await userEvent.click(screen.getByRole('button', { name: 'Провести поставку' })); await userEvent.click(await screen.findByRole('button', { name: 'Подтвердить проведение' }))
+  expect(apiClient.createInventoryReceipt).toHaveBeenCalledTimes(1)
+  expect(apiClient.updateInventoryReceipt).not.toHaveBeenCalled()
+  expect(postInventoryReceipt).toHaveBeenNthCalledWith(2, 7, 91)
+})
+
+it('shows list failures with retry and enforces effective permissions', async () => {
+  const inventoryReceipts = vi.fn().mockRejectedValueOnce(new ApiError(500, null)).mockResolvedValueOnce({ items: [receipt], limit: 25, offset: 0, total: 1 })
+  render(<InventoryReceiptsView apiClient={client({ inventoryReceipts })} parkId={7} permissions={[]} />)
+  expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось загрузить поставки.')
+  await userEvent.click(screen.getByRole('button', { name: 'Повторить загрузку поставок' }))
+  const card = await screen.findByRole('article', { name: 'Поставка №91' })
+  expect(screen.queryByRole('button', { name: 'Новая поставка' })).not.toBeInTheDocument()
+  await userEvent.click(within(card).getByRole('button', { name: 'Открыть' }))
+  expect(screen.queryByRole('button', { name: 'Провести поставку' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Отменить черновик' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('textbox', { name: 'Поставщик или завод' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('searchbox', { name: 'Найти запчасть для поставки' })).not.toBeInTheDocument()
 })

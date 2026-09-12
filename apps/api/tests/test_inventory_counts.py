@@ -217,8 +217,22 @@ def test_count_collects_every_stale_conflict_before_any_mutation(
     assert response.json()["detail"] == {
         "code": "inventory_count_stale",
         "conflicts": [
-            {"catalog_part_id": first.id, "expected_quantity": 2, "current_quantity": 3},
-            {"catalog_part_id": second.id, "expected_quantity": 4, "current_quantity": 5},
+            {
+                "catalog_part_id": first.id,
+                "expected_quantity": 2,
+                "current_quantity": 3,
+                "affected_lines": [
+                    {"count_line_id": count["lines"][0]["id"], "catalog_part_id": first.id}
+                ],
+            },
+            {
+                "catalog_part_id": second.id,
+                "expected_quantity": 4,
+                "current_quantity": 5,
+                "affected_lines": [
+                    {"count_line_id": count["lines"][1]["id"], "catalog_part_id": second.id}
+                ],
+            },
         ],
     }
     db_session.expire_all()
@@ -481,6 +495,63 @@ def test_count_lines_survive_merge_and_archiving_before_post(
         f"{count['id']}:canonical:{target.id}",
         f"{count['id']}:canonical:{archived.id}",
     }
+
+
+def test_stale_count_conflict_identifies_original_lines_after_catalog_merge(
+    client, db_session, seed_park_with_tracker
+):
+    admin = _user(db_session, "admin", "count-stale-alias")
+    component = _component(db_session, admin, "Stale alias component")
+    source = _part(db_session, admin, component, article="STALE-SOURCE")
+    target = _part(db_session, admin, component, article="STALE-TARGET")
+    _stock(db_session, seed_park_with_tracker, source, 2)
+    _stock(db_session, seed_park_with_tracker, target, 3)
+    login_as(client, admin.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/counts"
+    count = _create_count(client, seed_park_with_tracker).json()
+    assert (
+        client.patch(
+            f"{base}/{count['id']}",
+            json={
+                "lines": [
+                    {
+                        "catalog_part_id": line["catalog_part_id"],
+                        "actual_quantity": line["expected_quantity"],
+                    }
+                    for line in count["lines"]
+                ]
+            },
+        ).status_code
+        == 200
+    )
+    inventory_catalog.merge_parts(db_session, admin, source.id, target.id)
+    inventory_stock.apply_stock_delta(
+        db_session,
+        user=admin,
+        park_id=seed_park_with_tracker.id,
+        catalog_part_id=target.id,
+        delta=1,
+        kind="receipt",
+        source_kind=None,
+        source_id=None,
+        note=None,
+    )
+    db_session.commit()
+
+    response = client.post(f"{base}/{count['id']}/post")
+
+    assert response.status_code == 409, response.text
+    conflicts = response.json()["detail"]["conflicts"]
+    assert len(conflicts) == 1
+    assert conflicts[0]["catalog_part_id"] == target.id
+    expected_lines = {
+        (line["id"], line["catalog_part_id"])
+        for line in count["lines"]
+        if line["catalog_part_id"] in {source.id, target.id}
+    }
+    assert {
+        (line["count_line_id"], line["catalog_part_id"]) for line in conflicts[0]["affected_lines"]
+    } == expected_lines
 
 
 @pytest.mark.parametrize(

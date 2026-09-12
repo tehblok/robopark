@@ -22,6 +22,7 @@ function InventoryWorkflowPlaceholder({ view, parkName, role }: { view: Exclude<
 export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi }) {
   const { selectedPark, loading } = useParkScope()
   const role = useContext(AuthContext)?.user?.role
+  const permissions = useContext(AuthContext)?.user?.permissions
   const [overview, setOverview] = useState<InventoryOverview | null>(null)
   const requestGeneration = useRef(0)
   const parkId = selectedPark?.id
@@ -46,9 +47,9 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
     <InventoryTabs renderPanel={view => view === 'parts'
       ? <InventoryPartsView apiClient={apiClient} parkId={selectedPark.id} />
       : view === 'receipts'
-        ? <InventoryReceiptsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} />
+        ? <InventoryReceiptsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} permissions={permissions} />
         : view === 'counts'
-          ? <InventoryCountsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} />
+          ? <InventoryCountsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} permissions={permissions} />
       : view === 'manage'
         ? <InventoryManageView apiClient={apiClient} parkId={selectedPark.id} role={role} />
         : <InventoryWorkflowPlaceholder parkName={selectedPark.name} role={role} view={view} />} />

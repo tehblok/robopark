@@ -189,7 +189,7 @@ describe('inventory API contracts', () => {
 
   it('preserves structured inventory errors for typed conflict handling', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(
-      '{"detail":{"code":"inventory_count_stale","conflicts":[{"catalog_part_id":3,"expected_quantity":9007199254740993,"current_quantity":9223372036854775807}]}}',
+      '{"detail":{"code":"inventory_count_stale","conflicts":[{"catalog_part_id":3,"expected_quantity":9007199254740993,"current_quantity":9223372036854775807,"affected_lines":[{"count_line_id":41,"catalog_part_id":9}]}]}}',
       { status: 409, headers: { 'Content-Type': 'application/json' } },
     )))
 
@@ -200,12 +200,13 @@ describe('inventory API contracts', () => {
     expect(failure.detail).toBeNull()
     expect(failure.structuredDetail).toEqual({
       code: 'inventory_count_stale',
-      conflicts: [{ catalog_part_id: 3, expected_quantity: '9007199254740993', current_quantity: '9223372036854775807' }],
+      conflicts: [{ catalog_part_id: 3, expected_quantity: '9007199254740993', current_quantity: '9223372036854775807', affected_lines: [{ count_line_id: 41, catalog_part_id: 9 }] }],
     })
     const detail = inventoryErrorDetail(failure)
     expect(isInventoryCountStaleErrorDetail(detail)).toBe(true)
     if (!isInventoryCountStaleErrorDetail(detail)) throw new Error('expected stale count detail')
     expect(detail.conflicts[0].current_quantity).toBe('9223372036854775807')
+    expect(detail.conflicts[0].affected_lines).toEqual([{ count_line_id: 41, catalog_part_id: 9 }])
   })
 
   it('narrows duplicate inventory errors to their existing identifiers', () => {
