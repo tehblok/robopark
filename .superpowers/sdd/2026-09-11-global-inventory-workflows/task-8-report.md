@@ -52,14 +52,24 @@ cd apps/api && .venv/bin/pytest tests/test_inventory_receipts.py tests/test_inve
 39 passed.
 ```
 
+Round 3 RED reproduced unconditional receipt PATCH, supplier-null post no-op, and
+all-lines count draft validation. Focused GREEN:
+
+```text
+cd apps/web && npm test -- --run src/domains/inventory/InventoryReceiptsView.test.tsx src/domains/inventory/InventoryCountsView.test.tsx
+Test Files 2 passed; Tests 19 passed.
+```
+
 ## Implementation
 
 - Receipt creation searches the scoped server catalog, adds lines, combines duplicate part IDs, validates digit-only positive int64 strings, confirms posting, and supports draft cancellation and posted reversal where the API exposes them.
 - Opening a receipt hydrates all server draft lines. A newly created draft is selected before posting, so a failed/lost post response retries the same server ID without creating or patching another receipt.
+- Receipt dirty state resets on open/save/post/park/back. Unchanged existing drafts post directly, preserving historical source aliases; only actual edits trigger PATCH. Supplier remains optional as defined by the API.
 - Count creation uses the server-produced scope lines, retains actual-quantity inputs across 409 stale conflicts, shows expected/current conflict values inline, computes differences with `BigInt`, and offers an explicit retry.
 - Receipt/count lines carry source part and component names/articles in API responses, including archived merge sources. Reopened documents therefore render historical aliases without relying on active-catalog search.
 - Stale conflicts carry original count-line/catalog-part IDs when available; the web guard validates every conflict field and remains compatible with older payloads that omit `affected_lines`.
 - Component scopes load the complete paginated component catalog and submit the exact selected component scope.
+- Count draft Save sends only valid changed lines, while Post still requires actual quantities for every line. The saved server response replaces local draft state and list reload preserves it after Back/reopen.
 - Both document lists use server query/offset pagination and generation guards for list, catalog, park, and mutation responses.
 - A synchronous pending ref plus disabled confirmation controls prevents duplicate mutations before React can render pending state.
 - Effective permissions are independent: stock-manage exposes create/save/update/cancel, document-post exposes posting/reversal, and users with both can save or save-and-post. Every mutation has a synchronous pending guard.
@@ -71,7 +81,7 @@ cd apps/api && .venv/bin/pytest tests/test_inventory_receipts.py tests/test_inve
 
 ```text
 cd apps/web && npm test
-127 files passed; 1865 tests passed.
+127 files passed; 1869 tests passed.
 
 cd apps/web && npm run build
 exit 0; 2188 modules transformed; existing chunk-size warning only.

@@ -127,3 +127,37 @@ it('lets post-only users post an existing receipt without editing it', async () 
   await waitFor(() => expect(apiClient.postInventoryReceipt).toHaveBeenCalledWith(7, 91))
   expect(apiClient.updateInventoryReceipt).not.toHaveBeenCalled()
 })
+
+it('posts an unchanged historical receipt directly and patches only after edits', async () => {
+  const historical = { ...receipt, lines: [{ ...receipt.lines[0], catalog_part_name: 'Источник A', catalog_part_article: 'A-OLD' }] }
+  const apiClient = client({ inventoryReceipts: vi.fn(async () => ({ items: [historical], limit: 25, offset: 0, total: 1 })) })
+  render(<InventoryReceiptsView apiClient={apiClient} parkId={7} permissions={['inventory.stock.manage', 'inventory.documents.post']} />)
+  await userEvent.click(within(await screen.findByRole('article', { name: 'Поставка №91' })).getByRole('button', { name: 'Открыть' }))
+  expect(screen.getByText('Источник A · A-OLD')).toBeVisible()
+  await userEvent.click(screen.getByRole('button', { name: 'Провести поставку' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Подтвердить проведение' }))
+  await waitFor(() => expect(apiClient.postInventoryReceipt).toHaveBeenCalledWith(7, 91))
+  expect(apiClient.updateInventoryReceipt).not.toHaveBeenCalled()
+})
+
+it('posts a supplier-null draft for a post-only user without a silent dialog no-op', async () => {
+  const withoutSupplier = { ...receipt, supplier: null }
+  const apiClient = client({ inventoryReceipts: vi.fn(async () => ({ items: [withoutSupplier], limit: 25, offset: 0, total: 1 })) })
+  render(<InventoryReceiptsView apiClient={apiClient} parkId={7} permissions={['inventory.documents.post']} />)
+  await userEvent.click(within(await screen.findByRole('article', { name: 'Поставка №91' })).getByRole('button', { name: 'Открыть' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Провести поставку' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Подтвердить проведение' }))
+  await waitFor(() => expect(apiClient.postInventoryReceipt).toHaveBeenCalledWith(7, 91))
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+})
+
+it('patches a receipt before posting when editable fields changed', async () => {
+  const apiClient = client({ inventoryReceipts: vi.fn(async () => ({ items: [receipt], limit: 25, offset: 0, total: 1 })) })
+  render(<InventoryReceiptsView apiClient={apiClient} parkId={7} permissions={['inventory.stock.manage', 'inventory.documents.post']} />)
+  await userEvent.click(within(await screen.findByRole('article', { name: 'Поставка №91' })).getByRole('button', { name: 'Открыть' }))
+  await userEvent.type(screen.getByLabelText('Комментарий'), 'Изменено')
+  await userEvent.click(screen.getByRole('button', { name: 'Провести поставку' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Подтвердить проведение' }))
+  await waitFor(() => expect(apiClient.updateInventoryReceipt).toHaveBeenCalledTimes(1))
+  expect(apiClient.postInventoryReceipt).toHaveBeenCalledWith(7, 91)
+})

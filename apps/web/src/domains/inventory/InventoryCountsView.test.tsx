@@ -137,3 +137,22 @@ it('lets manage-only users save count drafts and post-only users post without up
   await waitFor(() => expect(postClient.postInventoryCount).toHaveBeenCalledWith(7, 71))
   expect(postClient.updateInventoryCount).not.toHaveBeenCalled()
 })
+
+it('saves only filled changed count lines and reloads that server draft after Back', async () => {
+  const secondLine = { ...count.lines[0], id: 2, catalog_part_id: 32, catalog_part_name: 'Штанга', catalog_part_article: 'DEF-2', expected_quantity: '4' as const }
+  const twoLineCount = { ...count, lines: [count.lines[0], secondLine] }
+  const saved = { ...twoLineCount, lines: [{ ...count.lines[0], actual_quantity: '8' as const, difference: '3' as const }, secondLine] }
+  let current = twoLineCount
+  const inventoryCounts = vi.fn(async () => ({ items: [current], limit: 25, offset: 0, total: 1 }))
+  const updateInventoryCount = vi.fn(async () => { current = saved; return saved })
+  const apiClient = client({ inventoryCounts, updateInventoryCount })
+  render(<InventoryCountsView apiClient={apiClient} parkId={7} permissions={['inventory.stock.manage']} />)
+  await userEvent.click(within(await screen.findByRole('article', { name: 'Инвентаризация №71' })).getByRole('button', { name: 'Открыть' }))
+  await userEvent.type(screen.getByRole('textbox', { name: 'Фактически ABC-1' }), '8')
+  await userEvent.click(screen.getByRole('button', { name: 'Сохранить черновик' }))
+  await waitFor(() => expect(updateInventoryCount).toHaveBeenCalledWith(7, 71, [{ catalog_part_id: 31, actual_quantity: '8', comment: null }]))
+  await userEvent.click(screen.getByRole('button', { name: 'Назад к актам' }))
+  await userEvent.click(within(await screen.findByRole('article', { name: 'Инвентаризация №71' })).getByRole('button', { name: 'Открыть' }))
+  expect(screen.getByRole('textbox', { name: 'Фактически ABC-1' })).toHaveValue('8')
+  expect(screen.getByRole('textbox', { name: 'Фактически DEF-2' })).toHaveValue('')
+})
