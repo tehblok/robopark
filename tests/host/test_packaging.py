@@ -135,6 +135,8 @@ def test_release_reproducible_with_normalized_zip_and_standalone_verifier(packag
         "node_modules/item",
         "apps/api/data/unknown.json",
         "apps/api/src/data/report-attachments/private-photo.bin",
+        "apps/web/test-results/inventory/trace.zip",
+        "apps/web/playwright-report/index.html",
     ],
 )
 def test_release_excludes_runtime_and_secrets(packaging, tmp_path, name):

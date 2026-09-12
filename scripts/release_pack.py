@@ -63,6 +63,8 @@ EXCLUDED_DIRS = {
     "build",
     "coverage",
     "logs",
+    "test-results",
+    "playwright-report",
     ".worktrees",
     ".superpowers",
 }
