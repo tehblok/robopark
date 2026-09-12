@@ -53,6 +53,35 @@ it('explicitly refreshes a stale snapshot and then sends exactly one new post', 
   expect(apiClient.updateInventoryCount).toHaveBeenCalledTimes(2)
 })
 
+it('shows the refreshed snapshot when the post becomes stale a second time', async () => {
+  const firstStale = new ApiError(409, { code: 'inventory_count_stale', conflicts: [{ catalog_part_id: 31, expected_quantity: '5', current_quantity: '6', affected_lines: [{ count_line_id: 1, catalog_part_id: 31 }] }] })
+  const secondStale = new ApiError(409, { code: 'inventory_count_stale', conflicts: [{ catalog_part_id: 31, expected_quantity: '6', current_quantity: '7', affected_lines: [{ count_line_id: 1, catalog_part_id: 31 }] }] })
+  const refreshed = { ...count, lines: [{ ...count.lines[0], expected_quantity: '6' as const, actual_quantity: '9' as const, difference: '3' as const }] }
+  const apiClient = client({
+    refreshInventoryCount: vi.fn(async () => refreshed),
+    postInventoryCount: vi.fn().mockRejectedValueOnce(firstStale).mockRejectedValueOnce(secondStale),
+  })
+  const user = userEvent.setup()
+  render(<InventoryCountsView apiClient={apiClient} parkId={7} permissions={['inventory.stock.manage', 'inventory.documents.post']} />)
+  await user.click(await screen.findByRole('button', { name: 'Новая инвентаризация' }))
+  await user.type(screen.getByLabelText('Название акта'), 'Сентябрь')
+  await user.click(screen.getByRole('button', { name: 'Создать акт' }))
+  const actual = await screen.findByRole('textbox', { name: 'Фактически ABC-1' })
+  await user.type(actual, '8')
+  await user.click(screen.getByRole('button', { name: 'Провести акт' }))
+  await user.click(await screen.findByRole('button', { name: 'Подтвердить проведение' }))
+  expect(await screen.findByText('Ожидалось 5, сейчас 6')).toBeVisible()
+  await user.clear(actual)
+  await user.type(actual, '9')
+  await user.click(screen.getByRole('button', { name: 'Обновить остатки и провести' }))
+  await user.click(await screen.findByRole('button', { name: 'Подтвердить проведение' }))
+
+  expect(await screen.findByText('Ожидалось 6, сейчас 7')).toBeVisible()
+  expect(screen.getByText('Ожидается: 6')).toBeVisible()
+  expect(screen.getByText('Разница: +3')).toBeVisible()
+  expect(actual).toHaveValue('9')
+})
+
 it('pages and searches counts on the server', async () => {
   const inventoryCounts = vi.fn(async ({ offset }: { query?: string; offset?: number }) => ({ items: [count], limit: 25, offset: offset ?? 0, total: 60 }))
   render(<InventoryCountsView apiClient={client({ inventoryCounts })} parkId={7} />)

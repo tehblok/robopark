@@ -102,6 +102,7 @@ export function InventoryCountsView({ apiClient = api, parkId, onInventoryChange
     const generation = ++documentGeneration.current
     const requestedPark = parkId
     const requestedId = selected.id
+    let latestDocument: InventoryCount | null = null
     try {
       let value: InventoryCount
       if (action === 'post') {
@@ -110,6 +111,7 @@ export function InventoryCountsView({ apiClient = api, parkId, onInventoryChange
         if (conflicts.length) {
           if (canManage) await apiClient.updateInventoryCount(requestedPark, requestedId, lines.map(line => ({ catalog_part_id: line.catalog_part_id, actual_quantity: actual[line.catalog_part_id] as `${bigint}`, comment: line.comment })))
           saved = await apiClient.refreshInventoryCount(requestedPark, requestedId)
+          latestDocument = saved
         } else {
           saved = canManage
             ? await apiClient.updateInventoryCount(requestedPark, requestedId, lines.map(line => ({ catalog_part_id: line.catalog_part_id, actual_quantity: actual[line.catalog_part_id] as `${bigint}`, comment: line.comment })))
@@ -122,7 +124,7 @@ export function InventoryCountsView({ apiClient = api, parkId, onInventoryChange
     } catch (reason) {
       if (generation !== documentGeneration.current) return
       const detail = inventoryErrorDetail(reason)
-      if (isInventoryCountStaleErrorDetail(detail)) { setConflicts(detail.conflicts); setAction(null) }
+      if (isInventoryCountStaleErrorDetail(detail)) { if (latestDocument) open(latestDocument); setConflicts(detail.conflicts); setAction(null) }
       else setError(classifyApiError(reason, 'Не удалось изменить акт.').description)
     } finally { if (generation === documentGeneration.current) { setBusy(false); pending.current = false } }
   }
