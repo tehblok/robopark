@@ -1,5 +1,5 @@
 import { expect, type Page } from '@playwright/test'
-import type { AdminRole, AdminUser, Campaign, CampaignDetail, InventoryOverview, ParkRequest, PermissionCatalogItem, Report, User } from '../../src/api'
+import type { AdminRole, AdminUser, Campaign, CampaignDetail, ParkRequest, PermissionCatalogItem, Report, User } from '../../src/api'
 import { ROUTE_MANIFEST, type AppRouteId, type RouteManifestItem } from '../../src/app/routing/routeManifest'
 import { analyticsFixture } from '../../src/domains/analytics/analytics.test-support'
 import type { MockRoute } from '../support/mockApi'
@@ -26,11 +26,6 @@ const routeRequests: ParkRequest[] = [{ id: 5, user_id: 101, park_id: 8, status:
 const routeRoles: AdminRole[] = [{ id: 1, slug: 'mechanic', name: 'Механик', description: 'Работа с задачами', is_system: true, is_active: true, permissions: ['nav.inventory'], user_count: 1 }]
 const routeCatalog: PermissionCatalogItem[] = [{ key: 'nav.inventory', category: 'nav', label: 'Склад', sort_order: 75 }]
 const routeUsers: AdminUser[] = [{ id: 101, username: 'route-admin', role: 'admin', role_id: 1, access_status: 'approved', is_active: true, tracker_login: 'admin.test', must_change_password: false, parks: [parkNorth], permissions: ['nav.admin'], role_permissions: ['nav.admin'] }]
-const routeInventory: InventoryOverview = {
-  park_id: 7, component_count: 1, part_count: 1, low_stock_count: 0, out_of_stock_count: 0,
-  components: [{ id: 71, park_id: 7, name: 'route-inventory-component', has_photo: false, parts: [{ id: 701, park_id: 7, component_id: 71, name: 'route-inventory-part', article: 'ROUTE-701', quantity: 3, minimum_quantity: 1, location: 'A-7', is_active: true, has_photo: false }] }],
-}
-
 function routeMockRoutes(): MockRoute[] {
   return [
     { method: 'GET', path: '/api/analytics', handler: request => {
@@ -42,7 +37,6 @@ function routeMockRoutes(): MockRoute[] {
     { method: 'GET', path: '/api/operator/park-requests', handler: () => ({ json: routeRequests }) },
     { method: 'GET', path: '/api/campaigns', handler: () => ({ json: [routeCampaign] }) },
     { method: 'GET', path: '/api/campaigns/4', handler: () => ({ json: routeCampaignDetail }) },
-    { method: 'GET', path: '/api/inventory', handler: () => ({ json: routeInventory }) },
     { method: 'GET', path: '/api/reports/mine', handler: () => ({ json: [routeReport] }) },
     { method: 'GET', path: '/api/reports/inbox', handler: () => ({ json: [routeReport] }) },
     { method: 'GET', path: '/api/reports/1', handler: () => ({ json: routeReport }) },
@@ -102,7 +96,7 @@ function routeReadyMarker(page: Page, routeId: AppRouteId) {
     case 'robot-detail': return page.getByRole('heading', { name: 'Робот 447', exact: true })
     case 'robot-check': return page.getByRole('tabpanel', { name: 'Состояние' })
     case 'legacy-robot-check': return page.locator('.rp-robots-search-panel')
-    case 'inventory': return page.getByText('route-inventory-part', { exact: true })
+    case 'inventory': return page.getByText('ABC-1', { exact: true })
     case 'campaigns': return page.getByRole('heading', { name: routeCampaign.name, exact: true })
     case 'campaign-detail': return page.getByRole('heading', { name: routeCampaignDetail.name, exact: true })
     case 'reports': return page.getByRole('button', { name: `Открыть репорт ${routeReport.title}`, exact: true })

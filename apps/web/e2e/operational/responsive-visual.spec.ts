@@ -10,6 +10,7 @@ const states = [
   { name: 'work', path: '/work/ROBOPARK-42?park=7&status=open&sort=newest&page=2', ready: '.issue-actions' },
   { name: 'robots', path: '/robots?park=7', ready: '.rp-robots-search-panel' },
   { name: 'robot-check', path: `/robots/${snapshot.vin}/check?park=7&tab=scheme`, ready: '.rp-check-photo-frame img' },
+  { name: 'inventory', path: '/inventory?park=7', ready: '[data-inventory-workflow="parts"]' },
 ] as const
 
 async function assertPhotoGeometry(page: Page) {

@@ -1,6 +1,8 @@
 import { expect, type Page } from '@playwright/test'
 import type {
   Blocker, DashboardSummary, EmergencySectionDetail, EmergencySnapshot, MechanicTasks,
+  InventoryCatalogComponent, InventoryCatalogSearchItem, InventoryCount, InventoryCountLineInput,
+  InventoryCountScope, InventoryOverview, InventoryReceipt, InventoryReceiptInput, InventoryStockView,
   OperationsOverview, OperatorBlockers, Paged, Park, TrackerActionResult, TrackerComment,
   TrackerIssueDetail, TrackerTransition, User,
 } from '../../src/api'
@@ -17,13 +19,14 @@ const allPermissions = [
   'nav.analytics', 'nav.reports', 'nav.inventory', 'nav.learning', 'nav.help', 'nav.admin',
   'nav.admin.tracker', 'nav.admin.emergency', 'tracker.read', 'tracker.write',
   'tracker.attach', 'reports.create', 'reports.resolve', 'roles.manage',
+  'inventory.stock.manage', 'inventory.documents.post', 'inventory.export', 'inventory.catalog.manage',
   'users.manage', 'users.approve', 'parks.manage',
 ]
 
 const rolePermissions: Record<OperationalRole, string[]> = {
   driver: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.reports', 'tracker.read', 'reports.create'],
-  mechanic: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.reports', 'nav.inventory', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create'],
-  operator: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.analytics', 'nav.reports', 'nav.inventory', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create', 'reports.resolve'],
+  mechanic: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.reports', 'nav.inventory', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create', 'inventory.stock.manage', 'inventory.documents.post', 'inventory.export'],
+  operator: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.analytics', 'nav.reports', 'nav.inventory', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create', 'reports.resolve', 'inventory.stock.manage', 'inventory.documents.post', 'inventory.export'],
   admin: allPermissions.filter((permission) => permission !== 'users.approve'),
   royal: allPermissions,
 }
@@ -96,6 +99,40 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
   const currentSnapshot = structuredClone(options.snapshot ?? snapshot)
   const comments: TrackerComment[] = []
   const user = options.user ?? userForRole('mechanic')
+  const inventoryPart: InventoryCatalogSearchItem = {
+    id: 101, component_id: 11, component_name: 'Ходовая часть', name: 'Комплект крепежа', article: 'ABC-1',
+    is_active: true, has_photo: false, quantity: '0', minimum_quantity: '2', location: 'Полка A-1', stock_is_active: true,
+  }
+  const inventoryComponent: InventoryCatalogComponent = { id: 11, name: inventoryPart.component_name, is_active: true, has_photo: false }
+  const inventoryQuantities = new Map<number, bigint>([[parkNorth.id, 0n], [parkSouth.id, 3n]])
+  const receipts: InventoryReceipt[] = []
+  const counts: InventoryCount[] = []
+  const requestedPark = (request: Request) => {
+    const url = new URL(request.url)
+    const match = url.pathname.match(/^\/api\/inventory\/parks\/(\d+)/)
+    return Number(url.searchParams.get('park_id') ?? match?.[1] ?? 0)
+  }
+  const canReadPark = (parkId: number) => ['admin', 'royal'].includes(user.role) || user.parks.some(park => park.id === parkId)
+  const inventoryDenied = { status: 403, json: { detail: 'inventory_park_forbidden' } }
+  const searchItem = (parkId: number): InventoryCatalogSearchItem => ({ ...inventoryPart, quantity: String(inventoryQuantities.get(parkId) ?? 0n) as `${bigint}` })
+  const receiptFrom = (parkId: number, id: number, input: InventoryReceiptInput, status: InventoryReceipt['status'] = 'draft'): InventoryReceipt => ({
+    id, park_id: parkId, supplier: input.supplier ?? null, document_number: input.document_number ?? null,
+    received_on: input.received_on, comment: input.comment ?? null, status, created_by: user.id,
+    posted_by: status === 'posted' ? user.id : null, created_at: FIXED_TIME, posted_at: status === 'posted' ? FIXED_TIME : null,
+    lines: input.lines.map((line, index) => ({
+      id: id * 10 + index + 1, catalog_part_id: line.catalog_part_id,
+      catalog_part_name: inventoryPart.name, catalog_part_article: inventoryPart.article,
+      catalog_component_id: inventoryPart.component_id, catalog_component_name: inventoryPart.component_name,
+      quantity: line.quantity, note: line.note ?? null,
+    })),
+  })
+  const countLines = (parkId: number, id: number) => [{
+    id: id * 10 + 1, catalog_part_id: inventoryPart.id, catalog_part_name: inventoryPart.name,
+    catalog_part_article: inventoryPart.article, catalog_component_id: inventoryPart.component_id,
+    catalog_component_name: inventoryPart.component_name,
+    expected_quantity: String(inventoryQuantities.get(parkId) ?? 0n) as `${bigint}`,
+    actual_quantity: null, difference: null, comment: null,
+  }]
   const blocker = (): Blocker => ({ key: currentIssue.key, summary: currentIssue.summary, status: currentIssue.status, status_key: currentIssue.status_key, robot: currentIssue.robot ?? null, created_at: FIXED_TIME, hours_created: '0', url: currentIssue.url, bucket: 'open', priority: 'normal', assignee: currentIssue.assignee })
   const routes: MockRoute[] = [
     { method: 'GET', path: '/api/robots', handler: request => {
@@ -128,6 +165,145 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
     { method: 'GET', path: '/api/admin/users', handler: () => ({ json: [] }) },
     { method: 'GET', path: '/api/admin/access-requests', handler: () => ({ json: [] }) },
     { method: 'GET', path: '/api/admin/parks', handler: () => ({ json: [parkNorth, parkSouth] }) },
+    { method: 'GET', path: '/api/inventory', handler: request => {
+      const parkId = requestedPark(request)
+      if (!canReadPark(parkId)) return inventoryDenied
+      const quantity = inventoryQuantities.get(parkId) ?? 0n
+      return { json: {
+        park_id: parkId, component_count: 1, part_count: 1,
+        low_stock_count: quantity < 2n ? 1 : 0, out_of_stock_count: quantity === 0n ? 1 : 0,
+        components: [],
+      } satisfies InventoryOverview }
+    } },
+    { method: 'GET', path: '/api/inventory/catalog/search', handler: request => {
+      const parkId = requestedPark(request)
+      if (!canReadPark(parkId)) return inventoryDenied
+      const query = new URL(request.url).searchParams.get('q')?.toUpperCase()
+      const items = !query || `${inventoryPart.name} ${inventoryPart.article}`.toUpperCase().includes(query) ? [searchItem(parkId)] : []
+      return { json: { items, limit: 25, offset: 0, total: items.length } }
+    } },
+    { method: 'GET', path: '/api/inventory/catalog/components', handler: request => {
+      const parkId = requestedPark(request)
+      return canReadPark(parkId) ? { json: { items: [inventoryComponent], limit: 100, offset: 0, total: 1 } } : inventoryDenied
+    } },
+    { method: 'GET', path: /^\/api\/inventory\/catalog\/parts\/101$/, handler: request => {
+      const parkId = requestedPark(request)
+      return canReadPark(parkId) ? { json: searchItem(parkId) } : inventoryDenied
+    } },
+    { method: 'PUT', path: /^\/api\/inventory\/parks\/\d+\/stocks\/101$/, handler: async request => {
+      const parkId = requestedPark(request)
+      if (!canReadPark(parkId)) return inventoryDenied
+      const body: Pick<InventoryStockView, 'minimum_quantity' | 'location' | 'is_active'> = await request.json()
+      inventoryPart.minimum_quantity = body.minimum_quantity
+      inventoryPart.location = body.location
+      inventoryPart.stock_is_active = body.is_active
+      return { json: { park_id: parkId, catalog_part_id: inventoryPart.id, quantity: String(inventoryQuantities.get(parkId) ?? 0n), minimum_quantity: body.minimum_quantity, location: body.location, is_active: body.is_active, version: '1' } satisfies InventoryStockView }
+    } },
+    { method: 'GET', path: /^\/api\/inventory\/parks\/\d+\/receipts$/, handler: request => {
+      const parkId = requestedPark(request)
+      if (!canReadPark(parkId)) return inventoryDenied
+      const items = receipts.filter(item => item.park_id === parkId)
+      return { json: { items, limit: 25, offset: 0, total: items.length } }
+    } },
+    { method: 'POST', path: /^\/api\/inventory\/parks\/\d+\/receipts$/, handler: async request => {
+      const parkId = requestedPark(request)
+      if (!canReadPark(parkId)) return inventoryDenied
+      const created = receiptFrom(parkId, receipts.length + 1, await request.json())
+      receipts.unshift(created)
+      return { json: created }
+    } },
+    { method: 'PATCH', path: /^\/api\/inventory\/parks\/\d+\/receipts\/\d+$/, handler: async request => {
+      const parkId = requestedPark(request)
+      if (!canReadPark(parkId)) return inventoryDenied
+      const id = Number(new URL(request.url).pathname.split('/').at(-1))
+      const index = receipts.findIndex(item => item.id === id && item.park_id === parkId)
+      const updated = receiptFrom(parkId, id, await request.json())
+      if (index >= 0) receipts[index] = updated
+      else receipts.unshift(updated)
+      return { json: updated }
+    } },
+    { method: 'POST', path: /^\/api\/inventory\/parks\/\d+\/receipts\/\d+\/post$/, handler: request => {
+      const parkId = requestedPark(request)
+      if (!canReadPark(parkId)) return inventoryDenied
+      const id = Number(new URL(request.url).pathname.split('/').at(-2))
+      const index = receipts.findIndex(item => item.id === id && item.park_id === parkId)
+      const current = receipts[index]
+      if (!current) return { status: 404, json: { detail: 'inventory_receipt_not_found' } }
+      current.lines.forEach(line => inventoryQuantities.set(parkId, (inventoryQuantities.get(parkId) ?? 0n) + BigInt(line.quantity)))
+      const posted = { ...current, status: 'posted' as const, posted_by: user.id, posted_at: FIXED_TIME }
+      receipts[index] = posted
+      return { json: posted }
+    } },
+    { method: 'POST', path: /^\/api\/inventory\/parks\/\d+\/receipts\/\d+\/(cancel|reverse)$/, handler: request => {
+      const parkId = requestedPark(request)
+      const id = Number(new URL(request.url).pathname.split('/').at(-2))
+      const index = receipts.findIndex(item => item.id === id && item.park_id === parkId)
+      if (!canReadPark(parkId)) return inventoryDenied
+      if (index < 0) return { status: 404, json: { detail: 'inventory_receipt_not_found' } }
+      receipts[index] = { ...receipts[index], status: 'cancelled' }
+      return { json: receipts[index] }
+    } },
+    { method: 'GET', path: /^\/api\/inventory\/parks\/\d+\/counts$/, handler: request => {
+      const parkId = requestedPark(request)
+      if (!canReadPark(parkId)) return inventoryDenied
+      const items = counts.filter(item => item.park_id === parkId)
+      return { json: { items, limit: 25, offset: 0, total: items.length } }
+    } },
+    { method: 'POST', path: /^\/api\/inventory\/parks\/\d+\/counts$/, handler: async request => {
+      const parkId = requestedPark(request)
+      if (!canReadPark(parkId)) return inventoryDenied
+      const body: { name: string; scope: InventoryCountScope } = await request.json()
+      const created: InventoryCount = { id: counts.length + 1, park_id: parkId, name: body.name, status: 'draft', created_by: user.id, posted_by: null, created_at: FIXED_TIME, posted_at: null, lines: countLines(parkId, counts.length + 1) }
+      counts.unshift(created)
+      return { json: created }
+    } },
+    { method: 'PATCH', path: /^\/api\/inventory\/parks\/\d+\/counts\/\d+$/, handler: async request => {
+      const parkId = requestedPark(request)
+      if (!canReadPark(parkId)) return inventoryDenied
+      const id = Number(new URL(request.url).pathname.split('/').at(-1))
+      const current = counts.find(item => item.id === id && item.park_id === parkId)
+      if (!current) return { status: 404, json: { detail: 'inventory_count_not_found' } }
+      const body: { lines: InventoryCountLineInput[] } = await request.json()
+      const updated: InventoryCount = { ...current, lines: current.lines.map(line => {
+        const input = body.lines.find(item => item.catalog_part_id === line.catalog_part_id)
+        if (!input) return line
+        return { ...line, actual_quantity: input.actual_quantity, difference: String(BigInt(input.actual_quantity) - BigInt(line.expected_quantity)) as `${bigint}`, comment: input.comment ?? null }
+      }) }
+      counts[counts.indexOf(current)] = updated
+      return { json: updated }
+    } },
+    { method: 'POST', path: /^\/api\/inventory\/parks\/\d+\/counts\/\d+\/post$/, handler: request => {
+      const parkId = requestedPark(request)
+      if (!canReadPark(parkId)) return inventoryDenied
+      const id = Number(new URL(request.url).pathname.split('/').at(-2))
+      const current = counts.find(item => item.id === id && item.park_id === parkId)
+      if (!current) return { status: 404, json: { detail: 'inventory_count_not_found' } }
+      current.lines.forEach(line => { if (line.actual_quantity !== null) inventoryQuantities.set(parkId, BigInt(line.actual_quantity)) })
+      const posted = { ...current, status: 'posted' as const, posted_by: user.id, posted_at: FIXED_TIME }
+      counts[counts.indexOf(current)] = posted
+      return { json: posted }
+    } },
+    { method: 'POST', path: /^\/api\/inventory\/parks\/\d+\/counts\/\d+\/cancel$/, handler: request => {
+      const parkId = requestedPark(request)
+      if (!canReadPark(parkId)) return inventoryDenied
+      const id = Number(new URL(request.url).pathname.split('/').at(-2))
+      const current = counts.find(item => item.id === id && item.park_id === parkId)
+      if (!current) return { status: 404, json: { detail: 'inventory_count_not_found' } }
+      const cancelled = { ...current, status: 'cancelled' as const }
+      counts[counts.indexOf(current)] = cancelled
+      return { json: cancelled }
+    } },
+    { method: 'GET', path: '/api/inventory/export', handler: request => {
+      const url = new URL(request.url)
+      const allParks = url.searchParams.get('scope') === 'all'
+      if (allParks && !['admin', 'royal'].includes(user.role)) return inventoryDenied
+      const parkId = Number(url.searchParams.get('park_id') ?? 0)
+      if (!allParks && !canReadPark(parkId)) return inventoryDenied
+      const format = url.searchParams.get('format')
+      return format === 'csv'
+        ? { body: 'park,article,quantity\n7,ABC-1,0\n', headers: { 'Content-Type': 'text/csv' } }
+        : { body: 'inventory-workbook', headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } }
+    } },
   ]
   for (const action of ['comment', 'attachments', 'assign', 'unassign', 'transition', 'close'] as const) {
     routes.push({ method: 'POST', path: new RegExp(`^/api/tracker/issues/ROBOPARK-42/${action}$`), handler: async request => {
