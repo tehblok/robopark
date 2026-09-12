@@ -128,3 +128,21 @@ Task 11: fix round 1/5 (P0 addressed — repository packer had included 70 ignor
 Task 11: fix round 2/5 (P1 addressed without code commit — stale invalid `artifacts/robopark-0.1.33-c83b0b2` ZIP and sidecars removed; source runtime attachments and canonical da876b1 artifact preserved).
 Task 11: Ruling: never publish or install stale artifact c83b0b2; the only canonical 0.1.33 artifact is the signed da876b1 build — cost if wrong: publishing the stale archive would disclose runtime report attachments and invalidate the release.
 Task 11: complete locally (release commits c83b0b2..da876b1, final reviewer PASS with 0 open findings; live deploy and push remain pending controller).
+
+## Final branch review
+
+- Final packaging finding resolved in `907a674`: ignored browser/runtime test output is excluded from OTA packaging.
+- Final inventory review findings resolved in `852566b`: stale-count refresh/rebase, task-writeoff idempotency, merge-collision metadata, archived/all catalog restore, blank-location migration/filtering, and expanding Unicode normalization are covered by backend and web regressions.
+- Final P2 count-state finding resolved in `f7cbc6d`: after refresh, a second stale response renders the refreshed expected quantity and difference together with the newest conflict while preserving the entered actual quantity.
+- Final reviewer: **PASS**. All P0, P1, and P2 findings are resolved; no release-blocking findings remain open.
+
+## Final rulings
+
+- Ruling: stale inventory counts require an explicit flow of saving the current actual quantities, refreshing/rebasing the expected snapshot, and then issuing exactly one atomic post; if that post is stale again, the UI adopts the refreshed document before rendering the new conflict — cost if wrong: operators can see or post differences computed from an obsolete snapshot or lose an edited actual quantity.
+- Ruling: task writeoff uses a durable idempotency key to guarantee one database movement and one stock decrement per logical request; the normal committed path records one audit entry, and audit failure remains retry-safe. A Tracker-accepted comment followed by an uncertain database commit is a distributed-systems boundary that still requires a durable outbox, remote idempotency, or reconciliation — cost if wrong: blind retries at that boundary can duplicate a Tracker comment or leave Tracker and stock state inconsistent.
+- Ruling: when merge source and target stocks collide, minimum quantity becomes the maximum, a meaningful target location wins while a blank target inherits the normalized source location, and active state is the logical OR — cost if wrong: merge can silently discard replenishment thresholds, physical placement, or availability configuration.
+- Ruling: archived/all catalog browsing and restore are restricted to admin and royal roles; merged aliases are not offered as restorable records, while archived records under inactive components remain discoverable — cost if wrong: ordinary users could mutate global catalog history, or authorized users could receive a false restore success for an immutable merge alias.
+- Ruling: legacy empty and whitespace-only locations normalize to `NULL`, and `without_location` treats missing, empty, and whitespace-only values equivalently — cost if wrong: migrated stock disappears from the missing-location workflow or produces false metadata conflicts.
+- Ruling: normalized catalog name/article columns use length 384 so every accepted 128-character source value remains PostgreSQL-safe under the maximum Unicode casefold expansion — cost if wrong: valid inputs such as repeated `ß` can overflow normalized storage or fail only in production PostgreSQL.
+- Ruling: release packaging excludes ignored runtime data and ignored test/browser output, and every older 0.1.33 artifact is forbidden from publication or installation — cost if wrong: a stale or contaminated package can disclose runtime data or ship code that predates final review fixes.
+- The release artifact must be rebuilt after this ledger commit so the packaged repository state includes the final bookkeeping commit. Do not record the resulting artifact path or hash in this ledger, because doing so would create a self-reference cycle.
