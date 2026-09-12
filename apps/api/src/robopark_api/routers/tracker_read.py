@@ -17,6 +17,7 @@ from robopark_api.schemas import (
     TrackerAttachmentOut,
     TrackerCommentOut,
     TrackerIssueCapabilitiesOut,
+    TrackerIssueClaimOut,
     TrackerIssueDetailOut,
     TrackerIssueOut,
     TrackerIssuesOut,
@@ -30,6 +31,7 @@ from robopark_api.services import tracker_signatures as sig_svc
 from robopark_api.services.rbac import RoleSlug
 from robopark_api.services.tracker_assignees import list_assignee_candidates
 from robopark_api.services.tracker_claims import (
+    get_claim,
     local_assignee,
     local_assignees,
     mechanic_can_access_issue,
@@ -119,6 +121,7 @@ def _normalized_robot_number(raw: object) -> str | None:
 
 def _detail_out(issue: dict, *, db: Session, user: User) -> TrackerIssueDetailOut:
     attachments = [TrackerAttachmentOut(**item) for item in (issue.get("attachments") or [])]
+    claim = get_claim(db, str(issue.get("key") or ""))
     writable = can_write_tracker(db, user)
     return TrackerIssueDetailOut(
         **_issue_out(issue, db=db).model_dump(),
@@ -127,6 +130,7 @@ def _detail_out(issue: dict, *, db: Session, user: User) -> TrackerIssueDetailOu
         reporter=_person_out(issue.get("reporter")),
         components=[str(item) for item in (issue.get("components") or [])],
         attachments=attachments,
+        claim=TrackerIssueClaimOut(park_id=claim.park_id) if claim is not None else None,
         capabilities=TrackerIssueCapabilitiesOut(
             comment=writable,
             assign=writable,

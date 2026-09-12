@@ -121,3 +121,63 @@ check-nav: ok (30 route ids).
 ### Concerns
 
 None.
+
+## Fix round 2/5
+
+### RED
+
+```text
+cd apps/api && .venv/bin/pytest tests/test_tracker_read.py::test_mechanic_can_open_unclaimed_issue_and_another_users_claim_to_take_over -q
+1 failed: detail response had no `claim` field.
+
+cd apps/web && npm test -- --run src/domains/work/IssueWorkbench.test.tsx
+2 failed: multi-tag/user-park order selected park B instead of claim park A; missing claim fell back to a tagged park.
+```
+
+### Changes
+
+- Tracker issue detail now exposes the narrow authoritative local claim contract as `claim: { park_id } | null`.
+- IssueWorkbench passes only the backend claim park ID to TaskPartsPanel after confirming that park remains assigned to the mechanic. It no longer derives writeoff scope from tags, queue, user-park order, or the current URL park.
+- The integration regression covers a multi-tag task with user parks `[B, A]`: claim A supplies A's location/stock and the writeoff uses A's catalog part adapter. A missing claim disables parts without an inventory request.
+
+### GREEN and verification
+
+```text
+cd apps/api && .venv/bin/pytest tests/test_tracker_read.py -q
+36 passed.
+
+cd apps/api && .venv/bin/pytest -q
+1468 passed; 21 existing warnings.
+
+cd apps/api && .venv/bin/ruff check src/robopark_api/routers/tracker_read.py src/robopark_api/schemas.py tests/test_tracker_read.py
+All checks passed.
+
+cd apps/web && npm test -- --run src/domains/work/IssueWorkbench.test.tsx src/domains/inventory/TaskPartsPanel.test.tsx
+2 files passed; 86 tests passed.
+
+cd apps/web && npm test -- --run
+129 files passed; 1898 tests passed.
+
+cd apps/web && npm run build
+exit 0; 2189 modules transformed (existing chunk-size warning only).
+
+cd apps/web && npm run lint
+exit 0; existing warnings only, none in fix-round files.
+
+cd apps/web && npm run check-nav
+check-nav: ok (30 route ids).
+```
+
+### Changed files
+
+- `apps/api/src/robopark_api/schemas.py`
+- `apps/api/src/robopark_api/routers/tracker_read.py`
+- `apps/api/tests/test_tracker_read.py`
+- `apps/web/src/api.ts`
+- `apps/web/src/domains/work/IssueWorkbench.tsx`
+- `apps/web/src/domains/work/IssueWorkbench.test.tsx`
+- `.superpowers/sdd/2026-09-11-global-inventory-workflows/task-9-report.md`
+
+### Concerns
+
+None.

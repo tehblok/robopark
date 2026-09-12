@@ -6,6 +6,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import {
   api,
   ApiError,
+  type InventoryCatalogSearchItem,
   type Park,
   type Paged,
   type TrackerIssue,
@@ -146,24 +147,42 @@ it('shows a claimed mechanic task only once', async () => {
   })).toHaveLength(1)
 })
 
-it('loads task parts from the claim park instead of the URL-selected park', async () => {
-  const urlPark = { ...park, id: 7, name: 'A', tag: 'Alpha' }
-  const claimPark = { ...park, id: 8, name: 'B', tag: 'Beta' }
-  const mechanic: User = { ...user, username: 'mech', role: 'mechanic', parks: [urlPark, claimPark] }
-  const claimedIssue = { ...issue, tags: ['Beta'], assignee: { display: 'mech', login: 'mech' } }
-  const searchInventory = vi.fn(async () => ({ items: [], limit: 200, offset: 0, total: 0 }))
-  const client = apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory })
+it('displays and writes task parts from the backend claim park despite tag and user-park order', async () => {
+  const claimPark = { ...park, id: 7, name: 'A', tag: 'Alpha' }
+  const otherPark = { ...park, id: 8, name: 'B', tag: 'Beta' }
+  const mechanic: User = { ...user, username: 'mech', role: 'mechanic', parks: [otherPark, claimPark] }
+  const claimedIssue = {
+    ...issue,
+    tags: ['Beta', 'Alpha'],
+    claim: { park_id: claimPark.id },
+    assignee: { display: 'mech', login: 'mech' },
+  }
+  const part: InventoryCatalogSearchItem = {
+    id: 91, component_id: 21, component_name: 'Колёса', name: 'Шина', article: 'WH-91',
+    is_active: true, has_photo: false, quantity: '3', minimum_quantity: '1',
+    location: 'Склад парка A', stock_is_active: true,
+  }
+  const searchInventory = vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 }))
+  const writeoffInventoryForTask = vi.fn()
+  const client = apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory, writeoffInventoryForTask })
 
-  renderWorkbench({ client, currentUser: mechanic, selectedPark: urlPark })
+  renderWorkbench({ client, currentUser: mechanic, selectedPark: otherPark })
   fireEvent.click(await screen.findByRole('button', { name: 'Использовать запчасть' }))
 
-  await waitFor(() => expect(searchInventory).toHaveBeenCalledWith({ parkId: 8, stockFilter: 'in_stock', limit: 200, offset: 0 }))
-  expect(searchInventory).not.toHaveBeenCalledWith(expect.objectContaining({ parkId: 7 }))
+  expect(await screen.findByRole('option', { name: 'Колёса' })).toBeInTheDocument()
+  fireEvent.change(screen.getByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
+  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  expect(screen.getByText('Склад парка A')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
+
+  expect(searchInventory).toHaveBeenCalledWith({ parkId: 7, stockFilter: 'in_stock', limit: 200, offset: 0 })
+  expect(searchInventory).not.toHaveBeenCalledWith(expect.objectContaining({ parkId: 8 }))
+  await waitFor(() => expect(writeoffInventoryForTask).toHaveBeenCalledWith(issue.key, -91, '1'))
 })
 
-it('does not fall back to the URL park when the tagged claim park is unavailable', async () => {
+it('disables task parts when the backend claim is missing', async () => {
   const mechanic: User = { ...user, username: 'mech', role: 'mechanic', parks: [park] }
-  const claimedIssue = { ...issue, tags: ['Unavailable-park'], assignee: { display: 'mech', login: 'mech' } }
+  const claimedIssue = { ...issue, tags: ['Alpha'], claim: null, assignee: { display: 'mech', login: 'mech' } }
   const searchInventory = vi.fn(async () => ({ items: [], limit: 200, offset: 0, total: 0 }))
   const client = apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory })
 

@@ -376,6 +376,7 @@ export type TrackerIssueDetail = TrackerIssue & {
   reporter?: TrackerPerson | null
   components?: string[]
   attachments?: TrackerAttachment[]
+  claim?: { park_id: number } | null
   capabilities: TrackerIssueCapabilities
 }
 

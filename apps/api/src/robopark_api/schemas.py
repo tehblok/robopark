@@ -422,12 +422,17 @@ class TrackerIssueCapabilitiesOut(BaseModel):
     attach: bool
 
 
+class TrackerIssueClaimOut(BaseModel):
+    park_id: int
+
+
 class TrackerIssueDetailOut(TrackerIssueOut):
     resolution: str | None = None
     description: str | None = None
     reporter: TrackerPersonOut | None = None
     components: list[str] = Field(default_factory=list)
     attachments: list[TrackerAttachmentOut] = Field(default_factory=list)
+    claim: TrackerIssueClaimOut | None = None
     capabilities: TrackerIssueCapabilitiesOut
 
 

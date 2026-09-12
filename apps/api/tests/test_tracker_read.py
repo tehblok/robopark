@@ -538,7 +538,9 @@ def test_mechanic_can_open_unclaimed_issue_and_another_users_claim_to_take_over(
     monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: dict(issue))
     login_as(client, "mech1", "secret")
 
-    assert client.get("/tracker/issues/ROBOPARK-1").status_code == 200
+    unclaimed = client.get("/tracker/issues/ROBOPARK-1")
+    assert unclaimed.status_code == 200
+    assert unclaimed.json()["claim"] is None
 
     from robopark_api.services.tracker_claims import claim_issue
 
@@ -552,6 +554,7 @@ def test_mechanic_can_open_unclaimed_issue_and_another_users_claim_to_take_over(
     claimed = client.get("/tracker/issues/ROBOPARK-1")
     assert claimed.status_code == 200
     assert claimed.json()["assignee"]["login"] == seed_royal.username
+    assert claimed.json()["claim"] == {"park_id": seed_park_with_tracker.id}
 
 
 def test_tracker_robot_search_royal(

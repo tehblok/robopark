@@ -119,17 +119,6 @@ function mechanicOwnsIssue(user: User, issue: TrackerIssueDetail): boolean {
     && issue.assignee?.login?.trim().toLocaleLowerCase() === expected
 }
 
-function issuePark(user: User, issue: TrackerIssueDetail): Park | null {
-  const tags = new Set((issue.tags ?? []).map(tag => tag.trim().toLocaleLowerCase()))
-  const tagged = user.parks.find(park => tags.has(park.tag.trim().toLocaleLowerCase()))
-  if (tagged) return tagged
-  if (tags.size) return null
-  const queue = issue.queue?.trim().toLocaleLowerCase()
-  return queue
-    ? user.parks.find(park => park.tracker_queue?.trim().toLocaleLowerCase() === queue) ?? null
-    : null
-}
-
 function significantComments(comments: TrackerComment[]): TrackerComment[] {
   return sortCommentsChronologically(comments).filter(comment => (
     splitPlatformComment(comment.text).body.length > 0 || (comment.attachments?.length ?? 0) > 0
@@ -542,7 +531,8 @@ function IssueWorkbenchOwner({
   const mechanicCanWork = Boolean(
     detail.data && (user.role !== 'mechanic' || mechanicOwnsIssue(user, detail.data)),
   )
-  const taskPark = detail.data ? issuePark(user, detail.data) : null
+  const claimParkId = detail.data?.claim?.park_id ?? null
+  const taskParkId = user.parks.some(park => park.id === claimParkId) ? claimParkId : null
   const activeTab = requestedTab === 'check' && !mechanicCanWork ? 'task' : requestedTab
   const changeTab = (detailTab: 'task' | 'open' | 'closed' | 'check') => onStateChange({ ...state, detailTab }, { replace: false })
   const rootIssue = state.rootIssue ?? issueKey
@@ -775,7 +765,7 @@ function IssueWorkbenchOwner({
                       {user.role === 'mechanic' && mechanicCanWork ? (
                         <ResponsiveDisclosure id="parts" title="Использовать запчасть">
                           <div id="parts">
-                            <TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={taskPark?.id ?? null} />
+                            <TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={taskParkId} />
                           </div>
                         </ResponsiveDisclosure>
                       ) : null}
