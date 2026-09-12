@@ -197,6 +197,24 @@ describe('ParkScopeProvider', () => {
     expect(screen.getByTestId('park-id')).toHaveTextContent('7')
   })
 
+  it.each(['admin', 'royal'] as const)('drops an inactive %s selection when leaving inventory export', async role => {
+    const principal = { ...scopeUser('operator', []), role }
+    vi.spyOn(api, 'parks').mockResolvedValue([park(7), { ...park(9), is_active: false }])
+    const snapshots: ScopeSnapshot[] = []
+    const actor = userEvent.setup()
+
+    render(<MemoryRouter initialEntries={['/inventory?view=export&park=9']}><SwitchingScope
+      initialUser={principal} nextPath="/inventory?view=parts&park=9" nextUser={principal} snapshots={snapshots}
+    /></MemoryRouter>)
+    await waitFor(() => expect(screen.getByTestId('park-id')).toHaveTextContent('9'))
+
+    await actor.click(screen.getByRole('button', { name: 'Сменить пользователя' }))
+
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('view=parts&park=7'))
+    expect(screen.getByTestId('parks')).toHaveTextContent('7')
+    expect(screen.getByTestId('park-id')).toHaveTextContent('7')
+  })
+
   it('keeps a mechanic restricted to assigned parks on inventory', async () => {
     const parksRequest = vi.spyOn(api, 'parks')
 

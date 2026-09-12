@@ -47,7 +47,10 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
     && ['/overview', '/analytics'].includes(pathname.replace(/\/$/, '')))
   const selectionContext = allowAllParks ? `insights:${searchParams.get(PARK_QUERY_KEY) ?? 'all'}` : 'single'
   const inventoryFleetScope = Boolean(user?.role === 'operator' && pathname.replace(/\/$/, '') === '/inventory')
-  const includeInactiveInventoryParks = Boolean(user && ['admin', 'royal'].includes(user.role) && pathname.replace(/\/$/, '') === '/inventory')
+  const includeInactiveInventoryParks = Boolean(user
+    && ['admin', 'royal'].includes(user.role)
+    && pathname.replace(/\/$/, '') === '/inventory'
+    && searchParams.get('view') === 'export')
   const fleetScope = Boolean(user && (hasFleetParkScope(user) || inventoryFleetScope))
   const [loadState, setLoadState] = useState<ParkLoadState | null>(null)
   const [selectionState, setSelectionState] = useState<ParkSelectionState | null>(null)

@@ -104,6 +104,7 @@ function apiClient(
     trackerTransition: vi.fn(async () => actionResult('transition')),
     trackerClose: vi.fn(async () => actionResult('close')),
     inventory: vi.fn(async parkId => ({ park_id: parkId, component_count: 0, part_count: 0, low_stock_count: 0, out_of_stock_count: 0, components: [] })),
+    searchInventory: vi.fn(async () => ({ items: [], limit: 200, offset: 0, total: 0 })),
     writeoffInventoryForTask: vi.fn(),
     inventoryComponentPhotoUrl: vi.fn(id => `/api/inventory/components/${id}/photo`),
     inventoryPartPhotoUrl: vi.fn(id => `/api/inventory/parts/${id}/photo`),
@@ -143,6 +144,34 @@ it('shows a claimed mechanic task only once', async () => {
   expect(await screen.findAllByRole('button', {
     name: `Открыть задачу ${issue.key}: ${issue.summary}`,
   })).toHaveLength(1)
+})
+
+it('loads task parts from the claim park instead of the URL-selected park', async () => {
+  const urlPark = { ...park, id: 7, name: 'A', tag: 'Alpha' }
+  const claimPark = { ...park, id: 8, name: 'B', tag: 'Beta' }
+  const mechanic: User = { ...user, username: 'mech', role: 'mechanic', parks: [urlPark, claimPark] }
+  const claimedIssue = { ...issue, tags: ['Beta'], assignee: { display: 'mech', login: 'mech' } }
+  const searchInventory = vi.fn(async () => ({ items: [], limit: 200, offset: 0, total: 0 }))
+  const client = apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory })
+
+  renderWorkbench({ client, currentUser: mechanic, selectedPark: urlPark })
+  fireEvent.click(await screen.findByRole('button', { name: 'Использовать запчасть' }))
+
+  await waitFor(() => expect(searchInventory).toHaveBeenCalledWith({ parkId: 8, stockFilter: 'in_stock', limit: 200, offset: 0 }))
+  expect(searchInventory).not.toHaveBeenCalledWith(expect.objectContaining({ parkId: 7 }))
+})
+
+it('does not fall back to the URL park when the tagged claim park is unavailable', async () => {
+  const mechanic: User = { ...user, username: 'mech', role: 'mechanic', parks: [park] }
+  const claimedIssue = { ...issue, tags: ['Unavailable-park'], assignee: { display: 'mech', login: 'mech' } }
+  const searchInventory = vi.fn(async () => ({ items: [], limit: 200, offset: 0, total: 0 }))
+  const client = apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory })
+
+  renderWorkbench({ client, currentUser: mechanic, selectedPark: park })
+  fireEvent.click(await screen.findByRole('button', { name: 'Использовать запчасть' }))
+
+  expect(screen.getByText('Парк задачи недоступен')).toBeVisible()
+  expect(searchInventory).not.toHaveBeenCalled()
 })
 
 it('lets a mechanic inspect and explicitly take over a shiftmates task', async () => {
