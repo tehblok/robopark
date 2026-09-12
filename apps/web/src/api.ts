@@ -839,7 +839,20 @@ export function inventoryErrorDetail(error: unknown): InventoryApiErrorDetail | 
 }
 
 export function isInventoryCountStaleErrorDetail(detail: InventoryApiErrorDetail | null): detail is InventoryCountStaleErrorDetail {
-  return detail?.code === 'inventory_count_stale' && Array.isArray(detail.conflicts)
+  if (detail?.code !== 'inventory_count_stale' || !Array.isArray(detail.conflicts)) return false
+  return detail.conflicts.every(conflict => {
+    if (!conflict || typeof conflict !== 'object') return false
+    const value = conflict as Record<string, unknown>
+    const quantity = (candidate: unknown) => typeof candidate === 'string' && /^(0|[1-9]\d*)$/.test(candidate) && BigInt(candidate) <= 9223372036854775807n
+    if (typeof value.catalog_part_id !== 'number' || !Number.isInteger(value.catalog_part_id) || !quantity(value.expected_quantity) || !quantity(value.current_quantity)) return false
+    if (value.affected_lines === undefined) return true
+    return Array.isArray(value.affected_lines) && value.affected_lines.every(line => {
+      if (!line || typeof line !== 'object') return false
+      const affected = line as Record<string, unknown>
+      return typeof affected.count_line_id === 'number' && Number.isInteger(affected.count_line_id)
+        && typeof affected.catalog_part_id === 'number' && Number.isInteger(affected.catalog_part_id)
+    })
+  })
 }
 
 export function isInventoryDuplicateErrorDetail(detail: InventoryApiErrorDetail | null): detail is InventoryDuplicateErrorDetail {

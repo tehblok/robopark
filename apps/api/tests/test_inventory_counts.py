@@ -477,6 +477,18 @@ def test_count_lines_survive_merge_and_archiving_before_post(
     response = client.post(f"{base}/{count['id']}/post")
 
     assert response.status_code == 200, response.text
+    reopened = next(item for item in client.get(base).json()["items"] if item["id"] == count["id"])
+    source_line = next(line for line in reopened["lines"] if line["catalog_part_id"] == source.id)
+    assert (
+        source_line
+        | {
+            "catalog_part_name": source.name,
+            "catalog_part_article": "COUNT-SOURCE",
+            "catalog_component_id": source.component_id,
+            "catalog_component_name": component.name,
+        }
+        == source_line
+    )
     db_session.expire_all()
     quantities = dict(
         db_session.execute(

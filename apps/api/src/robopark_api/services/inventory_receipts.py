@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 
 from robopark_api.models import (
     AuditLog,
+    InventoryCatalogComponent,
+    InventoryCatalogPart,
     InventoryMovement,
     InventoryReceipt,
     InventoryReceiptLine,
@@ -115,7 +117,40 @@ def _normalized_lines(db: Session, values) -> list[dict]:
     return [combined[part_id] for part_id in sorted(combined)]
 
 
-def _receipt_dict(receipt: InventoryReceipt, lines: list[InventoryReceiptLine]) -> dict:
+def _catalog_metadata(db: Session, lines: list[InventoryReceiptLine]) -> dict[int, dict]:
+    part_ids = {line.catalog_part_id for line in lines}
+    if not part_ids:
+        return {}
+    rows = db.execute(
+        select(
+            InventoryCatalogPart.id,
+            InventoryCatalogPart.name,
+            InventoryCatalogPart.article,
+            InventoryCatalogPart.component_id,
+            InventoryCatalogComponent.name,
+        )
+        .join(
+            InventoryCatalogComponent,
+            InventoryCatalogComponent.id == InventoryCatalogPart.component_id,
+        )
+        .where(InventoryCatalogPart.id.in_(part_ids))
+    )
+    return {
+        part_id: {
+            "catalog_part_name": part_name,
+            "catalog_part_article": article,
+            "catalog_component_id": component_id,
+            "catalog_component_name": component_name,
+        }
+        for part_id, part_name, article, component_id, component_name in rows
+    }
+
+
+def _receipt_dict(
+    receipt: InventoryReceipt,
+    lines: list[InventoryReceiptLine],
+    catalog_metadata: dict[int, dict],
+) -> dict:
     return {
         "id": receipt.id,
         "park_id": receipt.park_id,
@@ -132,6 +167,7 @@ def _receipt_dict(receipt: InventoryReceipt, lines: list[InventoryReceiptLine]) 
             {
                 "id": line.id,
                 "catalog_part_id": line.catalog_part_id,
+                **catalog_metadata[line.catalog_part_id],
                 "quantity": line.quantity,
                 "note": line.note,
             }
@@ -141,7 +177,8 @@ def _receipt_dict(receipt: InventoryReceipt, lines: list[InventoryReceiptLine]) 
 
 
 def receipt_out(db: Session, receipt: InventoryReceipt) -> dict:
-    return _receipt_dict(receipt, _lines(db, receipt.id))
+    lines = _lines(db, receipt.id)
+    return _receipt_dict(receipt, lines, _catalog_metadata(db, lines))
 
 
 def receipts_out(db: Session, receipts: list[InventoryReceipt]) -> list[dict]:
@@ -161,7 +198,12 @@ def receipts_out(db: Session, receipts: list[InventoryReceipt]) -> list[dict]:
         )
         for line in rows:
             lines_by_receipt[line.receipt_id].append(line)
-    return [_receipt_dict(receipt, lines_by_receipt[receipt.id]) for receipt in receipts]
+    all_lines = [line for lines in lines_by_receipt.values() for line in lines]
+    catalog_metadata = _catalog_metadata(db, all_lines)
+    return [
+        _receipt_dict(receipt, lines_by_receipt[receipt.id], catalog_metadata)
+        for receipt in receipts
+    ]
 
 
 def create_receipt(db: Session, user: User, *, park_id: int, payload) -> InventoryReceipt:

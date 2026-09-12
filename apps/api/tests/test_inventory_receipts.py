@@ -565,7 +565,20 @@ def test_receipt_line_source_identity_survives_merge_before_post_and_after_post(
         ),
     ).json()
     inventory_catalog.merge_parts(db_session, admin, source.id, target.id)
-    assert client.post(f"{base}/{before['id']}/post").status_code == 200
+    posted_before = client.post(f"{base}/{before['id']}/post")
+    assert posted_before.status_code == 200
+    reopened = next(item for item in client.get(base).json()["items"] if item["id"] == before["id"])
+    source_line = next(line for line in reopened["lines"] if line["catalog_part_id"] == source.id)
+    assert (
+        source_line
+        | {
+            "catalog_part_name": source.name,
+            "catalog_part_article": "MERGE-BEFORE-SOURCE",
+            "catalog_component_id": source.component_id,
+            "catalog_component_name": source.component.name,
+        }
+        == source_line
+    )
     db_session.expire_all()
     stock = db_session.scalar(
         select(InventoryParkStock).where(

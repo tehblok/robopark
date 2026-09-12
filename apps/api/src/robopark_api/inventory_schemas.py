@@ -193,6 +193,10 @@ class InventoryReceiptUpdateIn(BaseModel):
 class InventoryReceiptLineOut(BaseModel):
     id: int
     catalog_part_id: int
+    catalog_part_name: str
+    catalog_part_article: str
+    catalog_component_id: int
+    catalog_component_name: str
     quantity: int
     note: str | None
 
@@ -257,6 +261,10 @@ class InventoryCountUpdateIn(BaseModel):
 class InventoryCountLineOut(BaseModel):
     id: int
     catalog_part_id: int
+    catalog_part_name: str
+    catalog_part_article: str
+    catalog_component_id: int
+    catalog_component_name: str
     expected_quantity: int
     actual_quantity: int | None
     difference: int | None

@@ -68,7 +68,7 @@ export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChan
   }, [apiClient, creating, parkId, partQuery, selected?.status])
 
   const receiptLines = (receipt: InventoryReceipt, known: DraftLine[] = []) => receipt.lines.map(line => ({
-    part: known.find(item => item.part.id === line.catalog_part_id)?.part ?? parts.find(item => item.id === line.catalog_part_id) ?? { id: line.catalog_part_id, article: `#${line.catalog_part_id}`, name: 'Запчасть', component_id: 0, component_name: '', is_active: true, has_photo: false, quantity: '0' as const, minimum_quantity: '0' as const, location: null, stock_is_active: true },
+    part: known.find(item => item.part.id === line.catalog_part_id)?.part ?? { id: line.catalog_part_id, article: line.catalog_part_article, name: line.catalog_part_name, component_id: line.catalog_component_id, component_name: line.catalog_component_name, is_active: true, has_photo: false, quantity: '0' as const, minimum_quantity: '0' as const, location: null, stock_is_active: true },
     quantity: line.quantity,
     note: line.note ?? '',
   }))
@@ -87,6 +87,24 @@ export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChan
   const draftLines = lines
   const invalid = !supplier.trim() || !receivedOn || !draftLines.length || draftLines.some(line => !isPositiveInventoryQuantity(line.quantity))
   const payload = (): InventoryReceiptInput => ({ supplier: supplier.trim() || null, document_number: documentNumber.trim() || null, received_on: receivedOn, comment: comment.trim() || null, lines: draftLines.map(line => ({ catalog_part_id: line.part.id, quantity: line.quantity as `${bigint}`, note: line.note.trim() || null })) })
+  const saveDraft = async () => {
+    if (invalid || pending.current || !canManage) return
+    pending.current = true; setBusy(true); setError('')
+    const generation = ++operationGeneration.current
+    const requestedPark = parkId
+    const requestedId = selected?.id ?? null
+    try {
+      const value = requestedId
+        ? await apiClient.updateInventoryReceipt(requestedPark, requestedId, payload())
+        : await apiClient.createInventoryReceipt(requestedPark, payload())
+      if (generation !== operationGeneration.current || value.park_id !== requestedPark) return
+      setSelected(value); setCreating(false); setLines(receiptLines(value, draftLines)); postRetryId.current = value.id; setNotice('Черновик сохранён'); setOffset(0); load()
+    } catch (reason) {
+      if (generation === operationGeneration.current) setError(classifyApiError(reason, 'Не удалось сохранить черновик.').description)
+    } finally {
+      if (generation === operationGeneration.current) { setBusy(false); pending.current = false }
+    }
+  }
   const commitAction = async () => {
     if (!action || pending.current) return
     pending.current = true; setBusy(true); setError('')
@@ -97,9 +115,11 @@ export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChan
       let value: InventoryReceipt
       if (action === 'post') {
         if (invalid) return
-        const saved = requestedId
-          ? postRetryId.current === requestedId ? selected! : await apiClient.updateInventoryReceipt(requestedPark, requestedId, payload())
-          : await apiClient.createInventoryReceipt(requestedPark, payload())
+        const saved = canManage
+          ? requestedId
+            ? postRetryId.current === requestedId ? selected! : await apiClient.updateInventoryReceipt(requestedPark, requestedId, payload())
+            : await apiClient.createInventoryReceipt(requestedPark, payload())
+          : selected!
         if (generation !== operationGeneration.current || saved.park_id !== requestedPark) return
         setSelected(saved); setCreating(false); setLines(receiptLines(saved, draftLines)); postRetryId.current = saved.id
         value = await apiClient.postInventoryReceipt(requestedPark, saved.id)
@@ -129,7 +149,7 @@ export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChan
       {notice ? <p className="inventory-notice" role="status">{notice}</p> : null}{error ? <p className="form-error" role="alert">{error}</p> : null}
       {(creating || selected?.status === 'draft') && canManage ? <><div className="inventory-document-fields"><FormField id="receipt-supplier" label="Поставщик или завод" required><input value={supplier} onChange={event => { postRetryId.current = null; setSupplier(event.target.value) }} /></FormField><FormField id="receipt-number" label="Номер документа"><input value={documentNumber} onChange={event => { postRetryId.current = null; setDocumentNumber(event.target.value) }} /></FormField><FormField id="receipt-date" label="Дата поставки"><input type="date" value={receivedOn} onChange={event => { postRetryId.current = null; setReceivedOn(event.target.value) }} /></FormField><FormField id="receipt-comment" label="Комментарий"><input value={comment} onChange={event => { postRetryId.current = null; setComment(event.target.value) }} /></FormField></div>
       <FormField id="receipt-part-search" label="Найти запчасть для поставки"><input type="search" value={partQuery} onChange={event => setPartQuery(event.target.value)} /></FormField>{parts.length ? <ul className="inventory-picker-results">{parts.map(part => <li key={part.id}><span>{part.name} · <strong>{part.article}</strong></span><Button aria-label={`Добавить ${part.article}`} onClick={() => addLine(part)} size="compact" variant="secondary">Добавить</Button></li>)}</ul> : null}
-      <div className="inventory-document-lines">{editorLines.map((line, index) => <div className="inventory-document-line" key={line.part.id}><strong>{line.part.name} · {line.part.article}</strong><FormField error={touchedLines.has(line.part.id) ? inventoryQuantityError(line.quantity) || (line.quantity === '0' ? 'Больше нуля' : undefined) : undefined} id={`receipt-quantity-${line.part.id}`} label={`Количество ${line.part.article}`}><input inputMode="numeric" value={line.quantity} onBlur={() => setTouchedLines(current => new Set(current).add(line.part.id))} onChange={event => { postRetryId.current = null; setLines(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, quantity: event.target.value } : item)) }} /></FormField><Button aria-label={`Удалить ${line.part.article}`} onClick={() => { postRetryId.current = null; setLines(lines.filter((_, itemIndex) => itemIndex !== index)) }} size="compact" variant="ghost">Удалить</Button></div>)}</div><div className="inventory-document-actions">{canPost ? <Button disabled={invalid || busy} onClick={() => setAction('post')}>Провести поставку</Button> : null}{selected ? <Button disabled={busy} onClick={() => setAction('cancel')} variant="danger">Отменить черновик</Button> : null}</div></> : <><dl className="inventory-document-summary"><dt>Статус</dt><dd>{selected ? statusLabel[selected.status] : ''}</dd><dt>Позиций</dt><dd>{selected?.lines.length}</dd></dl>{selected?.status === 'posted' && canPost ? <><FormField id="receipt-reverse-reason" label="Причина сторно"><input value={reverseReason} onChange={event => setReverseReason(event.target.value)} /></FormField><Button disabled={!reverseReason.trim() || busy} onClick={() => setAction('reverse')} variant="danger">Сторнировать</Button></> : null}</>}
+      <div className="inventory-document-lines">{editorLines.map((line, index) => <div className="inventory-document-line" key={line.part.id}><strong>{line.part.name} · {line.part.article}</strong><FormField error={touchedLines.has(line.part.id) ? inventoryQuantityError(line.quantity) || (line.quantity === '0' ? 'Больше нуля' : undefined) : undefined} id={`receipt-quantity-${line.part.id}`} label={`Количество ${line.part.article}`}><input inputMode="numeric" value={line.quantity} onBlur={() => setTouchedLines(current => new Set(current).add(line.part.id))} onChange={event => { postRetryId.current = null; setLines(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, quantity: event.target.value } : item)) }} /></FormField><Button aria-label={`Удалить ${line.part.article}`} onClick={() => { postRetryId.current = null; setLines(lines.filter((_, itemIndex) => itemIndex !== index)) }} size="compact" variant="ghost">Удалить</Button></div>)}</div><div className="inventory-document-actions"><Button busy={busy} disabled={invalid} onClick={saveDraft} variant="secondary">Сохранить черновик</Button>{canPost ? <Button disabled={invalid || busy} onClick={() => setAction('post')}>Провести поставку</Button> : null}{selected ? <Button disabled={busy} onClick={() => setAction('cancel')} variant="danger">Отменить черновик</Button> : null}</div></> : <><dl className="inventory-document-summary"><dt>Статус</dt><dd>{selected ? statusLabel[selected.status] : ''}</dd><dt>Позиций</dt><dd>{selected?.lines.length}</dd></dl>{selected ? <div className="inventory-document-lines">{selected.lines.map(line => <div className="inventory-document-line" key={line.id}><strong>{line.catalog_part_name} · {line.catalog_part_article}</strong><span>{line.catalog_component_name}</span><span>Количество: {line.quantity}</span></div>)}</div> : null}{selected?.status === 'draft' && canPost ? <Button disabled={busy} onClick={() => setAction('post')}>Провести поставку</Button> : null}{selected?.status === 'posted' && canPost ? <><FormField id="receipt-reverse-reason" label="Причина сторно"><input value={reverseReason} onChange={event => setReverseReason(event.target.value)} /></FormField><Button disabled={!reverseReason.trim() || busy} onClick={() => setAction('reverse')} variant="danger">Сторнировать</Button></> : null}</>}
     </div> : !mobile ? <div className="inventory-document-empty"><p>Выберите поставку или создайте новую.</p></div> : null}
     <ConfirmDialog confirmLabel={action === 'cancel' ? 'Подтвердить отмену' : action === 'reverse' ? 'Подтвердить сторно' : 'Подтвердить проведение'} description="Операция изменит остатки или статус документа." onConfirm={commitAction} onOpenChange={open => { if (!open && !busy) { if (action === 'reverse') setReverseReason(''); setAction(null) } }} open={action !== null} pending={busy} title="Подтвердите действие" tone={action === 'post' ? 'default' : 'danger'} />
   </section>

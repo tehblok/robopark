@@ -85,6 +85,10 @@ export type InventoryReceiptInput = {
 export type InventoryReceiptLine = {
   id: number
   catalog_part_id: number
+  catalog_part_name: string
+  catalog_part_article: string
+  catalog_component_id: number
+  catalog_component_name: string
   quantity: InventoryInt64
   note: string | null
 }
@@ -117,6 +121,10 @@ export type InventoryCountLineInput = {
 export type InventoryCountLine = {
   id: number
   catalog_part_id: number
+  catalog_part_name: string
+  catalog_part_article: string
+  catalog_component_id: number
+  catalog_component_name: string
   expected_quantity: InventoryInt64
   actual_quantity: InventoryInt64 | null
   difference: InventoryInt64 | null
@@ -161,7 +169,7 @@ export type InventoryCountStaleErrorDetail = {
     catalog_part_id: number
     expected_quantity: InventoryInt64
     current_quantity: InventoryInt64
-    affected_lines: Array<{ count_line_id: number; catalog_part_id: number }>
+    affected_lines?: Array<{ count_line_id: number; catalog_part_id: number }>
   }>
 }
 

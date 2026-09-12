@@ -94,7 +94,40 @@ def _lines(db: Session, count_id: int) -> list[InventoryCountLine]:
     )
 
 
-def _count_dict(count: InventoryCount, lines: list[InventoryCountLine]) -> dict:
+def _catalog_metadata(db: Session, lines: list[InventoryCountLine]) -> dict[int, dict]:
+    part_ids = {line.catalog_part_id for line in lines}
+    if not part_ids:
+        return {}
+    rows = db.execute(
+        select(
+            InventoryCatalogPart.id,
+            InventoryCatalogPart.name,
+            InventoryCatalogPart.article,
+            InventoryCatalogPart.component_id,
+            InventoryCatalogComponent.name,
+        )
+        .join(
+            InventoryCatalogComponent,
+            InventoryCatalogComponent.id == InventoryCatalogPart.component_id,
+        )
+        .where(InventoryCatalogPart.id.in_(part_ids))
+    )
+    return {
+        part_id: {
+            "catalog_part_name": part_name,
+            "catalog_part_article": article,
+            "catalog_component_id": component_id,
+            "catalog_component_name": component_name,
+        }
+        for part_id, part_name, article, component_id, component_name in rows
+    }
+
+
+def _count_dict(
+    count: InventoryCount,
+    lines: list[InventoryCountLine],
+    catalog_metadata: dict[int, dict],
+) -> dict:
     return {
         "id": count.id,
         "park_id": count.park_id,
@@ -108,6 +141,7 @@ def _count_dict(count: InventoryCount, lines: list[InventoryCountLine]) -> dict:
             {
                 "id": line.id,
                 "catalog_part_id": line.catalog_part_id,
+                **catalog_metadata[line.catalog_part_id],
                 "expected_quantity": line.expected_quantity,
                 "actual_quantity": line.actual_quantity,
                 "difference": line.difference,
@@ -119,7 +153,8 @@ def _count_dict(count: InventoryCount, lines: list[InventoryCountLine]) -> dict:
 
 
 def count_out(db: Session, count: InventoryCount) -> dict:
-    return _count_dict(count, _lines(db, count.id))
+    lines = _lines(db, count.id)
+    return _count_dict(count, lines, _catalog_metadata(db, lines))
 
 
 def counts_out(db: Session, counts: list[InventoryCount]) -> list[dict]:
@@ -137,7 +172,9 @@ def counts_out(db: Session, counts: list[InventoryCount]) -> list[dict]:
         )
         for line in rows:
             lines_by_count[line.count_id].append(line)
-    return [_count_dict(count, lines_by_count[count.id]) for count in counts]
+    all_lines = [line for lines in lines_by_count.values() for line in lines]
+    catalog_metadata = _catalog_metadata(db, all_lines)
+    return [_count_dict(count, lines_by_count[count.id], catalog_metadata) for count in counts]
 
 
 def _snapshot(db: Session, *, park_id: int, component_id: int | None) -> list[tuple[int, int]]:

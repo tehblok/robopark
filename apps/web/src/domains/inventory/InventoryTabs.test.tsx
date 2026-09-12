@@ -209,6 +209,14 @@ describe('inventory API contracts', () => {
     expect(detail.conflicts[0].affected_lines).toEqual([{ count_line_id: 41, catalog_part_id: 9 }])
   })
 
+  it('accepts legacy stale conflicts and rejects malformed conflict items', () => {
+    const legacy = inventoryErrorDetail(new ApiError(409, { code: 'inventory_count_stale', conflicts: [{ catalog_part_id: 3, expected_quantity: '5', current_quantity: '6' }] }))
+    const malformed = inventoryErrorDetail(new ApiError(409, { code: 'inventory_count_stale', conflicts: [{ catalog_part_id: '3', expected_quantity: '5', current_quantity: '6' }] }))
+
+    expect(isInventoryCountStaleErrorDetail(legacy)).toBe(true)
+    expect(isInventoryCountStaleErrorDetail(malformed)).toBe(false)
+  })
+
   it('narrows duplicate inventory errors to their existing identifiers', () => {
     const article = inventoryErrorDetail(new ApiError(409, { code: 'inventory_article_exists', existing_part_id: 91 }))
     const component = inventoryErrorDetail(new ApiError(409, { code: 'inventory_component_exists', existing_component_id: 92 }))
