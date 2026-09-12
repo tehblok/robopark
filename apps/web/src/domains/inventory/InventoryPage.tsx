@@ -7,14 +7,14 @@ import { EmptyState, LoadingState } from '../../design-system/feedback/AsyncStat
 import { PageLayout } from '../../design-system/layout/PageLayout'
 import { InventoryManageView } from './InventoryManageView'
 import { InventoryPartsView } from './InventoryPartsView'
+import { InventoryReceiptsView } from './InventoryReceiptsView'
+import { InventoryCountsView } from './InventoryCountsView'
 import { InventoryTabs, type InventoryView } from './InventoryTabs'
 import './inventory.css'
 
-type InventoryApi = Pick<typeof api, 'inventory' | 'inventoryPartPhotoUrl' | 'searchInventory' | 'inventoryCatalogComponents' | 'getInventoryCatalogPart' | 'createInventoryCatalogComponent' | 'createInventoryCatalogPart' | 'updateInventoryCatalogPart' | 'mergeInventoryCatalogPart' | 'updateInventoryStock'>
+type InventoryApi = Pick<typeof api, 'inventory' | 'inventoryPartPhotoUrl' | 'searchInventory' | 'inventoryCatalogComponents' | 'getInventoryCatalogPart' | 'createInventoryCatalogComponent' | 'createInventoryCatalogPart' | 'updateInventoryCatalogPart' | 'mergeInventoryCatalogPart' | 'updateInventoryStock' | 'inventoryReceipts' | 'createInventoryReceipt' | 'updateInventoryReceipt' | 'postInventoryReceipt' | 'cancelInventoryReceipt' | 'reverseInventoryReceipt' | 'inventoryCounts' | 'createInventoryCount' | 'updateInventoryCount' | 'postInventoryCount' | 'cancelInventoryCount'>
 
-function InventoryWorkflowPlaceholder({ view, parkName, role }: { view: Exclude<InventoryView, 'parts'>; parkName: string; role?: string }) {
-  if (view === 'receipts') return <section className="inventory-workflow-placeholder"><h2>Поставки</h2><p>Список и редактор поставок появятся здесь.</p></section>
-  if (view === 'counts') return <section className="inventory-workflow-placeholder"><h2>Инвентаризация</h2><p>Акты и фактические остатки появятся здесь.</p></section>
+function InventoryWorkflowPlaceholder({ view, parkName, role }: { view: Exclude<InventoryView, 'parts' | 'receipts' | 'counts'>; parkName: string; role?: string }) {
   if (view === 'manage') return <section className="inventory-workflow-placeholder"><h2>Управление</h2><p>{role === 'admin' || role === 'royal' ? 'Глобальный каталог и настройки склада парка.' : 'Настройки склада парка.'}</p></section>
   return <section className="inventory-workflow-placeholder"><h2>Выгрузка парка {parkName}</h2><p>Выбор формата и скачивание появятся здесь.</p></section>
 }
@@ -45,6 +45,10 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
     {overview ? <div className="stat-grid inventory-kpis"><MetricCard label="Компоненты" value={overview.component_count} /><MetricCard label="Запчасти" value={overview.part_count} /><MetricCard label="Ниже минимума" tone={overview.low_stock_count ? 'warning' : 'neutral'} value={overview.low_stock_count} /><MetricCard label="Нет на складе" tone={overview.out_of_stock_count ? 'critical' : 'neutral'} value={overview.out_of_stock_count} /></div> : null}
     <InventoryTabs renderPanel={view => view === 'parts'
       ? <InventoryPartsView apiClient={apiClient} parkId={selectedPark.id} />
+      : view === 'receipts'
+        ? <InventoryReceiptsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} />
+        : view === 'counts'
+          ? <InventoryCountsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} />
       : view === 'manage'
         ? <InventoryManageView apiClient={apiClient} parkId={selectedPark.id} role={role} />
         : <InventoryWorkflowPlaceholder parkName={selectedPark.name} role={role} view={view} />} />

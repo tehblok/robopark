@@ -59,6 +59,20 @@ it('mounts the fast parts and scoped manage views through the active shell panel
   expect(document.querySelectorAll('[data-inventory-workflow]')).toHaveLength(1)
 })
 
+it.each([
+  ['/inventory?view=receipts', 'Новая поставка'],
+  ['/inventory?view=counts', 'Новая инвентаризация'],
+] as const)('mounts the active inventory document workflow at %s', async (path, action) => {
+  const client = inventoryClient({
+    inventoryReceipts: vi.fn(async () => ({ items: [], limit: 25, offset: 0, total: 0 })),
+    inventoryCounts: vi.fn(async () => ({ items: [], limit: 25, offset: 0, total: 0 })),
+    searchInventory: vi.fn(async () => ({ items: [], limit: 25, offset: 0, total: 0 })),
+  })
+  render(renderInventoryPage(park, client, path))
+  expect(await screen.findByRole('button', { name: action })).toBeVisible()
+  expect(document.querySelectorAll('[data-inventory-workflow]')).toHaveLength(1)
+})
+
 it('keeps park identity and KPI strip above export without coupling the workflow to overview success', async () => {
   const client = inventoryClient()
   render(renderInventoryPage(park, client, '/inventory?park=7&view=export'))
