@@ -26,6 +26,19 @@ const normalizePayload = (input: InventoryReceiptInput): InventoryReceiptInput =
     note: line.note?.trim() || null,
   })),
 })
+const comparisonSnapshot = (input: InventoryReceiptInput): string => {
+  const normalized = normalizePayload(input)
+  normalized.lines.sort((left, right) => {
+    const leftId = BigInt(left.catalog_part_id)
+    const rightId = BigInt(right.catalog_part_id)
+    if (leftId !== rightId) return leftId < rightId ? -1 : 1
+    if (left.quantity !== right.quantity) return left.quantity < right.quantity ? -1 : 1
+    const leftNote = left.note ?? ''
+    const rightNote = right.note ?? ''
+    return leftNote === rightNote ? 0 : leftNote < rightNote ? -1 : 1
+  })
+  return JSON.stringify(normalized)
+}
 
 export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChanged, permissions }: { apiClient?: ReceiptsApi; parkId: number; onInventoryChanged?: () => void; permissions?: string[] }) {
   const [page, setPage] = useState<InventoryPageEnvelope<InventoryReceipt> | null>(null)
@@ -87,7 +100,7 @@ export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChan
   const acceptReceipt = (receipt: InventoryReceipt, known: DraftLine[] = []) => {
     setSelected(receipt); setCreating(false); setSupplier(receipt.supplier ?? ''); setDocumentNumber(receipt.document_number ?? ''); setReceivedOn(receipt.received_on); setComment(receipt.comment ?? ''); setLines(receiptLines(receipt, known))
     // A serialized snapshot cannot change when the editor or a refreshed list changes.
-    setBaselinePayload(JSON.stringify(normalizePayload(receipt)))
+    setBaselinePayload(comparisonSnapshot(receipt))
   }
 
   const begin = () => {
@@ -104,7 +117,7 @@ export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChan
   const draftLines = lines
   const invalid = !receivedOn || !draftLines.length || draftLines.some(line => !isPositiveInventoryQuantity(line.quantity))
   const payload = normalizePayload({ supplier, document_number: documentNumber, received_on: receivedOn, comment, lines: draftLines.map(line => ({ catalog_part_id: line.part.id, quantity: line.quantity as `${bigint}`, note: line.note })) })
-  const dirty = JSON.stringify(payload) !== baselinePayload
+  const dirty = comparisonSnapshot(payload) !== baselinePayload
   const saveDraft = async () => {
     if (invalid || pending.current || !canManage) return
     pending.current = true; setBusy(true); setError('')

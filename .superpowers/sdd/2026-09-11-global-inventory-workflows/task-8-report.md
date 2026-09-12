@@ -75,11 +75,16 @@ Test Files 4 passed; Tests 51 passed.
 The genuine-edit regression also verifies one normalized PATCH followed by a failed
 Post, then edit/revert and successful Post retry without another PATCH.
 
+Round 5 RED reproduced the order-only false dirty state when an existing active B
+line is removed and re-added beside historical source A (1 failed, 2 passed).
+The same table verifies real quantity edits and removal of an existing note still
+PATCH. Round 5 focused GREEN: 4 files passed; 54 tests passed.
+
 ## Implementation
 
 - Receipt creation searches the scoped server catalog, adds lines, combines duplicate part IDs, validates digit-only positive int64 strings, confirms posting, and supports draft cancellation and posted reversal where the API exposes them.
 - Opening a receipt hydrates all server draft lines. A newly created draft is selected before posting, so a failed/lost post response retries the same server ID without creating or patching another receipt.
-- Receipt changes are derived from an immutable serialized baseline captured on open and every accepted save/create/action response. The same normalized payload builder handles comparison and API writes: trimmed nullable text, date, ordered part IDs, notes, and canonical int64 quantity strings. Edit/revert and whitespace-only changes post directly, preserving historical source aliases; real edits trigger one PATCH and refresh the baseline. Supplier remains optional as defined by the API.
+- Receipt changes are derived from an immutable serialized baseline captured on open and every accepted save/create/action response. The same normalized payload builder handles comparison and API writes: trimmed nullable text, date, part IDs, notes, and canonical int64 quantity strings. Comparison sorts its own normalized copy by numeric catalog part ID using BigInt, then quantity and note as deterministic tie-breakers; editor and outgoing payload order are preserved. Edit/revert, order-only, and whitespace-only changes post directly, preserving historical source aliases; real edits trigger one PATCH and refresh the baseline. Supplier remains optional as defined by the API.
 - Count creation uses the server-produced scope lines, retains actual-quantity inputs across 409 stale conflicts, shows expected/current conflict values inline, computes differences with `BigInt`, and offers an explicit retry.
 - Receipt/count lines carry source part and component names/articles in API responses, including archived merge sources. Reopened documents therefore render historical aliases without relying on active-catalog search.
 - Stale conflicts carry original count-line/catalog-part IDs when available; the web guard validates every conflict field and remains compatible with older payloads that omit `affected_lines`.
@@ -96,7 +101,7 @@ Post, then edit/revert and successful Post retry without another PATCH.
 
 ```text
 cd apps/web && npm test
-127 files passed; 1876 tests passed (fresh Round 4 gate).
+127 files passed; 1879 tests passed (fresh Round 5 gate).
 
 cd apps/web && npm run build
 exit 0; 2188 modules transformed; existing chunk-size warning only.

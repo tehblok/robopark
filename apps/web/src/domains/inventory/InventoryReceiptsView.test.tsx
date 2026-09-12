@@ -184,6 +184,44 @@ it('does not patch after adding and removing an extra receipt line', async () =>
   expect(apiClient.updateInventoryReceipt).not.toHaveBeenCalled()
 })
 
+it.each([
+  { change: 'order only', quantity: '1', note: null, patches: 0 },
+  { change: 'quantity', quantity: '2', note: null, patches: 1 },
+  { change: 'note removed', quantity: '1', note: 'Original note', patches: 1 },
+])('compares re-added active lines by content: $change', async ({ quantity, note, patches }) => {
+  const active = { ...part, id: 32, article: 'B-NEW', name: 'Цель B' }
+  let stored: InventoryReceipt = { ...receipt, lines: [
+    { ...receipt.lines[0], id: 2, catalog_part_id: 32, catalog_part_article: 'B-NEW', catalog_part_name: 'Цель B', quantity: '1', note },
+    { ...receipt.lines[0], catalog_part_article: 'A-OLD', catalog_part_name: 'Источник A', quantity: '9007199254740993', note: 'Historical note' },
+  ] }
+  const apiClient = client({
+    inventoryReceipts: vi.fn(async () => ({ items: [stored], limit: 25, offset: 0, total: 1 })),
+    searchInventory: vi.fn(async () => ({ items: [active], limit: 25, offset: 0, total: 1 })),
+    updateInventoryReceipt: vi.fn(async () => stored),
+    postInventoryReceipt: vi.fn(async () => { stored = { ...stored, status: 'posted' }; return stored }),
+  })
+  render(<InventoryReceiptsView apiClient={apiClient} parkId={7} />)
+  await userEvent.click(within(await screen.findByRole('article', { name: 'Поставка №91' })).getByRole('button', { name: 'Открыть' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Удалить B-NEW' }))
+  await userEvent.type(screen.getByRole('searchbox', { name: 'Найти запчасть для поставки' }), 'B-NEW')
+  await userEvent.click(await screen.findByRole('button', { name: 'Добавить B-NEW' }))
+  fireEvent.change(screen.getByLabelText('Количество B-NEW'), { target: { value: quantity } })
+  expect(screen.getAllByRole('textbox', { name: /^Количество/ }).map(input => input.getAttribute('id'))).toEqual(['receipt-quantity-31', 'receipt-quantity-32'])
+  if (!patches) expect(screen.getByRole('button', { name: 'Сохранить черновик' })).toBeDisabled()
+  else expect(screen.getByRole('button', { name: 'Сохранить черновик' })).toBeEnabled()
+  await userEvent.click(screen.getByRole('button', { name: 'Провести поставку' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Подтвердить проведение' }))
+  expect(await screen.findByText('Поставка проведена')).toBeVisible()
+  expect(apiClient.updateInventoryReceipt).toHaveBeenCalledTimes(patches)
+  if (patches) expect(apiClient.updateInventoryReceipt).toHaveBeenCalledWith(7, 91, expect.objectContaining({ lines: [
+    { catalog_part_id: 31, quantity: '9007199254740993', note: 'Historical note' },
+    { catalog_part_id: 32, quantity, note: null },
+  ] }))
+  expect(apiClient.postInventoryReceipt).toHaveBeenCalledWith(7, 91)
+  expect(screen.getByText('Источник A · A-OLD')).toBeVisible()
+  expect(stored.lines[1]).toMatchObject({ id: 1, catalog_part_id: 31, note: 'Historical note' })
+})
+
 it('posts a supplier-null draft for a post-only user without a silent dialog no-op', async () => {
   const withoutSupplier = { ...receipt, supplier: null }
   const apiClient = client({ inventoryReceipts: vi.fn(async () => ({ items: [withoutSupplier], limit: 25, offset: 0, total: 1 })) })
