@@ -269,10 +269,13 @@ def test_stale_count_can_refresh_snapshot_then_post_one_atomic_adjustment(
     login_as(client, mechanic.username, "secret")
     base = f"/inventory/parks/{seed_park_with_tracker.id}/counts"
     count = _create_count(client, seed_park_with_tracker).json()
-    assert client.patch(
-        f"{base}/{count['id']}",
-        json={"lines": [{"catalog_part_id": part.id, "actual_quantity": 8}]},
-    ).status_code == 200
+    assert (
+        client.patch(
+            f"{base}/{count['id']}",
+            json={"lines": [{"catalog_part_id": part.id, "actual_quantity": 8}]},
+        ).status_code
+        == 200
+    )
     inventory_stock.apply_stock_delta(
         db_session,
         user=mechanic,
@@ -290,20 +293,27 @@ def test_stale_count_can_refresh_snapshot_then_post_one_atomic_adjustment(
     refreshed = client.post(f"{base}/{count['id']}/refresh")
 
     assert refreshed.status_code == 200, refreshed.text
-    assert refreshed.json()["lines"][0] | {
-        "expected_quantity": 6,
-        "actual_quantity": 8,
-        "difference": 2,
-    } == refreshed.json()["lines"][0]
+    assert (
+        refreshed.json()["lines"][0]
+        | {
+            "expected_quantity": 6,
+            "actual_quantity": 8,
+            "difference": 2,
+        }
+        == refreshed.json()["lines"][0]
+    )
     posted = client.post(f"{base}/{count['id']}/post")
     assert posted.status_code == 200, posted.text
     db_session.expire_all()
-    assert db_session.scalar(
-        select(InventoryParkStock.quantity).where(
-            InventoryParkStock.park_id == seed_park_with_tracker.id,
-            InventoryParkStock.catalog_part_id == part.id,
+    assert (
+        db_session.scalar(
+            select(InventoryParkStock.quantity).where(
+                InventoryParkStock.park_id == seed_park_with_tracker.id,
+                InventoryParkStock.catalog_part_id == part.id,
+            )
         )
-    ) == 8
+        == 8
+    )
     adjustments = list(
         db_session.scalars(
             select(InventoryMovement).where(InventoryMovement.source_kind == "count")

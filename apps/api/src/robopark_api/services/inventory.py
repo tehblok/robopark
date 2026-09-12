@@ -556,14 +556,10 @@ def task_writeoff(
     resolved_part_id = part.id
     park = require_park(db, user, stock.park_id)
     existing = db.scalar(
-        select(InventoryMovement).where(
-            InventoryMovement.idempotency_key == idempotency_key
-        )
+        select(InventoryMovement).where(InventoryMovement.idempotency_key == idempotency_key)
     )
     if existing is not None:
-        existing_part = resolve_catalog_part(
-            db, existing.catalog_part_id, allow_archived=True
-        )
+        existing_part = resolve_catalog_part(db, existing.catalog_part_id, allow_archived=True)
         if (
             existing.actor_user_id != user.id
             or existing.issue_key != issue_key
@@ -625,15 +621,11 @@ def task_writeoff(
     except IntegrityError:
         db.rollback()
         existing = db.scalar(
-            select(InventoryMovement).where(
-                InventoryMovement.idempotency_key == idempotency_key
-            )
+            select(InventoryMovement).where(InventoryMovement.idempotency_key == idempotency_key)
         )
         if existing is None:
             raise
-        existing_part = resolve_catalog_part(
-            db, existing.catalog_part_id, allow_archived=True
-        )
+        existing_part = resolve_catalog_part(db, existing.catalog_part_id, allow_archived=True)
         if (
             existing.actor_user_id != user.id
             or existing.issue_key != issue_key
@@ -641,9 +633,7 @@ def task_writeoff(
             or existing_part.id != resolved_part_id
             or existing.delta != -quantity
         ):
-            raise inventory_stock.InventoryConflict(
-                "inventory_idempotency_conflict"
-            ) from None
+            raise inventory_stock.InventoryConflict("inventory_idempotency_conflict") from None
         return existing
     except Exception:
         db.rollback()

@@ -145,14 +145,13 @@ def test_catalog_archived_mode_is_admin_only_and_supports_restore(
     client, db_session, seed_park_with_tracker
 ):
     admin = _user(db_session, "admin", "archive-browser-admin")
-    mechanic = _user(
-        db_session, "mechanic", "archive-browser-mechanic", [seed_park_with_tracker]
-    )
+    mechanic = _user(db_session, "mechanic", "archive-browser-mechanic", [seed_park_with_tracker])
     component, part = _catalog(db_session, admin, article="ARCHIVE-FIND")
     login_as(client, admin.username, "secret")
-    assert client.patch(
-        f"/inventory/catalog/parts/{part.id}", json={"is_active": False}
-    ).status_code == 200
+    assert (
+        client.patch(f"/inventory/catalog/parts/{part.id}", json={"is_active": False}).status_code
+        == 200
+    )
 
     active = client.get(
         "/inventory/catalog/search",
@@ -174,32 +173,45 @@ def test_catalog_archived_mode_is_admin_only_and_supports_restore(
     assert [row["id"] for row in archived.json()["items"]] == [part.id]
     assert part.id in [row["id"] for row in all_rows.json()["items"]]
 
-    assert client.patch(
-        f"/inventory/catalog/components/{component.id}", json={"is_active": False}
-    ).status_code == 200
-    assert [row["id"] for row in client.get(
-        "/inventory/catalog/search",
-        params={"park_id": seed_park_with_tracker.id, "mode": "archived"},
-    ).json()["items"]] == [part.id]
+    assert (
+        client.patch(
+            f"/inventory/catalog/components/{component.id}", json={"is_active": False}
+        ).status_code
+        == 200
+    )
+    assert [
+        row["id"]
+        for row in client.get(
+            "/inventory/catalog/search",
+            params={"park_id": seed_park_with_tracker.id, "mode": "archived"},
+        ).json()["items"]
+    ] == [part.id]
 
     login_as(client, mechanic.username, "secret")
-    assert client.get(
-        "/inventory/catalog/search",
-        params={"park_id": seed_park_with_tracker.id, "mode": "archived"},
-    ).status_code == 403
+    assert (
+        client.get(
+            "/inventory/catalog/search",
+            params={"park_id": seed_park_with_tracker.id, "mode": "archived"},
+        ).status_code
+        == 403
+    )
 
     login_as(client, admin.username, "secret")
-    assert client.patch(
-        f"/inventory/catalog/components/{component.id}", json={"is_active": True}
-    ).status_code == 200
-    restored = client.patch(
-        f"/inventory/catalog/parts/{part.id}", json={"is_active": True}
+    assert (
+        client.patch(
+            f"/inventory/catalog/components/{component.id}", json={"is_active": True}
+        ).status_code
+        == 200
     )
+    restored = client.patch(f"/inventory/catalog/parts/{part.id}", json={"is_active": True})
     assert restored.status_code == 200, restored.text
-    assert client.get(
-        "/inventory/catalog/search",
-        params={"park_id": seed_park_with_tracker.id, "q": "ARCHIVE-FIND"},
-    ).json()["items"][0]["id"] == part.id
+    assert (
+        client.get(
+            "/inventory/catalog/search",
+            params={"park_id": seed_park_with_tracker.id, "q": "ARCHIVE-FIND"},
+        ).json()["items"][0]["id"]
+        == part.id
+    )
 
 
 def test_catalog_component_metadata_and_exact_part_are_scoped_and_independent_of_search_page(

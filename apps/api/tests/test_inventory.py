@@ -308,17 +308,23 @@ def test_task_writeoff_idempotency_key_has_one_movement_decrement_comment_and_au
     assert first.json()["id"] == retried.json()["id"]
     db_session.expire_all()
     assert db_session.scalar(select(InventoryParkStock.quantity)) == 3
-    assert db_session.scalar(
-        select(func.count(InventoryMovement.id)).where(
-            InventoryMovement.kind == "task_writeoff"
+    assert (
+        db_session.scalar(
+            select(func.count(InventoryMovement.id)).where(
+                InventoryMovement.kind == "task_writeoff"
+            )
         )
-    ) == 1
+        == 1
+    )
     assert len(comments) == 1
-    assert db_session.scalar(
-        select(func.count(AuditLog.id)).where(
-            AuditLog.action == "tracker.comment", AuditLog.target_id == "RP-IDEMPOTENT"
+    assert (
+        db_session.scalar(
+            select(func.count(AuditLog.id)).where(
+                AuditLog.action == "tracker.comment", AuditLog.target_id == "RP-IDEMPOTENT"
+            )
         )
-    ) == 1
+        == 1
+    )
 
     mismatch = client.post(
         "/inventory/tasks/RP-IDEMPOTENT/writeoff",
@@ -359,7 +365,9 @@ def test_task_writeoff_audit_failure_does_not_make_committed_operation_retryable
         inventory_svc.tracker_client, "add_comment", lambda **kwargs: comments.append(kwargs)
     )
     monkeypatch.setattr(
-        inventory_svc.audit, "record", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("audit"))
+        inventory_svc.audit,
+        "record",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("audit")),
     )
     payload = {"part_id": part["id"], "quantity": 2, "idempotency_key": "audit-failure"}
 
@@ -521,7 +529,11 @@ def test_task_writeoff_flushes_before_tracker_and_commits_only_after_success(
 
     response = client.post(
         "/inventory/tasks/RP-TRANSACTION/writeoff",
-        json={"part_id": part["id"], "quantity": 1, "idempotency_key": f"transaction-{tracker_fails}"},
+        json={
+            "part_id": part["id"],
+            "quantity": 1,
+            "idempotency_key": f"transaction-{tracker_fails}",
+        },
     )
 
     assert response.status_code == (502 if tracker_fails else 201), response.text
