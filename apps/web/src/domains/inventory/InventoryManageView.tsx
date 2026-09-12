@@ -153,10 +153,11 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
     try {
       const created = await apiClient.createInventoryCatalogComponent({ park_id: requestedParkId, name: componentName })
       if (activeParkId.current !== requestedParkId || operationGeneration.current !== requestGeneration) return
+      setComponents(current => [...current.filter(component => component.id !== created.id), { id: created.id, name: created.name }]
+        .sort((left, right) => left.name.localeCompare(right.name, 'ru') || left.id - right.id))
       setDraft(current => ({ ...current, componentId: String(created.id) }))
       setComponentName('')
       setWorkflow('create')
-      await load()
     } catch (reason) {
       if (activeParkId.current === requestedParkId && operationGeneration.current === requestGeneration) setError(classifyApiError(reason, 'Не удалось создать компоненту.').description)
     } finally {

@@ -92,7 +92,26 @@ describe('InventoryManageView', () => {
     expect(apiClient.updateInventoryStock).toHaveBeenCalledWith(1, 32, { minimum_quantity: '9007199254740993', location: 'Полка B-2', is_active: true })
   })
 
-  it('ignores a component created for a park that is no longer active', async () => {
+  it('shows the created component as selected in the sorted cache without reloading the catalog', async () => {
+    const apiClient = client({
+      createInventoryCatalogComponent: vi.fn(async () => ({ id: 88, name: 'Амортизаторы', is_active: true, has_photo: false })),
+    })
+    render(<InventoryManageView apiClient={apiClient} parkId={1} role="mechanic" />)
+    await screen.findByRole('option', { name: 'Тяга · ABC-01' })
+    await userEvent.click(screen.getByRole('button', { name: 'Добавить компоненту' }))
+    const form = screen.getByRole('form', { name: 'Новая компонента' })
+    await userEvent.type(within(form).getByRole('textbox', { name: 'Название' }), 'Амортизаторы')
+    await userEvent.click(within(form).getByRole('button', { name: 'Создать' }))
+
+    const select = within(await screen.findByRole('form', { name: 'Новая позиция' })).getByRole('combobox', { name: 'Компонента' })
+    expect(select).toHaveValue('88')
+    expect(select).toHaveDisplayValue('Амортизаторы')
+    expect(within(select).getAllByRole('option').map(option => option.textContent)).toEqual(['Выберите', 'Амортизаторы', 'Подвязка'])
+    expect(apiClient.searchInventory).toHaveBeenCalledTimes(1)
+    expect(apiClient.inventoryCatalogComponents).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([false, true])('ignores a component created for an earlier park generation (return to original park: %s)', async returnToOriginalPark => {
     const created = deferred<{ id: number; name: string; is_active: boolean; has_photo: boolean }>()
     const apiClient = client({
       createInventoryCatalogComponent: vi.fn(() => created.promise),
@@ -108,10 +127,18 @@ describe('InventoryManageView', () => {
 
     view.rerender(<InventoryManageView apiClient={apiClient} parkId={2} role="mechanic" />)
     await waitFor(() => expect(apiClient.searchInventory).toHaveBeenLastCalledWith(expect.objectContaining({ parkId: 2 })))
+    if (returnToOriginalPark) {
+      view.rerender(<InventoryManageView apiClient={apiClient} parkId={1} role="mechanic" />)
+      await waitFor(() => expect(apiClient.searchInventory).toHaveBeenLastCalledWith(expect.objectContaining({ parkId: 1 })))
+    }
+    const searchCount = apiClient.searchInventory.mock.calls.length
     await act(async () => created.resolve({ id: 88, name: 'Старая компонента', is_active: true, has_photo: false }))
 
     expect(screen.queryByRole('form', { name: 'Новая позиция' })).not.toBeInTheDocument()
-    expect(apiClient.searchInventory).not.toHaveBeenLastCalledWith(expect.objectContaining({ parkId: 1 }))
+    expect(apiClient.searchInventory).toHaveBeenCalledTimes(searchCount)
+    await userEvent.click(screen.getByRole('button', { name: 'Добавить позицию' }))
+    expect(screen.getByRole('combobox', { name: 'Компонента' })).toHaveValue('')
+    expect(screen.queryByRole('option', { name: 'Старая компонента' })).not.toBeInTheDocument()
   })
 
   it('selects a duplicate existing part, opens park settings and preserves the draft', async () => {

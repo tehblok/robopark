@@ -52,6 +52,15 @@ cd apps/api && .venv/bin/pytest tests/test_inventory_catalog.py -q
 19 passed, 1 third-party deprecation warning
 ```
 
+## Round 4 — created component selection
+
+- Fixed the sole P2: insert the returned component into the local cache before selecting its ID, deduplicate by ID, and use the component loader's stable Russian-name/ID ordering.
+- Removed the unrelated catalog reload after component creation. Existing park and operation-generation checks guard the entire cache/selection update.
+- RED: `npm test -- --run src/domains/inventory/InventoryManageView.test.tsx` — 1 failed, 14 passed; the new component selector had an empty value instead of `88`.
+- GREEN: Parts, Manage, InventoryPage and InventoryTabs — 4 files, 50 tests passed. Regression assertions cover the selected name, sorted options, no extra catalog/component requests, and late creation responses across A→B and A→B→A park changes.
+- Build passed (2186 modules; existing chunk-size warning), lint passed (existing warnings outside Task 7), check-nav passed (30 route IDs), and `git diff --check` passed.
+- Full web suite not repeated: the production edit only changes the Manage create-component success handler; shared code and contracts are unchanged. The full-suite result above remains the prior round's evidence.
+
 ## Implementation
 
 - Search field precedes filters and emits debounced, server-paginated requests. Separate request generations reject stale search and stock-mutation responses.
