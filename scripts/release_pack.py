@@ -79,6 +79,8 @@ def excluded(relative):
         and relative.as_posix() != "apps/api/data/emergency_sections.json"
     ):
         return True
+    if parts[:4] == ("apps", "api", "src", "data"):
+        return True
     if parts[:1] in (("data",), ("diagnostics",)):
         return True
     if (name == ".env" or name.startswith(".env.") or name.endswith(".env") or ".env." in name) and not (

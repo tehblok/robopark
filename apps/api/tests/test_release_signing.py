@@ -374,12 +374,19 @@ def test_pack_release_keeps_api_ops_code_and_excludes_runtime_state(
     key_path.chmod(0o600)
     root = Path(__file__).parents[3]
     runtime_state = root / "apps" / "api" / "data" / "ops" / "task1-pack-state.json"
+    attachment_data_root = root / "apps" / "api" / "src" / "data"
+    runtime_attachment = attachment_data_root / "report-attachments" / "task11-pack-runtime"
     secret = root / "apps" / "api" / ".env"
     assert not runtime_state.exists()
+    assert not runtime_attachment.exists()
     created_state_dir = not runtime_state.parent.exists()
+    created_attachment_data_root = not attachment_data_root.exists()
+    created_attachment_dir = not runtime_attachment.parent.exists()
     created_secret = not secret.exists()
     runtime_state.parent.mkdir(parents=True, exist_ok=True)
     runtime_state.write_text('{"state":"runtime-only"}', encoding="utf-8")
+    runtime_attachment.parent.mkdir(parents=True, exist_ok=True)
+    runtime_attachment.write_bytes(b"private runtime attachment")
     if created_secret:
         secret.write_text("SECRET_KEY=task1-test-only\n", encoding="utf-8")
     output = tmp_path / "release.zip"
@@ -402,14 +409,20 @@ def test_pack_release_keeps_api_ops_code_and_excludes_runtime_state(
         if created_secret:
             secret.unlink(missing_ok=True)
         runtime_state.unlink(missing_ok=True)
+        runtime_attachment.unlink(missing_ok=True)
         if created_state_dir:
             runtime_state.parent.rmdir()
+        if created_attachment_dir:
+            runtime_attachment.parent.rmdir()
+        if created_attachment_data_root:
+            attachment_data_root.rmdir()
 
     assert packed.returncode == 0, packed.stderr
     with zipfile.ZipFile(output) as archive:
         names = set(archive.namelist())
     assert "apps/api/src/robopark_api/services/ops/archives.py" in names
     assert "apps/api/data/ops/task1-pack-state.json" not in names
+    assert not any(name.startswith("apps/api/src/data/") for name in names)
     assert "apps/api/.env" not in names
 
 
