@@ -14,25 +14,47 @@ async function assertInventoryPage(page: Page, width: number) {
   await assertNoSeriousA11yViolations(page)
 }
 
-async function postReceipt(page: Page, article: string, quantity: string) {
+async function assertOpenDocumentEditor(page: Page, width: number) {
+  const editor = page.locator('.inventory-document-editor:visible')
+  const list = page.locator('.inventory-document-list')
+  await expect(editor).toHaveCount(1)
+  if (width < 600) await expect(list).toBeHidden()
+  else {
+    await expect(list).toBeVisible()
+    const [listBox, editorBox] = await Promise.all([list.boundingBox(), editor.boundingBox()])
+    expect(listBox && editorBox).toBeTruthy()
+    expect(listBox!.y + listBox!.height).toBeLessThanOrEqual(editorBox!.y)
+  }
+  await assertInventoryPage(page, width)
+}
+
+async function postReceipt(page: Page, article: string, quantity: string, width: number) {
   await page.getByRole('tab', { name: 'Поставки' }).click()
   await page.getByRole('button', { name: 'Новая поставка' }).click()
+  await assertOpenDocumentEditor(page, width)
   await page.getByRole('searchbox', { name: 'Найти запчасть для поставки' }).fill(article)
   await page.getByRole('button', { name: `Добавить ${article}` }).click()
   await page.getByRole('textbox', { name: `Количество ${article}` }).fill(quantity)
   await page.getByRole('button', { name: 'Провести поставку' }).click()
-  await page.getByRole('alertdialog', { name: 'Подтвердите действие' }).getByRole('button', { name: 'Подтвердить проведение' }).click()
+  const dialog = page.getByRole('alertdialog', { name: 'Подтвердите действие' })
+  await expect(dialog).toBeVisible()
+  await assertOpenDocumentEditor(page, width)
+  await dialog.getByRole('button', { name: 'Подтвердить проведение' }).click()
   await expect(page.getByRole('status')).toContainText('Поставка проведена')
 }
 
-async function postCount(page: Page, article: string, quantity: string) {
+async function postCount(page: Page, article: string, quantity: string, width: number) {
   await page.getByRole('tab', { name: 'Инвентаризация' }).click()
   await page.getByRole('button', { name: 'Новая инвентаризация' }).click()
+  await assertOpenDocumentEditor(page, width)
   await page.getByRole('textbox', { name: 'Название акта' }).fill('Контрольный пересчёт')
   await page.getByRole('button', { name: 'Создать акт' }).click()
   await page.getByRole('textbox', { name: `Фактически ${article}` }).fill(quantity)
   await page.getByRole('button', { name: 'Провести акт' }).click()
-  await page.getByRole('alertdialog', { name: 'Подтвердите действие' }).getByRole('button', { name: 'Подтвердить проведение' }).click()
+  const dialog = page.getByRole('alertdialog', { name: 'Подтвердите действие' })
+  await expect(dialog).toBeVisible()
+  await assertOpenDocumentEditor(page, width)
+  await dialog.getByRole('button', { name: 'Подтвердить проведение' }).click()
   await expect(page.getByRole('status')).toContainText('Акт проведён')
 }
 
@@ -41,8 +63,15 @@ test('mechanic completes the park stock cycle on phone', async ({ page }) => {
   await openAs(page, 'mechanic', '/inventory?park=7')
   await page.getByRole('searchbox', { name: 'Найти запчасть' }).fill('ABC-1')
   await expect(page.getByText('Полка A-1', { exact: true })).toBeVisible()
-  await postReceipt(page, 'ABC-1', '5')
-  await postCount(page, 'ABC-1', '4')
+  await postReceipt(page, 'ABC-1', '5', 390)
+  await page.getByRole('tab', { name: 'Запчасти' }).click()
+  await expect(page.getByText('5 шт.', { exact: true })).toBeVisible()
+  const duplicateStatus = await page.evaluate(async () => (await fetch('/api/inventory/parks/7/receipts/1/post', { method: 'POST' })).status)
+  expect(duplicateStatus).toBe(200)
+  await page.reload()
+  await page.getByRole('tab', { name: 'Запчасти' }).click()
+  await expect(page.getByText('5 шт.', { exact: true })).toBeVisible()
+  await postCount(page, 'ABC-1', '4', 390)
   await page.getByRole('tab', { name: 'Запчасти' }).click()
   await expect(page.getByText('4 шт.', { exact: true })).toBeVisible()
   await assertInventoryPage(page, 390)
@@ -58,6 +87,7 @@ test('mechanic cannot broaden inventory to a foreign park at 320px', async ({ pa
   await expect(stickySearch).toHaveCSS('position', 'sticky')
   expect(await stickySearch.evaluate(element => element.closest('main') !== null)).toBe(true)
   await assertInventoryPage(page, 320)
+  await postCount(page, 'ABC-1', '0', 320)
 })
 
 test('operator switches inventory workflows with the keyboard at 768px', async ({ page }) => {
@@ -69,7 +99,22 @@ test('operator switches inventory workflows with the keyboard at 768px', async (
   await expect(page.getByRole('tab', { name: 'Поставки' })).toHaveAttribute('aria-selected', 'true')
   await expect(page).toHaveURL(/view=receipts/)
   await expect(page.getByRole('heading', { name: 'Поставки', exact: true })).toBeVisible()
-  await assertInventoryPage(page, 768)
+  await page.getByRole('button', { name: 'Новая поставка' }).click()
+  await assertOpenDocumentEditor(page, 768)
+})
+
+test('stock settings remain isolated between parks', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 900 })
+  await openAs(page, 'admin', '/inventory?park=7')
+  await page.getByRole('button', { name: 'Настроить остаток' }).click()
+  await page.getByRole('textbox', { name: 'Место' }).fill('Полка N-7')
+  await page.getByRole('textbox', { name: 'Минимум' }).fill('9')
+  await page.getByRole('button', { name: 'Сохранить' }).click()
+  await expect(page.getByText('Полка N-7', { exact: true })).toBeVisible()
+  await page.goto('/inventory?park=8')
+  await expect(page.getByText('Полка A-1', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Настроить остаток' }).click()
+  await expect(page.getByRole('textbox', { name: 'Минимум' })).toHaveValue('2')
 })
 
 test('admin opens a global catalog workflow at 1024px', async ({ page }) => {

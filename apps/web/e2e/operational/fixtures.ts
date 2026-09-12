@@ -104,7 +104,11 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
     is_active: true, has_photo: false, quantity: '0', minimum_quantity: '2', location: 'Полка A-1', stock_is_active: true,
   }
   const inventoryComponent: InventoryCatalogComponent = { id: 11, name: inventoryPart.component_name, is_active: true, has_photo: false }
-  const inventoryQuantities = new Map<number, bigint>([[parkNorth.id, 0n], [parkSouth.id, 3n]])
+  type InventoryStockState = { quantity: bigint; minimumQuantity: `${bigint}`; location: string | null; isActive: boolean; version: bigint }
+  const inventoryStocks = new Map<string, InventoryStockState>([
+    [`${parkNorth.id}:${inventoryPart.id}`, { quantity: 0n, minimumQuantity: '2', location: 'Полка A-1', isActive: true, version: 1n }],
+    [`${parkSouth.id}:${inventoryPart.id}`, { quantity: 3n, minimumQuantity: '2', location: 'Полка A-1', isActive: true, version: 1n }],
+  ])
   const receipts: InventoryReceipt[] = []
   const counts: InventoryCount[] = []
   const requestedPark = (request: Request) => {
@@ -114,7 +118,18 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
   }
   const canReadPark = (parkId: number) => ['admin', 'royal'].includes(user.role) || user.parks.some(park => park.id === parkId)
   const inventoryDenied = { status: 403, json: { detail: 'inventory_park_forbidden' } }
-  const searchItem = (parkId: number): InventoryCatalogSearchItem => ({ ...inventoryPart, quantity: String(inventoryQuantities.get(parkId) ?? 0n) as `${bigint}` })
+  const stockFor = (parkId: number, catalogPartId = inventoryPart.id): InventoryStockState => {
+    const key = `${parkId}:${catalogPartId}`
+    const current = inventoryStocks.get(key)
+    if (current) return current
+    const created: InventoryStockState = { quantity: 0n, minimumQuantity: '2', location: null, isActive: true, version: 1n }
+    inventoryStocks.set(key, created)
+    return created
+  }
+  const searchItem = (parkId: number): InventoryCatalogSearchItem => {
+    const stock = stockFor(parkId)
+    return { ...inventoryPart, quantity: String(stock.quantity) as `${bigint}`, minimum_quantity: stock.minimumQuantity, location: stock.location, stock_is_active: stock.isActive }
+  }
   const receiptFrom = (parkId: number, id: number, input: InventoryReceiptInput, status: InventoryReceipt['status'] = 'draft'): InventoryReceipt => ({
     id, park_id: parkId, supplier: input.supplier ?? null, document_number: input.document_number ?? null,
     received_on: input.received_on, comment: input.comment ?? null, status, created_by: user.id,
@@ -130,7 +145,7 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
     id: id * 10 + 1, catalog_part_id: inventoryPart.id, catalog_part_name: inventoryPart.name,
     catalog_part_article: inventoryPart.article, catalog_component_id: inventoryPart.component_id,
     catalog_component_name: inventoryPart.component_name,
-    expected_quantity: String(inventoryQuantities.get(parkId) ?? 0n) as `${bigint}`,
+    expected_quantity: String(stockFor(parkId).quantity) as `${bigint}`,
     actual_quantity: null, difference: null, comment: null,
   }]
   const blocker = (): Blocker => ({ key: currentIssue.key, summary: currentIssue.summary, status: currentIssue.status, status_key: currentIssue.status_key, robot: currentIssue.robot ?? null, created_at: FIXED_TIME, hours_created: '0', url: currentIssue.url, bucket: 'open', priority: 'normal', assignee: currentIssue.assignee })
@@ -168,7 +183,7 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
     { method: 'GET', path: '/api/inventory', handler: request => {
       const parkId = requestedPark(request)
       if (!canReadPark(parkId)) return inventoryDenied
-      const quantity = inventoryQuantities.get(parkId) ?? 0n
+      const quantity = stockFor(parkId).quantity
       return { json: {
         park_id: parkId, component_count: 1, part_count: 1,
         low_stock_count: quantity < 2n ? 1 : 0, out_of_stock_count: quantity === 0n ? 1 : 0,
@@ -194,10 +209,10 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
       const parkId = requestedPark(request)
       if (!canReadPark(parkId)) return inventoryDenied
       const body: Pick<InventoryStockView, 'minimum_quantity' | 'location' | 'is_active'> = await request.json()
-      inventoryPart.minimum_quantity = body.minimum_quantity
-      inventoryPart.location = body.location
-      inventoryPart.stock_is_active = body.is_active
-      return { json: { park_id: parkId, catalog_part_id: inventoryPart.id, quantity: String(inventoryQuantities.get(parkId) ?? 0n), minimum_quantity: body.minimum_quantity, location: body.location, is_active: body.is_active, version: '1' } satisfies InventoryStockView }
+      const current = stockFor(parkId)
+      const updated: InventoryStockState = { ...current, minimumQuantity: body.minimum_quantity, location: body.location, isActive: body.is_active, version: current.version + 1n }
+      inventoryStocks.set(`${parkId}:${inventoryPart.id}`, updated)
+      return { json: { park_id: parkId, catalog_part_id: inventoryPart.id, quantity: String(updated.quantity), minimum_quantity: updated.minimumQuantity, location: updated.location, is_active: updated.isActive, version: String(updated.version) } satisfies InventoryStockView }
     } },
     { method: 'GET', path: /^\/api\/inventory\/parks\/\d+\/receipts$/, handler: request => {
       const parkId = requestedPark(request)
@@ -229,7 +244,12 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
       const index = receipts.findIndex(item => item.id === id && item.park_id === parkId)
       const current = receipts[index]
       if (!current) return { status: 404, json: { detail: 'inventory_receipt_not_found' } }
-      current.lines.forEach(line => inventoryQuantities.set(parkId, (inventoryQuantities.get(parkId) ?? 0n) + BigInt(line.quantity)))
+      if (current.status === 'posted') return { json: current }
+      if (current.status !== 'draft') return { status: 409, json: { detail: 'inventory_receipt_not_draft' } }
+      current.lines.forEach(line => {
+        const stock = stockFor(parkId, line.catalog_part_id)
+        inventoryStocks.set(`${parkId}:${line.catalog_part_id}`, { ...stock, quantity: stock.quantity + BigInt(line.quantity), version: stock.version + 1n })
+      })
       const posted = { ...current, status: 'posted' as const, posted_by: user.id, posted_at: FIXED_TIME }
       receipts[index] = posted
       return { json: posted }
@@ -278,7 +298,11 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
       const id = Number(new URL(request.url).pathname.split('/').at(-2))
       const current = counts.find(item => item.id === id && item.park_id === parkId)
       if (!current) return { status: 404, json: { detail: 'inventory_count_not_found' } }
-      current.lines.forEach(line => { if (line.actual_quantity !== null) inventoryQuantities.set(parkId, BigInt(line.actual_quantity)) })
+      current.lines.forEach(line => {
+        if (line.actual_quantity === null) return
+        const stock = stockFor(parkId, line.catalog_part_id)
+        inventoryStocks.set(`${parkId}:${line.catalog_part_id}`, { ...stock, quantity: BigInt(line.actual_quantity), version: stock.version + 1n })
+      })
       const posted = { ...current, status: 'posted' as const, posted_by: user.id, posted_at: FIXED_TIME }
       counts[counts.indexOf(current)] = posted
       return { json: posted }
