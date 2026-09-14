@@ -89,7 +89,7 @@ def peek_robot_payloads(*, vins: list[str], identity: str | None) -> dict[str, d
     """Read fresh, identity-bound payloads only; never load, wait or refresh.
 
     Registry misses remain unknown. In-process entries deliberately retain the
-    same 2.5 second lifetime as the detail endpoint; no second telemetry store.
+    same 3 second lifetime as the detail endpoint; no second telemetry store.
     """
     now = time.monotonic()
     with _lock:

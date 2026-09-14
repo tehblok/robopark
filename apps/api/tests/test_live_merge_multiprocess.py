@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import multiprocessing
+import os
 import time
 from pathlib import Path
 
@@ -165,6 +166,43 @@ def _lease_worker(root: str, held_path: str, hold: float) -> None:
     if won:
         time.sleep(hold)
         lease.release()
+
+
+def _hold_lock_without_inflight(lock_path: str, acquired, release) -> None:
+    with Path(lock_path).open("a+", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        acquired.set()
+        assert release.wait(timeout=5)
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def test_prune_does_not_unlink_lock_held_before_inflight_is_written(tmp_path):
+    store = LiveMergeStore(tmp_path)
+    lock_path = store.lock_path("ns", "race")
+    lock_path.parent.mkdir(parents=True)
+    lock_path.touch()
+    old = time.time() - 120
+    os.utime(lock_path, (old, old))
+    ctx = multiprocessing.get_context("spawn")
+    acquired = ctx.Event()
+    release = ctx.Event()
+    holder = ctx.Process(
+        target=_hold_lock_without_inflight,
+        args=(str(lock_path), acquired, release),
+    )
+    holder.start()
+    try:
+        assert acquired.wait(timeout=5)
+
+        assert store.prune(now=time.time(), lock_max_age_seconds=60) == 0
+        assert lock_path.exists()
+    finally:
+        release.set()
+        holder.join(timeout=5)
+
+    assert holder.exitcode == 0
+    assert store.prune(now=time.time(), lock_max_age_seconds=60) == 1
+    assert not lock_path.exists()
 
 
 def test_job_lease_only_one_owner_across_processes(tmp_path):

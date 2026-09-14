@@ -602,7 +602,7 @@ def test_cleanup_deletes_only_old_or_overflowing_new_unknowns(db_session):
             state=state,
         )
 
-    db_session.add(unknown("old-new", state="new", seen=now - timedelta(days=30)))
+    db_session.add(unknown("old-new", state="new", seen=now - timedelta(days=31)))
     db_session.add(unknown("old-mapped", state="mapped", seen=now - timedelta(days=365)))
     db_session.add(unknown("old-ignored", state="ignored", seen=now - timedelta(days=365)))
     for index in range(1002):
@@ -632,4 +632,30 @@ def test_cleanup_deletes_only_old_or_overflowing_new_unknowns(db_session):
     )
     assert db_session.scalar(
         select(DiagnosticUnknown).where(DiagnosticUnknown.identity == "old-ignored")
+    )
+
+
+def test_cleanup_keeps_unknown_seen_exactly_thirty_days_ago(db_session):
+    from robopark_api.models import DiagnosticUnknown
+    from robopark_api.services.diagnostic_unknowns import prune_diagnostic_unknowns
+
+    now = datetime(2026, 9, 14, tzinfo=UTC)
+    boundary = DiagnosticUnknown(
+        identity="thirty-day-boundary",
+        source_path="errors",
+        source_segments_json='["errors"]',
+        raw_json='"sample"',
+        original_json='"sample"',
+        first_seen_at=now - timedelta(days=30),
+        last_seen_at=now - timedelta(days=30),
+        observations=1,
+        last_robot="robot",
+        state="new",
+    )
+    db_session.add(boundary)
+    db_session.commit()
+
+    assert prune_diagnostic_unknowns(db_session, now=now, max_entries=10) == 0
+    assert db_session.scalar(
+        select(DiagnosticUnknown).where(DiagnosticUnknown.identity == boundary.identity)
     )

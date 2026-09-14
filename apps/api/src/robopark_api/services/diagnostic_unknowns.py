@@ -61,7 +61,7 @@ def prune_diagnostic_unknowns(
         db.scalars(
             select(DiagnosticUnknown.id).where(
                 DiagnosticUnknown.state == "new",
-                DiagnosticUnknown.last_seen_at <= cutoff,
+                DiagnosticUnknown.last_seen_at < cutoff,
             )
         )
     )

@@ -190,7 +190,11 @@ class ResponseCache(Generic[T]):  # noqa: UP046
             else:
                 value = loader()
         except BaseException as exc:  # last-good or fan-out one shared error
-            if stale is not None and time.monotonic() - stale[0] < self._max_stale:
+            if (
+                isinstance(exc, Exception)
+                and stale is not None
+                and time.monotonic() - stale[0] < self._max_stale
+            ):
                 value = stale[1]
             else:
                 error = exc

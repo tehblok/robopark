@@ -367,6 +367,10 @@ class LiveMergeStore:
         try:
             value = loader()
         except BaseException as exc:
+            if not isinstance(exc, Exception):
+                with self._exclusive(namespace, key, timeout=self.waiter_timeout):
+                    self._clear_inflight(namespace, key, claim)
+                raise
             stale_allowed = stale_if(exc) if stale_if is not None else True
             with self._exclusive(namespace, key, timeout=self.waiter_timeout):
                 if is_current is not None and not is_current():
@@ -393,6 +397,48 @@ class LiveMergeStore:
             self._clear_error(namespace, key)
             self._clear_inflight(namespace, key, claim)
         return value
+
+    def _prune_lock(
+        self,
+        path: Path,
+        *,
+        initial_stat: os.stat_result,
+        now: float,
+        max_age_seconds: float,
+    ) -> bool:
+        try:
+            fh = path.open("r+", encoding="utf-8")
+        except OSError:
+            return False
+        with fh:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, OSError):
+                return False
+            try:
+                try:
+                    descriptor_stat = os.fstat(fh.fileno())
+                    current_stat = path.stat()
+                except OSError:
+                    return False
+                expected_inode = (initial_stat.st_dev, initial_stat.st_ino)
+                if (
+                    (descriptor_stat.st_dev, descriptor_stat.st_ino) != expected_inode
+                    or (current_stat.st_dev, current_stat.st_ino) != expected_inode
+                    or max(0.0, now - current_stat.st_mtime) < max_age_seconds
+                ):
+                    return False
+                inflight = self._read_json(path.with_suffix(".inflight"))
+                pid = inflight.get("pid") if inflight is not None else None
+                if isinstance(pid, int) and _pid_alive(pid):
+                    return False
+                try:
+                    path.unlink()
+                except OSError:
+                    return False
+                return True
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
     def invalidate(self, namespace: str, key: str) -> None:
         from robopark_api.services.ops.maintenance import require_application_writes
@@ -476,11 +522,14 @@ class LiveMergeStore:
                     pid = data.get("pid") if data is not None else None
                     should_remove = not isinstance(pid, int) or not _pid_alive(pid)
                 elif suffix == ".lock":
-                    inflight = self._read_json(path.with_suffix(".inflight"))
-                    pid = inflight.get("pid") if inflight is not None else None
-                    should_remove = age >= lock_max_age_seconds and not (
-                        isinstance(pid, int) and _pid_alive(pid)
-                    )
+                    if age >= lock_max_age_seconds and self._prune_lock(
+                        path,
+                        initial_stat=stat,
+                        now=now,
+                        max_age_seconds=lock_max_age_seconds,
+                    ):
+                        removed += 1
+                    continue
                 if not should_remove:
                     continue
                 try:

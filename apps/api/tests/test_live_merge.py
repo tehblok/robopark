@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import json
 import os
@@ -170,6 +171,23 @@ def test_failed_refresh_rejects_blob_aged_sixty_seconds(tmp_path, monkeypatch):
     now[0] = 160.0
     with pytest.raises(RuntimeError, match="unavailable"):
         store.merge_load("ns", "k", 3, boom)
+
+
+@pytest.mark.parametrize("control_flow", [KeyboardInterrupt(), asyncio.CancelledError()])
+def test_stale_blob_does_not_swallow_control_flow(tmp_path, control_flow, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("robopark_api.services.live_merge.time.time", lambda: now[0])
+    store = LiveMergeStore(tmp_path)
+    assert store.merge_load("ns", "k", 3, lambda: {"n": 1}) == {"n": 1}
+    now[0] = 104.0
+
+    def interrupt() -> dict:
+        raise control_flow
+
+    with pytest.raises(type(control_flow)):
+        store.merge_load("ns", "k", 3, interrupt)
+
+    assert not store.inflight_path("ns", "k").exists()
 
 
 def test_prune_removes_old_merge_files_but_preserves_live_inflight(tmp_path):

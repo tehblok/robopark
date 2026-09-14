@@ -1,3 +1,4 @@
+import asyncio
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -228,6 +229,23 @@ def test_completed_flight_does_not_retain_errors_or_payloads(failure):
 
     with pytest.raises(type(failure)):
         cache.get_or_load("k", fail)
+
+    assert cache._flights == {}
+
+
+@pytest.mark.parametrize("control_flow", [KeyboardInterrupt(), asyncio.CancelledError()])
+def test_last_good_does_not_swallow_control_flow(control_flow, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("robopark_api.services.response_cache.time.monotonic", lambda: now[0])
+    cache: ResponseCache[int] = ResponseCache(3, name="control-flow", shared=False)
+    assert cache.get_or_load("k", lambda: 1) == 1
+    now[0] = 104.0
+
+    def interrupt() -> int:
+        raise control_flow
+
+    with pytest.raises(type(control_flow)):
+        cache.get_or_load("k", interrupt)
 
     assert cache._flights == {}
 
