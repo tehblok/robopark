@@ -5,7 +5,8 @@ Lists and keyed collections expand to individual errors. Untouched structured
 errors retain their raw fields; partially classified objects retain only their
 residual diagnostic units and unknown siblings. Scalar code/message/text/path
 fields form one unit, whereas structured diagnostic fields contain child units.
-Exact matching is case/whitespace sensitive; nonstrings use canonical JSON.
+Exact matching retains raw compatibility and also uses canonical notification
+bodies with normalized whitespace; nonstrings retain canonical JSON raw matching.
 Regex uses search, once per rule/value, after compilation. Invalid persisted
 patterns are skipped, leaving the corresponding raw errors visible.
 """
@@ -28,8 +29,12 @@ from robopark_api.models import DiagnosticRule
 from robopark_api.schemas import DiagnosticEvent
 
 _ERROR_SOURCES = (
+    "robotHudData.notifications.lastCritNotification",
+    "robotHudData.notifications.lastErrorNotification",
+    "robotHudData.notifications.lastWarnNotification",
     "lastCritNotification",
     "lastErrorNotification",
+    "lastWarnNotification",
     "errors",
     "panics",
     "notifications",
@@ -45,6 +50,9 @@ _COUNTED_REPEAT = re.compile(r"\{([0-9]*)(?:,([0-9]*))?\}")
 _INLINE_FLAGS = re.compile(r"\(\?((?:[abefimprswxLu]|V0)*)(?:-([abefimprswxLu]+))?([:)])")
 _POSIX_CLASS = re.compile(r"\[:\^?[A-Za-z0-9 &_.-]*(?:[:=][A-Za-z0-9 &_./-]+)?:\]")
 _SUPPORTED_GROUP = re.compile(r"\(\?(?:[:=!>]|<[=!]|(?:P<|<)[A-Za-z_][A-Za-z0-9_]*>)")
+_NOTIFICATION_PREFIX = re.compile(
+    r"^(?:(CRIT|ERROR|WARN):\s*)?(?:\[\+\d+(?:\.\d+)?s\]\s*)?"
+)
 type Location = tuple[str | int, ...]
 type IdentityPath = tuple[str | int | None, ...]
 
@@ -276,6 +284,39 @@ def _raw_text(value: Any) -> str:
     return value if type(value) is str else _canonical(value)
 
 
+def canonical_notification_body(value: Any) -> str | None:
+    """Project a stable rule body while leaving the upstream value untouched."""
+    if isinstance(value, dict):
+        name = str(value.get("name") or "").strip().rstrip(":")
+        message = str(value.get("message") or "").strip()
+        text = f"{name}: {message}" if name and message else name or message
+    elif isinstance(value, str):
+        text = _NOTIFICATION_PREFIX.sub("", value.strip(), count=1)
+    else:
+        return None
+    return " ".join(text.split()) or None
+
+
+def _exact_matches(pattern: str, value: Any) -> bool:
+    raw_text = _raw_text(value)
+    body = canonical_notification_body(value)
+    normalized_pattern = " ".join(pattern.strip().split())
+    return pattern == raw_text or (body is not None and normalized_pattern == body)
+
+
+def _source_severity(source: str, value: Any) -> str | None:
+    source_name = source.rsplit(".", maxsplit=1)[-1].lower()
+    if source_name == "lastwarnnotification":
+        return "warning"
+    if source_name in {"lastcritnotification", "lasterrornotification"}:
+        return "critical"
+    if type(value) is str:
+        prefix = _NOTIFICATION_PREFIX.match(value.strip())
+        if prefix is not None and prefix.group(1):
+            return "warning" if prefix.group(1) == "WARN" else "critical"
+    return None
+
+
 def _raw_errors(
     value: Any,
     location: Location,
@@ -450,7 +491,7 @@ def match_diagnostic_events_for_rules(
             matches = (
                 diagnostic_regex_matches(pattern, text)
                 if pattern is not None
-                else rule.pattern == text
+                else _exact_matches(rule.pattern, raw)
             )
             if not matches:
                 continue
@@ -466,7 +507,7 @@ def match_diagnostic_events_for_rules(
                 raw_value=raw,
                 title=rule.title,
                 description=rule.description,
-                severity=rule.severity,
+                severity=_source_severity(rule.source_path, raw) or rule.severity,
                 sort_order=rule.sort_order,
                 part=rule.part,
                 view=rule.preferred_view,
@@ -508,7 +549,7 @@ def match_diagnostic_events_for_rules(
             raw_value=raw,
             title=_raw_text(raw),
             description="Неизвестная ошибка. Правило диагностики не найдено.",
-            severity="warning",
+            severity=_source_severity(source, raw) or "warning",
         )
 
     return sorted(
@@ -551,6 +592,10 @@ def diagnostic_rule_matches_sample(
         if not _is_within(error.location, sample_location):
             continue
         text = _raw_text(error.value)
-        if diagnostic_regex_matches(pattern, text) if pattern is not None else rule.pattern == text:
+        if (
+            diagnostic_regex_matches(pattern, text)
+            if pattern is not None
+            else _exact_matches(rule.pattern, error.value)
+        ):
             return True
     return False

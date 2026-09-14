@@ -158,6 +158,9 @@ def test_parse_snapshot_live_field_shapes():
     )
     assert snap["battery1_percent"] == 73
     assert snap["battery2_percent"] == 74
+    assert snap["battery1_connected"] is True
+    assert snap["battery2_connected"] is True
+    assert snap["speed"] == 0
     assert snap["disk_percent"] == 17
     assert snap["connection"] == "lte"
     assert snap["wheels_fault"] == []
@@ -178,9 +181,38 @@ def test_parse_snapshot_disconnected_battery_wheel_dict_and_wire():
         vin="YASADR00000000001",
     )
     assert snap["battery1_percent"] == 50
-    assert snap["battery2_percent"] is None
+    assert snap["battery2_percent"] == 0
+    assert snap["battery1_connected"] is True
+    assert snap["battery2_connected"] is False
     assert snap["wheels_fault"] == ["fl", "rr"]
     assert snap["connection"] == "wire"
+
+
+def test_parse_snapshot_prefers_disk_usage_and_converts_millisecond_timestamp():
+    snap = parse_emergency_snapshot(
+        {
+            "diskUsage": 40,
+            "disk": {"usedPercents": 53},
+            "timestamp": 1_700_000_000_000,
+        },
+        vin="YASADR00000000447",
+    )
+
+    assert snap["disk_percent"] == 40
+    assert snap["observed_at"] == datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("timestamp", [None, True, "bad", float("inf"), 10**100])
+def test_parse_snapshot_uses_aware_receipt_time_for_invalid_timestamp(timestamp):
+    before = datetime.now(UTC)
+    snap = parse_emergency_snapshot(
+        {"timestamp": timestamp},
+        vin="YASADR00000000447",
+    )
+    after = datetime.now(UTC)
+
+    assert before <= snap["observed_at"] <= after
+    assert snap["observed_at"].tzinfo is UTC
 
 
 def test_parse_snapshot_explicit_wire_beats_lte():

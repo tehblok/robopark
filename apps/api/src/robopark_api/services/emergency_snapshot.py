@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -233,26 +234,37 @@ def _wheel_slots(raw: Any) -> list[str]:
     return ["body"]
 
 
-def _battery_pack(raw: Any) -> float | None:
-    if raw is None:
-        return None
-    if isinstance(raw, dict) and "isConnected" in raw and _as_bool(raw.get("isConnected")) is False:
-        return None
-    return _as_float(raw)
+def _battery_pack(raw: Any) -> tuple[float | None, bool | None]:
+    if not isinstance(raw, dict):
+        return _as_float(raw), None
+    connected = _as_bool(raw.get("isConnected")) if "isConnected" in raw else None
+    return _as_float(raw), connected
 
 
-def _battery_levels(payload: dict[str, Any]) -> tuple[float | None, float | None, float | None]:
+def _battery_levels(
+    payload: dict[str, Any],
+) -> tuple[float | None, float | None, float | None, bool | None, bool | None]:
     batteries = payload.get("batteriesStatus")
     if not isinstance(batteries, dict):
-        return None, None, None
+        return None, None, None, None, None
     overall = _as_float(batteries.get("chargePercents"))
     if overall is None:
         overall = _as_float(batteries.get("chargePercentage"))
-    bat1 = _battery_pack(batteries.get("battery1"))
-    bat2 = _battery_pack(batteries.get("battery2"))
+    bat1, bat1_connected = _battery_pack(batteries.get("battery1"))
+    bat2, bat2_connected = _battery_pack(batteries.get("battery2"))
     if bat1 is None and bat2 is None and overall is not None:
         bat1 = overall
-    return bat1, bat2, overall
+    return bat1, bat2, overall, bat1_connected, bat2_connected
+
+
+def _observed_at(payload: dict[str, Any]) -> datetime:
+    timestamp = payload.get("timestamp")
+    if type(timestamp) in (int, float):
+        try:
+            return datetime.fromtimestamp(timestamp / 1000, UTC)
+        except (OverflowError, OSError, ValueError):
+            pass
+    return datetime.now(UTC)
 
 
 def _mode_label(payload: dict[str, Any]) -> str | None:
@@ -303,22 +315,25 @@ def _error_banner(payload: dict[str, Any]) -> str | None:
 def parse_emergency_snapshot(
     payload: dict[str, Any], *, vin: str, db: Session | None = None
 ) -> dict[str, Any]:
-    bat1, bat2, charge = _battery_levels(payload)
+    bat1, bat2, charge, bat1_connected, bat2_connected = _battery_levels(payload)
     pos = _position(payload)
     icp_raw = payload.get("icp")
     lte_raw = payload.get("lte")
     online = _as_bool(payload.get("isOnline"))
-    disk = _as_float(payload.get("disk"))
+    disk = _as_float(payload.get("diskUsage"))
     if disk is None:
-        disk = _as_float(payload.get("diskUsage"))
+        disk = _as_float(payload.get("disk"))
     return {
         "vin": vin,
         "short_number": short_robot_number(vin),
+        "observed_at": _observed_at(payload),
         "online": online,
         "speed": _as_float(payload.get("velocity")),
         "charge_percent": charge if charge is not None else bat1,
         "battery1_percent": bat1,
         "battery2_percent": bat2,
+        "battery1_connected": bat1_connected,
+        "battery2_connected": bat2_connected,
         "disk_percent": disk,
         "mode": _mode_label(payload),
         "icp_label": _status_label(icp_raw, fallback="ICP"),

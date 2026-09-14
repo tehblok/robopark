@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -229,5 +229,12 @@ def test_snapshot_returns_hud_when_allowed(
     body = response.json()
     assert body["vin"] == "YASADR00000000447"
     assert body["short_number"] == "447"
+    assert body["battery1_percent"] == 83
+    assert body["battery2_percent"] == 0
+    assert body["battery1_connected"] is True
+    assert body["battery2_connected"] is False
+    assert body["speed"] == 0
+    assert body["disk_percent"] == 40
+    assert body["online"] is True
     observed_at = datetime.fromisoformat(body["observed_at"])
-    assert observed_at.tzinfo is not None
+    assert observed_at == datetime.fromtimestamp(emergency_payload["timestamp"] / 1000, UTC)

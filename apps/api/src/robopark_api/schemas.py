@@ -226,6 +226,8 @@ class EmergencySnapshotOut(BaseModel):
     charge_percent: float | None = None
     battery1_percent: float | None = None
     battery2_percent: float | None = None
+    battery1_connected: bool | None = None
+    battery2_connected: bool | None = None
     disk_percent: float | None = None
     mode: str | None = None
     icp_label: str | None = None
