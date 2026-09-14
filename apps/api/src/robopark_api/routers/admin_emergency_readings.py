@@ -49,6 +49,9 @@ router = APIRouter(
 )
 
 ReadingId = Annotated[int, Path(gt=0, le=2**63 - 1)]
+_MAX_DISCOVERED_FIELDS = 1000
+_MAX_DISCOVERY_WORK = 10000
+_MAX_DISCOVERY_DEPTH = 12
 
 
 def _canonical_no_data(values: list[Any]) -> str:
@@ -59,6 +62,12 @@ def _canonical_no_data(values: list[Any]) -> str:
         separators=(",", ":"),
         allow_nan=False,
     )
+
+
+def _field_changed(key: str, current: Any, replacement: Any) -> bool:
+    if key == "no_data_values":
+        return _canonical_no_data(current) != _canonical_no_data(replacement)
+    return current != replacement
 
 
 def _reading_out(reading: EmergencyReading) -> EmergencyReadingOut:
@@ -301,7 +310,9 @@ def update_reading(
         except ValidationError:
             raise HTTPException(status_code=422, detail="invalid_emergency_reading") from None
         _validate_config(db, candidate)
-        changed_fields = sorted(key for key, value in changes.items() if current[key] != value)
+        changed_fields = sorted(
+            key for key, value in changes.items() if _field_changed(key, current[key], value)
+        )
         for key in changed_fields:
             if key == "no_data_values":
                 reading.no_data_json = _canonical_no_data(changes[key])
@@ -365,37 +376,45 @@ def _example(value: Any) -> tuple[str, str] | None:
 
 def _discover_scalars(payload: dict[str, Any]) -> list[EmergencyDiscoveredField]:
     result: list[EmergencyDiscoveredField] = []
-    visited = 0
+    work = 1
 
-    def walk(value: Any, parts: tuple[str, ...]) -> None:
-        nonlocal visited
-        if len(result) >= 1000 or visited >= 10000 or len(parts) > 12:
-            return
-        visited += 1
+    def consume_work() -> bool:
+        nonlocal work
+        if work >= _MAX_DISCOVERY_WORK:
+            return False
+        work += 1
+        return True
+
+    def walk(value: Any, parts: tuple[str, ...]) -> bool:
+        if len(result) >= _MAX_DISCOVERED_FIELDS:
+            return False
+        if len(parts) > _MAX_DISCOVERY_DEPTH:
+            return True
         if type(value) is dict:
-            for key in sorted(value):
-                if len(result) >= 1000:
-                    return
+            for key, child in value.items():
+                if not consume_work():
+                    return False
                 if type(key) is not str or not _safe_key(key):
                     continue
                 next_parts = (*parts, key)
                 path = ".".join(next_parts)
                 if diagnostic_source_parts(path) is None:
                     continue
-                walk(value[key], next_parts)
-            return
+                if not walk(child, next_parts):
+                    return False
+            return True
         if type(value) is list:
             for index, item in enumerate(value):
-                if len(result) >= 1000:
-                    return
-                walk(item, (*parts, str(index)))
-            return
+                if not consume_work() or not walk(item, (*parts, str(index))):
+                    return False
+            return True
         if not parts or (record := _example(value)) is None:
-            return
+            return True
         value_type, example = record
         result.append(
             EmergencyDiscoveredField(path=".".join(parts), value_type=value_type, example=example)
         )
+        return len(result) < _MAX_DISCOVERED_FIELDS
 
     walk(payload, ())
     return result

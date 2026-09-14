@@ -1,4 +1,5 @@
 import json
+import sys
 
 import pytest
 from pydantic import ValidationError
@@ -113,6 +114,30 @@ def test_crud_uses_canonical_sentinels_etags_conflicts_and_structural_audit(
     assert all(secret_label not in (entry.detail or "") for entry in audits)
     assert "parktronics" not in " ".join(entry.detail or "" for entry in audits)
     assert json.loads(audits[1].detail) == {"fields": ["label", "no_data_values"]}
+
+
+@pytest.mark.parametrize(
+    ("initial", "replacement", "stored"),
+    [
+        ([1], [True], "[true]"),
+        ([0], [False], "[false]"),
+    ],
+)
+def test_patch_preserves_json_scalar_types_in_no_data_values(
+    admin_client, db_session, initial, replacement, stored
+):
+    created = admin_client.post(BASE, json={**READING, "no_data_values": initial}).json()
+
+    response = admin_client.patch(f"{BASE}/{created['id']}", json={"no_data_values": replacement})
+
+    assert response.status_code == 200
+    assert response.json()["no_data_values"] == replacement
+    assert type(response.json()["no_data_values"][0]) is type(replacement[0])
+    assert db_session.get(EmergencyReading, created["id"]).no_data_json == stored
+    audit_entry = db_session.scalar(
+        select(AuditLog).where(AuditLog.action == "admin.emergency_reading.updated")
+    )
+    assert json.loads(audit_entry.detail) == {"fields": ["no_data_values"]}
 
 
 def test_reorder_requires_current_catalog_etag_and_every_id_once(admin_client, db_session):
@@ -265,3 +290,66 @@ def test_discovery_requires_valid_explicit_vin_and_caps_candidates(admin_client,
     response = admin_client.get(BASE + "/discovered", params={"vin": "1"})
     assert response.status_code == 200
     assert len(response.json()) == 1000
+
+
+def test_discovery_does_not_sort_or_materialize_large_dict(monkeypatch):
+    from robopark_api.routers import admin_emergency_readings
+
+    def forbidden_sort(*_args, **_kwargs):
+        raise AssertionError("discovery must not sort the complete payload mapping")
+
+    monkeypatch.setattr(admin_emergency_readings, "sorted", forbidden_sort, raising=False)
+    payload = {f"field{index}": index for index in range(20_000)}
+
+    result = admin_emergency_readings._discover_scalars(payload)
+
+    assert len(result) == 1000
+
+
+def test_discovery_stops_large_list_walk_at_traversal_budget():
+    from robopark_api.routers import admin_emergency_readings
+
+    walk_calls = 0
+    module_file = admin_emergency_readings.__file__
+
+    def profile(frame, event, _arg):
+        nonlocal walk_calls
+        if (
+            event == "call"
+            and frame.f_code.co_name == "walk"
+            and frame.f_code.co_filename == module_file
+        ):
+            walk_calls += 1
+
+    previous_profile = sys.getprofile()
+    sys.setprofile(profile)
+    try:
+        result = admin_emergency_readings._discover_scalars(
+            {"values": ["x" * 129 for _index in range(20_000)]}
+        )
+    finally:
+        sys.setprofile(previous_profile)
+
+    assert result == []
+    assert walk_calls <= 10_002
+
+
+def test_discovery_bounds_work_for_filter_only_large_dict(monkeypatch):
+    from robopark_api.routers import admin_emergency_readings
+
+    checked_keys = 0
+    real_safe_key = admin_emergency_readings._safe_key
+
+    def counted_safe_key(key):
+        nonlocal checked_keys
+        checked_keys += 1
+        return real_safe_key(key)
+
+    monkeypatch.setattr(admin_emergency_readings, "_safe_key", counted_safe_key)
+
+    result = admin_emergency_readings._discover_scalars(
+        {f"token{index}": index for index in range(20_000)}
+    )
+
+    assert result == []
+    assert checked_keys <= 10_000
