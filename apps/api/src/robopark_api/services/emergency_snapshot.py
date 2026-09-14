@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from robopark_api.services.diagnostic_rules import match_diagnostic_events
+from robopark_api.services.emergency_readings import render_readings
 from robopark_api.services.emergency_vin import short_robot_number
 
 WHEEL_SLOTS = ("fl", "ml", "rl", "fr", "mr", "rr")
@@ -313,7 +314,11 @@ def _error_banner(payload: dict[str, Any]) -> str | None:
 
 
 def parse_emergency_snapshot(
-    payload: dict[str, Any], *, vin: str, db: Session | None = None
+    payload: dict[str, Any],
+    *,
+    vin: str,
+    db: Session | None = None,
+    role: str | None = None,
 ) -> dict[str, Any]:
     bat1, bat2, charge, bat1_connected, bat2_connected = _battery_levels(payload)
     pos = _position(payload)
@@ -343,6 +348,9 @@ def parse_emergency_snapshot(
         "connection": _connection(payload, online),
         "error_banner": _error_banner(payload),
         "diagnostic_events": match_diagnostic_events(db, payload) if db is not None else [],
+        "readings": render_readings(db, payload, role)
+        if db is not None and role is not None
+        else [],
         "lat": pos["lat"],
         "lon": pos["lon"],
         "heading_deg": pos["heading_deg"],

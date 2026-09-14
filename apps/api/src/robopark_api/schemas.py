@@ -364,6 +364,7 @@ class EmergencySnapshotOut(BaseModel):
     connection: Literal["lte", "wire"] | None = None
     error_banner: str | None = None
     diagnostic_events: list[DiagnosticEvent] = Field(default_factory=list)
+    readings: list[EmergencyReadingValue] = Field(default_factory=list)
     lat: float | None = None
     lon: float | None = None
     heading_deg: float | None = None

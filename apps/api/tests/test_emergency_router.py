@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from conftest import login_as, role_id_for
-from robopark_api.models import AccessStatus, User, UserPark
+from robopark_api.models import AccessStatus, EmergencyReading, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import (
     emergency_cache,
@@ -238,3 +238,57 @@ def test_snapshot_returns_hud_when_allowed(
     assert body["online"] is True
     observed_at = datetime.fromisoformat(body["observed_at"])
     assert observed_at == datetime.fromtimestamp(emergency_payload["timestamp"] / 1000, UTC)
+
+
+def test_operator_snapshot_includes_only_readings_from_operator_sections(
+    client, db_session, seed_operator, monkeypatch, emergency_payload
+):
+    configure_emergency(db_session, monkeypatch, emergency_payload)
+    visible = EmergencyReading(
+        section_id="position_route",
+        path="position.lat",
+        label="Latitude",
+        display_kind="number",
+        unit=None,
+        precision=1,
+        enabled_path=None,
+        no_data_json="[]",
+        warning_below=None,
+        warning_above=None,
+        critical_below=None,
+        critical_above=None,
+        view="top",
+        x=0.2,
+        y=0.3,
+        label_direction="right",
+        sort_order=1,
+    )
+    hidden = EmergencyReading(
+        section_id="service_raw",
+        path="position.lon",
+        label="Longitude",
+        display_kind="number",
+        unit=None,
+        precision=1,
+        enabled_path=None,
+        no_data_json="[]",
+        warning_below=None,
+        warning_above=None,
+        critical_below=None,
+        critical_above=None,
+        view="top",
+        x=0.8,
+        y=0.3,
+        label_direction="left",
+        sort_order=0,
+    )
+    db_session.add_all([visible, hidden])
+    db_session.commit()
+    login_as(client, "operator1", "secret")
+
+    response = client.get("/emergency/447/snapshot")
+
+    assert response.status_code == 200
+    assert [(item["id"], item["section_id"]) for item in response.json()["readings"]] == [
+        (visible.id, "position_route")
+    ]
