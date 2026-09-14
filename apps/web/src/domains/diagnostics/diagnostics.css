@@ -47,3 +47,18 @@
 .rp-diagnostic-raw { max-block-size: 20rem; overflow: auto; }
 .rp-diagnostic-sample-list { display: grid; gap: var(--rp-space-3); padding-inline-start: var(--rp-space-4); max-block-size: 24rem; overflow: auto; }
 .rp-diagnostic-preview summary { cursor: pointer; padding-block: var(--rp-space-2); }
+.rp-reading-heading-actions,
+.rp-reading-actions { display: flex; flex-wrap: wrap; gap: var(--rp-space-2); }
+.rp-reading-discovery { display: grid; gap: var(--rp-space-3); padding: var(--rp-space-4); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-panel); min-inline-size: 0; }
+.rp-reading-discovery-list { display: grid; gap: var(--rp-space-2); list-style: none; margin: 0; padding: 0; max-block-size: 18rem; overflow: auto; }
+.rp-reading-discovery-list button { display: grid; gap: var(--rp-space-1); width: 100%; min-block-size: var(--rp-control-min-size); padding: var(--rp-space-3); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-control); background: var(--rp-surface); color: var(--rp-text); text-align: start; cursor: pointer; }
+.rp-reading-discovery-list button:hover { border-color: var(--rp-action); }
+.rp-reading-discovery-list span { color: var(--rp-text-muted); overflow-wrap: anywhere; }
+.rp-reading-editor .rp-diagnostic-preview { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+@media (max-width: 599px) {
+  .rp-reading-heading-actions,
+  .rp-reading-actions { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .rp-reading-heading-actions .rp-button,
+  .rp-reading-actions .rp-button { width: 100%; }
+  .rp-reading-editor .rp-diagnostic-preview { grid-template-columns: minmax(0, 1fr); }
+}

@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth-context'
 import { Tabs, TabPanel } from '../design-system/navigation/Tabs'
 import { DiagnosticRuleEditor } from '../domains/diagnostics/DiagnosticRuleEditor'
+import { ReadingCatalogEditor } from '../domains/diagnostics/ReadingCatalogEditor'
 import {
   api,
   type EmergencyAdminSection,
@@ -20,19 +21,24 @@ const roles: EmergencyViewerRole[] = ['mechanic', 'operator', 'admin', 'royal', 
 export function AdminEmergencyConfig() {
   const { user } = useAuth()
   const [params, setParams] = useSearchParams()
-  const canEditRules = user?.access_status === 'approved' && ['admin', 'royal'].includes(user.role)
-  const tab = canEditRules && params.get('tab') === 'indication' ? 'indication' : 'fields'
-  return <PageShell backTo="/admin" title="Настройки проверки робота" subtitle="Разделы диагностики и общие для всех парков правила ошибок.">
+  const canEditCatalog = user?.access_status === 'approved' && user.role === 'admin'
+  const requestedTab = params.get('tab')
+  const tab = canEditCatalog && (requestedTab === 'indication' || requestedTab === 'errors')
+    ? 'errors'
+    : canEditCatalog && requestedTab === 'readings'
+      ? 'readings'
+      : 'fields'
+  return <PageShell backTo="/admin" title="Настройки проверки робота" subtitle="Разделы диагностики, ошибки и показания действуют во всех парках.">
     <div className="rp-check-settings-tabs"><Tabs ariaLabel="Настройки проверки робота" value={tab} panelIdFor={id => `check-settings-${id}`}
-      items={[{ id: 'fields', label: 'Разделы и поля' }, ...(canEditRules ? [{ id: 'indication', label: 'Ошибки и индикация' }] : [])]}
+      items={[{ id: 'fields', label: 'Разделы и поля' }, ...(canEditCatalog ? [{ id: 'errors', label: 'Ошибки' }, { id: 'readings', label: 'Показания' }] : [])]}
       onChange={id => { const next = new URLSearchParams(params); next.set('tab', id); next.delete('rule'); setParams(next) }} /></div>
     <TabPanel id={`check-settings-${tab}`} labelledBy={`tab-${tab}`} active>
-      {tab === 'indication' ? <DiagnosticRuleEditor /> : <EmergencyFieldsConfig />}
+      {tab === 'errors' ? <DiagnosticRuleEditor /> : tab === 'readings' ? <ReadingCatalogEditor /> : <EmergencyFieldsConfig readOnly={!canEditCatalog} />}
     </TabPanel>
   </PageShell>
 }
 
-function EmergencyFieldsConfig() {
+function EmergencyFieldsConfig({ readOnly }: { readOnly: boolean }) {
   const sectionsRes = useCachedResource<EmergencyAdminSection[]>(
     'admin:emergency-sections',
     () => api.adminEmergencySections(),
@@ -182,7 +188,7 @@ function EmergencyFieldsConfig() {
 
   return (
     <div className="page-body">
-      <Panel actions={<button className="btn btn-secondary" onClick={() => { setSelectedSectionId(null); setCreateOpen(true) }} type="button">Новый раздел</button>} hint="Найдите раздел и откройте его единственный редактор." title="Разделы">
+      <Panel actions={readOnly ? undefined : <button className="btn btn-secondary" onClick={() => { setSelectedSectionId(null); setCreateOpen(true) }} type="button">Новый раздел</button>} hint={readOnly ? 'Просмотр доступных разделов и полей.' : 'Найдите раздел и откройте его единственный редактор.'} title="Разделы">
         <label className="field"><span className="field-label">Поиск</span><input aria-label="Поиск разделов" onChange={(event) => setSearch(event.target.value)} role="searchbox" value={search} /></label>
         <ul className="card-list">{sections.filter((section) => `${section.title} ${section.id}`.toLowerCase().includes(search.trim().toLowerCase())).map((section) => <li className="card action-row" key={section.id}><div><div className="card-title">{section.title}</div><div className="card-meta">ID: {section.id}</div></div><button aria-label={`Открыть раздел ${section.title}`} className="btn btn-secondary" onClick={() => { setCreateOpen(false); setSelectedSectionId(section.id) }} type="button">Открыть</button></li>)}</ul>
       </Panel>
@@ -194,7 +200,7 @@ function EmergencyFieldsConfig() {
       {displayError && <Alert tone="error">{displayError}</Alert>}
       {message && <Alert tone="success">{message}</Alert>}
 
-      {createOpen ? <Panel actions={<button className="btn btn-ghost" onClick={() => setCreateOpen(false)} type="button">Закрыть</button>} hint="ID можно задать только при создании." title="Новый раздел">
+      {!readOnly && createOpen ? <Panel actions={<button className="btn btn-ghost" onClick={() => setCreateOpen(false)} type="button">Закрыть</button>} hint="ID можно задать только при создании." title="Новый раздел">
         <form className="form-grid" onSubmit={createSection}>
           <label className="field">
             <span className="field-label">ID раздела</span>
@@ -240,7 +246,7 @@ function EmergencyFieldsConfig() {
                 <>
                   <Badge active={section.is_enabled} />
                   <button className="btn btn-ghost" onClick={() => setSelectedSectionId(null)} type="button">Закрыть</button>
-                  <button
+                  {!readOnly ? <button
                     aria-label="Выше"
                     className="btn btn-ghost"
                     disabled={busy || index === 0}
@@ -248,8 +254,8 @@ function EmergencyFieldsConfig() {
                     type="button"
                   >
                     ↑
-                  </button>
-                  <button
+                  </button> : null}
+                  {!readOnly ? <button
                     aria-label="Ниже"
                     className="btn btn-ghost"
                     disabled={busy || index === sections.length - 1}
@@ -257,8 +263,8 @@ function EmergencyFieldsConfig() {
                     type="button"
                   >
                     ↓
-                  </button>
-                  <button
+                  </button> : null}
+                  {!readOnly ? <button
                     className="btn btn-danger"
                     disabled={busy}
                     onClick={() => {
@@ -269,7 +275,7 @@ function EmergencyFieldsConfig() {
                     type="button"
                   >
                     Удалить
-                  </button>
+                  </button> : null}
                 </>
               )}
               hint={`ID: ${section.id} · позиция ${index + 1}`}
@@ -282,6 +288,7 @@ function EmergencyFieldsConfig() {
                   <input
                     aria-label={`Название ${section.id}`}
                     onChange={(event) => editSection(section.id, { title: event.target.value })}
+                    readOnly={readOnly}
                     required
                     value={section.title}
                   />
@@ -291,12 +298,14 @@ function EmergencyFieldsConfig() {
               <div className="toggle-list emergency-config-section-toggles">
                 <Toggle
                   checked={section.is_enabled}
+                  disabled={readOnly}
                   label="Раздел включён"
                   onChange={(next) => editSection(section.id, { is_enabled: next })}
                 />
                 {roles.map((role) => (
                   <Toggle
                     checked={section.roles.includes(role)}
+                    disabled={readOnly}
                     key={role}
                     label={roleLabel(role)}
                     onChange={(next) => setRole(section, role, next)}
@@ -315,6 +324,7 @@ function EmergencyFieldsConfig() {
                         onChange={(event) => editField(section.id, field.id, {
                           path: event.target.value,
                         })}
+                        readOnly={readOnly}
                         value={field.path}
                       />
                     </label>
@@ -325,10 +335,11 @@ function EmergencyFieldsConfig() {
                         onChange={(event) => editField(section.id, field.id, {
                           label: event.target.value,
                         })}
+                        readOnly={readOnly}
                         value={field.label}
                       />
                     </label>
-                    <div className="form-actions">
+                    {!readOnly ? <div className="form-actions">
                       <button
                         className="btn"
                         disabled={busy}
@@ -351,11 +362,11 @@ function EmergencyFieldsConfig() {
                       >
                         Удалить
                       </button>
-                    </div>
+                    </div> : null}
                   </div>
                 ))}
 
-                <form
+                {!readOnly ? <form
                   className="form-grid emergency-config-field-row"
                   onSubmit={(event) => addField(event, section.id)}
                 >
@@ -394,10 +405,10 @@ function EmergencyFieldsConfig() {
                       Добавить поле
                     </button>
                   </div>
-                </form>
+                </form> : null}
               </div>
 
-              <div className="form-actions emergency-config-section-save">
+              {!readOnly ? <div className="form-actions emergency-config-section-save">
                 <button
                   className="btn"
                   disabled={busy || !section.title.trim()}
@@ -406,7 +417,7 @@ function EmergencyFieldsConfig() {
                 >
                   {ru.save}
                 </button>
-              </div>
+              </div> : null}
             </Panel>
           )
         })

@@ -638,6 +638,38 @@ export type DiagnosticEvent = {
 }
 export type DiagnosticPreview = { matched: boolean; events: DiagnosticEvent[] }
 
+export type ReadingState = 'normal' | 'warning' | 'critical' | 'unavailable'
+export type EmergencyReadingDisplayKind = 'text' | 'number' | 'percent' | 'distance' | 'current' | 'state'
+export type EmergencyReadingLabelDirection = 'auto' | 'left' | 'right' | 'top' | 'bottom'
+export type EmergencyReadingDraft = {
+  section_id: string
+  path: string
+  label: string
+  display_kind: EmergencyReadingDisplayKind
+  unit: string | null
+  precision: number
+  enabled_path: string | null
+  no_data_values: JsonValue[]
+  warning_below: number | null
+  warning_above: number | null
+  critical_below: number | null
+  critical_above: number | null
+  view: DiagnosticView
+  x: number
+  y: number
+  label_direction: EmergencyReadingLabelDirection
+  is_enabled: boolean
+  sort_order: number
+}
+export type EmergencyReading = EmergencyReadingDraft & { id: number }
+export type EmergencyDiscoveredField = {
+  path: string
+  value_type: 'string' | 'number' | 'boolean' | 'null'
+  example: string
+}
+export type EmergencyReadingUpdate = Partial<Omit<EmergencyReadingDraft, 'sort_order'>>
+export type EmergencyReadingCatalog = { readings: EmergencyReading[]; etag: string | null }
+
 // Keep only fixed backend codes. Validation bodies may contain sensitive examples.
 const diagnosticErrorCodes = new Set([
   'invalid_diagnostic_source_path', 'invalid_diagnostic_regex', 'unsupported_diagnostic_regex',
@@ -656,6 +688,51 @@ async function diagnosticRequest<T>(suffix = '', init: RequestInit = {}): Promis
     }
     return { data: await response.json() as T, etag: response.headers.get('ETag') }
   })
+}
+
+const emergencyReadingErrorCodes = new Set([
+  'emergency_reading_conflict', 'emergency_reading_not_found', 'emergency_readings_write_conflict',
+  'emergency_readings_catalog_changed', 'emergency_readings_if_match_required',
+  'invalid_emergency_reading', 'invalid_emergency_reading_path', 'emergency_section_not_found',
+  'invalid_robot_number', 'emergency_cookie_not_configured', 'emergency_cookie_invalid',
+  'emergency_upstream_error',
+])
+
+async function emergencyReadingRequest<T>(suffix = '', init: RequestInit = {}): Promise<{ data: T; etag: string | null }> {
+  return fetchWithTimeout(`/api/admin/emergency-readings${suffix}`, {
+    ...init,
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', ...init.headers },
+  }, JSON_TIMEOUT_MS, async response => {
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as { detail?: unknown } | null
+      const detail = typeof body?.detail === 'string' && emergencyReadingErrorCodes.has(body.detail)
+        ? body.detail
+        : null
+      throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
+    }
+    return {
+      data: (response.status === 204 ? undefined : await response.json()) as T,
+      etag: response.headers.get('ETag'),
+    }
+  })
+}
+
+function emergencyReadingChanges(reading: Partial<EmergencyReadingDraft>): Partial<EmergencyReadingDraft> {
+  const {
+    section_id, path, label, display_kind, unit, precision, enabled_path, no_data_values,
+    warning_below, warning_above, critical_below, critical_above, view, x, y,
+    label_direction, is_enabled,
+  } = reading
+  return {
+    section_id, path, label, display_kind, unit, precision, enabled_path, no_data_values,
+    warning_below, warning_above, critical_below, critical_above, view, x, y,
+    label_direction, is_enabled,
+  }
+}
+
+function emergencyReadingDraft(reading: EmergencyReadingDraft): EmergencyReadingDraft {
+  return { ...emergencyReadingChanges(reading) as EmergencyReadingDraft, sort_order: reading.sort_order }
 }
 
 function diagnosticChanges(changes: DiagnosticRuleUpdate): DiagnosticRuleUpdate {
@@ -978,6 +1055,37 @@ async function requestForm<T>(path: string, formData: FormData, headers?: Record
 }
 
 export const api = {
+  emergencyReadings: async (signal?: AbortSignal): Promise<EmergencyReadingCatalog> => {
+    const result = await emergencyReadingRequest<EmergencyReading[]>('', { signal })
+    return { readings: result.data, etag: result.etag }
+  },
+  discoverEmergencyReadings: async (vin: string, signal?: AbortSignal) => (
+    await emergencyReadingRequest<EmergencyDiscoveredField[]>(`/discovered?${new URLSearchParams({ vin })}`, { signal })
+  ).data,
+  createEmergencyReading: async (reading: EmergencyReadingDraft) => (
+    await emergencyReadingRequest<EmergencyReading>('', {
+      method: 'POST', body: JSON.stringify(emergencyReadingDraft(reading)),
+    })
+  ).data,
+  updateEmergencyReading: async (id: number, changes: EmergencyReadingUpdate) => (
+    await emergencyReadingRequest<EmergencyReading>(`/${id}`, {
+      method: 'PATCH', body: JSON.stringify(emergencyReadingChanges(changes)),
+    })
+  ).data,
+  disableEmergencyReading: async (id: number) => (
+    await emergencyReadingRequest<EmergencyReading>(`/${id}`, {
+      method: 'PATCH', body: JSON.stringify({ is_enabled: false }),
+    })
+  ).data,
+  reorderEmergencyReadings: async (ids: number[], etag: string): Promise<EmergencyReadingCatalog> => {
+    const result = await emergencyReadingRequest<EmergencyReading[]>('/reorder', {
+      method: 'PUT', headers: { 'If-Match': etag }, body: JSON.stringify({ ids }),
+    })
+    return { readings: result.data, etag: result.etag }
+  },
+  deleteEmergencyReading: async (id: number) => {
+    await emergencyReadingRequest<void>(`/${id}`, { method: 'DELETE' })
+  },
   diagnosticRules: async (signal?: AbortSignal): Promise<DiagnosticCatalog> => {
     const result = await diagnosticRequest<DiagnosticRule[]>('', { signal })
     return { rules: result.data, etag: result.etag }
