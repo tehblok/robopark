@@ -683,6 +683,53 @@ class EmergencySectionRole(Base):
     section: Mapped[EmergencySection] = relationship(back_populates="roles")
 
 
+class EmergencyReading(Base):
+    __tablename__ = "emergency_readings"
+    __table_args__ = (
+        CheckConstraint(
+            "display_kind IN ('text', 'number', 'percent', 'distance', 'current', 'state')",
+            name="ck_emergency_readings_display_kind",
+        ),
+        CheckConstraint(
+            "view IN ('top', 'front', 'rear', 'left', 'right', 'isometric')",
+            name="ck_emergency_readings_view",
+        ),
+        CheckConstraint(
+            "label_direction IN ('auto', 'left', 'right', 'top', 'bottom')",
+            name="ck_emergency_readings_label_direction",
+        ),
+        CheckConstraint("x = x AND x >= 0.0 AND x <= 1.0", name="ck_emergency_readings_x"),
+        CheckConstraint("y = y AND y >= 0.0 AND y <= 1.0", name="ck_emergency_readings_y"),
+        CheckConstraint(
+            "precision >= 0 AND precision <= 4", name="ck_emergency_readings_precision"
+        ),
+        UniqueConstraint("section_id", "path", name="uq_emergency_readings_section_path"),
+        Index("ix_emergency_readings_sort_order_id", "sort_order", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    section_id: Mapped[str] = mapped_column(
+        ForeignKey("emergency_sections.id", ondelete="CASCADE"), index=True
+    )
+    path: Mapped[str] = mapped_column(String(256))
+    label: Mapped[str] = mapped_column(String(128))
+    display_kind: Mapped[str] = mapped_column(String(16))
+    unit: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    precision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    enabled_path: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    no_data_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    warning_below: Mapped[float | None] = mapped_column(Float, nullable=True)
+    warning_above: Mapped[float | None] = mapped_column(Float, nullable=True)
+    critical_below: Mapped[float | None] = mapped_column(Float, nullable=True)
+    critical_above: Mapped[float | None] = mapped_column(Float, nullable=True)
+    view: Mapped[str] = mapped_column(String(16))
+    x: Mapped[float] = mapped_column(Float)
+    y: Mapped[float] = mapped_column(Float)
+    label_direction: Mapped[str] = mapped_column(String(16), default="auto", server_default="auto")
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
 class AuditLog(Base):
     """Append-only record of security- and Tracker-relevant actions.
 

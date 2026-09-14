@@ -8,6 +8,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import BigInteger, LargeBinary, create_engine, inspect, text
 from sqlalchemy.dialects import postgresql
 
+from robopark_api import models
 from robopark_api.models import (
     AuthSession,
     Base,
@@ -34,6 +35,7 @@ def test_metadata_has_required_tables():
         "emergency_sections",
         "emergency_fields",
         "emergency_section_roles",
+        "emergency_readings",
         "park_blocker_history",
         "reports",
         "report_attachments",
@@ -95,10 +97,100 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_is_global_inventory_workflows():
+def test_alembic_head_is_emergency_readings():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0026_global_inventory_workflows"]
+    assert script.get_heads() == ["0027_emergency_readings"]
+
+
+def test_emergency_readings_upgrade_from_previous_head(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    api_dir = Path(__file__).parents[1]
+    config = Config(api_dir / "alembic.ini")
+
+    command.upgrade(config, "0026_global_inventory_workflows")
+    engine = create_engine(sqlite_database_url, future=True)
+    assert "emergency_readings" not in inspect(engine).get_table_names()
+
+    command.upgrade(config, "0027_emergency_readings")
+
+    inspector = inspect(engine)
+    assert {column["name"] for column in inspector.get_columns("emergency_readings")} == {
+        "id",
+        "section_id",
+        "path",
+        "label",
+        "display_kind",
+        "unit",
+        "precision",
+        "enabled_path",
+        "no_data_json",
+        "warning_below",
+        "warning_above",
+        "critical_below",
+        "critical_above",
+        "view",
+        "x",
+        "y",
+        "label_direction",
+        "is_enabled",
+        "sort_order",
+    }
+    assert any(
+        constraint["name"] == "uq_emergency_readings_section_path"
+        and constraint["column_names"] == ["section_id", "path"]
+        for constraint in inspector.get_unique_constraints("emergency_readings")
+    )
+    assert {
+        constraint["name"] for constraint in inspector.get_check_constraints("emergency_readings")
+    } == {
+        "ck_emergency_readings_display_kind",
+        "ck_emergency_readings_label_direction",
+        "ck_emergency_readings_precision",
+        "ck_emergency_readings_view",
+        "ck_emergency_readings_x",
+        "ck_emergency_readings_y",
+    }
+    assert any(
+        index["name"] == "ix_emergency_readings_sort_order_id"
+        and index["column_names"] == ["sort_order", "id"]
+        and not index["unique"]
+        for index in inspector.get_indexes("emergency_readings")
+    )
+    foreign_keys = inspector.get_foreign_keys("emergency_readings")
+    assert len(foreign_keys) == 1
+    assert foreign_keys[0]["constrained_columns"] == ["section_id"]
+    assert foreign_keys[0]["referred_table"] == "emergency_sections"
+    assert foreign_keys[0]["options"]["ondelete"] == "CASCADE"
+
+    command.downgrade(config, "0026_global_inventory_workflows")
+    assert "emergency_readings" not in inspect(engine).get_table_names()
+
+
+def test_emergency_reading_model_matches_catalog_contract():
+    assert hasattr(models, "EmergencyReading")
+    emergency_reading = models.EmergencyReading
+    assert set(emergency_reading.__table__.columns.keys()) == {
+        "id",
+        "section_id",
+        "path",
+        "label",
+        "display_kind",
+        "unit",
+        "precision",
+        "enabled_path",
+        "no_data_json",
+        "warning_below",
+        "warning_above",
+        "critical_below",
+        "critical_above",
+        "view",
+        "x",
+        "y",
+        "label_direction",
+        "is_enabled",
+        "sort_order",
+    }
 
 
 def test_diagnostic_rules_upgrade_from_previous_head(sqlite_database_url, monkeypatch):
@@ -456,7 +548,7 @@ def test_inventory_upgrade_preserves_existing_data(sqlite_database_url, monkeypa
                 "INSERT INTO parks (id, name, tag, is_active) VALUES (1, 'Existing', 'existing', 1)"
             )
         )
-    command.upgrade(config, "0026_global_inventory_workflows")
+    command.upgrade(config, "head")
     assert {
         "tracker_presence",
         "tracker_submissions",

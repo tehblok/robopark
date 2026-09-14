@@ -18,6 +18,7 @@ from robopark_api.routers import (
     admin_diagnostic_rules,
     admin_diagnostic_unknowns,
     admin_emergency,
+    admin_emergency_readings,
     admin_health,
     admin_ops,
     admin_park_requests,
@@ -165,6 +166,7 @@ def create_app() -> FastAPI:
             for prefix in (
                 admin_diagnostic_rules.router.prefix,
                 admin_diagnostic_unknowns.router.prefix,
+                admin_emergency_readings.router.prefix,
             )
         ):
             return JSONResponse(
@@ -212,6 +214,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_diagnostic_rules.router)
     app.include_router(admin_diagnostic_unknowns.router)
     app.include_router(admin_emergency.router)
+    app.include_router(admin_emergency_readings.router)
     app.include_router(admin_settings.router)
     app.include_router(admin_ops.router)
     app.include_router(admin_health.router)
