@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
@@ -30,6 +31,8 @@ from robopark_api.services.live_merge import LiveMergeStore, get_live_merge_stor
 T = TypeVar("T")
 
 _MISSING: object = object()
+DEFAULT_MAX_ENTRIES = 1024
+DEFAULT_MAX_STALE_SECONDS = 60.0
 
 
 @dataclass
@@ -48,13 +51,21 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         *,
         name: str = "cache",
         shared: LiveMergeStore | None | bool = True,
+        max_entries: int = DEFAULT_MAX_ENTRIES,
+        max_stale_seconds: float = DEFAULT_MAX_STALE_SECONDS,
     ) -> None:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
+        if max_entries <= 0:
+            raise ValueError("max_entries must be positive")
+        if max_stale_seconds <= 0:
+            raise ValueError("max_stale_seconds must be positive")
         self._ttl = ttl_seconds
         self._name = name
+        self._max_entries = max_entries
+        self._max_stale = max_stale_seconds
         self._lock = threading.Lock()
-        self._store: dict[str, tuple[float, T, float | None]] = {}
+        self._store: OrderedDict[str, tuple[float, T, float | None]] = OrderedDict()
         self._flights: dict[str, _Flight[T]] = {}
         # True → look up the process-wide store each call (tests may disable it).
         # LiveMergeStore → always that store. False/None → in-process only.
@@ -82,6 +93,24 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         if merge is None:
             return True
         return merge.result_mtime(self._name, key) == hit[2]
+
+    def _prune_expired_locked(self, now: float) -> None:
+        retention = max(self._ttl, self._max_stale)
+        expired = [key for key, hit in self._store.items() if now - hit[0] >= retention]
+        for key in expired:
+            self._store.pop(key, None)
+
+    def _store_locked(self, key: str, hit: tuple[float, T, float | None]) -> None:
+        self._store[key] = hit
+        self._store.move_to_end(key)
+        while len(self._store) > self._max_entries:
+            self._store.popitem(last=False)
+
+    @staticmethod
+    def _shared_loaded_at(mtime: float | None, now: float) -> float:
+        if mtime is None:
+            return now
+        return now - max(0.0, time.time() - mtime)
 
     def invalidate(self, key: str) -> None:
         with self._lock:
@@ -118,13 +147,15 @@ class ResponseCache(Generic[T]):  # noqa: UP046
 
         now = time.monotonic()
         merge = self._merge()
-        stale: T | None = None
+        stale: tuple[float, T, float | None] | None = None
         with self._lock:
+            self._prune_expired_locked(now)
             hit = self._store.get(key)
             if hit is not None and self._l1_valid(key, hit, now):
+                self._store.move_to_end(key)
                 return hit[1]
             if hit is not None:
-                stale = hit[1]
+                stale = hit
                 self._store.pop(key, None)
 
         if merge is not None:
@@ -132,7 +163,8 @@ class ResponseCache(Generic[T]):  # noqa: UP046
             if found:
                 mtime = merge.result_mtime(self._name, key)
                 with self._lock:
-                    self._store[key] = (time.monotonic(), blob, mtime)
+                    loaded_at = self._shared_loaded_at(mtime, time.monotonic())
+                    self._store_locked(key, (loaded_at, blob, mtime))
                 return blob
 
         with self._lock:
@@ -158,8 +190,8 @@ class ResponseCache(Generic[T]):  # noqa: UP046
             else:
                 value = loader()
         except BaseException as exc:  # last-good or fan-out one shared error
-            if stale is not None:
-                value = stale
+            if stale is not None and time.monotonic() - stale[0] < self._max_stale:
+                value = stale[1]
             else:
                 error = exc
                 raise
@@ -169,7 +201,15 @@ class ResponseCache(Generic[T]):  # noqa: UP046
                 flight.error = error
                 if error is None and value is not _MISSING:
                     mtime = merge.result_mtime(self._name, key) if merge is not None else None
-                    self._store[key] = (time.monotonic(), value, mtime)  # type: ignore[assignment]
+                    stored_at = (
+                        stale[0]
+                        if stale is not None and value is stale[1]
+                        else self._shared_loaded_at(mtime, time.monotonic())
+                    )
+                    self._store_locked(  # type: ignore[arg-type]
+                        key,
+                        (stored_at, value, mtime),
+                    )
                 self._flights.pop(key, None)
                 flight.done.set()
 

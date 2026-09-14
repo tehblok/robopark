@@ -50,6 +50,7 @@ from robopark_api.routers import (
 from robopark_api.seed import ensure_seed_user
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.blocker_history_job import run_blocker_history_loop
+from robopark_api.services.cache_cleanup import run_cache_cleanup_loop
 from robopark_api.services.emergency_config import ensure_default_section_roles
 from robopark_api.services.emergency_keepalive import run_keepalive_loop
 from robopark_api.services.live_merge import JobLease, default_live_merge_root, live_merge_enabled
@@ -113,7 +114,8 @@ def create_app() -> FastAPI:
                     return
             if deferred:
                 initialize_data()
-            run_background_jobs = (not live_merge_enabled()) or job_lease.try_acquire()
+            owns_job_lease = job_lease.try_acquire()
+            run_background_jobs = (not live_merge_enabled()) or owns_job_lease
             if not run_background_jobs:
                 return
             tasks.extend(
@@ -128,6 +130,8 @@ def create_app() -> FastAPI:
                     ),
                 ]
             )
+            if owns_job_lease:
+                tasks.append(asyncio.create_task(run_cache_cleanup_loop(stop_event)))
 
         startup = asyncio.create_task(start_writers())
         try:

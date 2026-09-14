@@ -580,3 +580,56 @@ def test_classify_cannot_match_only_previously_known_sibling(royal_client, snaps
         e["rule_id"] is not None
         for e in royal_client.get("/emergency/001/snapshot").json()["diagnostic_events"]
     )
+
+
+def test_cleanup_deletes_only_old_or_overflowing_new_unknowns(db_session):
+    from robopark_api.models import DiagnosticUnknown
+    from robopark_api.services.diagnostic_unknowns import prune_diagnostic_unknowns
+
+    now = datetime(2026, 9, 14, tzinfo=UTC)
+
+    def unknown(identity: str, *, state: str, seen: datetime) -> DiagnosticUnknown:
+        return DiagnosticUnknown(
+            identity=identity,
+            source_path="errors",
+            source_segments_json='["errors"]',
+            raw_json='"sample"',
+            original_json='"sample"',
+            first_seen_at=seen,
+            last_seen_at=seen,
+            observations=1,
+            last_robot="robot",
+            state=state,
+        )
+
+    db_session.add(unknown("old-new", state="new", seen=now - timedelta(days=30)))
+    db_session.add(unknown("old-mapped", state="mapped", seen=now - timedelta(days=365)))
+    db_session.add(unknown("old-ignored", state="ignored", seen=now - timedelta(days=365)))
+    for index in range(1002):
+        db_session.add(unknown(f"new-{index}", state="new", seen=now - timedelta(seconds=index)))
+    db_session.commit()
+
+    removed = prune_diagnostic_unknowns(db_session, now=now)
+
+    remaining_new = list(
+        db_session.scalars(select(DiagnosticUnknown).where(DiagnosticUnknown.state == "new"))
+    )
+    assert removed == 3
+    assert len(remaining_new) == 1000
+    assert db_session.scalar(
+        select(DiagnosticUnknown).where(DiagnosticUnknown.identity == "new-999")
+    )
+    assert (
+        db_session.scalar(select(DiagnosticUnknown).where(DiagnosticUnknown.identity == "new-1000"))
+        is None
+    )
+    assert (
+        db_session.scalar(select(DiagnosticUnknown).where(DiagnosticUnknown.identity == "new-1001"))
+        is None
+    )
+    assert db_session.scalar(
+        select(DiagnosticUnknown).where(DiagnosticUnknown.identity == "old-mapped")
+    )
+    assert db_session.scalar(
+        select(DiagnosticUnknown).where(DiagnosticUnknown.identity == "old-ignored")
+    )

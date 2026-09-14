@@ -11,7 +11,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -22,6 +22,8 @@ from robopark_api.services.diagnostic_rules import diagnostic_source_parts
 logger = logging.getLogger(__name__)
 MAX_SAMPLE_BYTES = 8192
 SAMPLE_INTERVAL = timedelta(seconds=60)
+UNKNOWN_MAX_ENTRIES = 1000
+UNKNOWN_MAX_AGE = timedelta(days=30)
 _SENSITIVE = re.compile(
     r"password|passwd|secret|token|cookie|authorization|api[_-]?key|credential", re.I
 )
@@ -41,6 +43,43 @@ def ignored_diagnostic_identities(db: Session) -> set[str]:
     return set(
         db.scalars(select(DiagnosticUnknown.identity).where(DiagnosticUnknown.state == "ignored"))
     )
+
+
+def prune_diagnostic_unknowns(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    max_entries: int = UNKNOWN_MAX_ENTRIES,
+    max_age: timedelta = UNKNOWN_MAX_AGE,
+) -> int:
+    """Delete only stale/overflowing unclassified diagnostic identities."""
+    if max_entries < 0:
+        raise ValueError("max_entries must be non-negative")
+    now = now or datetime.now(UTC)
+    cutoff = now - max_age
+    stale_ids = set(
+        db.scalars(
+            select(DiagnosticUnknown.id).where(
+                DiagnosticUnknown.state == "new",
+                DiagnosticUnknown.last_seen_at <= cutoff,
+            )
+        )
+    )
+    if stale_ids:
+        db.execute(delete(DiagnosticUnknown).where(DiagnosticUnknown.id.in_(stale_ids)))
+        db.flush()
+    overflow_ids = set(
+        db.scalars(
+            select(DiagnosticUnknown.id)
+            .where(DiagnosticUnknown.state == "new")
+            .order_by(DiagnosticUnknown.last_seen_at.desc(), DiagnosticUnknown.id.desc())
+            .offset(max_entries)
+        )
+    )
+    if overflow_ids:
+        db.execute(delete(DiagnosticUnknown).where(DiagnosticUnknown.id.in_(overflow_ids)))
+    db.commit()
+    return len(stale_ids | overflow_ids)
 
 
 def _sensitive(value: Any) -> bool:

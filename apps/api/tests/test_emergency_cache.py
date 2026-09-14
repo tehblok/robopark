@@ -1,5 +1,6 @@
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock
 
 import pytest
@@ -69,7 +70,7 @@ def test_cache_reuses_payload_within_ttl(db_session, monkeypatch):
     assert calls == 1
 
 
-def test_cache_expires_at_exactly_two_point_five_seconds(db_session, monkeypatch):
+def test_cache_expires_at_exactly_three_seconds(db_session, monkeypatch):
     now = [100.0]
     calls = 0
 
@@ -83,11 +84,88 @@ def test_cache_expires_at_exactly_two_point_five_seconds(db_session, monkeypatch
     _set_cookie(db_session)
 
     assert emergency_cache.get_robot_payload(db=db_session, vin=VIN) == {"call": 1}
-    now[0] += 2.499
+    now[0] += 2.999
     assert emergency_cache.get_robot_payload(db=db_session, vin=VIN) == {"call": 1}
     now[0] += 0.001
     assert emergency_cache.get_robot_payload(db=db_session, vin=VIN) == {"call": 2}
     assert calls == 2
+
+
+def test_payload_cache_is_a_512_entry_lru(monkeypatch):
+    calls: list[str] = []
+
+    def fake_fetch(**kwargs):
+        calls.append(kwargs["vin"])
+        return {"vin": kwargs["vin"]}
+
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
+    monkeypatch.setattr(settings_svc, "record_emergency_cookie_probe", lambda _db, **kwargs: False)
+    probe = ("cookie", "identity")
+    vins = [f"VIN-{index:03d}" for index in range(513)]
+
+    for vin in vins:
+        emergency_cache.get_robot_payload(db=object(), vin=vin, probe=probe)
+    assert emergency_cache.get_robot_payload(db=object(), vin=vins[1], probe=probe) == {
+        "vin": vins[1]
+    }
+    emergency_cache.get_robot_payload(db=object(), vin=vins[0], probe=probe)
+
+    assert len(emergency_cache._cache) == 512
+    assert calls.count(vins[1]) == 1
+    assert calls.count(vins[0]) == 2
+
+
+def test_distinct_vins_respect_configured_external_concurrency(monkeypatch):
+    from robopark_api.config import reset_settings_cache
+
+    limit = 3
+    callers = 20
+    ready = threading.Barrier(callers + 1)
+    saturated = threading.Event()
+    overflowed = threading.Event()
+    release = threading.Event()
+    state_lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    monkeypatch.setenv("EMERGENCY_MAX_CONCURRENCY", str(limit))
+    reset_settings_cache()
+
+    def fake_fetch(**kwargs):
+        nonlocal active, peak
+        with state_lock:
+            active += 1
+            peak = max(peak, active)
+            if active == limit:
+                saturated.set()
+            if active > limit:
+                overflowed.set()
+        assert release.wait(timeout=5)
+        with state_lock:
+            active -= 1
+        return {"vin": kwargs["vin"]}
+
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
+    monkeypatch.setattr(settings_svc, "record_emergency_cookie_probe", lambda _db, **kwargs: False)
+
+    def worker(index: int) -> dict:
+        ready.wait(timeout=5)
+        return emergency_cache.get_robot_payload(
+            db=object(), vin=f"VIN-{index}", probe=("cookie", "identity")
+        )
+
+    with ThreadPoolExecutor(max_workers=callers) as executor:
+        futures = [executor.submit(worker, index) for index in range(callers)]
+        ready.wait(timeout=5)
+        assert saturated.wait(timeout=5)
+        overflow_before_release = overflowed.wait(timeout=0.2)
+        release.set()
+        results = [future.result(timeout=5) for future in futures]
+
+    assert len(results) == callers
+    assert not overflow_before_release
+    assert peak == limit
+    assert emergency_cache._flights == {}
 
 
 def test_single_flight_per_vin(monkeypatch):
@@ -129,6 +207,40 @@ def test_single_flight_per_vin(monkeypatch):
     assert not errors
     assert results == [{"vin": VIN}, {"vin": VIN}]
     assert calls == 1
+
+
+def test_two_hundred_same_vin_callers_share_one_payload_object(monkeypatch):
+    callers = 200
+    ready = threading.Barrier(callers + 1)
+    fetch_started = threading.Event()
+    release_fetch = threading.Event()
+    payload = {"vin": VIN}
+    calls = 0
+
+    def fake_fetch(**kwargs):
+        nonlocal calls
+        calls += 1
+        fetch_started.set()
+        assert release_fetch.wait(timeout=5)
+        return payload
+
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
+    monkeypatch.setattr(settings_svc, "record_emergency_cookie_probe", lambda _db, **kwargs: False)
+
+    def worker() -> dict:
+        ready.wait(timeout=5)
+        return emergency_cache.get_robot_payload(db=object(), vin=VIN, probe=("cookie", "identity"))
+
+    with ThreadPoolExecutor(max_workers=callers) as executor:
+        futures = [executor.submit(worker) for _ in range(callers)]
+        ready.wait(timeout=5)
+        assert fetch_started.wait(timeout=5)
+        release_fetch.set()
+        results = [future.result(timeout=5) for future in futures]
+
+    assert calls == 1
+    assert all(result is payload for result in results)
+    assert emergency_cache._flights == {}
 
 
 def test_different_vins_do_not_share_flight(monkeypatch):
@@ -189,6 +301,41 @@ def test_auth_error_invalidates_vin_marks_cookie_invalid_and_reraises(db_session
         lambda **kwargs: {"version": 2},
     )
     assert emergency_cache.get_robot_payload(db=db_session, vin=VIN) == {"version": 2}
+
+
+def test_unavailable_refresh_returns_last_good_only_before_sixty_seconds(db_session, monkeypatch):
+    now = [100.0]
+    responses = iter(({"version": 1}, emergency_client.EmergencyError("offline")))
+
+    def fake_fetch(**kwargs):
+        response = next(responses, emergency_client.EmergencyError("offline"))
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+    monkeypatch.setattr(emergency_cache.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
+    monkeypatch.setattr(settings_svc, "record_emergency_cookie_probe", lambda _db, **kwargs: False)
+    probe = ("cookie", "identity")
+
+    first = emergency_cache.get_robot_payload(db=db_session, vin=VIN, probe=probe)
+    now[0] = 104.0
+    assert emergency_cache.get_robot_payload(db=db_session, vin=VIN, probe=probe) is first
+    now[0] = 160.0
+    with pytest.raises(emergency_client.EmergencyError, match="offline"):
+        emergency_cache.get_robot_payload(db=db_session, vin=VIN, probe=probe)
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("boom"), KeyboardInterrupt()])
+def test_failed_emergency_flight_is_removed(monkeypatch, failure):
+    def fail(**kwargs):
+        raise failure
+
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", fail)
+    with pytest.raises(type(failure)):
+        emergency_cache.get_robot_payload(db=object(), vin=VIN, probe=("cookie", "identity"))
+
+    assert emergency_cache._flights == {}
 
 
 def test_cookie_valid_write_failure_releases_auth_error_waiters(monkeypatch):
