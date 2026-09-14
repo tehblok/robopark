@@ -345,11 +345,37 @@ def _raw_errors(
         yield _RawError(location, identity_path, value)
 
 
-def _event_id(rule_id: int | None, identity_path: IdentityPath, raw_value: Any) -> str:
+def _notification_identity_value(source: str, value: Any) -> Any:
+    body = canonical_notification_body(value)
+    if body is None:
+        return value
+    parts = source.split(".")
+    structured_notification_source = "notifications" in parts or parts[0] in {
+        "lastCritNotification",
+        "lastErrorNotification",
+        "lastWarnNotification",
+        "notifications",
+    }
+    legacy_notification_source = structured_notification_source or parts[0] in {
+        "errors",
+        "panics",
+    }
+    if isinstance(value, dict):
+        return body if structured_notification_source or "name" in value else value
+    prefix = _NOTIFICATION_PREFIX.match(value.strip())
+    return (
+        body
+        if legacy_notification_source or (prefix is not None and prefix.end() > 0)
+        else value
+    )
+
+
+def _event_id(rule_id: int | None, identity_path: IdentityPath, identity_value: Any) -> str:
     # Hash typed path segments, not a lossy joined display string. Collection
     # positions are wildcards, so moving the same raw error keeps its selection.
-    # Array order INSIDE a raw error is semantic (samples, coordinates, traces).
-    identity = _canonical([rule_id, identity_path, raw_value]).encode("utf-8")
+    # Notification identity uses its stable body; raw values remain presentation
+    # data. Array order inside every other value remains semantic.
+    identity = _canonical([rule_id, identity_path, identity_value]).encode("utf-8")
     return hashlib.sha256(identity).hexdigest()
 
 
@@ -497,7 +523,11 @@ def match_diagnostic_events_for_rules(
                 continue
             matched_locations.add(location)
             source_location = source_locations[rule.source_path]
-            event_id = _event_id(rule.id, source_location, raw)
+            event_id = _event_id(
+                rule.id,
+                source_location,
+                _notification_identity_value(rule.source_path, raw),
+            )
             event_paths[event_id] = source_location
             events[event_id] = DiagnosticEvent(
                 id=event_id,
@@ -536,7 +566,7 @@ def match_diagnostic_events_for_rules(
     ):
         location, raw = error.location, error.value
         source = _display_path(location)
-        event_id = _event_id(None, error.identity_path, raw)
+        event_id = _event_id(None, error.identity_path, _notification_identity_value(source, raw))
         # Identical raw occurrences on one wildcard-normalized source dedupe to
         # the first structural position; numeric index 2 precedes index 10.
         if event_id in events:

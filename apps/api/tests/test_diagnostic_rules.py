@@ -214,6 +214,22 @@ def test_exact_notification_rule_matches_canonical_body_and_preserves_live_sever
     assert [(event.rule_id, event.severity) for event in events] == [(rule.id, "critical")]
 
 
+def test_notification_event_identity_ignores_prefix_severity_and_elapsed_time(db_session):
+    body = "/RoverChassis/Wheels/right_rear_wheel/MotorCalibration: CalibrationFault"
+    _insert_rule(db_session, source_path="notifications", pattern=body)
+    raw_values = [
+        f"CRIT: [+8353.6s] {body}",
+        f"ERROR: [+17s] {body}",
+        f"WARN: [+0.1s] {body}",
+    ]
+
+    events = [_events(db_session, {"notifications": [raw]})[0] for raw in raw_values]
+
+    assert len({event.id for event in events}) == 1
+    assert [event.raw_value for event in events] == raw_values
+    assert [event.severity for event in events] == ["critical", "critical", "warning"]
+
+
 def test_regex_notification_rule_keeps_raw_matching_semantics(db_session):
     body = "/RoverChassis/Wheels/right_rear_wheel/MotorCalibration: CalibrationFault"
     rule = _insert_rule(
@@ -253,6 +269,31 @@ def test_structured_notification_source_matches_body_and_uses_source_severity(db
     assert [(event.rule_id, event.severity, event.raw_value) for event in events] == [
         (rule.id, "warning", raw)
     ]
+
+
+def test_unknown_structured_notification_identity_ignores_timestamp():
+    from robopark_api.services.diagnostic_rules import match_diagnostic_events_for_rules
+
+    first_raw = {
+        "level": 2,
+        "name": "/RemoteControl/FleetApi/LastSuccessfulRequestAge:",
+        "message": "Error",
+        "timestamp": 3198.1,
+    }
+    second_raw = {**first_raw, "timestamp": 9876.5}
+
+    first = match_diagnostic_events_for_rules(
+        [],
+        {"robotHudData": {"notifications": {"lastErrorNotification": first_raw}}},
+    )[0]
+    second = match_diagnostic_events_for_rules(
+        [],
+        {"robotHudData": {"notifications": {"lastErrorNotification": second_raw}}},
+    )[0]
+
+    assert first.id == second.id
+    assert first.raw_value == first_raw
+    assert second.raw_value == second_raw
 
 
 def test_undocumented_numeric_level_does_not_override_rule_severity(db_session):
