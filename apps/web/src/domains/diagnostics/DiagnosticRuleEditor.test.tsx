@@ -73,7 +73,7 @@ it('offers a collapse control for the detailed diagnostic rule form', async () =
 it('describes the normal exact flow with the cleaned error body and keeps regex available', async () => {
   render(tree())
 
-  expect(await screen.findByLabelText('Очищенное тело ошибки')).toHaveValue('E01')
+  expect(await screen.findByRole('textbox', { name: 'Очищенное тело ошибки' })).toHaveValue('E01')
   const matching = screen.getByLabelText('Сопоставление')
   expect(matching).toHaveDisplayValue('Точное совпадение')
   fireEvent.change(matching, { target: { value: 'regex' } })

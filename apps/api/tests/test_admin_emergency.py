@@ -3,6 +3,7 @@ import json
 from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, User
 from robopark_api.security import hash_password
+from robopark_api.services import rbac
 
 
 def _create_section(client, section_id: str = "status"):
@@ -123,6 +124,29 @@ def test_operator_gets_403_for_admin_emergency(client, db_session):
     login_as(client, "operator-admin-test", "secret")
 
     assert client.get("/admin/emergency/sections").status_code == 403
+    assert _create_section(client).status_code == 403
+
+
+def test_emergency_settings_viewer_can_read_sections_but_cannot_mutate(client, db_session):
+    viewer = User(
+        username="emergency-settings-viewer",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "operator"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(viewer)
+    db_session.flush()
+    rbac.set_user_effective_permissions(
+        db_session,
+        viewer,
+        [rbac.PERMISSION_NAV_ADMIN_EMERGENCY],
+    )
+    db_session.commit()
+    login_as(client, "emergency-settings-viewer", "secret")
+
+    assert client.get("/admin/emergency/sections").status_code == 200
+    assert client.get("/admin/emergency/export").status_code == 200
     assert _create_section(client).status_code == 403
 
 

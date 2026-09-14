@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import {
@@ -163,4 +163,61 @@ it('reloads the authoritative catalog after an ETag conflict and explains the re
 
   await waitFor(() => expect(api.emergencyReadings).toHaveBeenCalledTimes(2))
   expect(screen.getByText('Каталог изменился. Обновите список и повторите действие.')).toBeVisible()
+})
+
+it('keeps the editor available when Emergency rejects an integration cookie', async () => {
+  vi.mocked(api.discoverEmergencyReadings).mockRejectedValueOnce(new ApiError(403, 'emergency_cookie_invalid'))
+  render(tree())
+  fireEvent.change(await screen.findByLabelText('Номер робота для примера'), { target: { value: 'R-107' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Найти показания' }))
+
+  expect(await screen.findByText('Проверьте подключение к Emergency.')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Новое показание' })).toBeVisible()
+  expect(screen.queryByText('Нет доступа к настройке показаний.')).not.toBeInTheDocument()
+})
+
+it.each([
+  ['status.name', 'string', 'ready'],
+  ['status.note', 'null', 'null'],
+] as const)('maps discovered %s fields to a visible supported format', async (path, valueType, example) => {
+  vi.mocked(api.discoverEmergencyReadings).mockResolvedValueOnce([{ path, value_type: valueType, example }])
+  render(tree())
+  fireEvent.change(await screen.findByLabelText('Номер робота для примера'), { target: { value: 'R-107' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Найти показания' }))
+  fireEvent.click(await screen.findByRole('button', { name: `Выбрать ${path}` }))
+
+  expect(screen.getByLabelText('Формат')).toHaveDisplayValue('Состояние')
+  expect(screen.getByLabelText('Формат')).toHaveValue('state')
+})
+
+it.each(['selection', 'draft', 'navigation'] as const)('does not publish a late save after newer %s state', async owner => {
+  let complete!: (reading: EmergencyReading) => void
+  vi.mocked(api.updateEmergencyReading).mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+  render(tree())
+  fireEvent.click(await screen.findByRole('button', { name: 'Открыть показание Напряжение' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить показание' }))
+  await waitFor(() => expect(api.updateEmergencyReading).toHaveBeenCalled())
+  if (owner === 'selection') fireEvent.click(screen.getByRole('button', { name: 'Открыть показание Скорость' }))
+  if (owner === 'draft') fireEvent.change(screen.getByLabelText('Название показания'), { target: { value: 'Новая правка' } })
+  if (owner === 'navigation') fireEvent.click(screen.getByRole('tab', { name: 'Разделы и поля' }))
+
+  await act(async () => complete({ ...baseReading, label: 'Поздний ответ' }))
+  if (owner === 'selection') expect(screen.getByLabelText('Название показания')).toHaveValue('Скорость')
+  if (owner === 'draft') expect(screen.getByLabelText('Название показания')).toHaveValue('Новая правка')
+  if (owner === 'navigation') expect(screen.getByRole('tab', { name: 'Разделы и поля' })).toHaveAttribute('aria-selected', 'true')
+  expect(screen.queryByText('Показание сохранено.')).not.toBeInTheDocument()
+})
+
+it('preserves a raw no-data value while typing and parses it only on submit', async () => {
+  render(tree())
+  fireEvent.click(await screen.findByRole('button', { name: 'Открыть показание Напряжение' }))
+  const input = screen.getByLabelText('Нет показания')
+  fireEvent.change(input, { target: { value: '1,' } })
+  expect(input).toHaveValue('1,')
+  fireEvent.change(input, { target: { value: '1, -0.' } })
+  expect(input).toHaveValue('1, -0.')
+  fireEvent.change(input, { target: { value: '1, 2.5' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить показание' }))
+
+  await waitFor(() => expect(api.updateEmergencyReading).toHaveBeenCalledWith(1, expect.objectContaining({ no_data_values: [1, 2.5] })))
 })
