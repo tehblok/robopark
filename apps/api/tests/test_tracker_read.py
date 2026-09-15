@@ -143,25 +143,29 @@ def test_tracker_owned_list_uses_local_claims_before_pagination_and_scope(
         ("ROBOPARK-HIDDEN", seed_park_with_tracker.id, seed_mechanic.id),
         ("ROBOPARK-OWN-NEW", seed_park_with_tracker.id, seed_mechanic.id),
     ]
-    db_session.add_all([
-        TrackerClaim(
-            issue_key=key,
-            park_id=park_id,
-            owner_user_id=owner_id,
-            updated_by_user_id=owner_id,
+    db_session.add_all(
+        [
+            TrackerClaim(
+                issue_key=key,
+                park_id=park_id,
+                owner_user_id=owner_id,
+                updated_by_user_id=owner_id,
+                updated_at=1,
+            )
+            for key, park_id, owner_id in claims
+        ]
+    )
+    db_session.add(
+        HiddenTask(
+            id="hidden-owned",
+            issue_key="ROBOPARK-HIDDEN",
+            park_id=seed_park_with_tracker.id,
+            reason="duplicate",
+            actor_user_id=other_owner.id,
+            created_at=1,
             updated_at=1,
         )
-        for key, park_id, owner_id in claims
-    ])
-    db_session.add(HiddenTask(
-        id="hidden-owned",
-        issue_key="ROBOPARK-HIDDEN",
-        park_id=seed_park_with_tracker.id,
-        reason="duplicate",
-        actor_user_id=other_owner.id,
-        created_at=1,
-        updated_at=1,
-    ))
+    )
     db_session.commit()
 
     issues = [

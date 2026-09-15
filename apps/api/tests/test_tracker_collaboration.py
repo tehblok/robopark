@@ -542,16 +542,12 @@ def test_manual_transition_stays_disabled_when_transition_becomes_available(
     written = []
     monkeypatch.setattr(tracker_client, "transition_issue", lambda **kw: written.append(kw))
     payload = {"transition": "close"}
-    first = client.post(
-        "/tracker/issues/ROBOPARK-1/transition", json=payload, headers=headers()
-    )
+    first = client.post("/tracker/issues/ROBOPARK-1/transition", json=payload, headers=headers())
     assert first.status_code == 409
     transitions.append({"id": "close", "display": "Закрыть"})
     from robopark_api.services import tracker_cache
 
     tracker_cache.invalidate_issue("ROBOPARK-1")
-    second = client.post(
-        "/tracker/issues/ROBOPARK-1/transition", json=payload, headers=headers()
-    )
+    second = client.post("/tracker/issues/ROBOPARK-1/transition", json=payload, headers=headers())
     assert second.status_code == 409
     assert written == []

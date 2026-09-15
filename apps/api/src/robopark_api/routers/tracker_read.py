@@ -422,13 +422,9 @@ def list_issues(
     seen_keys: set[str] = set()
     hidden_keys = task_lifecycle.hidden_issue_keys(db)
     owned_parks = (
-        None
-        if rbac.is_admin_or_royal(user)
-        else {park.id for park in get_user_parks(db, user)}
+        None if rbac.is_admin_or_royal(user) else {park.id for park in get_user_parks(db, user)}
     )
-    owned_keys = (
-        owned_issue_keys(db, user, park_ids=owned_parks) if owned_by_me else set()
-    )
+    owned_keys = owned_issue_keys(db, user, park_ids=owned_parks) if owned_by_me else set()
     # Raw upstream data is shared; authorization is loaded afresh for this
     # response after the upstream wait and reused only across its rows.
     scope = load_issue_scope(db, user)

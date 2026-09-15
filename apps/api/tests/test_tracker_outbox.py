@@ -298,9 +298,7 @@ def test_failed_review_prerequisite_blocks_transition_and_needs_attention(
 ):
     from robopark_api.services import tracker_outbox
 
-    failed = _action(
-        db_session, seed_mechanic, action="set_field", payload={"value": "BD-01"}
-    )
+    failed = _action(db_session, seed_mechanic, action="set_field", payload={"value": "BD-01"})
     failed.idempotency_key = "failed-review-bundle"
     failed.state = "needs_attention"
     review = _action(
