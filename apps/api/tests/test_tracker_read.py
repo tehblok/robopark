@@ -159,54 +159,106 @@ def test_tracker_list_prefers_queue_history_and_exposes_exact_five_hour_sla(
     assert items[2]["sla_source"] is None
 
 
-def test_tracker_resource_without_embedded_history_uses_changelog_once_and_orders_by_queue(
+def test_tracker_work_page_hydrates_only_returned_items_and_orders_exact_queue_times(
     client, db_session, seed_park_with_tracker, monkeypatch
 ):
     _seed_operator(db_session, seed_park_with_tracker)
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     from robopark_api.services import tracker_client
 
-    class Changelog:
-        calls = 0
-
-        def get_all(self):
-            self.calls += 1
-            return [
-                {
-                    "updatedAt": "2026-01-02T09:00:00Z",
-                    "fields": [{"field": {"id": "status"}, "to": {"key": "queued"}}],
-                }
-            ]
-
-    class Resource:
-        def __init__(self):
-            self._value = {
-                "key": "ROBOPARK-9",
-                "summary": "history resource [9]",
-                "status": {"key": "queued", "display": "В очереди"},
-                "queue": {"key": "ROBOPARK"},
-                "createdAt": "2026-01-03T10:00:00Z",
-                "tags": ["Alpha"],
-            }
-            self.changelog = Changelog()
-
-    resource = Resource()
-    historical = tracker_client.issue_to_dict(resource)
-    estimated = _scoped_issue("ROBOPARK-10", "2026-01-02T10:00:00Z")
+    first = _scoped_issue("ROBOPARK-9", "2026-01-02T09:00:00Z")
+    second = _scoped_issue("ROBOPARK-10", "2026-01-02T10:00:00Z")
+    outside_page = _scoped_issue("ROBOPARK-11", "2026-01-02T11:00:00Z")
     monkeypatch.setattr(
         tracker_client,
         "search_issues",
-        lambda **_kwargs: [estimated, historical],
+        lambda **_kwargs: [first, second, outside_page],
     )
+    calls = []
+
+    def history(*, token, key, issue):
+        del issue
+        calls.append((token, key))
+        timestamp = {
+            "ROBOPARK-9": "2026-01-02T12:00:00Z",
+            "ROBOPARK-10": "2026-01-02T11:00:00Z",
+        }[key]
+        return [
+            {
+                "updatedAt": timestamp,
+                "fields": [{"field": {"id": "status"}, "to": {"key": "queued"}}],
+            }
+        ]
+
+    monkeypatch.setattr(tracker_client, "get_issue_status_history", history, raising=False)
     login_as(client, "op2", "secret")
 
-    items = client.get("/tracker/issues?sort=oldest").json()["items"]
+    items = client.get("/tracker/issues?sort=oldest&limit=2").json()["items"]
 
-    assert resource.changelog.calls == 1
-    assert [item["key"] for item in items] == ["ROBOPARK-9", "ROBOPARK-10"]
-    assert items[0]["queued_at"] == "2026-01-02T09:00:00Z"
-    assert items[0]["sla_deadline"] == "2026-01-02T14:00:00Z"
+    assert calls == [("token", "ROBOPARK-9"), ("token", "ROBOPARK-10")]
+    assert [item["key"] for item in items] == ["ROBOPARK-10", "ROBOPARK-9"]
+    assert items[0]["queued_at"] == "2026-01-02T11:00:00Z"
+    assert items[0]["sla_deadline"] == "2026-01-02T16:00:00Z"
     assert items[0]["sla_source"] == "status_history"
+
+
+def test_tracker_work_history_failure_falls_back_to_estimated_creation(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    issue = _scoped_issue("ROBOPARK-12", "2026-01-02T10:00:00Z")
+    monkeypatch.setattr(tracker_client, "search_issues", lambda **_kwargs: [issue])
+    calls = []
+
+    def failed_history(*, token, key, issue):
+        del issue
+        calls.append((token, key))
+        raise tracker_client.TrackerError("history unavailable")
+
+    monkeypatch.setattr(tracker_client, "get_issue_status_history", failed_history, raising=False)
+    login_as(client, "op2", "secret")
+
+    item = client.get("/tracker/issues").json()["items"][0]
+
+    assert calls == [("token", "ROBOPARK-12")]
+    assert item["queued_at"] == "2026-01-02T10:00:00Z"
+    assert item["sla_deadline"] == "2026-01-02T15:00:00Z"
+    assert item["sla_source"] == "estimated"
+
+
+def test_tracker_work_detail_hydrates_exact_queue_history(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    issue = _scoped_issue("ROBOPARK-13", "2026-01-03T10:00:00Z")
+    monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: issue)
+    calls = []
+
+    def history(*, token, key, issue):
+        del issue
+        calls.append((token, key))
+        return [
+            {
+                "updatedAt": "2026-01-02T08:30:00Z",
+                "fields": [{"field": {"id": "status"}, "to": {"key": "queued"}}],
+            }
+        ]
+
+    monkeypatch.setattr(tracker_client, "get_issue_status_history", history, raising=False)
+    login_as(client, "op2", "secret")
+
+    item = client.get("/tracker/issues/ROBOPARK-13").json()
+
+    assert calls == [("token", "ROBOPARK-13")]
+    assert item["queued_at"] == "2026-01-02T08:30:00Z"
+    assert item["sla_deadline"] == "2026-01-02T13:30:00Z"
+    assert item["sla_source"] == "status_history"
 
 
 def test_tracker_list_exact_robot_filters_before_deduplication_and_pagination(

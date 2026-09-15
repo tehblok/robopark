@@ -61,3 +61,19 @@ with loaded status performs exactly one changelog read during normalization.
   `status_history` source, the five-hour deadline, and queue ordering against an estimate.
 - Verification: `tests/test_tracker_read.py` and `tests/test_tracker_issue_fields.py` pass;
   focused Ruff check and format check are clean.
+
+## Fix round 2: bounded Work-boundary history hydration
+
+Shared Tracker normalization is pure again: `issue_to_dict` and ordinary search/detail
+consumers never call the SDK changelog accessor. The SDK resource is carried as a private
+internal handle, and only the Work `/tracker/issues` list and detail boundary requests exact
+history. List enrichment happens after scope filtering and pagination, so no item outside the
+returned page performs changelog work. The bounded page is enriched sequentially (at most the
+endpoint's 200-item limit), with one attempt and a 10-second call timeout per returned item.
+Related-repair ordering remains unchanged; ordinary Work pages re-sort the enriched page by
+the exact queue timestamp with stable ties.
+
+Missing, malformed, or failed history reads fall back to the explicitly estimated creation
+timestamp and exact five-hour deadline. The focused RED suite produced four expected failures;
+after the boundary move, the focused regression suite passes `63 passed` with one pre-existing
+Starlette/httpx warning. Ruff check, Ruff format check, and `git diff --check` are clean.

@@ -139,6 +139,24 @@ def _ordered_by_queue(items: list[dict], *, newest: bool) -> list[dict]:
     ]
 
 
+def _work_issue_sla(*, token: str, issue: dict) -> dict:
+    embedded = tracker_client.repair_sla_fields(issue)
+    if embedded["sla_source"] == "status_history":
+        return {**issue, **embedded}
+    try:
+        history = tracker_client.get_issue_status_history(
+            token=token,
+            key=str(issue.get("key") or ""),
+            issue=issue,
+        )
+    except tracker_client.TrackerError:
+        history = []
+    return {
+        **issue,
+        **tracker_client.repair_sla_fields(issue, status_history=history),
+    }
+
+
 def _normalized_robot_number(raw: object) -> str | None:
     text = str(raw or "").strip().upper()
     if text.startswith("[") and text.endswith("]"):
@@ -439,7 +457,11 @@ def list_issues(
         scoped_raw.append(issue)
 
     total = len(scoped_raw)
-    page_raw = scoped_raw[offset : offset + limit]
+    page_raw = [
+        _work_issue_sla(token=token, issue=issue) for issue in scoped_raw[offset : offset + limit]
+    ]
+    if not related_repairs:
+        page_raw = _ordered_by_queue(page_raw, newest=sort_order == "newest")
     assignments = local_assignees(db, [str(issue.get("key") or "") for issue in page_raw])
     page = [
         _issue_out(
@@ -498,6 +520,7 @@ def get_issue(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     enforce_issue_scope(db, user, issue)
     _enforce_mechanic_claim(db, user, issue)
+    issue = _work_issue_sla(token=token, issue=issue)
     return _detail_out(issue, db=db, user=user, include_hidden=include_hidden)
 
 

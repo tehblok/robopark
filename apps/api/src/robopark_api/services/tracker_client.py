@@ -298,19 +298,14 @@ def _history_items(issue: Any) -> list[Any]:
             return list(embedded)
         except TypeError:
             return []
-    if isinstance(issue, dict):
-        return []
-    if not _field(issue, "status"):
-        return []
-    try:
-        return list(issue.changelog.get_all())
-    except Exception:  # noqa: BLE001 - missing history degrades to an explicit estimate
-        return []
+    return []
 
 
-def repair_sla_fields(issue: Any) -> dict[str, str | None]:
+def repair_sla_fields(
+    issue: Any, *, status_history: list[Any] | None = None
+) -> dict[str, str | None]:
     """Derive the five-hour repair SLA, preferring the latest queued transition."""
-    if (
+    if status_history is None and (
         issue.get("sla_source") in {"status_history", "estimated"}
         if isinstance(issue, dict)
         else False
@@ -322,7 +317,7 @@ def repair_sla_fields(issue: Any) -> dict[str, str | None]:
         }
 
     queued: list[datetime] = []
-    for event in _history_items(issue):
+    for event in status_history if status_history is not None else _history_items(issue):
         fields = _field(event, "fields") or []
         for change in fields:
             field = _field(change, "field")
@@ -735,6 +730,7 @@ def _search(
             item = issue_to_dict(issue, login_cache=login_cache)
             if filter_open and not is_issue_open_item(item):
                 continue
+            item["_tracker_resource"] = issue
             items.append(item)
         return items
 
@@ -824,6 +820,7 @@ def get_issue(*, token: str, key: str) -> dict[str, Any] | None:
                 return None
             raise
         item = issue_to_dict(issue)
+        item["_tracker_resource"] = issue
         return item
 
     try:
@@ -832,6 +829,17 @@ def get_issue(*, token: str, key: str) -> dict[str, Any] | None:
         if type(exc).__name__ in {"NotFound", "NotFoundError"}:
             return None
         raise
+
+
+def get_issue_status_history(*, token: str, key: str, issue: dict[str, Any]) -> list[Any]:
+    resource = issue.get("_tracker_resource")
+    if resource is None:
+        return []
+
+    def _run() -> list[Any]:
+        return list(resource.changelog.get_all())
+
+    return _run_tracked(_run, max_attempts=1, call_timeout=10.0)
 
 
 def list_comments(*, token: str, key: str) -> list[dict[str, Any]]:
