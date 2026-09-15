@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -74,6 +74,19 @@ def replay_action(row: ReliableAction, payload_hash: str) -> BeginResult:
     raise HTTPException(409, "reliable_action_uncertain")
 
 
+def _begin_sqlite_transaction(db: Session) -> None:
+    if db.get_bind().dialect.name != "sqlite":
+        return
+    connection = db.connection()
+    driver_connection = getattr(connection.connection, "driver_connection", connection.connection)
+    if not driver_connection.in_transaction:
+        cursor = driver_connection.cursor()
+        try:
+            cursor.execute("BEGIN")
+        finally:
+            cursor.close()
+
+
 def begin_action(
     db: Session,
     *,
@@ -95,7 +108,8 @@ def begin_action(
         action=action,
         idempotency_key=idempotency_key,
     )
-    existing = db.scalar(query)
+    with db.no_autoflush:
+        existing = db.scalar(query)
     if existing is not None:
         return replay_action(existing, payload_hash)
 
@@ -113,14 +127,15 @@ def begin_action(
         created_at=now,
         updated_at=now,
     )
-    db.add(row)
+    _begin_sqlite_transaction(db)
+    # Keep the caller's pending local writes in the outer transaction. Only
+    # the competing reliable-action insert belongs to the savepoint below.
+    db.flush()
     try:
-        db.flush()
+        with db.begin_nested():
+            db.add(row)
+            db.flush()
     except IntegrityError:
-        # The competing transaction owns the durable row. Restore this session
-        # before loading it; callers have not yet received a reservation and
-        # therefore cannot have attached local state to this action.
-        db.rollback()
         db.expire_all()
         existing = db.scalar(query)
         if existing is None:
@@ -219,18 +234,28 @@ def claim_due_batch(
             or_(ReliableAction.lease_until.is_(None), ReliableAction.lease_until <= current),
         ),
     )
-    rows = list(
-        db.scalars(
-            select(ReliableAction)
+    claimed_ids: list[str] = []
+    batch_size = max(0, min(limit, MAX_BATCH_SIZE))
+    for _ in range(batch_size):
+        candidate = (
+            select(ReliableAction.id)
             .where(due)
             .order_by(ReliableAction.next_attempt_at, ReliableAction.id)
-            .limit(max(0, min(limit, MAX_BATCH_SIZE)))
-            .with_for_update(skip_locked=True)
+            .limit(1)
+            .scalar_subquery()
         )
-    )
-    for row in rows:
-        row.state = "sending"
-        row.lease_until = current + LEASE_SECONDS
-        row.updated_at = current
+        claimed_id = db.execute(
+            update(ReliableAction)
+            .where(ReliableAction.id == candidate, due)
+            .values(
+                state="sending",
+                lease_until=current + LEASE_SECONDS,
+                updated_at=current,
+            )
+            .returning(ReliableAction.id)
+        ).scalar_one_or_none()
+        if claimed_id is None:
+            break
+        claimed_ids.append(claimed_id)
     db.commit()
-    return rows
+    return [db.get(ReliableAction, claimed_id) for claimed_id in claimed_ids]

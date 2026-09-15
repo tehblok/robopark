@@ -24,6 +24,7 @@ def begin(db, user, key, action, request, payload, token, *, validate=None):
     if not 8 <= len(request_key) <= 128:
         raise HTTPException(400, "tracker_submission_key_invalid")
     _, digest = reliable_actions.canonical_payload(payload)
+    legacy_digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     query = select(TrackerSubmission).where(
         TrackerSubmission.actor_id == user.id,
         TrackerSubmission.resource_type == "tracker_issue",
@@ -38,7 +39,7 @@ def begin(db, user, key, action, request, payload, token, *, validate=None):
     ensure_action_allowed(db, user, issue, action)
     previous = db.scalar(query)
     if previous:
-        return replay(previous, digest)
+        return replay(previous, digest, legacy_digest=legacy_digest)
     try:
         expected = json.loads(unquote(request.headers.get("X-Tracker-State", "")))
         if not isinstance(expected, dict) or set(expected) != {"status", "status_key", "assignee"}:
@@ -76,9 +77,11 @@ def begin(db, user, key, action, request, payload, token, *, validate=None):
     return result.row, result.result
 
 
-def replay(row, digest):
+def replay(row, digest, *, legacy_digest=None):
+    if row.payload_hash not in {digest, legacy_digest}:
+        raise HTTPException(409, "tracker_submission_payload_conflict")
     try:
-        result = reliable_actions.replay_action(row, digest)
+        result = reliable_actions.replay_action(row, row.payload_hash)
     except HTTPException as exc:
         detail = {
             "reliable_action_payload_conflict": "tracker_submission_payload_conflict",

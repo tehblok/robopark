@@ -145,6 +145,50 @@ def test_tracker_compatibility_uses_canonical_payload_hash(
     assert row.payload_hash == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def test_tracker_replays_migrated_succeeded_action_with_legacy_payload_hash(
+    client, db_session, seed_mechanic, tracker_setup, monkeypatch
+):
+    payload = {"text": "готово"}
+    legacy = json.dumps(payload, sort_keys=True)
+    saved = {
+        "key": "ROBOPARK-1",
+        "action": "comment",
+        "status": "Open",
+        "actor": "mech1",
+        "performed_at": "2026-09-15T12:00:00+00:00",
+    }
+    db_session.add(
+        ReliableAction(
+            actor_user_id=seed_mechanic.id,
+            resource_type="tracker_issue",
+            resource_id="ROBOPARK-1",
+            action="comment",
+            idempotency_key="migrated-action",
+            payload_hash=hashlib.sha256(legacy.encode()).hexdigest(),
+            payload_json="{}",
+            state="succeeded",
+            result_json=json.dumps(saved),
+            created_at=time.time() - 100,
+            updated_at=time.time() - 100,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        tracker_client,
+        "add_comment",
+        lambda **kw: pytest.fail("saved migrated action must not be sent again"),
+    )
+
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/comment",
+        json=payload,
+        headers=headers("migrated-action"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == saved
+
+
 def test_submission_lookup_is_scoped_to_tracker_issue_resource_type(
     client, db_session, seed_mechanic, tracker_setup, monkeypatch
 ):

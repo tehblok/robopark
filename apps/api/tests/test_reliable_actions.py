@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from robopark_api.collaboration_models import TrackerPresence
 from robopark_api.models import User
 from robopark_api.task_workflow_models import ReliableAction
 
@@ -90,6 +91,46 @@ def test_two_sessions_racing_on_same_key_create_one_action(db_engine, seed_mecha
     assert rows[0].id in results
 
 
+def test_uniqueness_loser_preserves_callers_outer_transaction(db_engine, seed_mechanic):
+    actor_id = seed_mechanic.id
+    loser_selected = threading.Event()
+    winner_committed = threading.Event()
+
+    class PausingSession(Session):
+        paused = False
+
+        def scalar(self, statement, *args, **kwargs):
+            result = super().scalar(statement, *args, **kwargs)
+            if not self.paused and "reliable_actions" in str(statement):
+                self.paused = True
+                loser_selected.set()
+                assert winner_committed.wait(timeout=5)
+            return result
+
+    def lose_race():
+        with PausingSession(db_engine, autoflush=False) as db:
+            actor = db.get(User, actor_id)
+            db.add(TrackerPresence(issue_key="LOCAL-1", actor_id=actor_id, expires_at=999.0))
+            with pytest.raises(HTTPException) as caught:
+                _begin(db, actor, key="shared-race-key")
+            assert caught.value.detail == "reliable_action_uncertain"
+            db.commit()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        loser = pool.submit(lose_race)
+        assert loser_selected.wait(timeout=5)
+        with Session(db_engine) as db:
+            actor = db.get(User, actor_id)
+            _begin(db, actor, key="shared-race-key")
+            db.commit()
+        winner_committed.set()
+        loser.result(timeout=5)
+
+    with Session(db_engine) as db:
+        assert db.get(TrackerPresence, 1).issue_key == "LOCAL-1"
+        assert db.query(ReliableAction).count() == 1
+
+
 def test_payload_is_stored_as_canonical_utf8_json(db_session, seed_mechanic):
     result = _begin(db_session, seed_mechanic, payload={"z": "мотор", "a": 1})
 
@@ -123,6 +164,39 @@ def test_claim_due_batch_orders_caps_and_reclaims_expired_leases(db_session, see
 
     assert claimed == rows[:20]
     assert all(row.state == "sending" and row.lease_until == 160.0 for row in claimed)
+
+
+def test_claim_due_batch_returns_each_uuid_to_only_one_sqlite_session(
+    db_engine, db_session, seed_mechanic
+):
+    from robopark_api.services.reliable_actions import claim_due_batch
+
+    row = _begin(db_session, seed_mechanic, key="one-worker-only").row
+    action_id = row.id
+    db_session.commit()
+    due_at = row.created_at + 1
+    barrier = threading.Barrier(2)
+
+    class SynchronizedSession(Session):
+        synchronized = False
+
+        def scalars(self, statement, *args, **kwargs):
+            result = super().scalars(statement, *args, **kwargs)
+            if not self.synchronized and "reliable_actions" in str(statement):
+                self.synchronized = True
+                barrier.wait(timeout=5)
+            return result
+
+    def claim():
+        with SynchronizedSession(db_engine) as db:
+            barrier.wait(timeout=5)
+            return [claimed.id for claimed in claim_due_batch(db, now=due_at, limit=1)]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claimed_ids = list(pool.map(lambda _: claim(), range(2)))
+
+    assert sum(ids == [action_id] for ids in claimed_ids) == 1
+    assert sum(not ids for ids in claimed_ids) == 1
 
 
 @pytest.mark.parametrize(
