@@ -354,6 +354,12 @@ def test_payload_result_identifies_last_good_age_without_changing_legacy_return(
     assert stale.stale is True
     assert stale.age_seconds == pytest.approx(4.25)
 
+    cached_stale = emergency_cache.get_robot_payload_result(db=db_session, vin=VIN, probe=probe)
+    assert cached_stale.payload == {"version": 1}
+    assert cached_stale.stale is True
+    assert cached_stale.age_seconds == pytest.approx(4.25)
+    assert emergency_cache.peek_robot_payloads(vins=[VIN], identity="identity") == {}
+
 
 @pytest.mark.parametrize("failure", [RuntimeError("boom"), KeyboardInterrupt()])
 def test_failed_emergency_flight_is_removed(monkeypatch, failure):

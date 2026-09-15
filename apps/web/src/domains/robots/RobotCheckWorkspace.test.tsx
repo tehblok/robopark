@@ -21,6 +21,9 @@ function deferred<T>() {
   let resolve!: (value: T) => void; let reject!: (error: unknown) => void
   return { promise: new Promise<T>((res, rej) => { resolve = res; reject = rej }), resolve: (v: T) => resolve(v), reject: (e: unknown) => reject(e) }
 }
+function rectangle(left: number, top: number, width: number, height: number): DOMRect {
+  return { x: left, y: top, left, top, width, height, right: left + width, bottom: top + height, toJSON: () => ({}) } as DOMRect
+}
 function tree(apiClient: RobotCheckApiClient, activeTab = 'wheels', overrides: Partial<React.ComponentProps<typeof RobotCheckWorkspace>> = {}) {
   return <MemoryRouter><RobotCheckWorkspace vin={VIN} user={user} sections={sections} activeTab={activeTab} onTabChange={vi.fn()} apiClient={apiClient} {...overrides} /></MemoryRouter>
 }
@@ -263,7 +266,7 @@ it('automatically opens the leading event, preserves manual view across polling 
   expect(screen.getByRole('button', { name: 'Сзади', pressed: true })).toBeInTheDocument()
   expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(battery.description)
 })
-it('selects the first events arriving after an empty snapshot only once', async () => {
+it('recomputes automatic event selection as active events change', async () => {
   const apiClient = client(); render(tree(apiClient, 'scheme'))
   await screen.findByRole('button', { name: 'Сверху', pressed: true })
   vi.mocked(apiClient.emergencySnapshot).mockResolvedValue(snapshot({ diagnostic_events: [lidar] }))
@@ -274,7 +277,20 @@ it('selects the first events arriving after an empty snapshot only once', async 
   expect(screen.queryByRole('region', { name: 'Выбранная ошибка' })).not.toBeInTheDocument()
   vi.mocked(apiClient.emergencySnapshot).mockResolvedValue(snapshot({ diagnostic_events: [battery] }))
   vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange')); await act(async () => undefined)
+  expect(screen.getByRole('button', { name: 'Сзади', pressed: true })).toBeInTheDocument()
+})
+it('promotes a later critical event over the previously selected warning', async () => {
+  const apiClient = client({ emergencySnapshot: vi.fn()
+    .mockResolvedValueOnce(snapshot({ diagnostic_events: [battery] }))
+    .mockResolvedValue(snapshot({ diagnostic_events: [lidar, battery] })) })
+  render(tree(apiClient, 'scheme'))
+  expect(await screen.findByRole('button', { name: 'Сзади', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(battery.description)
+
+  vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange'))
+  await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2))
   expect(screen.getByRole('button', { name: 'Спереди', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(lidar.description)
 })
 it('keeps a manual view chosen before events arrive', async () => {
   const apiClient = client(); render(tree(apiClient, 'scheme'))
@@ -289,6 +305,7 @@ it('keeps real diagnostic markers clickable without permanent wheel buttons', as
   render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({ diagnostic_events: [lidar, outlined], wheels_fault: ['fl'] })) }), 'scheme'))
   const marker = await screen.findByRole('button', { name: `Ошибка: ${outlined.title}` })
   expect(marker).toHaveClass('rp-check-event-marker--outline', 'rp-check-event-marker--warning')
+  expect(marker).toHaveStyle({ borderWidth: '0px', background: 'transparent', width: '44px', height: '44px' })
   expect(screen.getByRole('button', { name: `Ошибка: ${lidar.title}` })).toHaveClass('rp-check-event-marker--point', 'rp-check-event-marker--critical')
   act(() => marker.focus())
   expect(marker).toHaveFocus(); expect(marker).toHaveAttribute('aria-pressed', 'true')
@@ -300,6 +317,21 @@ it('keeps real diagnostic markers clickable without permanent wheel buttons', as
   fireEvent.click(screen.getByRole('button', { name: `Ошибка: ${lidar.title}` }))
   expect(detail).toHaveTextContent(lidar.description)
   expect(screen.queryByRole('button', { name: /колесо/i })).not.toBeInTheDocument()
+})
+it('uses wrapped label height when preventing diagram collisions', async () => {
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    if (this.classList.contains('rp-check-overlay-frame')) return rectangle(0, 0, 400, 300)
+    if (this.classList.contains('rp-check-photo-frame')) return rectangle(120, 60, 160, 180)
+    if (this.hasAttribute('data-rp-check-label-measure')) return rectangle(0, 0, 96, 96)
+    return rectangle(0, 0, 0, 0)
+  })
+  render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({ readings: [
+    { id: 1, section_id: 'wheels', label: 'A', display: '1', state: 'critical', view: 'top', x: 0, y: .35, label_direction: 'left' },
+    { id: 2, section_id: 'wheels', label: 'B', display: '2', state: 'critical', view: 'top', x: 0, y: .65, label_direction: 'left' },
+  ] } as EmergencySnapshot)) }), 'scheme'))
+
+  const collapsed = await screen.findByRole('list', { name: 'Метки рядом со схемой' })
+  expect(within(collapsed).getAllByRole('listitem')).toHaveLength(1)
 })
 it('shows unknown raw errors safely in the errors list with no invented marker and opens localized events on the scheme', async () => {
   const onTabChange = vi.fn()

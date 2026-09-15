@@ -41,9 +41,9 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
   const [follow, setFollow] = useState(true)
   const [diagnosticSelection, setDiagnosticSelection] = useState<{ view: DiagnosticView; eventId: string | null; blockId: string | null }>({ view: 'top', eventId: null, blockId: sections[0]?.id ?? null })
   // Owned by the same VIN/access/park lifetime as the snapshot, never by a tab.
-  const automaticApplied = useRef(false)
   const manualView = useRef(false)
   const manualBlock = useRef(false)
+  const manualEventId = useRef<string | null>(null)
   // This cache belongs to one VIN/access lifetime and never persists to disk.
   const cache = useRef(new Map<string, { data?: unknown; updatedAt: number; pending?: Promise<unknown> }>())
   const cachedRequest = useCallback(<T,>(key: string, load: () => Promise<T>, force: boolean): Promise<T> => {
@@ -89,15 +89,15 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
     const snapshotRequest = cachedRequest('snapshot', () => apiClient.emergencySnapshot(vin), force).then(value => {
       if (current()) {
         setSnapshot(value); setSnapshotError(null)
-        if (!automaticApplied.current && (value.diagnostic_events?.length || value.readings?.length)) {
-          automaticApplied.current = true
-          const automatic = chooseAutomaticDiagnosticSelection(value.diagnostic_events ?? [], value.readings ?? [], sections.map(section => section.id))
-          setDiagnosticSelection(current => ({
-            view: manualView.current ? current.view : automatic.view,
-            blockId: manualBlock.current && sections.some(section => section.id === current.blockId) ? current.blockId : automatic.blockId,
-            eventId: automatic.eventId,
-          }))
-        }
+        const events = value.diagnostic_events ?? []
+        const automatic = chooseAutomaticDiagnosticSelection(events, value.readings ?? [], sections.map(section => section.id))
+        const manualEvent = events.find(event => event.id === manualEventId.current)
+        if (!manualEvent) manualEventId.current = null
+        setDiagnosticSelection(current => ({
+          view: manualView.current ? current.view : automatic.view,
+          blockId: manualBlock.current && sections.some(section => section.id === current.blockId) ? current.blockId : automatic.blockId,
+          eventId: manualEvent?.id ?? automatic.eventId,
+        }))
       }
     }, error => { observeFailure(error); throw error })
     const requests = [snapshotRequest]
@@ -114,11 +114,13 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
   const events = snapshot?.diagnostic_events ?? []
   const showEvent = (event: DiagnosticEvent) => {
     if (!isLocalizedEvent(event)) return
-    automaticApplied.current = true
+    manualView.current = true
+    manualEventId.current = event.id
     setDiagnosticSelection(current => ({ ...current, view: event.view, eventId: event.id }))
   }
   const showLeadingError = () => {
-    automaticApplied.current = true
+    manualView.current = false
+    manualEventId.current = null
     setDiagnosticSelection(current => ({ ...current, view: chooseAutomaticView(events), eventId: leadingDiagnosticEvent(events)?.id ?? null }))
   }
   const section = details[tab.id]
@@ -159,7 +161,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
         </dl> : null}
         {tab.kind === 'scheme' ? snapshot ? <RobotDiagnosticDiagram faults={snapshot.wheels_fault} events={events} readings={snapshot.readings ?? []} blocks={sections} selectedBlockId={diagnosticSelection.blockId} view={diagnosticSelection.view} selectedEventId={diagnosticSelection.eventId}
           onViewChange={view => { manualView.current = true; setDiagnosticSelection(current => ({ ...current, view })) }}
-          onSelectEvent={event => { automaticApplied.current = true; setDiagnosticSelection(current => ({ ...current, eventId: event.id })) }}
+          onSelectEvent={event => { manualView.current = true; manualEventId.current = event.id; setDiagnosticSelection(current => ({ ...current, eventId: event.id })) }}
           onBlockChange={blockId => { manualBlock.current = true; setDiagnosticSelection(current => ({ ...current, blockId })) }}
           onShowError={showLeadingError} onRevealEvent={showEvent} onOpenErrors={() => onTabChange('errors')} /> : <EmptyState title="Данные диагностики не получены" /> : null}
         {tab.kind === 'section' ? <>

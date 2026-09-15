@@ -41,8 +41,17 @@ class EmergencyPayloadResult:
     age_seconds: float
 
 
+@dataclass(frozen=True)
+class _CacheEntry:
+    cached_at: float
+    source_loaded_at: float
+    identity: str | None
+    payload: dict[str, Any]
+    stale: bool
+
+
 _lock = threading.Lock()
-_cache: OrderedDict[str, tuple[float, str | None, dict[str, Any]]] = OrderedDict()
+_cache: OrderedDict[str, _CacheEntry] = OrderedDict()
 _flights: dict[tuple[str | None, str], _Flight] = {}
 _generation = 0
 _http_slots_lock = threading.Lock()
@@ -68,7 +77,9 @@ def _http_semaphore() -> threading.BoundedSemaphore:
 
 def _prune_cache_locked(now: float) -> None:
     expired = [
-        vin for vin, cached in _cache.items() if now - cached[0] >= PAYLOAD_MAX_STALE_SECONDS
+        vin
+        for vin, cached in _cache.items()
+        if now - cached.source_loaded_at >= PAYLOAD_MAX_STALE_SECONDS
     ]
     for vin in expired:
         _cache.pop(vin, None)
@@ -80,8 +91,15 @@ def _cache_payload_locked(
     loaded_at: float,
     identity: str | None,
     payload: dict[str, Any],
+    stale: bool = False,
 ) -> None:
-    _cache[vin] = (loaded_at, identity, payload)
+    _cache[vin] = _CacheEntry(
+        cached_at=time.monotonic(),
+        source_loaded_at=loaded_at,
+        identity=identity,
+        payload=payload,
+        stale=stale,
+    )
     _cache.move_to_end(vin)
     while len(_cache) > PAYLOAD_CACHE_MAX_ENTRIES:
         _cache.popitem(last=False)
@@ -112,10 +130,11 @@ def peek_robot_payloads(*, vins: list[str], identity: str | None) -> dict[str, d
             cached = _cache.get(vin)
             if (
                 cached is not None
-                and cached[1] == identity
-                and now - cached[0] < PAYLOAD_CACHE_TTL_SECONDS
+                and not cached.stale
+                and cached.identity == identity
+                and now - cached.cached_at < PAYLOAD_CACHE_TTL_SECONDS
             ):
-                result[vin] = cached[2]
+                result[vin] = cached.payload
                 _cache.move_to_end(vin)
         return result
 
@@ -123,7 +142,7 @@ def peek_robot_payloads(*, vins: list[str], identity: str | None) -> dict[str, d
 def invalidate_vin(vin: str, *, identity: str | None = None) -> None:
     with _lock:
         cached = _cache.get(vin)
-        if cached is not None and (identity is None or cached[1] == identity):
+        if cached is not None and (identity is None or cached.identity == identity):
             _cache.pop(vin, None)
     merge = get_live_merge_store()
     if merge is not None:
@@ -171,6 +190,7 @@ def _finish_flight(
                 loaded_at=loaded_at if loaded_at is not None else time.monotonic(),
                 identity=flight.identity,
                 payload=result,
+                stale=stale,
             )
         flight_key = (flight.identity, vin)
         if _flights.get(flight_key) is flight:
@@ -194,23 +214,26 @@ def get_robot_payload(
     cookie, identity = probe or settings_svc.get_emergency_cookie_probe(db)
     now = time.monotonic()
     merge = get_live_merge_store()
-    stale: tuple[float, str | None, dict[str, Any]] | None = None
+    stale: _CacheEntry | None = None
     with _lock:
         _prune_cache_locked(now)
         generation = _generation
         cached = _cache.get(vin)
         if (
             cached is not None
-            and cached[1] == identity
-            and now - cached[0] < PAYLOAD_CACHE_TTL_SECONDS
+            and cached.identity == identity
+            and now - cached.cached_at < PAYLOAD_CACHE_TTL_SECONDS
         ):
-            payload = cached[2]
+            payload = cached.payload
             _cache.move_to_end(vin)
             flight = None
             is_leader = False
         else:
             if cached is not None:
-                if cached[1] == identity and now - cached[0] < PAYLOAD_MAX_STALE_SECONDS:
+                if (
+                    cached.identity == identity
+                    and now - cached.source_loaded_at < PAYLOAD_MAX_STALE_SECONDS
+                ):
                     stale = cached
                 _cache.pop(vin, None)
             flight_key = (identity, vin)
@@ -223,7 +246,10 @@ def get_robot_payload(
 
     if payload is not None:
         if _metadata is not None:
-            _metadata.update(stale=False, age_seconds=max(0.0, now - cached[0]))
+            _metadata.update(
+                stale=cached.stale,
+                age_seconds=max(0.0, now - cached.source_loaded_at),
+            )
         return payload
 
     if merge is not None:
@@ -358,10 +384,10 @@ def get_robot_payload(
             stale is not None
             and isinstance(exc, emergency_client.EmergencyError)
             and not isinstance(exc, emergency_client.EmergencyAuthError)
-            and time.monotonic() - stale[0] < PAYLOAD_MAX_STALE_SECONDS
+            and time.monotonic() - stale.source_loaded_at < PAYLOAD_MAX_STALE_SECONDS
         ):
-            payload = stale[2]
-            payload_loaded_at = stale[0]
+            payload = stale.payload
+            payload_loaded_at = stale.source_loaded_at
             stale_result = True
         else:
             error = exc

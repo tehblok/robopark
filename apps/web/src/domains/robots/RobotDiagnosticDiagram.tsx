@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState } from 'react'
+import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { DiagnosticEvent, EmergencyReadingValue, EmergencySection } from '../../api'
 import { Button } from '../../design-system/actions/Button'
 import { DiagnosticEventDetails } from './DiagnosticEventDetails'
@@ -23,6 +23,7 @@ type Props = {
   onRevealEvent: (event: DiagnosticEvent) => void; onOpenErrors: () => void
 }
 type Measurement = { width: number; height: number; robot: DOMRectReadOnly }
+type LabelSize = { width: number; height: number }
 
 export function RobotDiagnosticDiagram({ faults, events, readings, blocks, selectedBlockId, view, selectedEventId, onViewChange, onBlockChange, onSelectEvent, onShowError, onRevealEvent, onOpenErrors }: Props) {
   const detailId = useId()
@@ -30,6 +31,7 @@ export function RobotDiagnosticDiagram({ faults, events, readings, blocks, selec
   const frameRef = useRef<HTMLDivElement>(null)
   const robotRef = useRef<HTMLDivElement>(null)
   const [measurement, setMeasurement] = useState<Measurement | null>(null)
+  const [labelSizes, setLabelSizes] = useState<Record<string, LabelSize>>({})
   const [selectedReadingId, setSelectedReadingId] = useState<number | null>(null)
   const [revealRevision, setRevealRevision] = useState(0)
   useLayoutEffect(() => {
@@ -57,6 +59,7 @@ export function RobotDiagnosticDiagram({ faults, events, readings, blocks, selec
     observer.observe(frame); observer.observe(robot)
     return () => observer.disconnect()
   }, [view])
+  useLayoutEffect(() => { setLabelSizes({}) }, [view, measurement?.width, measurement?.height])
   useLayoutEffect(() => {
     const detail = detailRef.current
     if (!revealRevision || !detail) return
@@ -71,17 +74,41 @@ export function RobotDiagnosticDiagram({ faults, events, readings, blocks, selec
   const hasUnlocalizedFault = faults.some(slot => !Object.hasOwn(WHEEL_LABELS, slot))
   const failed = failedImages[view]
   const selectedEvent = events.find(event => event.id === selectedEventId)
-  const eventMarkers = events.filter(isLocalizedEvent).filter(event => event.view === view)
+  const eventMarkers = useMemo(() => events.filter(isLocalizedEvent).filter(event => event.view === view), [events, view])
   const selectedBlock = blocks.find(block => block.id === selectedBlockId) ?? blocks[0]
-  const blockReadings = readings.filter(reading => reading.section_id === selectedBlock?.id)
-  const readingMarkers = blockReadings.filter(reading => reading.view === view)
-  const labels = measurement ? [
+  const blockReadings = useMemo(() => readings.filter(reading => reading.section_id === selectedBlock?.id), [readings, selectedBlock?.id])
+  const readingMarkers = useMemo(() => blockReadings.filter(reading => reading.view === view), [blockReadings, view])
+  const labels = useMemo(() => measurement ? [
     ...eventMarkers.map(event => ({ id: `event:${event.id}`, text: `${event.title}: ${event.description}`, x: measurement.robot.left + event.x * measurement.robot.width, y: measurement.robot.top + event.y * measurement.robot.height, direction: 'auto' as const, priority: 'error' as const })),
     ...readingMarkers.filter(reading => reading.state === 'critical' || reading.state === 'warning' || reading.id === selectedReadingId).map(reading => ({ id: `reading:${reading.id}`, text: `${reading.label}: ${reading.display}`, x: measurement.robot.left + reading.x * measurement.robot.width, y: measurement.robot.top + reading.y * measurement.robot.height, direction: reading.label_direction, priority: reading.state === 'critical' ? 'critical' as const : reading.id === selectedReadingId ? 'selected' as const : 'warning' as const })),
-  ] : []
-  const boxes: LabelBox[] = labels.map(label => ({ ...label, width: Math.min(190, Math.max(96, label.text.length * 6)), height: 42 }))
+  ] : [], [eventMarkers, measurement, readingMarkers, selectedReadingId])
+  const boxes: LabelBox[] = labels.map(label => ({
+    ...label,
+    width: labelSizes[label.id]?.width ?? Math.min(190, Math.max(96, label.text.length * 6)),
+    height: labelSizes[label.id]?.height ?? 42,
+  }))
   const placed = measurement ? placeLabels(boxes, measurement, measurement.robot) : []
   const collapsed = placed.filter(label => label.collapsed)
+  const placementKey = placed.map(label => `${label.id}:${label.collapsed}:${label.width}:${label.height}`).join('|')
+  useLayoutEffect(() => {
+    const frame = frameRef.current
+    if (!frame) return
+    setLabelSizes(current => {
+      const next: Record<string, LabelSize> = {}
+      for (const label of labels) {
+        const previous = current[label.id]
+        if (previous) next[label.id] = previous
+      }
+      for (const element of frame.querySelectorAll<HTMLElement>('[data-rp-check-label-measure]')) {
+        const id = element.dataset.rpCheckLabelMeasure
+        const rect = element.getBoundingClientRect()
+        if (id && rect.width > 0 && rect.height > 0) next[id] = { width: rect.width, height: rect.height }
+      }
+      const ids = Object.keys(next)
+      const unchanged = ids.length === Object.keys(current).length && ids.every(id => current[id]?.width === next[id].width && current[id]?.height === next[id].height)
+      return unchanged ? current : next
+    })
+  }, [labels, placementKey])
   return <div className="rp-check-diagram">
     <div className="rp-check-views" role="group" aria-label="Ракурс модели">
       {VIEWS.map(item => <button type="button" key={item.id} aria-pressed={view === item.id} onClick={() => onViewChange(item.id)}>{item.label}</button>)}
@@ -96,11 +123,11 @@ export function RobotDiagnosticDiagram({ faults, events, readings, blocks, selec
           <div ref={robotRef} className="rp-check-photo-frame">
             {failed ? <svg role="img" aria-label="Схема модели робота" viewBox="0 0 240 320"><rect className="rp-check-diagram-body" height="220" rx="36" width="160" x="40" y="50" /><rect className="rp-check-diagram-lid" height="54" rx="18" width="112" x="64" y="24" /><circle className="rp-check-diagram-sensor" cx="120" cy="51" r="10" /><path className="rp-check-diagram-divider" d="M56 160h128M120 78v176" /></svg>
               : <img key={photo.id} src={photo.src} alt={`Иллюстрация модели робота: ${photo.title.toLowerCase()}`} width={photo.width} height={photo.height} loading="lazy" decoding="async" onError={() => setFailedImages(current => ({ ...current, [view]: true }))} />}
-            {!failed ? eventMarkers.map(event => <button type="button" key={event.id} className={`rp-check-event-marker rp-check-event-marker--${event.indicator} rp-check-event-marker--${event.severity}`} style={{ left: `${event.x * 100}%`, top: `${event.y * 100}%` }} aria-label={`Ошибка: ${event.title}`} aria-pressed={selectedEventId === event.id} aria-controls={detailId} aria-describedby={`${detailId}-${event.id}`} onFocus={() => onSelectEvent(event)} onClick={() => { onSelectEvent(event); setRevealRevision(current => current + 1) }}><span className="rp-check-marker-dot" aria-hidden="true">{event.severity === 'info' ? 'i' : '!'}</span></button>) : null}
+            {!failed ? eventMarkers.map(event => <button type="button" key={event.id} className={`rp-check-event-marker rp-check-event-marker--${event.indicator} rp-check-event-marker--${event.severity}`} style={{ left: `${event.x * 100}%`, top: `${event.y * 100}%`, width: 44, height: 44, borderWidth: 0, background: 'transparent' }} aria-label={`Ошибка: ${event.title}`} aria-pressed={selectedEventId === event.id} aria-controls={detailId} aria-describedby={`${detailId}-${event.id}`} onFocus={() => onSelectEvent(event)} onClick={() => { onSelectEvent(event); setRevealRevision(current => current + 1) }}><span className="rp-check-marker-dot" aria-hidden="true">{event.severity === 'info' ? 'i' : '!'}</span></button>) : null}
             {!failed ? readingMarkers.map(reading => <button type="button" key={reading.id} className={`rp-check-reading-marker rp-check-reading-marker--${reading.state}`} style={{ left: `${reading.x * 100}%`, top: `${reading.y * 100}%` }} aria-label={`Показание: ${reading.label}, ${reading.display}`} aria-pressed={selectedReadingId === reading.id} onClick={() => setSelectedReadingId(current => current === reading.id ? null : reading.id)}><span className="rp-check-marker-dot" aria-hidden="true" /></button>) : null}
           </div>
           {measurement ? <svg className="rp-check-leaders" aria-hidden="true" viewBox={`0 0 ${measurement.width} ${measurement.height}`}>{placed.filter(label => !label.collapsed).map(label => <line key={label.id} x1={label.x} y1={label.y} x2={label.left + label.width / 2} y2={label.top + label.height / 2} />)}</svg> : null}
-          {placed.filter(label => !label.collapsed).map(label => <span key={label.id} className="rp-check-marker-label" style={{ left: label.left, top: label.top, width: label.width }}>{labels.find(item => item.id === label.id)?.text}</span>)}
+          {placed.filter(label => !label.collapsed).map(label => <span key={label.id} className="rp-check-marker-label" data-rp-check-label-measure={label.id} style={{ left: label.left, top: label.top, width: label.width }}>{labels.find(item => item.id === label.id)?.text}</span>)}
         </div>
         <figcaption>Иллюстрация модели</figcaption>
         {collapsed.length ? <ol className="rp-check-collapsed-labels" aria-label="Метки рядом со схемой">{collapsed.map(label => <li key={label.id}>{labels.find(item => item.id === label.id)?.text}</li>)}</ol> : null}

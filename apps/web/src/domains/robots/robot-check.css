@@ -86,21 +86,20 @@
 .rp-check-events { display: grid; gap: var(--rp-space-4); list-style: none; margin: var(--rp-space-4) 0; padding: 0; }
 .rp-check-event-description { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .rp-check-event-marker {
-  --rp-marker-size: 44px;
-  --rp-marker-inset: calc(var(--rp-marker-size) / 2 + 5px);
   position: absolute;
   z-index: 1;
   display: grid;
   place-items: center;
   transform: translate(-50%, -50%);
-  width: var(--rp-marker-size);
-  height: var(--rp-marker-size);
+  width: 44px;
+  height: 44px;
   min-width: 44px;
   min-height: 44px;
   padding: 0;
-  border: 3px solid currentColor;
+  border-width: 0;
+  border-style: none;
   border-radius: 50%;
-  background: var(--rp-surface);
+  background: transparent;
   font: inherit;
   font-size: var(--rp-font-size-title);
   font-weight: var(--rp-font-weight-bold);
@@ -147,8 +146,9 @@
 .rp-check-event-marker--info { color: var(--rp-info); }
 .rp-check-event-marker--warning { color: var(--rp-warning); }
 .rp-check-event-marker--critical { color: var(--rp-critical); }
-.rp-check-event-marker--outline { --rp-marker-size: 54px; border-radius: var(--rp-radius-control); background: color-mix(in srgb, var(--rp-surface) 92%, transparent); }
-.rp-check-event-marker--zone { --rp-marker-size: 56px; border-style: dashed; background: var(--rp-surface); }
+.rp-check-event-marker .rp-check-marker-dot { width: 18px; height: 18px; border-width: 3px; }
+.rp-check-event-marker--outline .rp-check-marker-dot { width: 26px; height: 22px; border-radius: var(--rp-radius-control); background: color-mix(in srgb, var(--rp-surface) 92%, transparent); }
+.rp-check-event-marker--zone .rp-check-marker-dot { width: 28px; height: 28px; border-style: dashed; background: var(--rp-surface); }
 .rp-check-event-marker[aria-pressed='true'], .rp-check-event-marker:focus-visible { outline: 3px solid var(--rp-focus); outline-offset: 2px; }
 .rp-check-panel .inspection-map { position: relative; inset: auto; height: min(60vh, 560px); min-height: 300px; width: 100%; margin-block-start: var(--rp-space-3); border-radius: var(--rp-radius-control); z-index: 0; }
 .rp-check-panel .leaflet-control-attribution { font-size: var(--rp-font-size-body); }
