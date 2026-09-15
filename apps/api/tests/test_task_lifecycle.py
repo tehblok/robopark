@@ -349,6 +349,7 @@ def test_returned_review_rejects_duplicate_return_and_approval(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
     operator = _operator(db_session, seed_park_with_tracker)
+    next_mechanic = _mechanic(db_session, seed_park_with_tracker, username="replay-target")
     _prepare_tracker(db_session, monkeypatch)
     assert _claim(client, seed_mechanic).status_code == 200
     assert _submit(client, comment="Починил").status_code == 200
@@ -363,17 +364,12 @@ def test_returned_review_rejects_duplicate_return_and_approval(
     returned = client.post(
         f"/tracker/issues/{ISSUE_KEY}/review/return",
         headers={"Idempotency-Key": "return-task-51"},
-        json={"reason": "Нужно переснять"},
+        json={"reason": "Нужно переснять", "assignee": next_mechanic.username},
     )
     assert returned.status_code == 200
     assert db_session.query(TaskReview).one().state == "returned"
-    assert db_session.get(TrackerClaim, ISSUE_KEY).owner_user_id == seed_mechanic.id
+    assert db_session.get(TrackerClaim, ISSUE_KEY).owner_user_id == next_mechanic.id
 
-    replay = client.post(
-        f"/tracker/issues/{ISSUE_KEY}/review/return",
-        headers={"Idempotency-Key": "return-task-51"},
-        json={"reason": "Нужно переснять"},
-    )
     duplicate_return = client.post(
         f"/tracker/issues/{ISSUE_KEY}/review/return",
         headers={"Idempotency-Key": "return-again-51"},
@@ -383,11 +379,33 @@ def test_returned_review_rejects_duplicate_return_and_approval(
         f"/tracker/issues/{ISSUE_KEY}/review/approve",
         headers={"Idempotency-Key": "approve-task-51"},
     )
-    assert replay.status_code == 200
-    assert replay.json() == returned.json()
     assert duplicate_return.status_code == 409
     assert approved.status_code == 409
-    assert db_session.query(TaskReview).one().state == "returned"
+
+    next_mechanic.is_active = False
+    db_session.delete(
+        db_session.query(UserPark).filter_by(user_id=next_mechanic.id).one()
+    )
+    review = db_session.query(TaskReview).one()
+    review.state = "pending"
+    review.return_reason = None
+    db_session.commit()
+
+    replay = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/review/return",
+        headers={"Idempotency-Key": "return-task-51"},
+        json={"reason": "Нужно переснять", "assignee": next_mechanic.username},
+    )
+    conflict = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/review/return",
+        headers={"Idempotency-Key": "return-task-51"},
+        json={"reason": "Другая причина", "assignee": next_mechanic.username},
+    )
+    assert replay.status_code == 200
+    assert replay.json() == returned.json()
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == "reliable_action_payload_conflict"
+    assert db_session.query(TaskReview).one().state == "pending"
     assert db_session.get(TrackerClaim, ISSUE_KEY) is not None
     assert db_session.query(ReliableAction).filter_by(action="close").count() == 0
 

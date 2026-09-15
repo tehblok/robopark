@@ -5,6 +5,7 @@ from unittest.mock import patch
 from conftest import login_as
 from robopark_api.models import Park, UserPark
 from robopark_api.services.tracker_client import issue_to_dict
+from robopark_api.task_workflow_models import HiddenTask
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -25,14 +26,27 @@ def test_mechanic_tasks_with_mocked_tracker(client, seed_mechanic, seed_royal, d
         issue_to_dict(item)
         for item in json.loads((FIXTURES / "tracker_issues.json").read_text(encoding="utf-8"))
     ]
+    park = db_session.query(Park).filter_by(tag="Alpha").one()
+    db_session.add(
+        HiddenTask(
+            id="hidden-mechanic-task",
+            issue_key="ROBOPARK-1",
+            park_id=park.id,
+            reason="duplicate",
+            actor_user_id=seed_royal.id,
+            created_at=1,
+            updated_at=1,
+        )
+    )
+    db_session.commit()
     with patch("robopark_api.services.tracker_client._search", return_value=issues):
         response = client.get("/mechanic/tasks?status=all")
 
     assert response.status_code == 200
     body = response.json()
     assert body["park_tag"] == "Alpha"
-    assert len(body["items"]) == 2
-    assert body["counts"]["all"] == 2
+    assert [item["key"] for item in body["items"]] == ["ROBOPARK-2"]
+    assert body["counts"]["all"] == 1
 
 
 def test_mechanic_tasks_disabled_when_feature_off(

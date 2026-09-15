@@ -554,6 +554,33 @@ def return_review(
     clean_reason = reason.strip()
     if not clean_reason:
         raise HTTPException(400, "task_review_return_reason_required")
+    requested_assignee = assignee.strip() if assignee is not None else None
+    existing = db.scalar(
+        select(ReliableAction).where(
+            ReliableAction.actor_user_id == actor.id,
+            ReliableAction.resource_type == "tracker_issue",
+            ReliableAction.resource_id == issue_key,
+            ReliableAction.action == "return",
+            ReliableAction.idempotency_key == idempotency_key,
+        )
+    )
+    if existing is not None:
+        saved_payload = json.loads(existing.payload_json)
+        if (
+            saved_payload.get("assignee") != requested_assignee
+            or saved_payload.get("reason") != clean_reason
+        ):
+            raise HTTPException(409, "reliable_action_payload_conflict")
+        saved_response = saved_payload.get("local_response")
+        if isinstance(saved_response, dict):
+            return saved_response
+        return _result(
+            db,
+            issue_key=issue_key,
+            actor=actor,
+            command="return_review",
+            performed_at=existing.created_at,
+        )
     review = _active_review(db, issue_key)
     claim_row = get_claim(db, issue_key)
     target = (
@@ -566,30 +593,6 @@ def return_review(
         "reason": clean_reason,
     }
     if review is None or review.state != "pending":
-        existing = db.scalar(
-            select(ReliableAction).where(
-                ReliableAction.actor_user_id == actor.id,
-                ReliableAction.resource_id == issue_key,
-                ReliableAction.action == "return",
-                ReliableAction.idempotency_key == idempotency_key,
-            )
-        )
-        if existing is not None:
-            replay = _action(
-                db,
-                actor=actor,
-                issue_key=issue_key,
-                action="return",
-                idempotency_key=idempotency_key,
-                payload=payload,
-            )
-            return _result(
-                db,
-                issue_key=issue_key,
-                actor=actor,
-                command="return_review",
-                performed_at=replay.row.created_at,
-            )
         raise HTTPException(409, "task_review_not_pending")
     begun = _action(
         db,
@@ -625,7 +628,18 @@ def return_review(
             text=f"Возврат с проверки: {clean_reason}",
             action=comment_action.row,
         )
+        local_response = _result(
+            db,
+            issue_key=issue_key,
+            actor=actor,
+            command="return_review",
+            performed_at=begun.row.created_at,
+        )
+        encoded, digest = canonical_payload({**payload, "local_response": local_response})
+        begun.row.payload_json = encoded
+        begun.row.payload_hash = digest
         db.commit()
+        return local_response
     return _result(
         db,
         issue_key=issue_key,

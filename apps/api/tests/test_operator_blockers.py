@@ -6,6 +6,7 @@ from conftest import login_as, role_id_for
 from robopark_api.models import Park, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services.tracker_client import issue_to_dict
+from robopark_api.task_workflow_models import HiddenTask
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -63,14 +64,26 @@ def test_blockers_mocked_ok(client, db_session, seed_royal):
     client.put("/admin/settings/tracker-token", json={"token": "fake"})
     login_as(client, "op-block", "secret")
     issues = [issue_to_dict(i) for i in json.loads((FIXTURES / "tracker_issues.json").read_text())]
+    db_session.add(
+        HiddenTask(
+            id="hidden-operator-blocker",
+            issue_key="ROBOPARK-1",
+            park_id=park.id,
+            reason="duplicate",
+            actor_user_id=seed_royal.id,
+            created_at=1,
+            updated_at=1,
+        )
+    )
+    db_session.commit()
     with patch("robopark_api.services.tracker_client._search", return_value=issues):
         r = client.get(f"/operator/blockers?park_id={park.id}&status=all")
     assert r.status_code == 200
     body = r.json()
     assert body["park_id"] == park.id
     assert body["park_tag"] == "Alpha"
-    assert body["counts"]["all"] == 2
-    assert len(body["items"]) == 2
+    assert body["counts"]["all"] == 1
+    assert [item["key"] for item in body["items"]] == ["ROBOPARK-2"]
 
 
 def test_blockers_disabled(client, db_session, seed_royal):

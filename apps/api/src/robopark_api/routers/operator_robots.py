@@ -7,7 +7,7 @@ from robopark_api.models import User
 from robopark_api.routers._blockers import blocker_out as _blocker_out
 from robopark_api.schemas import RobotTicketsOut
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_cache, tracker_client, tracker_filters
+from robopark_api.services import task_lifecycle, tracker_cache, tracker_client, tracker_filters
 
 router = APIRouter(prefix="/operator", tags=["operator-robots"])
 
@@ -58,7 +58,9 @@ def operator_robot_tickets(
             detail="tracker_upstream_error",
         ) from exc
 
-    sorted_items = tracker_filters.sort_issues_oldest_first(merged)
+    hidden_keys = task_lifecycle.hidden_issue_keys(db)
+    visible_items = [item for item in merged if item.get("key") not in hidden_keys]
+    sorted_items = tracker_filters.sort_issues_oldest_first(visible_items)
     return RobotTicketsOut(
         query=query,
         items=[_blocker_out(item) for item in sorted_items],
