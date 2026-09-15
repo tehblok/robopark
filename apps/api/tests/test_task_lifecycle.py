@@ -1,4 +1,5 @@
 import json
+from itertools import pairwise
 
 from conftest import login_as, role_id_for
 from robopark_api.collaboration_models import TrackerClaim
@@ -303,6 +304,52 @@ def test_submit_review_stages_one_photo_and_all_bot_actions_once(
     automatic = next(message for message in messages if "Передано на проверку" in message.text)
     assert "BD-01" in automatic.text
     assert "operator51" in automatic.text
+
+
+def test_rapid_review_lifecycle_builds_one_causal_transition_chain(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    operator = _operator(db_session, seed_park_with_tracker)
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+    assert _submit(client, key="review-chain-1", comment="Починил").status_code == 200
+
+    login_as(client, operator.username, "secret")
+    returned = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/review/return",
+        headers={"Idempotency-Key": "return-chain-1"},
+        json={"reason": "Нужно переснять"},
+    )
+    assert returned.status_code == 200
+
+    login_as(client, seed_mechanic.username, "secret")
+    # Replaying an older command after a newer transition must retain its original chain edge.
+    assert _submit(client, key="review-chain-1", comment="Починил").status_code == 200
+    assert _submit(client, key="review-chain-2", comment="Переснял").status_code == 200
+
+    login_as(client, operator.username, "secret")
+    approved = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/review/approve",
+        headers={"Idempotency-Key": "approve-chain-1"},
+    )
+    assert approved.status_code == 200
+
+    transitions = (
+        db_session.query(ReliableAction)
+        .filter(
+            ReliableAction.resource_id == ISSUE_KEY,
+            ReliableAction.action.in_(("start", "review", "return", "close")),
+        )
+        .order_by(ReliableAction.created_at, ReliableAction.id)
+        .all()
+    )
+    assert [row.action for row in transitions] == ["start", "review", "return", "review", "close"]
+    for previous, current in pairwise(transitions):
+        assert json.loads(current.payload_json)["depends_on_action_ids"] == [previous.id]
+    first_review_payload = json.loads(transitions[1].payload_json)
+    second_review_payload = json.loads(transitions[3].payload_json)
+    assert first_review_payload["depends_on_actions"] == ["comment", "attach", "set_field"]
+    assert second_review_payload["depends_on_actions"] == ["comment", "attach", "set_field"]
 
 
 def test_submit_review_requires_attachment_permission_before_queuing_any_actions(

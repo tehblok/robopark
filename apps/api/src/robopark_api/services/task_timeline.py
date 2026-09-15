@@ -30,13 +30,30 @@ from robopark_api.task_workflow_models import ReliableAction, TaskAttachment, Ta
 _API_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_RANK = {"tracker": 0, "system": 1, "user": 2}
 _ACTION_MARKER_RE = re.compile(
-    r"(?m)^\s*surp-action:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*$",
+    r"(?m)^\s*surp-action:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s*$",
     re.IGNORECASE,
 )
 
 
 def _strip_action_marker(text: object) -> str:
     return _ACTION_MARKER_RE.sub("", str(text or "")).strip()
+
+
+def _action_marker_id(text: object) -> str | None:
+    match = _ACTION_MARKER_RE.search(str(text or ""))
+    return match.group(1).lower() if match is not None else None
+
+
+def _remote_attachments(*groups: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for group in groups:
+        for attachment in group:
+            identity = str(attachment.get("id") or attachment)
+            if identity not in seen:
+                seen.add(identity)
+                merged.append(attachment)
+    return merged
 
 
 def staged_attachments_root() -> Path:
@@ -298,11 +315,45 @@ def merge_timeline(
     )
     seen_external = {row.external_id for row in local_rows if row.external_id}
     external_attachments: dict[str, list[dict]] = {}
+    marker_ids = {
+        marker_id
+        for comment in comments
+        if (marker_id := _action_marker_id(comment.get("text"))) is not None
+    }
+    attachment_rows = (
+        db.scalars(select(TaskAttachment).where(TaskAttachment.id.in_(marker_ids))).all()
+        if marker_ids
+        else []
+    )
+    valid_actions = {
+        row.id
+        for row in db.scalars(
+            select(ReliableAction).where(
+                ReliableAction.id.in_(marker_ids),
+                ReliableAction.resource_type == "tracker_issue",
+                ReliableAction.resource_id == issue_key,
+                ReliableAction.action == "attach",
+            )
+        ).all()
+    }
+    marker_messages = {
+        row.id: db.get(TaskMessage, row.message_id)
+        for row in attachment_rows
+        if row.id in valid_actions
+    }
+    message_external_attachments: dict[str, list[dict]] = {}
     for comment in comments:
         external_id = str(comment.get("id") or "").strip()
         if not external_id:
             continue
-        external_attachments[external_id] = list(comment.get("attachments") or [])
+        comment_attachments = list(comment.get("attachments") or [])
+        marker_message = marker_messages.get(_action_marker_id(comment.get("text")) or "")
+        if marker_message is not None and marker_message.issue_key == issue_key:
+            message_external_attachments.setdefault(marker_message.id, []).extend(
+                comment_attachments
+            )
+            continue
+        external_attachments[external_id] = comment_attachments
         if external_id in seen_external:
             continue
         created_at = _timestamp(comment.get("created_at"))
@@ -382,9 +433,11 @@ def merge_timeline(
             "text": _strip_action_marker(row.text) if row.kind == "tracker" else row.text,
             "created_at": _iso(row.created_at),
             "sync_state": _sync_state(row, actions.get(row.action_id)),
-            "attachments": external_attachments.get(
-                row.external_id or "", local_attachments.get(row.id, [])
-            ),
+            "attachments": _remote_attachments(
+                external_attachments.get(row.external_id or "", []),
+                message_external_attachments.get(row.id, []),
+            )
+            or local_attachments.get(row.id, []),
             "_sort": (row.created_at, _SOURCE_RANK[row.kind], row.id),
         }
         for row in local_rows

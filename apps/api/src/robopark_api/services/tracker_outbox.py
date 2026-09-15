@@ -53,13 +53,18 @@ def _dependency_state(db: Session, action: ReliableAction) -> str:
     except (TypeError, ValueError) as exc:
         raise DeliveryError("invalid_payload") from exc
     dependencies = payload.get("depends_on_actions", []) if isinstance(payload, dict) else []
+    dependency_ids = payload.get("depends_on_action_ids", []) if isinstance(payload, dict) else []
     if not isinstance(dependencies, list) or not all(
         isinstance(item, str) and item for item in dependencies
     ):
         raise DeliveryError("invalid_payload")
-    if not dependencies:
+    if not isinstance(dependency_ids, list) or not all(
+        isinstance(item, str) and item for item in dependency_ids
+    ):
+        raise DeliveryError("invalid_payload")
+    if not dependencies and not dependency_ids:
         return "ready"
-    rows = db.scalars(
+    named_rows = db.scalars(
         select(ReliableAction).where(
             ReliableAction.actor_user_id == action.actor_user_id,
             ReliableAction.resource_type == action.resource_type,
@@ -68,10 +73,23 @@ def _dependency_state(db: Session, action: ReliableAction) -> str:
             ReliableAction.action.in_(dependencies),
         )
     ).all()
-    states = {row.action: row.state for row in rows}
-    if any(states.get(name) == "needs_attention" for name in dependencies):
+    id_rows = db.scalars(
+        select(ReliableAction).where(
+            ReliableAction.id.in_(dependency_ids),
+            ReliableAction.resource_type == action.resource_type,
+            ReliableAction.resource_id == action.resource_id,
+        )
+    ).all()
+    named_states = {row.action: row.state for row in named_rows}
+    id_states = {row.id: row.state for row in id_rows}
+    if len(id_states) != len(set(dependency_ids)):
+        raise DeliveryError("invalid_payload")
+    states = [named_states.get(name) for name in dependencies] + [
+        id_states.get(action_id) for action_id in dependency_ids
+    ]
+    if "needs_attention" in states:
         return "failed"
-    if any(states.get(name) != "succeeded" for name in dependencies):
+    if any(state != "succeeded" for state in states):
         return "waiting"
     return "ready"
 
@@ -294,10 +312,10 @@ def _sync_message(db: Session, action: ReliableAction) -> None:
         return
     if action.state == "succeeded":
         message.sync_state = "synced"
-        if action.action == "comment" and action.result_json:
+        if action.action in {"comment", "attach"} and action.result_json:
             result = json.loads(action.result_json)
             external_id = str(result.get("external_id") or "").strip()
-            if external_id:
+            if external_id and (action.action == "comment" or message.external_id is None):
                 canonical_conflict = db.scalar(
                     select(TaskMessage).where(
                         TaskMessage.issue_key == action.resource_id,

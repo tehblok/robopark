@@ -323,6 +323,79 @@ def test_failed_review_prerequisite_blocks_transition_and_needs_attention(
         assert (saved.state, saved.error_code) == ("needs_attention", "prerequisite_failed")
 
 
+def test_transition_chain_survives_retry_and_restart_without_stale_final_status(
+    db_engine, db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    review = _action(db_session, seed_mechanic, action="review", payload={})
+    review.idempotency_key = "review-before-drain"
+    review.next_attempt_at = 1.0
+    review_id = review.id
+    returned = _action(
+        db_session,
+        seed_mechanic,
+        action="return",
+        payload={"depends_on_action_ids": [review_id]},
+    )
+    returned.idempotency_key = "return-before-drain"
+    returned.next_attempt_at = 0.0
+    returned_id = returned.id
+    db_session.commit()
+
+    remote = {"status": "In Progress", "status_key": "inProgress"}
+    delivered = []
+    first_review = True
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **_kwargs: {"key": "ROBOPARK-1", **remote},
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_transitions",
+        lambda **_kwargs: (
+            [{"id": "to-review", "display": "Review"}]
+            if remote["status"] == "In Progress"
+            else [{"id": "to-work", "display": "Return to work"}]
+        ),
+    )
+
+    def transition_issue(*, transition, **_kwargs):
+        nonlocal first_review
+        delivered.append(transition)
+        if transition == "to-review":
+            remote.update(status="Review", status_key="review")
+            if first_review:
+                first_review = False
+                raise tracker_outbox.tracker_client.TrackerError("request timeout")
+        else:
+            remote.update(status="In Progress", status_key="inProgress")
+
+    monkeypatch.setattr(tracker_outbox.tracker_client, "transition_issue", transition_issue)
+    factory = sessionmaker(bind=db_engine, future=True)
+
+    # The later return is due first, but must wait for its review prerequisite.
+    tracker_outbox._process_batch(factory)
+    with Session(db_engine) as db:
+        assert db.get(ReliableAction, returned_id).state == "pending"
+        retry = db.get(ReliableAction, review_id)
+        assert retry.state == "retry_wait"
+        retry.next_attempt_at = 0
+        db.commit()
+
+    # A new process sees Review already applied, completes that action, then returns to Work.
+    tracker_outbox._process_batch(factory)
+    tracker_outbox._process_batch(factory)
+
+    with Session(db_engine) as db:
+        assert db.get(ReliableAction, review_id).state == "succeeded"
+        assert db.get(ReliableAction, returned_id).state == "succeeded"
+    assert delivered == ["to-review", "to-work"]
+    assert remote["status"] == "In Progress"
+
+
 def test_worker_uploads_staged_attachment_by_action_id_and_adds_one_signed_comment(
     db_engine, db_session, seed_mechanic, tmp_path, monkeypatch
 ):
@@ -391,6 +464,7 @@ def test_worker_uploads_staged_attachment_by_action_id_and_adds_one_signed_comme
         assert saved.uploaded_at is not None
         assert db.get(ReliableAction, action_id).state == "succeeded"
         assert db.get(TaskMessage, message.id).sync_state == "synced"
+        assert db.get(TaskMessage, message.id).external_id == "comment-7"
     assert uploaded[0]["content"] == b"png-bytes"
     assert comments[0]["attachment_ids"] == ["temp-7"]
     assert comments[0]["text"].startswith("Фото готово\n\n—\n")
@@ -686,7 +760,13 @@ def test_worker_reconciles_attachment_comment_accepted_before_timeout_without_re
     def accepted_then_timeout(**kwargs):
         nonlocal posts
         posts += 1
-        remote_comments.append({"id": "attachment-comment-42", "text": kwargs["text"]})
+        remote_comments.append(
+            {
+                "id": "attachment-comment-42",
+                "text": kwargs["text"],
+                "attachments": [{"id": "remote-photo", "name": "photo.png", "size": 5}],
+            }
+        )
         raise tracker_outbox.tracker_client.TrackerError("request timeout")
 
     monkeypatch.setattr(tracker_outbox.tracker_client, "upload_temp_attachment", upload)
@@ -709,6 +789,16 @@ def test_worker_reconciles_attachment_comment_accepted_before_timeout_without_re
             "external_id": "attachment-comment-42",
         }
         assert db.get(TaskMessage, message.id).external_id == "primary-comment-7"
+        from robopark_api.services.task_timeline import merge_timeline
+
+        items = merge_timeline(db, issue_key="ROBOPARK-1", comments=remote_comments)
+        assert [item["id"] for item in items] == [message.id]
+        assert items[0]["attachments"] == [{"id": "remote-photo", "name": "photo.png", "size": 5}]
+        assert db.get(TaskAttachment, action_id) is not None
+        remote_comments[0]["attachments"] = []
+        fallback = merge_timeline(db, issue_key="ROBOPARK-1", comments=remote_comments)
+        assert [item["id"] for item in fallback] == [message.id]
+        assert [item["id"] for item in fallback[0]["attachments"]] == [action_id]
     assert (uploads, posts) == (1, 1)
 
 

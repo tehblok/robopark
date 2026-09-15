@@ -35,6 +35,7 @@ from robopark_api.task_workflow_models import (
 
 _IMAGE_MIMES = frozenset({"image/jpeg", "image/png", "image/webp"})
 _REVIEW_ROLES = frozenset({rbac.RoleSlug.OPERATOR, rbac.RoleSlug.ADMIN, rbac.RoleSlug.ROYAL})
+_TRANSITION_ACTIONS = frozenset({"start", "review", "return", "close"})
 
 
 def _role(user: User) -> str:
@@ -73,6 +74,52 @@ def _action(
         action=action,
         idempotency_key=idempotency_key,
         payload=payload,
+    )
+
+
+def _transition_action(
+    db: Session,
+    *,
+    actor: User,
+    issue_key: str,
+    action: str,
+    idempotency_key: str | None,
+    payload: dict,
+) -> BeginResult:
+    """Append one transition to the issue chain without changing replay payloads."""
+    effective_payload = dict(payload)
+    existing = db.scalar(
+        select(ReliableAction).where(
+            ReliableAction.actor_user_id == actor.id,
+            ReliableAction.resource_type == "tracker_issue",
+            ReliableAction.resource_id == issue_key,
+            ReliableAction.action == action,
+            ReliableAction.idempotency_key == idempotency_key,
+        )
+    )
+    if existing is not None:
+        saved_payload = json.loads(existing.payload_json)
+        if "depends_on_action_ids" in saved_payload:
+            effective_payload["depends_on_action_ids"] = saved_payload["depends_on_action_ids"]
+    else:
+        previous = db.scalar(
+            select(ReliableAction)
+            .where(
+                ReliableAction.resource_type == "tracker_issue",
+                ReliableAction.resource_id == issue_key,
+                ReliableAction.action.in_(_TRANSITION_ACTIONS),
+            )
+            .order_by(ReliableAction.created_at.desc(), ReliableAction.id.desc())
+        )
+        if previous is not None:
+            effective_payload["depends_on_action_ids"] = [previous.id]
+    return _action(
+        db,
+        actor=actor,
+        issue_key=issue_key,
+        action=action,
+        idempotency_key=idempotency_key,
+        payload=effective_payload,
     )
 
 
@@ -243,7 +290,7 @@ def claim(
     if _role(actor) != rbac.RoleSlug.MECHANIC:
         raise HTTPException(403, "task_claim_mechanic_required")
     payload = {"owner_user_id": actor.id, "park_id": park.id}
-    begun = _action(
+    begun = _transition_action(
         db,
         actor=actor,
         issue_key=issue_key,
@@ -455,7 +502,7 @@ def submit_review(
         "depends_on_actions": dependencies,
         "photo_sha256": digest,
     }
-    primary = _action(
+    primary = _transition_action(
         db,
         actor=actor,
         issue_key=issue_key,
@@ -630,7 +677,7 @@ def return_review(
     }
     if review is None or review.state != "pending":
         raise HTTPException(409, "task_review_not_pending")
-    begun = _action(
+    begun = _transition_action(
         db,
         actor=actor,
         issue_key=issue_key,
@@ -671,7 +718,8 @@ def return_review(
             command="return_review",
             performed_at=begun.row.created_at,
         )
-        encoded, digest = canonical_payload({**payload, "local_response": local_response})
+        saved_payload = json.loads(begun.row.payload_json)
+        encoded, digest = canonical_payload({**saved_payload, "local_response": local_response})
         begun.row.payload_json = encoded
         begun.row.payload_hash = digest
         db.commit()
@@ -715,7 +763,7 @@ def approve_review(
         raise HTTPException(409, "task_review_not_pending")
     if review.state != "pending":
         raise HTTPException(409, "task_review_not_pending")
-    begun = _action(
+    begun = _transition_action(
         db,
         actor=actor,
         issue_key=issue_key,
