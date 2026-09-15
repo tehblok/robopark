@@ -170,6 +170,41 @@ it('requires a reason to hide and restores a hidden task without loading its tim
   expect(taskTimeline).not.toHaveBeenCalled()
 })
 
+it('keeps hidden detail and restore controls on the same phone mount after hiding', async () => {
+  vi.stubGlobal('innerWidth', 390)
+  const admin = { ...user, role: 'admin' as const }
+  const visible = {
+    ...issue,
+    workflow: { owner: null, review_state: null, display_status: 'queued' as const, sync_state: 'saved' as const, has_current_cycle_comment: false },
+  }
+  const hidden = {
+    ...issue,
+    workflow: { ...visible.workflow, display_status: 'hidden' as const,
+      hidden: { reason: 'Дубль с телефона', actor: 'admin', created_at: '2026-09-15T09:00:00Z' } },
+  }
+  const trackerIssue = vi.fn().mockResolvedValueOnce(visible).mockResolvedValue(hidden)
+  const taskTimeline = vi.fn()
+    .mockResolvedValueOnce([])
+    .mockRejectedValue(new ApiError(404, 'task_not_found', 'hidden-comments'))
+  const taskHide = vi.fn(async () => ({ ...actionResult('hide'), sync_state: 'saved' as const, workflow: hidden.workflow }))
+  const client = apiClient({ trackerIssue, taskTimeline, taskHide })
+
+  renderWorkbench({
+    client,
+    currentUser: admin,
+    currentState: { ...state, filters: { ...state.filters, includeHidden: true } },
+  })
+  fireEvent.click(await screen.findByRole('button', { name: 'Скрыть задачу' }))
+  fireEvent.change(screen.getByRole('textbox', { name: 'Причина скрытия' }), {
+    target: { value: 'Дубль с телефона' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Подтвердить скрытие' }))
+
+  expect(await screen.findByText('Причина скрытия: Дубль с телефона')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Восстановить задачу' })).toBeVisible()
+  expect(taskTimeline).toHaveBeenCalledOnce()
+})
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (error: unknown) => void

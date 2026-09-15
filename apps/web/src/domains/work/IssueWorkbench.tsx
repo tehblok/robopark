@@ -639,14 +639,14 @@ function IssueWorkbenchOwner({
     onOpenIssue(key)
   }
 
-  const invalidateMutationResources = useCallback(() => {
+  const invalidateMutationResources = useCallback((refreshComments = true) => {
     resourceStore.invalidate(`${accessPrefix}list:${selectedPark.id}:`, {
       prefix: true,
     })
     resourceStore.invalidate(ownedKey)
     if (!issueKey) return
     resourceStore.invalidate(detailKey)
-    resourceStore.invalidate(commentsKey)
+    if (refreshComments) resourceStore.invalidate(commentsKey)
     resourceStore.invalidate(`${accessPrefix}transitions:${issueKey}`)
     resourceStore.invalidate(`${accessPrefix}related:${issueKey}:`, { prefix: true })
     setRelatedRefreshGeneration((generation) => generation + 1)
@@ -654,7 +654,7 @@ function IssueWorkbenchOwner({
       list.refresh(),
       ...(user.role === 'mechanic' ? [owned.refresh()] : []),
       detail.refresh(),
-      comments.refresh(),
+      ...(refreshComments ? [comments.refresh()] : []),
       ...(transitionsEnabled ? [transitions.refresh()] : []),
     ])
   }, [
@@ -673,7 +673,7 @@ function IssueWorkbenchOwner({
     user.role,
   ])
 
-  const mutate = useCallback(async (action: (assertCurrent: () => void) => Promise<unknown>, onSuccess?: () => void) => {
+  const mutate = useCallback(async (action: (assertCurrent: () => void) => Promise<unknown>, onSuccess?: () => void, refreshComments = true) => {
     const generation = ownerGeneration.current
     const accessGeneration = getAccessGeneration()
     const assertCurrent = () => {
@@ -687,7 +687,7 @@ function IssueWorkbenchOwner({
       throw error
     }
     if (generation !== ownerGeneration.current || getAccessGeneration() !== accessGeneration) return
-    invalidateMutationResources()
+    invalidateMutationResources(refreshComments)
     onSuccess?.()
   }, [getAccessGeneration, guarded, invalidateMutationResources])
 
@@ -705,13 +705,14 @@ function IssueWorkbenchOwner({
     request: (key: string) => Promise<unknown>,
     message: string,
     onSuccess?: () => void,
+    refreshComments = true,
   ) => {
     if (taskControlBusy) return
     setTaskControlBusy(true)
     setTaskControlMessage('')
     setTaskControlError('')
     try {
-      await mutate(() => lifecycleMutation(action, payload, request), onSuccess)
+      await mutate(() => lifecycleMutation(action, payload, request), onSuccess, refreshComments)
       setTaskControlMessage(message)
     } catch (error) {
       setTaskControlError(classifyApiError(error, 'Не удалось изменить задачу.').description)
@@ -720,16 +721,17 @@ function IssueWorkbenchOwner({
     }
   }, [lifecycleMutation, mutate, taskControlBusy])
 
+  const effectiveCommentsFailure = hiddenDetail ? null : commentsFailure
   const detailSideFailure = useMemo(() => {
     const failures = [
       detailFailure,
-      commentsFailure,
+      effectiveCommentsFailure,
       transitionsFailure,
     ].filter((failure): failure is DomainError => failure != null)
     return failures.find((failure) => !canRetainProtectedData(failure))
       ?? failures[0]
       ?? null
-  }, [commentsFailure, detailFailure, transitionsFailure])
+  }, [detailFailure, effectiveCommentsFailure, transitionsFailure])
   const detailSideDataAvailable = Boolean(
     detail.data
       && (hiddenDetail || comments.data !== undefined)
@@ -789,7 +791,7 @@ function IssueWorkbenchOwner({
                 failure={detailSideFailure}
                 onRetry={() => void Promise.allSettled([
                   detail.refresh(),
-                  comments.refresh(),
+                  ...(!hiddenDetail ? [comments.refresh()] : []),
                   ...(transitionsEnabled ? [transitions.refresh()] : []),
                 ])}
               >
@@ -812,9 +814,9 @@ function IssueWorkbenchOwner({
                         panelIdFor={tab => `work-panel-${tab}`} />
                     </> : null}
                     <TabPanel id="work-panel-task" labelledBy="tab-task" active={activeTab === 'task'} key={issueKey}>
-                    <SyncStatus updatedAt={detail.updatedAt !== null && comments.updatedAt !== null ? Math.min(detail.updatedAt, comments.updatedAt) : null}
-                      isRevalidating={detail.isRevalidating || comments.isRevalidating}
-                      error={detail.error || comments.error} />
+                    <SyncStatus updatedAt={hiddenDetail ? detail.updatedAt : detail.updatedAt !== null && comments.updatedAt !== null ? Math.min(detail.updatedAt, comments.updatedAt) : null}
+                      isRevalidating={detail.isRevalidating || (!hiddenDetail && comments.isRevalidating)}
+                      error={detail.error || (!hiddenDetail ? comments.error : null)} />
                     {detail.data?.workflow ? <>
                       <TaskIssueSummary issue={detail.data} now={now} robotReadOnly={!mechanicCanWork}
                         onOpenRobotCheck={mechanicCanWork ? () => changeTab('check') : undefined} />
@@ -835,7 +837,7 @@ function IssueWorkbenchOwner({
                             <label className="field"><span className="field-label">Причина скрытия</span><textarea maxLength={4000} onChange={event => setHideReason(event.target.value)} value={hideReason} /></label>
                             <div className="form-actions"><Button busy={taskControlBusy} disabled={!hideReason.trim()} onClick={() => void runTaskControl(
                               'hide-task', { reason: hideReason.trim() }, key => apiClient.taskHide!(detail.data!.key, hideReason.trim(), key),
-                              'Задача скрыта', includeHidden ? undefined : onCloseIssue,
+                              'Задача скрыта', includeHidden ? undefined : onCloseIssue, false,
                             )} variant="danger">Подтвердить скрытие</Button><Button onClick={() => { setHideOpen(false); setHideReason('') }} variant="secondary">Отмена</Button></div>
                           </div>}
                         </>}

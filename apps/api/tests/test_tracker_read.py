@@ -1,6 +1,7 @@
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -275,7 +276,7 @@ def test_tracker_work_page_hydrates_only_returned_items_and_orders_exact_queue_t
             }
         ]
 
-    monkeypatch.setattr(tracker_client, "get_issue_status_history", history, raising=False)
+    monkeypatch.setattr(tracker_client, "_load_work_status_history", history)
     login_as(client, "op2", "secret")
 
     items = client.get("/tracker/issues?sort=oldest&limit=2").json()["items"]
@@ -304,7 +305,7 @@ def test_tracker_work_history_failure_falls_back_to_estimated_creation(
         calls.append((token, key))
         raise tracker_client.TrackerError("history unavailable")
 
-    monkeypatch.setattr(tracker_client, "get_issue_status_history", failed_history, raising=False)
+    monkeypatch.setattr(tracker_client, "_load_work_status_history", failed_history)
     login_as(client, "op2", "secret")
 
     item = client.get("/tracker/issues").json()["items"][0]
@@ -338,7 +339,7 @@ def test_tracker_work_cold_page_has_one_short_history_budget_and_bounded_calls(
         release.wait(5)
         raise tracker_client.TrackerError("history unavailable")
 
-    monkeypatch.setattr(tracker_client, "get_issue_status_history", stalled_history, raising=False)
+    monkeypatch.setattr(tracker_client, "_load_work_status_history", stalled_history)
     login_as(client, "op2", "secret")
 
     started = time.monotonic()
@@ -353,6 +354,76 @@ def test_tracker_work_cold_page_has_one_short_history_budget_and_bounded_calls(
     assert len(calls) <= 2
     assert len(response.json()["items"]) == 200
     assert {item["sla_source"] for item in response.json()["items"]} == {"estimated"}
+
+
+def test_tracker_work_history_does_not_enqueue_the_inner_tracker_executor(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_api, tracker_client
+
+    inner_release = threading.Event()
+    inner_started = threading.Barrier(tracker_api.MAX_INFLIGHT + 1)
+
+    def occupy_inner_worker():
+        inner_started.wait(timeout=2)
+        inner_release.wait(5)
+
+    inner_futures = [
+        tracker_api._executor.submit(occupy_inner_worker)  # noqa: SLF001
+        for _ in range(tracker_api.MAX_INFLIGHT)
+    ]
+    inner_started.wait(timeout=2)
+
+    history_release = threading.Event()
+    history_calls: list[str] = []
+    history_lock = threading.Lock()
+
+    class StalledChangelog:
+        def __init__(self, key: str):
+            self.key = key
+
+        def get_all(self):
+            with history_lock:
+                history_calls.append(self.key)
+            history_release.wait(5)
+            return []
+
+    generation = 0
+
+    def search(**_kwargs):
+        nonlocal generation
+        generation += 1
+        return [
+            {
+                **_scoped_issue(f"ROBOPARK-{generation}-{index}", "2026-01-02T10:00:00Z"),
+                "_tracker_resource": SimpleNamespace(
+                    changelog=StalledChangelog(f"ROBOPARK-{generation}-{index}")
+                ),
+            }
+            for index in range(200)
+        ]
+
+    monkeypatch.setattr(tracker_client, "search_issues", search)
+    login_as(client, "op2", "secret")
+
+    try:
+        first = client.get("/tracker/issues?limit=200")
+        second = client.get("/tracker/issues?limit=200")
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert len(history_calls) == 2
+        assert tracker_client._work_history_executor._work_queue.qsize() == 0  # noqa: SLF001
+        assert tracker_api._executor._work_queue.qsize() == 0  # noqa: SLF001
+        assert {item["sla_source"] for item in first.json()["items"]} == {"estimated"}
+        assert {item["sla_source"] for item in second.json()["items"]} == {"estimated"}
+    finally:
+        history_release.set()
+        inner_release.set()
+        for future in inner_futures:
+            future.result(timeout=2)
 
 
 def test_tracker_work_history_hydration_reuses_a_fixed_worker_pool(
@@ -370,9 +441,8 @@ def test_tracker_work_history_hydration_reuses_a_fixed_worker_pool(
     release = threading.Event()
     monkeypatch.setattr(
         tracker_client,
-        "get_issue_status_history",
+        "_load_work_status_history",
         lambda **_kwargs: release.wait(5) or [],
-        raising=False,
     )
     login_as(client, "op2", "secret")
 

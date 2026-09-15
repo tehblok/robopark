@@ -859,6 +859,26 @@ def get_issue_status_history(*, token: str, key: str, issue: dict[str, Any]) -> 
     return _run_tracked(_run, max_attempts=1, call_timeout=10.0)
 
 
+def _load_work_status_history(*, token: str, key: str, issue: dict[str, Any]) -> list[Any]:
+    """Load one Work changelog in the caller's already-bounded worker."""
+    del token, key
+    resource = issue.get("_tracker_resource")
+    if resource is None:
+        return []
+    from robopark_api.services.tracker_api import tracker_slot
+
+    try:
+        with tracker_slot():
+            return list(resource.changelog.get_all())
+    except TrackerError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        mapped = _map_exc(exc)
+        if mapped is exc:
+            raise
+        raise mapped from exc
+
+
 def schedule_issue_status_history(
     *, token: str, key: str, issue: dict[str, Any], allow_start: bool = True
 ) -> tuple[Future[list[Any]] | None, bool]:
@@ -887,7 +907,7 @@ def schedule_issue_status_history(
 
         def load() -> list[Any]:
             try:
-                return get_issue_status_history(token=token, key=key, issue=issue)
+                return _load_work_status_history(token=token, key=key, issue=issue)
             except TrackerError:
                 return []
 
