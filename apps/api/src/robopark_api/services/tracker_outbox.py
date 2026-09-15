@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from robopark_api.models import User
@@ -268,6 +269,23 @@ def _sync_message(db: Session, action: ReliableAction) -> None:
             result = json.loads(action.result_json)
             external_id = str(result.get("external_id") or "").strip()
             if external_id:
+                canonical_conflict = db.scalar(
+                    select(TaskMessage).where(
+                        TaskMessage.issue_key == action.resource_id,
+                        TaskMessage.kind == message.kind,
+                        TaskMessage.external_id == external_id,
+                        TaskMessage.id != message.id,
+                    )
+                )
+                if canonical_conflict is not None:
+                    mark_needs_attention(
+                        db,
+                        action,
+                        error_code="timeline_external_id_conflict",
+                    )
+                    message.sync_state = "needs_attention"
+                    message.updated_at = action.updated_at
+                    return
                 tracker_twin = db.scalar(
                     select(TaskMessage).where(
                         TaskMessage.issue_key == action.resource_id,
@@ -275,9 +293,28 @@ def _sync_message(db: Session, action: ReliableAction) -> None:
                         TaskMessage.external_id == external_id,
                     )
                 )
-                if tracker_twin is not None:
-                    db.delete(tracker_twin)
-                message.external_id = external_id
+                try:
+                    with db.begin_nested():
+                        if tracker_twin is not None:
+                            attachments = db.scalars(
+                                select(TaskAttachment).where(
+                                    TaskAttachment.message_id == tracker_twin.id
+                                )
+                            ).all()
+                            for attachment in attachments:
+                                attachment.message_id = message.id
+                            db.flush()
+                            db.delete(tracker_twin)
+                        message.external_id = external_id
+                        db.flush()
+                except IntegrityError:
+                    mark_needs_attention(
+                        db,
+                        action,
+                        error_code="timeline_external_id_conflict",
+                    )
+                    message.sync_state = "needs_attention"
+                    message.updated_at = action.updated_at
     elif action.state == "needs_attention":
         message.sync_state = "needs_attention"
     else:
