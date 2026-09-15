@@ -60,6 +60,7 @@ from robopark_api.services.ops.maintenance import host_maintenance_active
 from robopark_api.services.ops.reconcile import reconcile_pending_rebuild
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
 from robopark_api.services.session_cleanup import run_session_cleanup_loop
+from robopark_api.services.tracker_outbox import run_tracker_outbox_loop
 
 
 def create_app() -> FastAPI:
@@ -132,7 +133,12 @@ def create_app() -> FastAPI:
                 ]
             )
             if owns_job_lease:
-                tasks.append(asyncio.create_task(run_cache_cleanup_loop(stop_event)))
+                tasks.extend(
+                    [
+                        asyncio.create_task(run_cache_cleanup_loop(stop_event)),
+                        asyncio.create_task(run_tracker_outbox_loop(SessionLocal, stop_event)),
+                    ]
+                )
 
         startup = asyncio.create_task(start_writers())
         try:

@@ -1,0 +1,342 @@
+import asyncio
+import hashlib
+import json
+
+from sqlalchemy.orm import Session, sessionmaker
+
+from robopark_api.task_workflow_models import ReliableAction, TaskAttachment, TaskMessage
+
+
+def _action(db, actor, *, action="comment", payload=None, state="pending", lease_until=None):
+    encoded = json.dumps(payload or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    row = ReliableAction(
+        actor_user_id=actor.id,
+        resource_type="tracker_issue",
+        resource_id="ROBOPARK-1",
+        action=action,
+        idempotency_key=f"{action}-delivery-0001",
+        payload_hash=hashlib.sha256(encoded.encode()).hexdigest(),
+        payload_json=encoded,
+        state=state,
+        next_attempt_at=0.0,
+        lease_until=lease_until,
+        created_at=1.0,
+        updated_at=1.0,
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def _run_one_cycle(factory, stop_event, monkeypatch):
+    from robopark_api.services import tracker_outbox
+
+    real_claim = tracker_outbox.claim_due_batch
+
+    def claim_once(db, **kwargs):
+        rows = real_claim(db, **kwargs)
+        stop_event.set()
+        return rows
+
+    monkeypatch.setattr(tracker_outbox, "claim_due_batch", claim_once)
+    asyncio.run(tracker_outbox.run_tracker_outbox_loop(factory, stop_event, interval_seconds=3600))
+
+
+def test_worker_delivers_signed_comment_completes_action_and_invalidates_cache(
+    db_engine, db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    action = _action(db_session, seed_mechanic, payload={"text": "Готово"})
+    action_id = action.id
+    delivered = []
+    invalidated = []
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **kwargs: {"key": "ROBOPARK-1", "tags": ["Alpha"], "status": "Open"},
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "add_comment",
+        lambda **kwargs: delivered.append(kwargs) or {"id": "comment-42", "text": kwargs["text"]},
+    )
+    monkeypatch.setattr(tracker_outbox.tracker_cache, "invalidate_issue", invalidated.append)
+    stop = asyncio.Event()
+
+    _run_one_cycle(sessionmaker(bind=db_engine, future=True), stop, monkeypatch)
+
+    with Session(db_engine) as db:
+        saved = db.get(ReliableAction, action_id)
+        assert saved.state == "succeeded"
+        assert json.loads(saved.result_json) == {"external_id": "comment-42"}
+    assert delivered[0]["key"] == "ROBOPARK-1"
+    assert delivered[0]["text"].startswith("Готово\n\n—\n")
+    assert invalidated == ["ROBOPARK-1"]
+
+
+def test_worker_schedules_transient_retry_and_marks_permanent_error_for_attention(
+    db_engine, db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    retry = _action(db_session, seed_mechanic, payload={"text": "one"})
+    retry.idempotency_key = "retry-delivery-0001"
+    permanent = _action(db_session, seed_mechanic, payload={"text": "two"})
+    permanent.idempotency_key = "permanent-delivery-0001"
+    permanent.next_attempt_at = 1.0
+    db_session.commit()
+    ids = retry.id, permanent.id
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **kwargs: {"key": "ROBOPARK-1", "status": "Open"},
+    )
+    errors = iter(
+        [
+            tracker_outbox.tracker_client.TrackerError("request timeout"),
+            tracker_outbox.tracker_client.TrackerError("comment create failed: 400"),
+        ]
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "add_comment",
+        lambda **kwargs: (_ for _ in ()).throw(next(errors)),
+    )
+    stop = asyncio.Event()
+
+    _run_one_cycle(sessionmaker(bind=db_engine, future=True), stop, monkeypatch)
+
+    with Session(db_engine) as db:
+        assert db.get(ReliableAction, ids[0]).state == "retry_wait"
+        assert db.get(ReliableAction, ids[0]).attempts == 1
+        assert db.get(ReliableAction, ids[1]).state == "needs_attention"
+
+
+def test_worker_recovers_expired_transition_lease_without_duplicate_delivery(
+    db_engine, db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    action = _action(
+        db_session,
+        seed_mechanic,
+        action="start",
+        payload={},
+        state="sending",
+        lease_until=0.0,
+    )
+    action_id = action.id
+    transitions = []
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **kwargs: {"key": "ROBOPARK-1", "status": "В работе", "status_key": "inProgress"},
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "transition_issue",
+        lambda **kwargs: transitions.append(kwargs),
+    )
+    stop = asyncio.Event()
+
+    _run_one_cycle(sessionmaker(bind=db_engine, future=True), stop, monkeypatch)
+
+    with Session(db_engine) as db:
+        assert db.get(ReliableAction, action_id).state == "succeeded"
+    assert transitions == []
+
+
+def test_worker_recognizes_return_transition_target_status_after_restart(
+    db_engine, db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    action = _action(
+        db_session,
+        seed_mechanic,
+        action="return",
+        payload={},
+        state="sending",
+        lease_until=0.0,
+    )
+    action_id = action.id
+    transitions = []
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **kwargs: {"key": "ROBOPARK-1", "status": "In Progress"},
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "transition_issue",
+        lambda **kwargs: transitions.append(kwargs),
+    )
+    stop = asyncio.Event()
+
+    _run_one_cycle(sessionmaker(bind=db_engine, future=True), stop, monkeypatch)
+
+    with Session(db_engine) as db:
+        assert db.get(ReliableAction, action_id).state == "succeeded"
+    assert transitions == []
+
+
+def test_worker_stores_transition_missing_instead_of_choosing_arbitrary_transition(
+    db_engine, db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    action = _action(db_session, seed_mechanic, action="review", payload={})
+    action_id = action.id
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **kwargs: {"key": "ROBOPARK-1", "status": "In Progress"},
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_transitions",
+        lambda **kwargs: [{"id": "pause", "display": "Pause"}],
+    )
+    stop = asyncio.Event()
+
+    _run_one_cycle(sessionmaker(bind=db_engine, future=True), stop, monkeypatch)
+
+    with Session(db_engine) as db:
+        saved = db.get(ReliableAction, action_id)
+        assert (saved.state, saved.error_code) == (
+            "needs_attention",
+            "tracker_transition_missing",
+        )
+
+
+def test_worker_uploads_staged_attachment_by_action_id_and_adds_one_signed_comment(
+    db_engine, db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    message = TaskMessage(
+        id="message-1",
+        issue_key="ROBOPARK-1",
+        kind="user",
+        author_user_id=seed_mechanic.id,
+        author_name=seed_mechanic.username,
+        text="Фото готово",
+        sync_state="pending",
+        created_at=1.0,
+        updated_at=1.0,
+    )
+    db_session.add(message)
+    action = _action(
+        db_session,
+        seed_mechanic,
+        action="attach",
+        payload={"filename": "photo.png", "message_id": message.id, "mime_type": "image/png"},
+    )
+    blob = tmp_path / "blob"
+    blob.write_bytes(b"png-bytes")
+    db_session.add(
+        TaskAttachment(
+            id=action.id,
+            message_id=message.id,
+            blob_name=blob.name,
+            original_name="photo.png",
+            mime_type="image/png",
+            size_bytes=9,
+            sha256=hashlib.sha256(b"png-bytes").hexdigest(),
+            created_at=1.0,
+        )
+    )
+    db_session.commit()
+    action_id = action.id
+    uploaded = []
+    comments = []
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(tracker_outbox, "staged_attachments_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **kwargs: {"key": "ROBOPARK-1", "status": "Open"},
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "upload_temp_attachment",
+        lambda **kwargs: uploaded.append(kwargs) or "temp-7",
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "add_comment",
+        lambda **kwargs: comments.append(kwargs) or {"id": "comment-7"},
+    )
+    stop = asyncio.Event()
+
+    _run_one_cycle(sessionmaker(bind=db_engine, future=True), stop, monkeypatch)
+
+    with Session(db_engine) as db:
+        saved = db.get(TaskAttachment, action_id)
+        assert saved.uploaded_at is not None
+        assert db.get(ReliableAction, action_id).state == "succeeded"
+        assert db.get(TaskMessage, message.id).sync_state == "synced"
+    assert uploaded[0]["content"] == b"png-bytes"
+    assert comments[0]["attachment_ids"] == ["temp-7"]
+    assert comments[0]["text"].startswith("Фото готово\n\n—\n")
+
+
+def test_worker_delivers_only_allowlisted_tracker_field(
+    db_engine, db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    allowed = _action(
+        db_session,
+        seed_mechanic,
+        action="set_field",
+        payload={"field": "theDefectCode", "value": "motor"},
+    )
+    allowed.idempotency_key = "allowed-field-0001"
+    denied = _action(
+        db_session,
+        seed_mechanic,
+        action="set_field",
+        payload={"field": "assignee", "value": "someone"},
+    )
+    denied.idempotency_key = "denied-field-0001"
+    db_session.commit()
+    ids = allowed.id, denied.id
+    updates = []
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **kwargs: {"key": "ROBOPARK-1", "status": "Open"},
+    )
+    monkeypatch.setattr(tracker_outbox, "_set_issue_field", lambda **kwargs: updates.append(kwargs))
+    stop = asyncio.Event()
+
+    _run_one_cycle(sessionmaker(bind=db_engine, future=True), stop, monkeypatch)
+
+    with Session(db_engine) as db:
+        assert db.get(ReliableAction, ids[0]).state == "succeeded"
+        assert db.get(ReliableAction, ids[1]).state == "needs_attention"
+    assert updates == [
+        {
+            "token": "token",
+            "key": "ROBOPARK-1",
+            "field_id": "60df26695151a36df681d67b--theDefectCode",
+            "value": "motor",
+        }
+    ]
+
+
+def test_worker_returns_immediately_when_shutdown_is_already_requested():
+    from robopark_api.services.tracker_outbox import run_tracker_outbox_loop
+
+    stop = asyncio.Event()
+    stop.set()
+
+    asyncio.run(run_tracker_outbox_loop(lambda: (_ for _ in ()).throw(AssertionError()), stop))
