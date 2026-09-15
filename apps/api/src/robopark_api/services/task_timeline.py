@@ -200,6 +200,7 @@ def stage_attachment(
         idempotency_key=idempotency_key,
         payload={
             "filename": original_name,
+            "message_id": message.id,
             "mime_type": resolved_type,
             "sha256": digest,
             "size_bytes": len(content),

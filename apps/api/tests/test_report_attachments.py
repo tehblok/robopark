@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from alembic import command as alembic_command
 from alembic.config import Config
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -157,10 +158,67 @@ def test_successful_staged_attachment_retry_reuses_row_action_and_blob(
     assert list(task_timeline.staged_attachments_root().iterdir()) == [first_path]
     assert json.loads(action.payload_json) == {
         "filename": "done.png",
+        "message_id": message.id,
         "mime_type": "image/png",
         "sha256": hashlib.sha256(TINY_PNG).hexdigest(),
         "size_bytes": len(TINY_PNG),
     }
+
+
+def test_staged_attachment_idempotency_key_cannot_replay_across_messages(
+    db_session, seed_royal, test_settings, monkeypatch
+):
+    from robopark_api.services import task_timeline
+    from robopark_api.services.reliable_actions import complete_action
+
+    monkeypatch.setattr(task_timeline, "get_settings", lambda: test_settings)
+    first_message = task_timeline.append_system_message(
+        db_session, issue_key="ROBOPARK-1", actor=seed_royal, text="First photo"
+    )
+    second_message = task_timeline.append_system_message(
+        db_session, issue_key="ROBOPARK-1", actor=seed_royal, text="Second photo"
+    )
+    db_session.commit()
+    first, action = task_timeline.stage_attachment(
+        db_session,
+        actor=seed_royal,
+        issue_key="ROBOPARK-1",
+        message=first_message,
+        idempotency_key="attachment-message-scope-0001",
+        filename="done.png",
+        content=TINY_PNG,
+        content_type="image/png",
+    )
+    complete_action(db_session, action, {"external_id": "tracker-file-1"})
+    db_session.commit()
+
+    replay, replay_action = task_timeline.stage_attachment(
+        db_session,
+        actor=seed_royal,
+        issue_key="ROBOPARK-1",
+        message=first_message,
+        idempotency_key="attachment-message-scope-0001",
+        filename="done.png",
+        content=TINY_PNG,
+        content_type="image/png",
+    )
+    with pytest.raises(HTTPException) as error:
+        task_timeline.stage_attachment(
+            db_session,
+            actor=seed_royal,
+            issue_key="ROBOPARK-1",
+            message=second_message,
+            idempotency_key="attachment-message-scope-0001",
+            filename="done.png",
+            content=TINY_PNG,
+            content_type="image/png",
+        )
+
+    assert (replay.id, replay_action.id) == (first.id, action.id)
+    assert error.value.status_code == 409
+    assert error.value.detail == "reliable_action_payload_conflict"
+    attachments = list(db_session.scalars(select(TaskAttachment)).all())
+    assert [(item.id, item.message_id) for item in attachments] == [(action.id, first_message.id)]
 
 
 @pytest.fixture
