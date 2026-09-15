@@ -92,14 +92,15 @@ describe('canAccessRoute', () => {
     expect(navigationForUser(manager, 'desktop').map((item) => item.id)).toContain('admin')
   })
 
-  it('shares canonical and legacy permission gates without granting drivers Work', () => {
+  it('shares canonical and legacy permission gates and lets dashboard users reach Work', () => {
     const driver = user({ role: 'driver', permissions: ['nav.dashboard', 'nav.robot_search', 'nav.emergency'] })
     for (const id of ['overview', 'robots', 'robot-detail', 'robot-check', 'legacy-robot-check'] as const) {
       expect(canAccessRoute(driver, id)).toBe(true)
     }
     for (const id of ['work', 'work-issue'] as const) {
-      expect(canAccessRoute(driver, id)).toBe(false)
+      expect(canAccessRoute(driver, id)).toBe(true)
       expect(canAccessRoute(user({ permissions: ['nav.tasks'] }), id)).toBe(true)
+      expect(canAccessRoute(user({ permissions: ['nav.robot_search'] }), id)).toBe(false)
     }
     for (const id of ['robot-check', 'legacy-robot-check'] as const) {
       expect(canAccessRoute(user({ permissions: ['nav.robot_search'] }), id)).toBe(false)

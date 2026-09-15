@@ -1,18 +1,21 @@
-import { fireEvent, screen } from '@testing-library/react'
+import { screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
-import { api } from '../api'
 import { resourceStore } from '../lib/resource'
 import { installMatchMedia, renderApp, testUser } from '../test/renderApp'
 
+const north = { id: 7, name: 'Северный', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
+
 afterEach(() => { vi.restoreAllMocks(); resourceStore.clearAll() })
 
-it('shows issue filters before the explicitly disclosed policy editor at 390px', async () => {
+it('redirects the retired Tracker workspace to Work without reviving manual filters', async () => {
   installMatchMedia({ width: 390 })
-  vi.spyOn(api, 'trackerPolicy').mockResolvedValue({ operator_show_untagged: false, operator_show_raw: false, operator_show_firmware_profile: false, mechanic_can_write: false })
-  vi.spyOn(api, 'trackerIssues').mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0, has_more: false })
-  renderApp('/admin/tracker?park=7', testUser({ role: 'admin', permissions: ['nav.admin.tracker', 'tracker.read'] }))
-  expect(await screen.findByRole('button', { name: 'Фильтры' })).toBeVisible()
-  expect(screen.queryByRole('checkbox', { name: 'Запись механика' })).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: 'Настроить политику Tracker' }))
-  expect(screen.getByRole('checkbox', { name: 'Запись механика' })).toBeVisible()
+  renderApp('/admin/tracker?park=7', testUser({
+    permissions: ['nav.dashboard', 'nav.tasks', 'nav.emergency'],
+    parks: [north],
+  }))
+
+  expect(await screen.findByRole('heading', { name: 'Работа' })).toBeVisible()
+  expect(screen.getByTestId('location')).toHaveTextContent('/work?park=7')
+  expect(screen.queryByRole('button', { name: 'Фильтры' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Настроить политику Tracker' })).not.toBeInTheDocument()
 })
