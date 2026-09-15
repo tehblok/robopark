@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -36,6 +37,7 @@ _TRANSITION_ACTIONS = frozenset({"start", "review", "return", "close"})
 _ALLOWED_TRACKER_FIELDS = {
     "theDefectCode": "60df26695151a36df681d67b--theDefectCode",
 }
+_ACTION_MARKER_PREFIX = "surp-action:"
 
 
 class DeliveryError(Exception):
@@ -44,21 +46,53 @@ class DeliveryError(Exception):
         self.code = code
 
 
-def _signed_text(db: Session, actor: User, issue: dict, body: str) -> str:
+def _action_marker(action: ReliableAction) -> str:
+    return f"{_ACTION_MARKER_PREFIX}{action.id}"
+
+
+def _signed_text(
+    db: Session,
+    action: ReliableAction,
+    actor: User,
+    issue: dict,
+    body: str,
+) -> str:
     context = tracker_signatures.build_signature_context(db, actor, issue)
-    return tracker_signatures.format_signed_comment(
+    signed = tracker_signatures.format_signed_comment(
         body=body,
         park_name=context.park_name,
         mechanic_login=context.mechanic_login,
         operator_login=context.operator_login,
         actor_login=context.actor_login,
+        occurred_at=datetime.fromtimestamp(action.created_at, UTC),
     )
+    return f"{signed}\n\n{_action_marker(action)}"
 
 
 def _external_id(result: Any) -> str:
     if isinstance(result, dict):
         return str(result.get("id") or result.get("longId") or "")
     return ""
+
+
+def _reconciled_external_id(
+    action: ReliableAction,
+    *,
+    token: str,
+) -> str | None:
+    marker = _action_marker(action)
+    comments = tracker_client.list_comments(token=token, key=action.resource_id)
+    matches = [
+        str(comment.get("id") or "").strip()
+        for comment in comments
+        if marker in str(comment.get("text") or "")
+    ]
+    external_ids = {external_id for external_id in matches if external_id}
+    if len(external_ids) == 1:
+        return next(iter(external_ids))
+    if len(external_ids) > 1:
+        raise DeliveryError("duplicate_remote_action")
+    return None
 
 
 def _set_issue_field(*, token: str, key: str, field_id: str, value: object) -> None:
@@ -118,7 +152,7 @@ def _deliver_attachment(
     result = tracker_client.add_comment(
         token=token,
         key=action.resource_id,
-        text=_signed_text(db, actor, issue, message.text),
+        text=_signed_text(db, action, actor, issue, message.text),
         attachment_ids=[temp_id],
     )
     return {"external_id": _external_id(result), "attachment_id": temp_id}
@@ -161,6 +195,16 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise DeliveryError("invalid_payload")
 
+    if action.action in {"comment", "attach"}:
+        external_id = _reconciled_external_id(action, token=token)
+        if external_id is not None:
+            result: dict[str, Any] = {"external_id": external_id}
+            if action.action == "attach":
+                temp_id = _attachment_temp_id(action)
+                if temp_id is not None:
+                    result["attachment_id"] = temp_id
+            return result
+
     # This intentionally bypasses tracker_cache: replay safety needs fresh state.
     issue = tracker_client.get_issue(token=token, key=action.resource_id)
     if issue is None:
@@ -173,7 +217,7 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
         result = tracker_client.add_comment(
             token=token,
             key=action.resource_id,
-            text=_signed_text(db, actor, issue, body),
+            text=_signed_text(db, action, actor, issue, body),
         )
         return {"external_id": _external_id(result)}
     if action.action == "attach":
@@ -220,6 +264,11 @@ def _sync_message(db: Session, action: ReliableAction) -> None:
         return
     if action.state == "succeeded":
         message.sync_state = "synced"
+        if action.result_json:
+            result = json.loads(action.result_json)
+            external_id = str(result.get("external_id") or "").strip()
+            if external_id:
+                message.external_id = external_id
     elif action.state == "needs_attention":
         message.sync_state = "needs_attention"
     else:

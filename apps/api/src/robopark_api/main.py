@@ -105,8 +105,10 @@ def create_app() -> FastAPI:
         stop_event = asyncio.Event()
         job_lease = JobLease(default_live_merge_root(), "lifespan-jobs")
         tasks = []
+        outbox_task: asyncio.Task[None] | None = None
 
         async def start_writers():
+            nonlocal outbox_task
             # Candidate readiness is read-only. Start seeding and workers only
             # after root commits the release and publishes writes_resumed.
             while host_maintenance_active(settings):
@@ -133,12 +135,8 @@ def create_app() -> FastAPI:
                 ]
             )
             if owns_job_lease:
-                tasks.extend(
-                    [
-                        asyncio.create_task(run_cache_cleanup_loop(stop_event)),
-                        asyncio.create_task(run_tracker_outbox_loop(SessionLocal, stop_event)),
-                    ]
-                )
+                tasks.append(asyncio.create_task(run_cache_cleanup_loop(stop_event)))
+                outbox_task = asyncio.create_task(run_tracker_outbox_loop(SessionLocal, stop_event))
 
         startup = asyncio.create_task(start_writers())
         try:
@@ -155,6 +153,11 @@ def create_app() -> FastAPI:
             for task in tasks:
                 with suppress(asyncio.CancelledError):
                     await task
+            # Cancelling an asyncio.to_thread waiter does not stop its thread.
+            # Keep the lease until the bounded Tracker call and worker exit.
+            if outbox_task is not None:
+                with suppress(asyncio.CancelledError):
+                    await outbox_task
             job_lease.release()
 
     app = FastAPI(

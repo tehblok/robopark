@@ -48,6 +48,20 @@ def test_worker_delivers_signed_comment_completes_action_and_invalidates_cache(
     from robopark_api.services import tracker_outbox
 
     action = _action(db_session, seed_mechanic, payload={"text": "Готово"})
+    message = TaskMessage(
+        id="comment-message",
+        issue_key="ROBOPARK-1",
+        kind="user",
+        author_user_id=seed_mechanic.id,
+        author_name=seed_mechanic.username,
+        text="Готово",
+        action_id=action.id,
+        sync_state="pending",
+        created_at=1.0,
+        updated_at=1.0,
+    )
+    db_session.add(message)
+    db_session.commit()
     action_id = action.id
     delivered = []
     invalidated = []
@@ -57,6 +71,7 @@ def test_worker_delivers_signed_comment_completes_action_and_invalidates_cache(
         "get_issue",
         lambda **kwargs: {"key": "ROBOPARK-1", "tags": ["Alpha"], "status": "Open"},
     )
+    monkeypatch.setattr(tracker_outbox.tracker_client, "list_comments", lambda **kwargs: [])
     monkeypatch.setattr(
         tracker_outbox.tracker_client,
         "add_comment",
@@ -71,8 +86,11 @@ def test_worker_delivers_signed_comment_completes_action_and_invalidates_cache(
         saved = db.get(ReliableAction, action_id)
         assert saved.state == "succeeded"
         assert json.loads(saved.result_json) == {"external_id": "comment-42"}
+        assert db.get(TaskMessage, message.id).external_id == "comment-42"
     assert delivered[0]["key"] == "ROBOPARK-1"
     assert delivered[0]["text"].startswith("Готово\n\n—\n")
+    assert f"surp-action:{action_id}" in delivered[0]["text"]
+    assert "Время: 01.01.1970 03:00 МСК" in delivered[0]["text"]
     assert invalidated == ["ROBOPARK-1"]
 
 
@@ -94,6 +112,7 @@ def test_worker_schedules_transient_retry_and_marks_permanent_error_for_attentio
         "get_issue",
         lambda **kwargs: {"key": "ROBOPARK-1", "status": "Open"},
     )
+    monkeypatch.setattr(tracker_outbox.tracker_client, "list_comments", lambda **kwargs: [])
     errors = iter(
         [
             tracker_outbox.tracker_client.TrackerError("request timeout"),
@@ -263,6 +282,7 @@ def test_worker_uploads_staged_attachment_by_action_id_and_adds_one_signed_comme
         "get_issue",
         lambda **kwargs: {"key": "ROBOPARK-1", "status": "Open"},
     )
+    monkeypatch.setattr(tracker_outbox.tracker_client, "list_comments", lambda **kwargs: [])
     monkeypatch.setattr(
         tracker_outbox.tracker_client,
         "upload_temp_attachment",
@@ -285,6 +305,151 @@ def test_worker_uploads_staged_attachment_by_action_id_and_adds_one_signed_comme
     assert uploaded[0]["content"] == b"png-bytes"
     assert comments[0]["attachment_ids"] == ["temp-7"]
     assert comments[0]["text"].startswith("Фото готово\n\n—\n")
+    assert f"surp-action:{action_id}" in comments[0]["text"]
+
+
+def test_worker_reconciles_comment_accepted_before_timeout_without_posting_twice(
+    db_engine, db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    action = _action(db_session, seed_mechanic, payload={"text": "Готово"})
+    message = TaskMessage(
+        id="accepted-comment-message",
+        issue_key=action.resource_id,
+        kind="user",
+        author_user_id=seed_mechanic.id,
+        author_name=seed_mechanic.username,
+        text="Готово",
+        action_id=action.id,
+        sync_state="pending",
+        created_at=action.created_at,
+        updated_at=action.created_at,
+    )
+    db_session.add(message)
+    db_session.commit()
+    action_id = action.id
+    remote_comments = []
+    post_count = 0
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **kwargs: {"key": "ROBOPARK-1", "status": "Open"},
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_comments",
+        lambda **kwargs: list(remote_comments),
+    )
+
+    def accepted_then_timeout(**kwargs):
+        nonlocal post_count
+        post_count += 1
+        remote_comments.append({"id": "accepted-42", "text": kwargs["text"]})
+        raise tracker_outbox.tracker_client.TrackerError("request timeout")
+
+    monkeypatch.setattr(tracker_outbox.tracker_client, "add_comment", accepted_then_timeout)
+    factory = sessionmaker(bind=db_engine, future=True)
+
+    tracker_outbox._process_batch(factory)
+    with Session(db_engine) as db:
+        retry = db.get(ReliableAction, action_id)
+        assert retry.state == "retry_wait"
+        retry.next_attempt_at = 0
+        db.commit()
+    tracker_outbox._process_batch(factory)
+
+    with Session(db_engine) as db:
+        saved = db.get(ReliableAction, action_id)
+        assert saved.state == "succeeded"
+        assert json.loads(saved.result_json) == {"external_id": "accepted-42"}
+        assert db.get(TaskMessage, message.id).external_id == "accepted-42"
+    assert post_count == 1
+
+
+def test_worker_reconciles_attachment_comment_accepted_before_timeout_without_reupload(
+    db_engine, db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    message = TaskMessage(
+        id="accepted-attachment-message",
+        issue_key="ROBOPARK-1",
+        kind="system",
+        author_user_id=seed_mechanic.id,
+        author_name=seed_mechanic.username,
+        text="Передано на проверку",
+        sync_state="pending",
+        created_at=1.0,
+        updated_at=1.0,
+    )
+    db_session.add(message)
+    action = _action(
+        db_session,
+        seed_mechanic,
+        action="attach",
+        payload={"filename": "photo.png", "message_id": message.id, "mime_type": "image/png"},
+    )
+    blob = tmp_path / "accepted-blob"
+    blob.write_bytes(b"photo")
+    db_session.add(
+        TaskAttachment(
+            id=action.id,
+            message_id=message.id,
+            blob_name=blob.name,
+            original_name="photo.png",
+            mime_type="image/png",
+            size_bytes=5,
+            sha256=hashlib.sha256(b"photo").hexdigest(),
+            created_at=1.0,
+        )
+    )
+    db_session.commit()
+    action_id = action.id
+    remote_comments = []
+    uploads = 0
+    posts = 0
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(tracker_outbox, "staged_attachments_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **kwargs: {"key": "ROBOPARK-1", "status": "Open"},
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_comments",
+        lambda **kwargs: list(remote_comments),
+    )
+
+    def upload(**kwargs):
+        nonlocal uploads
+        uploads += 1
+        return "temp-accepted"
+
+    def accepted_then_timeout(**kwargs):
+        nonlocal posts
+        posts += 1
+        remote_comments.append({"id": "attachment-comment-42", "text": kwargs["text"]})
+        raise tracker_outbox.tracker_client.TrackerError("request timeout")
+
+    monkeypatch.setattr(tracker_outbox.tracker_client, "upload_temp_attachment", upload)
+    monkeypatch.setattr(tracker_outbox.tracker_client, "add_comment", accepted_then_timeout)
+    factory = sessionmaker(bind=db_engine, future=True)
+
+    tracker_outbox._process_batch(factory)
+    with Session(db_engine) as db:
+        retry = db.get(ReliableAction, action_id)
+        assert retry.state == "retry_wait"
+        retry.next_attempt_at = 0
+        db.commit()
+    tracker_outbox._process_batch(factory)
+
+    with Session(db_engine) as db:
+        assert db.get(ReliableAction, action_id).state == "succeeded"
+        assert db.get(TaskMessage, message.id).external_id == "attachment-comment-42"
+    assert (uploads, posts) == (1, 1)
 
 
 def test_worker_delivers_only_allowlisted_tracker_field(

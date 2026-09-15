@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import time
 from collections.abc import Callable
 from contextlib import suppress
@@ -28,6 +29,14 @@ from robopark_api.task_workflow_models import ReliableAction, TaskAttachment, Ta
 
 _API_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_RANK = {"tracker": 0, "system": 1, "user": 2}
+_ACTION_MARKER_RE = re.compile(
+    r"(?m)^\s*surp-action:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_action_marker(text: object) -> str:
+    return _ACTION_MARKER_RE.sub("", str(text or "")).strip()
 
 
 def staged_attachments_root() -> Path:
@@ -306,7 +315,7 @@ def merge_timeline(
                 "author_name": str(
                     comment.get("author_login") or comment.get("author") or "Tracker"
                 ),
-                "text": str(comment.get("text") or ""),
+                "text": _strip_action_marker(comment.get("text")),
                 "external_id": external_id,
                 "sync_state": "synced",
                 "created_at": created_at,
@@ -370,7 +379,7 @@ def merge_timeline(
             "id": row.id,
             "kind": row.kind,
             "author": row.author_name,
-            "text": row.text,
+            "text": _strip_action_marker(row.text) if row.kind == "tracker" else row.text,
             "created_at": _iso(row.created_at),
             "sync_state": _sync_state(row, actions.get(row.action_id)),
             "attachments": external_attachments.get(

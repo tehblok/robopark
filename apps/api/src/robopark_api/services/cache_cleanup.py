@@ -29,9 +29,11 @@ def prune_tracker_outbox(db: Session, *, now: float) -> tuple[int, int]:
     attachments = list(
         db.scalars(
             select(TaskAttachment)
+            .join(ReliableAction, ReliableAction.id == TaskAttachment.id)
             .where(
                 TaskAttachment.uploaded_at.is_not(None),
                 TaskAttachment.uploaded_at < now - _UPLOADED_BLOB_RETENTION_SECONDS,
+                ReliableAction.state == "succeeded",
             )
             .order_by(TaskAttachment.uploaded_at, TaskAttachment.id)
             .limit(_RETENTION_BATCH_SIZE)

@@ -89,7 +89,7 @@ def test_timeline_orders_merges_deduplicates_and_hides_action_secrets(
         lambda **_kwargs: [
             {
                 "id": "tracker-1",
-                "text": "external first",
+                "text": "external first\n\nsurp-action:00000000-0000-0000-0000-000000000001",
                 "author": "Operator",
                 "author_login": "operator",
                 "created_at": "1970-01-01T00:00:00",
@@ -128,6 +128,8 @@ def test_timeline_orders_merges_deduplicates_and_hides_action_secrets(
     ]
     assert items[2]["sync_state"] == "pending"
     assert items[0]["created_at"] == "1970-01-01T00:00:00+00:00"
+    assert items[0]["text"] == "external first"
+    assert "surp-action:" not in first.text
     assert items[3]["attachments"] == [
         {
             "id": "photo-1",

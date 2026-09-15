@@ -191,6 +191,8 @@ def test_cleanup_bounds_successful_actions_and_uploaded_blob_retention(
     message.action_id = removable.id
     blob = tmp_path / "old-blob"
     blob.write_bytes(b"old")
+    retained_blob = tmp_path / "attention-blob"
+    retained_blob.write_bytes(b"attention")
     db_session.add(
         TaskAttachment(
             id=removable.id,
@@ -200,6 +202,19 @@ def test_cleanup_bounds_successful_actions_and_uploaded_blob_retention(
             mime_type="image/png",
             size_bytes=3,
             sha256="0" * 64,
+            created_at=old,
+            uploaded_at=cutoff - 8 * 86400,
+        )
+    )
+    db_session.add(
+        TaskAttachment(
+            id=retained_attention.id,
+            message_id=message.id,
+            blob_name=retained_blob.name,
+            original_name="attention.png",
+            mime_type="image/png",
+            size_bytes=9,
+            sha256="1" * 64,
             created_at=old,
             uploaded_at=cutoff - 8 * 86400,
         )
@@ -221,6 +236,64 @@ def test_cleanup_bounds_successful_actions_and_uploaded_blob_retention(
         assert db.get(TaskMessage, message_id) is not None
         assert db.get(TaskAttachment, removable_id) is None
     assert not blob.exists()
+    assert retained_blob.exists()
+
+
+def test_lifespan_awaits_blocking_outbox_before_releasing_job_lease(
+    db_engine, test_settings, monkeypatch
+):
+    entered = threading.Event()
+    close_context = threading.Event()
+    outbox_started = threading.Event()
+    finish_outbox = threading.Event()
+    lease_released = threading.Event()
+
+    class Lease:
+        def __init__(self, root, name):
+            pass
+
+        def try_acquire(self):
+            return True
+
+        def release(self):
+            lease_released.set()
+
+    async def idle_loop(stop_event, **kwargs):
+        await stop_event.wait()
+
+    async def blocking_outbox(session_factory, stop_event, **kwargs):
+        outbox_started.set()
+        await asyncio.to_thread(finish_outbox.wait)
+        assert stop_event.is_set()
+
+    monkeypatch.setattr(main, "SessionLocal", sessionmaker(bind=db_engine, future=True))
+    monkeypatch.setattr(main, "get_settings", lambda: test_settings)
+    monkeypatch.setattr(main, "live_merge_enabled", lambda: True)
+    monkeypatch.setattr(main, "JobLease", Lease)
+    monkeypatch.setattr(main, "run_keepalive_loop", idle_loop)
+    monkeypatch.setattr(main, "run_blocker_history_loop", idle_loop)
+    monkeypatch.setattr(main, "run_session_cleanup_loop", idle_loop)
+    monkeypatch.setattr(main, "run_cache_cleanup_loop", idle_loop)
+    monkeypatch.setattr(main, "run_tracker_outbox_loop", blocking_outbox)
+
+    def serve():
+        with TestClient(main.create_app()):
+            entered.set()
+            close_context.wait(timeout=2)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    assert entered.wait(timeout=1)
+    assert outbox_started.wait(timeout=1)
+    close_context.set()
+    try:
+        assert not lease_released.wait(timeout=0.1)
+    finally:
+        finish_outbox.set()
+        thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert lease_released.is_set()
 
 
 def test_cleanup_limits_each_outbox_retention_batch_to_500(db_engine, db_session, seed_mechanic):
