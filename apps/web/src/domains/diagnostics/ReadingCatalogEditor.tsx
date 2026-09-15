@@ -159,6 +159,12 @@ export function ReadingCatalogEditor() {
     setNotice('')
   }
 
+  const editRaw = () => {
+    viewRevision.current += 1
+    setError('')
+    setNotice('')
+  }
+
   const selectReading = (reading: EmergencyReading) => {
     viewRevision.current += 1
     setSelected(reading.id)
@@ -356,13 +362,14 @@ export function ReadingCatalogEditor() {
         </li>)}
       </ol>}
     </>} detail={selected === 'new' || selectedReading ? <ReadingForm
-      key={selected}
+      key={`${selected}:${draft.path}`}
       draft={draft}
       example={example}
       sections={sections}
       busy={busy}
       existing={Boolean(selectedReading)}
       onEdit={edit}
+      onRawEdit={editRaw}
       onSave={save}
       onDisable={() => void disable()}
       onDelete={() => void remove()}
@@ -370,13 +377,14 @@ export function ReadingCatalogEditor() {
   </div>
 }
 
-function ReadingForm({ draft, example, sections, busy, existing, onEdit, onSave, onDisable, onDelete }: {
+function ReadingForm({ draft, example, sections, busy, existing, onEdit, onRawEdit, onSave, onDisable, onDelete }: {
   draft: EmergencyReadingDraft
   example: string
   sections: EmergencyAdminSection[]
   busy: boolean
   existing: boolean
   onEdit: (changes: Partial<EmergencyReadingDraft>) => void
+  onRawEdit: () => void
   onSave: (event: FormEvent, noDataValues: JsonValue[]) => void
   onDisable: () => void
   onDelete: () => void
@@ -404,7 +412,7 @@ function ReadingForm({ draft, example, sections, busy, existing, onEdit, onSave,
       <FormField id={`${formId}-reading-unit`} label="Единица"><input maxLength={32} value={draft.unit ?? ''} onChange={event => onEdit({ unit: event.target.value || null })} /></FormField>
       <FormField id={`${formId}-reading-precision`} label="Знаков после запятой"><input type="number" min={0} max={4} value={draft.precision} onChange={event => onEdit({ precision: Number(event.target.value) })} /></FormField>
       <FormField id={`${formId}-reading-enabled-path`} label="Путь доступности" hint="Подставляется автоматически для соседнего поля Enabled."><input readOnly value={draft.enabled_path ?? ''} /></FormField>
-      <FormField id={`${formId}-reading-no-data`} label="Нет показания" hint="Значения через запятую."><input value={noDataInput} onChange={event => setNoDataInput(event.target.value)} onBlur={() => onEdit({ no_data_values: parseNoData(noDataInput) })} /></FormField>
+      <FormField id={`${formId}-reading-no-data`} label="Нет показания" hint="Значения через запятую."><input value={noDataInput} onChange={event => { setNoDataInput(event.target.value); onRawEdit() }} onBlur={() => onEdit({ no_data_values: parseNoData(noDataInput) })} /></FormField>
       <FormField id={`${formId}-reading-view`} label="Ракурс"><select value={draft.view} onChange={event => onEdit({ view: event.target.value as EmergencyReadingDraft['view'] })}>{ROBOT_PHOTOS.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></FormField>
       <FormField id={`${formId}-reading-direction`} label="Направление подписи"><select value={draft.label_direction} onChange={event => onEdit({ label_direction: event.target.value as EmergencyReadingDraft['label_direction'] })}>{Object.entries(DIRECTIONS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></FormField>
     </div>

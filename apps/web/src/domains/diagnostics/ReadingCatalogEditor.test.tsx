@@ -221,3 +221,37 @@ it('preserves a raw no-data value while typing and parses it only on submit', as
 
   await waitFor(() => expect(api.updateEmergencyReading).toHaveBeenCalledWith(1, expect.objectContaining({ no_data_values: [1, 2.5] })))
 })
+
+it('invalidates an in-flight save when raw no-data text changes without blur', async () => {
+  let complete!: (reading: EmergencyReading) => void
+  vi.mocked(api.updateEmergencyReading).mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+  render(tree())
+  fireEvent.click(await screen.findByRole('button', { name: 'Открыть показание Напряжение' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить показание' }))
+  await waitFor(() => expect(api.updateEmergencyReading).toHaveBeenCalled())
+
+  fireEvent.change(screen.getByLabelText('Нет показания'), { target: { value: '1,' } })
+  await act(async () => complete({ ...baseReading, label: 'Поздний ответ' }))
+
+  expect(screen.getByLabelText('Нет показания')).toHaveValue('1,')
+  expect(screen.getByLabelText('Название показания')).toHaveValue('Напряжение')
+  expect(screen.queryByText('Показание сохранено.')).not.toBeInTheDocument()
+})
+
+it('resets the raw sentinel when choosing another discovered field with the same new identity', async () => {
+  render(tree())
+  fireEvent.change(await screen.findByLabelText('Номер робота для примера'), { target: { value: 'R-107' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Найти показания' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Выбрать parktronics.lt' }))
+  expect(screen.getByLabelText('Нет показания')).toHaveValue('2147483647')
+
+  fireEvent.click(screen.getByRole('button', { name: 'Выбрать velocity' }))
+  expect(screen.getByLabelText('Нет показания')).toHaveValue('')
+  fireEvent.change(screen.getByLabelText('Название показания'), { target: { value: 'Скорость' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить показание' }))
+
+  await waitFor(() => expect(api.createEmergencyReading).toHaveBeenCalledWith(expect.objectContaining({
+    path: 'velocity',
+    no_data_values: [],
+  })))
+})
