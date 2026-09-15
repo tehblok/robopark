@@ -164,32 +164,35 @@ git commit -m "feat(api): enqueue idempotent reliable actions"
 
 **Files:**
 - Create: `apps/api/src/robopark_api/services/task_timeline.py`
+- Create: `apps/api/src/robopark_api/services/defect_codes.py`
 - Create: `apps/api/src/robopark_api/routers/task_timeline.py`
 - Modify: `apps/api/src/robopark_api/schemas.py`
 - Modify: `apps/api/src/robopark_api/main.py`
 - Create: `apps/api/tests/test_task_timeline.py`
+- Create: `apps/api/tests/test_defect_codes.py`
 - Modify: `apps/api/tests/test_report_attachments.py`
 
 **Interfaces:**
 - Produces: `GET /tracker/issues/{key}/timeline -> list[TaskTimelineItemOut]`.
 - Produces: `POST /tracker/issues/{key}/messages` and `POST /tracker/issues/{key}/message-attachments`.
 - Produces: `append_system_message(db, *, issue_key, actor, text, action_id=None) -> TaskMessage`.
+- Produces: `GET /tracker/defect-codes -> list[DefectCodeOut]` with the 35 approved codes; the Tracker write value is always the code only.
 
 - [ ] **Step 1: Write failing timeline tests**
 
 Assert one ordered response merges Tracker comments with local user/system messages, deduplicates by stable external ID, keeps attachments beside their message and exposes `sync_state` without exposing payload JSON or tokens.
 
-- [ ] **Step 2: Write attachment safety tests**
+- [ ] **Step 2: Write catalog and attachment safety tests**
 
-Assert a staged upload rejects traversal names, unsupported content, empty files and files above the existing attachment limit; closing the request does not remove a successfully staged attachment.
+Assert the catalog contains exactly the 35 unique approved values from `BD-01` through `PP-03`, preserves their Russian labels/explanations and rejects unknown values. Assert a staged upload rejects traversal names, unsupported content, empty files and files above the existing attachment limit; closing the request does not remove a successfully staged attachment.
 
 - [ ] **Step 3: Confirm failure**
 
-Run: `cd apps/api && uv run pytest tests/test_task_timeline.py tests/test_report_attachments.py -q`
+Run: `cd apps/api && uv run pytest tests/test_task_timeline.py tests/test_defect_codes.py tests/test_report_attachments.py -q`
 
-- [ ] **Step 4: Implement timeline merge**
+- [ ] **Step 4: Implement the immutable defect catalog and timeline merge**
 
-Use UTC timestamps and stable ordering `(created_at, source_rank, id)`. Persist imported Tracker comments as `kind='tracker'` with external IDs so refresh is idempotent. A local user message and its `ReliableAction(action='comment')` are committed together.
+Define immutable `DefectCode(code, label, description)` values matching the spec, return them through the read-only endpoint and validate by exact code. Use UTC timestamps and stable ordering `(created_at, source_rank, id)`. Persist imported Tracker comments as `kind='tracker'` with external IDs so refresh is idempotent. A local user message and its `ReliableAction(action='comment')` are committed together.
 
 - [ ] **Step 5: Implement staged attachment storage**
 
@@ -197,14 +200,14 @@ Write blobs under the configured data directory using generated names, `O_NOFOLL
 
 - [ ] **Step 6: Register the router and verify**
 
-Run: `cd apps/api && uv run pytest tests/test_task_timeline.py tests/test_report_attachments.py -q`
+Run: `cd apps/api && uv run pytest tests/test_task_timeline.py tests/test_defect_codes.py tests/test_report_attachments.py -q`
 
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add apps/api/src/robopark_api/services/task_timeline.py apps/api/src/robopark_api/routers/task_timeline.py apps/api/src/robopark_api/schemas.py apps/api/src/robopark_api/main.py apps/api/tests/test_task_timeline.py apps/api/tests/test_report_attachments.py
+git add apps/api/src/robopark_api/services/task_timeline.py apps/api/src/robopark_api/services/defect_codes.py apps/api/src/robopark_api/routers/task_timeline.py apps/api/src/robopark_api/schemas.py apps/api/src/robopark_api/main.py apps/api/tests/test_task_timeline.py apps/api/tests/test_defect_codes.py apps/api/tests/test_report_attachments.py
 git commit -m "feat(api): add unified task timeline"
 ```
 
@@ -280,6 +283,7 @@ git commit -m "feat(api): deliver Tracker actions asynchronously"
 
 **Interfaces:**
 - Produces: commands `claim`, `handoff`, `submit_review`, `return_review`, `approve_review`, `hide`, `restore`.
+- Produces: multipart `submit_review` input with one `defect_code`, one image `photo` and an optional new `comment`.
 - Produces: `TrackerActionOut.sync_state` and `TrackerIssueDetailOut.workflow`.
 - Consumes: reliable actions, transition resolver, timeline and review models.
 
@@ -289,7 +293,7 @@ Assert claim commits `TrackerClaim`, system message and `ReliableAction(action='
 
 - [ ] **Step 2: Write failing review tests**
 
-Assert a mechanic cannot final-close. `submit_review` creates one pending `TaskReview`, enqueues review transition and operator mention, and retains the claim. Operator `return_review` sets returned, enqueues a reason, and leaves/reassigns the mechanic. Operator `approve_review` enqueues final close, closes review and releases the claim only after local state is committed.
+Assert a mechanic cannot final-close. `submit_review` accepts exactly one known defect code and exactly one valid image. It requires a comment by the current mechanic after the latest claim/handoff-to-user/operator-return boundary; when such a comment exists, the request may omit `comment`, and when a non-empty optional comment is supplied it is appended once. The command creates one pending `TaskReview`, stages one photo, enqueues the optional clarification when present, then enqueues one automatic «Передано на проверку» bot comment carrying the photo and selected code, the `theDefectCode` field update, review transition and operator mention, and retains the claim. Operator `return_review` sets returned, enqueues a reason, and leaves/reassigns the mechanic. Operator `approve_review` enqueues final close, closes review and releases the claim only after local state is committed.
 
 - [ ] **Step 3: Write failing hide/restore tests**
 
@@ -310,14 +314,14 @@ Use explicit routes:
 ```text
 POST /tracker/issues/{key}/claim
 POST /tracker/issues/{key}/handoff
-POST /tracker/issues/{key}/submit-review
+POST /tracker/issues/{key}/submit-review  # multipart: defect_code, photo, optional comment
 POST /tracker/issues/{key}/review/return
 POST /tracker/issues/{key}/review/approve
 POST /tracker/issues/{key}/hide
 DELETE /tracker/issues/{key}/hide
 ```
 
-Each route requires `Idempotency-Key`, uses the existing per-task mutation lease and returns the locally committed workflow plus `sync_state`.
+Each route requires `Idempotency-Key`, uses the existing per-task mutation lease and returns the locally committed workflow plus `sync_state`. `submit-review` hashes the image bytes as part of the idempotency payload, validates `image/jpeg|image/png|image/webp`, requires exactly one multipart `photo`, and writes only the selected code to Tracker field key `theDefectCode` (ID `60df26695151a36df681d67b--theDefectCode`).
 
 - [ ] **Step 7: Expose workflow and filter hidden tasks**
 
@@ -385,6 +389,8 @@ git commit -m "feat(work): show five-hour repair SLA"
 - Create: `apps/web/src/domains/work/TaskTimeline.test.tsx`
 - Create: `apps/web/src/domains/work/TaskSyncStatus.tsx`
 - Create: `apps/web/src/domains/work/TaskSyncStatus.test.tsx`
+- Create: `apps/web/src/domains/work/SubmitReviewForm.tsx`
+- Create: `apps/web/src/domains/work/SubmitReviewForm.test.tsx`
 - Modify: `apps/web/src/api.ts`
 - Modify: `apps/web/src/domains/work/IssueWorkbench.tsx`
 - Modify: `apps/web/src/components/tracker/IssueActionsPanel.tsx`
@@ -403,11 +409,11 @@ Assert chronological rendering of user, bot and system messages with attachments
 
 - [ ] **Step 2: Write failing action-layout tests**
 
-Assert the comment form is followed by closed disclosures «Заказать запчасть» then «Передать смену». Assert no manual transitions, no separate Tracker link, mechanic sees «Передать на проверку», and operator sees return/approve only for pending review.
+Assert the comment form is followed by closed disclosures «Заказать запчасть» then «Передать смену». Assert no manual transitions, no separate Tracker link, mechanic sees «Передать на проверку», and operator sees return/approve only for pending review. If the current mechanic has no qualifying comment, opening review shows «Напишите, что было сделано перед передачей на проверку» and requires text. If a qualifying comment exists, the text input remains available as optional «Добавить уточнение» and submission succeeds without repeating it.
 
 - [ ] **Step 3: Confirm failure**
 
-Run: `cd apps/web && npm test -- --run src/domains/work/TaskTimeline.test.tsx src/domains/work/TaskSyncStatus.test.tsx src/domains/work/IssueWorkbench.test.tsx src/components/tracker/IssueActionsPanel.test.tsx`
+Run: `cd apps/web && npm test -- --run src/domains/work/TaskTimeline.test.tsx src/domains/work/TaskSyncStatus.test.tsx src/domains/work/SubmitReviewForm.test.tsx src/domains/work/IssueWorkbench.test.tsx src/components/tracker/IssueActionsPanel.test.tsx`
 
 - [ ] **Step 4: Implement API types and timeline**
 
@@ -421,12 +427,16 @@ Remove the old significant-comment/history split, manual transition disclosure a
 
 Rename «Использовать запчасть» to «Заказать запчасть» in this context. Keep both panels closed initially on phone and desktop. Their successful actions append system messages and refresh the same timeline.
 
-- [ ] **Step 7: Verify and commit**
+- [ ] **Step 7: Implement the review form**
+
+Load the server defect catalog and provide searchable single selection. Require exactly one photo preview with replace/remove controls. On phones show two explicit controls bound to the same single-photo state: «Сделать фото» uses `accept="image/*" capture="environment"`, while «Выбрать файл» uses `accept="image/jpeg,image/png,image/webp"` without `capture`; on desktop show file selection. Do not request camera permission until «Сделать фото» is chosen. Submit one multipart request containing `defect_code`, `photo` and only a non-empty optional `comment`.
+
+- [ ] **Step 8: Verify and commit**
 
 Run the command from Step 3; expect PASS.
 
 ```bash
-git add apps/web/src/api.ts apps/web/src/domains/work/TaskTimeline.tsx apps/web/src/domains/work/TaskTimeline.test.tsx apps/web/src/domains/work/TaskSyncStatus.tsx apps/web/src/domains/work/TaskSyncStatus.test.tsx apps/web/src/domains/work/IssueWorkbench.tsx apps/web/src/domains/work/IssueWorkbench.test.tsx apps/web/src/components/tracker/IssueActionsPanel.tsx apps/web/src/components/tracker/IssueActionsPanel.test.tsx apps/web/src/domains/inventory/TaskPartsPanel.tsx apps/web/src/components/tracker/TaskCollaboration.tsx
+git add apps/web/src/api.ts apps/web/src/domains/work/TaskTimeline.tsx apps/web/src/domains/work/TaskTimeline.test.tsx apps/web/src/domains/work/TaskSyncStatus.tsx apps/web/src/domains/work/TaskSyncStatus.test.tsx apps/web/src/domains/work/SubmitReviewForm.tsx apps/web/src/domains/work/SubmitReviewForm.test.tsx apps/web/src/domains/work/IssueWorkbench.tsx apps/web/src/domains/work/IssueWorkbench.test.tsx apps/web/src/components/tracker/IssueActionsPanel.tsx apps/web/src/components/tracker/IssueActionsPanel.test.tsx apps/web/src/domains/inventory/TaskPartsPanel.tsx apps/web/src/components/tracker/TaskCollaboration.tsx
 git commit -m "feat(work): unify task chat and actions"
 ```
 
@@ -508,7 +518,7 @@ Expose test-only controls for Tracker availability, transition fixtures and deli
 
 - [ ] **Step 2: Write the full browser lifecycle**
 
-Cover mechanic claim, duplicate click, comment/photo, parts disclosure, handoff, submit review, operator return, resubmit and operator approve. Assert the visible timeline order and that each upstream operation count is one.
+Cover mechanic claim, duplicate click, comment/photo, parts disclosure, handoff, submit review with an existing current-cycle comment, submit review with a new optional clarification, one defect code, one uploaded/taken photo, operator return, resubmit and operator approve. Assert the visible timeline order, the `theDefectCode` value and that each upstream operation count is one.
 
 - [ ] **Step 3: Add mobile and accessibility coverage**
 
