@@ -43,6 +43,7 @@ from robopark_api.routers import (
     parks,
     reports,
     robot_registry,
+    task_timeline,
     tracker_actions,
     tracker_collaboration,
     tracker_read,
@@ -234,6 +235,7 @@ def create_app() -> FastAPI:
     app.include_router(tracker_read.router)
     app.include_router(tracker_actions.router)
     app.include_router(tracker_collaboration.router)
+    app.include_router(task_timeline.router)
     app.include_router(dashboard.router)
     app.include_router(robot_registry.router)
     app.include_router(operations.router)

@@ -608,6 +608,33 @@ class TrackerCommentIn(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
 
 
+class TaskTimelineItemOut(BaseModel):
+    id: str
+    kind: Literal["user", "system", "tracker"]
+    author: str
+    text: str
+    created_at: str
+    sync_state: Literal["saved", "pending", "synced", "needs_attention"]
+    attachments: list[TrackerAttachmentOut] = Field(default_factory=list)
+
+
+class TaskAttachmentStagedOut(BaseModel):
+    id: str
+    message_id: str
+    name: str
+    mimetype: str
+    size: int
+    sha256: str
+    action_id: str
+    sync_state: Literal["pending", "needs_attention"] = "pending"
+
+
+class DefectCodeOut(BaseModel):
+    code: str
+    label: str
+    description: str | None = None
+
+
 class TrackerAssignIn(BaseModel):
     assignee: str = Field(min_length=1, max_length=128)
 
