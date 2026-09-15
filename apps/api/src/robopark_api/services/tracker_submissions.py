@@ -3,17 +3,15 @@
 import fcntl
 import hashlib
 import json
-import time
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import unquote
 
 from fastapi import HTTPException
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 
 from robopark_api.collaboration_models import TrackerSubmission
-from robopark_api.services import tracker_cache, tracker_claims, tracker_client
+from robopark_api.services import reliable_actions, tracker_cache, tracker_claims, tracker_client
 from robopark_api.services.tracker_policy import ensure_action_allowed
 
 
@@ -25,7 +23,7 @@ def begin(db, user, key, action, request, payload, token, *, validate=None):
         return None, None  # Compatibility for older clients.
     if not 8 <= len(request_key) <= 128:
         raise HTTPException(400, "tracker_submission_key_invalid")
-    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    _, digest = reliable_actions.canonical_payload(payload)
     query = select(TrackerSubmission).where(
         TrackerSubmission.actor_id == user.id,
         TrackerSubmission.resource_type == "tracker_issue",
@@ -58,45 +56,48 @@ def begin(db, user, key, action, request, payload, token, *, validate=None):
         raise HTTPException(409, "tracker_state_conflict")
     if validate is not None:
         validate()
-    row = TrackerSubmission(
-        actor_id=user.id,
-        resource_type="tracker_issue",
-        issue_key=key,
-        action=action,
-        request_key=request_key,
-        payload_hash=digest,
-        state="pending",
-        created_at=time.time(),
-    )
-    db.add(row)
     try:
-        db.commit()  # Persist intent before issuing the non-transactional upstream write.
-    except IntegrityError:
-        db.rollback()
-        return replay(db.scalar(query), digest)
-    return row, None
+        result = reliable_actions.begin_action(
+            db,
+            actor=user,
+            resource_type="tracker_issue",
+            resource_id=key,
+            action=action,
+            idempotency_key=request_key,
+            payload=payload,
+        )
+    except HTTPException as exc:
+        if exc.detail == "reliable_action_payload_conflict":
+            raise HTTPException(409, "tracker_submission_payload_conflict") from None
+        if exc.detail == "reliable_action_uncertain":
+            raise HTTPException(409, "tracker_submission_uncertain") from None
+        raise
+    db.commit()  # The compatibility route still writes upstream synchronously.
+    return result.row, result.result
 
 
 def replay(row, digest):
-    if row.payload_hash != digest:
-        raise HTTPException(409, "tracker_submission_payload_conflict")
-    if row.state == "succeeded":
-        return row, json.loads(row.result_json)
-    # Includes pending entries left by process termination.
-    raise HTTPException(409, "tracker_submission_uncertain")
+    try:
+        result = reliable_actions.replay_action(row, digest)
+    except HTTPException as exc:
+        detail = {
+            "reliable_action_payload_conflict": "tracker_submission_payload_conflict",
+            "reliable_action_uncertain": "tracker_submission_uncertain",
+        }.get(exc.detail, exc.detail)
+        raise HTTPException(exc.status_code, detail) from None
+    return result.row, result.result
 
 
 def uncertain(db, row):
     if row is not None:
-        row.state = "uncertain"
+        reliable_actions.mark_needs_attention(db, row, error_code="tracker_outcome_uncertain")
         db.commit()
         raise HTTPException(409, "tracker_submission_uncertain")
 
 
 def finish(db, row, result):
     if row is not None:
-        row.state = "succeeded"
-        row.result_json = result.model_dump_json()
+        reliable_actions.complete_action(db, row, result)
         db.commit()
     return result
 

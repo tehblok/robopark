@@ -125,6 +125,26 @@ def test_old_unknown_outcome_stays_durable_and_is_never_replayed(
     assert db_session.query(ReliableAction).one().state == "needs_attention"
 
 
+def test_tracker_compatibility_uses_canonical_payload_hash(
+    client, db_session, tracker_setup, monkeypatch
+):
+    monkeypatch.setattr(tracker_client, "add_comment", lambda **kw: None)
+
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/comment",
+        json={"text": "готово"},
+        headers=headers("canonical-payload"),
+    )
+
+    assert response.status_code == 200
+    row = db_session.query(ReliableAction).one()
+    canonical = json.dumps(
+        {"text": "готово"}, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    assert row.payload_json == canonical
+    assert row.payload_hash == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def test_submission_lookup_is_scoped_to_tracker_issue_resource_type(
     client, db_session, seed_mechanic, tracker_setup, monkeypatch
 ):
