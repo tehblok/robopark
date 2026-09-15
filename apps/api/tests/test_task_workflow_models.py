@@ -5,6 +5,7 @@ from robopark_api.models import Role, User
 from robopark_api.task_workflow_models import (
     HiddenTask,
     ReliableAction,
+    TaskAttachment,
     TaskMessage,
     TaskReview,
 )
@@ -51,6 +52,60 @@ def test_reliable_action_rejects_duplicate_idempotency_scope(db_session):
     db_session.add(_action(user.id, id="action-2"))
     with pytest.raises(IntegrityError):
         db_session.commit()
+
+
+def test_reliable_action_keeps_legacy_compatible_action_length():
+    assert ReliableAction.action.type.length == 32
+
+
+@pytest.mark.parametrize(
+    "blob_name",
+    ["", "/tmp/photo.jpg", "../photo.jpg", "folder/photo.jpg", r"folder\photo.jpg", ".."],
+)
+def test_task_attachment_rejects_unsafe_blob_name(blob_name):
+    with pytest.raises(ValueError, match="blob_name_invalid"):
+        TaskAttachment(
+            id="attachment-1",
+            message_id="message-1",
+            blob_name=blob_name,
+            original_name="photo.jpg",
+            mime_type="image/jpeg",
+            size_bytes=10,
+            sha256="a" * 64,
+            created_at=1.0,
+        )
+
+
+@pytest.mark.parametrize("blob_name", ["../photo.jpg", r"folder\photo.jpg"])
+def test_database_rejects_unsafe_blob_name_when_orm_validation_is_bypassed(db_session, blob_name):
+    db_session.add(
+        TaskMessage(
+            id="message-1",
+            issue_key="SDCFLEETOPS-1",
+            kind="system",
+            author_name="Robopark",
+            text="Photo staged",
+            sync_state="saved",
+            created_at=1.0,
+            updated_at=1.0,
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(IntegrityError):
+        db_session.execute(
+            TaskAttachment.__table__.insert(),
+            {
+                "id": "attachment-1",
+                "message_id": "message-1",
+                "blob_name": blob_name,
+                "original_name": "photo.jpg",
+                "mime_type": "image/jpeg",
+                "size_bytes": 10,
+                "sha256": "a" * 64,
+                "created_at": 1.0,
+            },
+        )
 
 
 @pytest.mark.parametrize(

@@ -41,7 +41,7 @@ class ReliableAction(Base):
     actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     resource_type: Mapped[str] = mapped_column(String(64), default="tracker_issue")
     resource_id: Mapped[str] = mapped_column(String(128))
-    action: Mapped[str] = mapped_column(String(64))
+    action: Mapped[str] = mapped_column(String(32))
     idempotency_key: Mapped[str] = mapped_column(String(128))
     payload_hash: Mapped[str] = mapped_column(String(64))
     payload_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
@@ -96,7 +96,16 @@ class TaskMessage(Base):
 
 class TaskAttachment(Base):
     __tablename__ = "task_attachments"
-    __table_args__ = (Index("ix_task_attachments_message_id", "message_id", "id"),)
+    __table_args__ = (
+        CheckConstraint(
+            "length(blob_name) > 0 "
+            "AND blob_name NOT LIKE '%/%' "
+            "AND blob_name NOT LIKE '%!\\%' ESCAPE '!' "
+            "AND blob_name NOT LIKE '%..%'",
+            name="ck_task_attachments_safe_blob_name",
+        ),
+        Index("ix_task_attachments_message_id", "message_id", "id"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     message_id: Mapped[str] = mapped_column(ForeignKey("task_messages.id", ondelete="CASCADE"))
@@ -107,6 +116,12 @@ class TaskAttachment(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[float] = mapped_column(Float)
     uploaded_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    @validates("blob_name")
+    def _validate_blob_name(self, _key: str, value: str) -> str:
+        if not value or "/" in value or "\\" in value or ".." in value:
+            raise ValueError("blob_name_invalid")
+        return value
 
 
 class TaskReview(Base):

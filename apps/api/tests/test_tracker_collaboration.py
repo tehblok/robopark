@@ -1,12 +1,15 @@
 """Collaboration must not repeat upstream writes or cross issue scope."""
 
+import hashlib
 import json
+import time
 from urllib.parse import quote
 
 import pytest
 
 from conftest import login_as
 from robopark_api.services import platform_settings, tracker_client
+from robopark_api.task_workflow_models import ReliableAction
 
 
 @pytest.fixture
@@ -93,11 +96,9 @@ def test_unknown_outcome_never_replayed(client, tracker_setup, monkeypatch):
     assert len(written) == 1
 
 
-def test_old_unknown_outcome_can_be_retried(client, db_session, tracker_setup, monkeypatch):
-    import time
-
-    from robopark_api.collaboration_models import TrackerSubmission
-
+def test_old_unknown_outcome_stays_durable_and_is_never_replayed(
+    client, db_session, tracker_setup, monkeypatch
+):
     written = []
 
     def lost_response(**kw):
@@ -109,7 +110,7 @@ def test_old_unknown_outcome_can_be_retried(client, db_session, tracker_setup, m
         "/tracker/issues/ROBOPARK-1/comment", json={"text": "done"}, headers=headers()
     )
     assert first.status_code == 409
-    row = db_session.query(TrackerSubmission).one()
+    row = db_session.query(ReliableAction).one()
     row.created_at = time.time() - 61
     db_session.commit()
 
@@ -118,7 +119,46 @@ def test_old_unknown_outcome_can_be_retried(client, db_session, tracker_setup, m
     )
 
     assert second.status_code == 409
-    assert len(written) == 2
+    assert second.json()["detail"] == "tracker_submission_uncertain"
+    assert len(written) == 1
+    assert db_session.query(ReliableAction).count() == 1
+    assert db_session.query(ReliableAction).one().state == "needs_attention"
+
+
+def test_submission_lookup_is_scoped_to_tracker_issue_resource_type(
+    client, db_session, seed_mechanic, tracker_setup, monkeypatch
+):
+    payload = {"text": "done"}
+    db_session.add(
+        ReliableAction(
+            actor_user_id=seed_mechanic.id,
+            resource_type="inventory",
+            resource_id="ROBOPARK-1",
+            action="comment",
+            idempotency_key="resource-scope",
+            payload_hash=hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest(),
+            payload_json=json.dumps(payload),
+            state="pending",
+            created_at=time.time(),
+            updated_at=time.time(),
+        )
+    )
+    db_session.commit()
+    written = []
+    monkeypatch.setattr(tracker_client, "add_comment", lambda **kw: written.append(kw))
+
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/comment",
+        json=payload,
+        headers=headers("resource-scope"),
+    )
+
+    assert response.status_code == 200
+    assert len(written) == 1
+    assert {row.resource_type for row in db_session.query(ReliableAction)} == {
+        "inventory",
+        "tracker_issue",
+    }
 
 
 def test_conflict_checks_uncached_state_before_write(client, tracker_setup, monkeypatch):

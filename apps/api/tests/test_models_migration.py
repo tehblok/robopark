@@ -139,6 +139,12 @@ def test_reliable_workflow_upgrade_and_downgrade_preserve_legacy_submissions(
 
     command.upgrade(config, "head")
     assert "tracker_submissions" not in inspect(engine).get_table_names()
+    action_column = next(
+        column
+        for column in inspect(engine).get_columns("reliable_actions")
+        if column["name"] == "action"
+    )
+    assert action_column["type"].length == 32
     with Session(engine) as session:
         action = session.scalar(select(ReliableAction))
         assert action is not None

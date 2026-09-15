@@ -21,7 +21,7 @@ def upgrade() -> None:
         ),
         sa.Column("resource_type", sa.String(64), nullable=False),
         sa.Column("resource_id", sa.String(128), nullable=False),
-        sa.Column("action", sa.String(64), nullable=False),
+        sa.Column("action", sa.String(32), nullable=False),
         sa.Column("idempotency_key", sa.String(128), nullable=False),
         sa.Column("payload_hash", sa.String(64), nullable=False),
         sa.Column("payload_json", sa.Text(), nullable=False),
@@ -102,6 +102,13 @@ def upgrade() -> None:
         sa.Column("sha256", sa.String(64), nullable=False),
         sa.Column("created_at", sa.Float(), nullable=False),
         sa.Column("uploaded_at", sa.Float(), nullable=True),
+        sa.CheckConstraint(
+            "length(blob_name) > 0 "
+            "AND blob_name NOT LIKE '%/%' "
+            "AND blob_name NOT LIKE '%!\\%' ESCAPE '!' "
+            "AND blob_name NOT LIKE '%..%'",
+            name="ck_task_attachments_safe_blob_name",
+        ),
     )
     op.create_index("ix_task_attachments_message_id", "task_attachments", ["message_id", "id"])
 

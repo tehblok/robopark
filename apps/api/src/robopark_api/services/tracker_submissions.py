@@ -16,8 +16,6 @@ from robopark_api.collaboration_models import TrackerSubmission
 from robopark_api.services import tracker_cache, tracker_claims, tracker_client
 from robopark_api.services.tracker_policy import ensure_action_allowed
 
-UNCERTAIN_RETRY_SECONDS = 60
-
 
 def begin(db, user, key, action, request, payload, token, *, validate=None):
     request_key = request.headers.get("Idempotency-Key")
@@ -30,6 +28,7 @@ def begin(db, user, key, action, request, payload, token, *, validate=None):
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     query = select(TrackerSubmission).where(
         TrackerSubmission.actor_id == user.id,
+        TrackerSubmission.resource_type == "tracker_issue",
         TrackerSubmission.issue_key == key,
         TrackerSubmission.action == action,
         TrackerSubmission.request_key == request_key,
@@ -41,14 +40,7 @@ def begin(db, user, key, action, request, payload, token, *, validate=None):
     ensure_action_allowed(db, user, issue, action)
     previous = db.scalar(query)
     if previous:
-        if (
-            previous.state != "succeeded"
-            and time.time() - previous.created_at >= UNCERTAIN_RETRY_SECONDS
-        ):
-            db.delete(previous)
-            db.commit()
-        else:
-            return replay(previous, digest)
+        return replay(previous, digest)
     try:
         expected = json.loads(unquote(request.headers.get("X-Tracker-State", "")))
         if not isinstance(expected, dict) or set(expected) != {"status", "status_key", "assignee"}:
@@ -68,6 +60,7 @@ def begin(db, user, key, action, request, payload, token, *, validate=None):
         validate()
     row = TrackerSubmission(
         actor_id=user.id,
+        resource_type="tracker_issue",
         issue_key=key,
         action=action,
         request_key=request_key,
