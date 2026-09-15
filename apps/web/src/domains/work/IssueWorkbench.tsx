@@ -82,6 +82,7 @@ export type IssueWorkbenchApiClient = Pick<
 > & Partial<Pick<typeof api,
   | 'taskTimeline' | 'taskDefectCodes' | 'taskMessage' | 'taskClaim' | 'taskHandoff'
   | 'taskSubmitReview' | 'taskReturnReview' | 'taskApproveReview'
+  | 'taskRetryNow' | 'taskHide' | 'taskRestore'
 >>
 
 export type IssueWorkbenchProps = {
@@ -430,14 +431,17 @@ function IssueWorkbenchOwner({
   const allowUntagged = user.role === 'operator'
     || user.role === 'admin'
     || user.role === 'royal'
+  const manager = user.role === 'admin' || user.role === 'royal'
   const requestState = useMemo<WorkUrlState>(() => {
-    if (allowUntagged || !state.filters.untagged) return state
+    if ((allowUntagged || !state.filters.untagged) && (manager || !state.filters.includeHidden)) return state
     const filters = { ...state.filters }
-    delete filters.untagged
+    if (!allowUntagged) delete filters.untagged
+    if (!manager) delete filters.includeHidden
     return { ...state, filters }
-  }, [allowUntagged, state])
+  }, [allowUntagged, manager, state])
   const listKey = `${accessPrefix}list:${selectedPark.id}:${JSON.stringify({ filters: requestState.filters, sort: requestState.sort, page: requestState.page })}`
-  const detailKey = issueKey ? `${accessPrefix}issue:${issueKey}` : ''
+  const includeHidden = manager && Boolean(requestState.filters.includeHidden)
+  const detailKey = issueKey ? `${accessPrefix}issue:${issueKey}${includeHidden ? ':hidden' : ''}` : ''
   const commentsKey = issueKey ? `${accessPrefix}comments:${issueKey}` : ''
   const ownedKey = `${accessPrefix}owned:${user.username}`
   const blockedRef = useRef(false)
@@ -447,6 +451,11 @@ function IssueWorkbenchOwner({
   const [authorizationFailure, setAuthorizationFailure] = useState<DomainError | null>(null)
   const [relatedRefreshGeneration, setRelatedRefreshGeneration] = useState(0)
   const [reviewOpen, setReviewOpen] = useState(false)
+  const [hideOpen, setHideOpen] = useState(false)
+  const [hideReason, setHideReason] = useState('')
+  const [taskControlBusy, setTaskControlBusy] = useState(false)
+  const [taskControlMessage, setTaskControlMessage] = useState('')
+  const [taskControlError, setTaskControlError] = useState('')
   const mutationKeys = useRef(new StableMutationKey())
 
   useLayoutEffect(() => () => { ++ownerGeneration.current }, [])
@@ -502,9 +511,12 @@ function IssueWorkbenchOwner({
   )
   const detail = useCachedResource<TrackerIssueDetail>(
     detailKey,
-    () => guarded(() => apiClient.trackerIssue(issueKey as string)),
+    () => guarded(() => includeHidden
+      ? apiClient.trackerIssue(issueKey as string, undefined, true)
+      : apiClient.trackerIssue(issueKey as string)),
     { enabled: Boolean(issueKey) },
   )
+  const hiddenDetail = Boolean(detail.data?.workflow?.hidden)
   const comments = useCachedResource<TaskTimelineItem[]>(
     commentsKey,
     () => guarded(async () => apiClient.taskTimeline
@@ -515,7 +527,7 @@ function IssueWorkbenchOwner({
           created_at: comment.created_at ?? '', sync_state: 'synced' as const,
           attachments: comment.attachments ?? [],
         }))),
-    { enabled: Boolean(issueKey) },
+    { enabled: Boolean(issueKey && (!includeHidden || (detail.data && !hiddenDetail))) },
   )
   const defectCodes = useCachedResource(
     `${accessPrefix}defect-codes`,
@@ -687,6 +699,27 @@ function IssueWorkbenchOwner({
     return result
   }, [])
 
+  const runTaskControl = useCallback(async (
+    action: string,
+    payload: unknown,
+    request: (key: string) => Promise<unknown>,
+    message: string,
+    onSuccess?: () => void,
+  ) => {
+    if (taskControlBusy) return
+    setTaskControlBusy(true)
+    setTaskControlMessage('')
+    setTaskControlError('')
+    try {
+      await mutate(() => lifecycleMutation(action, payload, request), onSuccess)
+      setTaskControlMessage(message)
+    } catch (error) {
+      setTaskControlError(classifyApiError(error, 'Не удалось изменить задачу.').description)
+    } finally {
+      setTaskControlBusy(false)
+    }
+  }, [lifecycleMutation, mutate, taskControlBusy])
+
   const detailSideFailure = useMemo(() => {
     const failures = [
       detailFailure,
@@ -699,12 +732,13 @@ function IssueWorkbenchOwner({
   }, [commentsFailure, detailFailure, transitionsFailure])
   const detailSideDataAvailable = Boolean(
     detail.data
-      && comments.data !== undefined
+      && (hiddenDetail || comments.data !== undefined)
       && (!transitionsEnabled || transitions.data !== undefined),
   )
   const canRenderDetailActions = Boolean(
-    detail.data
+      detail.data
       && mechanicCanWork
+      && !hiddenDetail
       && (
         !detailSideFailure
         || (
@@ -731,6 +765,7 @@ function IssueWorkbenchOwner({
         driver={user.role === 'driver'}
         key={buildWorkSearch(state, null)}
         loading={list.isRevalidating}
+        manager={manager}
         onApply={(next) => onStateChange({ ...state, ...next }, { replace: false })}
         value={requestState}
       />
@@ -784,7 +819,30 @@ function IssueWorkbenchOwner({
                       <TaskIssueSummary issue={detail.data} now={now} robotReadOnly={!mechanicCanWork}
                         onOpenRobotCheck={mechanicCanWork ? () => changeTab('check') : undefined} />
                       <TaskSyncStatus state={detail.data.workflow.sync_state} />
-                      <TaskTimeline items={taskComments} />
+                      {manager ? <section aria-label="Управление задачей" className="issue-section">
+                        {detail.data.workflow.hidden ? <>
+                          <p>Причина скрытия: {detail.data.workflow.hidden.reason}</p>
+                          <Button busy={taskControlBusy} onClick={() => void runTaskControl(
+                            'restore-task', {}, key => apiClient.taskRestore!(detail.data!.key, key),
+                            'Задача восстановлена',
+                          )} variant="secondary">Восстановить задачу</Button>
+                        </> : <>
+                          {detail.data.workflow.sync_state === 'needs_attention' ? <Button busy={taskControlBusy} onClick={() => void runTaskControl(
+                            'retry-now', {}, key => apiClient.taskRetryNow!(detail.data!.key, key),
+                            'Повторная отправка запущена',
+                          )} variant="secondary">Повторить сейчас</Button> : null}
+                          {!hideOpen ? <Button onClick={() => setHideOpen(true)} variant="secondary">Скрыть задачу</Button> : <div className="form-grid">
+                            <label className="field"><span className="field-label">Причина скрытия</span><textarea maxLength={4000} onChange={event => setHideReason(event.target.value)} value={hideReason} /></label>
+                            <div className="form-actions"><Button busy={taskControlBusy} disabled={!hideReason.trim()} onClick={() => void runTaskControl(
+                              'hide-task', { reason: hideReason.trim() }, key => apiClient.taskHide!(detail.data!.key, hideReason.trim(), key),
+                              'Задача скрыта', includeHidden ? undefined : onCloseIssue,
+                            )} variant="danger">Подтвердить скрытие</Button><Button onClick={() => { setHideOpen(false); setHideReason('') }} variant="secondary">Отмена</Button></div>
+                          </div>}
+                        </>}
+                        {taskControlMessage ? <p role="status">{taskControlMessage}</p> : null}
+                        {taskControlError ? <p role="alert">{taskControlError}</p> : null}
+                      </section> : null}
+                      {!hiddenDetail ? <TaskTimeline items={taskComments} /> : null}
                     </> : <IssueDetailPanel
                       currentUser={user.tracker_login ?? user.username} accountKey={user.username}
                       commentsLoading={comments.isLoading && !comments.data}

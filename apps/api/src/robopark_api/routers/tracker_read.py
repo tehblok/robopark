@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import time
+from concurrent.futures import Future, wait
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -55,6 +57,8 @@ from robopark_api.services.tracker_policy import (
 
 MAX_PAGE_SIZE = 200
 DEFAULT_PAGE_SIZE = 50
+WORK_HISTORY_REQUEST_BUDGET_SECONDS = 0.25
+WORK_HISTORY_STARTS_PER_REQUEST = 2
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tracker", tags=["tracker-read"])
@@ -156,6 +160,48 @@ def _work_issue_sla(*, token: str, issue: dict) -> dict:
         **issue,
         **tracker_client.repair_sla_fields(issue, status_history=history),
     }
+
+
+def _work_page_sla(*, token: str, issues: list[dict]) -> list[dict]:
+    deadline = time.monotonic() + WORK_HISTORY_REQUEST_BUDGET_SECONDS
+    pending: list[tuple[dict, Future[list[object]]]] = []
+    starts = 0
+    for issue in issues:
+        embedded = tracker_client.repair_sla_fields(issue)
+        if embedded["sla_source"] == "status_history":
+            continue
+        future, started = tracker_client.schedule_issue_status_history(
+            token=token,
+            key=str(issue.get("key") or ""),
+            issue=issue,
+            allow_start=starts < WORK_HISTORY_STARTS_PER_REQUEST,
+        )
+        starts += int(started)
+        if future is not None:
+            pending.append((issue, future))
+
+    remaining = max(0.0, deadline - time.monotonic())
+    ready, _ = (
+        wait(
+            {future for _issue, future in pending},
+            timeout=remaining,
+        )
+        if pending
+        else (set(), set())
+    )
+    histories = {id(issue): future.result() for issue, future in pending if future in ready}
+    return [
+        {
+            **issue,
+            **tracker_client.repair_sla_fields(
+                issue,
+                status_history=histories[id(issue)],
+            ),
+        }
+        if id(issue) in histories
+        else {**issue, **tracker_client.repair_sla_fields(issue)}
+        for issue in issues
+    ]
 
 
 def _normalized_robot_number(raw: object) -> str | None:
@@ -465,9 +511,7 @@ def list_issues(
         scoped_raw.append(issue)
 
     total = len(scoped_raw)
-    page_raw = [
-        _work_issue_sla(token=token, issue=issue) for issue in scoped_raw[offset : offset + limit]
-    ]
+    page_raw = _work_page_sla(token=token, issues=scoped_raw[offset : offset + limit])
     if not related_repairs:
         page_raw = _ordered_by_queue(page_raw, newest=sort_order == "newest")
     assignments = local_assignees(db, [str(issue.get("key") or "") for issue in page_raw])

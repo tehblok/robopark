@@ -30,7 +30,14 @@ from robopark_api.schemas import (
     TrackerCommentIn,
     TrackerTransitionIn,
 )
-from robopark_api.services import audit, rbac, task_lifecycle, tracker_cache, tracker_client
+from robopark_api.services import (
+    audit,
+    rbac,
+    reliable_actions,
+    task_lifecycle,
+    tracker_cache,
+    tracker_client,
+)
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import tracker_signatures as sig_svc
 from robopark_api.services import tracker_submissions as submissions
@@ -320,6 +327,55 @@ def approve_task_review(
                 idempotency_key=idempotency_key,
             )
         )
+
+
+@router.post("/issues/{key}/retry-now", response_model=TrackerActionOut)
+def retry_task_now(
+    key: str,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> TrackerActionOut:
+    if not rbac.is_admin_or_royal(user):
+        raise HTTPException(403, "task_retry_manager_required")
+    issue = _lifecycle_issue(db, user, key)
+    with submissions.task_mutation_lease(db, key):
+        begin = reliable_actions.begin_action(
+            db,
+            actor=user,
+            resource_type="task_control",
+            resource_id=key,
+            action="retry_now",
+            idempotency_key=idempotency_key,
+            payload={},
+        )
+        if begin.result is not None:
+            return TrackerActionOut(**begin.result)
+        changed = reliable_actions.retry_needs_attention(db, resource_id=key)
+        if not changed:
+            raise HTTPException(409, "task_retry_not_needed")
+        workflow = task_lifecycle.workflow(db, issue_key=key, viewer=user, issue=issue)
+        result = TrackerActionOut(
+            key=key,
+            action="retry_now",
+            status="retrying",
+            actor=user.username,
+            performed_at=datetime.fromtimestamp(begin.row.created_at, UTC).isoformat(),
+            sync_state=workflow["sync_state"],
+            workflow=workflow,
+        )
+        reliable_actions.complete_action(db, begin.row, result)
+        audit.record(
+            db,
+            action="tracker.retry_now",
+            actor=user,
+            target_type="tracker_issue",
+            target_id=key,
+            detail=f"actions={changed}",
+            client_ip=client_ip(request),
+        )
+        return result
 
 
 @router.post("/issues/{key}/hide", response_model=TrackerActionOut)

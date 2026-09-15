@@ -553,3 +553,65 @@ def test_hide_restore_is_manager_only_filters_before_counts_and_writes_audit(
     assert row.actor_user_id == seed_admin.id
     assert row.restored_by_user_id == seed_admin.id
     assert client.get("/tracker/issues").json()["total"] == 1
+
+
+def test_manager_retry_now_is_idempotent_and_preserves_failed_action_history(
+    client,
+    db_session,
+    seed_mechanic,
+    seed_admin,
+    seed_park_with_tracker,
+    monkeypatch,
+):
+    _prepare_tracker(db_session, monkeypatch)
+    failed = ReliableAction(
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id=ISSUE_KEY,
+        action="start",
+        idempotency_key="failed-start-51",
+        payload_hash="0" * 64,
+        payload_json="{}",
+        state="needs_attention",
+        error_code="missing_transition",
+        attempts=3,
+        next_attempt_at=999.0,
+        created_at=1.0,
+        updated_at=2.0,
+    )
+    db_session.add(failed)
+    db_session.commit()
+
+    login_as(client, seed_mechanic.username, "secret")
+    denied = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/retry-now",
+        headers={"Idempotency-Key": "retry-now-task-51"},
+    )
+    assert denied.status_code == 403
+
+    login_as(client, seed_admin.username, "secret")
+    first = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/retry-now",
+        headers={"Idempotency-Key": "retry-now-task-51"},
+    )
+    replay = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/retry-now",
+        headers={"Idempotency-Key": "retry-now-task-51"},
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert first.json() == replay.json()
+    db_session.refresh(failed)
+    assert (failed.state, failed.error_code, failed.attempts) == (
+        "retry_wait",
+        "missing_transition",
+        3,
+    )
+    controls = (
+        db_session.query(ReliableAction)
+        .filter_by(resource_type="task_control", resource_id=ISSUE_KEY, action="retry_now")
+        .all()
+    )
+    assert len(controls) == 1
+    assert controls[0].state == "succeeded"
+    assert db_session.query(AuditLog).filter_by(action="tracker.retry_now").count() == 1

@@ -55,6 +55,7 @@ export function loadWorkPage(
     assignee: filters.assignee,
     untagged: filters.untagged,
     age_hours: filters.ageHours,
+    ...(filters.includeHidden ? { include_hidden: true } : {}),
     sort: 'oldest',
     limit: WORK_PAGE_SIZE,
     offset: pageOffset(state.page),

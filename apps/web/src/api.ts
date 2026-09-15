@@ -386,6 +386,7 @@ export type TaskWorkflow = {
   sync_state: TaskSyncState
   queued_at?: string | null
   queued_at_source?: 'tracker_history' | 'created_at_estimate' | null
+  hidden?: { reason: string; actor: string; created_at: string } | null
   has_current_cycle_comment: boolean
 }
 
@@ -1408,6 +1409,7 @@ export const api = {
     limit?: number
     offset?: number
     owned_by_me?: boolean
+    include_hidden?: boolean
   }) => {
     const q = new URLSearchParams({ sort: params.sort ?? 'oldest' })
     Object.entries(params).forEach(([key, value]) => {
@@ -1437,9 +1439,9 @@ export const api = {
     return request<Paged<AuditEntry>>(`/admin/audit?${q.toString()}`)
   },
   auditActions: () => request<string[]>('/admin/audit/actions'),
-  trackerIssue: (key: string, signal?: AbortSignal) =>
+  trackerIssue: (key: string, signal?: AbortSignal, includeHidden = false) =>
     request<TrackerIssueDetail>(
-      `/tracker/issues/${encodeURIComponent(key)}`,
+      `/tracker/issues/${encodeURIComponent(key)}${includeHidden ? '?include_hidden=true' : ''}`,
       signal ? { signal } : undefined,
     ),
   trackerComments: (key: string) =>
@@ -1463,6 +1465,9 @@ export const api = {
   },
   taskReturnReview: (key: string, reason: string, assignee: string | undefined, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/review/return`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ reason, assignee }) }),
   taskApproveReview: (key: string, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/review/approve`, { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey } }),
+  taskRetryNow: (key: string, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/retry-now`, { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey } }),
+  taskHide: (key: string, reason: string, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/hide`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ reason }) }),
+  taskRestore: (key: string, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/hide`, { method: 'DELETE', headers: { 'Idempotency-Key': idempotencyKey } }),
   trackerTransitions: (key: string) =>
     request<TrackerTransition[]>(`/tracker/transitions/${encodeURIComponent(key)}`),
   trackerComment: (key: string, text: string, headers?: Record<string, string>) =>

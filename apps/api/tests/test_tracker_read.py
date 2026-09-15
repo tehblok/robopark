@@ -1,3 +1,5 @@
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -310,6 +312,80 @@ def test_tracker_work_history_failure_falls_back_to_estimated_creation(
     assert item["queued_at"] == "2026-01-02T10:00:00Z"
     assert item["sla_deadline"] == "2026-01-02T15:00:00Z"
     assert item["sla_source"] == "estimated"
+
+
+def test_tracker_work_cold_page_has_one_short_history_budget_and_bounded_calls(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    issues = [
+        _scoped_issue(f"ROBOPARK-{index}", f"2026-01-{index % 28 + 1:02d}T10:00:00Z")
+        for index in range(200)
+    ]
+    monkeypatch.setattr(tracker_client, "search_issues", lambda **_kwargs: issues)
+    release = threading.Event()
+    calls: list[str] = []
+    calls_lock = threading.Lock()
+
+    def stalled_history(*, token, key, issue):
+        del token, issue
+        with calls_lock:
+            calls.append(key)
+        release.wait(5)
+        raise tracker_client.TrackerError("history unavailable")
+
+    monkeypatch.setattr(tracker_client, "get_issue_status_history", stalled_history, raising=False)
+    login_as(client, "op2", "secret")
+
+    started = time.monotonic()
+    try:
+        response = client.get("/tracker/issues?limit=200")
+    finally:
+        release.set()
+    elapsed = time.monotonic() - started
+
+    assert response.status_code == 200
+    assert elapsed < 1.0
+    assert len(calls) <= 2
+    assert len(response.json()["items"]) == 200
+    assert {item["sla_source"] for item in response.json()["items"]} == {"estimated"}
+
+
+def test_tracker_work_history_hydration_reuses_a_fixed_worker_pool(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [_scoped_issue("ROBOPARK-POOL", "2026-01-02T10:00:00Z")],
+    )
+    release = threading.Event()
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue_status_history",
+        lambda **_kwargs: release.wait(5) or [],
+        raising=False,
+    )
+    login_as(client, "op2", "secret")
+
+    try:
+        for _ in range(5):
+            assert client.get("/tracker/issues").status_code == 200
+        workers = [
+            thread
+            for thread in threading.enumerate()
+            if thread.name.startswith("tracker-work-history")
+        ]
+        assert len(workers) <= 2
+    finally:
+        release.set()
 
 
 def test_tracker_work_detail_hydrates_exact_queue_history(

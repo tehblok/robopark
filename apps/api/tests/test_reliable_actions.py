@@ -236,3 +236,25 @@ def test_retry_jitter_is_deterministic(db_session, seed_mechanic):
     schedule_retry(db_session, first, error_code="timeout", now=100.0)
 
     assert first.next_attempt_at == expected
+
+
+def test_retry_needs_attention_preserves_attempt_history_and_makes_actions_due(
+    db_session, seed_mechanic
+):
+    from robopark_api.services.reliable_actions import retry_needs_attention
+
+    row = _begin(db_session, seed_mechanic, key="retry-attention").row
+    row.state = "needs_attention"
+    row.error_code = "missing_transition"
+    row.attempts = 4
+    row.next_attempt_at = 999.0
+    db_session.commit()
+
+    changed = retry_needs_attention(db_session, resource_id="SDCFLEETOPS-1", now=100.0)
+
+    assert changed == 1
+    assert row.state == "retry_wait"
+    assert row.error_code == "missing_transition"
+    assert row.attempts == 4
+    assert row.next_attempt_at == 100.0
+    assert row.lease_until is None

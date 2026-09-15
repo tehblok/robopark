@@ -217,6 +217,28 @@ def schedule_retry(
     return row
 
 
+def retry_needs_attention(db: Session, *, resource_id: str, now: float | None = None) -> int:
+    """Make a task's manual-attention actions immediately retryable.
+
+    Attempts and the last error remain intact as delivery/audit history.
+    """
+    current = time.time() if now is None else now
+    rows = db.scalars(
+        select(ReliableAction).where(
+            ReliableAction.resource_type == "tracker_issue",
+            ReliableAction.resource_id == resource_id,
+            ReliableAction.state == "needs_attention",
+        )
+    ).all()
+    for row in rows:
+        row.state = "retry_wait"
+        row.next_attempt_at = current
+        row.lease_until = None
+        row.updated_at = current
+    db.flush()
+    return len(rows)
+
+
 def claim_due_batch(
     db: Session,
     *,

@@ -30,4 +30,18 @@ describe('WorkFilters', () => {
     expect(screen.getByText('Статус из ссылки: review')).toBeVisible()
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
   })
+
+  it('lets only managers include hidden tasks through an explicit filter', () => {
+    const onApply = vi.fn()
+    const value = { filters: { queue: 'RP' }, sort: 'oldest' as const, page: 2 }
+    const view = render(<WorkFilters loading={false} manager onApply={onApply} value={value} />)
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Показать скрытые задачи' }))
+    expect(onApply).toHaveBeenCalledWith({
+      filters: { queue: 'RP', includeHidden: true }, sort: 'oldest', page: 1,
+    })
+
+    view.rerender(<WorkFilters loading={false} onApply={onApply} value={value} />)
+    expect(screen.queryByRole('checkbox', { name: 'Показать скрытые задачи' })).not.toBeInTheDocument()
+  })
 })

@@ -106,6 +106,9 @@ function apiClient(
     trackerUnassign: vi.fn(async () => actionResult('unassign')),
     trackerTransition: vi.fn(async () => actionResult('transition')),
     trackerClose: vi.fn(async () => actionResult('close')),
+    taskRetryNow: vi.fn(async () => ({ ...actionResult('retry_now'), sync_state: 'pending' as const, workflow: null })),
+    taskHide: vi.fn(async () => ({ ...actionResult('hide'), sync_state: 'saved' as const, workflow: null })),
+    taskRestore: vi.fn(async () => ({ ...actionResult('restore'), sync_state: 'saved' as const, workflow: null })),
     inventory: vi.fn(async parkId => ({ park_id: parkId, component_count: 0, part_count: 0, low_stock_count: 0, out_of_stock_count: 0, components: [] })),
     searchInventory: vi.fn(async () => ({ items: [], limit: 200, offset: 0, total: 0 })),
     writeoffInventoryForTask: vi.fn(),
@@ -118,6 +121,54 @@ function apiClient(
     ...overrides,
   }
 }
+
+it('lets an admin retry a task needing attention once and announces recovery', async () => {
+  const admin = { ...user, role: 'admin' as const }
+  const attention = {
+    ...issue,
+    workflow: { owner: null, review_state: null, display_status: 'queued' as const, sync_state: 'needs_attention' as const, has_current_cycle_comment: false },
+  }
+  const taskRetryNow = vi.fn(async () => ({ ...actionResult('retry_now'), sync_state: 'pending' as const, workflow: attention.workflow }))
+  const client = apiClient({ trackerIssue: vi.fn(async () => attention), taskRetryNow })
+
+  renderWorkbench({ client, currentUser: admin })
+  fireEvent.click(await screen.findByRole('button', { name: 'Повторить сейчас' }))
+
+  await screen.findByText('Повторная отправка запущена')
+  expect(taskRetryNow).toHaveBeenCalledOnce()
+})
+
+it('requires a reason to hide and restores a hidden task without loading its timeline', async () => {
+  const admin = { ...user, role: 'admin' as const }
+  const taskHide = vi.fn(async () => ({ ...actionResult('hide'), sync_state: 'saved' as const, workflow: null }))
+  const visibleClient = apiClient({
+    trackerIssue: vi.fn(async () => ({ ...issue, workflow: { owner: null, review_state: null, display_status: 'queued' as const, sync_state: 'saved' as const, has_current_cycle_comment: false } })),
+    taskHide,
+  })
+  const visible = renderWorkbench({ client: visibleClient, currentUser: admin })
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Скрыть задачу' }))
+  expect(screen.getByRole('button', { name: 'Подтвердить скрытие' })).toBeDisabled()
+  fireEvent.change(screen.getByRole('textbox', { name: 'Причина скрытия' }), { target: { value: 'Дубль' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Подтвердить скрытие' }))
+  await waitFor(() => expect(taskHide).toHaveBeenCalledOnce())
+  visible.unmount()
+
+  const hidden = {
+    ...issue,
+    workflow: { owner: null, review_state: null, display_status: 'hidden' as const, sync_state: 'saved' as const, has_current_cycle_comment: false,
+      hidden: { reason: 'Дубль', actor: 'admin', created_at: '2026-09-15T09:00:00Z' } },
+  }
+  const taskTimeline = vi.fn(async () => [])
+  const taskRestore = vi.fn(async () => ({ ...actionResult('restore'), sync_state: 'saved' as const, workflow: null }))
+  const hiddenClient = apiClient({ trackerIssue: vi.fn(async () => hidden), taskTimeline, taskRestore })
+  renderWorkbench({ client: hiddenClient, currentUser: admin, currentState: { ...state, filters: { ...state.filters, includeHidden: true } } })
+
+  expect(await screen.findByText('Причина скрытия: Дубль')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Восстановить задачу' }))
+  await waitFor(() => expect(taskRestore).toHaveBeenCalledOnce())
+  expect(taskTimeline).not.toHaveBeenCalled()
+})
 
 function deferred<T>() {
   let resolve!: (value: T) => void

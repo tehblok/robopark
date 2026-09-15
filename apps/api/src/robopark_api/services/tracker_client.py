@@ -8,9 +8,14 @@ Uses the declared ``yandex-tracker-client`` package:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
+import threading
+import time
+from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -50,6 +55,18 @@ _ATTACHMENT_EXT_MIMES = {
 }
 
 _CLIENTS: dict[str, Any] = {}
+
+_WORK_HISTORY_WORKERS = 2
+_WORK_HISTORY_TTL_SECONDS = 60.0
+_WORK_HISTORY_MAX_ENTRIES = 512
+_work_history_executor = ThreadPoolExecutor(
+    max_workers=_WORK_HISTORY_WORKERS,
+    thread_name_prefix="tracker-work-history",
+)
+_work_history_slots = threading.BoundedSemaphore(_WORK_HISTORY_WORKERS)
+_work_history_lock = threading.Lock()
+_work_history_cache: OrderedDict[str, tuple[float, list[Any]]] = OrderedDict()
+_work_history_flights: dict[str, Future[list[Any]]] = {}
 
 
 class TrackerError(Exception):
@@ -840,6 +857,68 @@ def get_issue_status_history(*, token: str, key: str, issue: dict[str, Any]) -> 
         return list(resource.changelog.get_all())
 
     return _run_tracked(_run, max_attempts=1, call_timeout=10.0)
+
+
+def schedule_issue_status_history(
+    *, token: str, key: str, issue: dict[str, Any], allow_start: bool = True
+) -> tuple[Future[list[Any]] | None, bool]:
+    """Return cached/shared Work history without growing a request-owned queue.
+
+    At most two list hydrations exist process-wide. Callers may stop admitting
+    new work after their own small request quota while still consuming a cached
+    value or an already-running single flight.
+    """
+    cache_key = f"{hashlib.sha256(token.encode()).hexdigest()}:{key}"
+    now = time.monotonic()
+    with _work_history_lock:
+        hit = _work_history_cache.get(cache_key)
+        if hit is not None and now - hit[0] < _WORK_HISTORY_TTL_SECONDS:
+            _work_history_cache.move_to_end(cache_key)
+            ready: Future[list[Any]] = Future()
+            ready.set_result(hit[1])
+            return ready, False
+        if hit is not None:
+            _work_history_cache.pop(cache_key, None)
+        flight = _work_history_flights.get(cache_key)
+        if flight is not None:
+            return flight, False
+        if not allow_start or not _work_history_slots.acquire(blocking=False):
+            return None, False
+
+        def load() -> list[Any]:
+            try:
+                return get_issue_status_history(token=token, key=key, issue=issue)
+            except TrackerError:
+                return []
+
+        try:
+            flight = _work_history_executor.submit(load)
+        except BaseException:
+            _work_history_slots.release()
+            raise
+        _work_history_flights[cache_key] = flight
+
+    def finish(done: Future[list[Any]]) -> None:
+        try:
+            history = done.result()
+        except BaseException:
+            history = []
+        with _work_history_lock:
+            if _work_history_flights.get(cache_key) is done:
+                _work_history_flights.pop(cache_key, None)
+            _work_history_cache[cache_key] = (time.monotonic(), history)
+            _work_history_cache.move_to_end(cache_key)
+            while len(_work_history_cache) > _WORK_HISTORY_MAX_ENTRIES:
+                _work_history_cache.popitem(last=False)
+        _work_history_slots.release()
+
+    flight.add_done_callback(finish)
+    return flight, True
+
+
+def clear_issue_status_history_cache() -> None:
+    with _work_history_lock:
+        _work_history_cache.clear()
 
 
 def list_comments(*, token: str, key: str) -> list[dict[str, Any]]:
