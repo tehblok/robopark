@@ -22,3 +22,11 @@
 
 - Parent verification reports a real copied database upgraded from revision 0022 to 0028 and restored to a byte-identical pre-cutover snapshot.
 - Production queue transition mapping and independent authorization/idempotency/attachment/worker review remain parent-level completion-gate work; this task used deterministic test fixtures only and never contacted external services.
+
+## Fix round 2 — UI-only lifecycle proof
+
+- Removed the bridge `submit_review` mutation control. The bridge now exposes only guarded setup/upstream availability, outbox drain and read-only counters/snapshot evidence for lifecycle tests.
+- Proved RED with the old bypass scenario (`submit_review` control returned 400), then rewrote the desktop and 390×844 lifecycle around visible controls only: claim, comments, two handoffs, real logout/login role changes, defect-code selection, actual file/camera inputs, operator return, mechanic clarification/resubmit and operator approval.
+- Both unique submissions assert exactly two uploads and exactly two `theDefectCode` writes; all delivered action markers are present and each has count one. The rendered DOM timeline is asserted as an ordered sequence, and the comment counter assertion is non-vacuous.
+- The retained card test reproduced a real lifecycle-summary regression that exposed raw SUF/Port/Rover/Mode template fields. `TaskIssueSummary` now reuses the existing display-only `summarizeIssueDescription` projection; Classificator, Comment, Zone and repair notes remain visible.
+- Final focused Playwright: 5 passed in 13.4s. TypeScript, scoped Oxlint, bridge Ruff check/format and `git diff --check`: passed.

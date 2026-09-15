@@ -90,10 +90,6 @@ def run():
                 {"id": "close", "display": "Закрыть"},
             ],
         }
-        review_png = bytes.fromhex(
-            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
-            "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
-        )
 
         def tracker_issue(**_kwargs):
             return {
@@ -281,21 +277,6 @@ def run():
                             "actions": actions,
                             "timeline": timeline,
                         },
-                    }
-                elif request["control"] == "submit_review":
-                    response = clients[request.get("actor", "mechanic")].post(
-                        "/tracker/issues/ROBOPARK-42/submit-review",
-                        headers={"Idempotency-Key": request["idempotency_key"]},
-                        data={
-                            "defect_code": request.get("defect_code", "BD-01"),
-                            **({"comment": request["comment"]} if request.get("comment") else {}),
-                        },
-                        files={"photo": ("fixed.png", review_png, "image/png")},
-                    )
-                    response_data = {
-                        "status": response.status_code,
-                        "body": response.text,
-                        "headers": dict(response.headers),
                     }
                 else:
                     response_data = {"status": 400, "json": {"detail": "unknown_test_control"}}

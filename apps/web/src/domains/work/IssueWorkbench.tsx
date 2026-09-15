@@ -24,6 +24,7 @@ import { SyncStatus } from '../../design-system/status/SyncStatus'
 import { IssueActionsPanel } from '../../components/tracker/IssueActionsPanel'
 import { IssueDetailPanel } from '../../components/tracker/IssueDetailPanel'
 import { IssueRichText } from '../../components/tracker/IssueRichText'
+import { summarizeIssueDescription } from '../../components/tracker/issueDescription'
 import { formatAge, personName, statusTone } from '../../components/tracker/issue-utils'
 import { Button } from '../../design-system/actions/Button'
 import { EntityRow } from '../../design-system/data/EntityRow'
@@ -136,6 +137,7 @@ function ClosedDisclosure({ title, children }: { title: string; children: ReactN
 function TaskIssueSummary({ issue, now, onOpenRobotCheck, robotReadOnly }: { issue: TrackerIssueDetail; now: number; onOpenRobotCheck?: () => void; robotReadOnly: boolean }) {
   const robot = normalizedRobotNumber(issue.robot)
   const status = taskWorkflowStatus(issue.workflow?.display_status)
+  const description = summarizeIssueDescription(issue.description ?? '')
   return <article className="issue-detail">
     <header className="issue-detail-head"><div className="issue-detail-title-row"><a className="issue-detail-key" href={issue.url} rel="noreferrer" target="_blank">{issue.key}</a><StatusBadge tone={status.tone}>{status.label}</StatusBadge></div><h2 className="issue-detail-summary">{issue.summary}</h2></header>
     <dl className="issue-fields">
@@ -143,7 +145,7 @@ function TaskIssueSummary({ issue, now, onOpenRobotCheck, robotReadOnly }: { iss
       <div className="issue-field"><dt>Ответственный</dt><dd>{personName(issue.workflow?.owner ?? issue.assignee)}</dd></div>
     </dl>
     <RepairSla deadline={issue.sla_deadline} now={now} source={issue.sla_source} />
-    {issue.description?.trim() ? <section className="issue-section"><h3>Описание</h3><IssueRichText text={issue.description} /></section> : null}
+    {description.trim() ? <section className="issue-section"><h3>Описание</h3><IssueRichText text={description} /></section> : null}
   </article>
 }
 

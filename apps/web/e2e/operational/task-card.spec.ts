@@ -56,14 +56,17 @@ test('390x844 lifecycle card is ordered, keyboard reachable and does not overflo
 
 test('robot repair descriptions keep classification, comment, zone and repair notes only', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
-  await installOperational(page, { issue: { ...issue, description: `**SUF**: робот находится под управлением системы SUF
+  await installOperational(page, { issue: { ...claimed, description: `**SUF**: робот находится под управлением системы SUF
 **Classificator:** Disk space
 **Comment:** Недостаточно места на диске
 **Zone:** Lavka Smolensky
 **Port:** Moscow Robot
 **Rover name:** a1217
 **Mode:** AUTO_MODE_AUTO
-Что было сделано: Агрессивная чистка, почищены старые докер-образы. Рекомендации: Забит логами, необходимо слить по шнурку.` } })
+Что было сделано: Агрессивная чистка, почищены старые докер-образы. Рекомендации: Забит логами, необходимо слить по шнурку.` }, routes: [
+    { method: 'GET', path: '/api/tracker/issues/ROBOPARK-42/timeline', handler: () => ({ json: [] }) },
+    { method: 'GET', path: '/api/tracker/defect-codes', handler: () => ({ json: [{ code: 'BD-01', label: 'Вмятина', description: null }] }) },
+  ] })
   await page.goto('/work/ROBOPARK-42?park=7')
   const description = page.locator('.issue-section').filter({ has: page.getByRole('heading', { name: 'Описание', exact: true }) })
   await expect(description).toContainText('Classificator: Disk space')
