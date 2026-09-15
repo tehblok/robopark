@@ -162,20 +162,35 @@ class LiveMergeStore:
         lock_path, _, _, _ = self._paths(namespace, key)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + max(timeout, 0.0)
-        with lock_path.open("a+", encoding="utf-8") as fh:
-            while True:
+        while True:
+            with lock_path.open("a+", encoding="utf-8") as fh:
+                while True:
+                    try:
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise LiveMergeTimeout(key) from None
+                        time.sleep(_LOCK_RETRY_SEC)
                 try:
-                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        raise LiveMergeTimeout(key) from None
-                    time.sleep(_LOCK_RETRY_SEC)
-            try:
-                require_application_writes()
-                yield
-            finally:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                    # Pruning may unlink an inode after this waiter opened it.
+                    # Only the inode currently named by the path coordinates peers.
+                    descriptor = os.fstat(fh.fileno())
+                    try:
+                        current = lock_path.stat()
+                    except FileNotFoundError:
+                        current = None
+                    if current is not None and (descriptor.st_dev, descriptor.st_ino) == (
+                        current.st_dev,
+                        current.st_ino,
+                    ):
+                        require_application_writes()
+                        yield
+                        return
+                finally:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            if time.monotonic() >= deadline:
+                raise LiveMergeTimeout(key)
 
     def _atomic_write(self, path: Path, payload: dict[str, Any]) -> None:
         from robopark_api.services.ops.maintenance import require_application_writes

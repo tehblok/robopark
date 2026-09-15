@@ -338,14 +338,14 @@ def test_discovery_bounds_work_for_filter_only_large_dict(monkeypatch):
     from robopark_api.routers import admin_emergency_readings
 
     checked_keys = 0
-    real_safe_key = admin_emergency_readings._safe_key
+    real_safe_key = admin_emergency_readings.safe_reading_key
 
     def counted_safe_key(key):
         nonlocal checked_keys
         checked_keys += 1
         return real_safe_key(key)
 
-    monkeypatch.setattr(admin_emergency_readings, "_safe_key", counted_safe_key)
+    monkeypatch.setattr(admin_emergency_readings, "safe_reading_key", counted_safe_key)
 
     result = admin_emergency_readings._discover_scalars(
         {f"token{index}": index for index in range(20_000)}

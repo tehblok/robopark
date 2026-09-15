@@ -72,14 +72,13 @@ function readingError(error: unknown): string {
   return 'Не удалось выполнить запрос. Повторите попытку.'
 }
 
-function parseNoData(value: string): JsonValue[] {
-  return value.split(',').map(item => item.trim()).filter(Boolean).map(item => {
-    if (item === 'null') return null
-    if (item === 'true') return true
-    if (item === 'false') return false
-    const number = Number(item)
-    return Number.isFinite(number) ? number : item
-  })
+function parseNoData(value: string): JsonValue[] | null {
+  try {
+    const values: JsonValue[] = JSON.parse(`[${value}]`)
+    return values.length <= 32 && values.every(item => item === null || typeof item === 'string' || typeof item === 'boolean' || (typeof item === 'number' && Number.isFinite(item))) ? values : null
+  } catch {
+    return null
+  }
 }
 
 function previewValue(draft: EmergencyReadingDraft, example: string): string {
@@ -110,8 +109,10 @@ export function ReadingCatalogEditor() {
   const [denied, setDenied] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [formKey, setFormKey] = useState(0)
   const mounted = useRef(true)
   const viewRevision = useRef(0)
+  const draftOwner = useRef(0)
 
   const deny = useCallback((failure: unknown) => {
     if (failure instanceof ApiError && (failure.status === 401 || (failure.status === 403 && failure.detail !== 'emergency_cookie_invalid'))) {
@@ -166,6 +167,8 @@ export function ReadingCatalogEditor() {
   }
 
   const selectReading = (reading: EmergencyReading) => {
+    draftOwner.current += 1
+    setFormKey(draftOwner.current)
     viewRevision.current += 1
     setSelected(reading.id)
     setDraft(toDraft(reading))
@@ -175,6 +178,8 @@ export function ReadingCatalogEditor() {
   }
 
   const startNew = () => {
+    draftOwner.current += 1
+    setFormKey(draftOwner.current)
     viewRevision.current += 1
     setSelected('new')
     setDraft(emptyDraft(sections[0]?.id ?? ''))
@@ -184,6 +189,8 @@ export function ReadingCatalogEditor() {
   }
 
   const selectField = (field: EmergencyDiscoveredField) => {
+    draftOwner.current += 1
+    setFormKey(draftOwner.current)
     const enabled = discovered.find(candidate => candidate.path === `${field.path}Enabled`)
     const leaf = field.path.split('.').at(-1)?.toLowerCase()
     viewRevision.current += 1
@@ -220,6 +227,7 @@ export function ReadingCatalogEditor() {
     event.preventDefault()
     if (!catalog || busy || !draft.path || !draft.label.trim() || !draft.section_id) return
     const operationRevision = viewRevision.current
+    const operationOwner = draftOwner.current
     const operationDraft = { ...draft, no_data_values: noDataValues }
     setBusy(true)
     setError('')
@@ -232,9 +240,9 @@ export function ReadingCatalogEditor() {
             sort_order: Math.max(-1, ...catalog.readings.map(item => item.sort_order)) + 1,
           })
         : await api.updateEmergencyReading(selected!, { ...operationDraft, label: operationDraft.label.trim() })
-      if (!mounted.current || viewRevision.current !== operationRevision) return
+      if (!mounted.current) return
       const refreshed = await api.emergencyReadings().catch(() => null)
-      if (!mounted.current || viewRevision.current !== operationRevision) return
+      if (!mounted.current) return
       setCatalog(current => {
         const base = refreshed ?? current
         if (!base) return current
@@ -245,7 +253,9 @@ export function ReadingCatalogEditor() {
             : [...base.readings, result],
         }
       })
+      if (draftOwner.current !== operationOwner) return
       setSelected(result.id)
+      if (viewRevision.current !== operationRevision) return
       setDraft(toDraft(result))
       setNotice('Показание сохранено.')
     } catch (failure) {
@@ -267,13 +277,18 @@ export function ReadingCatalogEditor() {
       return
     }
     const next = [...catalog.readings]
+    const operationRevision = viewRevision.current
     ;[next[index], next[target]] = [next[target], next[index]]
     setBusy(true)
     setError('')
     try {
-      setCatalog(await api.reorderEmergencyReadings(next.map(item => item.id), catalog.etag))
+      const result = await api.reorderEmergencyReadings(next.map(item => item.id), catalog.etag)
+      if (!mounted.current) return
+      setCatalog(result)
+      if (viewRevision.current !== operationRevision) return
       setNotice('Порядок сохранён.')
     } catch (failure) {
+      if (!mounted.current || viewRevision.current !== operationRevision) return
       deny(failure)
       setError(readingError(failure))
       if (failure instanceof ApiError && [409, 428].includes(failure.status)) await reload(undefined, true)
@@ -284,14 +299,18 @@ export function ReadingCatalogEditor() {
 
   const disable = async () => {
     if (!catalog || typeof selected !== 'number' || busy) return
+    const operationRevision = viewRevision.current
     setBusy(true)
     setError('')
     try {
       const result = await api.disableEmergencyReading(selected)
+      if (!mounted.current) return
       setCatalog(current => current ? { etag: null, readings: current.readings.map(item => item.id === result.id ? result : item) } : current)
+      if (viewRevision.current !== operationRevision) return
       setDraft(toDraft(result))
       setNotice('Показание отключено.')
     } catch (failure) {
+      if (!mounted.current || viewRevision.current !== operationRevision) return
       deny(failure)
       setError(readingError(failure))
     } finally {
@@ -301,14 +320,18 @@ export function ReadingCatalogEditor() {
 
   const remove = async () => {
     if (!catalog || typeof selected !== 'number' || busy || !window.confirm(`Удалить показание «${draft.label}»?`)) return
+    const operationRevision = viewRevision.current
     setBusy(true)
     setError('')
     try {
       await api.deleteEmergencyReading(selected)
+      if (!mounted.current) return
       setCatalog(current => current ? { etag: null, readings: current.readings.filter(item => item.id !== selected) } : current)
+      if (viewRevision.current !== operationRevision) return
       setSelected(null)
       setNotice('Показание удалено.')
     } catch (failure) {
+      if (!mounted.current || viewRevision.current !== operationRevision) return
       deny(failure)
       setError(readingError(failure))
     } finally {
@@ -326,7 +349,7 @@ export function ReadingCatalogEditor() {
     {loading ? <LoadingState label={catalog ? 'Обновление каталога' : 'Загрузка каталога'} variant="inline" /> : null}
     {error ? <ErrorState title="Не удалось обновить показания" description={error} /> : null}
     {notice ? <p role="status">{notice}</p> : null}
-    {catalog ? <MasterDetail detailOpen={selected !== null} onBack={() => { viewRevision.current += 1; setSelected(null) }} list={<>
+    {catalog ? <MasterDetail detailOpen={selected !== null} onBack={() => { draftOwner.current += 1; viewRevision.current += 1; setSelected(null) }} list={<>
       <div className="rp-diagnostic-list-heading">
         <h2>Каталог показаний</h2>
         <div className="rp-reading-heading-actions">
@@ -362,7 +385,7 @@ export function ReadingCatalogEditor() {
         </li>)}
       </ol>}
     </>} detail={selected === 'new' || selectedReading ? <ReadingForm
-      key={`${selected}:${draft.path}`}
+      key={formKey}
       draft={draft}
       example={example}
       sections={sections}
@@ -390,7 +413,10 @@ function ReadingForm({ draft, example, sections, busy, existing, onEdit, onRawEd
   onDelete: () => void
 }) {
   const formId = useId()
-  const [noDataInput, setNoDataInput] = useState(() => draft.no_data_values.join(', '))
+  const [noDataInput, setNoDataInput] = useState(() => draft.no_data_values.map(value => JSON.stringify(value)).join(', '))
+  const [advanced, setAdvanced] = useState(false)
+  const noDataValues = parseNoData(noDataInput)
+  const numeric = ['number', 'percent', 'distance', 'current'].includes(draft.display_kind)
   const photo = ROBOT_PHOTOS.find(item => item.id === draft.view) ?? ROBOT_PHOTOS[0]
   const validCoordinates = [draft.x, draft.y].every(value => Number.isFinite(value) && value >= 0 && value <= 1)
   const place = (event: PointerEvent<HTMLImageElement>) => {
@@ -400,9 +426,9 @@ function ReadingForm({ draft, example, sections, busy, existing, onEdit, onRawEd
     const clamp = (value: number) => Math.round(Math.max(0, Math.min(1, value)) * 10000) / 10000
     onEdit({ x: clamp((event.clientX - rect.left) / rect.width), y: clamp((event.clientY - rect.top) / rect.height) })
   }
-  const valid = Boolean(draft.path && draft.label.trim() && draft.section_id && validCoordinates)
+  const valid = Boolean(draft.path && draft.label.trim() && draft.section_id && validCoordinates && noDataValues)
 
-  return <form className="rp-diagnostic-form" onSubmit={event => onSave(event, parseNoData(noDataInput))}>
+  return <form className="rp-diagnostic-form" onSubmit={event => { event.preventDefault(); if (noDataValues) onSave(event, noDataValues) }}>
     <h2>{existing ? 'Редактирование показания' : 'Новое показание'}</h2>
     <div className="rp-diagnostic-fields">
       <FormField id={`${formId}-reading-label`} label="Название показания" required><input maxLength={128} value={draft.label} onChange={event => onEdit({ label: event.target.value })} /></FormField>
@@ -412,12 +438,21 @@ function ReadingForm({ draft, example, sections, busy, existing, onEdit, onRawEd
       <FormField id={`${formId}-reading-unit`} label="Единица"><input maxLength={32} value={draft.unit ?? ''} onChange={event => onEdit({ unit: event.target.value || null })} /></FormField>
       <FormField id={`${formId}-reading-precision`} label="Знаков после запятой"><input type="number" min={0} max={4} value={draft.precision} onChange={event => onEdit({ precision: Number(event.target.value) })} /></FormField>
       <FormField id={`${formId}-reading-enabled-path`} label="Путь доступности" hint="Подставляется автоматически для соседнего поля Enabled."><input readOnly value={draft.enabled_path ?? ''} /></FormField>
-      <FormField id={`${formId}-reading-no-data`} label="Нет показания" hint="Значения через запятую."><input value={noDataInput} onChange={event => { setNoDataInput(event.target.value); onRawEdit() }} onBlur={() => onEdit({ no_data_values: parseNoData(noDataInput) })} /></FormField>
+      <FormField id={`${formId}-reading-no-data`} label="Нет показания" hint={'JSON-значения через запятую: null, "0", 0, false.'} error={noDataValues === null ? 'Только JSON-значения: строки в кавычках, числа, true, false или null (до 32).' : undefined}><input value={noDataInput} onChange={event => { setNoDataInput(event.target.value); onRawEdit() }} onBlur={() => { if (noDataValues) onEdit({ no_data_values: noDataValues }) }} /></FormField>
       <FormField id={`${formId}-reading-view`} label="Ракурс"><select value={draft.view} onChange={event => onEdit({ view: event.target.value as EmergencyReadingDraft['view'] })}>{ROBOT_PHOTOS.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></FormField>
       <FormField id={`${formId}-reading-direction`} label="Направление подписи"><select value={draft.label_direction} onChange={event => onEdit({ label_direction: event.target.value as EmergencyReadingDraft['label_direction'] })}>{Object.entries(DIRECTIONS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></FormField>
     </div>
+    {numeric ? <>
+      <Button type="button" variant="ghost" aria-expanded={advanced} aria-controls={`${formId}-thresholds`} onClick={() => setAdvanced(value => !value)}>Дополнительные настройки</Button>
+      {advanced ? <div id={`${formId}-thresholds`} className="rp-diagnostic-fields">
+        {([['warning_below', 'Предупреждение ниже'], ['warning_above', 'Предупреждение выше'], ['critical_below', 'Критично ниже'], ['critical_above', 'Критично выше']] as const).map(([key, label]) => <FormField key={key} id={`${formId}-${key}`} label={label}><input type="number" step="any" value={draft[key] ?? ''} onChange={event => onEdit({ [key]: event.target.value === '' ? null : Number(event.target.value) })} /></FormField>)}
+      </div> : null}
+    </> : null}
     <section className="rp-diagnostic-placement" aria-label="Расположение показания">
       <p className="rp-diagnostic-hint">Нажмите на робота, чтобы поставить точку показания.</p>
+      <div className="rp-diagnostic-fields">
+        {(['x', 'y'] as const).map(axis => <FormField key={axis} id={`${formId}-${axis}`} label={`Координата ${axis.toUpperCase()}`}><input type="number" min={0} max={1} step={0.01} value={draft[axis]} onChange={event => onEdit({ [axis]: Number(event.target.value) })} /></FormField>)}
+      </div>
       <figure className="rp-diagnostic-figure">
         <div className="rp-diagnostic-photo" style={{ maxWidth: `${Math.min(420, 440 * photo.width / photo.height)}px` }}>
           <img src={photo.src} alt={photo.title} width={photo.width} height={photo.height} draggable={false} onPointerUp={place} />

@@ -138,9 +138,9 @@ def test_render_readings_treats_sensor_disabled_sentinel_and_invalid_config_as_u
 
     assert [item.id for item in rendered] == [disabled.id, sentinel.id, invalid.id, healthy.id]
     assert [(item.display, item.state) for item in rendered] == [
-        ("Нет данных", "unavailable"),
-        ("Нет данных", "unavailable"),
-        ("Нет данных", "unavailable"),
+        ("Отключён", "unavailable"),
+        ("Нет показания", "unavailable"),
+        ("Нет показания", "unavailable"),
         ("Да", "normal"),
     ]
 

@@ -341,7 +341,7 @@ def test_parser_projects_role_scoped_readings_without_losing_summary_or_diagnost
     ]
     assert [(item.id, item.display, item.state) for item in mechanic["readings"]] == [
         (normal.id, "3", "normal"),
-        (unavailable.id, "Нет данных", "unavailable"),
+        (unavailable.id, "Нет показания", "unavailable"),
     ]
     assert [
         item.model_dump(exclude={"id", "label", "display", "state"})

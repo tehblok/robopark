@@ -125,7 +125,7 @@ it('discovers a scalar, suggests its companion availability and sentinel, places
 
   expect(screen.getByRole('region', { name: 'Предпросмотр показания' })).toHaveTextContent('Левый парктроник')
   expect(screen.getByRole('region', { name: 'Предпросмотр показания' })).toHaveTextContent('320 мм')
-  expect(screen.queryByText(/порог/i)).not.toBeInTheDocument()
+  expect(screen.queryByLabelText('Предупреждение ниже')).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить показание' }))
   await waitFor(() => expect(api.createEmergencyReading).toHaveBeenCalledWith(expect.objectContaining({
     path: 'parktronics.lt', enabled_path: 'parktronics.ltEnabled', no_data_values: [2147483647],
@@ -254,4 +254,87 @@ it('resets the raw sentinel when choosing another discovered field with the same
     path: 'velocity',
     no_data_values: [],
   })))
+})
+
+it('keeps advanced numeric thresholds collapsed, saves and restores all four', async () => {
+  render(tree())
+  fireEvent.click(await screen.findByRole('button', { name: 'Открыть показание Напряжение' }))
+  expect(screen.queryByLabelText('Предупреждение ниже')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Дополнительные настройки' }))
+  for (const [label, value] of [['Предупреждение ниже', '20'], ['Предупреждение выше', '30'], ['Критично ниже', '10'], ['Критично выше', '40']]) {
+    fireEvent.change(screen.getByLabelText(label), { target: { value } })
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить показание' }))
+  await waitFor(() => expect(api.updateEmergencyReading).toHaveBeenCalledWith(1, expect.objectContaining({ warning_below: 20, warning_above: 30, critical_below: 10, critical_above: 40 })))
+  await screen.findByText('Показание сохранено.')
+  fireEvent.click(screen.getByRole('button', { name: 'Открыть показание Скорость' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Открыть показание Напряжение' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Дополнительные настройки' }))
+  expect(screen.getByLabelText('Предупреждение ниже')).toHaveValue(20)
+  expect(screen.getByLabelText('Предупреждение выше')).toHaveValue(30)
+  expect(screen.getByLabelText('Критично ниже')).toHaveValue(10)
+  expect(screen.getByLabelText('Критично выше')).toHaveValue(40)
+  fireEvent.change(screen.getByLabelText('Формат'), { target: { value: 'state' } })
+  expect(screen.queryByLabelText('Предупреждение ниже')).not.toBeInTheDocument()
+})
+
+it.each(['disable', 'delete', 'reorder'] as const)('late %s keeps another selected draft and its next save intact', async action => {
+  let complete!: () => void
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  if (action === 'disable') vi.mocked(api.disableEmergencyReading).mockImplementationOnce(() => new Promise(resolve => { complete = () => resolve({ ...baseReading, is_enabled: false }) }))
+  if (action === 'delete') vi.mocked(api.deleteEmergencyReading).mockImplementationOnce(() => new Promise(resolve => { complete = () => resolve() }))
+  if (action === 'reorder') vi.mocked(api.reorderEmergencyReadings).mockImplementationOnce(() => new Promise(resolve => { complete = () => resolve({ readings: [secondReading, baseReading], etag: '"new"' }) }))
+  render(tree())
+  fireEvent.click(await screen.findByRole('button', { name: 'Открыть показание Напряжение' }))
+  fireEvent.click(screen.getByRole('button', { name: action === 'disable' ? 'Отключить показание' : action === 'delete' ? 'Удалить показание' : 'Ниже: Напряжение' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Открыть показание Скорость' }))
+  fireEvent.change(screen.getByLabelText('Название показания'), { target: { value: 'Скорость B' } })
+  await act(async () => complete())
+  expect(screen.getByLabelText('Название показания')).toHaveValue('Скорость B')
+  expect(screen.queryByText(/Показание отключено\.|Показание удалено\.|Порядок сохранён\./)).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить показание' }))
+  await waitFor(() => expect(api.updateEmergencyReading).toHaveBeenCalledWith(2, expect.objectContaining({ path: 'velocity', label: 'Скорость B', is_enabled: true })))
+})
+
+it('reconciles a created ID while retaining edits typed during POST for the next PATCH', async () => {
+  let complete!: (reading: EmergencyReading) => void
+  vi.mocked(api.createEmergencyReading).mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+  render(tree())
+  fireEvent.change(await screen.findByLabelText('Номер робота для примера'), { target: { value: '1' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Найти показания' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Выбрать velocity' }))
+  fireEvent.change(screen.getByLabelText('Название показания'), { target: { value: 'Created' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить показание' }))
+  const sent = vi.mocked(api.createEmergencyReading).mock.calls[0][0]
+  fireEvent.change(screen.getByLabelText('Название показания'), { target: { value: 'New edit' } })
+  fireEvent.change(screen.getByLabelText('Нет показания'), { target: { value: 'null, "0", 0, false' } })
+  await act(async () => complete({ ...sent, id: 73 }))
+  expect(screen.getByLabelText('Название показания')).toHaveValue('New edit')
+  expect(screen.getByLabelText('Нет показания')).toHaveValue('null, "0", 0, false')
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить показание' }))
+  await waitFor(() => expect(api.updateEmergencyReading).toHaveBeenCalledWith(73, expect.objectContaining({ label: 'New edit', no_data_values: [null, '0', 0, false] })))
+  expect(api.createEmergencyReading).toHaveBeenCalledTimes(1)
+})
+
+it('preserves typed JSON sentinels on unrelated edits and rejects non-scalars', async () => {
+  vi.mocked(api.emergencyReadings).mockResolvedValue({ readings: [{ ...baseReading, no_data_values: [null, '0', 0, false, true, 'a,b'] }], etag: '"1"' })
+  render(tree())
+  fireEvent.click(await screen.findByRole('button', { name: 'Открыть показание Напряжение' }))
+  fireEvent.change(screen.getByLabelText('Название показания'), { target: { value: 'Changed' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить показание' }))
+  await waitFor(() => expect(api.updateEmergencyReading).toHaveBeenCalledWith(1, expect.objectContaining({ no_data_values: [null, '0', 0, false, true, 'a,b'] })))
+  await screen.findByText('Показание сохранено.')
+  fireEvent.change(screen.getByLabelText('Нет показания'), { target: { value: '{"bad":1}' } })
+  expect(screen.getByRole('button', { name: 'Сохранить показание' })).toBeDisabled()
+  expect(screen.getByText(/Только JSON-значения/)).toBeVisible()
+})
+
+it('places readings using labelled keyboard coordinates and saves their projection', async () => {
+  render(tree())
+  fireEvent.click(await screen.findByRole('button', { name: 'Открыть показание Напряжение' }))
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Координата X' }), { target: { value: '0.7' } })
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Координата Y' }), { target: { value: '0.3' } })
+  expect(screen.getByRole('img', { name: 'Маркер: Напряжение' })).toHaveStyle({ left: '70%', top: '30%' })
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить показание' }))
+  await waitFor(() => expect(api.updateEmergencyReading).toHaveBeenCalledWith(1, expect.objectContaining({ x: 0.7, y: 0.3 })))
 })

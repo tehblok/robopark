@@ -33,6 +33,7 @@ from robopark_api.services import (
     rbac,
 )
 from robopark_api.services.diagnostic_rules import diagnostic_source_parts
+from robopark_api.services.emergency_reading_paths import safe_reading_key, safe_reading_path
 
 
 def require_readings_admin(user: User = Depends(require_user)) -> User:
@@ -173,8 +174,7 @@ def _validate_config(db: Session, payload: EmergencyReadingCreate) -> None:
     for path in (payload.path, payload.enabled_path):
         if path is None:
             continue
-        parts = diagnostic_source_parts(path)
-        if parts is None or len(parts) > 12:
+        if not safe_reading_path(path):
             raise HTTPException(status_code=422, detail="invalid_emergency_reading_path")
     if not -(2**63) <= payload.sort_order < 2**63:
         raise HTTPException(status_code=422, detail="invalid_emergency_reading_sort_order")
@@ -200,6 +200,7 @@ def list_readings(response: Response, db: Session = Depends(get_db)) -> list[Eme
 
 @router.get("/discovered", response_model=list[EmergencyDiscoveredField])
 def discover_readings(
+    response: Response,
     vin: Annotated[str, Query(min_length=1, max_length=64)],
     db: Session = Depends(get_db),
 ) -> list[EmergencyDiscoveredField]:
@@ -216,6 +217,7 @@ def discover_readings(
         raise HTTPException(status_code=403, detail="emergency_cookie_invalid") from exc
     except emergency_client.EmergencyError as exc:
         raise HTTPException(status_code=502, detail="emergency_upstream_error") from exc
+    response.headers["Cache-Control"] = "no-store"
     return _discover_scalars(payload)
 
 
@@ -348,16 +350,6 @@ def delete_reading(
     return response
 
 
-def _safe_key(key: str) -> bool:
-    folded = key.casefold()
-    return (
-        "hud" not in folded
-        and "sdcoptions" not in folded
-        and "cookie" not in folded
-        and "token" not in folded
-    )
-
-
 def _example(value: Any) -> tuple[str, str] | None:
     if value is None:
         return "null", "null"
@@ -394,7 +386,7 @@ def _discover_scalars(payload: dict[str, Any]) -> list[EmergencyDiscoveredField]
             for key, child in value.items():
                 if not consume_work():
                     return False
-                if type(key) is not str or not _safe_key(key):
+                if type(key) is not str or not safe_reading_key(key):
                     continue
                 next_parts = (*parts, key)
                 path = ".".join(next_parts)

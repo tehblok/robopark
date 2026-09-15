@@ -21,8 +21,8 @@ def _create_section(client, section_id: str = "status"):
     )
 
 
-def test_admin_lists_creates_and_updates_sections(client, seed_royal):
-    login_as(client, "royal", "secret")
+def test_admin_lists_creates_and_updates_sections(client, seed_admin):
+    login_as(client, "admin", "secret")
 
     created = _create_section(client)
     assert created.status_code == 201
@@ -64,8 +64,8 @@ def test_admin_lists_creates_and_updates_sections(client, seed_royal):
     assert [section["id"] for section in listed.json()] == ["status"]
 
 
-def test_admin_field_crud_and_section_delete(client, seed_royal):
-    login_as(client, "royal", "secret")
+def test_admin_field_crud_and_section_delete(client, seed_admin):
+    login_as(client, "admin", "secret")
     section = _create_section(client, "batteries").json()
 
     added = client.post(
@@ -88,8 +88,8 @@ def test_admin_field_crud_and_section_delete(client, seed_royal):
     assert client.get("/admin/emergency/sections").json() == []
 
 
-def test_admin_reorders_sections_and_exports_seed_shape(client, seed_royal):
-    login_as(client, "royal", "secret")
+def test_admin_reorders_sections_and_exports_seed_shape(client, seed_admin):
+    login_as(client, "admin", "secret")
     _create_section(client, "first")
     _create_section(client, "second")
 
@@ -150,8 +150,8 @@ def test_emergency_settings_viewer_can_read_sections_but_cannot_mutate(client, d
     assert _create_section(client).status_code == 403
 
 
-def test_export_canonical_keys_override_meta(client, seed_royal):
-    login_as(client, "royal", "secret")
+def test_export_canonical_keys_override_meta(client, seed_admin):
+    login_as(client, "admin", "secret")
     client.post(
         "/admin/emergency/sections",
         json={
@@ -180,8 +180,8 @@ def test_export_canonical_keys_override_meta(client, seed_royal):
     }
 
 
-def test_patch_rejects_explicit_null_for_title_path_label(client, seed_royal):
-    login_as(client, "royal", "secret")
+def test_patch_rejects_explicit_null_for_title_path_label(client, seed_admin):
+    login_as(client, "admin", "secret")
     section = _create_section(client, "status").json()
     field_id = section["fields"][0]["id"]
 

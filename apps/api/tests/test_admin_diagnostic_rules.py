@@ -45,8 +45,8 @@ def insert_rule(db_session, **changes):
 
 
 @pytest.fixture
-def royal_client(client, seed_royal):
-    assert login_as(client, "royal", "secret").status_code == 204
+def admin_client(client, seed_admin):
+    assert login_as(client, "admin", "secret").status_code == 204
     return client
 
 
@@ -104,7 +104,7 @@ def test_other_roles_cannot_use_any_rule_endpoint(client, db_session, role):
     assert db_session.scalar(select(DiagnosticRule)) is None
 
 
-@pytest.mark.parametrize("role", ["admin", "royal"])
+@pytest.mark.parametrize("role", ["admin"])
 def test_built_in_admin_roles_can_manage_rules(client, db_session, role):
     user = User(
         username="allowed",
@@ -136,15 +136,15 @@ def test_built_in_admin_roles_can_manage_rules(client, db_session, role):
     assert all(entry.actor_user_id == user.id for entry in rule_audits(db_session))
 
 
-def test_list_includes_disabled_rules_in_stable_sort_order(royal_client, db_session):
+def test_list_includes_disabled_rules_in_stable_sort_order(admin_client, db_session):
     first = insert_rule(db_session, pattern="first", sort_order=2)
     second = insert_rule(db_session, pattern="second", sort_order=-1, is_enabled=False)
     third = insert_rule(db_session, pattern="third", sort_order=2)
-    response = royal_client.get(BASE)
+    response = admin_client.get(BASE)
     assert response.status_code == 200
     assert [rule["id"] for rule in response.json()] == [second.id, first.id, third.id]
     assert response.json()[0]["is_enabled"] is False
-    assert response.headers["etag"] == royal_client.get(BASE).headers["etag"]
+    assert response.headers["etag"] == admin_client.get(BASE).headers["etag"]
 
 
 @pytest.mark.parametrize(
@@ -164,38 +164,38 @@ def test_list_includes_disabled_rules_in_stable_sort_order(royal_client, db_sess
         {"title": None},
     ],
 )
-def test_create_rejects_invalid_rules_without_writes(royal_client, db_session, changes):
-    response = royal_client.post(BASE, json={**RULE, **changes})
+def test_create_rejects_invalid_rules_without_writes(admin_client, db_session, changes):
+    response = admin_client.post(BASE, json={**RULE, **changes})
     assert response.status_code == 422
     assert db_session.scalar(select(DiagnosticRule)) is None
     assert rule_audits(db_session) == []
 
 
 @pytest.mark.parametrize("field", list(RULE))
-def test_update_rejects_explicit_null_without_changing_rule(royal_client, db_session, field):
+def test_update_rejects_explicit_null_without_changing_rule(admin_client, db_session, field):
     rule = insert_rule(db_session)
-    response = royal_client.patch(f"{BASE}/{rule.id}", json={field: None})
+    response = admin_client.patch(f"{BASE}/{rule.id}", json={field: None})
     assert response.status_code == 422
     db_session.refresh(rule)
     assert getattr(rule, field) == RULE[field]
     assert rule_audits(db_session) == []
 
 
-def test_update_validates_resulting_regex_even_when_pattern_is_omitted(royal_client, db_session):
+def test_update_validates_resulting_regex_even_when_pattern_is_omitted(admin_client, db_session):
     rule = insert_rule(db_session, pattern="[")
-    response = royal_client.patch(f"{BASE}/{rule.id}", json={"match_kind": "regex"})
+    response = admin_client.patch(f"{BASE}/{rule.id}", json={"match_kind": "regex"})
     assert response.status_code == 422
     assert response.json()["detail"] == "invalid_diagnostic_regex"
     db_session.refresh(rule)
     assert rule.match_kind == "exact"
     assert rule_audits(db_session) == []
-    assert royal_client.patch(f"{BASE}/{rule.id}", json={"example": "["}).status_code == 200
+    assert admin_client.patch(f"{BASE}/{rule.id}", json={"example": "["}).status_code == 200
 
 
-def test_exact_patterns_are_not_compiled(royal_client):
-    created = royal_client.post(BASE, json={**RULE, "pattern": "[", "example": "["})
+def test_exact_patterns_are_not_compiled(admin_client):
+    created = admin_client.post(BASE, json={**RULE, "pattern": "[", "example": "["})
     assert created.status_code == 201
-    preview = royal_client.post(
+    preview = admin_client.post(
         f"{BASE}/preview", json={"rule": {**RULE, "pattern": "[", "example": "["}}
     )
     assert preview.status_code == 200
@@ -203,14 +203,14 @@ def test_exact_patterns_are_not_compiled(royal_client):
 
 
 def test_unique_create_and_update_conflicts_are_409_and_leave_no_partial_write(
-    royal_client, db_session
+    admin_client, db_session
 ):
     first = insert_rule(db_session)
     second = insert_rule(db_session, pattern="SECOND")
-    duplicate = royal_client.post(BASE, json=RULE)
+    duplicate = admin_client.post(BASE, json=RULE)
     assert duplicate.status_code == 409
     assert duplicate.json()["detail"] == "diagnostic_rule_conflict"
-    changed = royal_client.patch(
+    changed = admin_client.patch(
         f"{BASE}/{second.id}", json={"pattern": first.pattern, "title": "Must roll back"}
     )
     assert changed.status_code == 409
@@ -219,33 +219,33 @@ def test_unique_create_and_update_conflicts_are_409_and_leave_no_partial_write(
     assert second.pattern == "SECOND"
     assert second.title == RULE["title"]
     assert rule_audits(db_session) == []
-    assert royal_client.patch(f"{BASE}/{second.id}", json={"title": "Recovered"}).status_code == 200
+    assert admin_client.patch(f"{BASE}/{second.id}", json={"title": "Recovered"}).status_code == 200
 
 
-def test_missing_mutation_targets_are_404(royal_client):
-    assert royal_client.patch(f"{BASE}/999", json={"title": "Missing"}).status_code == 404
-    assert royal_client.post(f"{BASE}/999/disable").status_code == 404
+def test_missing_mutation_targets_are_404(admin_client):
+    assert admin_client.patch(f"{BASE}/999", json={"title": "Missing"}).status_code == 404
+    assert admin_client.post(f"{BASE}/999/disable").status_code == 404
 
 
-def test_disable_is_idempotent_preserves_order_and_never_deletes(royal_client, db_session):
+def test_disable_is_idempotent_preserves_order_and_never_deletes(admin_client, db_session):
     rule = insert_rule(db_session, sort_order=7)
     for _ in range(2):
-        response = royal_client.post(f"{BASE}/{rule.id}/disable")
+        response = admin_client.post(f"{BASE}/{rule.id}/disable")
         assert response.status_code == 200
         assert response.json() == {**RULE, "id": rule.id, "is_enabled": False, "sort_order": 7}
-    assert royal_client.delete(f"{BASE}/{rule.id}").status_code == 405
+    assert admin_client.delete(f"{BASE}/{rule.id}").status_code == 405
     assert len(rule_audits(db_session)) == 1
-    assert royal_client.patch(f"{BASE}/{rule.id}", json={"is_enabled": True}).status_code == 200
+    assert admin_client.patch(f"{BASE}/{rule.id}", json={"is_enabled": True}).status_code == 200
     assert db_session.get(DiagnosticRule, rule.id).is_enabled is True
 
 
-def test_reorder_includes_disabled_rules_and_rejects_stale_order(royal_client, db_session):
+def test_reorder_includes_disabled_rules_and_rejects_stale_order(admin_client, db_session):
     first = insert_rule(db_session, pattern="first", sort_order=10)
     second = insert_rule(db_session, pattern="second", sort_order=10, is_enabled=False)
-    before = royal_client.get(BASE)
+    before = admin_client.get(BASE)
     assert before.status_code == 200
     headers = {"If-Match": before.headers["etag"]}
-    response = royal_client.put(
+    response = admin_client.put(
         f"{BASE}/reorder", json={"ids": [second.id, first.id]}, headers=headers
     )
     assert response.status_code == 200
@@ -254,58 +254,58 @@ def test_reorder_includes_disabled_rules_and_rejects_stale_order(royal_client, d
         (first.id, 1),
     ]
     assert response.headers["etag"] != before.headers["etag"]
-    stale = royal_client.put(
+    stale = admin_client.put(
         f"{BASE}/reorder", json={"ids": [first.id, second.id]}, headers=headers
     )
     assert stale.status_code == 409
     assert stale.json()["detail"] == "diagnostic_rules_changed"
-    assert royal_client.get(BASE).json() == response.json()
+    assert admin_client.get(BASE).json() == response.json()
     assert len(rule_audits(db_session)) == 2
 
 
 @pytest.mark.parametrize("ids", [[], [1], [1, 1], [1, 999], [1, 2, 999], [True, 2]])
-def test_invalid_reorder_is_atomic(royal_client, db_session, ids):
+def test_invalid_reorder_is_atomic(admin_client, db_session, ids):
     insert_rule(db_session, pattern="first", sort_order=3)
     insert_rule(db_session, pattern="second", sort_order=9, is_enabled=False)
-    before = royal_client.get(BASE)
+    before = admin_client.get(BASE)
     assert before.status_code == 200
-    response = royal_client.put(
+    response = admin_client.put(
         f"{BASE}/reorder", json={"ids": ids}, headers={"If-Match": before.headers["etag"]}
     )
     assert response.status_code == 422
-    assert royal_client.get(BASE).json() == before.json()
+    assert admin_client.get(BASE).json() == before.json()
     assert rule_audits(db_session) == []
 
 
-def test_reorder_requires_a_precondition_and_handles_empty_catalog(royal_client):
-    response = royal_client.put(f"{BASE}/reorder", json={"ids": []})
+def test_reorder_requires_a_precondition_and_handles_empty_catalog(admin_client):
+    response = admin_client.put(f"{BASE}/reorder", json={"ids": []})
     assert response.status_code == 428
-    listed = royal_client.get(BASE)
-    response = royal_client.put(
+    listed = admin_client.get(BASE)
+    response = admin_client.put(
         f"{BASE}/reorder", json={"ids": []}, headers={"If-Match": listed.headers["etag"]}
     )
     assert response.status_code == 200
     assert response.json() == []
 
 
-def test_catalog_mutations_invalidate_a_previous_reorder_precondition(royal_client, db_session):
+def test_catalog_mutations_invalidate_a_previous_reorder_precondition(admin_client, db_session):
     rule = insert_rule(db_session)
-    before = royal_client.get(BASE)
+    before = admin_client.get(BASE)
     assert before.status_code == 200
     assert (
-        royal_client.patch(f"{BASE}/{rule.id}", json={"title": "Other editor"}).status_code == 200
+        admin_client.patch(f"{BASE}/{rule.id}", json={"title": "Other editor"}).status_code == 200
     )
-    response = royal_client.put(
+    response = admin_client.put(
         f"{BASE}/reorder", json={"ids": [rule.id]}, headers={"If-Match": before.headers["etag"]}
     )
     assert response.status_code == 409
 
 
-def test_competing_reorders_have_one_winner(royal_client, db_session, db_engine):
+def test_competing_reorders_have_one_winner(admin_client, db_session, db_engine):
     first = insert_rule(db_session, pattern="first", sort_order=5)
     second = insert_rule(db_session, pattern="second", sort_order=8)
     ids = [first.id, second.id]
-    listed = royal_client.get(BASE)
+    listed = admin_client.get(BASE)
     assert listed.status_code == 200
     headers = {"If-Match": listed.headers["etag"]}
 
@@ -313,24 +313,24 @@ def test_competing_reorders_have_one_winner(royal_client, db_session, db_engine)
         with Session(db_engine) as session:
             yield session
 
-    royal_client.app.dependency_overrides[get_db] = separate_session
+    admin_client.app.dependency_overrides[get_db] = separate_session
     barrier = Barrier(2)
 
     def reorder(order):
         barrier.wait(timeout=5)
-        return royal_client.put(f"{BASE}/reorder", json={"ids": order}, headers=headers)
+        return admin_client.put(f"{BASE}/reorder", json={"ids": order}, headers=headers)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         responses = list(pool.map(reorder, [ids, ids[::-1]]))
     assert sorted(response.status_code for response in responses) == [200, 409]
     winner = next(response for response in responses if response.status_code == 200)
-    assert royal_client.get(BASE).json() == winner.json()
+    assert admin_client.get(BASE).json() == winner.json()
 
 
-def test_reorder_database_failure_rolls_back_every_row(royal_client, db_session):
+def test_reorder_database_failure_rolls_back_every_row(admin_client, db_session):
     first = insert_rule(db_session, pattern="first", sort_order=5)
     second = insert_rule(db_session, pattern="second", sort_order=8)
-    listed = royal_client.get(BASE)
+    listed = admin_client.get(BASE)
     assert listed.status_code == 200
     second_id = second.id
 
@@ -340,7 +340,7 @@ def test_reorder_database_failure_rolls_back_every_row(royal_client, db_session)
 
     event.listen(DiagnosticRule, "before_update", reject_second_update)
     try:
-        response = royal_client.put(
+        response = admin_client.put(
             f"{BASE}/reorder",
             json={"ids": [second.id, first.id]},
             headers={"If-Match": listed.headers["etag"]},
@@ -348,17 +348,17 @@ def test_reorder_database_failure_rolls_back_every_row(royal_client, db_session)
     finally:
         event.remove(DiagnosticRule, "before_update", reject_second_update)
     assert response.status_code == 409
-    assert royal_client.get(BASE).json() == listed.json()
+    assert admin_client.get(BASE).json() == listed.json()
     assert rule_audits(db_session) == []
 
 
-def test_database_write_contention_is_a_safe_conflict(royal_client, db_session, db_engine, caplog):
+def test_database_write_contention_is_a_safe_conflict(admin_client, db_session, db_engine, caplog):
     rule = insert_rule(db_session)
     rule_id = rule.id
     db_session.execute(text("PRAGMA busy_timeout=1"))
     with db_engine.begin() as connection:
         connection.execute(update(DiagnosticRule).values(sort_order=9))
-        response = royal_client.patch(f"{BASE}/{rule_id}", json={"title": "Do not lose update"})
+        response = admin_client.patch(f"{BASE}/{rule_id}", json={"title": "Do not lose update"})
     assert response.status_code == 409
     assert response.json()["detail"] == "diagnostic_rules_write_conflict"
     db_session.refresh(rule)
@@ -383,9 +383,9 @@ def test_database_write_contention_is_a_safe_conflict(royal_client, db_session, 
     ],
 )
 def test_preview_builds_nested_payload_from_example_without_persisting(
-    royal_client, db_session, source, example, pattern, expected_raw
+    admin_client, db_session, source, example, pattern, expected_raw
 ):
-    response = royal_client.post(
+    response = admin_client.post(
         f"{BASE}/preview",
         json={"rule": {**RULE, "source_path": source, "example": example, "pattern": pattern}},
     )
@@ -422,7 +422,7 @@ def test_preview_builds_nested_payload_from_example_without_persisting(
     assert rule_audits(db_session) == []
 
 
-def test_preview_uses_live_matching_unknown_fallback_and_ordering(royal_client, db_session):
+def test_preview_uses_live_matching_unknown_fallback_and_ordering(admin_client, db_session):
     candidate = {**RULE, "match_kind": "regex", "pattern": "^WHEEL_", "sort_order": 3}
     rule = insert_rule(db_session, **candidate)
     payload = {
@@ -434,7 +434,7 @@ def test_preview_uses_live_matching_unknown_fallback_and_ordering(royal_client, 
         event.model_dump(exclude={"id", "rule_id"})
         for event in match_diagnostic_events(db_session, payload)
     ]
-    response = royal_client.post(f"{BASE}/preview", json={"rule": candidate, "payload": payload})
+    response = admin_client.post(f"{BASE}/preview", json={"rule": candidate, "payload": payload})
     assert response.status_code == 200
     preview = response.json()
     assert preview["matched"] is True
@@ -453,8 +453,8 @@ def test_preview_uses_live_matching_unknown_fallback_and_ordering(royal_client, 
 
 
 @pytest.mark.parametrize("changes", [{"pattern": "NO_MATCH"}, {"is_enabled": False}])
-def test_preview_no_match_keeps_raw_fault_unlocalized(royal_client, changes):
-    response = royal_client.post(f"{BASE}/preview", json={"rule": {**RULE, **changes}})
+def test_preview_no_match_keeps_raw_fault_unlocalized(admin_client, changes):
+    response = admin_client.post(f"{BASE}/preview", json={"rule": {**RULE, **changes}})
     assert response.status_code == 200
     assert response.json()["matched"] is False
     event = response.json()["events"][0]
@@ -464,9 +464,9 @@ def test_preview_no_match_keeps_raw_fault_unlocalized(royal_client, changes):
     assert event["view"] is None
 
 
-def test_preview_regex_timeout_keeps_raw_fault_visible(royal_client):
+def test_preview_regex_timeout_keeps_raw_fault_visible(admin_client):
     raw = "a" * 3000 + "!"
-    response = royal_client.post(
+    response = admin_client.post(
         f"{BASE}/preview",
         json={
             "rule": {**RULE, "match_kind": "regex", "pattern": "(a+)+$"},
@@ -487,15 +487,15 @@ def test_preview_regex_timeout_keeps_raw_fault_visible(royal_client):
         {"match_kind": "regex", "pattern": "(?R)"},
     ],
 )
-def test_preview_rejects_invalid_or_unconstructable_rules(royal_client, db_session, changes):
-    response = royal_client.post(f"{BASE}/preview", json={"rule": {**RULE, **changes}})
+def test_preview_rejects_invalid_or_unconstructable_rules(admin_client, db_session, changes):
+    response = admin_client.post(f"{BASE}/preview", json={"rule": {**RULE, **changes}})
     assert response.status_code == 422
     assert db_session.scalar(select(DiagnosticRule)) is None
     assert rule_audits(db_session) == []
 
 
 def test_mutation_audits_contain_only_actor_rule_and_structural_metadata(
-    royal_client, db_session, seed_royal, caplog
+    admin_client, db_session, seed_admin, caplog
 ):
     caplog.set_level(logging.INFO)
     secret = "private-example-token-123"
@@ -508,25 +508,25 @@ def test_mutation_audits_contain_only_actor_rule_and_structural_metadata(
         "part": secret,
         "source_path": f"errors.{secret}",
     }
-    created = royal_client.post(BASE, json=candidate)
+    created = admin_client.post(BASE, json=candidate)
     assert created.status_code == 201
     rule_id = created.json()["id"]
     assert (
-        royal_client.patch(
+        admin_client.patch(
             f"{BASE}/{rule_id}", json={"example": secret + "-changed", "x": 0.8}
         ).status_code
         == 200
     )
     assert (
-        royal_client.post(
+        admin_client.post(
             f"{BASE}/preview", json={"rule": candidate, "payload": {"errors": {secret: secret}}}
         ).status_code
         == 200
     )
-    assert royal_client.post(f"{BASE}/{rule_id}/disable").status_code == 200
-    listed = royal_client.get(BASE)
+    assert admin_client.post(f"{BASE}/{rule_id}/disable").status_code == 200
+    listed = admin_client.get(BASE)
     assert (
-        royal_client.put(
+        admin_client.put(
             f"{BASE}/reorder", json={"ids": [rule_id]}, headers={"If-Match": listed.headers["etag"]}
         ).status_code
         == 200
@@ -539,8 +539,8 @@ def test_mutation_audits_contain_only_actor_rule_and_structural_metadata(
         "admin.diagnostic_rule.reordered",
     ]
     for entry in entries:
-        assert entry.actor_user_id == seed_royal.id
-        assert entry.actor_role == "royal"
+        assert entry.actor_user_id == seed_admin.id
+        assert entry.actor_role == "admin"
         assert entry.target_id == str(rule_id)
         assert entry.outcome == "success"
         assert entry.park_id is None
@@ -550,9 +550,9 @@ def test_mutation_audits_contain_only_actor_rule_and_structural_metadata(
     assert secret not in caplog.text
 
 
-def test_invalid_regex_never_echoes_sensitive_pattern_or_logs_it(royal_client, caplog):
+def test_invalid_regex_never_echoes_sensitive_pattern_or_logs_it(admin_client, caplog):
     secret = "sensitive-cookie-content"
-    response = royal_client.post(
+    response = admin_client.post(
         BASE, json={**RULE, "match_kind": "regex", "pattern": secret + "["}
     )
     assert response.status_code == 422
@@ -564,34 +564,34 @@ def test_invalid_regex_never_echoes_sensitive_pattern_or_logs_it(royal_client, c
 @pytest.mark.parametrize("operation", ["create", "update", "preview"])
 @pytest.mark.parametrize("pattern", [r"\N{KEYCAP DIGIT ONE}", r"\N{TAMIL SYLLABLE SAI}"])
 def test_named_sequence_regex_is_rejected_without_mutation_or_input_disclosure(
-    royal_client, db_session, caplog, operation, pattern
+    admin_client, db_session, caplog, operation, pattern
 ):
     rule = insert_rule(db_session)
-    before = royal_client.get(BASE)
+    before = admin_client.get(BASE)
     caplog.set_level(logging.INFO)
     candidate = {**RULE, "match_kind": "regex", "pattern": f"(?# {PRIVATE_INPUT}){pattern}"}
     if operation == "create":
-        response = royal_client.post(BASE, json=candidate)
+        response = admin_client.post(BASE, json=candidate)
     elif operation == "update":
-        response = royal_client.patch(
+        response = admin_client.patch(
             f"{BASE}/{rule.id}",
             json={"match_kind": "regex", "pattern": candidate["pattern"]},
         )
     else:
-        response = royal_client.post(f"{BASE}/preview", json={"rule": candidate})
+        response = admin_client.post(f"{BASE}/preview", json={"rule": candidate})
 
     assert response.status_code == 422
     assert response.json() == {"detail": "invalid_diagnostic_regex"}
     assert PRIVATE_INPUT not in response.text
     assert PRIVATE_INPUT not in caplog.text
-    assert royal_client.get(BASE).json() == before.json()
-    assert royal_client.get(BASE).headers["etag"] == before.headers["etag"]
+    assert admin_client.get(BASE).json() == before.json()
+    assert admin_client.get(BASE).headers["etag"] == before.headers["etag"]
     assert rule_audits(db_session) == []
 
 
-def test_browser_can_read_and_send_catalog_preconditions(royal_client, test_settings):
+def test_browser_can_read_and_send_catalog_preconditions(admin_client, test_settings):
     origin = test_settings.cors_origins.split(",")[0]
-    preflight = royal_client.options(
+    preflight = admin_client.options(
         f"{BASE}/reorder",
         headers={
             "Origin": origin,
@@ -600,26 +600,26 @@ def test_browser_can_read_and_send_catalog_preconditions(royal_client, test_sett
         },
     )
     assert preflight.status_code == 200
-    listed = royal_client.get(BASE, headers={"Origin": origin})
+    listed = admin_client.get(BASE, headers={"Origin": origin})
     assert listed.status_code == 200
     assert "etag" in listed.headers["access-control-expose-headers"].lower()
     assert listed.headers["cache-control"] == "no-store"
 
 
 @pytest.mark.parametrize("sort_order", [2**63, -(2**63) - 1])
-def test_extreme_sort_orders_are_validation_errors(royal_client, db_session, sort_order):
-    assert royal_client.post(BASE, json={**RULE, "sort_order": sort_order}).status_code == 422
+def test_extreme_sort_orders_are_validation_errors(admin_client, db_session, sort_order):
+    assert admin_client.post(BASE, json={**RULE, "sort_order": sort_order}).status_code == 422
     rule = insert_rule(db_session)
     assert (
-        royal_client.patch(f"{BASE}/{rule.id}", json={"sort_order": sort_order}).status_code == 422
+        admin_client.patch(f"{BASE}/{rule.id}", json={"sort_order": sort_order}).status_code == 422
     )
     db_session.refresh(rule)
     assert rule.sort_order == 0
 
 
-def test_extreme_mutation_id_is_validation_error(royal_client):
-    assert royal_client.patch(f"{BASE}/{2**63}", json={"title": "Invalid"}).status_code == 422
-    assert royal_client.post(f"{BASE}/{2**63}/disable").status_code == 422
+def test_extreme_mutation_id_is_validation_error(admin_client):
+    assert admin_client.patch(f"{BASE}/{2**63}", json={"title": "Invalid"}).status_code == 422
+    assert admin_client.post(f"{BASE}/{2**63}/disable").status_code == 422
 
 
 @pytest.mark.parametrize(
@@ -657,11 +657,11 @@ def test_extreme_mutation_id_is_validation_error(royal_client):
     ],
 )
 def test_validation_responses_and_logs_do_not_echo_diagnostic_input(
-    royal_client, db_session, caplog, method, path, body
+    admin_client, db_session, caplog, method, path, body
 ):
     insert_rule(db_session)
     caplog.set_level(logging.INFO)
-    response = royal_client.request(method, path, json=body)
+    response = admin_client.request(method, path, json=body)
     assert response.status_code == 422
     assert PRIVATE_INPUT not in response.text
     detail = response.json()["detail"]
@@ -676,8 +676,8 @@ def test_validation_responses_and_logs_do_not_echo_diagnostic_input(
     assert rule_audits(db_session) == []
 
 
-def test_invalid_diagnostic_json_excludes_decoder_context(royal_client, caplog):
-    response = royal_client.post(
+def test_invalid_diagnostic_json_excludes_decoder_context(admin_client, caplog):
+    response = admin_client.post(
         f"{BASE}/preview",
         content='{"rule": "' + PRIVATE_INPUT + '" trailing}',
         headers={"Content-Type": "application/json"},
@@ -690,8 +690,8 @@ def test_invalid_diagnostic_json_excludes_decoder_context(royal_client, caplog):
     assert PRIVATE_INPUT not in caplog.text
 
 
-def test_diagnostic_error_sanitizing_keeps_other_route_contracts(royal_client):
-    response = royal_client.post("/admin/emergency/sections", json=[PRIVATE_INPUT])
+def test_diagnostic_error_sanitizing_keeps_other_route_contracts(admin_client):
+    response = admin_client.post("/admin/emergency/sections", json=[PRIVATE_INPUT])
     assert response.status_code == 422
     assert response.json()["detail"][0]["input"] == [PRIVATE_INPUT]
 
@@ -699,14 +699,14 @@ def test_diagnostic_error_sanitizing_keeps_other_route_contracts(royal_client):
 @pytest.mark.parametrize("precondition", ["absent", "fresh", "stale"])
 @pytest.mark.parametrize("sort_order", [0, 1, None, PRIVATE_INPUT])
 def test_patch_explicit_sort_order_always_requires_reorder(
-    royal_client, db_session, caplog, precondition, sort_order
+    admin_client, db_session, caplog, precondition, sort_order
 ):
     rule = insert_rule(db_session)
-    listed = royal_client.get(BASE)
+    listed = admin_client.get(BASE)
     headers = {}
     if precondition != "absent":
         headers["If-Match"] = listed.headers["etag"] if precondition == "fresh" else '"old"'
-    response = royal_client.patch(
+    response = admin_client.patch(
         f"{BASE}/{rule.id}",
         json={"sort_order": sort_order, "title": "Must not be saved", "example": PRIVATE_INPUT},
         headers=headers,
@@ -715,16 +715,16 @@ def test_patch_explicit_sort_order_always_requires_reorder(
     assert response.json()["detail"][0]["msg"] == "Value error, diagnostic_sort_order_use_reorder"
     assert PRIVATE_INPUT not in response.text
     assert PRIVATE_INPUT not in caplog.text
-    assert royal_client.get(BASE).json() == listed.json()
+    assert admin_client.get(BASE).json() == listed.json()
     assert rule_audits(db_session) == []
 
 
-def test_stale_editor_cannot_undo_atomic_reorder_via_patch(royal_client, db_session):
+def test_stale_editor_cannot_undo_atomic_reorder_via_patch(admin_client, db_session):
     first = insert_rule(db_session, pattern="A", sort_order=0)
     second = insert_rule(db_session, pattern="B", sort_order=1, is_enabled=False)
-    editor_a_snapshot = royal_client.get(BASE)
+    editor_a_snapshot = admin_client.get(BASE)
     stale_header = {"If-Match": editor_a_snapshot.headers["etag"]}
-    editor_b_reorder = royal_client.put(
+    editor_b_reorder = admin_client.put(
         f"{BASE}/reorder", json={"ids": [second.id, first.id]}, headers=stale_header
     )
     assert editor_b_reorder.status_code == 200
@@ -732,25 +732,25 @@ def test_stale_editor_cannot_undo_atomic_reorder_via_patch(royal_client, db_sess
         (second.id, 0),
         (first.id, 1),
     ]
-    stale_save = royal_client.patch(
+    stale_save = admin_client.patch(
         f"{BASE}/{first.id}", json={"title": "Editor A", "sort_order": 0}, headers=stale_header
     )
     assert stale_save.status_code == 422
-    assert royal_client.get(BASE).json() == editor_b_reorder.json()
-    regular_save = royal_client.patch(
+    assert admin_client.get(BASE).json() == editor_b_reorder.json()
+    regular_save = admin_client.patch(
         f"{BASE}/{first.id}", json={"title": "Editor A"}, headers=stale_header
     )
     assert regular_save.status_code == 200
     assert regular_save.json()["title"] == "Editor A"
     assert regular_save.json()["sort_order"] == 1
     assert (
-        royal_client.put(
+        admin_client.put(
             f"{BASE}/reorder", json={"ids": [first.id, second.id]}, headers=stale_header
         ).status_code
         == 409
     )
-    latest = royal_client.get(BASE)
-    reordered = royal_client.put(
+    latest = admin_client.get(BASE)
+    reordered = admin_client.put(
         f"{BASE}/reorder",
         json={"ids": [first.id, second.id]},
         headers={"If-Match": latest.headers["etag"]},

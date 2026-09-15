@@ -18,7 +18,7 @@ for (const width of [390, 1440]) test(`persisted rule controls real Emergency sn
     await installOperational(page, { role: 'admin', routes: api.routes })
     await page.goto('/admin/emergency/config?park=7&tab=indication')
     await page.getByRole('button', { name: 'Новое правило' }).click()
-    for (const [label, value] of [['Название ошибки', title], ['Часть робота', part], ['Путь источника', 'errors'], ['Код или шаблон', raw], ['Расшифровка', description], ['Пример входного значения', raw]]) await page.getByLabel(label, { exact: true }).fill(value)
+    for (const [label, value] of [['Название ошибки', title], ['Часть робота', part], ['Путь источника', 'errors'], ['Очищенное тело ошибки', raw], ['Расшифровка', description], ['Пример входного значения', raw]]) await page.getByLabel(label, { exact: true }).fill(value)
     await page.getByLabel('Уровень ошибки', { exact: true }).selectOption('critical')
     await page.getByLabel('Ракурс', { exact: true }).selectOption('front')
     await expect(page.getByLabel('Правило включено')).toBeChecked()
@@ -87,7 +87,7 @@ for (const actor of ['operator', 'custom-admin', 'admin', 'royal'] as const) tes
   try {
     await installOperational(page, { routes: api.routes })
     await page.goto('/admin/emergency/config?park=7&tab=indication')
-    const allowed = ['admin', 'royal'].includes(actor)
+    const allowed = actor === 'admin'
     const methods = [['GET', base], ['POST', base], ['PATCH', `${base}/1`], ['POST', `${base}/1/disable`], ['PUT', `${base}/reorder`], ['POST', `${base}/preview`]]
     if (allowed) {
       await expect(page.getByRole('button', { name: 'Новое правило' })).toBeVisible()
@@ -102,7 +102,40 @@ for (const actor of ['operator', 'custom-admin', 'admin', 'royal'] as const) tes
     } else {
       await expect(page.getByRole('button', { name: 'Новое правило' })).toHaveCount(0)
       await expect(page.getByRole('tab', { name: 'Ошибки и индикация' })).toHaveCount(0)
-      for (const [method, path] of methods) expect((await api.call({ method, path, body: '{}', headers: { 'content-type': 'application/json' } })).status).toBe(403)
+      for (const [method, path] of methods) {
+        const response = await api.call({ method, path, body: '{}', headers: { 'content-type': 'application/json' } })
+        const viewer = actor === 'royal' && (method === 'GET' || path.endsWith('/preview'))
+        expect(response.status).toBe(viewer ? method === 'GET' ? 200 : 422 : 403)
+      }
     }
+  } finally { await api.close() }
+})
+
+test('reading thresholds, typed sentinels and keyboard placement persist into real snapshot', async ({ page }) => {
+  const api = await startDiagnosticApi()
+  try {
+    expect((await api.call({ method: 'POST', path: '/admin/emergency/sections', body: JSON.stringify({ id: 'final-readings', title: 'Показания', roles: ['admin'], fields: [] }) })).status).toBe(201)
+    const created = await api.call({ method: 'POST', path: '/admin/emergency-readings', body: JSON.stringify({ section_id: 'final-readings', path: 'batteriesStatus.chargePercents', label: 'Заряд тест', display_kind: 'percent', view: 'front', x: .5, y: .5, no_data_values: [null, '0', 0, false] }) })
+    expect(created.status).toBe(201)
+    await installOperational(page, { role: 'admin', routes: api.routes })
+    await page.goto('/admin/emergency/config?tab=readings')
+    await page.getByRole('button', { name: 'Открыть показание Заряд тест' }).click()
+    await expect(page.getByLabel('Предупреждение ниже')).toHaveCount(0)
+    await page.getByRole('button', { name: 'Дополнительные настройки' }).click()
+    await page.getByLabel('Предупреждение ниже').fill('90')
+    await page.getByLabel('Критично ниже').fill('20')
+    await page.getByLabel('Координата X').fill('0.6')
+    await page.getByLabel('Координата Y').fill('0.3')
+    await page.getByRole('button', { name: 'Сохранить показание' }).click()
+    await expect(page.getByText('Показание сохранено.', { exact: true })).toBeVisible()
+    const saved = parse<Array<Record<string, unknown>>>(await api.call({ method: 'GET', path: '/admin/emergency-readings' }))[0]
+    expect(saved).toMatchObject({ warning_below: 90, critical_below: 20, x: .6, y: .3, no_data_values: [null, '0', 0, false] })
+    const live = parse<EmergencySnapshot>(await api.call({ method: 'GET', path: '/emergency/1/snapshot' }))
+    expect(live.readings).toEqual([expect.objectContaining({ label: 'Заряд тест', display: '84 %', state: 'warning', x: .6, y: .3 })])
+    await page.reload()
+    await page.getByRole('button', { name: 'Открыть показание Заряд тест' }).click()
+    await page.getByRole('button', { name: 'Дополнительные настройки' }).click()
+    await expect(page.getByLabel('Предупреждение ниже')).toHaveValue('90')
+    await expect(page.getByLabel('Нет показания')).toHaveValue('null, "0", 0, false')
   } finally { await api.close() }
 })

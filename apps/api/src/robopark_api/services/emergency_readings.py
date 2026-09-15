@@ -16,9 +16,10 @@ from robopark_api.models import (
 )
 from robopark_api.schemas import EmergencyReadingValue
 from robopark_api.services.diagnostic_rules import diagnostic_source_parts
+from robopark_api.services.emergency_reading_paths import safe_reading_key
 
 _MISSING = object()
-_UNAVAILABLE_DISPLAY = "Нет данных"
+_UNAVAILABLE_DISPLAY = "Нет показания"
 _DEFAULT_UNITS = {"percent": "%", "distance": "m", "current": "A"}
 _DISPLAY_KINDS = {"text", "number", "percent", "distance", "current", "state"}
 
@@ -114,12 +115,14 @@ def _state(reading: EmergencyReading, value: Any) -> str | None:
     return "normal"
 
 
-def _unavailable(reading: EmergencyReading) -> EmergencyReadingValue:
+def _unavailable(
+    reading: EmergencyReading, display: str = _UNAVAILABLE_DISPLAY
+) -> EmergencyReadingValue:
     return EmergencyReadingValue(
         id=reading.id,
         section_id=reading.section_id,
         label=reading.label,
-        display=_UNAVAILABLE_DISPLAY,
+        display=display,
         state="unavailable",
         view=reading.view,
         x=reading.x,
@@ -132,6 +135,8 @@ def _render_one(reading: EmergencyReading, payload: dict[str, Any]) -> Emergency
     values = _no_data_values(reading)
     value = _lookup(payload, reading.path)
     enabled = True if reading.enabled_path is None else _lookup(payload, reading.enabled_path)
+    if enabled is False:
+        return _unavailable(reading, "Отключён")
     if (
         values is None
         or value is _MISSING
@@ -175,6 +180,13 @@ def render_readings(db: Session, payload: dict[str, Any], role: str) -> list[Eme
     ).all()
     rendered: list[EmergencyReadingValue] = []
     for reading in readings:
+        if any(
+            not safe_reading_key(part)
+            for path in (reading.path, reading.enabled_path)
+            if path is not None
+            for part in path.split(".")
+        ):
+            continue
         try:
             rendered.append(_render_one(reading, payload))
         except (TypeError, ValueError, OverflowError):

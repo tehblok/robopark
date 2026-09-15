@@ -15,7 +15,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from robopark_api.models import DiagnosticUnknown, DiagnosticUnknownSighting
+from robopark_api.models import DiagnosticRule, DiagnosticUnknown, DiagnosticUnknownSighting
 from robopark_api.schemas import DiagnosticEvent
 from robopark_api.services.diagnostic_rules import diagnostic_source_parts
 
@@ -39,10 +39,31 @@ def canonical(value: Any) -> str:
 
 
 def ignored_diagnostic_identities(db: Session) -> set[str]:
-    """Return only raw diagnostic identities deliberately hidden by an admin."""
-    return set(
-        db.scalars(select(DiagnosticUnknown.identity).where(DiagnosticUnknown.state == "ignored"))
-    )
+    """Keep stored IDs and canonical aliases without rewriting inbox ownership.
+
+    Several old samples can collapse to one canonical event. Suppression is the
+    union of ignored aliases: reopening one row cannot undo another ignored row.
+    Malformed legacy samples retain their original suppression ID only.
+    """
+    from robopark_api.services.diagnostic_rules import match_diagnostic_events_for_rules
+
+    identities = set()
+    for row in db.scalars(select(DiagnosticUnknown).where(DiagnosticUnknown.state == "ignored")):
+        identities.add(row.identity)
+        try:
+            # The residual raw unit is the suppressed evidence; original_json
+            # can also contain siblings that were classified by a different rule.
+            sample = DiagnosticUnknown(
+                original_json=row.raw_json, source_segments_json=row.source_segments_json
+            )
+            payload = sample_payload(sample)
+            source = DiagnosticRule(source_path=row.source_path, is_enabled=False)
+            identities.update(
+                event.id for event in match_diagnostic_events_for_rules([source], payload)
+            )
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return identities
 
 
 def prune_diagnostic_unknowns(

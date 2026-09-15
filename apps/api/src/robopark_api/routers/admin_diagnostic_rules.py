@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
-from robopark_api.deps import require_user
+from robopark_api.deps import require_builtin_admin, require_user
 from robopark_api.models import DiagnosticRule, User
 from robopark_api.schemas import (
     DiagnosticEvent,
@@ -30,6 +30,7 @@ from robopark_api.schemas import (
 )
 from robopark_api.services import audit, rbac
 from robopark_api.services.diagnostic_rules import (
+    canonical_notification_body,
     compile_diagnostic_regex,
     diagnostic_source_parts,
     match_diagnostic_events_for_rules,
@@ -123,6 +124,11 @@ def _validate_rule(rule: DiagnosticRuleCreate) -> tuple[str, ...]:
             # The shared compiler exposes only fixed error codes, never the pattern.
             raise HTTPException(status_code=422, detail=str(exc)) from None
     return parts
+
+
+def _canonicalize_rule(rule: DiagnosticRuleCreate) -> None:
+    if rule.match_kind == "exact":
+        rule.pattern = canonical_notification_body(rule.pattern) or rule.pattern
 
 
 def _catalog(db: Session) -> list[DiagnosticRuleOut]:
@@ -220,8 +226,9 @@ def create_rule(
     payload: DiagnosticRuleCreate,
     response: Response,
     db: Session = Depends(get_db),
-    actor: User = Depends(require_rule_admin),
+    actor: User = Depends(require_builtin_admin),
 ) -> DiagnosticRuleOut:
+    _canonicalize_rule(payload)
     _validate_rule(payload)
     with _write(db):
         rule = DiagnosticRule(**payload.model_dump())
@@ -247,7 +254,7 @@ def reorder_rules(
     response: Response,
     if_match: str | None = Header(default=None),
     db: Session = Depends(get_db),
-    actor: User = Depends(require_rule_admin),
+    actor: User = Depends(require_builtin_admin),
 ) -> list[DiagnosticRuleOut]:
     if if_match is None:
         raise HTTPException(status_code=428, detail="diagnostic_rules_precondition_required")
@@ -340,7 +347,7 @@ def update_rule(
     payload: DiagnosticRuleUpdate,
     response: Response,
     db: Session = Depends(get_db),
-    actor: User = Depends(require_rule_admin),
+    actor: User = Depends(require_builtin_admin),
 ) -> DiagnosticRuleOut:
     changes = payload.model_dump(exclude_unset=True)
     with _write(db):
@@ -351,6 +358,9 @@ def update_rule(
         except ValidationError:
             raise HTTPException(status_code=422, detail="invalid_diagnostic_rule") from None
         _validate_rule(candidate)
+        _canonicalize_rule(candidate)
+        if "pattern" in changes or "match_kind" in changes:
+            changes["pattern"] = candidate.pattern
         changed_fields = sorted(key for key, value in changes.items() if values[key] != value)
         for key in changed_fields:
             setattr(rule, key, changes[key])
@@ -367,7 +377,7 @@ def disable_rule(
     rule_id: RuleId,
     response: Response,
     db: Session = Depends(get_db),
-    actor: User = Depends(require_rule_admin),
+    actor: User = Depends(require_builtin_admin),
 ) -> DiagnosticRuleOut:
     with _write(db):
         rule = _get_rule(db, rule_id)

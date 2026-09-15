@@ -50,9 +50,7 @@ _COUNTED_REPEAT = re.compile(r"\{([0-9]*)(?:,([0-9]*))?\}")
 _INLINE_FLAGS = re.compile(r"\(\?((?:[abefimprswxLu]|V0)*)(?:-([abefimprswxLu]+))?([:)])")
 _POSIX_CLASS = re.compile(r"\[:\^?[A-Za-z0-9 &_.-]*(?:[:=][A-Za-z0-9 &_./-]+)?:\]")
 _SUPPORTED_GROUP = re.compile(r"\(\?(?:[:=!>]|<[=!]|(?:P<|<)[A-Za-z_][A-Za-z0-9_]*>)")
-_NOTIFICATION_PREFIX = re.compile(
-    r"^(?:(CRIT|ERROR|WARN):\s*)?(?:\[\+\d+(?:\.\d+)?s\]\s*)?"
-)
+_NOTIFICATION_PREFIX = re.compile(r"^(?:(CRIT|ERROR|WARN):\s*)?(?:\[\+\d+(?:\.\d+)?s\]\s*)?")
 type Location = tuple[str | int, ...]
 type IdentityPath = tuple[str | int | None, ...]
 
@@ -300,7 +298,7 @@ def canonical_notification_body(value: Any) -> str | None:
 def _exact_matches(pattern: str, value: Any) -> bool:
     raw_text = _raw_text(value)
     body = canonical_notification_body(value)
-    normalized_pattern = " ".join(pattern.strip().split())
+    normalized_pattern = canonical_notification_body(pattern)
     return pattern == raw_text or (body is not None and normalized_pattern == body)
 
 
@@ -364,9 +362,7 @@ def _notification_identity_value(source: str, value: Any) -> Any:
         return body if structured_notification_source or "name" in value else value
     prefix = _NOTIFICATION_PREFIX.match(value.strip())
     return (
-        body
-        if legacy_notification_source or (prefix is not None and prefix.end() > 0)
-        else value
+        body if legacy_notification_source or (prefix is not None and prefix.end() > 0) else value
     )
 
 
@@ -375,8 +371,18 @@ def _event_id(rule_id: int | None, identity_path: IdentityPath, identity_value: 
     # positions are wildcards, so moving the same raw error keeps its selection.
     # Notification identity uses its stable body; raw values remain presentation
     # data. Array order inside every other value remains semantic.
-    identity = _canonical([rule_id, identity_path, identity_value]).encode("utf-8")
+    identity = _canonical([rule_id, _notification_family(identity_path), identity_value]).encode(
+        "utf-8"
+    )
     return hashlib.sha256(identity).hexdigest()
+
+
+def _notification_family(path: IdentityPath) -> IdentityPath:
+    for source in _ERROR_SOURCES[:6]:
+        parts = tuple(source.split("."))
+        if path[: len(parts)] == parts:
+            return ("notifications", "lastNotification", *path[len(parts) :])
+    return path
 
 
 def _display_path(location: Location) -> str:
@@ -511,7 +517,14 @@ def match_diagnostic_events_for_rules(
                 pattern = compile_diagnostic_regex(rule.pattern)
             except ValueError:
                 continue
-        for error in values.get(rule.source_path, []):
+        family = _notification_family(tuple(rule.source_path.split(".")))
+        rule_values = [
+            (source, error)
+            for source, errors in values.items()
+            if _notification_family(tuple(source.split("."))) == family
+            for error in errors
+        ]
+        for source, error in rule_values:
             location, raw = error.location, error.value
             text = _raw_text(raw)
             matches = (
@@ -522,22 +535,28 @@ def match_diagnostic_events_for_rules(
             if not matches:
                 continue
             matched_locations.add(location)
-            source_location = source_locations[rule.source_path]
+            source_location = source_locations[source]
             event_id = _event_id(
                 rule.id,
                 source_location,
-                _notification_identity_value(rule.source_path, raw),
+                _notification_identity_value(source, raw),
             )
+            severity = _source_severity(source, raw) or rule.severity
+            if (
+                event_id in events
+                and _SEVERITY_ORDER[events[event_id].severity] <= _SEVERITY_ORDER[severity]
+            ):
+                continue
             event_paths[event_id] = source_location
             events[event_id] = DiagnosticEvent(
                 id=event_id,
                 rule_id=rule.id,
-                source_path=rule.source_path,
+                source_path=source,
                 source_segments=list(source_location),
                 raw_value=raw,
                 title=rule.title,
                 description=rule.description,
-                severity=_source_severity(rule.source_path, raw) or rule.severity,
+                severity=severity,
                 sort_order=rule.sort_order,
                 part=rule.part,
                 view=rule.preferred_view,
@@ -612,20 +631,25 @@ def diagnostic_rule_matches_sample(
     parts = diagnostic_source_parts(rule.source_path)
     if not rule.is_enabled or parts is None:
         return False
-    location, value = _lookup(payload, parts)
     pattern = compile_diagnostic_regex(rule.pattern) if rule.match_kind == "regex" else None
-    if consume is not None:
-        consume()
-    for error in _raw_errors(value, location):
+    sources = sorted({rule.source_path, *_ERROR_SOURCES[:6]})
+    for source in sources:
+        source_parts = tuple(source.split("."))
+        if _notification_family(source_parts) != _notification_family(parts):
+            continue
+        location, value = _lookup(payload, source_parts)
         if consume is not None:
             consume()
-        if not _is_within(error.location, sample_location):
-            continue
-        text = _raw_text(error.value)
-        if (
-            diagnostic_regex_matches(pattern, text)
-            if pattern is not None
-            else _exact_matches(rule.pattern, error.value)
-        ):
-            return True
+        for error in _raw_errors(value, location):
+            if consume is not None:
+                consume()
+            if not _is_within(error.location, sample_location):
+                continue
+            text = _raw_text(error.value)
+            if (
+                diagnostic_regex_matches(pattern, text)
+                if pattern is not None
+                else _exact_matches(rule.pattern, error.value)
+            ):
+                return True
     return False
