@@ -1,6 +1,7 @@
 """Unified task chat, attachments, and defect-code endpoints."""
 
 from datetime import UTC, datetime
+from functools import partial
 
 from fastapi import (
     APIRouter,
@@ -87,10 +88,17 @@ def get_timeline(
         comments = tracker_cache.list_comments(token=token, key=key)
     except tracker_client.TrackerError as exc:
         raise HTTPException(status_code=502, detail="tracker_upstream_error") from exc
+    visibility_filter = None
     if rbac.role_slug(user) == rbac.RoleSlug.MECHANIC:
-        comments = filter_mechanic_visible_comments(db, comments)
+        visibility_filter = partial(filter_mechanic_visible_comments, db)
     return [
-        TaskTimelineItemOut(**item) for item in merge_timeline(db, issue_key=key, comments=comments)
+        TaskTimelineItemOut(**item)
+        for item in merge_timeline(
+            db,
+            issue_key=key,
+            comments=comments,
+            tracker_visibility_filter=visibility_filter,
+        )
     ]
 
 

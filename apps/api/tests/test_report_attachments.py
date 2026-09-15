@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -111,6 +112,55 @@ def test_staged_task_attachment_survives_request_completion(
     assert path.stat().st_mode & 0o777 == 0o600
     assert attachment.sha256 == hashlib.sha256(TINY_PNG).hexdigest()
     assert (action.action, action.state) == ("attach", "pending")
+
+
+def test_successful_staged_attachment_retry_reuses_row_action_and_blob(
+    db_session, seed_royal, test_settings, monkeypatch
+):
+    from robopark_api.services import task_timeline
+    from robopark_api.services.reliable_actions import complete_action
+
+    monkeypatch.setattr(task_timeline, "get_settings", lambda: test_settings)
+    message = task_timeline.append_system_message(
+        db_session, issue_key="ROBOPARK-1", actor=seed_royal, text="Photo"
+    )
+    db_session.commit()
+    first, action = task_timeline.stage_attachment(
+        db_session,
+        actor=seed_royal,
+        issue_key="ROBOPARK-1",
+        message=message,
+        idempotency_key="attachment-replay-0001",
+        filename="done.png",
+        content=TINY_PNG,
+        content_type="image/png",
+    )
+    first_path = task_timeline.staged_attachments_root() / first.blob_name
+    first_mtime = first_path.stat().st_mtime_ns
+    complete_action(db_session, action, {"external_id": "tracker-file-1"})
+    db_session.commit()
+
+    replay, replay_action = task_timeline.stage_attachment(
+        db_session,
+        actor=seed_royal,
+        issue_key="ROBOPARK-1",
+        message=message,
+        idempotency_key="attachment-replay-0001",
+        filename="done.png",
+        content=TINY_PNG,
+        content_type="image/png",
+    )
+
+    assert replay.id == first.id
+    assert replay_action.id == action.id
+    assert first_path.stat().st_mtime_ns == first_mtime
+    assert list(task_timeline.staged_attachments_root().iterdir()) == [first_path]
+    assert json.loads(action.payload_json) == {
+        "filename": "done.png",
+        "mime_type": "image/png",
+        "sha256": hashlib.sha256(TINY_PNG).hexdigest(),
+        "size_bytes": len(TINY_PNG),
+    }
 
 
 @pytest.fixture

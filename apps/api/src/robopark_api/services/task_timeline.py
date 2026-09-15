@@ -5,13 +5,15 @@ from __future__ import annotations
 import hashlib
 import os
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
@@ -107,6 +109,11 @@ def append_user_message(
         idempotency_key=idempotency_key,
         payload={"text": text},
     )
+    if not begun.created:
+        existing = db.scalar(select(TaskMessage).where(TaskMessage.action_id == begun.row.id))
+        if existing is None:
+            raise RuntimeError("task_message_replay_missing")
+        return existing
     row = TaskMessage(
         id=str(uuid4()),
         issue_key=issue_key,
@@ -183,8 +190,6 @@ def stage_attachment(
     if message.issue_key != issue_key:
         raise LookupError("task_message_not_found")
 
-    attachment_id = str(uuid4())
-    blob_name = uuid4().hex
     digest = hashlib.sha256(content).hexdigest()
     begun = begin_action(
         db,
@@ -194,14 +199,20 @@ def stage_attachment(
         action="attach",
         idempotency_key=idempotency_key,
         payload={
-            "attachment_id": attachment_id,
-            "blob_name": blob_name,
             "filename": original_name,
             "mime_type": resolved_type,
             "sha256": digest,
             "size_bytes": len(content),
         },
     )
+    if not begun.created:
+        existing = db.get(TaskAttachment, begun.row.id)
+        if existing is None:
+            raise RuntimeError("task_attachment_replay_missing")
+        return existing, begun.row
+
+    attachment_id = begun.row.id
+    blob_name = uuid4().hex
     path: Path | None = None
     try:
         path = _write_staged_blob(blob_name, content)
@@ -238,7 +249,36 @@ def _sync_state(row: TaskMessage, action: ReliableAction | None) -> str:
     return "pending"
 
 
-def merge_timeline(db: Session, *, issue_key: str, comments: list[dict]) -> list[dict]:
+def _insert_tracker_message(db: Session, values: dict) -> None:
+    dialect = db.get_bind().dialect.name
+    if dialect == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+
+        statement = dialect_insert(TaskMessage).values(**values).on_conflict_do_nothing()
+        db.execute(statement)
+        return
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+
+        statement = dialect_insert(TaskMessage).values(**values).on_conflict_do_nothing()
+        db.execute(statement)
+        return
+    try:
+        with db.begin_nested():
+            db.execute(insert(TaskMessage).values(**values))
+    except IntegrityError:
+        pass
+
+
+def merge_timeline(
+    db: Session,
+    *,
+    issue_key: str,
+    comments: list[dict],
+    tracker_visibility_filter: Callable[[list[dict]], list[dict]] | None = None,
+) -> list[dict]:
+    if tracker_visibility_filter is not None:
+        comments = tracker_visibility_filter(comments)
     local_rows = list(
         db.scalars(
             select(TaskMessage)
@@ -246,31 +286,49 @@ def merge_timeline(db: Session, *, issue_key: str, comments: list[dict]) -> list
             .order_by(TaskMessage.created_at, TaskMessage.id)
         ).all()
     )
-    by_external = {row.external_id: row for row in local_rows if row.external_id}
+    seen_external = {row.external_id for row in local_rows if row.external_id}
     external_attachments: dict[str, list[dict]] = {}
     for comment in comments:
         external_id = str(comment.get("id") or "").strip()
         if not external_id:
             continue
         external_attachments[external_id] = list(comment.get("attachments") or [])
-        if external_id in by_external:
+        if external_id in seen_external:
             continue
         created_at = _timestamp(comment.get("created_at"))
-        row = TaskMessage(
-            id=_tracker_row_id(issue_key, external_id),
-            issue_key=issue_key,
-            kind="tracker",
-            author_name=str(comment.get("author") or comment.get("author_login") or "Tracker"),
-            text=str(comment.get("text") or ""),
-            external_id=external_id,
-            sync_state="synced",
-            created_at=created_at,
-            updated_at=created_at,
+        _insert_tracker_message(
+            db,
+            {
+                "id": _tracker_row_id(issue_key, external_id),
+                "issue_key": issue_key,
+                "kind": "tracker",
+                "author_name": str(
+                    comment.get("author_login") or comment.get("author") or "Tracker"
+                ),
+                "text": str(comment.get("text") or ""),
+                "external_id": external_id,
+                "sync_state": "synced",
+                "created_at": created_at,
+                "updated_at": created_at,
+            },
         )
-        db.add(row)
-        local_rows.append(row)
-        by_external[external_id] = row
+        seen_external.add(external_id)
     db.commit()
+    local_rows = list(
+        db.scalars(
+            select(TaskMessage)
+            .where(TaskMessage.issue_key == issue_key)
+            .order_by(TaskMessage.created_at, TaskMessage.id)
+        ).all()
+    )
+    if tracker_visibility_filter is not None:
+        persisted = [
+            {"id": row.id, "text": row.text, "author_login": row.author_name}
+            for row in local_rows
+            if row.kind == "tracker"
+        ]
+        visible_ids = {item["id"] for item in tracker_visibility_filter(persisted)}
+        local_rows = [row for row in local_rows if row.kind != "tracker" or row.id in visible_ids]
 
     attachments = (
         list(

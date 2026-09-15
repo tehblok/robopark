@@ -1,6 +1,9 @@
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, User, UserPark
@@ -166,6 +169,33 @@ def test_post_message_commits_local_message_and_reliable_action_together(
     assert json.loads(action.payload_json) == {"text": "Заменил крепёж"}
 
 
+def test_successful_message_retry_returns_existing_message(db_session, seed_royal):
+    from robopark_api.services.reliable_actions import complete_action
+    from robopark_api.services.task_timeline import append_user_message
+
+    first = append_user_message(
+        db_session,
+        issue_key="ROBOPARK-1",
+        actor=seed_royal,
+        text="Заменил крепёж",
+        idempotency_key="message-replay-0001",
+    )
+    action = db_session.get(ReliableAction, first.action_id)
+    complete_action(db_session, action, {"external_id": "tracker-42"})
+    db_session.commit()
+
+    replay = append_user_message(
+        db_session,
+        issue_key="ROBOPARK-1",
+        actor=seed_royal,
+        text="Заменил крепёж",
+        idempotency_key="message-replay-0001",
+    )
+
+    assert replay.id == first.id
+    assert db_session.query(TaskMessage).filter_by(action_id=action.id).count() == 1
+
+
 def test_read_only_user_can_read_timeline(client, db_session, seed_park_with_tracker, monkeypatch):
     driver = User(
         username="driver-timeline",
@@ -216,29 +246,80 @@ def test_mechanic_timeline_keeps_existing_comment_visibility_policy(
     from robopark_api.services import tracker_cache
 
     monkeypatch.setattr(tracker_cache, "get_issue", lambda **_kwargs: dict(ISSUE))
-    monkeypatch.setattr(
-        tracker_cache,
-        "list_comments",
-        lambda **_kwargs: [
+    from robopark_api.services.task_timeline import append_system_message, merge_timeline
+
+    merge_timeline(
+        db_session,
+        issue_key="ROBOPARK-1",
+        comments=[
             {
                 "id": "signed",
                 "text": "ok\nAlpha / mech1 / operator1",
-                "author": "bot",
+                "author": "Robopark bot",
                 "author_login": "bot",
                 "created_at": "2026-09-15T12:00:00Z",
             },
             {
                 "id": "stranger",
                 "text": "private chatter",
-                "author": "human",
+                "author": "Human display",
                 "author_login": "stranger",
                 "created_at": "2026-09-15T12:01:00Z",
             },
         ],
     )
+    append_system_message(
+        db_session,
+        issue_key="ROBOPARK-1",
+        actor=seed_mechanic,
+        text="local system event",
+    )
+    db_session.commit()
+    monkeypatch.setattr(tracker_cache, "list_comments", lambda **_kwargs: [])
     login_as(client, "mech1", "secret")
 
     response = client.get("/tracker/issues/ROBOPARK-1/timeline")
 
     assert response.status_code == 200
-    assert [item["text"] for item in response.json()] == ["ok\nAlpha / mech1 / operator1"]
+    assert [item["text"] for item in response.json()] == [
+        "ok\nAlpha / mech1 / operator1",
+        "local system event",
+    ]
+
+
+def test_concurrent_tracker_import_is_conflict_safe_and_rereads_winner(db_engine):
+    from robopark_api.services.task_timeline import merge_timeline
+
+    barrier = threading.Barrier(2)
+
+    class PausingSession(Session):
+        paused = False
+
+        def scalars(self, statement, *args, **kwargs):
+            result = super().scalars(statement, *args, **kwargs)
+            if not self.paused and "FROM task_messages" in str(statement):
+                self.paused = True
+                barrier.wait(timeout=5)
+            return result
+
+    comment = {
+        "id": "concurrent-comment",
+        "text": "one imported message",
+        "author": "bot",
+        "author_login": "bot",
+        "created_at": "2026-09-15T12:00:00Z",
+    }
+
+    def import_once():
+        with PausingSession(db_engine) as db:
+            return merge_timeline(db, issue_key="ROBOPARK-1", comments=[comment])
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: import_once(), range(2)))
+
+    assert [[item["text"] for item in result] for result in results] == [
+        ["one imported message"],
+        ["one imported message"],
+    ]
+    with Session(db_engine) as db:
+        assert db.query(TaskMessage).filter_by(external_id="concurrent-comment").count() == 1
