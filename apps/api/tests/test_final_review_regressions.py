@@ -225,6 +225,23 @@ def test_matching_notification_family_keeps_strongest_live_severity(db_session):
     ] == [(rule.id, "critical")]
 
 
+def test_unknown_notification_family_keeps_strongest_live_severity():
+    payload = {
+        "lastWarnNotification": "WARN: [+1s] Motor: blocked",
+        "robotHudData": {
+            "notifications": {
+                "lastCritNotification": "CRIT: [+2s] Motor: blocked",
+            }
+        },
+    }
+
+    events = match_diagnostic_events_for_rules([], payload)
+
+    assert [(event.source_path, event.severity) for event in events] == [
+        ("robotHudData.notifications.lastCritNotification", "critical"),
+    ]
+
+
 def test_legacy_ignored_residual_does_not_suppress_original_siblings(db_session):
     db_session.add(
         DiagnosticUnknown(

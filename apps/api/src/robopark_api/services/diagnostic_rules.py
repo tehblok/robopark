@@ -586,9 +586,14 @@ def match_diagnostic_events_for_rules(
         location, raw = error.location, error.value
         source = _display_path(location)
         event_id = _event_id(None, error.identity_path, _notification_identity_value(source, raw))
+        severity = _source_severity(source, raw) or "warning"
         # Identical raw occurrences on one wildcard-normalized source dedupe to
-        # the first structural position; numeric index 2 precedes index 10.
-        if event_id in events:
+        # the first structural position unless a later notification-family
+        # occurrence carries a stronger live severity.
+        if (
+            event_id in events
+            and _SEVERITY_ORDER[events[event_id].severity] <= _SEVERITY_ORDER[severity]
+        ):
             continue
         event_paths[event_id] = error.identity_path
         events[event_id] = DiagnosticEvent(
@@ -598,7 +603,7 @@ def match_diagnostic_events_for_rules(
             raw_value=raw,
             title=_raw_text(raw),
             description="Неизвестная ошибка. Правило диагностики не найдено.",
-            severity=_source_severity(source, raw) or "warning",
+            severity=severity,
         )
 
     return sorted(
