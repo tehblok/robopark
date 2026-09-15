@@ -13,6 +13,12 @@ async function selectSecondaryTab(page: Page, name: string) {
 
 test('only admin can edit the global robot-check configuration', async ({ page }) => {
   const sections = [{ id: 'wheels', title: 'Колёса', is_enabled: true, roles: ['mechanic', 'admin'], fields: [{ id: 1, path: 'velocity', label: 'Скорость', sort_order: 0 }], sort_order: 0 }]
+  const reading = {
+    id: 1, section_id: 'wheels', path: 'parktronics.lt', label: 'Левый парктроник', display_kind: 'distance',
+    unit: 'см', precision: 0, enabled_path: 'parktronics.ltEnabled', no_data_values: [2147483647],
+    warning_below: 25, warning_above: null, critical_below: 10, critical_above: null,
+    view: 'top', x: .24, y: .56, label_direction: 'left', is_enabled: true, sort_order: 0,
+  }
   await installOperational(page, {
     role: 'royal',
     routes: [{ method: 'GET', path: '/api/admin/emergency/sections', handler: () => ({ json: sections }) }],
@@ -25,16 +31,33 @@ test('only admin can edit the global robot-check configuration', async ({ page }
   await expect(page.getByLabel('Название wheels')).toHaveAttribute('readonly', '')
   await expect(page.getByRole('button', { name: 'Сохранить', exact: true })).toHaveCount(0)
 
+  let saved = reading
+  let written: { endpoint: string; body: Record<string, unknown> } | null = null
   await installOperational(page, {
     role: 'admin',
     routes: [
       { method: 'GET', path: '/api/admin/emergency/sections', handler: () => ({ json: sections }) },
-      { method: 'GET', path: '/api/admin/emergency-readings', handler: () => ({ json: [] }) },
+      { method: 'GET', path: '/api/admin/emergency-readings', handler: () => ({ json: [saved], headers: { ETag: '"readings-1"' } }) },
+      { method: 'PATCH', path: '/api/admin/emergency-readings/1', handler: async request => {
+        const body = await request.json() as Record<string, unknown>
+        written = { endpoint: new URL(request.url).pathname, body }
+        saved = { ...saved, ...body }
+        return { json: saved }
+      } },
     ],
   })
   await page.goto('/admin/emergency/config?park=7&tab=readings')
   await expect(page.getByRole('tab', { name: 'Показания' })).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByRole('button', { name: 'Новое показание' })).toBeVisible()
+  await page.getByRole('button', { name: 'Открыть показание Левый парктроник' }).click()
+  await page.getByLabel('Название показания').fill('Левый парктроник кузова')
+  await page.getByRole('button', { name: 'Сохранить показание' }).click()
+  await expect(page.getByText('Показание сохранено.', { exact: true })).toBeVisible()
+  expect(written).toMatchObject({
+    endpoint: '/api/admin/emergency-readings/1',
+    body: { label: 'Левый парктроник кузова', path: 'parktronics.lt', section_id: 'wheels' },
+  })
+  await expect(page.getByRole('button', { name: 'Открыть показание Левый парктроник кузова' })).toBeVisible()
 })
 
 test('mechanic sees role-filtered partial readings and explicit stale age', async ({ page }) => {

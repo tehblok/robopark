@@ -102,13 +102,14 @@ for (const width of widths) for (const theme of themes) {
     await page.keyboard.press('Enter')
     await expect(marker).toHaveAttribute('aria-pressed', 'true')
     await expect(page.getByText('Ток колеса: 4,2 А', { exact: true })).toBeVisible()
+    await assertRobotReadingGeometry(page)
     await assertResponsiveContracts(page, width)
     await assertNoSeriousA11yViolations(page)
   })
 }
 
-test('200% text zoom keeps robot and catalog primary actions reachable', async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 })
+test('200% text zoom at an equivalent 720 CSS-pixel viewport keeps primary actions operable', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 900 })
   await installOperational(page, {
     role: 'admin',
     routes: [
@@ -122,7 +123,11 @@ test('200% text zoom keeps robot and catalog primary actions reachable', async (
   const save = page.getByRole('button', { name: 'Сохранить показание' })
   await save.scrollIntoViewIfNeeded()
   await expect(save).toBeInViewport()
-  await assertResponsiveContracts(page, 1440)
+  await expect(save).toBeEnabled()
+  await save.focus()
+  await expect(save).toBeFocused()
+  expect(await page.evaluate(() => window.innerWidth)).toBe(720)
+  await assertResponsiveContracts(page, 720)
 
   await installOperational(page, { role: 'mechanic', snapshot: measuredSnapshot })
   await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=scheme`)
@@ -131,7 +136,10 @@ test('200% text zoom keeps robot and catalog primary actions reachable', async (
   await primaryView.scrollIntoViewIfNeeded()
   await expect(primaryView).toBeInViewport()
   await expect(page.getByRole('button', { name: 'Показание: Левый парктроник, 18 см' })).toBeVisible()
-  await assertResponsiveContracts(page, 1440)
+  const front = page.getByRole('button', { name: 'Спереди', exact: true })
+  await front.click()
+  await expect(front).toHaveAttribute('aria-pressed', 'true')
+  await assertResponsiveContracts(page, 720)
 })
 
 for (const boundary of [
