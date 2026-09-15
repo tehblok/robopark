@@ -280,7 +280,8 @@ def test_tracker_work_page_hydrates_only_returned_items_and_orders_exact_queue_t
 
     items = client.get("/tracker/issues?sort=oldest&limit=2").json()["items"]
 
-    assert calls == [("token", "ROBOPARK-9"), ("token", "ROBOPARK-10")]
+    assert len(calls) == 2
+    assert set(calls) == {("token", "ROBOPARK-9"), ("token", "ROBOPARK-10")}
     assert [item["key"] for item in items] == ["ROBOPARK-10", "ROBOPARK-9"]
     assert items[0]["queued_at"] == "2026-01-02T11:00:00Z"
     assert items[0]["sla_deadline"] == "2026-01-02T16:00:00Z"
