@@ -17,18 +17,28 @@ export function RobotCheckSummary({ snapshot, online, failed, pending, onRefresh
   const diagnosticEvents = snapshot.diagnostic_events ?? []
   const leading = leadingDiagnosticEvent(diagnosticEvents)
   const hasDiagnosticEvents = diagnosticEvents.length > 0
-  const canAssertClean = !failed
+  const stale = failed || Boolean(snapshot.stale)
+  const canAssertClean = !stale
     && model.connection.state === 'online'
     && (model.freshness === 'live' || model.freshness === 'fresh')
   const observed = new Date(snapshot.observed_at)
   const date = Number.isNaN(observed.getTime()) ? 'Дата неизвестна' : new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(observed).replace(/\s*г\.$/, '')
   const time = Number.isNaN(observed.getTime()) ? '' : new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(observed)
   const retry = !online || failed
+  const battery = (connected: boolean | null | undefined, percent: number | null) => connected === false
+    ? 'Не подключена'
+    : percent == null ? 'Нет данных' : `${percent} %`
   return <section className="rp-check-summary" aria-label="Состояние робота" aria-busy={pending}>
     <h2>Робот {model.shortNumber}</h2>
-    <StatusBadge tone={model.connection.tone}>{model.connection.label}</StatusBadge>
-    <p className="rp-check-charge">Заряд {snapshot.charge_percent == null ? 'нет данных' : `${snapshot.charge_percent} %`}</p>
-    <StaleBadge state={failed ? 'stale' : model.freshness} updatedAt={snapshot.observed_at} />
+    <dl className="rp-check-summary-values">
+      <div><dt>АКБ 1</dt><dd>{battery(snapshot.battery1_connected, snapshot.battery1_percent)}</dd></div>
+      <div><dt>АКБ 2</dt><dd>{battery(snapshot.battery2_connected, snapshot.battery2_percent)}</dd></div>
+      <div><dt>Скорость</dt><dd>{snapshot.speed == null ? 'Нет данных' : `${snapshot.speed} м/с`}</dd></div>
+      <div><dt>Диск</dt><dd>{snapshot.disk_percent == null ? 'Нет данных' : `${snapshot.disk_percent} %`}</dd></div>
+      <div><dt>Связь</dt><dd><StatusBadge tone={model.connection.tone}>{model.connection.label}</StatusBadge></dd></div>
+    </dl>
+    {snapshot.stale ? <StatusBadge tone="warning" className="rp-freshness-badge">Данные устарели · {Math.round(snapshot.stale_age_seconds ?? 0)} с</StatusBadge>
+      : <StaleBadge state={failed ? 'stale' : model.freshness} updatedAt={snapshot.observed_at} />}
     <p><time dateTime={snapshot.observed_at}>Данные на {date}{time ? ` · ${time}` : ''}</time></p>
     {leading ? <div className="rp-check-leading-diagnostic">
       <strong>{leading.title}</strong>

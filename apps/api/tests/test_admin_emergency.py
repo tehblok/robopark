@@ -3,6 +3,7 @@ import json
 from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, User
 from robopark_api.security import hash_password
+from robopark_api.services import rbac
 
 
 def _create_section(client, section_id: str = "status"):
@@ -20,8 +21,8 @@ def _create_section(client, section_id: str = "status"):
     )
 
 
-def test_admin_lists_creates_and_updates_sections(client, seed_royal):
-    login_as(client, "royal", "secret")
+def test_admin_lists_creates_and_updates_sections(client, seed_admin):
+    login_as(client, "admin", "secret")
 
     created = _create_section(client)
     assert created.status_code == 201
@@ -63,8 +64,8 @@ def test_admin_lists_creates_and_updates_sections(client, seed_royal):
     assert [section["id"] for section in listed.json()] == ["status"]
 
 
-def test_admin_field_crud_and_section_delete(client, seed_royal):
-    login_as(client, "royal", "secret")
+def test_admin_field_crud_and_section_delete(client, seed_admin):
+    login_as(client, "admin", "secret")
     section = _create_section(client, "batteries").json()
 
     added = client.post(
@@ -87,8 +88,8 @@ def test_admin_field_crud_and_section_delete(client, seed_royal):
     assert client.get("/admin/emergency/sections").json() == []
 
 
-def test_admin_reorders_sections_and_exports_seed_shape(client, seed_royal):
-    login_as(client, "royal", "secret")
+def test_admin_reorders_sections_and_exports_seed_shape(client, seed_admin):
+    login_as(client, "admin", "secret")
     _create_section(client, "first")
     _create_section(client, "second")
 
@@ -126,8 +127,31 @@ def test_operator_gets_403_for_admin_emergency(client, db_session):
     assert _create_section(client).status_code == 403
 
 
-def test_export_canonical_keys_override_meta(client, seed_royal):
-    login_as(client, "royal", "secret")
+def test_emergency_settings_viewer_can_read_sections_but_cannot_mutate(client, db_session):
+    viewer = User(
+        username="emergency-settings-viewer",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "operator"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(viewer)
+    db_session.flush()
+    rbac.set_user_effective_permissions(
+        db_session,
+        viewer,
+        [rbac.PERMISSION_NAV_ADMIN_EMERGENCY],
+    )
+    db_session.commit()
+    login_as(client, "emergency-settings-viewer", "secret")
+
+    assert client.get("/admin/emergency/sections").status_code == 200
+    assert client.get("/admin/emergency/export").status_code == 200
+    assert _create_section(client).status_code == 403
+
+
+def test_export_canonical_keys_override_meta(client, seed_admin):
+    login_as(client, "admin", "secret")
     client.post(
         "/admin/emergency/sections",
         json={
@@ -156,8 +180,8 @@ def test_export_canonical_keys_override_meta(client, seed_royal):
     }
 
 
-def test_patch_rejects_explicit_null_for_title_path_label(client, seed_royal):
-    login_as(client, "royal", "secret")
+def test_patch_rejects_explicit_null_for_title_path_label(client, seed_admin):
+    login_as(client, "admin", "secret")
     section = _create_section(client, "status").json()
     field_id = section["fields"][0]["id"]
 

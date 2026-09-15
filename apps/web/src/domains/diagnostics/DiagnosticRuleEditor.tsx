@@ -62,7 +62,7 @@ export function DiagnosticRuleEditor() {
     setOwner({ user, park, generation: owner.generation + 1 })
     return null
   }
-  if (!user || user.access_status !== 'approved' || !['admin', 'royal'].includes(user.role)) return null
+  if (!user || user.access_status !== 'approved' || user.role !== 'admin') return null
   return <DiagnosticCatalogEditor key={owner.generation} user={user} />
 }
 
@@ -365,8 +365,8 @@ export function RuleForm({ rule, initialDraft, onDraftAdopted, busy, onSave, onC
       <FormField id={`${formId}-diagnostic-title`} label="Название ошибки" required><input maxLength={256} value={draft.title} onChange={event => edit({ title: event.target.value })} /></FormField>
       <FormField id={`${formId}-diagnostic-part`} label="Часть робота" required><input maxLength={128} value={draft.part} onChange={event => edit({ part: event.target.value })} /></FormField>
       <FormField id={`${formId}-diagnostic-source`} label="Путь источника" required hint="Поля и индексы через точку, например errors или data.errors.0"><input readOnly={lockSource} maxLength={256} value={draft.source_path} onChange={event => edit({ source_path: event.target.value })} /></FormField>
-      <FormField id={`${formId}-diagnostic-kind`} label="Сопоставление"><select value={draft.match_kind} onChange={event => edit({ match_kind: event.target.value as Draft['match_kind'] })}><option value="exact">Точное значение</option><option value="regex">Регулярное выражение</option></select></FormField>
-      <FormField id={`${formId}-diagnostic-pattern`} label="Код или шаблон" required error={draft.pattern.length > 512 ? 'Значение длиннее 512 символов. Выберите регулярное выражение и задайте короткий шаблон.' : undefined}><input maxLength={512} value={draft.pattern} onChange={event => edit({ pattern: event.target.value })} /></FormField>
+      <FormField id={`${formId}-diagnostic-kind`} label="Сопоставление"><select value={draft.match_kind} onChange={event => edit({ match_kind: event.target.value as Draft['match_kind'] })}><option value="exact">Точное совпадение</option><option value="regex">Регулярное выражение</option></select></FormField>
+      <FormField id={`${formId}-diagnostic-pattern`} label={<span id={`${formId}-diagnostic-pattern-label`}>Очищенное тело ошибки</span>} required hint="Для обычного правила вставьте текст без уровня WARN, ERROR или CRIT и без прошедшего времени. Регулярное выражение остаётся расширенным режимом." error={draft.pattern.length > 512 ? 'Значение длиннее 512 символов. Выберите регулярное выражение и задайте короткий шаблон.' : undefined}><input aria-label="Код или шаблон" aria-labelledby={`${formId}-diagnostic-pattern-label`} maxLength={512} value={draft.pattern} onChange={event => edit({ pattern: event.target.value })} /></FormField>
       <FormField id={`${formId}-diagnostic-severity`} label="Уровень ошибки"><select value={draft.severity} onChange={event => edit({ severity: event.target.value as Draft['severity'] })}>{Object.entries(SEVERITIES).map(([id, title]) => <option key={id} value={id}>{title}</option>)}</select></FormField>
     </div>
     <FormField id={`${formId}-diagnostic-description`} label="Расшифровка" required><textarea rows={3} value={draft.description} onChange={event => edit({ description: event.target.value })} /></FormField>

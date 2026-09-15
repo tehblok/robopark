@@ -70,6 +70,16 @@ it('offers a collapse control for the detailed diagnostic rule form', async () =
   expect(await screen.findByRole('button', { name: 'Свернуть: Редактирование правила' })).toBeVisible()
 })
 
+it('describes the normal exact flow with the cleaned error body and keeps regex available', async () => {
+  render(tree())
+
+  expect(await screen.findByRole('textbox', { name: 'Очищенное тело ошибки' })).toHaveValue('E01')
+  const matching = screen.getByLabelText('Сопоставление')
+  expect(matching).toHaveDisplayValue('Точное совпадение')
+  fireEvent.change(matching, { target: { value: 'regex' } })
+  expect(matching).toHaveDisplayValue('Регулярное выражение')
+})
+
 it.each(['matched', 'unknown', 'failure', 'unsupported'] as const)('shows the backend preview %s without exposing validation input', async state => {
   const normal = handler
   handler = (path, init) => path.endsWith('/preview') ? state === 'failure' ? json({ detail: [{ input: 'PRIVATE_VALUE' }] }, 422) : state === 'unsupported' ? json({ detail: 'unsupported_diagnostic_regex' }, 422) : json({ matched: state === 'matched', events: state === 'matched' ? [event] : [{ ...event, rule_id: null, part: null, view: null, x: null, y: null, indicator: null, title: 'Неизвестная ошибка' }] }) : normal(path, init)
@@ -168,10 +178,10 @@ it('keeps the old Emergency fields available and preserves park while opening an
   render(tree(user, '/admin/emergency/config?park=7'))
   fireEvent.click(await screen.findByRole('button', { name: 'Открыть раздел Состояние' }))
   expect(await screen.findByLabelText('Путь поля 9')).toHaveValue('data.status')
-  fireEvent.click(screen.getByRole('tab', { name: 'Ошибки и индикация' }))
+  fireEvent.click(screen.getByRole('tab', { name: 'Ошибки' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Открыть правило Лидар' }))
   fireEvent.click(screen.getByRole('button', { name: 'Назад к списку' }))
-  expect(screen.getByLabelText('Адрес')).toHaveTextContent('park=7&tab=indication')
+  expect(screen.getByLabelText('Адрес')).toHaveTextContent('park=7&tab=errors')
   expect(screen.getByLabelText('Адрес')).not.toHaveTextContent('rule=')
   fireEvent.click(screen.getByRole('tab', { name: 'Разделы и поля' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Открыть раздел Состояние' }))
@@ -180,7 +190,7 @@ it('keeps the old Emergency fields available and preserves park while opening an
 
 it('does not expose the rule editor to a custom role with settings navigation permission', async () => {
   render(tree({ ...user, role: 'field_lead' }))
-  expect(screen.queryByRole('tab', { name: 'Ошибки и индикация' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('tab', { name: 'Ошибки' })).not.toBeInTheDocument()
   fireEvent.click(await screen.findByRole('button', { name: 'Открыть раздел Состояние' }))
   await screen.findByLabelText('Путь поля 9')
   expect(requests.some(request => request.path.startsWith('/api/admin/diagnostic-rules'))).toBe(false)
@@ -190,7 +200,7 @@ it('creates a complete rule, keeps an intentional disabled state and opens the p
   render(tree(user, '/admin/emergency/config?park=7&tab=indication&rule=new'))
   await screen.findByLabelText('Название ошибки')
   expect(screen.getByRole('button', { name: 'Сохранить правило' })).toBeDisabled()
-  for (const [label, value] of [['Название ошибки', 'Батарея'], ['Часть робота', 'Батарея'], ['Путь источника', 'data.errors'], ['Код или шаблон', 'BAT'], ['Расшифровка', 'Заменить батарею'], ['Пример входного значения', 'BAT']]) fireEvent.change(screen.getByLabelText(label), { target: { value } })
+  for (const [label, value] of [['Название ошибки', 'Батарея'], ['Часть робота', 'Батарея'], ['Путь источника', 'data.errors'], ['Очищенное тело ошибки', 'BAT'], ['Расшифровка', 'Заменить батарею'], ['Пример входного значения', 'BAT']]) fireEvent.change(screen.getByLabelText(label), { target: { value } })
   fireEvent.click(screen.getByLabelText('Правило включено'))
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить правило' }))
   await waitFor(() => expect(screen.getByLabelText('Адрес')).toHaveTextContent('rule=3'))
@@ -205,7 +215,7 @@ it('retains a successful creation if its follow-up list refresh fails, preventin
   handler = (path, init) => path === '/api/admin/diagnostic-rules' && !init.method && ++reads > 1 ? json({}, 503) : normal(path, init)
   render(tree(user, '/admin/emergency/config?park=7&tab=indication&rule=new'))
   await screen.findByLabelText('Название ошибки')
-  for (const [label, value] of [['Название ошибки', 'Батарея'], ['Часть робота', 'Батарея'], ['Путь источника', 'errors'], ['Код или шаблон', 'BAT'], ['Расшифровка', 'Проверить батарею'], ['Пример входного значения', 'BAT']]) fireEvent.change(screen.getByLabelText(label), { target: { value } })
+  for (const [label, value] of [['Название ошибки', 'Батарея'], ['Часть робота', 'Батарея'], ['Путь источника', 'errors'], ['Очищенное тело ошибки', 'BAT'], ['Расшифровка', 'Проверить батарею'], ['Пример входного значения', 'BAT']]) fireEvent.change(screen.getByLabelText(label), { target: { value } })
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить правило' }))
   await waitFor(() => expect(screen.getByLabelText('Адрес')).toHaveTextContent('rule=3'))
   expect(screen.getByLabelText('Название ошибки')).toHaveValue('Батарея')
@@ -238,7 +248,7 @@ it.each(['park', 'auth', 'view'] as const)('does not let an old save overwrite a
 })
 
 function fillNewRule() {
-  for (const [label, value] of [['Название ошибки', 'Батарея'], ['Часть робота', 'Батарея'], ['Путь источника', 'errors'], ['Код или шаблон', 'BAT'], ['Расшифровка', 'Проверить батарею'], ['Пример входного значения', 'BAT']]) fireEvent.change(screen.getByLabelText(label), { target: { value } })
+  for (const [label, value] of [['Название ошибки', 'Батарея'], ['Часть робота', 'Батарея'], ['Путь источника', 'errors'], ['Очищенное тело ошибки', 'BAT'], ['Расшифровка', 'Проверить батарею'], ['Пример входного значения', 'BAT']]) fireEvent.change(screen.getByLabelText(label), { target: { value } })
 }
 
 it.each(['post', 'refresh'] as const)('promotes a committed creation and preserves edits made during pending %s for the next PATCH', async pending => {
@@ -376,7 +386,7 @@ it('tests collected originals on demand and keeps publication explicit', async (
   render(tree())
   const check = await screen.findByRole('button', { name: 'Проверить собранные ошибки' })
   expect(requests.some(request => request.path.endsWith('/test-samples'))).toBe(false)
-  fireEvent.change(screen.getByLabelText('Код или шаблон'), { target: { value: 'DRAFT' } })
+  fireEvent.change(screen.getByLabelText('Очищенное тело ошибки'), { target: { value: 'DRAFT' } })
   fireEvent.click(check)
   expect(await screen.findByText('Совпало: 1 · Не совпало: 1 · Пропущено: 1')).toBeVisible()
   fireEvent.click(screen.getByText('Образцы и пересечения'))
@@ -388,7 +398,7 @@ it('tests collected originals on demand and keeps publication explicit', async (
   expect(JSON.parse(String(sent.init.body))).toMatchObject({ rule: { pattern: 'DRAFT' }, exclude_rule_id: 1, limit: 50 })
   expect(requests.filter(request => request.init.method === 'POST')).toHaveLength(1)
   expect(screen.getByRole('button', { name: 'Сохранить правило' })).toBeEnabled()
-  fireEvent.change(screen.getByLabelText('Код или шаблон'), { target: { value: 'ANOTHER' } })
+  fireEvent.change(screen.getByLabelText('Очищенное тело ошибки'), { target: { value: 'ANOTHER' } })
   expect(screen.queryByText('Образец #9')).not.toBeInTheDocument()
 })
 

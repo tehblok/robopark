@@ -2,6 +2,13 @@
   "name": "Robot 447",
   "vin": "YASADR00000000447",
   "isOnline": true,
+  "timestamp": 1700000000000,
+  "velocity": 0,
+  "diskUsage": 40,
+  "batteriesStatus": {
+    "battery1": {"chargePercentage": 83, "isConnected": true},
+    "battery2": {"chargePercentage": 0, "isConnected": false}
+  },
   "position": {"lat": 1.0, "lon": 2.0},
   "errors": ["sensor timeout"]
 }

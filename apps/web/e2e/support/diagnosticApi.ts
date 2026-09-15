@@ -80,6 +80,6 @@ export async function startDiagnosticApi(actor: Actor = 'admin') {
       throw error
     }
   }
-  const routes: MockRoute[] = (['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const).map(method => ({ method, path: /^\/api\/(?:admin\/diagnostic-rules(?:\/.*)?|auth\/me|emergency\/(?:resolve|[^/]+\/snapshot))$/, handler: forward }))
+  const routes: MockRoute[] = (['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const).map(method => ({ method, path: /^\/api\/(?:admin\/(?:diagnostic-rules|diagnostic-unknowns|emergency-readings|emergency)(?:\/.*)?|auth\/me|emergency\/(?:resolve|[^/]+\/snapshot))$/, handler: forward }))
   return { call, routes, close }
 }

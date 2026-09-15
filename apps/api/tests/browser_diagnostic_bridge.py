@@ -34,6 +34,7 @@ def run():
         from robopark_api.routers import emergency
         from robopark_api.security import hash_password
         from robopark_api.services import rbac
+        from robopark_api.services.emergency_cache import EmergencyPayloadResult
         from robopark_api.services.emergency_config import ensure_default_section_roles
         from robopark_api.services.rbac_seed import ensure_rbac_catalog
 
@@ -73,6 +74,13 @@ def run():
             "errors": ["LIDAR_OFFLINE", "UNMAPPED_SENSOR_42"],
         }
         stack.enter_context(patch.object(emergency, "_get_robot_payload", return_value=payload))
+        stack.enter_context(
+            patch.object(
+                emergency,
+                "_get_robot_payload_result",
+                return_value=EmergencyPayloadResult(payload, False, 0),
+            )
+        )
         # Explicit mutation proves the browser catches a broken snapshot integration.
         if os.environ.get("DIAGNOSTIC_E2E_MUTATION") == "drop-events":
             stack.enter_context(

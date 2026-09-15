@@ -162,20 +162,35 @@ class LiveMergeStore:
         lock_path, _, _, _ = self._paths(namespace, key)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + max(timeout, 0.0)
-        with lock_path.open("a+", encoding="utf-8") as fh:
-            while True:
+        while True:
+            with lock_path.open("a+", encoding="utf-8") as fh:
+                while True:
+                    try:
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise LiveMergeTimeout(key) from None
+                        time.sleep(_LOCK_RETRY_SEC)
                 try:
-                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        raise LiveMergeTimeout(key) from None
-                    time.sleep(_LOCK_RETRY_SEC)
-            try:
-                require_application_writes()
-                yield
-            finally:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                    # Pruning may unlink an inode after this waiter opened it.
+                    # Only the inode currently named by the path coordinates peers.
+                    descriptor = os.fstat(fh.fileno())
+                    try:
+                        current = lock_path.stat()
+                    except FileNotFoundError:
+                        current = None
+                    if current is not None and (descriptor.st_dev, descriptor.st_ino) == (
+                        current.st_dev,
+                        current.st_ino,
+                    ):
+                        require_application_writes()
+                        yield
+                        return
+                finally:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            if time.monotonic() >= deadline:
+                raise LiveMergeTimeout(key)
 
     def _atomic_write(self, path: Path, payload: dict[str, Any]) -> None:
         from robopark_api.services.ops.maintenance import require_application_writes
@@ -262,11 +277,12 @@ class LiveMergeStore:
             },
         )
 
-    def _read_any_payload(self, namespace: str, key: str) -> object:
+    def _read_stale_payload(self, namespace: str, key: str, max_age: float) -> object:
         data = self._read_json(self.result_path(namespace, key))
-        if data is None or data.get("ok") is not True:
+        if data is None or data.get("ok") is not True or data.get("key") != key:
             return _MISSING
-        if data.get("key") != key:
+        written = data.get("written_at")
+        if not isinstance(written, (int, float)) or time.time() - written >= max_age:
             return _MISSING
         return data.get("payload")
 
@@ -281,7 +297,14 @@ class LiveMergeStore:
             return None
         return data
 
-    def _write_error(self, namespace: str, key: str, exc: BaseException) -> None:
+    def _write_error(
+        self,
+        namespace: str,
+        key: str,
+        exc: BaseException,
+        *,
+        stale_allowed: bool,
+    ) -> None:
         self._atomic_write(
             self.error_path(namespace, key),
             {
@@ -289,6 +312,7 @@ class LiveMergeStore:
                 "written_at": time.time(),
                 "ok": False,
                 "exc_msg": str(exc) or type(exc).__name__,
+                "stale_allowed": stale_allowed,
             },
         )
 
@@ -316,6 +340,10 @@ class LiveMergeStore:
         ttl: float,
         loader: Callable[[], T],
         is_current: Callable[[], bool] | None = None,
+        *,
+        max_stale_seconds: float = 60.0,
+        stale_if: Callable[[BaseException], bool] | None = None,
+        on_stale: Callable[[], None] | None = None,
     ) -> T:
         from robopark_api.db import release_request_session
 
@@ -337,8 +365,10 @@ class LiveMergeStore:
                     return cached  # type: ignore[return-value]
                 err = self._read_error(namespace, key, ttl)
                 if err is not None:
-                    stale = self._read_any_payload(namespace, key)
-                    if stale is not _MISSING:
+                    stale = self._read_stale_payload(namespace, key, max_stale_seconds)
+                    if err.get("stale_allowed") is not False and stale is not _MISSING:
+                        if on_stale is not None:
+                            on_stale()
                         return stale  # type: ignore[return-value]
                     self._raise_shared_error(err)
                 inflight = self._read_inflight(namespace, key)
@@ -352,14 +382,26 @@ class LiveMergeStore:
         try:
             value = loader()
         except BaseException as exc:
+            if not isinstance(exc, Exception):
+                with self._exclusive(namespace, key, timeout=self.waiter_timeout):
+                    self._clear_inflight(namespace, key, claim)
+                raise
+            stale_allowed = stale_if(exc) if stale_if is not None else True
             with self._exclusive(namespace, key, timeout=self.waiter_timeout):
                 if is_current is not None and not is_current():
                     self._clear_inflight(namespace, key, claim)
                     raise
-                self._write_error(namespace, key, exc)
+                self._write_error(
+                    namespace,
+                    key,
+                    exc,
+                    stale_allowed=stale_allowed,
+                )
                 self._clear_inflight(namespace, key, claim)
-                stale = self._read_any_payload(namespace, key)
-            if stale is not _MISSING:
+                stale = self._read_stale_payload(namespace, key, max_stale_seconds)
+            if stale_allowed and stale is not _MISSING:
+                if on_stale is not None:
+                    on_stale()
                 return stale  # type: ignore[return-value]
             raise
         with self._exclusive(namespace, key, timeout=self.waiter_timeout):
@@ -370,6 +412,48 @@ class LiveMergeStore:
             self._clear_error(namespace, key)
             self._clear_inflight(namespace, key, claim)
         return value
+
+    def _prune_lock(
+        self,
+        path: Path,
+        *,
+        initial_stat: os.stat_result,
+        now: float,
+        max_age_seconds: float,
+    ) -> bool:
+        try:
+            fh = path.open("r+", encoding="utf-8")
+        except OSError:
+            return False
+        with fh:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, OSError):
+                return False
+            try:
+                try:
+                    descriptor_stat = os.fstat(fh.fileno())
+                    current_stat = path.stat()
+                except OSError:
+                    return False
+                expected_inode = (initial_stat.st_dev, initial_stat.st_ino)
+                if (
+                    (descriptor_stat.st_dev, descriptor_stat.st_ino) != expected_inode
+                    or (current_stat.st_dev, current_stat.st_ino) != expected_inode
+                    or max(0.0, now - current_stat.st_mtime) < max_age_seconds
+                ):
+                    return False
+                inflight = self._read_json(path.with_suffix(".inflight"))
+                pid = inflight.get("pid") if inflight is not None else None
+                if isinstance(pid, int) and _pid_alive(pid):
+                    return False
+                try:
+                    path.unlink()
+                except OSError:
+                    return False
+                return True
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
     def invalidate(self, namespace: str, key: str) -> None:
         from robopark_api.services.ops.maintenance import require_application_writes
@@ -407,6 +491,68 @@ class LiveMergeStore:
         for path in folder.iterdir():
             if path.is_file():
                 path.unlink(missing_ok=True)
+
+    def prune(
+        self,
+        *,
+        now: float,
+        blob_max_age_seconds: float = 60.0,
+        lock_max_age_seconds: float = 60.0,
+        tmp_max_age_seconds: float = 3600.0,
+    ) -> int:
+        """Best-effort removal of stale live-merge artifacts."""
+        from robopark_api.services.ops.maintenance import require_application_writes
+
+        require_application_writes()
+        removed = 0
+        try:
+            folders = list(self.root.iterdir())
+        except OSError:
+            return 0
+        for folder in folders:
+            try:
+                is_dir = folder.is_dir()
+            except OSError:
+                continue
+            if not is_dir or folder.name == "jobs":
+                continue
+            try:
+                paths = list(folder.iterdir())
+            except OSError:
+                continue
+            for path in paths:
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                suffix = path.suffix
+                age = max(0.0, now - stat.st_mtime)
+                should_remove = False
+                if suffix in {".json", ".error"}:
+                    should_remove = age >= blob_max_age_seconds
+                elif suffix == ".tmp":
+                    should_remove = age >= tmp_max_age_seconds
+                elif suffix == ".inflight":
+                    data = self._read_json(path)
+                    pid = data.get("pid") if data is not None else None
+                    should_remove = not isinstance(pid, int) or not _pid_alive(pid)
+                elif suffix == ".lock":
+                    if age >= lock_max_age_seconds and self._prune_lock(
+                        path,
+                        initial_stat=stat,
+                        now=now,
+                        max_age_seconds=lock_max_age_seconds,
+                    ):
+                        removed += 1
+                    continue
+                if not should_remove:
+                    continue
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    continue
+                removed += 1
+        return removed
 
 
 class JobLease:

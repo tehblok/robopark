@@ -166,6 +166,20 @@ def client(db_engine, db_session, test_settings, monkeypatch):
 
 
 @pytest.fixture
+def seed_admin(db_session):
+    user = User(
+        username="admin",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, rbac.RoleSlug.ADMIN),
+        access_status="approved",
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+    return user
+
+
+@pytest.fixture
 def seed_royal(db_session):
     user = User(
         username="royal",

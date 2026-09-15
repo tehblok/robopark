@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     #: How often expired sessions are purged from the database.
     session_cleanup_interval_seconds: int = 60 * 60
 
+    # --- Emergency cache --------------------------------------------------
+    #: Maximum simultaneous Emergency HTTP requests in one API worker.
+    emergency_max_concurrency: int = 8
+
     # --- Royal ops (snapshot / restore / ZIP update) -----------------------
     #: Directory for job state, staging, and snapshot artifacts.
     ops_dir: str | None = None

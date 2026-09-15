@@ -11,17 +11,19 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from robopark_api.models import DiagnosticUnknown, DiagnosticUnknownSighting
+from robopark_api.models import DiagnosticRule, DiagnosticUnknown, DiagnosticUnknownSighting
 from robopark_api.schemas import DiagnosticEvent
 from robopark_api.services.diagnostic_rules import diagnostic_source_parts
 
 logger = logging.getLogger(__name__)
 MAX_SAMPLE_BYTES = 8192
 SAMPLE_INTERVAL = timedelta(seconds=60)
+UNKNOWN_MAX_ENTRIES = 1000
+UNKNOWN_MAX_AGE = timedelta(days=30)
 _SENSITIVE = re.compile(
     r"password|passwd|secret|token|cookie|authorization|api[_-]?key|credential", re.I
 )
@@ -37,10 +39,68 @@ def canonical(value: Any) -> str:
 
 
 def ignored_diagnostic_identities(db: Session) -> set[str]:
-    """Return only raw diagnostic identities deliberately hidden by an admin."""
-    return set(
-        db.scalars(select(DiagnosticUnknown.identity).where(DiagnosticUnknown.state == "ignored"))
+    """Keep stored IDs and canonical aliases without rewriting inbox ownership.
+
+    Several old samples can collapse to one canonical event. Suppression is the
+    union of ignored aliases: reopening one row cannot undo another ignored row.
+    Malformed legacy samples retain their original suppression ID only.
+    """
+    from robopark_api.services.diagnostic_rules import match_diagnostic_events_for_rules
+
+    identities = set()
+    for row in db.scalars(select(DiagnosticUnknown).where(DiagnosticUnknown.state == "ignored")):
+        identities.add(row.identity)
+        try:
+            # The residual raw unit is the suppressed evidence; original_json
+            # can also contain siblings that were classified by a different rule.
+            sample = DiagnosticUnknown(
+                original_json=row.raw_json, source_segments_json=row.source_segments_json
+            )
+            payload = sample_payload(sample)
+            source = DiagnosticRule(source_path=row.source_path, is_enabled=False)
+            identities.update(
+                event.id for event in match_diagnostic_events_for_rules([source], payload)
+            )
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return identities
+
+
+def prune_diagnostic_unknowns(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    max_entries: int = UNKNOWN_MAX_ENTRIES,
+    max_age: timedelta = UNKNOWN_MAX_AGE,
+) -> int:
+    """Delete only stale/overflowing unclassified diagnostic identities."""
+    if max_entries < 0:
+        raise ValueError("max_entries must be non-negative")
+    now = now or datetime.now(UTC)
+    cutoff = now - max_age
+    stale_ids = set(
+        db.scalars(
+            select(DiagnosticUnknown.id).where(
+                DiagnosticUnknown.state == "new",
+                DiagnosticUnknown.last_seen_at < cutoff,
+            )
+        )
     )
+    if stale_ids:
+        db.execute(delete(DiagnosticUnknown).where(DiagnosticUnknown.id.in_(stale_ids)))
+        db.flush()
+    overflow_ids = set(
+        db.scalars(
+            select(DiagnosticUnknown.id)
+            .where(DiagnosticUnknown.state == "new")
+            .order_by(DiagnosticUnknown.last_seen_at.desc(), DiagnosticUnknown.id.desc())
+            .offset(max_entries)
+        )
+    )
+    if overflow_ids:
+        db.execute(delete(DiagnosticUnknown).where(DiagnosticUnknown.id.in_(overflow_ids)))
+    db.commit()
+    return len(stale_ids | overflow_ids)
 
 
 def _sensitive(value: Any) -> bool:

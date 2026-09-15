@@ -9,8 +9,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from robopark_api.db import get_db
-from robopark_api.deps import require_admin
-from robopark_api.models import EmergencyField, EmergencySection, EmergencySectionRole
+from robopark_api.deps import require_builtin_admin, require_permission
+from robopark_api.models import EmergencyField, EmergencySection, EmergencySectionRole, User
 from robopark_api.schemas import (
     EmergencyFieldAdminOut,
     EmergencyFieldCreate,
@@ -20,13 +20,9 @@ from robopark_api.schemas import (
     EmergencySectionsReorder,
     EmergencySectionUpdate,
 )
-from robopark_api.services import emergency_config
+from robopark_api.services import emergency_config, rbac
 
-router = APIRouter(
-    prefix="/admin/emergency",
-    tags=["admin-emergency"],
-    dependencies=[Depends(require_admin)],
-)
+router = APIRouter(prefix="/admin/emergency", tags=["admin-emergency"])
 
 
 def _section_query():
@@ -88,7 +84,10 @@ def _commit_write(db: Session) -> None:
 
 
 @router.get("/sections", response_model=list[EmergencySectionAdminOut])
-def list_sections(db: Session = Depends(get_db)) -> list[EmergencySectionAdminOut]:
+def list_sections(
+    db: Session = Depends(get_db),
+    _viewer: User = Depends(require_permission(rbac.PERMISSION_NAV_ADMIN_EMERGENCY)),
+) -> list[EmergencySectionAdminOut]:
     sections = db.scalars(
         _section_query().order_by(EmergencySection.sort_order, EmergencySection.id)
     ).all()
@@ -103,6 +102,7 @@ def list_sections(db: Session = Depends(get_db)) -> list[EmergencySectionAdminOu
 def create_section(
     payload: EmergencySectionCreate,
     db: Session = Depends(get_db),
+    _admin: User = Depends(require_builtin_admin),
 ) -> EmergencySectionAdminOut:
     if db.get(EmergencySection, payload.id) is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT)
@@ -140,6 +140,7 @@ def create_section(
 def reorder_sections(
     payload: EmergencySectionsReorder,
     db: Session = Depends(get_db),
+    _admin: User = Depends(require_builtin_admin),
 ) -> list[EmergencySectionAdminOut]:
     sections = db.scalars(_section_query()).all()
     by_id = {section.id: section for section in sections}
@@ -159,6 +160,7 @@ def update_section(
     section_id: str,
     payload: EmergencySectionUpdate,
     db: Session = Depends(get_db),
+    _admin: User = Depends(require_builtin_admin),
 ) -> EmergencySectionAdminOut:
     section = _get_section(db, section_id)
     changes = payload.model_dump(exclude_unset=True)
@@ -179,7 +181,11 @@ def update_section(
 
 
 @router.delete("/sections/{section_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_section(section_id: str, db: Session = Depends(get_db)) -> Response:
+def delete_section(
+    section_id: str,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_builtin_admin),
+) -> Response:
     db.delete(_get_section(db, section_id))
     _commit_write(db)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -194,6 +200,7 @@ def create_field(
     section_id: str,
     payload: EmergencyFieldCreate,
     db: Session = Depends(get_db),
+    _admin: User = Depends(require_builtin_admin),
 ) -> EmergencyFieldAdminOut:
     _get_section(db, section_id)
     sort_order = db.scalar(
@@ -216,6 +223,7 @@ def update_field(
     field_id: int,
     payload: EmergencyFieldUpdate,
     db: Session = Depends(get_db),
+    _admin: User = Depends(require_builtin_admin),
 ) -> EmergencyFieldAdminOut:
     field = _get_field(db, field_id)
     changes = payload.model_dump(exclude_unset=True)
@@ -228,14 +236,21 @@ def update_field(
 
 
 @router.delete("/fields/{field_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_field(field_id: int, db: Session = Depends(get_db)) -> Response:
+def delete_field(
+    field_id: int,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_builtin_admin),
+) -> Response:
     db.delete(_get_field(db, field_id))
     _commit_write(db)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/export")
-def export_config(db: Session = Depends(get_db)) -> dict[str, Any]:
+def export_config(
+    db: Session = Depends(get_db),
+    _viewer: User = Depends(require_permission(rbac.PERMISSION_NAV_ADMIN_EMERGENCY)),
+) -> dict[str, Any]:
     sections = db.scalars(
         _section_query().order_by(EmergencySection.sort_order, EmergencySection.id)
     ).all()

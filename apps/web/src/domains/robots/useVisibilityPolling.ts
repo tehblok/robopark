@@ -44,10 +44,16 @@ export function useVisibilityPolling({ enabled, online, task }: { enabled: boole
     const visibility = () => {
       clear()
       if (!automatic()) return
-      const delay = Math.max(resumeDelay(), retryAt - Date.now())
-      if (delay <= 0) void run(false); else schedule(delay)
+      retryAt = 0
+      void run(false)
     }
-    resumeRunner.current = visibility
+    resumeRunner.current = () => {
+      clear()
+      if (!automatic()) return
+      const delay = Math.max(resumeDelay(), retryAt - Date.now())
+      if (delay <= 0) void run(false)
+      else schedule(delay)
+    }
     runner.current = run
     setPending(false)
     document.addEventListener('visibilitychange', visibility)

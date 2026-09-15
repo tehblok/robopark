@@ -11,6 +11,87 @@ async function selectSecondaryTab(page: Page, name: string) {
   await expect(page.getByRole('tab', { name, exact: true })).toHaveAttribute('aria-selected', 'true')
 }
 
+test('only admin can edit the global robot-check configuration', async ({ page }) => {
+  const sections = [{ id: 'wheels', title: 'Колёса', is_enabled: true, roles: ['mechanic', 'admin'], fields: [{ id: 1, path: 'velocity', label: 'Скорость', sort_order: 0 }], sort_order: 0 }]
+  const reading = {
+    id: 1, section_id: 'wheels', path: 'parktronics.lt', label: 'Левый парктроник', display_kind: 'distance',
+    unit: 'см', precision: 0, enabled_path: 'parktronics.ltEnabled', no_data_values: [2147483647],
+    warning_below: 25, warning_above: null, critical_below: 10, critical_above: null,
+    view: 'top', x: .24, y: .56, label_direction: 'left', is_enabled: true, sort_order: 0,
+  }
+  await installOperational(page, {
+    role: 'royal',
+    routes: [{ method: 'GET', path: '/api/admin/emergency/sections', handler: () => ({ json: sections }) }],
+  })
+  await page.goto('/admin/emergency/config?park=7&tab=readings')
+  await expect(page.getByRole('tab', { name: 'Разделы и поля' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Показания' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Новый раздел' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Открыть раздел Колёса' }).click()
+  await expect(page.getByLabel('Название wheels')).toHaveAttribute('readonly', '')
+  await expect(page.getByRole('button', { name: 'Сохранить', exact: true })).toHaveCount(0)
+
+  let saved = reading
+  let written: { endpoint: string; body: Record<string, unknown> } | null = null
+  await installOperational(page, {
+    role: 'admin',
+    routes: [
+      { method: 'GET', path: '/api/admin/emergency/sections', handler: () => ({ json: sections }) },
+      { method: 'GET', path: '/api/admin/emergency-readings', handler: () => ({ json: [saved], headers: { ETag: '"readings-1"' } }) },
+      { method: 'PATCH', path: '/api/admin/emergency-readings/1', handler: async request => {
+        const body = await request.json() as Record<string, unknown>
+        written = { endpoint: new URL(request.url).pathname, body }
+        saved = { ...saved, ...body }
+        return { json: saved }
+      } },
+    ],
+  })
+  await page.goto('/admin/emergency/config?park=7&tab=readings')
+  await expect(page.getByRole('tab', { name: 'Показания' })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('button', { name: 'Новое показание' })).toBeVisible()
+  await page.getByRole('button', { name: 'Открыть показание Левый парктроник' }).click()
+  await page.getByLabel('Название показания').fill('Левый парктроник кузова')
+  await page.getByRole('button', { name: 'Сохранить показание' }).click()
+  await expect(page.getByText('Показание сохранено.', { exact: true })).toBeVisible()
+  expect(written).toMatchObject({
+    endpoint: '/api/admin/emergency-readings/1',
+    body: { label: 'Левый парктроник кузова', path: 'parktronics.lt', section_id: 'wheels' },
+  })
+  await expect(page.getByRole('button', { name: 'Открыть показание Левый парктроник кузова' })).toBeVisible()
+})
+
+test('mechanic sees role-filtered partial readings and explicit stale age', async ({ page }) => {
+  await installOperational(page, { role: 'mechanic', snapshot: {
+    ...snapshot,
+    stale: true,
+    stale_age_seconds: 37.4,
+    battery1_percent: null,
+    battery1_connected: true,
+    battery2_percent: 0,
+    battery2_connected: false,
+    speed: 0,
+    disk_percent: null,
+    diagnostic_events: [],
+    readings: [
+      { id: 1, section_id: 'wheels', label: 'Ток колеса', display: '4,2 А', state: 'normal', view: 'top', x: .3, y: .6, label_direction: 'left' },
+      { id: 2, section_id: 'wheels', label: 'Парктроник', display: 'Нет данных', state: 'unavailable', view: 'top', x: .65, y: .5, label_direction: 'right' },
+    ],
+  } })
+  await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=scheme`)
+  const summary = page.getByRole('region', { name: 'Состояние робота' })
+  await expect(summary.locator('div').filter({ has: page.getByText('АКБ 1', { exact: true }) }).first()).toContainText('Нет данных')
+  await expect(summary.locator('div').filter({ has: page.getByText('АКБ 2', { exact: true }) }).first()).toContainText('Не подключена')
+  await expect(summary.locator('div').filter({ has: page.getByText('Скорость', { exact: true }) }).first()).toContainText('0 м/с')
+  await expect(summary.locator('div').filter({ has: page.getByText('Диск', { exact: true }) }).first()).toContainText('Нет данных')
+  await expect(summary).toContainText('Данные устарели · 37 с')
+  await expect(summary).not.toContainText('Активных ошибок нет')
+  const block = page.getByRole('region', { name: 'Диагностический блок «Колёса»' })
+  await expect(block).toContainText('Ток колеса')
+  await expect(block).toContainText('Парктроник')
+  await expect(page.getByRole('link', { name: 'Открыть настройки' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /сохранить|отключить|удалить/i })).toHaveCount(0)
+})
+
 test('robot search stays first and makes no registry requests across reload and park changes', async ({ page }) => {
   const registryRequests: string[] = []
   page.on('request', request => {
@@ -140,7 +221,9 @@ test('short route canonicalizes to the compact summary without loading a competi
   await installOperational(page)
   await page.goto('/robots/447?park=7')
   await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7`)
-  await expect(page.getByRole('region', { name: 'Состояние робота' })).toContainText('Заряд 84 %')
+  const summary = page.getByRole('region', { name: 'Состояние робота' })
+  await expect(summary.locator('div').filter({ has: page.getByText('АКБ 1', { exact: true }) }).first()).toContainText('85 %')
+  await expect(summary.locator('div').filter({ has: page.getByText('АКБ 2', { exact: true }) }).first()).toContainText('83 %')
   await expect(page.getByText(snapshot.vin, { exact: true })).toBeHidden()
   await settlePage(page)
   expect(photos).toEqual([])

@@ -1,3 +1,4 @@
+import math
 from datetime import datetime
 from typing import Any, Literal
 
@@ -189,6 +190,132 @@ DiagnosticMatchKind = Literal["exact", "regex"]
 DiagnosticSeverity = Literal["info", "warning", "critical"]
 DiagnosticView = Literal["top", "front", "rear", "left", "right", "isometric"]
 DiagnosticIndicator = Literal["point", "outline", "zone"]
+EmergencyReadingState = Literal["normal", "warning", "critical", "unavailable"]
+EmergencyLabelDirection = Literal["auto", "left", "right", "top", "bottom"]
+
+
+class EmergencyReadingValue(BaseModel):
+    id: int
+    section_id: str
+    label: str
+    display: str
+    state: EmergencyReadingState
+    view: DiagnosticView
+    x: float
+    y: float
+    label_direction: EmergencyLabelDirection
+
+
+EmergencyReadingDisplayKind = Literal["text", "number", "percent", "distance", "current", "state"]
+
+
+class EmergencyReadingCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    section_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    path: str = Field(min_length=1, max_length=256)
+    label: str = Field(min_length=1, max_length=128)
+    display_kind: EmergencyReadingDisplayKind
+    unit: str | None = Field(default=None, max_length=32)
+    precision: int = Field(default=0, ge=0, le=4)
+    enabled_path: str | None = Field(default=None, min_length=1, max_length=256)
+    no_data_values: list[JsonValue] = Field(default_factory=list, max_length=32)
+    warning_below: float | None = Field(default=None, allow_inf_nan=False)
+    warning_above: float | None = Field(default=None, allow_inf_nan=False)
+    critical_below: float | None = Field(default=None, allow_inf_nan=False)
+    critical_above: float | None = Field(default=None, allow_inf_nan=False)
+    view: DiagnosticView
+    x: float = Field(ge=0, le=1, allow_inf_nan=False)
+    y: float = Field(ge=0, le=1, allow_inf_nan=False)
+    label_direction: EmergencyLabelDirection = "auto"
+    is_enabled: bool = True
+    sort_order: int = 0
+
+    @model_validator(mode="after")
+    def validate_no_data_values(self):
+        for value in self.no_data_values:
+            if isinstance(value, (dict, list)):
+                raise ValueError("no_data_values must contain scalars")
+            if isinstance(value, str) and len(value) > 128:
+                raise ValueError("no_data_values strings must be at most 128 characters")
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError("no_data_values numbers must be finite")
+        return self
+
+
+class EmergencyReadingUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    section_id: str | None = Field(
+        default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"
+    )
+    path: str | None = Field(default=None, min_length=1, max_length=256)
+    label: str | None = Field(default=None, min_length=1, max_length=128)
+    display_kind: EmergencyReadingDisplayKind | None = None
+    unit: str | None = Field(default=None, max_length=32)
+    precision: int | None = Field(default=None, ge=0, le=4)
+    enabled_path: str | None = Field(default=None, min_length=1, max_length=256)
+    no_data_values: list[JsonValue] | None = Field(default=None, max_length=32)
+    warning_below: float | None = Field(default=None, allow_inf_nan=False)
+    warning_above: float | None = Field(default=None, allow_inf_nan=False)
+    critical_below: float | None = Field(default=None, allow_inf_nan=False)
+    critical_above: float | None = Field(default=None, allow_inf_nan=False)
+    view: DiagnosticView | None = None
+    x: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    y: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    label_direction: EmergencyLabelDirection | None = None
+    is_enabled: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_forbidden_nulls_and_sort_order(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "sort_order" in data:
+            raise ValueError("emergency_reading_sort_order_use_reorder")
+        return _reject_explicit_nulls(
+            data,
+            (
+                "section_id",
+                "path",
+                "label",
+                "display_kind",
+                "precision",
+                "no_data_values",
+                "view",
+                "x",
+                "y",
+                "label_direction",
+                "is_enabled",
+            ),
+        )
+
+    @model_validator(mode="after")
+    def validate_no_data_values(self):
+        if self.no_data_values is None:
+            return self
+        for value in self.no_data_values:
+            if isinstance(value, (dict, list)):
+                raise ValueError("no_data_values must contain scalars")
+            if isinstance(value, str) and len(value) > 128:
+                raise ValueError("no_data_values strings must be at most 128 characters")
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError("no_data_values numbers must be finite")
+        return self
+
+
+class EmergencyReadingOut(EmergencyReadingCreate):
+    id: int
+
+
+class EmergencyReadingsReorder(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[int] = Field(min_length=1, max_length=1000)
+
+
+class EmergencyDiscoveredField(BaseModel):
+    path: str = Field(min_length=1, max_length=256)
+    value_type: Literal["string", "number", "boolean", "null"]
+    example: str = Field(max_length=80)
 
 
 class DiagnosticEvent(BaseModel):
@@ -221,11 +348,15 @@ class EmergencySnapshotOut(BaseModel):
     vin: str
     short_number: str
     observed_at: datetime
+    stale: bool = False
+    stale_age_seconds: float = Field(default=0, ge=0, allow_inf_nan=False)
     online: bool | None = None
     speed: float | None = None
     charge_percent: float | None = None
     battery1_percent: float | None = None
     battery2_percent: float | None = None
+    battery1_connected: bool | None = None
+    battery2_connected: bool | None = None
     disk_percent: float | None = None
     mode: str | None = None
     icp_label: str | None = None
@@ -235,6 +366,7 @@ class EmergencySnapshotOut(BaseModel):
     connection: Literal["lte", "wire"] | None = None
     error_banner: str | None = None
     diagnostic_events: list[DiagnosticEvent] = Field(default_factory=list)
+    readings: list[EmergencyReadingValue] = Field(default_factory=list)
     lat: float | None = None
     lon: float | None = None
     heading_deg: float | None = None

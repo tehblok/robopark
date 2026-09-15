@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import fcntl
+import json
+import os
 import threading
 import time
 
@@ -152,6 +155,101 @@ def test_failed_refresh_keeps_last_good_blob(tmp_path):
 
     assert store.merge_load("ns", "k", 0.05, boom) == {"n": 1}
     assert calls == 1
+
+
+def test_failed_refresh_rejects_blob_aged_sixty_seconds(tmp_path, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("robopark_api.services.live_merge.time.time", lambda: now[0])
+    store = LiveMergeStore(tmp_path)
+    assert store.merge_load("ns", "k", 3, lambda: {"n": 1}) == {"n": 1}
+
+    def boom() -> dict:
+        raise RuntimeError("unavailable")
+
+    now[0] = 104.0
+    assert store.merge_load("ns", "k", 3, boom) == {"n": 1}
+    now[0] = 160.0
+    with pytest.raises(RuntimeError, match="unavailable"):
+        store.merge_load("ns", "k", 3, boom)
+
+
+@pytest.mark.parametrize("control_flow", [KeyboardInterrupt(), asyncio.CancelledError()])
+def test_stale_blob_does_not_swallow_control_flow(tmp_path, control_flow, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("robopark_api.services.live_merge.time.time", lambda: now[0])
+    store = LiveMergeStore(tmp_path)
+    assert store.merge_load("ns", "k", 3, lambda: {"n": 1}) == {"n": 1}
+    now[0] = 104.0
+
+    def interrupt() -> dict:
+        raise control_flow
+
+    with pytest.raises(type(control_flow)):
+        store.merge_load("ns", "k", 3, interrupt)
+
+    assert not store.inflight_path("ns", "k").exists()
+
+
+def test_prune_removes_old_merge_files_but_preserves_live_inflight(tmp_path):
+    now = 10_000.0
+    store = LiveMergeStore(tmp_path)
+    folder = store.namespace_dir("ns")
+    folder.mkdir(parents=True)
+    old = {
+        "result": folder / "old.json",
+        "error": folder / "old.error",
+        "lock": folder / "old.lock",
+        "tmp": folder / "old.tmp",
+        "dead": folder / "dead.inflight",
+    }
+    old["result"].write_text('{"ok":true}', encoding="utf-8")
+    old["error"].write_text('{"ok":false}', encoding="utf-8")
+    old["lock"].touch()
+    old["tmp"].touch()
+    old["dead"].write_text(
+        json.dumps({"pid": 2_000_000_000, "started_at": now - 100}), encoding="utf-8"
+    )
+    live = folder / "live.inflight"
+    live.write_text(json.dumps({"pid": os.getpid(), "started_at": now - 100}), encoding="utf-8")
+    fresh = folder / "fresh.json"
+    fresh.write_text('{"ok":true}', encoding="utf-8")
+    for path in (*old.values(), live):
+        os.utime(path, (now - 100, now - 100))
+    os.utime(old["tmp"], (now - 3601, now - 3601))
+    os.utime(fresh, (now - 10, now - 10))
+
+    removed = store.prune(now=now, blob_max_age_seconds=60, lock_max_age_seconds=60)
+
+    assert removed == len(old)
+    assert all(not path.exists() for path in old.values())
+    assert live.exists()
+    assert fresh.exists()
+
+
+def test_prune_tolerates_one_file_disappearing_or_failing(tmp_path, monkeypatch):
+    now = 10_000.0
+    store = LiveMergeStore(tmp_path)
+    folder = store.namespace_dir("ns")
+    folder.mkdir(parents=True)
+    failing = folder / "failing.json"
+    removable = folder / "removable.error"
+    failing.touch()
+    removable.touch()
+    os.utime(failing, (now - 100, now - 100))
+    os.utime(removable, (now - 100, now - 100))
+    path_type = type(failing)
+    original_unlink = path_type.unlink
+
+    def unlink(path, *args, **kwargs):
+        if path == failing:
+            raise OSError("raced")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, "unlink", unlink)
+
+    assert store.prune(now=now, blob_max_age_seconds=60) == 1
+    assert failing.exists()
+    assert not removable.exists()
 
 
 def test_failure_without_prior_does_not_refetch(tmp_path):

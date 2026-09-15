@@ -20,7 +20,13 @@ from robopark_api.db import (
     release_request_session,
     reset_request_session,
 )
-from robopark_api.models import Base, DiagnosticRule
+from robopark_api.models import (
+    Base,
+    DiagnosticRule,
+    EmergencyReading,
+    EmergencySection,
+    EmergencySectionRole,
+)
 from robopark_api.routers.emergency import emergency_snapshot_for_user
 from robopark_api.services import emergency_cache, emergency_client, emergency_scope
 from robopark_api.services import platform_settings as settings_svc
@@ -48,6 +54,31 @@ def _snapshot_rule(db):
     db.add(rule)
     db.commit()
     return rule
+
+
+def _snapshot_reading(db, *, section_id: str, path: str, label: str, **overrides):
+    values = {
+        "display_kind": "number",
+        "unit": None,
+        "precision": 0,
+        "enabled_path": None,
+        "no_data_json": "[]",
+        "warning_below": None,
+        "warning_above": None,
+        "critical_below": None,
+        "critical_above": None,
+        "view": "front",
+        "x": 0.25,
+        "y": 0.75,
+        "label_direction": "left",
+        "is_enabled": True,
+        "sort_order": 0,
+    }
+    values.update(overrides)
+    reading = EmergencyReading(section_id=section_id, path=path, label=label, **values)
+    db.add(reading)
+    db.flush()
+    return reading
 
 
 def test_short_robot_number_strips_leading_zeros():
@@ -158,6 +189,9 @@ def test_parse_snapshot_live_field_shapes():
     )
     assert snap["battery1_percent"] == 73
     assert snap["battery2_percent"] == 74
+    assert snap["battery1_connected"] is True
+    assert snap["battery2_connected"] is True
+    assert snap["speed"] == 0
     assert snap["disk_percent"] == 17
     assert snap["connection"] == "lte"
     assert snap["wheels_fault"] == []
@@ -178,9 +212,38 @@ def test_parse_snapshot_disconnected_battery_wheel_dict_and_wire():
         vin="YASADR00000000001",
     )
     assert snap["battery1_percent"] == 50
-    assert snap["battery2_percent"] is None
+    assert snap["battery2_percent"] == 0
+    assert snap["battery1_connected"] is True
+    assert snap["battery2_connected"] is False
     assert snap["wheels_fault"] == ["fl", "rr"]
     assert snap["connection"] == "wire"
+
+
+def test_parse_snapshot_prefers_disk_usage_and_converts_millisecond_timestamp():
+    snap = parse_emergency_snapshot(
+        {
+            "diskUsage": 40,
+            "disk": {"usedPercents": 53},
+            "timestamp": 1_700_000_000_000,
+        },
+        vin="YASADR00000000447",
+    )
+
+    assert snap["disk_percent"] == 40
+    assert snap["observed_at"] == datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("timestamp", [None, True, "bad", float("inf"), 10**100])
+def test_parse_snapshot_uses_aware_receipt_time_for_invalid_timestamp(timestamp):
+    before = datetime.now(UTC)
+    snap = parse_emergency_snapshot(
+        {"timestamp": timestamp},
+        vin="YASADR00000000447",
+    )
+    after = datetime.now(UTC)
+
+    assert before <= snap["observed_at"] <= after
+    assert snap["observed_at"].tzinfo is UTC
 
 
 def test_parse_snapshot_explicit_wire_beats_lte():
@@ -200,7 +263,115 @@ def test_snapshot_schema_defaults_events_for_legacy_clients():
     )
 
     assert snapshot.diagnostic_events == []
+    assert snapshot.readings == []
+    assert snapshot.stale is False
+    assert snapshot.stale_age_seconds == 0
     assert snapshot.error_banner == "ERROR: old payload"
+
+
+def test_parser_projects_role_scoped_readings_without_losing_summary_or_diagnostics(db_session):
+    rule = _snapshot_rule(db_session)
+    db_session.add_all(
+        [
+            EmergencySection(id="mechanic_status", title="Mechanic", sort_order=0),
+            EmergencySection(id="admin_service", title="Admin", sort_order=1),
+            EmergencySectionRole(section_id="mechanic_status", role="mechanic"),
+            EmergencySectionRole(section_id="admin_service", role="admin"),
+        ]
+    )
+    db_session.flush()
+    normal = _snapshot_reading(
+        db_session,
+        section_id="mechanic_status",
+        path="telemetry.temperature",
+        label="Temperature",
+        sort_order=10,
+        view="left",
+        x=0.15,
+        y=0.35,
+        label_direction="right",
+    )
+    unavailable = _snapshot_reading(
+        db_session,
+        section_id="mechanic_status",
+        path="telemetry.missing",
+        label="Missing",
+        sort_order=20,
+        view="rear",
+        x=0.65,
+        y=0.85,
+        label_direction="top",
+    )
+    critical = _snapshot_reading(
+        db_session,
+        section_id="admin_service",
+        path="telemetry.pressure",
+        label="Pressure",
+        critical_above=5,
+        view="top",
+        x=0.45,
+        y=0.55,
+        label_direction="bottom",
+    )
+    db_session.commit()
+    payload = {
+        "isOnline": True,
+        "telemetry": {"temperature": 3, "pressure": 9},
+        "errors": ["WHEEL_BLOCKED", "UNKNOWN"],
+    }
+
+    mechanic = parse_emergency_snapshot(
+        payload,
+        vin="YASADR00000000447",
+        db=db_session,
+        role="mechanic",
+    )
+    admin = parse_emergency_snapshot(
+        payload,
+        vin="YASADR00000000447",
+        db=db_session,
+        role="admin",
+    )
+
+    assert mechanic["online"] is True
+    assert mechanic["error_banner"] == "ERROR: WHEEL_BLOCKED"
+    assert [(item.rule_id, item.raw_value) for item in mechanic["diagnostic_events"]] == [
+        (rule.id, "WHEEL_BLOCKED"),
+        (None, "UNKNOWN"),
+    ]
+    assert [(item.id, item.display, item.state) for item in mechanic["readings"]] == [
+        (normal.id, "3", "normal"),
+        (unavailable.id, "Нет показания", "unavailable"),
+    ]
+    assert [
+        item.model_dump(exclude={"id", "label", "display", "state"})
+        for item in mechanic["readings"]
+    ] == [
+        {
+            "section_id": "mechanic_status",
+            "view": "left",
+            "x": 0.15,
+            "y": 0.35,
+            "label_direction": "right",
+        },
+        {
+            "section_id": "mechanic_status",
+            "view": "rear",
+            "x": 0.65,
+            "y": 0.85,
+            "label_direction": "top",
+        },
+    ]
+    assert [(item.id, item.display, item.state) for item in admin["readings"]] == [
+        (critical.id, "9", "critical")
+    ]
+    assert admin["readings"][0].model_dump(exclude={"id", "label", "display", "state"}) == {
+        "section_id": "admin_service",
+        "view": "top",
+        "x": 0.45,
+        "y": 0.55,
+        "label_direction": "bottom",
+    }
 
 
 def test_parser_normalizes_events_and_keeps_the_existing_error_banner(db_session):

@@ -47,6 +47,10 @@ ACTION_DIAGNOSTIC_RULE_CREATED = "admin.diagnostic_rule.created"
 ACTION_DIAGNOSTIC_RULE_UPDATED = "admin.diagnostic_rule.updated"
 ACTION_DIAGNOSTIC_RULE_DISABLED = "admin.diagnostic_rule.disabled"
 ACTION_DIAGNOSTIC_RULE_REORDERED = "admin.diagnostic_rule.reordered"
+ACTION_EMERGENCY_READING_CREATED = "admin.emergency_reading.created"
+ACTION_EMERGENCY_READING_UPDATED = "admin.emergency_reading.updated"
+ACTION_EMERGENCY_READING_DELETED = "admin.emergency_reading.deleted"
+ACTION_EMERGENCY_READING_REORDERED = "admin.emergency_reading.reordered"
 
 TRACKER_ACTIONS = {
     "comment": ACTION_TRACKER_COMMENT,
