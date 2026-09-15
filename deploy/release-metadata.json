@@ -1,5 +1,5 @@
 {
-  "migration_head": "0027_emergency_readings",
+  "migration_head": "0028_reliable_task_workflow",
   "migration_compatibility": {
     "from_heads": ["0022_tracker_collaboration", "0024_inventory", "0025_local_task_claims"],
     "reversible": true

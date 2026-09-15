@@ -14,7 +14,7 @@
 - Load: 1 passed in 2.26s. Evidence run: 200/200 status 200, p95 304.55ms (<1000ms), 50 unique actions, 50 upstream transitions, backlog 0.
 - Scoped Ruff check/format: clean (3 files).
 - Web Oxlint: exit 0 with existing warnings. TypeScript, navigation and production build: passed (`check-nav: ok`, 2188 modules built).
-- Full API: 1669 passed, 1 skipped, 2 `test_release_signing.py` failures because `pack-release.sh` rejects a dirty worktree; rerun after commit.
+- Full API: 1669 passed, 1 skipped, 2 initial `test_release_signing.py` failures. A clean-tree rerun traced both to `deploy/release-metadata.json` still declaring migration 0027 after the 0028 migration landed; the metadata and its exact wrapper expectation were synchronized in the bounded Task 9 fix round. Both pack-release regressions then passed on the clean committed state (2 passed in 2.21s).
 - Full web: 1961 passed across 137 files. The four stale Task 8 assertions were updated without reducing coverage: the `СУРП` brand is asserted, dashboard users are allowed onto Work while an unrelated permission remains denied, and the retired admin Tracker URL must preserve `park=7` while redirecting to Work without manual filters.
 - Full Ruff format found five pre-existing unformatted files outside Task 9 ownership; scoped files are formatted.
 
