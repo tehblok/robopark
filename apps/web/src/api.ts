@@ -341,6 +341,9 @@ export type TrackerIssue = {
   priority?: string | null
   type?: string | null
   assignee?: TrackerPerson | null
+  queued_at?: string | null
+  sla_deadline?: string | null
+  sla_source?: 'status_history' | 'estimated' | null
 }
 
 export type Paged<T> = {

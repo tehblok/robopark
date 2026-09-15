@@ -97,6 +97,7 @@ def _issue_out(
         assignee = local_assignee(db, issue)
     elif assignee is None and db is None:
         assignee = issue.get("assignee")
+    sla = tracker_client.repair_sla_fields(issue)
     return TrackerIssueOut(
         key=str(issue.get("key") or ""),
         summary=str(issue.get("summary") or ""),
@@ -112,7 +113,30 @@ def _issue_out(
         priority=str(issue.get("priority") or ""),
         type=str(issue.get("type") or ""),
         assignee=_person_out(assignee),
+        **sla,
     )
+
+
+def _ordered_by_queue(items: list[dict], *, newest: bool) -> list[dict]:
+    def timestamp(issue: dict) -> float | None:
+        raw = tracker_client.repair_sla_fields(issue)["queued_at"]
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            return None
+
+    indexed = [(issue, index, timestamp(issue)) for index, issue in enumerate(items)]
+    return [
+        issue
+        for issue, _index, _timestamp in sorted(
+            indexed,
+            key=lambda item: (
+                item[2] is None,
+                -(item[2] or 0) if newest else (item[2] or 0),
+                item[1],
+            ),
+        )
+    ]
 
 
 def _normalized_robot_number(raw: object) -> str | None:
@@ -353,7 +377,10 @@ def list_issues(
         )
     try:
         items = tracker_cache.search_issues(
-            token=token, query=query_text, filter_open=open_only or not bool(status_filter)
+            token=token,
+            query=query_text,
+            filter_open=open_only or not bool(status_filter),
+            order=["createdAt"],
         )
     except tracker_client.TrackerError as exc:
         logger.exception("tracker search failed query=%r", query_text)
@@ -362,12 +389,13 @@ def list_issues(
             detail="tracker_upstream_error",
         ) from exc
 
-    # Give the existing age/date ordering a stable final key independent of
-    # whichever order the upstream service happened to return equal records.
-    keyed_items = sorted(items, key=lambda issue: str(issue.get("key") or ""))
-    ordered = tracker_filters.sort_issues_oldest_first(keyed_items)
-    if sort_order == "newest":
-        ordered.reverse()
+    if related_repairs:
+        keyed_items = sorted(items, key=lambda issue: str(issue.get("key") or ""))
+        ordered = tracker_filters.sort_issues_oldest_first(keyed_items)
+        if sort_order == "newest":
+            ordered.reverse()
+    else:
+        ordered = _ordered_by_queue(items, newest=sort_order == "newest")
 
     excluded_key = (exclude_key or "").strip()
     scoped_raw: list[dict] = []

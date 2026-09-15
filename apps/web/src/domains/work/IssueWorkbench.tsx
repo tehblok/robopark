@@ -49,6 +49,7 @@ import { Tabs, TabPanel } from '../../design-system/navigation/Tabs'
 import { WorkRobotCheck } from './WorkRobotCheck'
 import { TaskPartsPanel } from '../inventory/TaskPartsPanel'
 import { WorkFilters } from './WorkFilters'
+import { RepairSla } from './RepairSla'
 import { loadWorkPage, oldestFirst } from './workData'
 import {
   buildWorkSearch,
@@ -92,6 +93,7 @@ export type IssueWorkbenchProps = {
   onOpenIssue(key: string): void
   onCloseIssue(): void
   onAuthorizationFailure(error: unknown): Promise<unknown>
+  now?: number
 }
 
 const retainableFailureKinds = new Set<DomainError['kind']>([
@@ -166,6 +168,7 @@ function EmbeddedTaskCollaboration(props: React.ComponentProps<typeof TaskCollab
 }
 
 const RELATED_PAGE_SIZE = 10
+const FALLBACK_NOW = Date.now()
 
 function normalizedRobotNumber(raw?: string | null): string | null {
   let text = raw?.trim().toUpperCase() ?? ''
@@ -184,16 +187,16 @@ function issueStatusTone(issue: TrackerIssue): StatusTone {
   }
 }
 
-function issueMeta(issue: TrackerIssue): ReactNode {
+function issueMeta(issue: TrackerIssue, now: number): ReactNode {
   const robot = normalizedRobotNumber(issue.robot)
   const age = formatAge(issue.hours_created) || 'неизвестен'
   return <div className="rp-work-issue-meta">
     <span className="rp-work-issue-age">Возраст: <strong>{age}</strong></span>
     <span>{[
       robot ? `Робот ${robot}` : 'Робот не указан',
-      'SLA: нет данных',
       `Ответственный: ${personName(issue.assignee)}`,
     ].join(' · ')}</span>
+    <RepairSla deadline={issue.sla_deadline} now={now} source={issue.sla_source} />
   </div>
 }
 
@@ -204,6 +207,7 @@ function WorkIssueRows({
   user,
   apiClient,
   onClaimed,
+  now,
 }: {
   items: readonly TrackerIssue[]
   selected?: string
@@ -211,6 +215,7 @@ function WorkIssueRows({
   user?: User
   apiClient?: IssueWorkbenchApiClient
   onClaimed?: () => void
+  now: number
 }) {
   const mechanicLogin = (user?.username || '').trim()
   const seen = new Set<string>()
@@ -222,14 +227,15 @@ function WorkIssueRows({
   return <div className="rp-work-entities">
     {uniqueItems.map((item) => <ClaimableIssueRow
       apiClient={apiClient} item={item} key={item.key} mechanicLogin={mechanicLogin}
-      onClaimed={onClaimed} onOpen={onOpen} selected={selected}
+      now={now} onClaimed={onClaimed} onOpen={onOpen} selected={selected}
       requireClaim={user?.role === 'mechanic'} />)}
   </div>
 }
 
-function ClaimableIssueRow({ item, selected, onOpen, requireClaim, mechanicLogin, apiClient, onClaimed }: {
+function ClaimableIssueRow({ item, selected, onOpen, requireClaim, mechanicLogin, apiClient, onClaimed, now }: {
   item: TrackerIssue; selected?: string; onOpen: (key: string) => void; requireClaim: boolean
   mechanicLogin: string; apiClient?: IssueWorkbenchApiClient; onClaimed?: () => void
+  now: number
 }) {
   const [claiming, setClaiming] = useState(false)
   const [claimError, setClaimError] = useState('')
@@ -259,7 +265,7 @@ function ClaimableIssueRow({ item, selected, onOpen, requireClaim, mechanicLogin
       : <Button busy={claiming} disabled={!mechanicLogin} onClick={() => void claim()}>Взять в работу</Button>
   return <EntityRow
     actions={<>{action}{claimError ? <span role="alert">{claimError}</span> : null}</>}
-    meta={issueMeta(item)} status={<StatusBadge tone={issueStatusTone(item)}>{item.status}</StatusBadge>}
+    meta={issueMeta(item, now)} status={<StatusBadge tone={issueStatusTone(item)}>{item.status}</StatusBadge>}
     statusLabel={`Статус задачи ${item.key}`}
     title={<><strong>{item.key}</strong><span> · {item.summary}</span></>}
   />
@@ -270,11 +276,13 @@ function RelatedTaskGroup({
   empty,
   resource,
   onOpen,
+  now,
 }: {
   title: string
   empty: string
   resource: ReturnType<typeof useCachedResource<Paged<TrackerIssue>>>
   onOpen: (key: string) => void
+  now: number
 }) {
   const failure = failureFor(resource.error, `Не удалось загрузить раздел «${title}».`)
   const data = resource.data
@@ -287,14 +295,15 @@ function RelatedTaskGroup({
       requestId={failure.requestId}
       title={failure.title}
     /> : resource.isLoading && !data ? <LoadingState label={`Загружаем: ${title.toLocaleLowerCase('ru')}`} />
-      : data?.items.length ? <WorkIssueRows items={data.items} onOpen={onOpen} />
+      : data?.items.length ? <WorkIssueRows items={data.items} now={now} onOpen={onOpen} />
         : <p>{empty}</p>}
   </section>
 }
 
-function RelatedTasksPanel({ apiClient, issueKey, onOpen, park, resourcePrefix, robotNumber, queue, kind }: {
+function RelatedTasksPanel({ apiClient, issueKey, onOpen, park, resourcePrefix, robotNumber, queue, kind, now }: {
   apiClient: IssueWorkbenchApiClient; issueKey: string; onOpen: (key: string) => void
   park?: string; resourcePrefix: string; robotNumber: string; queue: string; kind: 'open' | 'closed'
+  now: number
 }) {
   const [page, setPage] = useState(0)
   const related = useCachedResource<Paged<TrackerIssue>>(
@@ -310,7 +319,7 @@ function RelatedTasksPanel({ apiClient, issueKey, onOpen, park, resourcePrefix, 
     <SyncStatus {...related} />
     <RelatedTaskGroup
       empty={kind === 'open' ? 'Открытых ремонтов по этому роботу нет.' : 'За последние 14 дней закрытых ремонтов по этому роботу нет.'}
-      onOpen={onOpen} resource={related}
+      now={now} onOpen={onOpen} resource={related}
       title={`${kind === 'open' ? 'Открытые' : 'Закрытые'} задачи робота ${robotNumber}`}
     />
     {related.data ? <nav className="rp-work-pagination" aria-label="Страницы ремонтов">
@@ -397,6 +406,7 @@ function IssueWorkbenchOwner({
   onAuthorizationFailure,
   accessKey,
   getAccessGeneration,
+  now = FALLBACK_NOW,
 }: Required<Pick<IssueWorkbenchProps, 'apiClient'>> & Omit<IssueWorkbenchProps, 'apiClient'> & {
   accessKey: string
   getAccessGeneration: () => number
@@ -787,6 +797,7 @@ function IssueWorkbenchOwner({
                         apiClient={apiClient} issueKey={issueKey ?? ''} kind={kind}
                         key={`${relatedPrefix}:${relatedRefreshGeneration}:${kind}`}
                         onOpen={onOpenRelatedIssue ?? saveAndOpenIssue} park={relatedPark}
+                        now={now}
                         resourcePrefix={relatedPrefix} robotNumber={robotNumber} queue={relatedQueue}
                       /> : <p>Робот в задаче не указан — связанные задачи недоступны.</p> : null}
                     </TabPanel>)}
@@ -834,6 +845,7 @@ function IssueWorkbenchOwner({
                       onClaimed={() => void list.refresh()}
                       onOpen={saveAndOpenIssue}
                       selected={issueKey}
+                      now={now}
                       user={user}
                     />
                     <h3>Очередь парка</h3>
@@ -845,6 +857,7 @@ function IssueWorkbenchOwner({
                     onClaimed={() => void list.refresh()}
                     onOpen={saveAndOpenIssue}
                     selected={issueKey}
+                    now={now}
                     user={user}
                   />
                 </div>

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, type User } from '../../api'
 import { useAuth } from '../../auth-context'
@@ -46,7 +46,20 @@ function WorkPageOwner({
   const navigate = useNavigate()
   const { parkId, selectedPark, loading } = useParkScope()
   const refreshStarted = useRef(false)
+  const [now, setNow] = useState(() => Date.now())
   const [authorizationFailure, setAuthorizationFailure] = useState<DomainError | null>(null)
+  useEffect(() => {
+    let timer = 0
+    const schedule = () => {
+      const delay = 60_000 - (Date.now() % 60_000)
+      timer = window.setTimeout(() => {
+        setNow(Date.now())
+        schedule()
+      }, delay)
+    }
+    schedule()
+    return () => window.clearTimeout(timer)
+  }, [])
   const observeAuthorizationFailure = useCallback(async (error: unknown) => {
     if (refreshStarted.current) return
     refreshStarted.current = true
@@ -123,6 +136,7 @@ function WorkPageOwner({
         onOpenIssue={(key) => navigate(workIssueHref(key, { ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, parkId))}
         onOpenRelatedIssue={(key) => navigate(workIssueHref(key, { ...state, rootIssue: key === (state.rootIssue ?? issueKey) ? undefined : state.rootIssue ?? issueKey, detailTab: undefined, checkTab: undefined }, parkId))}
         onStateChange={writeState}
+        now={now}
         selectedPark={selectedPark}
         state={state}
         user={user}

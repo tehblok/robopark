@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -274,6 +274,99 @@ def _fmt_hours(value: float | None) -> str | None:
     return f"{value:.1f}"
 
 
+def _tracker_datetime(raw: object) -> datetime | None:
+    text = str(raw or "").strip().replace("Z", "+00:00")
+    if len(text) >= 5 and text[-5] in "+-" and text[-3] != ":":
+        text = f"{text[:-2]}:{text[-2:]}"
+    try:
+        value = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _utc_text(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _history_items(issue: Any) -> list[Any]:
+    embedded = _field(issue, "status_history") or _field(issue, "statusHistory")
+    if embedded is not None:
+        try:
+            return list(embedded)
+        except TypeError:
+            return []
+    if isinstance(_loaded_value(issue), dict):
+        return []
+    try:
+        return list(issue.changelog.get_all())
+    except Exception:  # noqa: BLE001 - missing history degrades to an explicit estimate
+        return []
+
+
+def repair_sla_fields(issue: Any) -> dict[str, str | None]:
+    """Derive the five-hour repair SLA, preferring the latest queued transition."""
+    if (
+        issue.get("sla_source") in {"status_history", "estimated"}
+        if isinstance(issue, dict)
+        else False
+    ):
+        return {
+            "queued_at": issue.get("queued_at"),
+            "sla_deadline": issue.get("sla_deadline"),
+            "sla_source": issue.get("sla_source"),
+        }
+
+    queued: list[datetime] = []
+    for event in _history_items(issue):
+        fields = _field(event, "fields") or []
+        for change in fields:
+            field = _field(change, "field")
+            field_name = (
+                str(
+                    _field(field, "id")
+                    or _field(field, "key")
+                    or _field(change, "fieldId")
+                    or field
+                    or ""
+                )
+                .strip()
+                .lower()
+            )
+            if field_name != "status":
+                continue
+            target = _field(change, "to") or _field(change, "newValue")
+            target_text = (
+                " ".join(
+                    str(value or "")
+                    for value in (_field(target, "key"), _field(target, "display"), target)
+                )
+                .lower()
+                .replace("ё", "е")
+            )
+            if "queued" not in target_text and "в очереди" not in target_text:
+                continue
+            changed_at = _tracker_datetime(_field(event, "updatedAt") or _field(event, "createdAt"))
+            if changed_at is not None:
+                queued.append(changed_at)
+
+    source = "status_history" if queued else "estimated"
+    queued_at = (
+        max(queued)
+        if queued
+        else _tracker_datetime(_field(issue, "created") or _field(issue, "createdAt"))
+    )
+    if queued_at is None:
+        return {"queued_at": None, "sla_deadline": None, "sla_source": None}
+    return {
+        "queued_at": _utc_text(queued_at),
+        "sla_deadline": _utc_text(queued_at + timedelta(hours=5)),
+        "sla_source": source,
+    }
+
+
 def _is_relocation_status(status: str) -> bool:
     low = (status or "").strip().lower()
     if not low:
@@ -524,6 +617,7 @@ def issue_to_dict(issue: Any, *, login_cache: dict[str, str] | None = None) -> d
         "attachments": attachments,
         "queue": queue,
         "tags": tags,
+        **repair_sla_fields(issue),
     }
 
 

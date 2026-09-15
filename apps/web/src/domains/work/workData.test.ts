@@ -13,11 +13,11 @@ function emptyPage(offset: number): Paged<TrackerIssue> {
 }
 
 describe('loadWorkPage', () => {
-  it('returns a new oldest-first queue when Tracker timestamps arrive out of order', () => {
+  it('returns a new oldest-first queue by queued timestamp', () => {
     const items: TrackerIssue[] = [
-      { key: 'ROBOPARK-3', summary: 'newest', status: 'Open', created_at: '2026-09-03T09:00:00Z', url: '' },
-      { key: 'ROBOPARK-1', summary: 'oldest', status: 'Open', created_at: '2026-09-01T09:00:00Z', url: '' },
-      { key: 'ROBOPARK-2', summary: 'middle', status: 'Open', created_at: '2026-09-02T09:00:00Z', url: '' },
+      { key: 'ROBOPARK-3', summary: 'newest', status: 'Open', queued_at: '2026-09-03T09:00:00Z', url: '' },
+      { key: 'ROBOPARK-1', summary: 'oldest', status: 'Open', queued_at: '2026-09-01T09:00:00Z', url: '' },
+      { key: 'ROBOPARK-2', summary: 'middle', status: 'Open', queued_at: '2026-09-02T09:00:00Z', url: '' },
     ]
 
     expect(oldestFirst(items).map((item) => item.key)).toEqual([
@@ -32,19 +32,17 @@ describe('loadWorkPage', () => {
     ])
   })
 
-  it('globally orders dated and age-derived records while leaving unknown ages stable', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-01-10T12:00:00Z'))
+  it('falls back to created timestamps and leaves malformed timestamps stable', () => {
     const items: TrackerIssue[] = [
       { key: 'UNKNOWN-A', summary: '', status: 'Open', created_at: null, hours_created: '', url: '' },
-      { key: 'DATED', summary: '', status: 'Open', created_at: '2026-01-06T09:00:00Z', hours_created: '1', url: '' },
-      { key: 'AGE-100', summary: '', status: 'Open', created_at: 'not-a-date', hours_created: '100', url: '' },
+      { key: 'DATED', summary: '', status: 'Open', queued_at: '2026-01-06T09:00:00Z', created_at: '2026-01-01T09:00:00Z', url: '' },
+      { key: 'CREATED', summary: '', status: 'Open', queued_at: 'not-a-date', created_at: '2026-01-05T09:00:00Z', url: '' },
       { key: 'UNKNOWN-B', summary: '', status: 'Open', created_at: null, hours_created: 'NaN', url: '' },
       { key: 'UNKNOWN-C', summary: '', status: 'Open', created_at: '', hours_created: 'Infinity', url: '' },
     ]
 
     expect(oldestFirst(items).map((item) => item.key)).toEqual([
-      'AGE-100',
+      'CREATED',
       'DATED',
       'UNKNOWN-A',
       'UNKNOWN-B',
@@ -53,11 +51,19 @@ describe('loadWorkPage', () => {
     expect(items.map((item) => item.key)).toEqual([
       'UNKNOWN-A',
       'DATED',
-      'AGE-100',
+      'CREATED',
       'UNKNOWN-B',
       'UNKNOWN-C',
     ])
-    vi.useRealTimers()
+  })
+
+  it('preserves input order when queued timestamps tie', () => {
+    const items: TrackerIssue[] = [
+      { key: 'ROBOPARK-2', summary: '', status: 'Open', queued_at: '2026-01-01T09:00:00Z', url: '' },
+      { key: 'ROBOPARK-1', summary: '', status: 'Open', queued_at: '2026-01-01T09:00:00Z', url: '' },
+    ]
+
+    expect(oldestFirst(items).map(item => item.key)).toEqual(['ROBOPARK-2', 'ROBOPARK-1'])
   })
 
   it('maps filters and pagination while forcing oldest even for legacy caller state', async () => {

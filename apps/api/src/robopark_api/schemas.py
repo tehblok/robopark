@@ -543,6 +543,9 @@ class TrackerIssueOut(BaseModel):
     priority: str | None = None
     type: str | None = None
     assignee: TrackerPersonOut | None = None
+    queued_at: str | None = None
+    sla_deadline: str | None = None
+    sla_source: Literal["status_history", "estimated"] | None = None
 
 
 class TrackerIssueCapabilitiesOut(BaseModel):

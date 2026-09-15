@@ -94,7 +94,7 @@ def test_tracker_list_honors_oldest_and_newest_sort(
     assert [item["key"] for item in newest] == ["ROBOPARK-2", "ROBOPARK-1"]
 
 
-def test_tracker_list_uses_issue_key_as_a_deterministic_sort_tiebreaker(
+def test_tracker_list_preserves_upstream_order_for_equal_queue_timestamps(
     client, db_session, seed_park_with_tracker, monkeypatch
 ):
     _seed_operator(db_session, seed_park_with_tracker)
@@ -114,8 +114,49 @@ def test_tracker_list_uses_issue_key_as_a_deterministic_sort_tiebreaker(
     oldest = client.get("/tracker/issues?sort=oldest").json()["items"]
     newest = client.get("/tracker/issues?sort=newest").json()["items"]
 
-    assert [item["key"] for item in oldest] == ["ROBOPARK-1", "ROBOPARK-2"]
+    assert [item["key"] for item in oldest] == ["ROBOPARK-2", "ROBOPARK-1"]
     assert [item["key"] for item in newest] == ["ROBOPARK-2", "ROBOPARK-1"]
+
+
+def test_tracker_list_prefers_queue_history_and_exposes_exact_five_hour_sla(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    historical = {
+        **_scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"),
+        "status_history": [
+            {
+                "updatedAt": "2026-01-03T09:15:00Z",
+                "fields": [
+                    {"field": {"id": "status"}, "to": {"key": "queued", "display": "В очереди"}}
+                ],
+            }
+        ],
+    }
+    fallback = _scoped_issue("ROBOPARK-2", "2026-01-02T10:00:00Z")
+    missing = {**_scoped_issue("ROBOPARK-3", ""), "hours_created": None}
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [historical, fallback, missing],
+    )
+    login_as(client, "op2", "secret")
+
+    items = client.get("/tracker/issues?sort=oldest").json()["items"]
+
+    assert [item["key"] for item in items] == ["ROBOPARK-2", "ROBOPARK-1", "ROBOPARK-3"]
+    assert items[0]["queued_at"] == "2026-01-02T10:00:00Z"
+    assert items[0]["sla_deadline"] == "2026-01-02T15:00:00Z"
+    assert items[0]["sla_source"] == "estimated"
+    assert items[1]["queued_at"] == "2026-01-03T09:15:00Z"
+    assert items[1]["sla_deadline"] == "2026-01-03T14:15:00Z"
+    assert items[1]["sla_source"] == "status_history"
+    assert items[2]["queued_at"] is None
+    assert items[2]["sla_deadline"] is None
+    assert items[2]["sla_source"] is None
 
 
 def test_tracker_list_exact_robot_filters_before_deduplication_and_pagination(
