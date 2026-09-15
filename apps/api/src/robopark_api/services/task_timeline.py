@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import time
@@ -54,6 +55,19 @@ def _remote_attachments(*groups: list[dict]) -> list[dict]:
                 seen.add(identity)
                 merged.append(attachment)
     return merged
+
+
+def _action_external_id(action: ReliableAction) -> str | None:
+    if not action.result_json:
+        return None
+    try:
+        result = json.loads(action.result_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(result, dict):
+        return None
+    external_id = str(result.get("external_id") or "").strip()
+    return external_id or None
 
 
 def staged_attachments_root() -> Path:
@@ -325,8 +339,8 @@ def merge_timeline(
         if marker_ids
         else []
     )
-    valid_actions = {
-        row.id
+    marker_actions = {
+        row.id: row
         for row in db.scalars(
             select(ReliableAction).where(
                 ReliableAction.id.in_(marker_ids),
@@ -339,19 +353,24 @@ def merge_timeline(
     marker_messages = {
         row.id: db.get(TaskMessage, row.message_id)
         for row in attachment_rows
-        if row.id in valid_actions
+        if row.id in marker_actions
     }
-    message_external_attachments: dict[str, list[dict]] = {}
+    action_external_attachments: dict[str, list[dict]] = {}
     for comment in comments:
         external_id = str(comment.get("id") or "").strip()
         if not external_id:
             continue
         comment_attachments = list(comment.get("attachments") or [])
-        marker_message = marker_messages.get(_action_marker_id(comment.get("text")) or "")
-        if marker_message is not None and marker_message.issue_key == issue_key:
-            message_external_attachments.setdefault(marker_message.id, []).extend(
-                comment_attachments
-            )
+        marker_id = _action_marker_id(comment.get("text")) or ""
+        marker_message = marker_messages.get(marker_id)
+        marker_action = marker_actions.get(marker_id)
+        if (
+            marker_message is not None
+            and marker_message.issue_key == issue_key
+            and marker_action is not None
+            and _action_external_id(marker_action) == external_id
+        ):
+            action_external_attachments.setdefault(marker_id, []).extend(comment_attachments)
             continue
         external_attachments[external_id] = comment_attachments
         if external_id in seen_external:
@@ -394,9 +413,9 @@ def merge_timeline(
     attachments = (
         list(
             db.scalars(
-                select(TaskAttachment).where(
-                    TaskAttachment.message_id.in_([row.id for row in local_rows])
-                )
+                select(TaskAttachment)
+                .where(TaskAttachment.message_id.in_([row.id for row in local_rows]))
+                .order_by(TaskAttachment.created_at, TaskAttachment.id)
             ).all()
         )
         if local_rows
@@ -435,9 +454,11 @@ def merge_timeline(
             "sync_state": _sync_state(row, actions.get(row.action_id)),
             "attachments": _remote_attachments(
                 external_attachments.get(row.external_id or "", []),
-                message_external_attachments.get(row.id, []),
-            )
-            or local_attachments.get(row.id, []),
+                *[
+                    action_external_attachments.get(attachment["id"], []) or [attachment]
+                    for attachment in local_attachments.get(row.id, [])
+                ],
+            ),
             "_sort": (row.created_at, _SOURCE_RANK[row.kind], row.id),
         }
         for row in local_rows

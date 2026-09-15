@@ -1,6 +1,10 @@
 import json
 from itertools import pairwise
 
+from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from conftest import login_as, role_id_for
 from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import AccessStatus, AuditLog, User, UserPark
@@ -503,6 +507,63 @@ def test_pending_review_approval_releases_claim(
     assert approved.status_code == 200
     assert db_session.query(TaskReview).one().state == "closed"
     assert db_session.get(TrackerClaim, ISSUE_KEY) is None
+
+
+def test_concurrent_return_and_approve_create_only_the_winning_transition(
+    client,
+    db_engine,
+    db_session,
+    seed_mechanic,
+    seed_royal,
+    seed_park_with_tracker,
+    monkeypatch,
+):
+    operator = _operator(db_session, seed_park_with_tracker)
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+    assert _submit(client, key="review-cas", comment="Починил").status_code == 200
+
+    from robopark_api.services import task_lifecycle
+
+    # Preserve the pending row read by the losing request before the winner commits.
+    with Session(db_engine) as snapshot_db:
+        stale_review = task_lifecycle._active_review(snapshot_db, ISSUE_KEY)
+        snapshot_db.expunge(stale_review)
+
+    with Session(db_engine) as winner_db:
+        task_lifecycle.return_review(
+            winner_db,
+            actor=winner_db.get(User, operator.id),
+            issue_key=ISSUE_KEY,
+            reason="Переснять",
+            assignee=None,
+            idempotency_key="concurrent-return",
+        )
+
+    monkeypatch.setattr(task_lifecycle, "_active_review", lambda *_args, **_kwargs: stale_review)
+    with Session(db_engine) as loser_db:
+        try:
+            task_lifecycle.approve_review(
+                loser_db,
+                actor=loser_db.get(User, seed_royal.id),
+                issue_key=ISSUE_KEY,
+                idempotency_key="concurrent-approve",
+            )
+        except HTTPException as exc:
+            assert exc.status_code == 409
+        else:
+            raise AssertionError("stale concurrent approval won the pending-state CAS")
+
+    with Session(db_engine) as db:
+        transitions = db.scalars(
+            select(ReliableAction).where(
+                ReliableAction.resource_id == ISSUE_KEY,
+                ReliableAction.action.in_(("return", "close")),
+            )
+        ).all()
+        assert len(transitions) == 1
+        review = db.query(TaskReview).one()
+        assert (transitions[0].action, review.state) == ("return", "returned")
 
 
 def test_operator_return_can_reassign_the_mechanic_and_starts_a_new_comment_cycle(

@@ -1,6 +1,7 @@
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,7 +10,7 @@ from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings
-from robopark_api.task_workflow_models import ReliableAction, TaskMessage
+from robopark_api.task_workflow_models import ReliableAction, TaskAttachment, TaskMessage
 
 ISSUE = {
     "key": "ROBOPARK-1",
@@ -325,3 +326,155 @@ def test_concurrent_tracker_import_is_conflict_safe_and_rereads_winner(db_engine
     ]
     with Session(db_engine) as db:
         assert db.query(TaskMessage).filter_by(external_id="concurrent-comment").count() == 1
+
+
+def test_attachment_projection_falls_back_per_action_without_losing_remote_evidence(
+    db_session, seed_royal
+):
+    from robopark_api.services.task_timeline import merge_timeline
+
+    message = TaskMessage(
+        id="multi-attachment-message",
+        issue_key="ROBOPARK-1",
+        kind="system",
+        author_user_id=seed_royal.id,
+        author_name=seed_royal.username,
+        text="Передано на проверку",
+        sync_state="synced",
+        created_at=1,
+        updated_at=1,
+    )
+    db_session.add(message)
+    action_ids = [str(uuid4()), str(uuid4())]
+    for index, (action_id, external_id) in enumerate(
+        zip(action_ids, ("remote-comment-a", "remote-comment-b"), strict=True)
+    ):
+        db_session.add_all(
+            [
+                ReliableAction(
+                    id=action_id,
+                    actor_user_id=seed_royal.id,
+                    resource_type="tracker_issue",
+                    resource_id="ROBOPARK-1",
+                    action="attach",
+                    idempotency_key=f"multi-attachment-{index}",
+                    payload_hash=str(index) * 64,
+                    payload_json="{}",
+                    state="succeeded",
+                    result_json=json.dumps({"external_id": external_id}),
+                    next_attempt_at=0,
+                    created_at=index + 1,
+                    updated_at=index + 1,
+                ),
+                TaskAttachment(
+                    id=action_id,
+                    message_id=message.id,
+                    blob_name=f"blob-{index}",
+                    original_name=f"local-{index}.png",
+                    mime_type="image/png",
+                    size_bytes=index + 1,
+                    sha256=str(index) * 64,
+                    created_at=index + 1,
+                ),
+            ]
+        )
+    db_session.commit()
+
+    items = merge_timeline(
+        db_session,
+        issue_key="ROBOPARK-1",
+        comments=[
+            {
+                "id": "remote-comment-a",
+                "text": f"remote A\n\nsurp-action:{action_ids[0]}",
+                "attachments": [{"id": "remote-a", "name": "remote-a.png"}],
+            },
+            {
+                "id": "remote-comment-b",
+                "text": f"remote B\n\nsurp-action:{action_ids[1]}",
+                "attachments": [],
+            },
+        ],
+    )
+
+    assert [item["id"] for item in items] == [message.id]
+    assert [attachment["id"] for attachment in items[0]["attachments"]] == [
+        "remote-a",
+        action_ids[1],
+    ]
+
+
+def test_copied_attachment_marker_remains_an_independent_tracker_comment(db_session, seed_royal):
+    from robopark_api.services.task_timeline import merge_timeline
+
+    action_id = str(uuid4())
+    message = TaskMessage(
+        id="trusted-attachment-message",
+        issue_key="ROBOPARK-1",
+        kind="system",
+        author_user_id=seed_royal.id,
+        author_name=seed_royal.username,
+        text="canonical",
+        external_id="real-attachment-comment",
+        sync_state="synced",
+        created_at=1,
+        updated_at=1,
+    )
+    db_session.add_all(
+        [
+            message,
+            ReliableAction(
+                id=action_id,
+                actor_user_id=seed_royal.id,
+                resource_type="tracker_issue",
+                resource_id="ROBOPARK-1",
+                action="attach",
+                idempotency_key="trusted-attachment-action",
+                payload_hash="a" * 64,
+                payload_json="{}",
+                state="succeeded",
+                result_json=json.dumps({"external_id": "real-attachment-comment"}),
+                next_attempt_at=0,
+                created_at=1,
+                updated_at=1,
+            ),
+            TaskAttachment(
+                id=action_id,
+                message_id=message.id,
+                blob_name="trusted-blob",
+                original_name="trusted.png",
+                mime_type="image/png",
+                size_bytes=1,
+                sha256="b" * 64,
+                created_at=1,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    marker = f"surp-action:{action_id}"
+    items = merge_timeline(
+        db_session,
+        issue_key="ROBOPARK-1",
+        comments=[
+            {
+                "id": "spoofed-comment",
+                "text": f"Copied text\n\n{marker}",
+                "author": "Other user",
+                "author_login": "outsider",
+                "attachments": [{"id": "spoofed-photo", "name": "spoofed.png"}],
+            },
+            {
+                "id": "real-attachment-comment",
+                "text": f"canonical\n\n{marker}",
+                "author": "Bot",
+                "attachments": [{"id": "trusted-photo", "name": "trusted.png"}],
+            },
+        ],
+    )
+
+    assert [item["id"] for item in items] == [message.id, "tracker:ROBOPARK-1:spoofed-comment"]
+    assert items[0]["attachments"] == [{"id": "trusted-photo", "name": "trusted.png"}]
+    assert items[1]["author"] == "outsider"
+    assert items[1]["text"] == "Copied text"
+    assert items[1]["attachments"] == [{"id": "spoofed-photo", "name": "spoofed.png"}]

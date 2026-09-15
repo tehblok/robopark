@@ -779,6 +779,14 @@ def test_worker_reconciles_attachment_comment_accepted_before_timeout_without_re
         assert retry.state == "retry_wait"
         retry.next_attempt_at = 0
         db.commit()
+    from robopark_api.services.task_timeline import merge_timeline
+
+    with Session(db_engine) as db:
+        before_reconciliation = merge_timeline(db, issue_key="ROBOPARK-1", comments=remote_comments)
+        assert [item["id"] for item in before_reconciliation] == [
+            message.id,
+            "tracker:ROBOPARK-1:attachment-comment-42",
+        ]
     tracker_outbox._process_batch(factory)
 
     with Session(db_engine) as db:
@@ -789,8 +797,6 @@ def test_worker_reconciles_attachment_comment_accepted_before_timeout_without_re
             "external_id": "attachment-comment-42",
         }
         assert db.get(TaskMessage, message.id).external_id == "primary-comment-7"
-        from robopark_api.services.task_timeline import merge_timeline
-
         items = merge_timeline(db, issue_key="ROBOPARK-1", comments=remote_comments)
         assert [item["id"] for item in items] == [message.id]
         assert items[0]["attachments"] == [{"id": "remote-photo", "name": "photo.png", "size": 5}]

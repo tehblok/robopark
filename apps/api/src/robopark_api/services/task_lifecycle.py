@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from robopark_api.models import AuditLog, Park, User, UserPark
@@ -152,12 +152,42 @@ def _message(
     return row
 
 
-def _active_review(db: Session, issue_key: str) -> TaskReview | None:
-    return db.scalar(
+def _active_review(db: Session, issue_key: str, *, for_update: bool = False) -> TaskReview | None:
+    statement = (
         select(TaskReview)
         .where(TaskReview.issue_key == issue_key, TaskReview.state != "closed")
         .order_by(TaskReview.created_at.desc())
     )
+    if for_update:
+        statement = statement.with_for_update()
+    return db.scalar(statement)
+
+
+def _advance_pending_review(
+    db: Session,
+    review: TaskReview,
+    *,
+    state: str,
+    reviewer_user_id: int,
+    now: float,
+    return_reason: str | None = None,
+    closed_at: float | None = None,
+) -> None:
+    claimed = db.execute(
+        update(TaskReview)
+        .where(TaskReview.id == review.id, TaskReview.state == "pending")
+        .values(
+            state=state,
+            reviewer_user_id=reviewer_user_id,
+            return_reason=return_reason,
+            closed_at=closed_at,
+            updated_at=now,
+        )
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        raise HTTPException(409, "task_review_not_pending")
+    db.refresh(review)
 
 
 def _latest_review(db: Session, issue_key: str) -> TaskReview | None:
@@ -664,7 +694,7 @@ def return_review(
             command="return_review",
             performed_at=existing.created_at,
         )
-    review = _active_review(db, issue_key)
+    review = _active_review(db, issue_key, for_update=True)
     claim_row = get_claim(db, issue_key)
     target = (
         _target_mechanic(db, username=assignee, park_id=claim_row.park_id)
@@ -677,6 +707,15 @@ def return_review(
     }
     if review is None or review.state != "pending":
         raise HTTPException(409, "task_review_not_pending")
+    now = time.time()
+    _advance_pending_review(
+        db,
+        review,
+        state="returned",
+        reviewer_user_id=actor.id,
+        return_reason=clean_reason,
+        now=now,
+    )
     begun = _transition_action(
         db,
         actor=actor,
@@ -686,11 +725,6 @@ def return_review(
         payload=payload,
     )
     if begun.created:
-        now = time.time()
-        review.state = "returned"
-        review.reviewer_user_id = actor.id
-        review.return_reason = clean_reason
-        review.updated_at = now
         if claim_row is not None:
             if target is not None:
                 claim_row.owner_user_id = target.id
@@ -742,7 +776,7 @@ def approve_review(
 ) -> dict:
     if _role(actor) not in _REVIEW_ROLES:
         raise HTTPException(403, "task_review_operator_required")
-    review = _active_review(db, issue_key)
+    review = _active_review(db, issue_key, for_update=True)
     if review is None:
         existing = db.scalar(
             select(ReliableAction).where(
@@ -763,6 +797,15 @@ def approve_review(
         raise HTTPException(409, "task_review_not_pending")
     if review.state != "pending":
         raise HTTPException(409, "task_review_not_pending")
+    now = time.time()
+    _advance_pending_review(
+        db,
+        review,
+        state="closed",
+        reviewer_user_id=actor.id,
+        closed_at=now,
+        now=now,
+    )
     begun = _transition_action(
         db,
         actor=actor,
@@ -772,11 +815,6 @@ def approve_review(
         payload={},
     )
     if begun.created:
-        now = time.time()
-        review.state = "closed"
-        review.reviewer_user_id = actor.id
-        review.closed_at = now
-        review.updated_at = now
         release_claim(db, issue_key)
         db.commit()
     return _result(
