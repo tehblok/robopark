@@ -358,6 +358,15 @@ def test_worker_reconciles_comment_accepted_before_timeout_without_posting_twice
         assert retry.state == "retry_wait"
         retry.next_attempt_at = 0
         db.commit()
+
+    # A timeline refresh may import the accepted Tracker comment while the
+    # local action is waiting for retry/reconciliation.
+    from robopark_api.services.task_timeline import merge_timeline
+
+    with Session(db_engine) as db:
+        merge_timeline(db, issue_key="ROBOPARK-1", comments=remote_comments)
+        assert db.query(TaskMessage).filter_by(issue_key="ROBOPARK-1").count() == 2
+
     tracker_outbox._process_batch(factory)
 
     with Session(db_engine) as db:
@@ -365,6 +374,8 @@ def test_worker_reconciles_comment_accepted_before_timeout_without_posting_twice
         assert saved.state == "succeeded"
         assert json.loads(saved.result_json) == {"external_id": "accepted-42"}
         assert db.get(TaskMessage, message.id).external_id == "accepted-42"
+        remaining = db.query(TaskMessage).filter_by(issue_key="ROBOPARK-1").all()
+        assert [(item.id, item.external_id) for item in remaining] == [(message.id, "accepted-42")]
     assert post_count == 1
 
 
@@ -380,6 +391,7 @@ def test_worker_reconciles_attachment_comment_accepted_before_timeout_without_re
         author_user_id=seed_mechanic.id,
         author_name=seed_mechanic.username,
         text="Передано на проверку",
+        external_id="primary-comment-7",
         sync_state="pending",
         created_at=1.0,
         updated_at=1.0,
@@ -447,8 +459,13 @@ def test_worker_reconciles_attachment_comment_accepted_before_timeout_without_re
     tracker_outbox._process_batch(factory)
 
     with Session(db_engine) as db:
-        assert db.get(ReliableAction, action_id).state == "succeeded"
-        assert db.get(TaskMessage, message.id).external_id == "attachment-comment-42"
+        saved = db.get(ReliableAction, action_id)
+        assert saved.state == "succeeded"
+        assert json.loads(saved.result_json) == {
+            "attachment_id": "temp-accepted",
+            "external_id": "attachment-comment-42",
+        }
+        assert db.get(TaskMessage, message.id).external_id == "primary-comment-7"
     assert (uploads, posts) == (1, 1)
 
 

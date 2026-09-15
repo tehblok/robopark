@@ -264,10 +264,19 @@ def _sync_message(db: Session, action: ReliableAction) -> None:
         return
     if action.state == "succeeded":
         message.sync_state = "synced"
-        if action.result_json:
+        if action.action == "comment" and action.result_json:
             result = json.loads(action.result_json)
             external_id = str(result.get("external_id") or "").strip()
             if external_id:
+                tracker_twin = db.scalar(
+                    select(TaskMessage).where(
+                        TaskMessage.issue_key == action.resource_id,
+                        TaskMessage.kind == "tracker",
+                        TaskMessage.external_id == external_id,
+                    )
+                )
+                if tracker_twin is not None:
+                    db.delete(tracker_twin)
                 message.external_id = external_id
     elif action.state == "needs_attention":
         message.sync_state = "needs_attention"
