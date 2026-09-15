@@ -860,16 +860,19 @@ def get_issue_status_history(*, token: str, key: str, issue: dict[str, Any]) -> 
 
 
 def _load_work_status_history(*, token: str, key: str, issue: dict[str, Any]) -> list[Any]:
-    """Load one Work changelog in the caller's already-bounded worker."""
+    """Load one Work changelog in its dedicated, already-bounded worker.
+
+    This path deliberately does not use the general Tracker slot/executor.  A
+    stuck read therefore occupies one of the two Work-history workers only;
+    it cannot poison the general Tracker semaphore or grow its retry queue.
+    """
     del token, key
     resource = issue.get("_tracker_resource")
     if resource is None:
         return []
-    from robopark_api.services.tracker_api import tracker_slot
 
     try:
-        with tracker_slot():
-            return list(resource.changelog.get_all())
+        return list(resource.changelog.get_all())
     except TrackerError:
         raise
     except Exception as exc:  # noqa: BLE001

@@ -363,6 +363,11 @@ def test_tracker_work_history_does_not_enqueue_the_inner_tracker_executor(
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     from robopark_api.services import tracker_api, tracker_client
 
+    def forbidden_general_slot(*_args, **_kwargs):
+        raise AssertionError("Work history must not use the general Tracker slot")
+
+    monkeypatch.setattr(tracker_api, "tracker_slot", forbidden_general_slot)
+
     inner_release = threading.Event()
     inner_started = threading.Barrier(tracker_api.MAX_INFLIGHT + 1)
 
