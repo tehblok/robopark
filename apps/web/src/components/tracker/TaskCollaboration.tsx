@@ -6,8 +6,8 @@ import { Button } from '../../design-system/actions/Button'
 
 const empty: Handoff = { revision: 0, done: '', remaining: '', obstacles: '', author: null, updated_at: null }
 
-function Content({ issueKey, owner, active, canWrite, onAuthorizationFailure }: {
-  issueKey: string; owner: string; active: boolean; canWrite: boolean; onAuthorizationFailure?: (error: unknown) => void
+function Content({ issueKey, owner, active, canWrite, onAuthorizationFailure, onSaved }: {
+  issueKey: string; owner: string; active: boolean; canWrite: boolean; onAuthorizationFailure?: (error: unknown) => void; onSaved?: () => void
 }) {
   const [people, setPeople] = useState<string[]>([])
   const [open, setOpen] = useState(false)
@@ -137,6 +137,7 @@ function Content({ issueKey, owner, active, canWrite, onAuthorizationFailure }: 
           return next
         })
       }
+      onSaved?.()
     } catch (caught) {
       if (!alive.current || deniedRef.current) return
       if (observeDenial(caught)) return

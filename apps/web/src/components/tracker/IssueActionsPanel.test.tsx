@@ -69,6 +69,21 @@ describe('IssueActionsPanel', () => {
     vi.unstubAllGlobals()
   })
 
+  it('shows role-derived review controls instead of manual Tracker transitions', () => {
+    render(<IssueActionsPanel {...baseProps} role="mechanic" reviewState={null} onSubmitReview={noop} />)
+    expect(screen.getByRole('button', { name: 'Передать на проверку' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Resolve' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Статус задачи' })).not.toBeInTheDocument()
+  })
+
+  it('shows return and approval only to an operator with a pending review', () => {
+    const { rerender } = render(<IssueActionsPanel {...baseProps} role="operator" reviewState={null} onReturnReview={noop} onApproveReview={noop} />)
+    expect(screen.queryByRole('button', { name: 'Вернуть в работу' })).not.toBeInTheDocument()
+    rerender(<IssueActionsPanel {...baseProps} role="operator" reviewState="pending" onReturnReview={noop} onApproveReview={noop} />)
+    expect(screen.getByRole('button', { name: 'Вернуть в работу' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Принять и закрыть' })).toBeVisible()
+  })
+
   it('keeps the phone comment and photo composer visible while secondary actions stay collapsed', () => {
     vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
       matches: true,

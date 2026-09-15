@@ -129,6 +129,11 @@ function IssueActionsPanelContent({
   onUnassign,
   onTransition,
   onClose,
+  role,
+  reviewState,
+  onSubmitReview,
+  onReturnReview,
+  onApproveReview,
 }: {
   canWrite?: boolean
   capabilities?: TrackerIssueCapabilities
@@ -143,6 +148,11 @@ function IssueActionsPanelContent({
   onUnassign: () => Promise<void>
   onTransition: (transition: string) => Promise<void>
   onClose: () => Promise<void>
+  role?: string
+  reviewState?: 'pending' | 'returned' | 'closed' | null
+  onSubmitReview?: () => Promise<void>
+  onReturnReview?: () => Promise<void>
+  onApproveReview?: () => Promise<void>
 }) {
   const issueUrl = safeHttpUrl(issueUrlRaw) ?? undefined
   const effectiveCapabilities: TrackerIssueCapabilities = capabilities ?? {
@@ -249,12 +259,14 @@ function IssueActionsPanelContent({
     if (await run('assign', () => onAssign(login))) setAssignee('')
   }
 
-  const hasActions = Object.values(effectiveCapabilities).some(Boolean)
+  const hasLifecycleAction = role === 'mechanic' && reviewState !== 'pending' && Boolean(onSubmitReview)
+    || role === 'operator' && reviewState === 'pending' && Boolean(onReturnReview || onApproveReview)
+  const hasActions = Object.values(effectiveCapabilities).some(Boolean) || hasLifecycleAction
   if (!hasActions) {
     return (
       <section className="issue-actions">
         <p className="issue-muted">{ru.tracker.actionsDisabled}</p>
-        {issueUrl && (
+        {issueUrl && !role && (
           <a className="btn btn-secondary" href={issueUrl} rel="noreferrer" target="_blank">
             {ru.tracker.actions.openInTracker}
           </a>
@@ -270,7 +282,7 @@ function IssueActionsPanelContent({
       {success && <p aria-live="polite">{success}</p>}
 
       <div className="issue-action-primary" id="comment">
-        {effectiveCapabilities.attach && (
+        {effectiveCapabilities.attach && !role && (
           <AttachmentActions
             busy={busy}
             onAttach={onAttach}
@@ -305,7 +317,17 @@ function IssueActionsPanelContent({
         )}
       </div>
 
-      <ResponsiveDisclosureGroup label="Дополнительные действия задачи">
+      {role === 'mechanic' && reviewState !== 'pending' && onSubmitReview ? (
+        <Button disabled={Boolean(busy)} onClick={() => void run('review', onSubmitReview)} type="button">
+          Передать на проверку
+        </Button>
+      ) : null}
+      {role === 'operator' && reviewState === 'pending' ? <div className="issue-action-row">
+        {onReturnReview ? <Button disabled={Boolean(busy)} onClick={() => void run('return', onReturnReview)} type="button" variant="secondary">Вернуть в работу</Button> : null}
+        {onApproveReview ? <Button disabled={Boolean(busy)} onClick={() => void run('approve', onApproveReview)} type="button">Принять и закрыть</Button> : null}
+      </div> : null}
+
+      {!role ? <ResponsiveDisclosureGroup label="Дополнительные действия задачи">
         {(effectiveCapabilities.transition && transitions.length > 0) || issueUrl || effectiveCapabilities.close ? (
           <ResponsiveDisclosure id="transition" title="Статус задачи">
             <div id="transition">
@@ -411,7 +433,7 @@ function IssueActionsPanelContent({
             </div>
           </ResponsiveDisclosure>
         )}
-      </ResponsiveDisclosureGroup>
+      </ResponsiveDisclosureGroup> : null}
 
       <ConfirmDialog
         cancelLabel="Отмена"

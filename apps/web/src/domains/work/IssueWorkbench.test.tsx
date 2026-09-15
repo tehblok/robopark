@@ -302,6 +302,22 @@ beforeEach(() => {
 })
 
 describe('IssueWorkbench', () => {
+  it('uses one chat and keeps task actions in compact lifecycle order', async () => {
+    const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
+    renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => ({
+      ...issue, assignee: { display: 'mech', login: 'mech' }, claim: { park_id: park.id },
+      workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress' as const, sync_state: 'saved' as const },
+    })) }) })
+    expect(await screen.findByRole('heading', { name: issue.summary })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'История действий' })).not.toBeInTheDocument()
+    const parts = screen.getByRole('button', { name: 'Заказать запчасть' })
+    const handoff = screen.getByRole('button', { name: 'Передать смену' })
+    expect(parts).toHaveAttribute('aria-expanded', 'false')
+    expect(handoff).toHaveAttribute('aria-expanded', 'false')
+    expect(parts.compareDocumentPosition(handoff) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Статус задачи' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: ru.tracker.actions.openInTracker })).not.toBeInTheDocument()
+  })
   it('shows the write-off control in the main tab only to the mechanic assigned to the task', async () => {
     const mechanic: User = { ...user, role: 'mechanic', username: 'mech', tracker_login: 'Mech.Login' }
     const owned = { ...issue, assignee: { display: 'Mechanic', login: 'mech' } }
