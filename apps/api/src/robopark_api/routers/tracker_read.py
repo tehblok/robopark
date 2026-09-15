@@ -26,7 +26,13 @@ from robopark_api.schemas import (
     TrackerUserOut,
 )
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import rbac, tracker_cache, tracker_client, tracker_filters
+from robopark_api.services import (
+    rbac,
+    task_lifecycle,
+    tracker_cache,
+    tracker_client,
+    tracker_filters,
+)
 from robopark_api.services import tracker_signatures as sig_svc
 from robopark_api.services.rbac import RoleSlug
 from robopark_api.services.tracker_assignees import list_assignee_candidates
@@ -119,7 +125,9 @@ def _normalized_robot_number(raw: object) -> str | None:
     return text.lstrip("0") or "0"
 
 
-def _detail_out(issue: dict, *, db: Session, user: User) -> TrackerIssueDetailOut:
+def _detail_out(
+    issue: dict, *, db: Session, user: User, include_hidden: bool = False
+) -> TrackerIssueDetailOut:
     attachments = [TrackerAttachmentOut(**item) for item in (issue.get("attachments") or [])]
     claim = get_claim(db, str(issue.get("key") or ""))
     writable = can_write_tracker(db, user)
@@ -138,6 +146,13 @@ def _detail_out(issue: dict, *, db: Session, user: User) -> TrackerIssueDetailOu
             transition=writable,
             close=writable,
             attach=rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_ATTACH),
+        ),
+        workflow=task_lifecycle.workflow(
+            db,
+            issue_key=str(issue.get("key") or ""),
+            viewer=user,
+            issue=issue,
+            include_hidden=include_hidden,
         ),
     )
 
@@ -283,10 +298,13 @@ def list_issues(
     sort_order: Literal["oldest", "newest"] = Query(default="oldest", alias="sort"),
     limit: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     offset: int = Query(default=0, ge=0),
+    include_hidden: bool = Query(default=False),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerIssuesOut:
     _ensure_tracker_user(user, db)
+    if include_hidden and not rbac.is_admin_or_royal(user):
+        raise HTTPException(status_code=403, detail="task_hidden_manager_required")
     exact_robot = _normalized_robot_number(robot_exact)
     if related_repairs and exact_robot is None:
         raise HTTPException(
@@ -354,6 +372,7 @@ def list_issues(
     excluded_key = (exclude_key or "").strip()
     scoped_raw: list[dict] = []
     seen_keys: set[str] = set()
+    hidden_keys = task_lifecycle.hidden_issue_keys(db)
     # Raw upstream data is shared; authorization is loaded afresh for this
     # response after the upstream wait and reused only across its rows.
     scope = load_issue_scope(db, user)
@@ -378,6 +397,8 @@ def list_issues(
         ):
             continue
         key = str(issue.get("key") or "").strip()
+        if key in hidden_keys and not include_hidden:
+            continue
         if key == excluded_key or key in seen_keys:
             continue
         if age_hours and issue.get("hours_created"):
@@ -423,10 +444,15 @@ def search_tracker_users(
 @router.get("/issues/{key}", response_model=TrackerIssueDetailOut)
 def get_issue(
     key: str,
+    include_hidden: bool = Query(default=False),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerIssueDetailOut:
     _ensure_tracker_user(user, db)
+    if include_hidden and not rbac.is_admin_or_royal(user):
+        raise HTTPException(status_code=403, detail="task_hidden_manager_required")
+    if task_lifecycle.is_hidden(db, key) and not include_hidden:
+        raise HTTPException(status_code=404)
     token = settings_svc.get_tracker_token(db)
     if not token:
         raise HTTPException(
@@ -444,7 +470,7 @@ def get_issue(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     enforce_issue_scope(db, user, issue)
     _enforce_mechanic_claim(db, user, issue)
-    return _detail_out(issue, db=db, user=user)
+    return _detail_out(issue, db=db, user=user, include_hidden=include_hidden)
 
 
 @router.get("/issues/{key}/comments", response_model=list[TrackerCommentOut])
@@ -585,7 +611,12 @@ def robot_tickets(
 
     scope = load_issue_scope(db, user)
     sorted_items = tracker_filters.sort_issues_oldest_first(
-        [item for item in merged if is_issue_in_scope(db, user, item, scope=scope)]
+        [
+            item
+            for item in merged
+            if is_issue_in_scope(db, user, item, scope=scope)
+            and not task_lifecycle.is_hidden(db, str(item.get("key") or ""))
+        ]
     )
     return RobotTicketsOut(
         query=query,

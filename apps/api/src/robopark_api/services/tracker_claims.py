@@ -49,8 +49,7 @@ def claim_issue(
         current.updated_by_user_id = actor.id
         current.park_id = park_id
         current.updated_at = time.time()
-        db.commit()
-        db.refresh(current)
+        db.flush()
         return current
     current = TrackerClaim(
         issue_key=key,
@@ -60,8 +59,7 @@ def claim_issue(
         updated_at=time.time(),
     )
     db.add(current)
-    db.commit()
-    db.refresh(current)
+    db.flush()
     return current
 
 
@@ -69,7 +67,7 @@ def release_claim(db: Session, issue_key: str) -> None:
     current = get_claim(db, issue_key)
     if current is not None:
         db.delete(current)
-        db.commit()
+        db.flush()
 
 
 def mechanic_owns_issue(db: Session, user: User, issue: dict) -> bool:

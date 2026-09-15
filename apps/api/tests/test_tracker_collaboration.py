@@ -501,7 +501,7 @@ def test_tracker_uses_the_declared_production_sdk():
     assert tracker_client._import_startrek() is TrackerClient
 
 
-@pytest.mark.parametrize("action", ["transition", "close"])
+@pytest.mark.parametrize("action", ["transition"])
 def test_successful_workflow_submission_replays_after_transition_disappears(
     client, tracker_setup, monkeypatch, action
 ):
@@ -531,6 +531,17 @@ def test_successful_workflow_submission_replays_after_transition_disappears(
         ).status_code
         == 403
     )
+
+
+def test_mechanic_legacy_close_is_rejected(client, tracker_setup, monkeypatch):
+    written = []
+    monkeypatch.setattr(tracker_client, "transition_issue", lambda **kw: written.append(kw))
+
+    response = client.post("/tracker/issues/ROBOPARK-1/close", headers=headers())
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "task_review_operator_required"
+    assert written == []
 
 
 def test_invalid_workflow_does_not_reserve_an_uncertain_submission(

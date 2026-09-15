@@ -69,3 +69,29 @@ def test_staff_can_transfer_and_release_a_local_claim(
     assert tracker_claims.mechanic_owns_issue(db_session, seed_royal, {"key": "ROBOPARK-12"})
     tracker_claims.release_claim(db_session, "ROBOPARK-12")
     assert tracker_claims.local_assignee(db_session, {"key": "ROBOPARK-12"}) is None
+
+
+def test_claim_and_release_helpers_do_not_commit_the_callers_transaction(
+    db_session, seed_mechanic, seed_park_with_tracker
+):
+    tracker_claims.claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key="ROBOPARK-atomic",
+        park_id=seed_park_with_tracker.id,
+    )
+    db_session.rollback()
+    assert tracker_claims.get_claim(db_session, "ROBOPARK-atomic") is None
+
+    tracker_claims.claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key="ROBOPARK-atomic",
+        park_id=seed_park_with_tracker.id,
+    )
+    db_session.commit()
+    tracker_claims.release_claim(db_session, "ROBOPARK-atomic")
+    db_session.rollback()
+    assert tracker_claims.get_claim(db_session, "ROBOPARK-atomic") is not None

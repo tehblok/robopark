@@ -1,0 +1,375 @@
+import json
+
+from conftest import login_as, role_id_for
+from robopark_api.collaboration_models import TrackerClaim
+from robopark_api.models import AccessStatus, AuditLog, User, UserPark
+from robopark_api.security import hash_password
+from robopark_api.services import platform_settings
+from robopark_api.task_workflow_models import (
+    HiddenTask,
+    ReliableAction,
+    TaskAttachment,
+    TaskMessage,
+    TaskReview,
+)
+
+ISSUE_KEY = "ROBOPARK-51"
+PNG = b"\x89PNG\r\n\x1a\n" + b"valid-image"
+
+
+def _issue():
+    return {
+        "key": ISSUE_KEY,
+        "summary": "blocker [447]",
+        "status": "В очереди",
+        "status_key": "queued",
+        "queue": "ROBOPARK",
+        "tags": ["Alpha"],
+        "created": "2026-09-15T08:00:00Z",
+    }
+
+
+def _prepare_tracker(db_session, monkeypatch):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: _issue())
+
+
+def _operator(db_session, park):
+    user = User(
+        username="operator51",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "operator"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.flush()
+    db_session.add(UserPark(user_id=user.id, park_id=park.id))
+    db_session.commit()
+    return user
+
+
+def _mechanic(db_session, park, username="mech2"):
+    user = User(
+        username=username,
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "mechanic"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.flush()
+    db_session.add(UserPark(user_id=user.id, park_id=park.id))
+    db_session.commit()
+    return user
+
+
+def _claim(client, user):
+    login_as(client, user.username, "secret")
+    return client.post(
+        f"/tracker/issues/{ISSUE_KEY}/claim",
+        headers={"Idempotency-Key": "claim-task-51"},
+    )
+
+
+def _submit(client, *, key="review-task-51", comment=None, code="BD-01", files=None):
+    data = {"defect_code": code}
+    if comment is not None:
+        data["comment"] = comment
+    return client.post(
+        f"/tracker/issues/{ISSUE_KEY}/submit-review",
+        headers={"Idempotency-Key": key},
+        data=data,
+        files=files or [("photo", ("robot.png", PNG, "image/png"))],
+    )
+
+
+def test_claim_is_atomic_idempotent_and_never_calls_tracker_mutations(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "transition_issue",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("request wrote to Tracker")),
+    )
+
+    first = _claim(client, seed_mechanic)
+    second = _claim(client, seed_mechanic)
+
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert first.json()["sync_state"] == "pending"
+    assert db_session.query(TrackerClaim).count() == 1
+    assert db_session.query(TaskMessage).count() == 1
+    assert db_session.query(ReliableAction).count() == 1
+    assert db_session.query(ReliableAction).one().action == "start"
+    assert "Задача взята в работу" in db_session.query(TaskMessage).one().text
+
+
+def test_claim_takeover_changes_owner_once_and_names_both_mechanics(
+    client, db_session, seed_mechanic, seed_royal, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=seed_royal,
+        owner=seed_royal,
+        issue_key=ISSUE_KEY,
+        park_id=seed_park_with_tracker.id,
+    )
+    response = _claim(client, seed_mechanic)
+
+    assert response.status_code == 200
+    claim = db_session.get(TrackerClaim, ISSUE_KEY)
+    assert claim.owner_user_id == seed_mechanic.id
+    message = db_session.query(TaskMessage).one()
+    assert seed_royal.username in message.text
+    assert seed_mechanic.username in message.text
+
+
+def test_handoff_replay_changes_owner_and_writes_one_message(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    next_mechanic = _mechanic(db_session, seed_park_with_tracker)
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+    before = db_session.query(TaskMessage).count()
+
+    first = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/handoff",
+        headers={"Idempotency-Key": "handoff-task-51"},
+        json={"assignee": next_mechanic.username},
+    )
+    replay = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/handoff",
+        headers={"Idempotency-Key": "handoff-task-51"},
+        json={"assignee": next_mechanic.username},
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert first.json() == replay.json()
+    assert db_session.get(TrackerClaim, ISSUE_KEY).owner_user_id == next_mechanic.id
+    assert db_session.query(TaskMessage).count() == before + 1
+
+
+def test_submit_review_requires_current_cycle_comment_one_known_code_and_one_valid_image(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+
+    missing_comment = _submit(client, key="review-no-comment")
+    assert missing_comment.status_code == 400
+    assert missing_comment.json()["detail"] == "task_completion_comment_required"
+
+    old = TaskMessage(
+        id="old-comment",
+        issue_key=ISSUE_KEY,
+        kind="user",
+        author_user_id=seed_mechanic.id,
+        author_name=seed_mechanic.username,
+        text="Старая работа",
+        sync_state="saved",
+        created_at=db_session.get(TrackerClaim, ISSUE_KEY).updated_at - 1,
+        updated_at=db_session.get(TrackerClaim, ISSUE_KEY).updated_at - 1,
+    )
+    db_session.add(old)
+    db_session.commit()
+    assert _submit(client, key="review-old-comment").status_code == 400
+
+    assert (
+        _submit(client, key="review-bad-code", comment="Заменил деталь", code="BAD").status_code
+        == 422
+    )
+    duplicate = _submit(
+        client,
+        key="review-two-photos",
+        comment="Заменил деталь",
+        files=[
+            ("photo", ("one.png", PNG, "image/png")),
+            ("photo", ("two.png", PNG, "image/png")),
+        ],
+    )
+    assert duplicate.status_code == 400
+    assert duplicate.json()["detail"] == "task_review_exactly_one_photo"
+    invalid = _submit(
+        client,
+        key="review-bad-photo",
+        comment="Заменил деталь",
+        files=[("photo", ("robot.gif", b"GIF89a", "image/gif"))],
+    )
+    assert invalid.status_code == 400
+    assert invalid.json()["detail"] == "task_attachment_invalid_type"
+    assert db_session.query(TaskReview).count() == 0
+
+
+def test_submit_review_stages_one_photo_and_all_bot_actions_once(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _operator(db_session, seed_park_with_tracker)
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+
+    response = _submit(client, comment="Заменил бампер")
+    replay = _submit(client, comment="Заменил бампер")
+
+    assert response.status_code == replay.status_code == 200
+    assert response.json() == replay.json()
+    assert db_session.query(TaskReview).one().state == "pending"
+    assert db_session.query(TaskAttachment).count() == 1
+    assert db_session.get(TrackerClaim, ISSUE_KEY).owner_user_id == seed_mechanic.id
+    actions = db_session.query(ReliableAction).filter_by(resource_id=ISSUE_KEY).all()
+    assert sorted(action.action for action in actions) == [
+        "attach",
+        "comment",
+        "review",
+        "set_field",
+        "start",
+    ]
+    field = next(action for action in actions if action.action == "set_field")
+    assert json.loads(field.payload_json) == {"field": "theDefectCode", "value": "BD-01"}
+    messages = db_session.query(TaskMessage).filter_by(issue_key=ISSUE_KEY).all()
+    assert sum(message.text == "Заменил бампер" for message in messages) == 1
+    automatic = next(message for message in messages if "Передано на проверку" in message.text)
+    assert "BD-01" in automatic.text
+    assert "operator51" in automatic.text
+
+
+def test_existing_current_cycle_comment_allows_omitting_optional_comment(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+    boundary = db_session.get(TrackerClaim, ISSUE_KEY).updated_at
+    db_session.add(
+        TaskMessage(
+            id="current-comment",
+            issue_key=ISSUE_KEY,
+            kind="user",
+            author_user_id=seed_mechanic.id,
+            author_name=seed_mechanic.username,
+            text="Работа завершена",
+            sync_state="saved",
+            created_at=boundary,
+            updated_at=boundary,
+        )
+    )
+    db_session.commit()
+
+    response = _submit(client, key="review-existing-comment")
+
+    assert response.status_code == 200
+    assert db_session.query(ReliableAction).filter_by(action="comment").count() == 0
+
+
+def test_only_operator_can_return_or_approve_and_approval_releases_claim(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    operator = _operator(db_session, seed_park_with_tracker)
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+    assert _submit(client, comment="Починил").status_code == 200
+
+    denied = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/review/approve",
+        headers={"Idempotency-Key": "approve-denied-51"},
+    )
+    assert denied.status_code == 403
+
+    login_as(client, operator.username, "secret")
+    returned = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/review/return",
+        headers={"Idempotency-Key": "return-task-51"},
+        json={"reason": "Нужно переснять"},
+    )
+    assert returned.status_code == 200
+    assert db_session.query(TaskReview).one().state == "returned"
+    assert db_session.get(TrackerClaim, ISSUE_KEY).owner_user_id == seed_mechanic.id
+
+    approved = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/review/approve",
+        headers={"Idempotency-Key": "approve-task-51"},
+    )
+    assert approved.status_code == 200
+    assert db_session.query(TaskReview).one().state == "closed"
+    assert db_session.get(TrackerClaim, ISSUE_KEY) is None
+    assert db_session.query(ReliableAction).filter_by(action="close").count() == 1
+
+
+def test_operator_return_can_reassign_the_mechanic_and_starts_a_new_comment_cycle(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    operator = _operator(db_session, seed_park_with_tracker)
+    next_mechanic = _mechanic(db_session, seed_park_with_tracker)
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+    assert _submit(client, comment="Починил").status_code == 200
+    prior_boundary = db_session.get(TrackerClaim, ISSUE_KEY).updated_at
+
+    login_as(client, operator.username, "secret")
+    response = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/review/return",
+        headers={"Idempotency-Key": "return-reassign-51"},
+        json={"reason": "Нужно переснять", "assignee": next_mechanic.username},
+    )
+
+    assert response.status_code == 200
+    claim = db_session.get(TrackerClaim, ISSUE_KEY)
+    assert claim.owner_user_id == next_mechanic.id
+    assert claim.updated_at > prior_boundary
+
+
+def test_hide_restore_is_manager_only_filters_before_counts_and_writes_audit(
+    client,
+    db_session,
+    seed_mechanic,
+    seed_admin,
+    seed_park_with_tracker,
+    monkeypatch,
+):
+    _prepare_tracker(db_session, monkeypatch)
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(tracker_client, "search_issues", lambda **_kwargs: [_issue()])
+    login_as(client, seed_mechanic.username, "secret")
+    denied = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/hide",
+        headers={"Idempotency-Key": "hide-denied-51"},
+        json={"reason": "Дубль"},
+    )
+    assert denied.status_code == 403
+
+    login_as(client, seed_admin.username, "secret")
+    hidden = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/hide",
+        headers={"Idempotency-Key": "hide-task-51"},
+        json={"reason": "Дубль"},
+    )
+    assert hidden.status_code == 200
+    assert client.get("/tracker/issues").json()["total"] == 0
+    assert client.get(f"/tracker/issues/{ISSUE_KEY}").status_code == 404
+    visible = client.get("/tracker/issues?include_hidden=true").json()
+    assert visible["total"] == 1
+    detail = client.get(f"/tracker/issues/{ISSUE_KEY}?include_hidden=true").json()
+    assert detail["workflow"]["hidden"]["reason"] == "Дубль"
+    local_actions = db_session.query(ReliableAction).filter_by(resource_id=ISSUE_KEY).all()
+    assert [(row.action, row.state) for row in local_actions] == [("hide", "succeeded")]
+    assert db_session.query(AuditLog).filter_by(action="tracker.hide").count() == 1
+
+    restored = client.delete(
+        f"/tracker/issues/{ISSUE_KEY}/hide",
+        headers={"Idempotency-Key": "restore-task-51"},
+    )
+    assert restored.status_code == 200
+    row = db_session.query(HiddenTask).one()
+    assert row.reason == "Дубль"
+    assert row.actor_user_id == seed_admin.id
+    assert row.restored_by_user_id == seed_admin.id
+    assert client.get("/tracker/issues").json()["total"] == 1

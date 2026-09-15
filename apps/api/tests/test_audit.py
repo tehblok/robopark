@@ -84,7 +84,7 @@ def test_lockout_is_audited(client, db_session, seed_royal, test_settings, monke
 # --- Tracker actions ----------------------------------------------------
 
 
-def test_close_is_audited_with_actor(
+def test_mechanic_cannot_final_close_through_legacy_route(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
     """The core gap: Tracker shows one service account for every user."""
@@ -101,13 +101,11 @@ def test_close_is_audited_with_actor(
     )
 
     login_as(client, "mech1", "secret")
-    assert client.post("/tracker/issues/ROBOPARK-1/close").status_code == 200
+    response = client.post("/tracker/issues/ROBOPARK-1/close")
 
-    entry = db_session.query(AuditLog).filter_by(action=audit.ACTION_TRACKER_CLOSE).one()
-    assert entry.actor_user_id == seed_mechanic.id
-    assert entry.actor_role == "mechanic"
-    assert entry.target_id == "ROBOPARK-1"
-    assert entry.park_id == seed_park_with_tracker.id
+    assert response.status_code == 403
+    assert response.json()["detail"] == "task_review_operator_required"
+    assert db_session.query(AuditLog).filter_by(action=audit.ACTION_TRACKER_CLOSE).count() == 0
 
 
 def test_comment_is_signed_and_audited(

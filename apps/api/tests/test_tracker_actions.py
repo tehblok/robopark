@@ -5,8 +5,6 @@ from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, Report, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings
-from robopark_api.services import reports as reports_svc
-from robopark_api.services.rbac import RoleSlug
 
 
 def _seed_operator(db_session, park):
@@ -405,7 +403,7 @@ def _mock_close_tracker(monkeypatch, *, key: str = "ROBOPARK-1"):
     return issue
 
 
-def test_mechanic_close_creates_close_review(
+def test_mechanic_cannot_use_legacy_final_close(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
@@ -424,18 +422,9 @@ def test_mechanic_close_creates_close_review(
     login_as(client, "mech1", "secret")
     response = client.post("/tracker/issues/ROBOPARK-1/close")
 
-    assert response.status_code == 200
-    assert response.json()["action"] == "close"
-
-    report = db_session.query(Report).one()
-    assert report.kind == reports_svc.KIND_TICKET_CLOSE_REVIEW
-    assert report.status == reports_svc.STATUS_OPEN
-    assert report.park_id == seed_park_with_tracker.id
-    assert report.author_user_id == seed_mechanic.id
-    assert report.target_role == RoleSlug.OPERATOR
-    assert report.tracker_key == "ROBOPARK-1"
-    assert report.tracker_url == "https://st.yandex-team.ru/ROBOPARK-1"
-    assert report.title == "Закрытие ROBOPARK-1"
+    assert response.status_code == 403
+    assert response.json()["detail"] == "task_review_operator_required"
+    assert db_session.query(Report).count() == 0
 
 
 def test_mechanic_close_without_park_rejected_before_tracker(client, db_session, monkeypatch):
