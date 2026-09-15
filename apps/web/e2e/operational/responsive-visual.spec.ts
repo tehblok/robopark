@@ -1,10 +1,29 @@
 import { expect, test, type Page } from '@playwright/test'
+import type { EmergencyReading, EmergencySnapshot } from '../../src/api'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 import { installOperational, settlePage, snapshot } from './fixtures'
 import { assertResponsiveContracts } from './routeFixtures'
 
 const widths = [320, 390, 768, 1024, 1440] as const
 const themes = ['light', 'dark'] as const
+const configuredReading: EmergencyReading = {
+  id: 1, section_id: 'wheels', path: 'parktronics.lt', label: 'Левый парктроник', display_kind: 'distance',
+  unit: 'см', precision: 0, enabled_path: 'parktronics.ltEnabled', no_data_values: [2147483647],
+  warning_below: 25, warning_above: null, critical_below: 10, critical_above: null,
+  view: 'top', x: .24, y: .56, label_direction: 'left', is_enabled: true, sort_order: 0,
+}
+const measuredSnapshot: EmergencySnapshot = {
+  ...snapshot,
+  stale: false,
+  stale_age_seconds: 0,
+  battery1_connected: true,
+  battery2_connected: true,
+  readings: [
+    { id: 1, section_id: 'wheels', label: 'Левый парктроник', display: '18 см', state: 'warning', view: 'top', x: .24, y: .56, label_direction: 'left' },
+    { id: 2, section_id: 'wheels', label: 'Ток колеса', display: '4,2 А', state: 'normal', view: 'top', x: .72, y: .42, label_direction: 'right' },
+  ],
+  diagnostic_events: [],
+}
 const states = [
   { name: 'overview', path: '/overview?park=7', ready: '.rp-overview' },
   { name: 'work', path: '/work/ROBOPARK-42?park=7&status=open&sort=newest&page=2', ready: '.issue-actions' },
@@ -34,6 +53,86 @@ async function assertWorkMode(page: Page, width: number) {
     await expect(page.locator('.rp-work-detail-pane')).toBeInViewport()
   } else await expect(page.locator('.rp-work-list-pane')).toBeHidden()
 }
+
+async function assertRobotReadingGeometry(page: Page) {
+  const robot = await page.locator('.rp-check-photo-frame').boundingBox()
+  expect(robot).toBeTruthy()
+  const labels = page.locator('.rp-check-marker-label:visible')
+  for (const label of await labels.all()) {
+    const box = await label.boundingBox()
+    expect(box).toBeTruthy()
+    const separated = box!.x + box!.width <= robot!.x
+      || robot!.x + robot!.width <= box!.x
+      || box!.y + box!.height <= robot!.y
+      || robot!.y + robot!.height <= box!.y
+    expect(separated, await label.textContent()).toBe(true)
+  }
+  await expect(labels.or(page.locator('.rp-check-collapsed-labels li'))).not.toHaveCount(0)
+  for (const marker of await page.locator('.rp-check-photo-frame button:visible').all()) {
+    const box = await marker.boundingBox()
+    expect(box).toBeTruthy()
+    expect(box!.width, await marker.getAttribute('aria-label')).toBeGreaterThanOrEqual(44)
+    expect(box!.height, await marker.getAttribute('aria-label')).toBeGreaterThanOrEqual(44)
+  }
+}
+
+for (const width of widths) for (const theme of themes) {
+  test(`robot readings and admin catalog reflow at ${width}px in ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await page.addInitScript(themeName => localStorage.setItem('robopark-theme', themeName), theme)
+    await installOperational(page, {
+      role: 'admin',
+      routes: [
+        { method: 'GET', path: '/api/admin/emergency/sections', handler: () => ({ json: [{ id: 'wheels', title: 'Колёса', is_enabled: true, roles: ['mechanic', 'admin'], fields: [], sort_order: 0 }] }) },
+        { method: 'GET', path: '/api/admin/emergency-readings', handler: () => ({ json: [configuredReading], headers: { ETag: '"readings-1"' } }) },
+      ],
+    })
+    await page.goto('/admin/emergency/config?park=7&tab=readings')
+    await expect(page.getByRole('heading', { name: 'Каталог показаний' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Новое показание' })).toBeVisible()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+    await assertResponsiveContracts(page, width)
+
+    await installOperational(page, { role: 'mechanic', snapshot: measuredSnapshot })
+    await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=scheme`)
+    await expect(page.getByRole('button', { name: 'Показание: Ток колеса, 4,2 А' })).toBeVisible()
+    await assertRobotReadingGeometry(page)
+    const marker = page.getByRole('button', { name: 'Показание: Ток колеса, 4,2 А' })
+    await marker.focus()
+    await page.keyboard.press('Enter')
+    await expect(marker).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByText('Ток колеса: 4,2 А', { exact: true })).toBeVisible()
+    await assertResponsiveContracts(page, width)
+    await assertNoSeriousA11yViolations(page)
+  })
+}
+
+test('200% text zoom keeps robot and catalog primary actions reachable', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await installOperational(page, {
+    role: 'admin',
+    routes: [
+      { method: 'GET', path: '/api/admin/emergency/sections', handler: () => ({ json: [{ id: 'wheels', title: 'Колёса', is_enabled: true, roles: ['mechanic', 'admin'], fields: [], sort_order: 0 }] }) },
+      { method: 'GET', path: '/api/admin/emergency-readings', handler: () => ({ json: [configuredReading] }) },
+    ],
+  })
+  await page.goto('/admin/emergency/config?park=7&tab=readings')
+  await page.getByRole('button', { name: 'Открыть показание Левый парктроник' }).click()
+  await page.evaluate(() => { document.documentElement.style.fontSize = '200%' })
+  const save = page.getByRole('button', { name: 'Сохранить показание' })
+  await save.scrollIntoViewIfNeeded()
+  await expect(save).toBeInViewport()
+  await assertResponsiveContracts(page, 1440)
+
+  await installOperational(page, { role: 'mechanic', snapshot: measuredSnapshot })
+  await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=scheme`)
+  await page.evaluate(() => { document.documentElement.style.fontSize = '200%' })
+  const primaryView = page.getByRole('button', { name: 'Сверху', exact: true })
+  await primaryView.scrollIntoViewIfNeeded()
+  await expect(primaryView).toBeInViewport()
+  await expect(page.getByRole('button', { name: 'Показание: Левый парктроник, 18 см' })).toBeVisible()
+  await assertResponsiveContracts(page, 1440)
+})
 
 for (const boundary of [
   { width: 899, mode: 'sequential', filterColumns: 2 },
