@@ -22,22 +22,24 @@ describe('AppRouter', () => {
 
   afterEach(() => vi.restoreAllMocks())
 
-  it('canonicalizes the dashboard alias into the manifest shell without stealing focus', async () => {
+  it.each(['/overview', '/dashboard', '/operator', '/admin/tracker'])(
+    'redirects the retired %s surface to Work and retains park', async (path) => {
     const approvedOperator = testUser({
       permissions: ['nav.dashboard', 'nav.tasks', 'nav.emergency'],
       parks: [north],
     })
 
-    renderApp('/dashboard?park=7', approvedOperator)
+    renderApp(`${path}?park=7`, approvedOperator)
 
-    expect(await screen.findByRole('heading', { name: 'Смена / Обзор' })).toBeVisible()
-    expect(screen.getByTestId('location')).toHaveTextContent('/overview?park=7')
+    expect(await screen.findByRole('heading', { name: 'Работа' })).toBeVisible()
+    expect(screen.getByTestId('location')).toHaveTextContent('/work?park=7')
     const navigation = screen.getAllByRole('navigation', { name: 'Основная навигация' })[0]
     const workLink = within(navigation).getByRole('link', { name: 'Работа' })
     expect(workLink).toHaveAttribute('href', '/work')
     expect(workLink.querySelector('svg')).not.toBeNull()
-    expect(screen.getByRole('heading', { name: 'Смена / Обзор' })).not.toHaveFocus()
-  })
+    expect(screen.getByRole('heading', { name: 'Работа' })).not.toHaveFocus()
+    },
+  )
 
   it('preserves meaningful search parameters through legacy redirects', async () => {
     renderApp('/operator?park=7', testUser({
@@ -46,7 +48,7 @@ describe('AppRouter', () => {
     }))
 
     await waitFor(() => {
-      expect(screen.getByTestId('location')).toHaveTextContent('/overview?park=7')
+      expect(screen.getByTestId('location')).toHaveTextContent('/work?park=7')
     })
   })
 
@@ -102,7 +104,7 @@ describe('AppRouter', () => {
       permissions: ['nav.dashboard'],
       parks: [north],
     }))
-    expect(await screen.findByRole('heading', { name: 'Смена / Обзор' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Работа' })).toBeVisible()
 
     app.rerenderAuth(null)
 
@@ -152,7 +154,7 @@ describe('AppRouter', () => {
     }))
 
     await waitFor(() => {
-      expect(screen.getByTestId('location')).toHaveTextContent('/overview?park=all')
+      expect(screen.getByTestId('location')).toHaveTextContent('/work?park=7')
     })
   })
 
@@ -370,7 +372,7 @@ describe('AppRouter', () => {
     }))
 
     await waitFor(() => {
-      expect(screen.getByTestId('location')).toHaveTextContent('/overview')
+      expect(screen.getByTestId('location')).toHaveTextContent('/work')
     })
   })
 })

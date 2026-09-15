@@ -486,6 +486,17 @@ function IssueWorkbenchOwner({
     listKey,
     () => guarded(() => loadWorkPage(apiClient, requestState, selectedPark.tag)),
   )
+  const owned = useCachedResource<Paged<TrackerIssue>>(
+    `${accessPrefix}owned:${user.username}`,
+    () => guarded(() => apiClient.trackerIssues({
+      assignee: user.username,
+      open_only: true,
+      sort: 'oldest',
+      limit: 50,
+      offset: 0,
+    }).then(page => ({ ...page, items: oldestFirst(page.items) }))),
+    { enabled: user.role === 'mechanic' && Boolean(user.username.trim()) },
+  )
   const detail = useCachedResource<TrackerIssueDetail>(
     detailKey,
     () => guarded(() => apiClient.trackerIssue(issueKey as string)),
@@ -529,15 +540,17 @@ function IssueWorkbenchOwner({
   // Coalesced same-access reads can outlive their initiating render (including
   // StrictMode cleanup). Only the current resource owner handles their denial.
   useEffect(() => {
-    for (const error of [list.error, detail.error, comments.error, transitions.error]) {
+    for (const error of [list.error, owned.error, detail.error, comments.error, transitions.error]) {
       if (error) observeAuthorizationFailure(error)
     }
-  }, [comments.error, detail.error, list.error, observeAuthorizationFailure, transitions.error])
+  }, [comments.error, detail.error, list.error, observeAuthorizationFailure, owned.error, transitions.error])
 
   const listFailure = failureFor(
     list.error,
     'Не удалось загрузить очередь задач.',
   )
+  const ownedItems = user.role === 'mechanic' ? oldestFirst(owned.data?.items ?? []) : []
+  const ownedKeys = new Set(ownedItems.map(item => item.key))
   const detailFailure = failureFor(
     detail.error,
     'Не удалось загрузить задачу.',
@@ -890,7 +903,7 @@ function IssueWorkbenchOwner({
             >
               {list.isLoading && !list.data ? (
                 <LoadingState label="Загружаем очередь задач" />
-              ) : !listFailure && list.data?.items.length === 0 ? (
+              ) : !listFailure && list.data?.items.length === 0 && ownedItems.length === 0 ? (
                 <EmptyState
                   description="Измените фильтры или проверьте выбранный парк."
                   icon="work"
@@ -899,12 +912,12 @@ function IssueWorkbenchOwner({
               ) : list.data ? (
                 <div className="rp-work-list-scroll" ref={listScrollRef}>
                   <p className="rp-work-list-count">Показано {list.data.items.length}{list.data.total > list.data.items.length ? ` из ${list.data.total}` : ''}</p>
-                  {user.role === 'mechanic' && list.data.items.some(item => item.assignee?.login?.toLocaleLowerCase() === user.username.toLocaleLowerCase()) ? <>
+                  {ownedItems.length ? <>
                     <h3>Мои задачи в работе</h3>
                     <WorkIssueRows
                       apiClient={apiClient}
-                      items={oldestFirst(list.data.items).filter(item => item.assignee?.login?.toLocaleLowerCase() === user.username.toLocaleLowerCase())}
-                      onClaimed={() => void list.refresh()}
+                      items={ownedItems}
+                      onClaimed={() => { void list.refresh(); void owned.refresh() }}
                       onOpen={saveAndOpenIssue}
                       selected={issueKey}
                       now={now}
@@ -914,9 +927,8 @@ function IssueWorkbenchOwner({
                   </> : null}
                   <WorkIssueRows
                     apiClient={apiClient}
-                    items={oldestFirst(list.data.items).filter(item => user.role !== 'mechanic'
-                      || item.assignee?.login?.toLocaleLowerCase() !== user.username.toLocaleLowerCase())}
-                    onClaimed={() => void list.refresh()}
+                    items={oldestFirst(list.data.items).filter(item => !ownedKeys.has(item.key))}
+                    onClaimed={() => { void list.refresh(); void owned.refresh() }}
                     onOpen={saveAndOpenIssue}
                     selected={issueKey}
                     now={now}

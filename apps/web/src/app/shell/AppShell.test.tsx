@@ -20,6 +20,7 @@ import { REPORTS_BADGE_REFRESH } from '../../reports-badge'
 
 const shellCss = readFileSync('src/app/shell/AppShell.css', 'utf8')
 const overviewCss = readFileSync('src/domains/shift/overview.css', 'utf8')
+const workCss = readFileSync('src/domains/work/work.css', 'utf8')
 
 const north = { id: 7, name: 'Северный', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
 const operator = testUser({
@@ -130,6 +131,32 @@ function declaredCssValue(element: Element, property: string): string {
 }
 
 describe('AppShell', () => {
+  it('shows the SURP product identity and developer attribution', async () => {
+    const actor = userEvent.setup()
+    renderShellPath('/work')
+    expect(screen.getByText('СУРП')).toHaveAccessibleName('СУРП — Система управления робопарками')
+    await actor.click(screen.getByRole('button', { name: 'Ещё' }))
+    expect(screen.getByText(/tehblokdan/)).toBeVisible()
+  })
+
+  it('puts Overview, Work, Robots and Campaigns first for operators', () => {
+    act(() => media.setWidth(390))
+    renderShellPath('/work', testUser({
+      role: 'operator', parks: [north],
+      permissions: ['nav.dashboard', 'nav.tasks', 'nav.robot_search'],
+    }))
+    const navigation = screen.getAllByRole('navigation', { name: 'Основная навигация' })[1]
+    expect(within(navigation).getAllByRole('link').map(link => link.textContent)).toEqual([
+      'Обзор', 'Работа', 'Роботы', 'СК и оклейка',
+    ])
+  })
+
+  it('does not expose the retired Startrek workspace in navigation', () => {
+    renderShellPath('/work', testUser({
+      role: 'admin', parks: [north], permissions: ['nav.tasks', 'nav.admin.tracker'],
+    }))
+    expect(screen.queryByRole('link', { name: /Startrek/ })).not.toBeInTheDocument()
+  })
   it.each(['admin', 'royal', 'operator'])('offers all and a specific park for %s even with one accessible park', async role => {
     const { setParkId } = renderShellWithParkScope(role, vi.fn(), [north], true)
     fireEvent.click(screen.getByRole('button', { name: 'Сменить парк' }))
@@ -238,7 +265,7 @@ describe('AppShell', () => {
 
   it('focuses the destination heading after manifest navigation, including from mobile nav', async () => {
     const actor = userEvent.setup()
-    renderApp('/overview', operator)
+    renderApp('/robots', operator)
 
     const desktopNavigation = screen.getAllByRole('navigation', {
       name: 'Основная навигация',
@@ -605,8 +632,6 @@ describe('AppShell', () => {
   })
 
   it.each([
-    ['/admin/tracker', 'Startrek'],
-    ['/admin/tracker/settings', 'Startrek'],
     ['/admin/emergency/config', 'Настройка проверки робота'],
     ['/admin/emergency/config/sections', 'Настройка проверки робота'],
   ])('keeps the administration parent and nested destination active at %s', (path, destinationName) => {
@@ -676,18 +701,17 @@ describe('AppShell', () => {
     } finally { active.remove(); style.remove() }
   })
 
-  it('gives the skip link and Overview primary action the shared minimum control size', async () => {
+  it('gives the skip link and Work summary action the shared minimum control size', async () => {
     const style = document.createElement('style')
-    style.textContent = `${shellCss}\n${overviewCss}`
+    style.textContent = `${shellCss}\n${overviewCss}\n${workCss}`
     document.head.append(style)
-    renderApp('/overview', operator)
+    renderApp('/work', operator)
 
     const skipLink = screen.getByRole('link', { name: 'К содержанию' })
-    const quickLink = await within(screen.getByRole('main')).findByRole('link', { name: 'Открыть задачу ROBOPARK-1' })
+    const quickLink = await within(screen.getByRole('main')).findByRole('button', { name: 'Сводка смены' })
     expect(declaredCssValue(skipLink, 'min-height')).toBe('var(--rp-control-min-size)')
     expect(getComputedStyle(skipLink).display).toBe('inline-flex')
     expect(declaredCssValue(quickLink, 'min-height')).toBe('var(--rp-control-min-size)')
-    expect(getComputedStyle(quickLink).display).toBe('grid')
     style.remove()
   })
 

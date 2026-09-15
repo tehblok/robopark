@@ -22,7 +22,7 @@ export function isScreenshotShortcut(event: KeyboardEvent): boolean {
 }
 
 export function buildWatermarkLabel(username: string, userId: number): string {
-  return `${username} · #${userId} · Управление парком · конфиденциально`
+  return `${username} · #${userId} · СУРП · конфиденциально`
 }
 
 export function shouldBlockProtectedAction(event: Event): boolean {

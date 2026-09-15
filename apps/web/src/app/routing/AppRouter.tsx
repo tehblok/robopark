@@ -11,10 +11,8 @@ import { ManagementPage } from '../../domains/management/ManagementPage'
 import { UserManagementPage } from '../../domains/management/UserManagementPage'
 import { RoleManagementPage } from '../../domains/management/RoleManagementPage'
 import { AdminEmergencyConfig } from '../../pages/AdminEmergencyConfig'
-import { AdminTrackerWorkspace } from '../../pages/AdminTrackerWorkspace'
 import { Analytics } from '../../pages/Analytics'
 import { ChangePassword } from '../../pages/ChangePassword'
-import { OverviewPage } from '../../domains/shift/OverviewPage'
 import { WorkPage } from '../../domains/work/WorkPage'
 import { RobotsPage } from '../../domains/robots/RobotsPage'
 import { RobotPage } from '../../domains/robots/RobotPage'
@@ -52,7 +50,7 @@ export const ROUTE_ELEMENTS: Record<AppRouteId, ReactElement> = {
   'access-pending': <OperatorPending />,
   'access-rejected': <OperatorRejected />,
   'mechanic-no-park': <MechanicNoPark />,
-  overview: <OverviewPage />,
+  overview: <LegacyRedirect to="/work" />,
   'operator-parks': <OperatorParks />,
   work: <WorkPage />,
   'work-issue': <WorkPage />,
@@ -71,7 +69,7 @@ export const ROUTE_ELEMENTS: Record<AppRouteId, ReactElement> = {
   'admin-settings': <Admin />,
   'admin-users': <UserManagementPage />,
   'admin-roles': <RoleManagementPage />,
-  'admin-tracker': <AdminTrackerWorkspace />,
+  'admin-tracker': <LegacyRedirect to="/work" />,
   'admin-robot-check': <AdminEmergencyConfig />,
   'not-found': <RouteFallback />,
 }
@@ -117,7 +115,8 @@ export function AppRouter() {
   const publicAndStandaloneRoutes = ROUTE_MANIFEST.filter(
     (route) => route.surface !== 'shell' && route.id !== 'not-found',
   )
-  const shellRoutes = ROUTE_MANIFEST.filter((route) => route.surface === 'shell')
+  const redirectRoutes = ROUTE_MANIFEST.filter((route) => route.redirectTo)
+  const shellRoutes = ROUTE_MANIFEST.filter((route) => route.surface === 'shell' && !route.redirectTo)
   const legacyRoutes = ROUTE_MANIFEST.flatMap((route) =>
     (route.legacyPaths ?? []).map((path) => ({ path, canonicalPath: route.path })),
   )
@@ -134,6 +133,10 @@ export function AppRouter() {
           key={path}
           path={path}
         />
+      ))}
+
+      {redirectRoutes.map((route) => (
+        <Route element={<LegacyRedirect to={route.redirectTo as string} />} key={route.id} path={route.path} />
       ))}
 
       <Route element={<ShellBoundary />}>

@@ -50,7 +50,7 @@ const allPermissions = [
 describe('ROUTE_MANIFEST', () => {
   it('keeps every canonical route and compatibility alias in one explicit record', () => {
     expect(ROUTE_MANIFEST).toEqual([
-      { id: 'home', path: '/', label: 'Управление парком', icon: 'overview', surface: 'public' },
+      { id: 'home', path: '/', label: 'СУРП', icon: 'overview', surface: 'public' },
       { id: 'login', path: '/login', label: 'Вход', icon: 'forward', surface: 'public' },
       { id: 'register', path: '/register', label: 'Регистрация', icon: 'users', surface: 'public' },
       { id: 'change-password', path: '/change-password', label: 'Смена пароля', icon: 'settings', surface: 'standalone' },
@@ -81,7 +81,7 @@ describe('ROUTE_MANIFEST', () => {
       {
         id: 'overview',
         path: '/overview',
-        legacyPaths: ['/dashboard', '/operator'],
+        redirectTo: '/work',
         label: 'Обзор',
         icon: 'overview',
         permission: 'nav.dashboard',
@@ -100,26 +100,26 @@ describe('ROUTE_MANIFEST', () => {
         icon: 'parks',
         prerequisites: ['password-changed', 'approved'],
         surface: 'shell',
-        nav: { group: 'operations', desktopOrder: 20, mobilePriority: { operator: 2 } },
+        nav: { group: 'operations', desktopOrder: 20 },
       },
       {
         id: 'work',
         path: '/work',
-        legacyPaths: ['/tasks'],
+        legacyPaths: ['/tasks', '/dashboard', '/operator'],
         label: 'Работа',
         icon: 'work',
-        permission: 'nav.tasks',
+        anyPermissions: ['nav.tasks', 'nav.dashboard', 'nav.admin.tracker'],
         prerequisites: ['password-changed', 'approved', 'mechanic-has-park'],
         surface: 'shell',
         nav: {
           group: 'operations',
           desktopOrder: 30,
-          mobilePriority: { royal: 3, admin: 3, operator: 3, mechanic: 1 },
+          mobilePriority: { royal: 3, admin: 3, operator: 2, mechanic: 1 },
         },
       },
       {
         id: 'work-issue', path: '/work/:issueKey', label: 'Работа', icon: 'work',
-        permission: 'nav.tasks', prerequisites: ['password-changed', 'approved', 'mechanic-has-park'], surface: 'shell',
+        anyPermissions: ['nav.tasks', 'nav.dashboard', 'nav.admin.tracker'], prerequisites: ['password-changed', 'approved', 'mechanic-has-park'], surface: 'shell',
       },
       {
         id: 'robots',
@@ -133,7 +133,7 @@ describe('ROUTE_MANIFEST', () => {
         nav: {
           group: 'operations',
           desktopOrder: 40,
-          mobilePriority: { operator: 4, mechanic: 3, driver: 2 },
+          mobilePriority: { operator: 3, mechanic: 3, driver: 2 },
         },
       },
       {
@@ -184,7 +184,7 @@ describe('ROUTE_MANIFEST', () => {
         icon: 'work',
         prerequisites: ['password-changed', 'approved', 'mechanic-has-park'],
         surface: 'shell',
-        nav: { group: 'collaboration', desktopOrder: 65 },
+        nav: { group: 'collaboration', desktopOrder: 65, mobilePriority: { operator: 4 } },
       },
       {
         id: 'campaign-detail', path: '/campaigns/:campaignId', label: 'Кампания', icon: 'work',
@@ -262,12 +262,12 @@ describe('ROUTE_MANIFEST', () => {
       {
         id: 'admin-tracker',
         path: '/admin/tracker',
+        redirectTo: '/work',
         label: 'Startrek',
         icon: 'integration',
         permission: 'nav.admin.tracker',
         prerequisites: ['password-changed', 'approved', 'mechanic-has-park'],
         surface: 'shell',
-        nav: { group: 'administration', desktopOrder: 90 },
       },
       {
         id: 'admin-robot-check',
@@ -283,13 +283,12 @@ describe('ROUTE_MANIFEST', () => {
     ])
   })
 
-  it('keeps the overview canonical path and exact legacy aliases', () => {
-    const overview = ROUTE_MANIFEST.find((route) => route.id === 'overview')
+  it('routes retired dashboards through the single Work home', () => {
+    const work = ROUTE_MANIFEST.find((route) => route.id === 'work')
+    const tracker = ROUTE_MANIFEST.find((route) => route.id === 'admin-tracker')
 
-    expect(overview && { path: overview.path, legacyPaths: overview.legacyPaths }).toEqual({
-      path: '/overview',
-      legacyPaths: ['/dashboard', '/operator'],
-    })
+    expect(work?.legacyPaths).toEqual(['/tasks', '/dashboard', '/operator'])
+    expect(tracker?.nav).toBeUndefined()
   })
 
   it('does not duplicate any canonical or legacy path', () => {
@@ -326,21 +325,21 @@ describe('ROUTE_MANIFEST', () => {
 
 describe('navigation ordering', () => {
   const expectedDesktop = {
-    royal: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    admin: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    operator: ['overview', 'operator-parks', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    mechanic: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    driver: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    field_lead: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
+    royal: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-robot-check'],
+    admin: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-robot-check'],
+    operator: ['overview', 'operator-parks', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-robot-check'],
+    mechanic: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-robot-check'],
+    driver: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-robot-check'],
+    field_lead: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-robot-check'],
   } as const
 
   const expectedMobile = {
-    royal: ['overview', 'admin', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin-tracker', 'admin-robot-check'],
-    admin: ['admin', 'overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin-tracker', 'admin-robot-check'],
-    operator: ['overview', 'operator-parks', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    mechanic: ['work', 'robots', 'overview', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    driver: ['robots', 'overview', 'reports', 'work', 'inventory', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
-    field_lead: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-tracker', 'admin-robot-check'],
+    royal: ['overview', 'admin', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin-robot-check'],
+    admin: ['admin', 'overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin-robot-check'],
+    operator: ['overview', 'work', 'robots', 'campaigns', 'operator-parks', 'inventory', 'reports', 'analytics', 'admin', 'admin-robot-check'],
+    mechanic: ['work', 'robots', 'overview', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-robot-check'],
+    driver: ['robots', 'overview', 'reports', 'work', 'inventory', 'campaigns', 'analytics', 'admin', 'admin-robot-check'],
+    field_lead: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'analytics', 'admin', 'admin-robot-check'],
   } as const
 
   it.each(Object.entries(expectedDesktop))('keeps desktop order stable for %s', (role, expected) => {

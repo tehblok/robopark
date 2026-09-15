@@ -364,6 +364,7 @@ export function AppShell() {
       </a>
 
       <aside className="sidebar rp-shell__sidebar">
+        <strong aria-label={ru.brandExpanded} className="rp-shell__product-brand">{ru.brand}</strong>
         {!phoneViewport ? (
           <ParkIdentity
             allowAllParks={allowAllParks}
@@ -539,6 +540,7 @@ export function AppShell() {
         <Button leadingIcon="logout" onClick={() => void logout()} variant="secondary">
           {ru.signOut}
         </Button>
+        <footer className="rp-shell__about">Разработчик: tehblokdan</footer>
       </BottomSheet>
     </div>
   )

@@ -48,6 +48,17 @@
   top: 0;
 }
 
+.rp-shell__product-brand {
+  color: var(--rp-action);
+  font-size: 1.25rem;
+  letter-spacing: 0.04em;
+}
+
+.rp-shell__about {
+  color: var(--rp-text-muted);
+  font-size: var(--rp-font-size-body);
+}
+
 .rp-shell__user,
 .rp-shell__topbar-actions {
   align-items: center;

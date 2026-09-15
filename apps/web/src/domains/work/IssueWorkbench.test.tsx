@@ -147,6 +147,35 @@ it('shows a claimed mechanic task only once', async () => {
   })).toHaveLength(1)
 })
 
+it('pins owned active tasks from an independent query and deduplicates the queue', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
+  const owned = { ...issue, key: 'ROBOPARK-OWNED', summary: 'Моя активная', assignee: { display: 'mech1', login: 'mech1' } }
+  const queued = { ...issue, key: 'ROBOPARK-QUEUE', summary: 'Общая очередь' }
+  const trackerIssues = vi.fn(async (query: Parameters<IssueWorkbenchApiClient['trackerIssues']>[0]) => (
+    query.assignee === 'mech1' && !query.queue && !query.park && !query.status
+      ? page([owned])
+      : page([queued, owned])
+  ))
+  renderWorkbench({
+    client: apiClient({ trackerIssues }), currentUser: mechanic, selectedIssue: '',
+    currentState: { filters: { queue: 'ROBOPARK', status: 'queued' }, sort: 'oldest', page: 1 },
+  })
+
+  expect(await screen.findByRole('heading', { name: 'Мои задачи в работе' })).toBeVisible()
+  const rows = screen.getAllByRole('article')
+  expect(rows.map(row => row.textContent)).toEqual([
+    expect.stringContaining('ROBOPARK-OWNED'),
+    expect.stringContaining('ROBOPARK-QUEUE'),
+  ])
+  expect(trackerIssues).toHaveBeenCalledWith(expect.objectContaining({
+    assignee: 'mech1', open_only: true, sort: 'oldest', limit: 50, offset: 0,
+  }))
+  const ownedQuery = trackerIssues.mock.calls.find(([query]) => query.assignee === 'mech1')?.[0]
+  expect(ownedQuery).not.toHaveProperty('queue')
+  expect(ownedQuery).not.toHaveProperty('park')
+  expect(ownedQuery).not.toHaveProperty('status')
+})
+
 it('displays and writes task parts from the backend claim park despite tag and user-park order', async () => {
   const claimPark = { ...park, id: 7, name: 'A', tag: 'Alpha' }
   const otherPark = { ...park, id: 8, name: 'B', tag: 'Beta' }
@@ -524,10 +553,10 @@ describe('IssueWorkbench', () => {
     expect(screen.getByRole('heading', { name: issue.summary })).toBeInTheDocument()
   })
 
-  it('preserves the original blocker and active tab when changing list filters', async () => {
-    const { onStateChange } = renderWorkbench({ currentState: { ...state, rootIssue: 'ROBOPARK-1', detailTab: 'open', checkTab: 'scheme' } })
+  it('preserves the original blocker and active tab when resetting linked restrictions', async () => {
+    const { onStateChange } = renderWorkbench({ currentState: { ...state, filters: { ...state.filters, status: 'queued', robot: '447' }, rootIssue: 'ROBOPARK-1', detailTab: 'open', checkTab: 'scheme' } })
     await screen.findByRole('heading', { name: 'Открытые задачи робота 447' })
-    fireEvent.change(screen.getByLabelText('Статус открытых блокеров'), { target: { value: 'queued' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Сбросить ограничения' }))
     expect(onStateChange).toHaveBeenCalledWith({
       filters: { queue: 'ROBOPARK', status: 'queued' }, sort: 'oldest', page: 1,
       rootIssue: 'ROBOPARK-1', detailTab: 'open', checkTab: 'scheme',
