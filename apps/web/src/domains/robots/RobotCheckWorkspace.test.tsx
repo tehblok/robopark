@@ -1,9 +1,13 @@
 import { StrictMode } from 'react'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { ApiError, type DiagnosticEvent, type EmergencySnapshot, type EmergencySectionDetail, type User } from '../../api'
 import { RobotCheckWorkspace, type RobotCheckApiClient } from './RobotCheckWorkspace'
+
+const robotCheckCss = readFileSync(resolve(process.cwd(), 'src/domains/robots/robot-check.css'), 'utf8')
 
 const VIN = 'YASADR00000000447'
 const user: User = { id: 3, username: 'op', role: 'operator', access_status: 'approved', permissions: ['nav.emergency'], parks: [] }
@@ -305,7 +309,6 @@ it('keeps real diagnostic markers clickable without permanent wheel buttons', as
   render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({ diagnostic_events: [lidar, outlined], wheels_fault: ['fl'] })) }), 'scheme'))
   const marker = await screen.findByRole('button', { name: `Ошибка: ${outlined.title}` })
   expect(marker).toHaveClass('rp-check-event-marker--outline', 'rp-check-event-marker--warning')
-  expect(marker).toHaveStyle({ borderWidth: '0px', background: 'transparent', width: '44px', height: '44px' })
   expect(screen.getByRole('button', { name: `Ошибка: ${lidar.title}` })).toHaveClass('rp-check-event-marker--point', 'rp-check-event-marker--critical')
   act(() => marker.focus())
   expect(marker).toHaveFocus(); expect(marker).toHaveAttribute('aria-pressed', 'true')
@@ -317,6 +320,36 @@ it('keeps real diagnostic markers clickable without permanent wheel buttons', as
   fireEvent.click(screen.getByRole('button', { name: `Ошибка: ${lidar.title}` }))
   expect(detail).toHaveTextContent(lidar.description)
   expect(screen.queryByRole('button', { name: /колесо/i })).not.toBeInTheDocument()
+})
+it('keeps selected and focused marker targets transparent while indicating state on the inner dot', () => {
+  const style = document.createElement('style')
+  style.textContent = robotCheckCss.replaceAll('var(--rp-focus)', 'rgb(1, 2, 3)')
+  document.head.append(style)
+  const marker = document.createElement('button')
+  marker.className = 'rp-check-event-marker rp-check-event-marker--point rp-check-event-marker--info'
+  marker.setAttribute('aria-pressed', 'true')
+  marker.innerHTML = '<span class="rp-check-marker-dot">!</span>'
+  document.body.append(marker)
+
+  const outer = getComputedStyle(marker)
+  const inner = getComputedStyle(marker.firstElementChild!)
+  expect(outer.width).toBe('44px')
+  expect(outer.height).toBe('44px')
+  expect(outer.backgroundColor).toBe('rgba(0, 0, 0, 0)')
+  expect(outer.borderTopStyle).toBe('none')
+  expect(outer.outline).not.toContain('solid')
+  expect(inner.outline).toContain('3px solid')
+
+  const focusedMarker = marker.cloneNode(true) as HTMLButtonElement
+  focusedMarker.setAttribute('aria-pressed', 'false')
+  document.body.append(focusedMarker)
+  fireEvent.keyDown(document.body, { key: 'Tab' })
+  focusedMarker.focus()
+  expect(getComputedStyle(focusedMarker).outline).not.toContain('solid')
+  expect(getComputedStyle(focusedMarker.firstElementChild!).outline).toContain('3px solid')
+  focusedMarker.remove()
+  marker.remove()
+  style.remove()
 })
 it('uses wrapped label height when preventing diagram collisions', async () => {
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
