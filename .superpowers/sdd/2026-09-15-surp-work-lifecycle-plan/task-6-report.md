@@ -45,3 +45,19 @@ wrapping grid is reused for phone and desktop layouts without viewport-specific 
 
 `WorkPage.tsx` and `IssueWorkbench.tsx` are the minimal composition changes required to make
 the one shared minute clock reach all cards; no other work-domain behavior was changed.
+
+## Fix round 1: SDK Resource changelog fallback
+
+Real `yandex-tracker-client` resources keep issue fields in a dictionary `_value`, while the
+status history remains available only through the resource's `changelog.get_all()` accessor.
+The original mapping guard inspected `_loaded_value(issue)` and therefore returned early for
+these resources. The guard now distinguishes an actual dictionary from an SDK Resource.
+Embedded history and raw-dictionary fallback behavior are unchanged; incomplete SDK search
+projections without a loaded status retain the existing no-hydration path, while a work issue
+with loaded status performs exactly one changelog read during normalization.
+
+- RED: the Resource-shaped regression failed with `changelog.calls == 0`.
+- GREEN: the regression verifies one changelog call, the exact queued timestamp, the
+  `status_history` source, the five-hour deadline, and queue ordering against an estimate.
+- Verification: `tests/test_tracker_read.py` and `tests/test_tracker_issue_fields.py` pass;
+  focused Ruff check and format check are clean.

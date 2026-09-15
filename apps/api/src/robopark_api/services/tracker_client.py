@@ -298,7 +298,9 @@ def _history_items(issue: Any) -> list[Any]:
             return list(embedded)
         except TypeError:
             return []
-    if isinstance(_loaded_value(issue), dict):
+    if isinstance(issue, dict):
+        return []
+    if not _field(issue, "status"):
         return []
     try:
         return list(issue.changelog.get_all())
