@@ -776,24 +776,29 @@ def approve_review(
 ) -> dict:
     if _role(actor) not in _REVIEW_ROLES:
         raise HTTPException(403, "task_review_operator_required")
+    existing = db.scalar(
+        select(ReliableAction).where(
+            ReliableAction.actor_user_id == actor.id,
+            ReliableAction.resource_type == "tracker_issue",
+            ReliableAction.resource_id == issue_key,
+            ReliableAction.action == "close",
+            ReliableAction.idempotency_key == idempotency_key,
+        )
+    )
+    if existing is not None:
+        saved_payload = json.loads(existing.payload_json)
+        saved_response = saved_payload.get("local_response")
+        if isinstance(saved_response, dict):
+            return saved_response
+        return _result(
+            db,
+            issue_key=issue_key,
+            actor=actor,
+            command="approve_review",
+            performed_at=existing.created_at,
+        )
     review = _active_review(db, issue_key, for_update=True)
     if review is None:
-        existing = db.scalar(
-            select(ReliableAction).where(
-                ReliableAction.actor_user_id == actor.id,
-                ReliableAction.resource_id == issue_key,
-                ReliableAction.action == "close",
-                ReliableAction.idempotency_key == idempotency_key,
-            )
-        )
-        if existing is not None:
-            return _result(
-                db,
-                issue_key=issue_key,
-                actor=actor,
-                command="approve_review",
-                performed_at=existing.created_at,
-            )
         raise HTTPException(409, "task_review_not_pending")
     if review.state != "pending":
         raise HTTPException(409, "task_review_not_pending")
@@ -816,7 +821,19 @@ def approve_review(
     )
     if begun.created:
         release_claim(db, issue_key)
+        local_response = _result(
+            db,
+            issue_key=issue_key,
+            actor=actor,
+            command="approve_review",
+            performed_at=begun.row.created_at,
+        )
+        saved_payload = json.loads(begun.row.payload_json)
+        encoded, digest = canonical_payload({**saved_payload, "local_response": local_response})
+        begun.row.payload_json = encoded
+        begun.row.payload_hash = digest
         db.commit()
+        return local_response
     return _result(
         db,
         issue_key=issue_key,

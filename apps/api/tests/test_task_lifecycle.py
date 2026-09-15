@@ -509,6 +509,46 @@ def test_pending_review_approval_releases_claim(
     assert db_session.get(TrackerClaim, ISSUE_KEY) is None
 
 
+def test_approve_replay_returns_cycle_one_result_without_mutating_cycle_two(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    operator = _operator(db_session, seed_park_with_tracker)
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+    assert _submit(client, key="review-cycle-one", comment="Починил").status_code == 200
+
+    login_as(client, operator.username, "secret")
+    first = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/review/approve",
+        headers={"Idempotency-Key": "approve-across-cycles"},
+    )
+    assert first.status_code == 200
+
+    login_as(client, seed_mechanic.username, "secret")
+    claimed = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/claim",
+        headers={"Idempotency-Key": "claim-cycle-two"},
+    )
+    assert claimed.status_code == 200
+    assert _submit(client, key="review-cycle-two", comment="Починил ещё").status_code == 200
+    cycle_two = db_session.query(TaskReview).order_by(TaskReview.created_at.desc()).first()
+    assert cycle_two.state == "pending"
+    cycle_two_id = cycle_two.id
+
+    login_as(client, operator.username, "secret")
+    replay = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/review/approve",
+        headers={"Idempotency-Key": "approve-across-cycles"},
+    )
+
+    assert replay.status_code == 200
+    assert replay.json() == first.json()
+    db_session.expire_all()
+    assert db_session.get(TaskReview, cycle_two_id).state == "pending"
+    assert db_session.get(TrackerClaim, ISSUE_KEY) is not None
+    assert db_session.query(ReliableAction).filter_by(action="close").count() == 1
+
+
 def test_concurrent_return_and_approve_create_only_the_winning_transition(
     client,
     db_engine,
