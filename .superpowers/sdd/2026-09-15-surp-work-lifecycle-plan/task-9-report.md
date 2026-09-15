@@ -30,3 +30,9 @@
 - Both unique submissions assert exactly two uploads and exactly two `theDefectCode` writes; all delivered action markers are present and each has count one. The rendered DOM timeline is asserted as an ordered sequence, and the comment counter assertion is non-vacuous.
 - The retained card test reproduced a real lifecycle-summary regression that exposed raw SUF/Port/Rover/Mode template fields. `TaskIssueSummary` now reuses the existing display-only `summarizeIssueDescription` projection; Classificator, Comment, Zone and repair notes remain visible.
 - Final focused Playwright: 5 passed in 13.4s. TypeScript, scoped Oxlint, bridge Ruff check/format and `git diff --check`: passed.
+
+## Fix round 3 — exact upstream comment set
+
+- Replaced the non-empty comment-counter loop with an exact scripted cardinality: seven `comment` actions and two `attach` actions must exist.
+- Expected upstream marker keys are derived from those nine persisted stable action IDs. The complete delivered marker-key map must equal the derived set with every value exactly one, so an extra, missing or duplicate user, handoff, return, clarification or attachment comment fails the test.
+- Proved RED by deliberately omitting one expected action; Playwright reported the ninth delivered marker as an unexpected key. Final lifecycle Playwright passed desktop and 390×844 (2 passed in 12.3s); the full focused Task 9 set passed (5 passed in 13.0s). TypeScript, scoped Oxlint and `git diff --check` passed.
