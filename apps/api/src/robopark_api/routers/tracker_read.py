@@ -41,6 +41,7 @@ from robopark_api.services.tracker_claims import (
     local_assignee,
     local_assignees,
     mechanic_can_access_issue,
+    owned_issue_keys,
 )
 from robopark_api.services.tracker_policy import (
     allowed_park_tags_for_user,
@@ -341,6 +342,7 @@ def list_issues(
     limit: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     offset: int = Query(default=0, ge=0),
     include_hidden: bool = Query(default=False),
+    owned_by_me: bool = Query(default=False),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerIssuesOut:
@@ -364,12 +366,12 @@ def list_issues(
     query_text = _build_query(
         user=user,
         db=db,
-        queue=queue,
-        park=park,
-        status_filter=status_filter,
+        queue=None if owned_by_me else queue,
+        park=None if owned_by_me else park,
+        status_filter=None if owned_by_me else status_filter,
         robot=robot,
-        assignee=assignee,
-        untagged=untagged,
+        assignee=None if owned_by_me else assignee,
+        untagged=False if owned_by_me else untagged,
         related_repairs=related_repairs,
     )
     if open_only and status_filter:
@@ -397,7 +399,7 @@ def list_issues(
         items = tracker_cache.search_issues(
             token=token,
             query=query_text,
-            filter_open=open_only or not bool(status_filter),
+            filter_open=owned_by_me or open_only or not bool(status_filter),
             order=["createdAt"],
         )
     except tracker_client.TrackerError as exc:
@@ -419,6 +421,14 @@ def list_issues(
     scoped_raw: list[dict] = []
     seen_keys: set[str] = set()
     hidden_keys = task_lifecycle.hidden_issue_keys(db)
+    owned_parks = (
+        None
+        if rbac.is_admin_or_royal(user)
+        else {park.id for park in get_user_parks(db, user)}
+    )
+    owned_keys = (
+        owned_issue_keys(db, user, park_ids=owned_parks) if owned_by_me else set()
+    )
     # Raw upstream data is shared; authorization is loaded afresh for this
     # response after the upstream wait and reused only across its rows.
     scope = load_issue_scope(db, user)
@@ -444,6 +454,8 @@ def list_issues(
             continue
         key = str(issue.get("key") or "").strip()
         if key in hidden_keys and not include_hidden:
+            continue
+        if owned_by_me and key not in owned_keys:
             continue
         if key == excluded_key or key in seen_keys:
             continue

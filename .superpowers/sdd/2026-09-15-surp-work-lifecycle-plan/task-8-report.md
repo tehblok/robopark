@@ -29,3 +29,11 @@
 - App shell branding, responsive navigation tests, and styles.
 - Work page, filters, workbench, responsive styles, and tests.
 - Russian product copy, HTML title, and screenshot watermark/test.
+
+## Fix round 1
+
+- Added the typed `owned_by_me` list request. The API now selects owned work from active local claims after permission scope and hidden-task filtering, without upstream assignee, park, or status filters.
+- Local claim ownership and claim park are applied before stable oldest-first pagination, so null/stale Tracker assignees still work and another owner or park cannot leak into the result.
+- Confirmed lifecycle mutations invalidate and immediately refresh the owned list once; focused coverage verifies the refresh does not loop.
+- Replaced the non-erasable TypeScript constructor parameter property and corrected workflow/dashboard client fixtures.
+- Verification: API 55/55; web 108/108; TypeScript, Ruff, Oxlint, navigation check, and production Vite build passed.

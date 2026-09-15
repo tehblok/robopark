@@ -437,6 +437,7 @@ function IssueWorkbenchOwner({
   const listKey = `${accessPrefix}list:${selectedPark.id}:${JSON.stringify({ filters: requestState.filters, sort: requestState.sort, page: requestState.page })}`
   const detailKey = issueKey ? `${accessPrefix}issue:${issueKey}` : ''
   const commentsKey = issueKey ? `${accessPrefix}comments:${issueKey}` : ''
+  const ownedKey = `${accessPrefix}owned:${user.username}`
   const blockedRef = useRef(false)
   const blockedErrorRef = useRef<unknown>(null)
   const refreshStartedRef = useRef(false)
@@ -487,9 +488,9 @@ function IssueWorkbenchOwner({
     () => guarded(() => loadWorkPage(apiClient, requestState, selectedPark.tag)),
   )
   const owned = useCachedResource<Paged<TrackerIssue>>(
-    `${accessPrefix}owned:${user.username}`,
+    ownedKey,
     () => guarded(() => apiClient.trackerIssues({
-      assignee: user.username,
+      owned_by_me: true,
       open_only: true,
       sort: 'oldest',
       limit: 50,
@@ -628,6 +629,7 @@ function IssueWorkbenchOwner({
     resourceStore.invalidate(`${accessPrefix}list:${selectedPark.id}:`, {
       prefix: true,
     })
+    resourceStore.invalidate(ownedKey)
     if (!issueKey) return
     resourceStore.invalidate(detailKey)
     resourceStore.invalidate(commentsKey)
@@ -636,6 +638,7 @@ function IssueWorkbenchOwner({
     setRelatedRefreshGeneration((generation) => generation + 1)
     void Promise.allSettled([
       list.refresh(),
+      ...(user.role === 'mechanic' ? [owned.refresh()] : []),
       detail.refresh(),
       comments.refresh(),
       ...(transitionsEnabled ? [transitions.refresh()] : []),
@@ -648,9 +651,12 @@ function IssueWorkbenchOwner({
     detailKey,
     issueKey,
     list,
+    owned,
+    ownedKey,
     selectedPark.id,
     transitions,
     transitionsEnabled,
+    user.role,
   ])
 
   const mutate = useCallback(async (action: (assertCurrent: () => void) => Promise<unknown>, onSuccess?: () => void) => {

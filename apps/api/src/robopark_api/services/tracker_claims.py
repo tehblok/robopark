@@ -29,6 +29,17 @@ def get_claim(db: Session, issue_key: str) -> TrackerClaim | None:
     return db.get(TrackerClaim, issue_key.strip())
 
 
+def owned_issue_keys(
+    db: Session, user: User, *, park_ids: set[int] | None = None
+) -> set[str]:
+    query = select(TrackerClaim.issue_key).where(TrackerClaim.owner_user_id == user.id)
+    if park_ids is not None:
+        if not park_ids:
+            return set()
+        query = query.where(TrackerClaim.park_id.in_(park_ids))
+    return set(db.scalars(query).all())
+
+
 def claim_issue(
     db: Session,
     *,

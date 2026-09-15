@@ -1,7 +1,10 @@
 export class StableMutationKey {
   private readonly entries = new Map<string, { payload: string; key: string }>()
+  private readonly createKey: () => string
 
-  constructor(private readonly createKey: () => string = () => crypto.randomUUID()) {}
+  constructor(createKey: () => string = () => crypto.randomUUID()) {
+    this.createKey = createKey
+  }
 
   get(action: string, payload: string): string {
     const current = this.entries.get(action)

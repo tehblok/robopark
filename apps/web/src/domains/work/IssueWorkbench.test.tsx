@@ -28,6 +28,8 @@ import {
   type WorkUrlState,
 } from './workUrl'
 
+type WorkPageApiClient = IssueWorkbenchApiClient & Pick<typeof api, 'dashboardSummary'>
+
 const state: WorkUrlState = {
   filters: { queue: 'ROBOPARK' },
   sort: 'oldest',
@@ -92,7 +94,7 @@ function actionResult(action: string) {
 
 function apiClient(
   overrides: Partial<IssueWorkbenchApiClient> = {},
-): IssueWorkbenchApiClient {
+): WorkPageApiClient {
   return {
     trackerIssues: vi.fn(async () => page()),
     trackerIssue: vi.fn(async () => issue),
@@ -109,6 +111,10 @@ function apiClient(
     writeoffInventoryForTask: vi.fn(),
     inventoryComponentPhotoUrl: vi.fn(id => `/api/inventory/components/${id}/photo`),
     inventoryPartPhotoUrl: vi.fn(id => `/api/inventory/parts/${id}/photo`),
+    dashboardSummary: vi.fn(async parkId => ({
+      park_id: parkId, generated_at: '2026-09-15T09:00:00Z', arrived: 0, done: 0,
+      queued: 0, in_transit: 0, moving: [],
+    })),
     ...overrides,
   }
 }
@@ -152,7 +158,7 @@ it('pins owned active tasks from an independent query and deduplicates the queue
   const owned = { ...issue, key: 'ROBOPARK-OWNED', summary: 'Моя активная', assignee: { display: 'mech1', login: 'mech1' } }
   const queued = { ...issue, key: 'ROBOPARK-QUEUE', summary: 'Общая очередь' }
   const trackerIssues = vi.fn(async (query: Parameters<IssueWorkbenchApiClient['trackerIssues']>[0]) => (
-    query.assignee === 'mech1' && !query.queue && !query.park && !query.status
+    query.owned_by_me
       ? page([owned])
       : page([queued, owned])
   ))
@@ -168,9 +174,10 @@ it('pins owned active tasks from an independent query and deduplicates the queue
     expect.stringContaining('ROBOPARK-QUEUE'),
   ])
   expect(trackerIssues).toHaveBeenCalledWith(expect.objectContaining({
-    assignee: 'mech1', open_only: true, sort: 'oldest', limit: 50, offset: 0,
+    owned_by_me: true, open_only: true, sort: 'oldest', limit: 50, offset: 0,
   }))
-  const ownedQuery = trackerIssues.mock.calls.find(([query]) => query.assignee === 'mech1')?.[0]
+  const ownedQuery = trackerIssues.mock.calls.find(([query]) => query.owned_by_me)?.[0]
+  expect(ownedQuery).not.toHaveProperty('assignee')
   expect(ownedQuery).not.toHaveProperty('queue')
   expect(ownedQuery).not.toHaveProperty('park')
   expect(ownedQuery).not.toHaveProperty('status')
@@ -361,8 +368,9 @@ describe('IssueWorkbench', () => {
     const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
     const workflowIssue: TrackerIssueDetail = { ...issue, claim: { park_id: park.id }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'saved', has_current_cycle_comment: true } }
     const taskHandoff = vi.fn().mockRejectedValueOnce(new Error('response lost')).mockResolvedValueOnce({})
+    const client = apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskHandoff })
     vi.spyOn(api, 'trackerUsers').mockResolvedValue([])
-    renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskHandoff }) })
+    renderWorkbench({ currentUser: mechanic, client })
     fireEvent.click(await screen.findByRole('button', { name: 'Передать смену' }))
     fireEvent.change(screen.getByLabelText('Логин сменщика'), { target: { value: 'bob' } })
     fireEvent.change(screen.getByLabelText('Причина передачи'), { target: { value: 'Конец смены' } })
@@ -372,10 +380,17 @@ describe('IssueWorkbench', () => {
     await waitFor(() => expect(taskHandoff).toHaveBeenCalledTimes(2))
     expect(taskHandoff.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ assignee: 'bob', reason: 'Конец смены' }))
     expect(taskHandoff.mock.calls[0]?.[2]).toBe(taskHandoff.mock.calls[1]?.[2])
+    await waitFor(() => expect(vi.mocked(client.trackerIssues).mock.calls.filter(
+      ([query]) => query.owned_by_me,
+    )).toHaveLength(2))
+    await act(async () => { await Promise.resolve() })
+    expect(vi.mocked(client.trackerIssues).mock.calls.filter(
+      ([query]) => query.owned_by_me,
+    )).toHaveLength(2)
   })
 
   it('maps workflow status once and keeps unknown values nontechnical', async () => {
-    renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => ({ ...issue, workflow: { owner: null, review_state: null, display_status: 'future' as never, sync_state: 'saved', has_current_cycle_comment: false } })) }) })
+    renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async (): Promise<TrackerIssueDetail> => ({ ...issue, workflow: { owner: null, review_state: null, display_status: 'future' as never, sync_state: 'saved', has_current_cycle_comment: false } })) }) })
     expect(await screen.findByText('Статус обновляется')).toBeVisible()
     expect(screen.getAllByText('Статус обновляется')).toHaveLength(1)
     expect(screen.queryByText('future')).not.toBeInTheDocument()
@@ -384,7 +399,7 @@ describe('IssueWorkbench', () => {
     const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
     renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => ({
       ...issue, assignee: { display: 'mech', login: 'mech' }, claim: { park_id: park.id },
-      workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress' as const, sync_state: 'saved' as const },
+      workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress' as const, sync_state: 'saved' as const, has_current_cycle_comment: false },
     })) }) })
     expect(await screen.findByRole('heading', { name: issue.summary })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'История действий' })).not.toBeInTheDocument()
@@ -950,7 +965,7 @@ describe('IssueWorkbench', () => {
     expect(trackerTransitions).not.toHaveBeenCalled()
   })
 
-  it('invalidates and refreshes only the selected issue resources after mutation', async () => {
+  it('invalidates the owned list and selected issue resources after mutation', async () => {
     const invalidate = vi.spyOn(resourceStore, 'invalidate')
     const clearAll = vi.spyOn(resourceStore, 'clearAll')
     const client = apiClient()
@@ -963,10 +978,11 @@ describe('IssueWorkbench', () => {
     fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
 
     await screen.findByText('Действие выполнено')
-    expect(invalidate).toHaveBeenCalledTimes(5)
+    expect(invalidate).toHaveBeenCalledTimes(6)
     expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}list:${park.id}:`, {
       prefix: true,
     })
+    expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}owned:${user.username}`)
     expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}issue:${issue.key}`)
     expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}comments:${issue.key}`)
     expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}transitions:${issue.key}`)
@@ -1228,7 +1244,7 @@ describe('WorkPage cold states', () => {
     loading?: boolean
     selectedPark?: Park | null
     parkId?: number | null
-    client?: IssueWorkbenchApiClient
+    client?: WorkPageApiClient
   } = {}) {
     return render(
       <AuthContext.Provider
@@ -1290,7 +1306,7 @@ describe('WorkPage cold states', () => {
 })
 
 describe('WorkPage authorization lifetime', () => {
-  function renderRefreshingPage(client: IssueWorkbenchApiClient) {
+  function renderRefreshingPage(client: WorkPageApiClient) {
     let replaceUser: (next: User) => void = () => undefined
     const refreshUser = vi.fn(async () => {
       const refreshed = { ...user, parks: [...user.parks] }

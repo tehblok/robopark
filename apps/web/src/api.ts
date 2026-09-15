@@ -1407,6 +1407,7 @@ export const api = {
     sort?: 'oldest' | 'newest'
     limit?: number
     offset?: number
+    owned_by_me?: boolean
   }) => {
     const q = new URLSearchParams({ sort: params.sort ?? 'oldest' })
     Object.entries(params).forEach(([key, value]) => {

@@ -3,9 +3,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from conftest import login_as, role_id_for
+from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import AccessStatus, Park, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings
+from robopark_api.task_workflow_models import HiddenTask
 
 
 def _seed_operator(db_session, park):
@@ -116,6 +118,83 @@ def test_tracker_list_preserves_upstream_order_for_equal_queue_timestamps(
 
     assert [item["key"] for item in oldest] == ["ROBOPARK-2", "ROBOPARK-1"]
     assert [item["key"] for item in newest] == ["ROBOPARK-2", "ROBOPARK-1"]
+
+
+def test_tracker_owned_list_uses_local_claims_before_pagination_and_scope(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    other_park = Park(
+        name="Beta", tag="Beta", is_active=True, tracker_queue="ROBOPARK", feature_blockers=True
+    )
+    other_owner = User(
+        username="mech2",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "mechanic"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add_all([other_park, other_owner])
+    db_session.flush()
+    claims = [
+        ("ROBOPARK-OWN-OLD", seed_park_with_tracker.id, seed_mechanic.id),
+        ("ROBOPARK-OTHER-OWNER", seed_park_with_tracker.id, other_owner.id),
+        ("ROBOPARK-OTHER-PARK", other_park.id, seed_mechanic.id),
+        ("ROBOPARK-HIDDEN", seed_park_with_tracker.id, seed_mechanic.id),
+        ("ROBOPARK-OWN-NEW", seed_park_with_tracker.id, seed_mechanic.id),
+    ]
+    db_session.add_all([
+        TrackerClaim(
+            issue_key=key,
+            park_id=park_id,
+            owner_user_id=owner_id,
+            updated_by_user_id=owner_id,
+            updated_at=1,
+        )
+        for key, park_id, owner_id in claims
+    ])
+    db_session.add(HiddenTask(
+        id="hidden-owned",
+        issue_key="ROBOPARK-HIDDEN",
+        park_id=seed_park_with_tracker.id,
+        reason="duplicate",
+        actor_user_id=other_owner.id,
+        created_at=1,
+        updated_at=1,
+    ))
+    db_session.commit()
+
+    issues = [
+        {**_scoped_issue("ROBOPARK-OWN-NEW", "2026-01-05T00:00:00Z"), "assignee": None},
+        # Upstream tags are stale; the local claim park remains authoritative.
+        _scoped_issue("ROBOPARK-OTHER-PARK", "2026-01-03T00:00:00Z"),
+        {**_scoped_issue("ROBOPARK-OTHER-OWNER", "2026-01-02T00:00:00Z")},
+        {**_scoped_issue("ROBOPARK-HIDDEN", "2026-01-04T00:00:00Z")},
+        {
+            **_scoped_issue("ROBOPARK-OWN-OLD", "2026-01-01T00:00:00Z"),
+            "assignee": {"login": "stale.tracker", "display": "stale.tracker"},
+        },
+    ]
+    captured = {}
+
+    from robopark_api.services import tracker_client
+
+    def fake_search(**kwargs):
+        captured.update(kwargs)
+        return issues
+
+    monkeypatch.setattr(tracker_client, "search_issues", fake_search)
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.get("/tracker/issues?owned_by_me=true&sort=oldest&limit=1&offset=1")
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
+    assert [item["key"] for item in response.json()["items"]] == ["ROBOPARK-OWN-NEW"]
+    assert response.json()["items"][0]["assignee"]["login"] == seed_mechanic.username
+    assert "Assignee:" not in captured["query"]
+    assert "Tags:" not in captured["query"]
+    assert captured["filter_open"] is True
 
 
 def test_tracker_list_prefers_queue_history_and_exposes_exact_five_hour_sla(

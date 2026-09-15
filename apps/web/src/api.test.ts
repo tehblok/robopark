@@ -106,6 +106,23 @@ describe('API transport metadata', () => {
     )
   })
 
+  it('requests locally owned work without Tracker assignee or park filters', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ items: [], total: 0, limit: 50, offset: 0, has_more: false }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.trackerIssues({ owned_by_me: true, open_only: true, limit: 50, offset: 0 })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/tracker/issues?sort=oldest&owned_by_me=true&open_only=true&limit=50&offset=0',
+      expect.objectContaining({ credentials: 'include' }),
+    )
+  })
+
   it('keeps exact related-robot matching separate from the generic summary search', async () => {
     const fetchMock = vi.fn(async () =>
       new Response(
