@@ -198,6 +198,15 @@ def workflow(
         "queued_at": queued_at,
         "queued_at_source": "created_at_estimate" if queued_at else None,
         "hidden": hidden_out,
+        "has_current_cycle_comment": bool(
+            claim is not None
+            and _valid_current_comment(
+                db,
+                issue_key=issue_key,
+                owner_id=claim.owner_user_id,
+                boundary=claim.updated_at,
+            )
+        ),
     }
 
 
@@ -288,12 +297,38 @@ def handoff(
     actor: User,
     issue_key: str,
     assignee: str,
+    reason: str,
     idempotency_key: str | None,
+    done: str = "",
+    remaining: str = "",
+    obstacles: str = "",
 ) -> dict:
     current = get_claim(db, issue_key)
     if current is None:
         raise HTTPException(409, "tracker_issue_claim_required")
     target = _target_mechanic(db, username=assignee, park_id=current.park_id)
+    reason = reason.strip()
+    if not reason:
+        raise HTTPException(400, "task_handoff_reason_required")
+    done, remaining, obstacles = done.strip(), remaining.strip(), obstacles.strip()
+    previous = db.get(User, current.owner_user_id)
+    message_lines = [
+        f"Передача смены: {previous.username} → {target.username}",
+        f"Причина: {reason}",
+    ]
+    for label, value in (("Сделано", done), ("Осталось", remaining), ("Препятствия", obstacles)):
+        if value:
+            message_lines.append(f"{label}: {value}")
+    message_text = "\n".join(message_lines)
+    payload = {
+        "text": message_text,
+        "from_user_id": current.owner_user_id,
+        "to_user_id": target.id,
+        "reason": reason,
+        "done": done,
+        "remaining": remaining,
+        "obstacles": obstacles,
+    }
     existing = db.scalar(
         select(ReliableAction).where(
             ReliableAction.actor_user_id == actor.id,
@@ -305,7 +340,10 @@ def handoff(
     )
     if existing is not None:
         saved_payload = json.loads(existing.payload_json)
-        if saved_payload.get("to_user_id") != target.id:
+        if any(
+            saved_payload.get(field) != payload[field]
+            for field in ("to_user_id", "reason", "done", "remaining", "obstacles")
+        ):
             raise HTTPException(409, "reliable_action_payload_conflict")
         return _result(
             db,
@@ -318,15 +356,13 @@ def handoff(
         raise HTTPException(403, "task_handoff_owner_required")
     if _role(actor) not in _REVIEW_ROLES | {rbac.RoleSlug.MECHANIC}:
         raise HTTPException(403, "task_handoff_forbidden")
-    previous = db.get(User, current.owner_user_id)
-    payload = {"from_user_id": current.owner_user_id, "to_user_id": target.id}
     begun = _action(
         db,
         actor=actor,
         issue_key=issue_key,
         action="comment",
         idempotency_key=idempotency_key,
-        payload={"text": f"Передача смены: {previous.username} → {target.username}", **payload},
+        payload=payload,
     )
     if begun.created:
         claim_issue(
@@ -341,7 +377,7 @@ def handoff(
             db,
             issue_key=issue_key,
             actor=actor,
-            text=f"Передача смены: {previous.username} → {target.username}",
+            text=message_text,
             action=begun.row,
         )
         db.commit()

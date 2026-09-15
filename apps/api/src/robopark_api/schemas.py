@@ -575,6 +575,7 @@ class TaskWorkflowOut(BaseModel):
     queued_at: str | None = None
     queued_at_source: Literal["tracker_history", "created_at_estimate"] | None = None
     hidden: TaskHiddenOut | None = None
+    has_current_cycle_comment: bool = False
 
 
 class TrackerIssueDetailOut(TrackerIssueOut):
@@ -668,6 +669,10 @@ class TrackerTransitionIn(BaseModel):
 
 class TaskHandoffIn(BaseModel):
     assignee: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=1, max_length=4000)
+    done: str = Field(default="", max_length=4000)
+    remaining: str = Field(default="", max_length=4000)
+    obstacles: str = Field(default="", max_length=4000)
 
 
 class TaskReviewReturnIn(BaseModel):

@@ -302,6 +302,55 @@ beforeEach(() => {
 })
 
 describe('IssueWorkbench', () => {
+  it('uses workflow owner and server comment eligibility as authoritative state', async () => {
+    const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
+    const workflowIssue: TrackerIssueDetail = {
+      ...issue, assignee: { display: 'stale', login: 'stale' }, claim: { park_id: park.id },
+      workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'saved', has_current_cycle_comment: true },
+    }
+    renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue) }) })
+    expect(await screen.findByRole('button', { name: 'Передать на проверку' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Передать на проверку' }))
+    expect(await screen.findByRole('textbox', { name: 'Добавить уточнение' })).not.toBeRequired()
+  })
+
+  it('retries a locally committed message with the same idempotency key', async () => {
+    const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
+    const workflowIssue: TrackerIssueDetail = { ...issue, claim: { park_id: park.id }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'pending', has_current_cycle_comment: false } }
+    const taskMessage = vi.fn().mockRejectedValueOnce(new Error('response lost')).mockResolvedValueOnce({})
+    renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskMessage }) })
+    const composer = await screen.findByRole('textbox', { name: ru.tracker.comments })
+    fireEvent.change(composer, { target: { value: 'Заменил датчик' } })
+    fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
+    await waitFor(() => expect(taskMessage).toHaveBeenCalledTimes(2))
+    expect(taskMessage.mock.calls[0]?.[2]).toBe(taskMessage.mock.calls[1]?.[2])
+  })
+
+  it('uses lifecycle handoff and keeps its key when the response is lost', async () => {
+    const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
+    const workflowIssue: TrackerIssueDetail = { ...issue, claim: { park_id: park.id }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'saved', has_current_cycle_comment: true } }
+    const taskHandoff = vi.fn().mockRejectedValueOnce(new Error('response lost')).mockResolvedValueOnce({})
+    vi.spyOn(api, 'trackerUsers').mockResolvedValue([])
+    renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskHandoff }) })
+    fireEvent.click(await screen.findByRole('button', { name: 'Передать смену' }))
+    fireEvent.change(screen.getByLabelText('Логин сменщика'), { target: { value: 'bob' } })
+    fireEvent.change(screen.getByLabelText('Причина передачи'), { target: { value: 'Конец смены' } })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Передать смену' }).at(-1)!)
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getAllByRole('button', { name: 'Передать смену' }).at(-1)!)
+    await waitFor(() => expect(taskHandoff).toHaveBeenCalledTimes(2))
+    expect(taskHandoff.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ assignee: 'bob', reason: 'Конец смены' }))
+    expect(taskHandoff.mock.calls[0]?.[2]).toBe(taskHandoff.mock.calls[1]?.[2])
+  })
+
+  it('maps workflow status once and keeps unknown values nontechnical', async () => {
+    renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => ({ ...issue, workflow: { owner: null, review_state: null, display_status: 'future' as never, sync_state: 'saved', has_current_cycle_comment: false } })) }) })
+    expect(await screen.findByText('Статус обновляется')).toBeVisible()
+    expect(screen.getAllByText('Статус обновляется')).toHaveLength(1)
+    expect(screen.queryByText('future')).not.toBeInTheDocument()
+  })
   it('uses one chat and keeps task actions in compact lifecycle order', async () => {
     const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
     renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => ({

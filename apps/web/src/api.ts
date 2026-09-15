@@ -386,6 +386,7 @@ export type TaskWorkflow = {
   sync_state: TaskSyncState
   queued_at?: string | null
   queued_at_source?: 'tracker_history' | 'created_at_estimate' | null
+  has_current_cycle_comment: boolean
 }
 
 export type TrackerIssueDetail = TrackerIssue & {
@@ -1454,7 +1455,7 @@ export const api = {
     return requestForm<TaskAttachmentStaged>(`/tracker/issues/${encodeURIComponent(key)}/message-attachments`, form, { 'Idempotency-Key': idempotencyKey })
   },
   taskClaim: (key: string, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/claim`, { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey } }),
-  taskHandoff: (key: string, assignee: string, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/handoff`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ assignee }) }),
+  taskHandoff: (key: string, value: { assignee: string; reason: string; done?: string; remaining?: string; obstacles?: string }, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/handoff`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(value) }),
   taskSubmitReview: (key: string, value: { defectCode: string; photo: File; comment?: string }, idempotencyKey: string) => {
     const form = new FormData(); form.append('defect_code', value.defectCode); form.append('photo', value.photo, value.photo.name); if (value.comment?.trim()) form.append('comment', value.comment.trim())
     return requestForm<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/submit-review`, form, { 'Idempotency-Key': idempotencyKey })

@@ -141,9 +141,7 @@ def test_claim_requires_tracker_write_permission(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
     _prepare_tracker(db_session, monkeypatch)
-    desired = rbac.role_permission_keys(db_session, seed_mechanic) - {
-        rbac.PERMISSION_TRACKER_WRITE
-    }
+    desired = rbac.role_permission_keys(db_session, seed_mechanic) - {rbac.PERMISSION_TRACKER_WRITE}
     rbac.set_user_effective_permissions(db_session, seed_mechanic, desired)
 
     response = _claim(client, seed_mechanic)
@@ -163,18 +161,51 @@ def test_handoff_replay_changes_owner_and_writes_one_message(
     first = client.post(
         f"/tracker/issues/{ISSUE_KEY}/handoff",
         headers={"Idempotency-Key": "handoff-task-51"},
-        json={"assignee": next_mechanic.username},
+        json={
+            "assignee": next_mechanic.username,
+            "reason": "Смена закончилась",
+            "done": "Заменён мотор",
+            "remaining": "Проверить",
+            "obstacles": "",
+        },
     )
     replay = client.post(
         f"/tracker/issues/{ISSUE_KEY}/handoff",
         headers={"Idempotency-Key": "handoff-task-51"},
-        json={"assignee": next_mechanic.username},
+        json={
+            "assignee": next_mechanic.username,
+            "reason": "Смена закончилась",
+            "done": "Заменён мотор",
+            "remaining": "Проверить",
+            "obstacles": "",
+        },
     )
 
     assert first.status_code == replay.status_code == 200
     assert first.json() == replay.json()
     assert db_session.get(TrackerClaim, ISSUE_KEY).owner_user_id == next_mechanic.id
     assert db_session.query(TaskMessage).count() == before + 1
+    message = db_session.query(TaskMessage).order_by(TaskMessage.created_at.desc()).first()
+    assert "Смена закончилась" in message.text
+    assert "Заменён мотор" in message.text
+
+
+def test_workflow_exposes_current_cycle_comment_eligibility(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+    before = client.get(f"/tracker/issues/{ISSUE_KEY}")
+    assert before.status_code == 200
+    assert before.json()["workflow"]["has_current_cycle_comment"] is False
+    posted = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/messages",
+        headers={"Idempotency-Key": "cycle-comment-51"},
+        json={"text": "Заменил датчик"},
+    )
+    assert posted.status_code == 201
+    after = client.get(f"/tracker/issues/{ISSUE_KEY}")
+    assert after.json()["workflow"]["has_current_cycle_comment"] is True
 
 
 def test_submit_review_requires_current_cycle_comment_one_known_code_and_one_valid_image(
@@ -383,9 +414,7 @@ def test_returned_review_rejects_duplicate_return_and_approval(
     assert approved.status_code == 409
 
     next_mechanic.is_active = False
-    db_session.delete(
-        db_session.query(UserPark).filter_by(user_id=next_mechanic.id).one()
-    )
+    db_session.delete(db_session.query(UserPark).filter_by(user_id=next_mechanic.id).one())
     review = db_session.query(TaskReview).one()
     review.state = "pending"
     review.return_reason = None

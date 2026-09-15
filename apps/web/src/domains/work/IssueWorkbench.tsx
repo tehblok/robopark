@@ -50,6 +50,7 @@ import { RepairSla } from './RepairSla'
 import { SubmitReviewForm } from './SubmitReviewForm'
 import { TaskSyncStatus } from './TaskSyncStatus'
 import { TaskTimeline } from './TaskTimeline'
+import { StableMutationKey } from './stableMutationKey'
 import { loadWorkPage, oldestFirst } from './workData'
 import {
   buildWorkSearch,
@@ -119,9 +120,10 @@ function failureFor(error: unknown, fallback: string): DomainError | null {
 
 function mechanicOwnsIssue(user: User, issue: TrackerIssueDetail): boolean {
   const expected = user.username.trim().toLocaleLowerCase()
+  const owner = issue.workflow ? issue.workflow.owner?.login : issue.assignee?.login
   return user.role === 'mechanic'
     && Boolean(expected)
-    && issue.assignee?.login?.trim().toLocaleLowerCase() === expected
+    && owner?.trim().toLocaleLowerCase() === expected
 }
 
 function ClosedDisclosure({ title, children }: { title: string; children: ReactNode }) {
@@ -133,16 +135,27 @@ function ClosedDisclosure({ title, children }: { title: string; children: ReactN
 
 function TaskIssueSummary({ issue, now, onOpenRobotCheck, robotReadOnly }: { issue: TrackerIssueDetail; now: number; onOpenRobotCheck?: () => void; robotReadOnly: boolean }) {
   const robot = normalizedRobotNumber(issue.robot)
+  const status = taskWorkflowStatus(issue.workflow?.display_status)
   return <article className="issue-detail">
-    <header className="issue-detail-head"><div className="issue-detail-title-row"><a className="issue-detail-key" href={issue.url} rel="noreferrer" target="_blank">{issue.key}</a><StatusBadge tone={issueStatusTone(issue)}>{issue.workflow?.display_status ?? issue.status}</StatusBadge></div><h2 className="issue-detail-summary">{issue.summary}</h2></header>
+    <header className="issue-detail-head"><div className="issue-detail-title-row"><a className="issue-detail-key" href={issue.url} rel="noreferrer" target="_blank">{issue.key}</a><StatusBadge tone={status.tone}>{status.label}</StatusBadge></div><h2 className="issue-detail-summary">{issue.summary}</h2></header>
     <dl className="issue-fields">
       {robot ? <div className="issue-field"><dt>Робот</dt><dd>{robotReadOnly || !onOpenRobotCheck ? robot : <button className="rp-work-robot-link" onClick={onOpenRobotCheck} type="button">{robot}</button>}</dd></div> : null}
-      <div className="issue-field"><dt>Статус СУРП</dt><dd>{issue.workflow?.display_status ?? issue.status}</dd></div>
       <div className="issue-field"><dt>Ответственный</dt><dd>{personName(issue.workflow?.owner ?? issue.assignee)}</dd></div>
     </dl>
     <RepairSla deadline={issue.sla_deadline} now={now} source={issue.sla_source} />
     {issue.description?.trim() ? <section className="issue-section"><h3>Описание</h3><IssueRichText text={issue.description} /></section> : null}
   </article>
+}
+
+function taskWorkflowStatus(value: string | undefined): { label: string; tone: StatusTone } {
+  switch (value) {
+    case 'queued': return { label: 'В очереди', tone: 'neutral' }
+    case 'in_progress': return { label: 'В работе', tone: 'info' }
+    case 'review': return { label: 'На проверке', tone: 'warning' }
+    case 'closed': return { label: 'Закрыта', tone: 'success' }
+    case 'hidden': return { label: 'Скрыта', tone: 'neutral' }
+    default: return { label: 'Статус обновляется', tone: 'neutral' }
+  }
 }
 
 function EmbeddedTaskCollaboration(props: React.ComponentProps<typeof TaskCollaboration>) {
@@ -231,13 +244,19 @@ function ClaimableIssueRow({ item, selected, onOpen, requireClaim, mechanicLogin
 }) {
   const [claiming, setClaiming] = useState(false)
   const [claimError, setClaimError] = useState('')
+  const mutationKey = useRef(new StableMutationKey())
   const assigned = item.assignee?.login?.trim() ?? ''
   const mine = Boolean(mechanicLogin && assigned.toLocaleLowerCase() === mechanicLogin.toLocaleLowerCase())
   const claim = async () => {
     if (!apiClient || !mechanicLogin || claiming) return
     setClaiming(true); setClaimError('')
     try {
-      if (apiClient.taskClaim) await apiClient.taskClaim(item.key, crypto.randomUUID())
+      if (apiClient.taskClaim) {
+        const payload = mechanicLogin
+        const key = mutationKey.current.get('claim', payload)
+        await apiClient.taskClaim(item.key, key)
+        mutationKey.current.succeeded('claim', payload)
+      }
       else await apiClient.trackerAssign(item.key, mechanicLogin)
       onClaimed?.()
       onOpen(item.key)
@@ -425,6 +444,7 @@ function IssueWorkbenchOwner({
   const [authorizationFailure, setAuthorizationFailure] = useState<DomainError | null>(null)
   const [relatedRefreshGeneration, setRelatedRefreshGeneration] = useState(0)
   const [reviewOpen, setReviewOpen] = useState(false)
+  const mutationKeys = useRef(new StableMutationKey())
 
   useLayoutEffect(() => () => { ++ownerGeneration.current }, [])
 
@@ -638,6 +658,14 @@ function IssueWorkbenchOwner({
     onSuccess?.()
   }, [getAccessGeneration, guarded, invalidateMutationResources])
 
+  const lifecycleMutation = useCallback(async <T,>(action: string, payload: unknown, request: (key: string) => Promise<T>): Promise<T> => {
+    const serialized = JSON.stringify(payload)
+    const key = mutationKeys.current.get(action, serialized)
+    const result = await request(key)
+    mutationKeys.current.succeeded(action, serialized)
+    return result
+  }, [])
+
   const detailSideFailure = useMemo(() => {
     const failures = [
       detailFailure,
@@ -665,13 +693,7 @@ function IssueWorkbenchOwner({
       ),
   )
   const taskComments = comments.data ?? []
-  const latestCycleBoundary = taskComments.reduce((latest, item) => (
-    item.kind === 'system' && /(взята? в работу|передана? .*смен|возвращена?)/i.test(item.text)
-      && item.created_at > latest ? item.created_at : latest
-  ), '')
-  const hasQualifyingComment = taskComments.some(item => item.kind === 'user'
-    && item.author.toLocaleLowerCase() === user.username.toLocaleLowerCase()
-    && item.created_at >= latestCycleBoundary && item.text.trim())
+  const hasQualifyingComment = detail.data?.workflow?.has_current_cycle_comment ?? false
   if (authorizationFailure) {
     return (
       <ErrorState
@@ -776,16 +798,18 @@ function IssueWorkbenchOwner({
                         onClose={detail.data.workflow ? async () => undefined : () => mutate((assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'close', {}, headers => apiClient.trackerClose(detail.data!.key, headers), assertCurrent), onCloseIssue)}
                         onComment={(text) => mutate(
                           (assertCurrent) => detail.data!.workflow && apiClient.taskMessage
-                            ? apiClient.taskMessage(detail.data!.key, text, crypto.randomUUID())
+                            ? lifecycleMutation('message', text, key => apiClient.taskMessage!(detail.data!.key, text, key))
                             : runTrackerSubmission(user.username, detail.data!, 'comment', { text }, headers => apiClient.trackerComment(detail.data!.key, text, headers), assertCurrent),
                         )}
                         onSubmitReview={async () => { setReviewOpen(true) }}
                         onReturnReview={async () => {
-                          const reason = window.prompt('Причина возврата')?.trim()
-                          if (reason && apiClient.taskReturnReview) await mutate(() => apiClient.taskReturnReview!(detail.data!.key, reason, undefined, crypto.randomUUID()))
+                          const response = window.prompt('Причина возврата')
+                          if (response == null) { mutationKeys.current.cancel('return-review'); return }
+                          const reason = response.trim()
+                          if (reason && apiClient.taskReturnReview) await mutate(() => lifecycleMutation('return-review', { reason }, key => apiClient.taskReturnReview!(detail.data!.key, reason, undefined, key)))
                         }}
                         onApproveReview={async () => {
-                          if (apiClient.taskApproveReview) await mutate(() => apiClient.taskApproveReview!(detail.data!.key, crypto.randomUUID()), onCloseIssue)
+                          if (apiClient.taskApproveReview) await mutate(() => lifecycleMutation('approve-review', {}, key => apiClient.taskApproveReview!(detail.data!.key, key)), onCloseIssue)
                         }}
                         onTransition={detail.data.workflow ? async () => undefined : (transition) => mutate(
                           (assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'transition', { transition }, headers => apiClient.trackerTransition(detail.data!.key, transition, undefined, headers), assertCurrent),
@@ -800,7 +824,10 @@ function IssueWorkbenchOwner({
                       defectCodes={defectCodes.data ?? []} hasQualifyingComment={Boolean(hasQualifyingComment)}
                       onSubmit={async value => {
                         if (!apiClient.taskSubmitReview) return
-                        await mutate(() => apiClient.taskSubmitReview!(detail.data!.key, value, crypto.randomUUID()))
+                        const payload = { defectCode: value.defectCode, comment: value.comment ?? '', photo: {
+                          name: value.photo.name, type: value.photo.type, size: value.photo.size, lastModified: value.photo.lastModified,
+                        } }
+                        await mutate(() => lifecycleMutation('submit-review', payload, key => apiClient.taskSubmitReview!(detail.data!.key, value, key)))
                         setReviewOpen(false)
                       }} /> : null}
                     {detail.data?.workflow ? <div aria-label="Дополнительные разделы задачи" className="rp-responsive-disclosure-group" role="group">
@@ -816,7 +843,8 @@ function IssueWorkbenchOwner({
                           <EmbeddedTaskCollaboration issueKey={detail.data.key} owner={user.username}
                             active={activeTab === 'task' && mechanicCanWork}
                             canWrite={detail.data.capabilities.comment && mechanicCanWork}
-                            onSaved={() => void comments.refresh()}
+                            lifecycle
+                            onHandoff={value => mutate(() => lifecycleMutation('handoff', value, key => apiClient.taskHandoff!(detail.data!.key, value, key)))}
                             onAuthorizationFailure={observeAuthorizationFailure} />
                         </div>
                       </ClosedDisclosure>

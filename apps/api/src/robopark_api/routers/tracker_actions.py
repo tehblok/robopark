@@ -185,9 +185,7 @@ def _mutation_lease(
         yield
 
 
-def _lifecycle_issue(
-    db: Session, user: User, key: str, *, actions: tuple[str, ...] = ()
-) -> dict:
+def _lifecycle_issue(db: Session, user: User, key: str, *, actions: tuple[str, ...] = ()) -> dict:
     _ensure_tracker_user(user, db)
     if task_lifecycle.is_hidden(db, key):
         raise HTTPException(status_code=404)
@@ -238,6 +236,10 @@ def handoff_task(
                 actor=user,
                 issue_key=key,
                 assignee=payload.assignee,
+                reason=payload.reason,
+                done=payload.done,
+                remaining=payload.remaining,
+                obstacles=payload.obstacles,
                 idempotency_key=idempotency_key,
             )
         )
