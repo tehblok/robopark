@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from robopark_api.task_workflow_models import ReliableAction, TaskAttachment, TaskMessage
@@ -237,6 +238,91 @@ def test_worker_stores_transition_missing_instead_of_choosing_arbitrary_transiti
             "needs_attention",
             "tracker_transition_missing",
         )
+
+
+def test_review_transition_waits_until_every_declared_prerequisite_succeeds(
+    db_engine, db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    prerequisites = [
+        _action(db_session, seed_mechanic, action=name, payload={"value": name})
+        for name in ("comment", "attach", "set_field")
+    ]
+    for action in prerequisites:
+        action.idempotency_key = "review-bundle-1"
+        action.next_attempt_at = 10**12
+    review = _action(
+        db_session,
+        seed_mechanic,
+        action="review",
+        payload={"depends_on_actions": ["comment", "attach", "set_field"]},
+    )
+    review.idempotency_key = "review-bundle-1"
+    db_session.commit()
+    review_id = review.id
+    transitioned = []
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **_kwargs: {"key": "ROBOPARK-1", "status": "Open"},
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_transitions",
+        lambda **_kwargs: [{"id": "review", "display": "Review"}],
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "transition_issue",
+        lambda **kwargs: transitioned.append(kwargs),
+    )
+
+    assert tracker_outbox._process_batch(sessionmaker(bind=db_engine, future=True)) == 1
+    with Session(db_engine) as db:
+        assert db.get(ReliableAction, review_id).state == "pending"
+        for action in db.scalars(select(ReliableAction).where(ReliableAction.id != review_id)):
+            action.state = "succeeded"
+        db.commit()
+
+    assert transitioned == []
+    assert tracker_outbox._process_batch(sessionmaker(bind=db_engine, future=True)) == 1
+    assert len(transitioned) == 1
+    with Session(db_engine) as db:
+        assert db.get(ReliableAction, review_id).state == "succeeded"
+
+
+def test_failed_review_prerequisite_blocks_transition_and_needs_attention(
+    db_engine, db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    failed = _action(
+        db_session, seed_mechanic, action="set_field", payload={"value": "BD-01"}
+    )
+    failed.idempotency_key = "failed-review-bundle"
+    failed.state = "needs_attention"
+    review = _action(
+        db_session,
+        seed_mechanic,
+        action="review",
+        payload={"depends_on_actions": ["set_field"]},
+    )
+    review.idempotency_key = "failed-review-bundle"
+    db_session.commit()
+    review_id = review.id
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "transition_issue",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("transition delivered")),
+    )
+
+    assert tracker_outbox._process_batch(sessionmaker(bind=db_engine, future=True)) == 1
+
+    with Session(db_engine) as db:
+        saved = db.get(ReliableAction, review_id)
+        assert (saved.state, saved.error_code) == ("needs_attention", "prerequisite_failed")
 
 
 def test_worker_uploads_staged_attachment_by_action_id_and_adds_one_signed_comment(

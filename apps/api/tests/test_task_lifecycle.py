@@ -4,7 +4,7 @@ from conftest import login_as, role_id_for
 from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import AccessStatus, AuditLog, User, UserPark
 from robopark_api.security import hash_password
-from robopark_api.services import platform_settings
+from robopark_api.services import platform_settings, rbac
 from robopark_api.task_workflow_models import (
     HiddenTask,
     ReliableAction,
@@ -14,7 +14,10 @@ from robopark_api.task_workflow_models import (
 )
 
 ISSUE_KEY = "ROBOPARK-51"
-PNG = b"\x89PNG\r\n\x1a\n" + b"valid-image"
+PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+)
 
 
 def _issue():
@@ -134,6 +137,21 @@ def test_claim_takeover_changes_owner_once_and_names_both_mechanics(
     assert seed_mechanic.username in message.text
 
 
+def test_claim_requires_tracker_write_permission(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    desired = rbac.role_permission_keys(db_session, seed_mechanic) - {
+        rbac.PERMISSION_TRACKER_WRITE
+    }
+    rbac.set_user_effective_permissions(db_session, seed_mechanic, desired)
+
+    response = _claim(client, seed_mechanic)
+
+    assert response.status_code == 403
+    assert db_session.get(TrackerClaim, ISSUE_KEY) is None
+
+
 def test_handoff_replay_changes_owner_and_writes_one_message(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
@@ -207,6 +225,14 @@ def test_submit_review_requires_current_cycle_comment_one_known_code_and_one_val
     )
     assert invalid.status_code == 400
     assert invalid.json()["detail"] == "task_attachment_invalid_type"
+    fake_png = _submit(
+        client,
+        key="review-fake-png",
+        comment="Заменил деталь",
+        files=[("photo", ("robot.png", b"not an image", "image/png"))],
+    )
+    assert fake_png.status_code == 400
+    assert fake_png.json()["detail"] == "task_attachment_invalid_type"
     assert db_session.query(TaskReview).count() == 0
 
 
@@ -235,11 +261,34 @@ def test_submit_review_stages_one_photo_and_all_bot_actions_once(
     ]
     field = next(action for action in actions if action.action == "set_field")
     assert json.loads(field.payload_json) == {"field": "theDefectCode", "value": "BD-01"}
+    review_action = next(action for action in actions if action.action == "review")
+    assert json.loads(review_action.payload_json)["depends_on_actions"] == [
+        "comment",
+        "attach",
+        "set_field",
+    ]
     messages = db_session.query(TaskMessage).filter_by(issue_key=ISSUE_KEY).all()
     assert sum(message.text == "Заменил бампер" for message in messages) == 1
     automatic = next(message for message in messages if "Передано на проверку" in message.text)
     assert "BD-01" in automatic.text
     assert "operator51" in automatic.text
+
+
+def test_submit_review_requires_attachment_permission_before_queuing_any_actions(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+    desired = rbac.role_permission_keys(db_session, seed_mechanic) - {
+        rbac.PERMISSION_TRACKER_ATTACH
+    }
+    rbac.set_user_effective_permissions(db_session, seed_mechanic, desired)
+    before = db_session.query(ReliableAction).count()
+
+    response = _submit(client, key="review-no-attach-permission", comment="Готово")
+
+    assert response.status_code == 403
+    assert db_session.query(ReliableAction).count() == before
 
 
 def test_existing_current_cycle_comment_allows_omitting_optional_comment(
@@ -269,7 +318,34 @@ def test_existing_current_cycle_comment_allows_omitting_optional_comment(
     assert db_session.query(ReliableAction).filter_by(action="comment").count() == 0
 
 
-def test_only_operator_can_return_or_approve_and_approval_releases_claim(
+def test_whitespace_only_current_cycle_comment_does_not_satisfy_review(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+    boundary = db_session.get(TrackerClaim, ISSUE_KEY).updated_at
+    db_session.add(
+        TaskMessage(
+            id="whitespace-comment",
+            issue_key=ISSUE_KEY,
+            kind="user",
+            author_user_id=seed_mechanic.id,
+            author_name=seed_mechanic.username,
+            text=" \t\n ",
+            sync_state="saved",
+            created_at=boundary,
+            updated_at=boundary,
+        )
+    )
+    db_session.commit()
+
+    response = _submit(client, key="review-whitespace-comment")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "task_completion_comment_required"
+
+
+def test_returned_review_rejects_duplicate_return_and_approval(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
     operator = _operator(db_session, seed_park_with_tracker)
@@ -293,14 +369,46 @@ def test_only_operator_can_return_or_approve_and_approval_releases_claim(
     assert db_session.query(TaskReview).one().state == "returned"
     assert db_session.get(TrackerClaim, ISSUE_KEY).owner_user_id == seed_mechanic.id
 
+    replay = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/review/return",
+        headers={"Idempotency-Key": "return-task-51"},
+        json={"reason": "Нужно переснять"},
+    )
+    duplicate_return = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/review/return",
+        headers={"Idempotency-Key": "return-again-51"},
+        json={"reason": "Ещё раз"},
+    )
     approved = client.post(
         f"/tracker/issues/{ISSUE_KEY}/review/approve",
         headers={"Idempotency-Key": "approve-task-51"},
     )
+    assert replay.status_code == 200
+    assert replay.json() == returned.json()
+    assert duplicate_return.status_code == 409
+    assert approved.status_code == 409
+    assert db_session.query(TaskReview).one().state == "returned"
+    assert db_session.get(TrackerClaim, ISSUE_KEY) is not None
+    assert db_session.query(ReliableAction).filter_by(action="close").count() == 0
+
+
+def test_pending_review_approval_releases_claim(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    operator = _operator(db_session, seed_park_with_tracker)
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+    assert _submit(client, comment="Починил").status_code == 200
+    login_as(client, operator.username, "secret")
+
+    approved = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/review/approve",
+        headers={"Idempotency-Key": "approve-pending-51"},
+    )
+
     assert approved.status_code == 200
     assert db_session.query(TaskReview).one().state == "closed"
     assert db_session.get(TrackerClaim, ISSUE_KEY) is None
-    assert db_session.query(ReliableAction).filter_by(action="close").count() == 1
 
 
 def test_operator_return_can_reassign_the_mechanic_and_starts_a_new_comment_cycle(
@@ -362,6 +470,31 @@ def test_hide_restore_is_manager_only_filters_before_counts_and_writes_audit(
     local_actions = db_session.query(ReliableAction).filter_by(resource_id=ISSUE_KEY).all()
     assert [(row.action, row.state) for row in local_actions] == [("hide", "succeeded")]
     assert db_session.query(AuditLog).filter_by(action="tracker.hide").count() == 1
+
+    hidden_requests = [
+        ("get", f"/tracker/issues/{ISSUE_KEY}/timeline", {}),
+        ("get", f"/tracker/issues/{ISSUE_KEY}/comments", {}),
+        ("get", f"/tracker/transitions/{ISSUE_KEY}", {}),
+        ("post", f"/tracker/issues/{ISSUE_KEY}/messages", {"json": {"text": "x"}}),
+        (
+            "post",
+            f"/tracker/issues/{ISSUE_KEY}/message-attachments",
+            {
+                "data": {"message_id": "hidden-message"},
+                "files": {"file": ("x.png", PNG, "image/png")},
+            },
+        ),
+        ("post", f"/tracker/issues/{ISSUE_KEY}/comment", {"json": {"text": "x"}}),
+        (
+            "post",
+            f"/tracker/issues/{ISSUE_KEY}/attachments",
+            {"files": {"file": ("x.png", PNG, "image/png")}},
+        ),
+        ("post", f"/tracker/issues/{ISSUE_KEY}/claim", {}),
+    ]
+    for method, url, kwargs in hidden_requests:
+        response = getattr(client, method)(url, **kwargs)
+        assert response.status_code == 404, (method, url, response.text)
 
     restored = client.delete(
         f"/tracker/issues/{ISSUE_KEY}/hide",

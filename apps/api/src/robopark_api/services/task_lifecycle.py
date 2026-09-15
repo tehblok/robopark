@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from robopark_api.models import AuditLog, Park, User, UserPark
@@ -362,7 +362,7 @@ def _valid_current_comment(db: Session, *, issue_key: str, owner_id: int, bounda
                 TaskMessage.kind == "user",
                 TaskMessage.author_user_id == owner_id,
                 TaskMessage.created_at >= boundary,
-                TaskMessage.text != "",
+                func.length(func.trim(TaskMessage.text, " \t\r\n")) > 0,
             )
         )
         is not None
@@ -374,11 +374,17 @@ def _validate_photo(
 ) -> tuple[str, str]:
     name = _validate_filename(filename)
     declared = (content_type or "").split(";", 1)[0].strip().lower()
-    detected = tracker_client.guess_image_content_type(name, content)
     if not content:
         raise ValueError("task_attachment_empty")
     if len(content) > tracker_client.MAX_ATTACHMENT_BYTES:
         raise ValueError("task_attachment_too_large")
+    detected = None
+    if content.startswith(b"\xff\xd8\xff"):
+        detected = "image/jpeg"
+    elif content.startswith(b"\x89PNG\r\n\x1a\n"):
+        detected = "image/png"
+    elif len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        detected = "image/webp"
     if declared not in _IMAGE_MIMES or detected not in _IMAGE_MIMES or declared != detected:
         raise ValueError("task_attachment_invalid_type")
     return name, detected
@@ -406,7 +412,13 @@ def submit_review(
     name, mime_type = _validate_photo(filename, content, content_type)
     clean_comment = (comment or "").strip()
     digest = hashlib.sha256(content).hexdigest()
-    payload = {"comment": clean_comment, "defect_code": code, "photo_sha256": digest}
+    dependencies = (["comment"] if clean_comment else []) + ["attach", "set_field"]
+    payload = {
+        "comment": clean_comment,
+        "defect_code": code,
+        "depends_on_actions": dependencies,
+        "photo_sha256": digest,
+    }
     primary = _action(
         db,
         actor=actor,
@@ -543,24 +555,49 @@ def return_review(
     if not clean_reason:
         raise HTTPException(400, "task_review_return_reason_required")
     review = _active_review(db, issue_key)
-    if review is None:
-        raise HTTPException(409, "task_review_not_pending")
     claim_row = get_claim(db, issue_key)
     target = (
         _target_mechanic(db, username=assignee, park_id=claim_row.park_id)
         if assignee is not None and claim_row is not None
         else None
     )
+    payload = {
+        "assignee": target.username if target is not None else None,
+        "reason": clean_reason,
+    }
+    if review is None or review.state != "pending":
+        existing = db.scalar(
+            select(ReliableAction).where(
+                ReliableAction.actor_user_id == actor.id,
+                ReliableAction.resource_id == issue_key,
+                ReliableAction.action == "return",
+                ReliableAction.idempotency_key == idempotency_key,
+            )
+        )
+        if existing is not None:
+            replay = _action(
+                db,
+                actor=actor,
+                issue_key=issue_key,
+                action="return",
+                idempotency_key=idempotency_key,
+                payload=payload,
+            )
+            return _result(
+                db,
+                issue_key=issue_key,
+                actor=actor,
+                command="return_review",
+                performed_at=replay.row.created_at,
+            )
+        raise HTTPException(409, "task_review_not_pending")
     begun = _action(
         db,
         actor=actor,
         issue_key=issue_key,
         action="return",
         idempotency_key=idempotency_key,
-        payload={
-            "assignee": target.username if target is not None else None,
-            "reason": clean_reason,
-        },
+        payload=payload,
     )
     if begun.created:
         now = time.time()
@@ -625,6 +662,8 @@ def approve_review(
                 command="approve_review",
                 performed_at=existing.created_at,
             )
+        raise HTTPException(409, "task_review_not_pending")
+    if review.state != "pending":
         raise HTTPException(409, "task_review_not_pending")
     begun = _action(
         db,

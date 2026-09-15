@@ -501,10 +501,7 @@ def test_tracker_uses_the_declared_production_sdk():
     assert tracker_client._import_startrek() is TrackerClient
 
 
-@pytest.mark.parametrize("action", ["transition"])
-def test_successful_workflow_submission_replays_after_transition_disappears(
-    client, tracker_setup, monkeypatch, action
-):
+def test_manual_transition_endpoint_is_disabled(client, tracker_setup, monkeypatch):
     written = []
     transitions = [{"id": "close", "display": "Закрыть"}]
     monkeypatch.setattr(tracker_client, "list_transitions", lambda **kw: list(transitions))
@@ -516,21 +513,14 @@ def test_successful_workflow_submission_replays_after_transition_disappears(
         transitions.clear()
 
     monkeypatch.setattr(tracker_client, "transition_issue", perform)
-    payload = {"transition": "close"} if action == "transition" else None
-    first = client.post(f"/tracker/issues/ROBOPARK-1/{action}", json=payload, headers=headers())
-    assert first.status_code == 200
-    # Browser never receives the first response and retries its durable key.
-    replayed = client.post(f"/tracker/issues/ROBOPARK-1/{action}", json=payload, headers=headers())
-    assert replayed.status_code == 200
-    assert replayed.json() == first.json()
-    assert len(written) == 1
-    tracker_setup["tags"] = ["Other"]
-    assert (
-        client.post(
-            f"/tracker/issues/ROBOPARK-1/{action}", json=payload, headers=headers()
-        ).status_code
-        == 403
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/transition",
+        json={"transition": "close"},
+        headers=headers(),
     )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "tracker_manual_transition_disabled"
+    assert written == []
 
 
 def test_mechanic_legacy_close_is_rejected(client, tracker_setup, monkeypatch):
@@ -544,7 +534,7 @@ def test_mechanic_legacy_close_is_rejected(client, tracker_setup, monkeypatch):
     assert written == []
 
 
-def test_invalid_workflow_does_not_reserve_an_uncertain_submission(
+def test_manual_transition_stays_disabled_when_transition_becomes_available(
     client, tracker_setup, monkeypatch
 ):
     transitions = []
@@ -552,20 +542,16 @@ def test_invalid_workflow_does_not_reserve_an_uncertain_submission(
     written = []
     monkeypatch.setattr(tracker_client, "transition_issue", lambda **kw: written.append(kw))
     payload = {"transition": "close"}
-    assert (
-        client.post(
-            "/tracker/issues/ROBOPARK-1/transition", json=payload, headers=headers()
-        ).status_code
-        == 400
+    first = client.post(
+        "/tracker/issues/ROBOPARK-1/transition", json=payload, headers=headers()
     )
+    assert first.status_code == 409
     transitions.append({"id": "close", "display": "Закрыть"})
     from robopark_api.services import tracker_cache
 
     tracker_cache.invalidate_issue("ROBOPARK-1")
-    assert (
-        client.post(
-            "/tracker/issues/ROBOPARK-1/transition", json=payload, headers=headers()
-        ).status_code
-        == 200
+    second = client.post(
+        "/tracker/issues/ROBOPARK-1/transition", json=payload, headers=headers()
     )
-    assert len(written) == 1
+    assert second.status_code == 409
+    assert written == []

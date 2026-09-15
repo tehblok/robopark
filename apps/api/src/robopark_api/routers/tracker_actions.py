@@ -19,8 +19,8 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
-from robopark_api.deps import get_user_parks, require_user
-from robopark_api.models import Park, User
+from robopark_api.deps import require_user
+from robopark_api.models import User
 from robopark_api.schemas import (
     TaskHandoffIn,
     TaskHideIn,
@@ -32,7 +32,6 @@ from robopark_api.schemas import (
 )
 from robopark_api.services import audit, rbac, task_lifecycle, tracker_cache, tracker_client
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import reports as reports_svc
 from robopark_api.services import tracker_signatures as sig_svc
 from robopark_api.services import tracker_submissions as submissions
 from robopark_api.services.login_throttle import client_ip
@@ -43,7 +42,7 @@ from robopark_api.services.tracker_claims import (
     mechanic_owns_issue,
     release_claim,
 )
-from robopark_api.services.tracker_policy import ensure_action_allowed, issue_tags
+from robopark_api.services.tracker_policy import ensure_action_allowed
 
 router = APIRouter(prefix="/tracker", tags=["tracker-actions"])
 
@@ -89,6 +88,8 @@ def _get_issue_or_404(token: str, key: str) -> dict:
 def _authorize(db: Session, user: User, issue: dict, action: str, request: Request) -> None:
     """Check the policy and audit a denial before propagating it."""
     try:
+        if task_lifecycle.is_hidden(db, str(issue.get("key") or "")):
+            raise HTTPException(status_code=404)
         ensure_action_allowed(db, user, issue, action)
         if (
             user.role == RoleSlug.MECHANIC
@@ -174,20 +175,28 @@ def _mutation_lease(
 ):
     _ensure_tracker_user(user, db)
     action = request.url.path.rsplit("/", 1)[-1]
-    if action == "close" and user.role == RoleSlug.MECHANIC and not get_user_parks(db, user):
-        raise HTTPException(400, "mechanic_park_required_for_close_review")
+    if task_lifecycle.is_hidden(db, key):
+        raise HTTPException(status_code=404)
+    if action == "close" and user.role == RoleSlug.MECHANIC:
+        raise HTTPException(403, "task_review_operator_required")
     issue = _get_issue_or_404(_require_token(db), key)
     _authorize(db, user, issue, "attach" if action == "attachments" else action, request)
     with submissions.task_mutation_lease(db, key):
         yield
 
 
-def _lifecycle_issue(db: Session, user: User, key: str) -> dict:
+def _lifecycle_issue(
+    db: Session, user: User, key: str, *, actions: tuple[str, ...] = ()
+) -> dict:
     _ensure_tracker_user(user, db)
+    if task_lifecycle.is_hidden(db, key):
+        raise HTTPException(status_code=404)
     issue = _get_issue_or_404(_require_token(db), key)
     from robopark_api.services.tracker_policy import enforce_issue_scope
 
     enforce_issue_scope(db, user, issue)
+    for action in actions:
+        ensure_action_allowed(db, user, issue, action)
     return issue
 
 
@@ -199,7 +208,7 @@ def claim_task(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    issue = _lifecycle_issue(db, user, key)
+    issue = _lifecycle_issue(db, user, key, actions=("assign",))
     with submissions.task_mutation_lease(db, key):
         return TrackerActionOut(
             **task_lifecycle.claim(
@@ -221,7 +230,7 @@ def handoff_task(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _lifecycle_issue(db, user, key)
+    _lifecycle_issue(db, user, key, actions=("comment",))
     with submissions.task_mutation_lease(db, key):
         return TrackerActionOut(
             **task_lifecycle.handoff(
@@ -245,7 +254,7 @@ def submit_task_review(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    issue = _lifecycle_issue(db, user, key)
+    issue = _lifecycle_issue(db, user, key, actions=("comment", "attach", "transition"))
     if len(photo) != 1:
         raise HTTPException(400, "task_review_exactly_one_photo")
     upload = photo[0]
@@ -278,7 +287,7 @@ def return_task_review(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _lifecycle_issue(db, user, key)
+    _lifecycle_issue(db, user, key, actions=("comment", "transition"))
     with submissions.task_mutation_lease(db, key):
         return TrackerActionOut(
             **task_lifecycle.return_review(
@@ -299,7 +308,7 @@ def approve_task_review(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _lifecycle_issue(db, user, key)
+    _lifecycle_issue(db, user, key, actions=("close",))
     with submissions.task_mutation_lease(db, key):
         return TrackerActionOut(
             **task_lifecycle.approve_review(
@@ -614,64 +623,7 @@ def transition_issue(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _ensure_tracker_user(user, db)
-    token = _require_token(db)
-    issue = _get_issue_or_404(token, key)
-    _authorize(db, user, issue, "transition", request)
-
-    def validate_workflow():
-        transitions = tracker_cache.list_transitions(token=token, key=key)
-        transition_ids = {item["id"] for item in transitions}
-        if payload.transition not in transition_ids:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="tracker_transition_invalid",
-            )
-
-    submission, saved = submissions.begin(
-        db,
-        user,
-        key,
-        "transition",
-        request,
-        payload.model_dump(),
-        token,
-        validate=validate_workflow,
-    )
-    if saved is not None:
-        return saved
-
-    try:
-        tracker_client.transition_issue(
-            token=token,
-            key=key,
-            transition=payload.transition,
-            resolution=payload.resolution,
-        )
-    except tracker_client.TrackerError as exc:
-        submissions.uncertain(db, submission)
-        raise _upstream_error(db, user, "transition", key, exc, request) from exc
-    tracker_cache.invalidate_issue(key)
-    _publish_bot_note(
-        token,
-        db,
-        user,
-        issue,
-        f"Статус изменён: {payload.transition}",
-    )
-
-    park = sig_svc.resolve_park(db, issue)
-    audit.record(
-        db,
-        action=audit.ACTION_TRACKER_TRANSITION,
-        actor=user,
-        park_id=park.id if park is not None else None,
-        target_type="tracker_issue",
-        target_id=key,
-        detail=f"transition={payload.transition} resolution={payload.resolution or '-'}",
-        client_ip=client_ip(request),
-    )
-    return submissions.finish(db, submission, _ok(key, "transition", user, issue))
+    raise HTTPException(status_code=409, detail="tracker_manual_transition_disabled")
 
 
 @router.post(
@@ -684,89 +636,15 @@ def transition_issue(
 def close_issue(
     key: str,
     request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _ensure_tracker_user(user, db)
-    if user.role == RoleSlug.MECHANIC:
-        raise HTTPException(status_code=403, detail="task_review_operator_required")
-    token = _require_token(db)
-
-    parks: list[Park] = []
-    mechanic_park = None
-    if user.role == RoleSlug.MECHANIC:
-        parks = get_user_parks(db, user)
-        if not parks:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="mechanic_park_required_for_close_review",
-            )
-
-    issue = _get_issue_or_404(token, key)
-    _authorize(db, user, issue, "close", request)
-
-    if user.role == RoleSlug.MECHANIC:
-        tags = issue_tags(issue)
-        matched = [park for park in parks if park.tag and str(park.tag).strip() in tags]
-        mechanic_park = matched[0] if matched else parks[0]
-
-    close_transition = None
-
-    def validate_workflow():
-        nonlocal close_transition
-        transitions = tracker_cache.list_transitions(token=token, key=key)
-        close_transition = next(
-            (
-                item
-                for item in transitions
-                if "close" in item["id"].lower() or "закры" in item["display"].lower()
-            ),
-            None,
+    return TrackerActionOut(
+        **task_lifecycle.approve_review(
+            db,
+            actor=user,
+            issue_key=key,
+            idempotency_key=idempotency_key,
         )
-        if not close_transition:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="tracker_close_transition_not_found",
-            )
-
-    submission, saved = submissions.begin(
-        db, user, key, "close", request, {}, token, validate=validate_workflow
     )
-    if saved is not None:
-        return saved
-
-    try:
-        tracker_client.transition_issue(token=token, key=key, transition=close_transition["id"])
-    except tracker_client.TrackerError as exc:
-        submissions.uncertain(db, submission)
-        raise _upstream_error(db, user, "close", key, exc, request) from exc
-    tracker_cache.invalidate_issue(key)
-    _publish_bot_note(token, db, user, issue, "Задача закрыта")
-
-    audit.record(
-        db,
-        action=audit.ACTION_TRACKER_CLOSE,
-        actor=user,
-        park_id=mechanic_park.id if mechanic_park else None,
-        target_type="tracker_issue",
-        target_id=key,
-        client_ip=client_ip(request),
-    )
-
-    if mechanic_park is not None:
-        try:
-            reports_svc.get_or_create_close_review(
-                db,
-                author=user,
-                park_id=mechanic_park.id,
-                tracker_key=key,
-                tracker_url=tracker_client.build_issue_url(key),
-                title=f"Закрытие {key}",
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="tracker_closed_report_failed",
-            ) from exc
-
-    return submissions.finish(db, submission, _ok(key, "close", user, issue))

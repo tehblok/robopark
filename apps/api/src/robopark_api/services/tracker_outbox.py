@@ -47,6 +47,35 @@ class DeliveryError(Exception):
         self.code = code
 
 
+def _dependency_state(db: Session, action: ReliableAction) -> str:
+    try:
+        payload = json.loads(action.payload_json)
+    except (TypeError, ValueError) as exc:
+        raise DeliveryError("invalid_payload") from exc
+    dependencies = payload.get("depends_on_actions", []) if isinstance(payload, dict) else []
+    if not isinstance(dependencies, list) or not all(
+        isinstance(item, str) and item for item in dependencies
+    ):
+        raise DeliveryError("invalid_payload")
+    if not dependencies:
+        return "ready"
+    rows = db.scalars(
+        select(ReliableAction).where(
+            ReliableAction.actor_user_id == action.actor_user_id,
+            ReliableAction.resource_type == action.resource_type,
+            ReliableAction.resource_id == action.resource_id,
+            ReliableAction.idempotency_key == action.idempotency_key,
+            ReliableAction.action.in_(dependencies),
+        )
+    ).all()
+    states = {row.action: row.state for row in rows}
+    if any(states.get(name) == "needs_attention" for name in dependencies):
+        return "failed"
+    if any(states.get(name) != "succeeded" for name in dependencies):
+        return "waiting"
+    return "ready"
+
+
 def _action_marker(action: ReliableAction) -> str:
     return f"{_ACTION_MARKER_PREFIX}{action.id}"
 
@@ -327,6 +356,18 @@ def _process_batch(session_factory) -> int:
         actions = claim_due_batch(db)
         for action in actions:
             try:
+                dependency_state = _dependency_state(db, action)
+                if dependency_state == "failed":
+                    mark_needs_attention(db, action, error_code="prerequisite_failed")
+                    db.commit()
+                    continue
+                if dependency_state == "waiting":
+                    action.state = "pending"
+                    action.lease_until = None
+                    action.next_attempt_at = time.time()
+                    action.updated_at = time.time()
+                    db.commit()
+                    continue
                 result = _deliver_action(db, action)
                 complete_action(db, action, result)
                 _sync_message(db, action)

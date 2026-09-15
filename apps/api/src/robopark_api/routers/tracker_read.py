@@ -480,6 +480,8 @@ def get_comments(
     db: Session = Depends(get_db),
 ) -> list[TrackerCommentOut]:
     _ensure_tracker_user(user, db)
+    if task_lifecycle.is_hidden(db, key):
+        raise HTTPException(status_code=404)
     token = settings_svc.get_tracker_token(db)
     if not token:
         raise HTTPException(
@@ -523,6 +525,8 @@ def get_transitions(
     db: Session = Depends(get_db),
 ) -> list[TrackerTransitionOut]:
     _ensure_tracker_user(user, db)
+    if task_lifecycle.is_hidden(db, key):
+        raise HTTPException(status_code=404)
     token = settings_svc.get_tracker_token(db)
     if not token:
         raise HTTPException(

@@ -27,7 +27,7 @@ from robopark_api.schemas import (
     TrackerCommentIn,
 )
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import rbac, tracker_cache, tracker_client
+from robopark_api.services import rbac, task_lifecycle, tracker_cache, tracker_client
 from robopark_api.services.defect_codes import DEFECT_CODES
 from robopark_api.services.task_timeline import (
     append_user_message,
@@ -44,6 +44,8 @@ router = APIRouter(prefix="/tracker", tags=["task-timeline"])
 
 def _issue(db: Session, user: User, key: str, action: str | None, request: Request) -> dict:
     rbac.assert_approved_or_staff(user)
+    if task_lifecycle.is_hidden(db, key):
+        raise HTTPException(status_code=404)
     token = settings_svc.get_tracker_token(db)
     if not token:
         raise HTTPException(status_code=503, detail="tracker_token_not_configured")
