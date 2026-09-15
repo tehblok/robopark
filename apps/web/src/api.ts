@@ -267,11 +267,15 @@ export type EmergencySnapshot = {
   vin: string
   short_number: string
   observed_at: string
+  stale?: boolean
+  stale_age_seconds?: number
   online: boolean | null
   speed: number | null
   charge_percent: number | null
   battery1_percent: number | null
   battery2_percent: number | null
+  battery1_connected?: boolean | null
+  battery2_connected?: boolean | null
   disk_percent: number | null
   mode: string | null
   icp_label: string | null
@@ -285,6 +289,7 @@ export type EmergencySnapshot = {
   heading_deg: number | null
   wheels_fault: string[]
   diagnostic_events?: DiagnosticEvent[]
+  readings?: EmergencyReadingValue[]
 }
 
 export type EmergencyViewerRole = 'mechanic' | 'operator' | 'admin' | 'royal' | 'driver'
@@ -639,6 +644,17 @@ export type DiagnosticEvent = {
 export type DiagnosticPreview = { matched: boolean; events: DiagnosticEvent[] }
 
 export type ReadingState = 'normal' | 'warning' | 'critical' | 'unavailable'
+export type EmergencyReadingValue = {
+  id: number
+  section_id: string
+  label: string
+  display: string
+  state: ReadingState
+  view: DiagnosticView
+  x: number
+  y: number
+  label_direction: EmergencyReadingLabelDirection
+}
 export type EmergencyReadingDisplayKind = 'text' | 'number' | 'percent' | 'distance' | 'current' | 'state'
 export type EmergencyReadingLabelDirection = 'auto' | 'left' | 'right' | 'top' | 'bottom'
 export type EmergencyReadingDraft = {

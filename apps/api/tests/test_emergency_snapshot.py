@@ -264,6 +264,8 @@ def test_snapshot_schema_defaults_events_for_legacy_clients():
 
     assert snapshot.diagnostic_events == []
     assert snapshot.readings == []
+    assert snapshot.stale is False
+    assert snapshot.stale_age_seconds == 0
     assert snapshot.error_banner == "ERROR: old payload"
 
 

@@ -236,6 +236,8 @@ def test_snapshot_returns_hud_when_allowed(
     assert body["speed"] == 0
     assert body["disk_percent"] == 40
     assert body["online"] is True
+    assert body["stale"] is False
+    assert body["stale_age_seconds"] == 0
     observed_at = datetime.fromisoformat(body["observed_at"])
     assert observed_at == datetime.fromtimestamp(emergency_payload["timestamp"] / 1000, UTC)
 

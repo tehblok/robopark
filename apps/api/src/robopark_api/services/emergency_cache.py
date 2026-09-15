@@ -29,7 +29,16 @@ class _Flight:
     identity: str | None
     done: threading.Event = field(default_factory=threading.Event)
     result: dict[str, Any] | None = None
+    loaded_at: float | None = None
+    stale: bool = False
     error: BaseException | None = None
+
+
+@dataclass(frozen=True)
+class EmergencyPayloadResult:
+    payload: dict[str, Any]
+    stale: bool
+    age_seconds: float
 
 
 _lock = threading.Lock()
@@ -83,6 +92,10 @@ def _shared_loaded_at(mtime: float | None) -> float:
     if mtime is None:
         return now
     return now - max(0.0, time.time() - mtime)
+
+
+def _payload_age_seconds(loaded_at: float | None) -> float:
+    return 0.0 if loaded_at is None else max(0.0, time.monotonic() - loaded_at)
 
 
 def peek_robot_payloads(*, vins: list[str], identity: str | None) -> dict[str, dict[str, Any]]:
@@ -145,9 +158,12 @@ def _finish_flight(
     result: dict[str, Any] | None = None,
     error: BaseException | None = None,
     loaded_at: float | None = None,
+    stale: bool = False,
 ) -> None:
     with _lock:
         flight.result = result
+        flight.loaded_at = loaded_at
+        flight.stale = stale
         flight.error = error
         if result is not None and flight.generation == _generation:
             _cache_payload_locked(
@@ -172,6 +188,7 @@ def get_robot_payload(
     db: Session,
     vin: str,
     probe: tuple[str | None, str | None] | None = None,
+    _metadata: dict[str, float | bool] | None = None,
 ) -> dict[str, Any]:
     """Fetch using one cookie/identity capture when a caller already has it."""
     cookie, identity = probe or settings_svc.get_emergency_cookie_probe(db)
@@ -205,17 +222,20 @@ def get_robot_payload(
             payload = None
 
     if payload is not None:
+        if _metadata is not None:
+            _metadata.update(stale=False, age_seconds=max(0.0, now - cached[0]))
         return payload
 
     if merge is not None:
         shared_key = _shared_key(identity, vin)
         found, blob = merge.try_fresh(_MERGE_NS, shared_key, PAYLOAD_CACHE_TTL_SECONDS)
         if found:
+            loaded_at = _shared_loaded_at(merge.result_mtime(_MERGE_NS, shared_key))
             with _lock:
                 if flight is not None and flight.generation == _generation:
                     _cache_payload_locked(
                         vin,
-                        loaded_at=_shared_loaded_at(merge.result_mtime(_MERGE_NS, shared_key)),
+                        loaded_at=loaded_at,
                         identity=identity,
                         payload=blob,
                     )
@@ -224,7 +244,11 @@ def get_robot_payload(
                     if _flights.get(flight_key) is flight:
                         _flights.pop(flight_key, None)
                     flight.result = blob
+                    flight.loaded_at = loaded_at
+                    flight.stale = False
                     flight.done.set()
+            if _metadata is not None:
+                _metadata.update(stale=False, age_seconds=_payload_age_seconds(loaded_at))
             return blob
 
     assert flight is not None
@@ -234,11 +258,17 @@ def get_robot_payload(
         if flight.error is not None:
             raise flight.error
         assert flight.result is not None
+        if _metadata is not None:
+            _metadata.update(
+                stale=flight.stale,
+                age_seconds=_payload_age_seconds(flight.loaded_at),
+            )
         return flight.result
 
     payload = None
     payload_loaded_at: float | None = None
     error: BaseException | None = None
+    stale_result = False
     try:
         try:
             used_shared_stale = False
@@ -275,6 +305,8 @@ def get_robot_payload(
                 else time.monotonic()
             )
             if host_maintenance_active():
+                if _metadata is not None:
+                    _metadata.update(stale=False, age_seconds=0.0)
                 return payload
             if used_shared_stale:
                 if _flight_is_current(flight):
@@ -330,6 +362,7 @@ def get_robot_payload(
         ):
             payload = stale[2]
             payload_loaded_at = stale[0]
+            stale_result = True
         else:
             error = exc
             raise
@@ -340,7 +373,30 @@ def get_robot_payload(
             result=payload if error is None else None,
             error=error,
             loaded_at=payload_loaded_at,
+            stale=stale_result or used_shared_stale,
         )
 
     assert payload is not None
+    if _metadata is not None:
+        _metadata.update(
+            stale=stale_result or used_shared_stale,
+            age_seconds=_payload_age_seconds(payload_loaded_at),
+        )
     return payload
+
+
+def get_robot_payload_result(
+    *,
+    db: Session,
+    vin: str,
+    probe: tuple[str | None, str | None] | None = None,
+) -> EmergencyPayloadResult:
+    """Return payload plus additive freshness metadata for snapshot delivery."""
+    metadata: dict[str, float | bool] = {}
+    payload = get_robot_payload(db=db, vin=vin, probe=probe, _metadata=metadata)
+    stale = bool(metadata.get("stale", False))
+    return EmergencyPayloadResult(
+        payload=payload,
+        stale=stale,
+        age_seconds=float(metadata.get("age_seconds", 0.0)) if stale else 0.0,
+    )

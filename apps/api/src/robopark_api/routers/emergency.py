@@ -52,6 +52,23 @@ def _get_robot_payload(db: Session, vin: str) -> dict:
         ) from exc
 
 
+def _get_robot_payload_result(db: Session, vin: str) -> emergency_cache.EmergencyPayloadResult:
+    probe = settings_svc.get_emergency_cookie_probe(db)
+    _require_emergency_cookie(probe)
+    try:
+        return emergency_cache.get_robot_payload_result(db=db, vin=vin, probe=probe)
+    except emergency_client.EmergencyAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="emergency_cookie_invalid",
+        ) from exc
+    except emergency_client.EmergencyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="emergency_upstream_error",
+        ) from exc
+
+
 def _enforce_vin_scope(db: Session, user: User, vin: str) -> None:
     """Deny non-admin access to VINs outside the user's Tracker-linked parks.
 
@@ -131,7 +148,8 @@ def emergency_snapshot_for_user(vin: str, user: User, db: Session) -> EmergencyS
         ) from exc
 
     _enforce_vin_scope(db, user, vin)
-    payload = _get_robot_payload(db, vin)
+    result = _get_robot_payload_result(db, vin)
+    payload = result.payload
     snap = parse_emergency_snapshot(
         payload,
         vin=vin,
@@ -139,7 +157,11 @@ def emergency_snapshot_for_user(vin: str, user: User, db: Session) -> EmergencyS
         role=user.role if user is not None else None,
     )
     diagnostic_unknowns.capture_unknowns(db, snap["diagnostic_events"], vin, payload=payload)
-    return EmergencySnapshotOut(**snap)
+    return EmergencySnapshotOut(
+        **snap,
+        stale=result.stale,
+        stale_age_seconds=result.age_seconds,
+    )
 
 
 @router.post("/resolve", response_model=EmergencyResolveOut)

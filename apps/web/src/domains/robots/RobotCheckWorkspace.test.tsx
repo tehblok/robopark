@@ -9,7 +9,7 @@ const VIN = 'YASADR00000000447'
 const user: User = { id: 3, username: 'op', role: 'operator', access_status: 'approved', permissions: ['nav.emergency'], parks: [] }
 const sections = [{ id: 'wheels', title: 'Колёса' }, { id: 'power', title: 'Питание' }]
 function snapshot(overrides: Partial<EmergencySnapshot> = {}): EmergencySnapshot {
-  return { vin: VIN, short_number: '447', observed_at: '2026-09-02T09:05:00Z', online: true, speed: 0, charge_percent: 80, battery1_percent: 75, battery2_percent: 85, disk_percent: 20, mode: 'AUTO', icp_label: 'ICP', icp_ok: true, lte_label: 'LTE', lte_ok: true, connection: 'lte', error_banner: null, lat: null, lon: null, heading_deg: null, wheels_fault: [], ...overrides }
+  return { vin: VIN, short_number: '447', observed_at: '2026-09-02T09:05:00Z', stale: false, stale_age_seconds: 0, online: true, speed: 0, charge_percent: 80, battery1_percent: 75, battery2_percent: 85, battery1_connected: true, battery2_connected: true, disk_percent: 20, mode: 'AUTO', icp_label: 'ICP', icp_ok: true, lte_label: 'LTE', lte_ok: true, connection: 'lte', error_banner: null, readings: [], lat: null, lon: null, heading_deg: null, wheels_fault: [], ...overrides } as EmergencySnapshot
 }
 const lidar: DiagnosticEvent = { id: 'lidar', rule_id: 1, source_path: 'errors.0', source_segments: ['errors', 0], raw_value: 'LIDAR_OFFLINE', title: 'Передний лидар недоступен', description: 'Проверьте питание и соединение лидара.', severity: 'critical', sort_order: 0, part: 'Передний лидар', view: 'front', x: .25, y: .6, indicator: 'point' }
 const battery: DiagnosticEvent = { ...lidar, id: 'battery', rule_id: 2, raw_value: 'BATTERY_HOT', title: 'Перегрев батареи', description: 'Проверьте температуру батареи.', severity: 'warning', sort_order: 1, part: 'Батарея', view: 'rear', indicator: 'zone' }
@@ -49,7 +49,7 @@ it('summarizes charge and the leading diagnostic and opens it on the scheme', as
   await screen.findByRole('heading', { name: 'Робот 447' })
   const summary = screen.getByRole('region', { name: 'Состояние робота' })
   expect(summary).toHaveTextContent('Робот на связи')
-  expect(summary).toHaveTextContent('Заряд 80 %')
+  expect(within(summary).getByText('АКБ 1').parentElement).toHaveTextContent('75 %')
   expect(summary).toHaveTextContent('Данные актуальны')
   expect(summary).toHaveTextContent(lidar.description)
   const supplementary = within(summary).getByText('VIN и координаты').closest('details')
@@ -62,6 +62,68 @@ it('summarizes charge and the leading diagnostic and opens it on the scheme', as
   view.rerender(tree(apiClient, 'scheme', { onTabChange }))
   expect(screen.getByRole('button', { name: 'Спереди', pressed: true })).toBeInTheDocument()
   expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(lidar.description)
+})
+it('renders the five decision values independently, including zero and a disconnected battery', async () => {
+  render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({
+    speed: 0,
+    battery1_percent: 0,
+    battery1_connected: false,
+    battery2_percent: null,
+    battery2_connected: true,
+    disk_percent: 0,
+  })) }), 'state'))
+
+  const summary = await screen.findByRole('region', { name: 'Состояние робота' })
+  expect(within(summary).getByText('АКБ 1').parentElement).toHaveTextContent('Не подключена')
+  expect(within(summary).getByText('АКБ 2').parentElement).toHaveTextContent('Нет данных')
+  expect(within(summary).getByText('Скорость').parentElement).toHaveTextContent('0 м/с')
+  expect(within(summary).getByText('Диск').parentElement).toHaveTextContent('0 %')
+  expect(within(summary).getByText('Связь').parentElement).toHaveTextContent('Робот на связи')
+})
+it('uses explicit stale age from the API instead of certifying a last-good snapshot', async () => {
+  render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({
+    stale: true,
+    stale_age_seconds: 37.4,
+    diagnostic_events: [],
+  })) }), 'state'))
+
+  const summary = await screen.findByRole('region', { name: 'Состояние робота' })
+  expect(summary).toHaveTextContent('Данные устарели · 37 с')
+  expect(summary).not.toHaveTextContent('Активных ошибок нет')
+})
+it('automatically selects the critical reading block and preserves a valid manual block and view', async () => {
+  const apiClient = client({ emergencySnapshot: vi.fn(async () => snapshot({ readings: [
+    { id: 1, section_id: 'wheels', label: 'Ток колеса', display: '4 А', state: 'normal', view: 'front', x: .3, y: .6, label_direction: 'left' },
+    { id: 2, section_id: 'power', label: 'Температура АКБ', display: '92 °C', state: 'critical', view: 'rear', x: .5, y: .5, label_direction: 'right' },
+  ] } as EmergencySnapshot)) })
+  render(tree(apiClient, 'scheme'))
+
+  expect(await screen.findByRole('button', { name: 'Питание', expanded: true })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Сзади', pressed: true })).toBeInTheDocument()
+  expect(screen.getAllByRole('region', { name: /Диагностический блок/ })).toHaveLength(1)
+  fireEvent.click(screen.getByRole('button', { name: 'Колёса' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Слева' }))
+  vi.mocked(apiClient.emergencySnapshot).mockResolvedValue(snapshot({ readings: [
+    { id: 3, section_id: 'power', label: 'Новая тревога', display: '99 °C', state: 'critical', view: 'top', x: .5, y: .5, label_direction: 'auto' },
+  ] } as EmergencySnapshot))
+  vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange'))
+  await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2))
+  expect(screen.getByRole('button', { name: 'Колёса', expanded: true })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Слева', pressed: true })).toBeInTheDocument()
+})
+it('keeps available readings visible when a sibling reading is unavailable and toggles ordinary labels', async () => {
+  render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({ readings: [
+    { id: 1, section_id: 'wheels', label: 'Ток колеса', display: '4 А', state: 'normal', view: 'top', x: .3, y: .6, label_direction: 'left' },
+    { id: 2, section_id: 'wheels', label: 'Парктроник', display: 'Нет данных', state: 'unavailable', view: 'top', x: .6, y: .6, label_direction: 'right' },
+  ] } as EmergencySnapshot)) }), 'scheme'))
+
+  const reading = await screen.findByRole('button', { name: 'Показание: Ток колеса, 4 А' })
+  expect(screen.getByRole('region', { name: 'Диагностический блок «Колёса»' })).toHaveTextContent('ПарктроникНет данных')
+  expect(screen.queryByText('Ток колеса: 4 А')).not.toBeInTheDocument()
+  fireEvent.click(reading)
+  expect(screen.getByText('Ток колеса: 4 А')).toBeInTheDocument()
+  fireEvent.click(reading)
+  expect(screen.queryByText('Ток колеса: 4 А')).not.toBeInTheDocument()
 })
 it('does not certify a stale clean snapshot as error-free', async () => {
   const apiClient = client({ emergencySnapshot: vi.fn(async () => snapshot({

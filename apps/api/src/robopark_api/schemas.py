@@ -348,6 +348,8 @@ class EmergencySnapshotOut(BaseModel):
     vin: str
     short_number: str
     observed_at: datetime
+    stale: bool = False
+    stale_age_seconds: float = Field(default=0, ge=0, allow_inf_nan=False)
     online: bool | None = None
     speed: float | None = None
     charge_percent: float | None = None

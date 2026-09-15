@@ -57,6 +57,24 @@ it('rechecks visibility before starting a queued automatic request', async () =>
   await flush()
   expect(task).not.toHaveBeenCalled()
 })
+it('resumes immediately when a failed hidden tab becomes visible and still keeps one request in flight', async () => {
+  let release!: () => void
+  const task = vi.fn()
+    .mockRejectedValueOnce(Error('offline'))
+    .mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve }))
+  render(<Probe task={task} />)
+  await flush()
+  Object.defineProperty(document, 'hidden', { value: true })
+  fireEvent(document, new Event('visibilitychange'))
+  Object.defineProperty(document, 'hidden', { value: false })
+  fireEvent(document, new Event('visibilitychange'))
+  await flush()
+  expect(task).toHaveBeenCalledTimes(2)
+  fireEvent.click(screen.getByRole('button'))
+  await flush()
+  expect(task).toHaveBeenCalledTimes(2)
+  await act(async () => release())
+})
 
 // Existing lifecycle assertions use the minimum jitter; capacity tests cover dispersion.
 beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })

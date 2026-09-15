@@ -326,6 +326,35 @@ def test_unavailable_refresh_returns_last_good_only_before_sixty_seconds(db_sess
         emergency_cache.get_robot_payload(db=db_session, vin=VIN, probe=probe)
 
 
+def test_payload_result_identifies_last_good_age_without_changing_legacy_return(
+    db_session, monkeypatch
+):
+    now = [100.0]
+    responses = iter(({"version": 1}, emergency_client.EmergencyError("offline")))
+
+    def fake_fetch(**kwargs):
+        response = next(responses)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+    monkeypatch.setattr(emergency_cache.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", fake_fetch)
+    monkeypatch.setattr(settings_svc, "record_emergency_cookie_probe", lambda _db, **kwargs: False)
+    probe = ("cookie", "identity")
+
+    fresh = emergency_cache.get_robot_payload_result(db=db_session, vin=VIN, probe=probe)
+    assert fresh.payload == {"version": 1}
+    assert fresh.stale is False
+    assert fresh.age_seconds == 0
+
+    now[0] = 104.25
+    stale = emergency_cache.get_robot_payload_result(db=db_session, vin=VIN, probe=probe)
+    assert stale.payload == {"version": 1}
+    assert stale.stale is True
+    assert stale.age_seconds == pytest.approx(4.25)
+
+
 @pytest.mark.parametrize("failure", [RuntimeError("boom"), KeyboardInterrupt()])
 def test_failed_emergency_flight_is_removed(monkeypatch, failure):
     def fail(**kwargs):

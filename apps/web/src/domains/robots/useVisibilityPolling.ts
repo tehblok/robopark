@@ -1,6 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { pollDelayAfterFailure, ROBOT_POLL_MS } from './polling'
-import { periodicDelay, resumeDelay, retryAfterMs } from '../../lib/pollingSchedule'
+import { periodicDelay, retryAfterMs } from '../../lib/pollingSchedule'
 
 // A stable task callback is the request identity. A changed callback starts a new
 // generation; old requests cannot coalesce with it or schedule its next timeout.
@@ -44,8 +44,8 @@ export function useVisibilityPolling({ enabled, online, task }: { enabled: boole
     const visibility = () => {
       clear()
       if (!automatic()) return
-      const delay = Math.max(resumeDelay(), retryAt - Date.now())
-      if (delay <= 0) void run(false); else schedule(delay)
+      retryAt = 0
+      void run(false)
     }
     resumeRunner.current = visibility
     runner.current = run
