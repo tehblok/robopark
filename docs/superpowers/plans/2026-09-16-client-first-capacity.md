@@ -10,6 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-16-client-first-capacity-design.md`
 
+## Execution notes (2026-09-16)
+
+- Baseline production bundle: initial JS 1,035.91 kB (304.90 kB gzip), CSS 161.82 kB (35.42 kB gzip). After route splitting: initial JS about 258 kB (80 kB gzip), CSS about 82 kB (19 kB gzip). These are build artifacts, not a measured phone p95.
+- Protected resource responses now stay in a 128-entry in-memory cache. Startup purges all old `robopark:res:` snapshots without JSON parsing; no production screen opts into disk persistence.
+- The revision signal uses small file-backed, cross-worker counters under the existing shared live-merge/data root. This avoids an OTA database migration and an extra background database loop. Royal/admin see the global work revision; other work users see the sum of revisions for their assigned parks only. Presence pings never advance it. The selected inventory park uses its park revision plus the shared catalog revision. Reports retain their existing visible-screen refresh, avoiding a global activity signal visible to narrowly scoped report users.
+- Only visible, online tabs start revision checks every approximately 4–4.2 s (request time is included); failures back off to 60 s. Last-seen versions survive route unmounts in bounded tab memory. Each active tab polls independently: cross-tab leader election/SSE is deferred until a local target measurement shows a material benefit, because lease failure modes would add complexity to the 8-GB/Wi-Fi installation.
+- The capacity harness now includes the revision endpoint and aggregate response bytes. A 200-user PASS, device/Wi-Fi p95, memory trend, and Tuna result require a test account and target-host run; none are inferred from the Mac tests.
+
 ## Global Constraints
 
 - The existing Armbian 8-GB/Wi-Fi host is a required target; Orin is optional and must be measured separately.
@@ -23,13 +31,13 @@
 
 ### Task 1: Measure the unchanged build and representative reads
 
-**Files:** Create `scripts/client-capacity-baseline.mjs`; create `apps/web/src/app/routing/routeLoadBudget.test.ts`; update `deploy/CAPACITY-RU.md` with local invocation and result fields.
+**Files:** Update this plan's execution notes and `deploy/CAPACITY-RU.md` with local invocation and result fields; no production code.
 
-**Interfaces:** Produces JSON `{initialJsBytes, routeJsBytes, requestCount, responseBytes, p95NavigationMs}` for a scripted, authenticated local test session. Uses the current Vite build and existing capacity gate; no production URL default.
+**Interfaces:** Record initial JS/CSS bytes from Vite's production build and, when a local API and test account are available, request count/bytes and p95 navigation on an authenticated local session. Existing `scripts/capacity-gate.py` is the 200-client measurement tool; no production URL default.
 
-- [ ] Write a failing test that parses the Vite manifest and rejects a missing `initialJsBytes`/`routeJsBytes` record; run `npm test -- --run src/app/routing/routeLoadBudget.test.ts` in `apps/web` and observe RED.
-- [ ] Implement a small manifest reader using `readFileSync` and `statSync`, e.g. `const manifest = JSON.parse(readFileSync(path, 'utf8')); const initialJsBytes = statSync(entryFile).size`, with explicit local build path and no network default.
-- [ ] Run focused test GREEN, `npm run build`, record baseline values in the plan execution notes, and commit measurement tooling.
+- [x] Run the existing web tests: 1969/1970 passed in parallel; the 5-second inventory pagination timeout passed 13/13 in focused rerun.
+- [x] Run TypeScript and Vite build from the bundled Node executable. Baseline: one 1,035.91-kB JS file (304.90 kB gzip), one 161.82-kB CSS file (35.42 kB gzip), six WebP robot assets loaded when requested.
+- [ ] Record authenticated request/byte/latency baseline only on a local stand with a test account; this is not a reason to block route splitting when no local stand is running.
 
 ### Task 2: Split route code without changing route access or UI
 

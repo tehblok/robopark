@@ -21,7 +21,8 @@ from uuid import uuid4
 
 import httpx
 
-READ_PATHS = ("/api/auth/me", "/api/operator/parks", "/api/reports/mine", "/api/reports/badge")
+LEGACY_READ_PATHS = ("/api/auth/me", "/api/operator/parks", "/api/reports/mine", "/api/reports/badge")
+READ_PATHS = (*LEGACY_READ_PATHS, "/api/changes?scope=work:mine")
 FAILURE_PATTERNS = {
     "database_lock": ("database is locked", "database table is locked", "sqlite_busy"),
     "event_loop": (
@@ -138,6 +139,7 @@ class Sample:
     latency_ms: float
     status: int
     failures: dict = field(default_factory=dict)
+    body_bytes: int = 0
 
 
 def failure_counts(text):
@@ -160,8 +162,11 @@ def scan_server_log(path):
 def summarize(samples, *, elapsed):
     values = sorted(sample.latency_ms for sample in samples)
     size = len(values)
+    total_bytes = sum(sample.body_bytes for sample in samples)
     return {
         "requests": size,
+        "response_bytes_total": total_bytes,
+        "response_bytes_per_second": total_bytes / elapsed if elapsed > 0 else 0,
         "throughput_rps": size / elapsed if elapsed > 0 else 0,
         "error_rate": sum(not 200 <= sample.status < 300 for sample in samples) / size
         if size
@@ -220,12 +225,13 @@ async def run_load(config, *, transport=None):
                     retained = bytearray()
                     async for chunk in response.aiter_bytes():
                         if len(retained) + len(chunk) > 1024 * 1024:
-                            return Sample((time.monotonic() - began) * 1000, 0)
+                            return Sample((time.monotonic() - began) * 1000, 0, body_bytes=response.num_bytes_downloaded)
                         retained.extend(chunk)
                     return Sample(
                         (time.monotonic() - began) * 1000,
                         response.status_code,
                         failure_counts(retained.decode(errors="replace")),
+                        response.num_bytes_downloaded,
                     )
             except (httpx.HTTPError, OSError):
                 return Sample((time.monotonic() - began) * 1000, 0)
@@ -344,7 +350,7 @@ def validate_report(value):
         and set(workload)
         == {"users", "duration_seconds", "warmup_seconds", "think_seconds", "writes", "read_paths"}
     )
-    require(workload["read_paths"] == list(READ_PATHS) and type(workload["writes"]) is bool)
+    require(workload["read_paths"] in (list(READ_PATHS), list(LEGACY_READ_PATHS)) and type(workload["writes"]) is bool)
     require(
         all(
             number(workload[key])
@@ -354,9 +360,14 @@ def validate_report(value):
     metrics = value["metrics"]
     require(
         isinstance(metrics, dict)
-        and set(metrics) == {"requests", "throughput_rps", "error_rate", "latency_ms"}
+        and set(metrics) in (
+            {"requests", "throughput_rps", "error_rate", "latency_ms"},
+            {"requests", "throughput_rps", "error_rate", "latency_ms", "response_bytes_total", "response_bytes_per_second"},
+        )
     )
     require(all(number(metrics[key]) for key in ("requests", "throughput_rps", "error_rate")))
+    if "response_bytes_total" in metrics:
+        require(number(metrics["response_bytes_total"]) and number(metrics["response_bytes_per_second"]))
     require(
         isinstance(metrics["latency_ms"], dict)
         and set(metrics["latency_ms"]) == {"p50", "p95", "p99"}

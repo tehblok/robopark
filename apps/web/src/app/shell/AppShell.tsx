@@ -9,6 +9,8 @@ import { useTheme } from '../../design-system/theme/ThemeProvider'
 import { DENSITY_MEDIA_QUERY } from '../../design-system/theme/theme'
 import { ru, roleLabel } from '../../i18n/ru'
 import { resourceStore, useCachedResource } from '../../lib/resource'
+import { startChangeFeed } from '../../lib/changeFeed'
+import { INVENTORY_REVISION_CHANGED } from '../../domains/inventory/inventoryRevision'
 import { useParkScope } from '../park/parkScope'
 import { navigationForUser } from '../routing/accessPolicy'
 import type { NavigationItem, NavGroup } from '../routing/routeManifest'
@@ -233,7 +235,7 @@ function NavigationLink({
 }
 
 export function AppShell() {
-  const { user, logout } = useAuth()
+  const { user, logout, refreshUser } = useAuth()
   const { parkId, selectedPark, parks, loading, locked, setParkId, allowAllParks } = useParkScope()
   const {
     preference,
@@ -279,6 +281,29 @@ export function AppShell() {
     ? badgeResource.data?.count ?? 0
     : 0
   const refreshBadge = badgeResource.refresh
+
+  const feedScope = location.pathname.startsWith('/work') && user?.permissions?.includes('tracker.read')
+    ? user.role === 'admin' || user.role === 'royal' ? 'work' : 'work:mine'
+    : location.pathname.startsWith('/inventory') && user?.permissions?.includes('nav.inventory') && parkId != null
+      ? `inventory:${parkId}`
+      : null
+
+  useEffect(() => {
+    if (!user || !feedScope) return
+    return startChangeFeed({
+      identity: String(user.id),
+      scope: feedScope,
+      load: async scope => (await api.changeRevision(scope)).revision,
+      onChange: () => {
+        if (feedScope.startsWith('work')) resourceStore.revalidate(`work:${user.id}:`, { prefix: true })
+        else window.dispatchEvent(new CustomEvent(INVENTORY_REVISION_CHANGED, { detail: parkId }))
+      },
+      onAuthorizationFailure: () => {
+        if (feedScope.startsWith('work')) resourceStore.invalidate(`work:${user.id}:`, { prefix: true })
+        void refreshUser().catch(() => {})
+      },
+    })
+  }, [feedScope, user, parkId, refreshUser])
 
   useLayoutEffect(() => {
     if (committedBadgeKey.current === badgeKey) return

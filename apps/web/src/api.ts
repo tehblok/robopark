@@ -1097,6 +1097,7 @@ async function requestForm<T>(path: string, formData: FormData, headers?: Record
 }
 
 export const api = {
+  changeRevision: (scope: string) => request<{ revision: number }>(`/changes?scope=${encodeURIComponent(scope)}`),
   emergencyReadings: async (signal?: AbortSignal): Promise<EmergencyReadingCatalog> => {
     const result = await emergencyReadingRequest<EmergencyReading[]>('', { signal })
     return { readings: result.data, etag: result.etag }

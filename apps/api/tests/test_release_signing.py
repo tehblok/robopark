@@ -360,6 +360,7 @@ def test_pack_release_wrapper_propagates_reviewed_migration_metadata(
             "0022_tracker_collaboration",
             "0024_inventory",
             "0025_local_task_claims",
+            "0026_global_inventory_workflows",
             "0027_emergency_readings",
         ],
         "reversible": True,

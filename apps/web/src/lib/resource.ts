@@ -92,6 +92,7 @@ function invalidateAllPendingLoads(): void {
 class ResourceStore {
   private mem = new Map<string, StoredEntry>()
   private subs = new Map<string, Set<() => void>>()
+  private refreshSubs = new Map<string, Set<() => void>>()
 
   private remember(key: string, entry: StoredEntry): void {
     this.mem.delete(key)
@@ -173,6 +174,15 @@ class ResourceStore {
     for (const k of notified) this.notify(k)
   }
 
+  /** Ask mounted consumers to reload in the background, retaining cached data. */
+  revalidate(keyOrPrefix: string, { prefix = false }: { prefix?: boolean } = {}): void {
+    for (const [key, listeners] of this.refreshSubs) {
+      if (prefix ? key.startsWith(keyOrPrefix) : key === keyOrPrefix) {
+        listeners.forEach(listener => listener())
+      }
+    }
+  }
+
   clearAll(): void {
     invalidateAllPendingLoads()
     const keys = Array.from(this.subs.keys())
@@ -193,6 +203,19 @@ class ResourceStore {
       if (!remaining) return
       remaining.delete(fn)
       if (remaining.size === 0) this.subs.delete(key)
+    }
+  }
+
+  subscribeRevalidate(key: string, fn: () => void): () => void {
+    let listeners = this.refreshSubs.get(key)
+    if (!listeners) {
+      listeners = new Set()
+      this.refreshSubs.set(key, listeners)
+    }
+    listeners.add(fn)
+    return () => {
+      listeners.delete(fn)
+      if (listeners.size === 0) this.refreshSubs.delete(key)
     }
   }
 
@@ -249,6 +272,19 @@ function removeFromStorageByPrefix(prefix: string): void {
     }
   } catch {
     // ignore
+  }
+}
+
+/** One-time upgrade cleanup; no current screen opts into disk persistence. */
+export function pruneLegacyResourceSnapshots(): void {
+  if (typeof window === 'undefined') return
+  try {
+    for (let index = window.localStorage.length - 1; index >= 0; index--) {
+      const key = window.localStorage.key(index)
+      if (key?.startsWith(LS_PREFIX)) window.localStorage.removeItem(key)
+    }
+  } catch {
+    // Storage may be disabled; in-memory reads still work.
   }
 }
 
@@ -432,6 +468,13 @@ export function useCachedResource<T>(
     !document.hidden && document.visibilityState !== 'hidden' && navigator.onLine !== false &&
     !retryRef.current.blocked && Date.now() >= retryRef.current.after
   ), [])
+
+  useEffect(() => {
+    if (!enabled) return
+    return resourceStore.subscribeRevalidate(key, () => {
+      if (canLoadAutomatically()) void runLoad(true)
+    })
+  }, [enabled, key, canLoadAutomatically, runLoad])
 
   useEffect(() => {
     if (!enabled || !canLoadAutomatically()) return

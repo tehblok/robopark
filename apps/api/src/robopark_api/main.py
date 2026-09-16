@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
@@ -28,6 +29,7 @@ from robopark_api.routers import (
     analytics,
     auth,
     campaigns,
+    changes,
     dashboard,
     emergency,
     health,
@@ -52,6 +54,10 @@ from robopark_api.seed import ensure_seed_user
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.blocker_history_job import run_blocker_history_loop
 from robopark_api.services.cache_cleanup import run_cache_cleanup_loop
+from robopark_api.services.change_revisions import (
+    default_change_revision_store,
+    scope_for_mutation,
+)
 from robopark_api.services.emergency_config import ensure_default_section_roles
 from robopark_api.services.emergency_keepalive import run_keepalive_loop
 from robopark_api.services.live_merge import JobLease, default_live_merge_root, live_merge_enabled
@@ -171,6 +177,22 @@ def create_app() -> FastAPI:
     app.state.ops_dir = resolved_ops_dir(settings)
     app.state.ops_settings = settings
     app.state.session_cookie_name = settings.session_cookie_name
+    app.state.change_revision_store = default_change_revision_store()
+
+    @app.middleware("http")
+    async def publish_change_revision(request: Request, call_next):
+        result = await call_next(request)
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and result.status_code < 400:
+            scopes = set(getattr(request.state, "change_scopes", ()))
+            default_scope = scope_for_mutation(request.url.path)
+            if default_scope:
+                scopes.add(default_scope)
+            for scope in scopes:
+                try:
+                    await asyncio.to_thread(app.state.change_revision_store.mark_changed, scope)
+                except OSError:
+                    logging.getLogger(__name__).exception("change revision publish failed")
+        return result
 
     @app.exception_handler(RequestValidationError)
     async def hide_sensitive_validation_input(request: Request, exc: RequestValidationError):
@@ -219,6 +241,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(auth.router)
     app.include_router(campaigns.router)
+    app.include_router(changes.router)
     app.include_router(inventory.router)
     app.include_router(health.router)
     app.include_router(parks.router)

@@ -40,7 +40,7 @@ const comparisonSnapshot = (input: InventoryReceiptInput): string => {
   return JSON.stringify(normalized)
 }
 
-export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChanged, permissions }: { apiClient?: ReceiptsApi; parkId: number; onInventoryChanged?: () => void; permissions?: string[] }) {
+export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChanged, permissions, refreshVersion = 0 }: { apiClient?: ReceiptsApi; parkId: number; onInventoryChanged?: () => void; permissions?: string[]; refreshVersion?: number }) {
   const [page, setPage] = useState<InventoryPageEnvelope<InventoryReceipt> | null>(null)
   const [query, setQuery] = useState('')
   const [offset, setOffset] = useState(0)
@@ -77,7 +77,7 @@ export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChan
     }).catch(reason => { if (generation === listGeneration.current) { setPage(null); setListError(classifyApiError(reason, 'Не удалось загрузить поставки.').description) } })
   }, [apiClient, offset, parkId, query])
 
-  useEffect(() => { load(); return () => { listGeneration.current += 1 } }, [load])
+  useEffect(() => { load(); return () => { listGeneration.current += 1 } }, [load, refreshVersion])
   useEffect(() => {
     setPage(null); setSelected(null); setCreating(false); setLines([]); setTouchedLines(new Set()); setOffset(0); setNotice(''); setError('')
     operationGeneration.current += 1; partGeneration.current += 1; pending.current = false; setBaselinePayload(null); setReverseReason('')

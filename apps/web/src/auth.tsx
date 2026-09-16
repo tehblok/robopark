@@ -7,7 +7,7 @@ import {
 } from 'react'
 import { api, ApiError, type User } from './api'
 import { AuthContext } from './auth-context'
-import { resourceStore } from './lib/resource'
+import { pruneLegacyResourceSnapshots, resourceStore } from './lib/resource'
 import { clearProtectedBrowserStorage } from './shared/auth/protectedBrowserStorage'
 
 export function AuthProvider({ children }: PropsWithChildren) {
@@ -26,6 +26,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }, [advanceSessionGeneration])
 
   useEffect(() => {
+    pruneLegacyResourceSnapshots()
     const generation = advanceSessionGeneration()
     api
       .me()

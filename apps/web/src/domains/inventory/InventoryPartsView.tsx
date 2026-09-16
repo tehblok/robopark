@@ -17,6 +17,7 @@ export type InventoryPartsViewProps = {
   apiClient?: InventoryPartsApi
   debounceMs?: number
   parkId: number
+  refreshVersion?: number
   selectedCatalogPartId?: number | null
   onSelectedCatalogPartIdChange?: (catalogPartId: number | null) => void
 }
@@ -54,7 +55,7 @@ function StockForm({ apiClient, onSaved, parkId, part }: { apiClient: InventoryP
   </form>
 }
 
-export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, selectedCatalogPartId, onSelectedCatalogPartIdChange }: InventoryPartsViewProps) {
+export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, refreshVersion = 0, selectedCatalogPartId, onSelectedCatalogPartIdChange }: InventoryPartsViewProps) {
   const [query, setQuery] = useState('')
   const [componentId, setComponentId] = useState<number | undefined>()
   const [stockFilter, setStockFilter] = useState<InventoryStockFilter | undefined>()
@@ -96,7 +97,7 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
       })
     }, query ? debounceMs : 0)
     return () => { globalThis.clearTimeout(timer); generation.current += 1 }
-  }, [apiClient, debounceMs, params, query])
+  }, [apiClient, debounceMs, params, query, refreshVersion])
 
   useEffect(() => {
     const requestedParkId = parkId
@@ -104,7 +105,7 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
     loadInventoryComponents(apiClient, parkId).then(value => {
       if (activeParkId.current === requestedParkId) setKnownComponents(value.map(item => ({ id: item.id, name: item.name })))
     }).catch(() => { if (activeParkId.current === requestedParkId) setComponentError(INVENTORY_COMPONENTS_INCOMPLETE) })
-  }, [apiClient, parkId])
+  }, [apiClient, parkId, refreshVersion])
 
   useEffect(() => {
     setOffset(0)

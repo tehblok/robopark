@@ -16,7 +16,7 @@ type Conflict = { catalog_part_id: number; expected_quantity: `${bigint}`; curre
 const pageSize = 25
 const labels = { draft: 'Черновик', posted: 'Проведён', cancelled: 'Отменён' } as const
 
-export function InventoryCountsView({ apiClient = api, parkId, onInventoryChanged, permissions }: { apiClient?: CountsApi; parkId: number; onInventoryChanged?: () => void; permissions?: string[] }) {
+export function InventoryCountsView({ apiClient = api, parkId, onInventoryChanged, permissions, refreshVersion = 0 }: { apiClient?: CountsApi; parkId: number; onInventoryChanged?: () => void; permissions?: string[]; refreshVersion?: number }) {
   const [page, setPage] = useState<InventoryPageEnvelope<InventoryCount> | null>(null)
   const [query, setQuery] = useState('')
   const [offset, setOffset] = useState(0)
@@ -50,7 +50,7 @@ export function InventoryCountsView({ apiClient = api, parkId, onInventoryChange
       if (generation === listGeneration.current) setPage(value)
     }).catch(reason => { if (generation === listGeneration.current) { setPage(null); setListError(classifyApiError(reason, 'Не удалось загрузить акты.').description) } })
   }, [apiClient, offset, parkId, query])
-  useEffect(() => { load(); return () => { listGeneration.current += 1 } }, [load])
+  useEffect(() => { load(); return () => { listGeneration.current += 1 } }, [load, refreshVersion])
   useEffect(() => {
     const generation = ++componentGeneration.current
     setComponentError('')

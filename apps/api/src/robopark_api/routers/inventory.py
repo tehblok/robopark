@@ -2,7 +2,7 @@ from collections.abc import Callable
 from typing import Literal, TypeVar
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -487,6 +487,7 @@ def overview(park_id: int, user: User = Depends(require_user), db: Session = Dep
     "/components", response_model=InventoryComponentOut, status_code=status.HTTP_201_CREATED
 )
 async def create_component(
+    request: Request,
     park_id: int = Form(...),
     name: str = Form(...),
     photo: UploadFile | None = File(None),
@@ -495,6 +496,7 @@ async def create_component(
 ):
     photo_data = await _photo(photo)
     row = _run(lambda: service.create_component(db, user, park_id, name, photo_data))
+    request.state.change_scopes = (f"inventory:{row.park_id}",)
     return {
         "id": row.id,
         "park_id": row.park_id,
@@ -584,6 +586,7 @@ def move_stock(
     status_code=status.HTTP_201_CREATED,
 )
 def task_writeoff(
+    request: Request,
     issue_key: str,
     payload: InventoryTaskWriteoffIn,
     user: User = Depends(require_user),
@@ -601,6 +604,7 @@ def task_writeoff(
             idempotency_key=payload.idempotency_key,
         )
     )
+    request.state.change_scopes = (f"inventory:{row.park_id}", f"work:park:{row.park_id}", "work")
     return {
         **row.__dict__,
         "part_id": service.part_adapter_id(db, row.catalog_part_id, legacy_part_id=row.part_id),

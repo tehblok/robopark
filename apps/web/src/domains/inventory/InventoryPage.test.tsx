@@ -7,6 +7,7 @@ import { AuthContext } from '../../auth-context'
 import { ParkScopeContext } from '../../app/park/parkScope'
 import { InventoryPage } from './InventoryPage'
 import { TaskPartsPanel } from './TaskPartsPanel'
+import { INVENTORY_REVISION_CHANGED } from './inventoryRevision'
 
 const park: Park = { id: 7, name: 'Север', tag: 'North', is_active: true }
 const stock: InventoryOverview = { park_id: 7, component_count: 1, part_count: 1, low_stock_count: 0, out_of_stock_count: 0, components: [{ id: 2, park_id: 7, name: 'Подвязка', has_photo: true, parts: [{ id: 3, park_id: 7, component_id: 2, name: 'Тяга', article: 'TY-001', quantity: '5', minimum_quantity: '2', location: 'Стеллаж A / полка 2', is_active: true, has_photo: true }] }] }
@@ -41,6 +42,23 @@ function useViewport(matches: boolean) {
 beforeEach(() => useViewport(false))
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+it('refreshes only the active park inventory without clearing the search', async () => {
+  const client = inventoryClient({
+    searchInventory: vi.fn(async () => ({ items: [], limit: 25, offset: 0, total: 0 })),
+    inventoryCatalogComponents: vi.fn(async () => ({ items: [], limit: 200, offset: 0, total: 0 })),
+  })
+  render(renderInventoryPage(park, client))
+  const search = await screen.findByRole('searchbox', { name: 'Найти запчасть' })
+  await userEvent.type(search, 'тяга')
+  await waitFor(() => expect(client.searchInventory).toHaveBeenCalledWith(expect.objectContaining({ query: 'тяга' })))
+  const before = vi.mocked(client.searchInventory).mock.calls.length
+  window.dispatchEvent(new CustomEvent(INVENTORY_REVISION_CHANGED, { detail: 9 }))
+  expect(vi.mocked(client.searchInventory).mock.calls.length).toBe(before)
+  window.dispatchEvent(new CustomEvent(INVENTORY_REVISION_CHANGED, { detail: 7 }))
+  await waitFor(() => expect(vi.mocked(client.searchInventory).mock.calls.length).toBeGreaterThan(before))
+  expect(search).toHaveValue('тяга')
+})
 
 it('mounts the fast parts and scoped manage views through the active shell panel', async () => {
   const client = inventoryClient({

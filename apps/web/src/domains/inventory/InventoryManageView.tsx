@@ -25,6 +25,7 @@ type Draft = { componentId: string; name: string; article: string; minimum: stri
 export type InventoryManageViewProps = {
   apiClient?: InventoryManageApi
   parkId: number
+  refreshVersion?: number
   role?: string
   selectedCatalogPartId?: number | null
   onSelectedCatalogPartIdChange?: (catalogPartId: number | null) => void
@@ -66,7 +67,7 @@ function ParkStockForm({ apiClient, onSaved, parkId, part }: { apiClient: Invent
   </form>
 }
 
-export function InventoryManageView({ apiClient = api, parkId, role, selectedCatalogPartId, onSelectedCatalogPartIdChange }: InventoryManageViewProps) {
+export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 0, role, selectedCatalogPartId, onSelectedCatalogPartIdChange }: InventoryManageViewProps) {
   const [items, setItems] = useState<InventoryCatalogSearchItem[]>([])
   const [components, setComponents] = useState<Array<{ id: number; name: string }>>([])
   const [catalogQuery, setCatalogQuery] = useState('')
@@ -134,7 +135,7 @@ export function InventoryManageView({ apiClient = api, parkId, role, selectedCat
   useEffect(() => {
     const timer = globalThis.setTimeout(() => { void load() }, catalogQuery ? 200 : 0)
     return () => { globalThis.clearTimeout(timer); generation.current += 1 }
-  }, [catalogQuery, load])
+  }, [catalogQuery, load, refreshVersion])
 
   const updateStockItem = (stock: InventoryStockView, requestedParkId: number) => {
     if (activeParkId.current !== requestedParkId || stock.park_id !== requestedParkId) return

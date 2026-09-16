@@ -17,6 +17,8 @@ import {
 } from '../../test/renderApp'
 import { AppShell } from './AppShell'
 import { REPORTS_BADGE_REFRESH } from '../../reports-badge'
+import { resourceStore } from '../../lib/resource'
+import { INVENTORY_REVISION_CHANGED } from '../../domains/inventory/inventoryRevision'
 
 const shellCss = readFileSync('src/app/shell/AppShell.css', 'utf8')
 const overviewCss = readFileSync('src/domains/shift/overview.css', 'utf8')
@@ -71,14 +73,16 @@ function renderShellWithParkScope(
   setParkId = vi.fn(),
   availableParks?: (typeof north)[],
   allowAllParks = false,
+  path = '/overview?park=7',
+  permissions: string[] = [],
 ) {
   const south = { id: 9, name: 'Южный', tag: 'south', is_active: true }
   const parks = availableParks ?? [north, south]
-  const currentUser = testUser({ role, parks })
+  const currentUser = testUser({ role, parks, permissions })
   return {
     setParkId,
     ...render(
-      <MemoryRouter initialEntries={['/overview?park=7']}>
+      <MemoryRouter initialEntries={[path]}>
         <ThemeProvider>
           <AuthContext.Provider value={{ user: currentUser, loading: false,
             login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn() }}>
@@ -176,10 +180,37 @@ describe('AppShell', () => {
     sessionStorage.clear()
     media = installMatchMedia({ width: 1200 })
     vi.spyOn(api, 'reportsBadge').mockResolvedValue({ count: 0 })
+    vi.spyOn(api, 'changeRevision').mockResolvedValue({ revision: 0 })
     vi.spyOn(api, 'dashboardSummary').mockResolvedValue({ park_id: 7, generated_at: '2026-09-02T09:00:00Z', arrived: 0, done: 0, queued: 0, in_transit: 0, moving: [] })
     vi.spyOn(api, 'operatorBlockers').mockResolvedValue({ park_id: 7, park_tag: 'north', status: 'all', counts: {}, items: [] })
     vi.spyOn(api, 'trackerIssues').mockResolvedValue({ items: [], total: 0, limit: 30, offset: 0, has_more: false })
     vi.spyOn(api, 'operationsOverview').mockResolvedValue({ park_id: 7, generated_at: '2026-09-02T09:00:00Z', timezone: 'Europe/Moscow', selected_status: 'all', status_options: [{ key: 'all', label: 'Все доступные' }, { key: 'new', label: 'Новые' }], counts: { all: 1, new: 1 }, tasks: [{ key: 'ROBOPARK-1', summary: 'Проверить робота', status: 'Новый', bucket: 'new', robot: '447', created_at: null, hours_created: null, url: '' }], tasks_total: 1, tasks_truncated: false, flow: { definition_version: 2, window_start: '2026-09-01T09:00:00Z', window_end: '2026-09-02T09:00:00Z', expected_buckets: 12, observed_buckets: 0, complete: false, legacy_buckets: 0, points: [] }, sla: { target_hours: null, evaluated_count: 0, unknown_count: 1, at_risk_count: null, overdue_count: null, overdue: [], overdue_truncated: false }, workload: null, operators: null })
+  })
+
+  it('checks only the visible work version and refreshes mounted resources on change', async () => {
+    vi.mocked(api.changeRevision)
+      .mockResolvedValueOnce({ revision: 2 })
+      .mockResolvedValueOnce({ revision: 3 })
+    const refresh = vi.spyOn(resourceStore, 'revalidate')
+    renderShellPath('/work')
+    await waitFor(() => expect(api.changeRevision).toHaveBeenCalledWith('work:mine'))
+    document.dispatchEvent(new Event('visibilitychange'))
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith(`work:${operator.id}:`, { prefix: true }))
+    refresh.mockRestore()
+  })
+
+  it('publishes a park-scoped inventory refresh when its version changes', async () => {
+    vi.mocked(api.changeRevision)
+      .mockResolvedValueOnce({ revision: 4 })
+      .mockResolvedValueOnce({ revision: 5 })
+    const changed = vi.fn()
+    window.addEventListener(INVENTORY_REVISION_CHANGED, changed)
+    renderShellWithParkScope('operator', vi.fn(), [north], false, '/inventory?park=7', ['nav.inventory'])
+    await waitFor(() => expect(api.changeRevision).toHaveBeenCalledWith('inventory:7'))
+    document.dispatchEvent(new Event('visibilitychange'))
+    await waitFor(() => expect(changed).toHaveBeenCalledOnce())
+    expect((changed.mock.calls[0][0] as CustomEvent<number>).detail).toBe(7)
+    window.removeEventListener(INVENTORY_REVISION_CHANGED, changed)
   })
 
   it.each([

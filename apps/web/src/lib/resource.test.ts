@@ -286,6 +286,22 @@ describe('automatic cached refresh', () => {
     expect(loader).toHaveBeenCalledTimes(1)
   })
 
+  it('refreshes a mounted resource after a change signal without hiding its last value', async () => {
+    const pending = deferred<TestPayload>()
+    let calls = 0
+    const loader = vi.fn((): Promise<TestPayload> => ++calls === 1
+      ? Promise.resolve({ value: 'last known' }) : pending.promise)
+    const view = renderHook(() => useCachedResource('work:7:issue:ONE-1', loader))
+    await waitFor(() => expect(view.result.current.data?.value).toBe('last known'))
+
+    resourceStore.revalidate('work:7:', { prefix: true })
+    await waitFor(() => expect(loader).toHaveBeenCalledTimes(2))
+    expect(view.result.current.data?.value).toBe('last known')
+
+    await resolveAndFlush(pending, { value: 'updated' })
+    expect(view.result.current.data?.value).toBe('updated')
+  })
+
   it('reuses a fresh cache and publishes a new value automatically when stale', async () => {
     vi.useFakeTimers()
     resourceStore.set('auto', { value: 'cached' }, false)

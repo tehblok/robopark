@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
 from robopark_api.deps import require_user
-from robopark_api.models import User
+from robopark_api.models import Park, User
 from robopark_api.schemas import (
     TaskHandoffIn,
     TaskHideIn,
@@ -50,6 +50,7 @@ from robopark_api.services.tracker_claims import (
     release_claim,
 )
 from robopark_api.services.tracker_policy import ensure_action_allowed
+from robopark_api.task_workflow_models import HiddenTask
 
 router = APIRouter(prefix="/tracker", tags=["tracker-actions"])
 
@@ -116,6 +117,20 @@ def _authorize(db: Session, user: User, issue: dict, action: str, request: Reque
             client_ip=client_ip(request),
         )
         raise
+    _mark_park_change(request, db, issue)
+
+
+def _mark_park_change(request: Request, db: Session, issue: dict) -> None:
+    tags = sig_svc.issue_tags(issue)
+    park_ids = set(db.scalars(select(Park.id).where(Park.tag.in_(tags)))) if tags else set()
+    if not park_ids:
+        queue = str(issue.get("queue") or "").strip()
+        if queue:
+            park_ids = set(db.scalars(select(Park.id).where(Park.tracker_queue == queue)))
+    if park_ids:
+        scopes = set(getattr(request.state, "change_scopes", ()))
+        scopes.update(f"work:park:{park_id}" for park_id in park_ids)
+        request.state.change_scopes = tuple(scopes)
 
 
 def _upstream_error(
@@ -192,7 +207,9 @@ def _mutation_lease(
         yield
 
 
-def _lifecycle_issue(db: Session, user: User, key: str, *, actions: tuple[str, ...] = ()) -> dict:
+def _lifecycle_issue(
+    db: Session, user: User, key: str, *, request: Request, actions: tuple[str, ...] = ()
+) -> dict:
     _ensure_tracker_user(user, db)
     if task_lifecycle.is_hidden(db, key):
         raise HTTPException(status_code=404)
@@ -202,6 +219,7 @@ def _lifecycle_issue(db: Session, user: User, key: str, *, actions: tuple[str, .
     enforce_issue_scope(db, user, issue)
     for action in actions:
         ensure_action_allowed(db, user, issue, action)
+    _mark_park_change(request, db, issue)
     return issue
 
 
@@ -213,7 +231,7 @@ def claim_task(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    issue = _lifecycle_issue(db, user, key, actions=("assign",))
+    issue = _lifecycle_issue(db, user, key, request=request, actions=("assign",))
     with submissions.task_mutation_lease(db, key):
         return TrackerActionOut(
             **task_lifecycle.claim(
@@ -235,7 +253,7 @@ def handoff_task(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _lifecycle_issue(db, user, key, actions=("comment",))
+    _lifecycle_issue(db, user, key, request=request, actions=("comment",))
     with submissions.task_mutation_lease(db, key):
         return TrackerActionOut(
             **task_lifecycle.handoff(
@@ -263,7 +281,9 @@ def submit_task_review(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    issue = _lifecycle_issue(db, user, key, actions=("comment", "attach", "transition"))
+    issue = _lifecycle_issue(
+        db, user, key, request=request, actions=("comment", "attach", "transition")
+    )
     if len(photo) != 1:
         raise HTTPException(400, "task_review_exactly_one_photo")
     upload = photo[0]
@@ -292,11 +312,12 @@ def submit_task_review(
 def return_task_review(
     key: str,
     payload: TaskReviewReturnIn,
+    request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _lifecycle_issue(db, user, key, actions=("comment", "transition"))
+    _lifecycle_issue(db, user, key, request=request, actions=("comment", "transition"))
     with submissions.task_mutation_lease(db, key):
         return TrackerActionOut(
             **task_lifecycle.return_review(
@@ -313,11 +334,12 @@ def return_task_review(
 @router.post("/issues/{key}/review/approve", response_model=TrackerActionOut)
 def approve_task_review(
     key: str,
+    request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _lifecycle_issue(db, user, key, actions=("close",))
+    _lifecycle_issue(db, user, key, request=request, actions=("close",))
     with submissions.task_mutation_lease(db, key):
         return TrackerActionOut(
             **task_lifecycle.approve_review(
@@ -339,7 +361,7 @@ def retry_task_now(
 ) -> TrackerActionOut:
     if not rbac.is_admin_or_royal(user):
         raise HTTPException(403, "task_retry_manager_required")
-    issue = _lifecycle_issue(db, user, key)
+    issue = _lifecycle_issue(db, user, key, request=request)
     with submissions.task_mutation_lease(db, key):
         begin = reliable_actions.begin_action(
             db,
@@ -382,13 +404,14 @@ def retry_task_now(
 def hide_task(
     key: str,
     payload: TaskHideIn,
+    request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
     if not rbac.is_admin_or_royal(user):
         raise HTTPException(403, "task_hide_manager_required")
-    issue = _lifecycle_issue(db, user, key)
+    issue = _lifecycle_issue(db, user, key, request=request)
     with submissions.task_mutation_lease(db, key):
         return TrackerActionOut(
             **task_lifecycle.hide(
@@ -405,12 +428,18 @@ def hide_task(
 @router.delete("/issues/{key}/hide", response_model=TrackerActionOut)
 def restore_task(
     key: str,
+    request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
     if not rbac.is_admin_or_royal(user):
         raise HTTPException(403, "task_hide_manager_required")
+    hidden = db.scalar(
+        select(HiddenTask).where(HiddenTask.issue_key == key, HiddenTask.restored_at.is_(None))
+    )
+    if hidden is not None:
+        request.state.change_scopes = (f"work:park:{hidden.park_id}",)
     with submissions.task_mutation_lease(db, key):
         return TrackerActionOut(
             **task_lifecycle.restore(

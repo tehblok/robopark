@@ -91,6 +91,20 @@ describe('AuthProvider session boundaries', () => {
     vi.restoreAllMocks()
   })
 
+  it('removes legacy private resource snapshots when an existing session resumes', async () => {
+    const oldKey = 'robopark:res:work:7:issue:OLD-1'
+    const newKey = 'robopark:res:work:7:issue:NEW-1'
+    localStorage.setItem(oldKey, JSON.stringify({ v: 1, updatedAt: Date.now(), data: { secret: 'old' } }))
+    localStorage.setItem(newKey, JSON.stringify({ v: 2, updatedAt: Date.now(), data: { secret: 'new' } }))
+    vi.spyOn(api, 'me').mockResolvedValue(oldAccount)
+
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+
+    expect(localStorage.getItem(oldKey)).toBeNull()
+    expect(localStorage.getItem(newKey)).toBeNull()
+  })
+
   it.each(['success', '401'] as const)('ignores an old refresh %s after a replacement login', async (result) => {
     const pending = deferred<User>()
     vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount)
