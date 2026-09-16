@@ -79,7 +79,14 @@ def test_production_metadata_is_signed_and_matches_both_verifiers(packaging, tmp
         assert json.loads(archive.read("manifest.json"))["update_notes"] == "Reviewed migration"
 
 
-def test_production_release_accepts_upgrade_from_0_1_18():
+@pytest.mark.parametrize(
+    ("current_version", "current_head"),
+    [
+        ("0.1.18", "0022_tracker_collaboration"),
+        ("0.1.33", "0027_emergency_readings"),
+    ],
+)
+def test_production_release_accepts_supported_upgrade(current_version, current_head):
     from robopark_host.release import check_compatibility
 
     metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
@@ -99,7 +106,7 @@ def test_production_release_accepts_upgrade_from_0_1_18():
             "scripts/verify.sh": {},
         },
     }
-    current = {"app_version": "0.1.18", "migration_head": "0022_tracker_collaboration"}
+    current = {"app_version": current_version, "migration_head": current_head}
 
     check_compatibility(candidate, current)
 
