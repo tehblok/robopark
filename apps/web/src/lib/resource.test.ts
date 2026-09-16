@@ -111,6 +111,28 @@ describe('resourceStore', () => {
     expect(resourceStore.get(key)).toBeUndefined()
     expect(window.localStorage.getItem(`robopark:res:${key}`)).toBeNull()
   })
+
+  it('drops protected snapshots saved by the previous browser cache format', () => {
+    const key = 'work:7:issue:OLD-1'
+    window.localStorage.setItem(`robopark:res:${key}`, JSON.stringify({
+      v: 1, updatedAt: Date.now(), data: { value: 'old private ticket' },
+    }))
+
+    expect(resourceStore.get(key)).toBeUndefined()
+    expect(window.localStorage.getItem(`robopark:res:${key}`)).toBeNull()
+  })
+
+  it('does not hydrate a protected resource from a disk snapshot', async () => {
+    const key = 'work:7:issue:DISK-1'
+    localStorage.setItem(`robopark:res:${key}`, JSON.stringify({
+      v: 2, updatedAt: Date.now(), data: { value: 'disk copy' },
+    }))
+    const loader = vi.fn(async () => ({ value: 'fresh from API' }))
+    const view = renderHook(() => useCachedResource(key, loader))
+
+    await waitFor(() => expect(view.result.current.data?.value).toBe('fresh from API'))
+    expect(loader).toHaveBeenCalledOnce()
+  })
 })
 
 describe('coalesceLoader', () => {
@@ -252,6 +274,18 @@ describe('automatic cached refresh', () => {
     resourceStore.clearAll()
   })
 
+  it('keeps a default private response in memory for instant return without writing localStorage', async () => {
+    const loader = vi.fn(async () => ({ value: 'private ticket' }))
+    const first = renderHook(() => useCachedResource('work:7:issue:ONE-1', loader))
+    await waitFor(() => expect(first.result.current.data?.value).toBe('private ticket'))
+    expect(localStorage.getItem('robopark:res:work:7:issue:ONE-1')).toBeNull()
+    first.unmount()
+
+    const second = renderHook(() => useCachedResource('work:7:issue:ONE-1', loader))
+    expect(second.result.current.data?.value).toBe('private ticket')
+    expect(loader).toHaveBeenCalledTimes(1)
+  })
+
   it('reuses a fresh cache and publishes a new value automatically when stale', async () => {
     vi.useFakeTimers()
     resourceStore.set('auto', { value: 'cached' }, false)
@@ -385,9 +419,9 @@ describe('successful synchronization timestamp', () => {
 
   it('restores cache time without inventing a new synchronization', () => {
     const savedAt = Date.now() - 10_000
-    localStorage.setItem('robopark:res:sync:cached', JSON.stringify({ v: 1, updatedAt: savedAt, data: { value: 'cached' } }))
+    localStorage.setItem('robopark:res:sync:cached', JSON.stringify({ v: 2, updatedAt: savedAt, data: { value: 'cached' } }))
     const loader = vi.fn()
-    const { result, rerender } = renderHook(({ cacheKey }) => useCachedResource(cacheKey, loader, { enabled: cacheKey !== 'disabled' }), { initialProps: { cacheKey: 'sync:cached' } })
+    const { result, rerender } = renderHook(({ cacheKey }) => useCachedResource(cacheKey, loader, { enabled: cacheKey !== 'disabled', persist: true }), { initialProps: { cacheKey: 'sync:cached' } })
     expect(result.current.updatedAt).toBe(savedAt)
     expect(loader).not.toHaveBeenCalled()
     rerender({ cacheKey: 'disabled' })
