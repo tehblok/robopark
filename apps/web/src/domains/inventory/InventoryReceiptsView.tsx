@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, type InventoryCatalogSearchItem, type InventoryPageEnvelope, type InventoryReceipt, type InventoryReceiptInput } from '../../api'
+import { api, ApiError, type InventoryCatalogSearchItem, type InventoryPageEnvelope, type InventoryReceipt, type InventoryReceiptInput } from '../../api'
 import { Button } from '../../design-system/actions/Button'
 import { EmptyState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { FormField } from '../../design-system/forms/FormField'
@@ -52,6 +52,7 @@ export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChan
   const [comment, setComment] = useState('')
   const [lines, setLines] = useState<DraftLine[]>([])
   const [baselinePayload, setBaselinePayload] = useState<string | null>(null)
+  const [conflicted, setConflicted] = useState(false)
   const [touchedLines, setTouchedLines] = useState<Set<number>>(() => new Set())
   const [partQuery, setPartQuery] = useState('')
   const [parts, setParts] = useState<InventoryCatalogSearchItem[]>([])
@@ -65,6 +66,7 @@ export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChan
   const partGeneration = useRef(0)
   const operationGeneration = useRef(0)
   const pending = useRef(false)
+  const comparedPage = useRef<InventoryPageEnvelope<InventoryReceipt> | null>(null)
   const mobile = globalThis.matchMedia?.('(max-width: 599px)').matches ?? false
   const canManage = permissions === undefined || permissions.includes('inventory.stock.manage')
   const canPost = permissions === undefined || permissions.includes('inventory.documents.post')
@@ -80,7 +82,7 @@ export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChan
   useEffect(() => { load(); return () => { listGeneration.current += 1 } }, [load, refreshVersion])
   useEffect(() => {
     setPage(null); setSelected(null); setCreating(false); setLines([]); setTouchedLines(new Set()); setOffset(0); setNotice(''); setError('')
-    operationGeneration.current += 1; partGeneration.current += 1; pending.current = false; setBaselinePayload(null); setReverseReason('')
+    operationGeneration.current += 1; partGeneration.current += 1; pending.current = false; setBaselinePayload(null); setReverseReason(''); setConflicted(false)
   }, [parkId])
   useEffect(() => {
     if (!(creating || selected?.status === 'draft') || !partQuery.trim()) { setParts([]); return }
@@ -99,12 +101,13 @@ export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChan
 
   const acceptReceipt = (receipt: InventoryReceipt, known: DraftLine[] = []) => {
     setSelected(receipt); setCreating(false); setSupplier(receipt.supplier ?? ''); setDocumentNumber(receipt.document_number ?? ''); setReceivedOn(receipt.received_on); setComment(receipt.comment ?? ''); setLines(receiptLines(receipt, known))
+    setConflicted(false)
     // A serialized snapshot cannot change when the editor or a refreshed list changes.
     setBaselinePayload(comparisonSnapshot(receipt))
   }
 
   const begin = () => {
-    setCreating(true); setSelected(null); setSupplier(''); setDocumentNumber(''); setReceivedOn(today()); setComment(''); setLines([]); setTouchedLines(new Set()); setPartQuery(''); setParts([]); setError(''); setNotice(''); setReverseReason(''); setBaselinePayload(null)
+    setCreating(true); setSelected(null); setSupplier(''); setDocumentNumber(''); setReceivedOn(today()); setComment(''); setLines([]); setTouchedLines(new Set()); setPartQuery(''); setParts([]); setError(''); setNotice(''); setReverseReason(''); setBaselinePayload(null); setConflicted(false)
   }
   const open = (receipt: InventoryReceipt) => {
     acceptReceipt(receipt); setTouchedLines(new Set()); setError(''); setNotice(''); setReverseReason('')
@@ -118,26 +121,43 @@ export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChan
   const invalid = !receivedOn || !draftLines.length || draftLines.some(line => !isPositiveInventoryQuantity(line.quantity))
   const payload = normalizePayload({ supplier, document_number: documentNumber, received_on: receivedOn, comment, lines: draftLines.map(line => ({ catalog_part_id: line.part.id, quantity: line.quantity as `${bigint}`, note: line.note })) })
   const dirty = comparisonSnapshot(payload) !== baselinePayload
+  useEffect(() => {
+    if (page === comparedPage.current) return
+    comparedPage.current = page
+    if (!selected || !page) return
+    const latest = page.items.find(item => item.id === selected.id)
+    if (!latest || latest.revision === selected.revision) return
+    if (dirty || action) { setAction(null); setConflicted(true) }
+    else acceptReceipt(latest)
+  }, [page, selected, dirty, action])
+  const receiptConflict = (reason: unknown) => {
+    if (!(reason instanceof ApiError) || reason.status !== 409) return false
+    const detail = reason.structuredDetail
+    return detail != null && !Array.isArray(detail) && detail.code === 'inventory_receipt_stale'
+  }
   const saveDraft = async () => {
-    if (invalid || pending.current || !canManage) return
+    if (invalid || conflicted || pending.current || !canManage) return
     pending.current = true; setBusy(true); setError('')
     const generation = ++operationGeneration.current
     const requestedPark = parkId
     const requestedId = selected?.id ?? null
     try {
       const value = requestedId
-        ? await apiClient.updateInventoryReceipt(requestedPark, requestedId, payload)
+        ? await apiClient.updateInventoryReceipt(requestedPark, requestedId, { ...payload, revision: selected!.revision })
         : await apiClient.createInventoryReceipt(requestedPark, payload)
       if (generation !== operationGeneration.current || value.park_id !== requestedPark) return
       acceptReceipt(value, draftLines); setNotice('Черновик сохранён'); setOffset(0); load()
     } catch (reason) {
-      if (generation === operationGeneration.current) setError(classifyApiError(reason, 'Не удалось сохранить черновик.').description)
+      if (generation === operationGeneration.current) {
+        if (receiptConflict(reason)) setConflicted(true)
+        else setError(classifyApiError(reason, 'Не удалось сохранить черновик.').description)
+      }
     } finally {
       if (generation === operationGeneration.current) { setBusy(false); pending.current = false }
     }
   }
   const commitAction = async () => {
-    if (!action || pending.current) return
+    if (!action || conflicted || pending.current) return
     pending.current = true; setBusy(true); setError('')
     const generation = ++operationGeneration.current
     const requestedPark = parkId
@@ -148,20 +168,20 @@ export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChan
         if (invalid) return
         const saved = canManage && (creating || dirty)
           ? requestedId
-            ? await apiClient.updateInventoryReceipt(requestedPark, requestedId, payload)
+            ? await apiClient.updateInventoryReceipt(requestedPark, requestedId, { ...payload, revision: selected!.revision })
             : await apiClient.createInventoryReceipt(requestedPark, payload)
           : selected!
         if (generation !== operationGeneration.current || saved.park_id !== requestedPark) return
         acceptReceipt(saved, draftLines)
-        value = await apiClient.postInventoryReceipt(requestedPark, saved.id)
-      } else if (action === 'cancel' && requestedId) value = await apiClient.cancelInventoryReceipt(requestedPark, requestedId)
+        value = await apiClient.postInventoryReceipt(requestedPark, saved.id, saved.revision)
+      } else if (action === 'cancel' && requestedId) value = await apiClient.cancelInventoryReceipt(requestedPark, requestedId, selected!.revision)
       else if (action === 'reverse' && requestedId) value = await apiClient.reverseInventoryReceipt(requestedPark, requestedId, reverseReason.trim())
       else return
       if (generation !== operationGeneration.current || value.park_id !== requestedPark) return
       acceptReceipt(value, draftLines); setAction(null); setReverseReason(''); setNotice(action === 'post' ? 'Поставка проведена' : action === 'cancel' ? 'Поставка отменена' : 'Поставка сторнирована')
       onInventoryChanged?.(); setOffset(0); load()
     } catch (reason) {
-      if (generation === operationGeneration.current) { setAction(null); setError(classifyApiError(reason, 'Не удалось изменить поставку.').description) }
+      if (generation === operationGeneration.current) { setAction(null); if (receiptConflict(reason)) setConflicted(true); else setError(classifyApiError(reason, 'Не удалось изменить поставку.').description) }
     } finally {
       if (generation === operationGeneration.current) { setBusy(false); pending.current = false }
     }
@@ -177,10 +197,10 @@ export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChan
       {page && page.total > page.limit ? <nav aria-label="Страницы поставок" className="inventory-pagination"><Button disabled={!offset} onClick={() => setOffset(value => Math.max(0, value - pageSize))} size="compact" variant="secondary">Предыдущая</Button><span>{offset + 1}–{Math.min(offset + page.limit, page.total)} из {page.total}</span><Button aria-label="Следующая страница поставок" disabled={offset + page.limit >= page.total} onClick={() => setOffset(value => value + pageSize)} size="compact" variant="secondary">Следующая</Button></nav> : null}
     </div>
     {editorOpen ? <div className="inventory-document-editor"><Button className="inventory-document-back" disabled={busy} onClick={() => { setCreating(false); setSelected(null); setReverseReason(''); setBaselinePayload(null) }} variant="ghost">Назад к поставкам</Button><h2>{creating ? 'Новая поставка' : `Поставка №${selected?.id}`}</h2>
-      {notice ? <p className="inventory-notice" role="status">{notice}</p> : null}{error ? <p className="form-error" role="alert">{error}</p> : null}
+      {notice ? <p className="inventory-notice" role="status">{notice}</p> : null}{conflicted ? <div><p className="form-error" role="alert">Поставка изменена другим пользователем. Обновите поставку перед повторным редактированием; несохранённые правки будут отброшены.</p><Button onClick={() => { setSelected(null); setPage(null); setConflicted(false); setError(''); load() }} size="compact" variant="secondary">Обновить поставку</Button></div> : error ? <p className="form-error" role="alert">{error}</p> : null}
       {(creating || selected?.status === 'draft') && canManage ? <><div className="inventory-document-fields"><FormField id="receipt-supplier" label="Поставщик или завод"><input value={supplier} onChange={event => { setSupplier(event.target.value) }} /></FormField><FormField id="receipt-number" label="Номер документа"><input value={documentNumber} onChange={event => { setDocumentNumber(event.target.value) }} /></FormField><FormField id="receipt-date" label="Дата поставки"><input type="date" value={receivedOn} onChange={event => { setReceivedOn(event.target.value) }} /></FormField><FormField id="receipt-comment" label="Комментарий"><input value={comment} onChange={event => { setComment(event.target.value) }} /></FormField></div>
       <FormField id="receipt-part-search" label="Найти запчасть для поставки"><input type="search" value={partQuery} onChange={event => setPartQuery(event.target.value)} /></FormField>{parts.length ? <ul className="inventory-picker-results">{parts.map(part => <li key={part.id}><span>{part.name} · <strong>{part.article}</strong></span><Button aria-label={`Добавить ${part.article}`} onClick={() => addLine(part)} size="compact" variant="secondary">Добавить</Button></li>)}</ul> : null}
-      <div className="inventory-document-lines">{editorLines.map((line, index) => <div className="inventory-document-line" key={line.part.id}><strong>{line.part.name} · {line.part.article}</strong><FormField error={touchedLines.has(line.part.id) ? inventoryQuantityError(line.quantity) || (line.quantity === '0' ? 'Больше нуля' : undefined) : undefined} id={`receipt-quantity-${line.part.id}`} label={`Количество ${line.part.article}`}><input inputMode="numeric" value={line.quantity} onBlur={() => setTouchedLines(current => new Set(current).add(line.part.id))} onChange={event => { setLines(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, quantity: event.target.value } : item)) }} /></FormField><Button aria-label={`Удалить ${line.part.article}`} onClick={() => { setLines(lines.filter((_, itemIndex) => itemIndex !== index)) }} size="compact" variant="ghost">Удалить</Button></div>)}</div><div className="inventory-document-actions"><Button busy={busy} disabled={invalid || (!creating && !dirty)} onClick={saveDraft} variant="secondary">Сохранить черновик</Button>{canPost ? <Button disabled={invalid || busy} onClick={() => setAction('post')}>Провести поставку</Button> : null}{selected ? <Button disabled={busy} onClick={() => setAction('cancel')} variant="danger">Отменить черновик</Button> : null}</div></> : <><dl className="inventory-document-summary"><dt>Статус</dt><dd>{selected ? statusLabel[selected.status] : ''}</dd><dt>Позиций</dt><dd>{selected?.lines.length}</dd></dl>{selected ? <div className="inventory-document-lines">{selected.lines.map(line => <div className="inventory-document-line" key={line.id}><strong>{line.catalog_part_name} · {line.catalog_part_article}</strong><span>{line.catalog_component_name}</span><span>Количество: {line.quantity}</span></div>)}</div> : null}{selected?.status === 'draft' && canPost ? <Button disabled={busy} onClick={() => setAction('post')}>Провести поставку</Button> : null}{selected?.status === 'posted' && canPost ? <><FormField id="receipt-reverse-reason" label="Причина сторно"><input value={reverseReason} onChange={event => setReverseReason(event.target.value)} /></FormField><Button disabled={!reverseReason.trim() || busy} onClick={() => setAction('reverse')} variant="danger">Сторнировать</Button></> : null}</>}
+      <div className="inventory-document-lines">{editorLines.map((line, index) => <div className="inventory-document-line" key={line.part.id}><strong>{line.part.name} · {line.part.article}</strong><FormField error={touchedLines.has(line.part.id) ? inventoryQuantityError(line.quantity) || (line.quantity === '0' ? 'Больше нуля' : undefined) : undefined} id={`receipt-quantity-${line.part.id}`} label={`Количество ${line.part.article}`}><input inputMode="numeric" value={line.quantity} onBlur={() => setTouchedLines(current => new Set(current).add(line.part.id))} onChange={event => { setLines(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, quantity: event.target.value } : item)) }} /></FormField><Button aria-label={`Удалить ${line.part.article}`} onClick={() => { setLines(lines.filter((_, itemIndex) => itemIndex !== index)) }} size="compact" variant="ghost">Удалить</Button></div>)}</div><div className="inventory-document-actions"><Button busy={busy} disabled={invalid || conflicted || (!creating && !dirty)} onClick={saveDraft} variant="secondary">Сохранить черновик</Button>{canPost ? <Button disabled={invalid || busy || conflicted} onClick={() => setAction('post')}>Провести поставку</Button> : null}{selected ? <Button disabled={busy || conflicted} onClick={() => setAction('cancel')} variant="danger">Отменить черновик</Button> : null}</div></> : <><dl className="inventory-document-summary"><dt>Статус</dt><dd>{selected ? statusLabel[selected.status] : ''}</dd><dt>Позиций</dt><dd>{selected?.lines.length}</dd></dl>{selected ? <div className="inventory-document-lines">{selected.lines.map(line => <div className="inventory-document-line" key={line.id}><strong>{line.catalog_part_name} · {line.catalog_part_article}</strong><span>{line.catalog_component_name}</span><span>Количество: {line.quantity}</span></div>)}</div> : null}{selected?.status === 'draft' && canPost ? <Button disabled={busy || conflicted} onClick={() => setAction('post')}>Провести поставку</Button> : null}{selected?.status === 'posted' && canPost ? <><FormField id="receipt-reverse-reason" label="Причина сторно"><input value={reverseReason} onChange={event => setReverseReason(event.target.value)} /></FormField><Button disabled={!reverseReason.trim() || busy} onClick={() => setAction('reverse')} variant="danger">Сторнировать</Button></> : null}</>}
     </div> : !mobile ? <div className="inventory-document-empty"><p>Выберите поставку или создайте новую.</p></div> : null}
     <ConfirmDialog confirmLabel={action === 'cancel' ? 'Подтвердить отмену' : action === 'reverse' ? 'Подтвердить сторно' : 'Подтвердить проведение'} description="Операция изменит остатки или статус документа." onConfirm={commitAction} onOpenChange={open => { if (!open && !busy) { if (action === 'reverse') setReverseReason(''); setAction(null) } }} open={action !== null} pending={busy} title="Подтвердите действие" tone={action === 'post' ? 'default' : 'danger'} />
   </section>

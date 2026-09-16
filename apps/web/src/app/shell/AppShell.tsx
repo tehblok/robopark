@@ -281,29 +281,32 @@ export function AppShell() {
     ? badgeResource.data?.count ?? 0
     : 0
   const refreshBadge = badgeResource.refresh
+  const feedIdentity = user?.id
 
   const feedScope = location.pathname.startsWith('/work') && user?.permissions?.includes('tracker.read')
     ? user.role === 'admin' || user.role === 'royal' ? 'work' : 'work:mine'
-    : location.pathname.startsWith('/inventory') && user?.permissions?.includes('nav.inventory') && parkId != null
+    : location.pathname.startsWith('/inventory') && new URLSearchParams(location.search).get('view') !== 'export'
+      && user?.permissions?.includes('nav.inventory') && parkId != null
       ? `inventory:${parkId}`
       : null
+  const feedParkId = feedScope?.startsWith('inventory:') ? parkId : null
 
   useEffect(() => {
-    if (!user || !feedScope) return
+    if (feedIdentity == null || !feedScope) return
     return startChangeFeed({
-      identity: String(user.id),
+      identity: String(feedIdentity),
       scope: feedScope,
       load: async scope => (await api.changeRevision(scope)).revision,
       onChange: () => {
-        if (feedScope.startsWith('work')) resourceStore.revalidate(`work:${user.id}:`, { prefix: true })
-        else window.dispatchEvent(new CustomEvent(INVENTORY_REVISION_CHANGED, { detail: parkId }))
+        if (feedScope.startsWith('work')) resourceStore.revalidate(`work:${feedIdentity}:`, { prefix: true })
+        else window.dispatchEvent(new CustomEvent(INVENTORY_REVISION_CHANGED, { detail: feedParkId }))
       },
       onAuthorizationFailure: () => {
-        if (feedScope.startsWith('work')) resourceStore.invalidate(`work:${user.id}:`, { prefix: true })
+        if (feedScope.startsWith('work')) resourceStore.invalidate(`work:${feedIdentity}:`, { prefix: true })
         void refreshUser().catch(() => {})
       },
     })
-  }, [feedScope, user, parkId, refreshUser])
+  }, [feedScope, feedIdentity, feedParkId, refreshUser])
 
   useLayoutEffect(() => {
     if (committedBadgeKey.current === badgeKey) return

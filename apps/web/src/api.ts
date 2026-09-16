@@ -1584,12 +1584,12 @@ export const api = {
     inventoryRequest<InventoryPageEnvelope<InventoryReceipt>>(`/inventory/parks/${parkId}/receipts${inventoryListQuery(params)}`),
   createInventoryReceipt: (parkId: number, payload: InventoryReceiptInput) =>
     inventoryRequest<InventoryReceipt>(`/inventory/parks/${parkId}/receipts`, { method: 'POST', body: inventoryStringify(payload) }),
-  updateInventoryReceipt: (parkId: number, receiptId: number, payload: Partial<InventoryReceiptInput>) =>
+  updateInventoryReceipt: (parkId: number, receiptId: number, payload: Partial<InventoryReceiptInput> & { revision: string }) =>
     inventoryRequest<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}`, { method: 'PATCH', body: inventoryStringify(payload) }),
-  postInventoryReceipt: (parkId: number, receiptId: number) =>
-    inventoryRequest<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}/post`, { method: 'POST' }),
-  cancelInventoryReceipt: (parkId: number, receiptId: number) =>
-    inventoryRequest<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}/cancel`, { method: 'POST' }),
+  postInventoryReceipt: (parkId: number, receiptId: number, revision: string) =>
+    inventoryRequest<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}/post`, { method: 'POST', body: inventoryStringify({ revision }) }),
+  cancelInventoryReceipt: (parkId: number, receiptId: number, revision: string) =>
+    inventoryRequest<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}/cancel`, { method: 'POST', body: inventoryStringify({ revision }) }),
   reverseInventoryReceipt: (parkId: number, receiptId: number, reason: string) =>
     inventoryRequest<InventoryReceipt>(`/inventory/parks/${parkId}/receipts/${receiptId}/reverse`, { method: 'POST', body: inventoryStringify({ reason }) }),
   inventoryCounts: (parkId: number, params?: InventoryListParams) =>

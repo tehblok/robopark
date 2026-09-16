@@ -105,6 +105,17 @@ describe('AuthProvider session boundaries', () => {
     expect(localStorage.getItem(newKey)).toBeNull()
   })
 
+  it('keeps the auth refresh callback stable across a same-user refresh', async () => {
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockResolvedValueOnce({ ...oldAccount })
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    const refresh = currentAuth!.refreshUser
+
+    await act(async () => { await refresh() })
+
+    expect(currentAuth!.refreshUser).toBe(refresh)
+  })
+
   it.each(['success', '401'] as const)('ignores an old refresh %s after a replacement login', async (result) => {
     const pending = deferred<User>()
     vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount)

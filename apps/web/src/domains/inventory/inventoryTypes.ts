@@ -95,6 +95,7 @@ export type InventoryReceiptLine = {
 
 export type InventoryReceipt = {
   id: number
+  revision: string
   park_id: number
   supplier: string | null
   document_number: string | null

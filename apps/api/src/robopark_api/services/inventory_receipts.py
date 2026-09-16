@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from hashlib import sha256
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
@@ -153,6 +154,7 @@ def _receipt_dict(
 ) -> dict:
     return {
         "id": receipt.id,
+        "revision": _revision(receipt, lines),
         "park_id": receipt.park_id,
         "supplier": receipt.supplier,
         "document_number": receipt.document_number,
@@ -174,6 +176,23 @@ def _receipt_dict(
             for line in lines
         ],
     }
+
+
+def _revision(
+    receipt: InventoryReceipt, lines: list[InventoryReceiptLine], *, status: str | None = None
+) -> str:
+    content = {
+        "supplier": receipt.supplier,
+        "document_number": receipt.document_number,
+        "received_on": receipt.receipt_date.isoformat(),
+        "comment": receipt.comment,
+        "status": receipt.status if status is None else status,
+        "lines": [
+            (line.catalog_part_id, line.quantity, line.note)
+            for line in sorted(lines, key=lambda item: (item.catalog_part_id, item.id))
+        ],
+    }
+    return sha256(json.dumps(content, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
 def receipt_out(db: Session, receipt: InventoryReceipt) -> dict:
@@ -237,13 +256,15 @@ def create_receipt(db: Session, user: User, *, park_id: int, payload) -> Invento
 
 
 def update_receipt(
-    db: Session, user: User, *, park_id: int, receipt_id: int, changes: dict
+    db: Session, user: User, *, park_id: int, receipt_id: int, revision: str, changes: dict
 ) -> InventoryReceipt:
     inventory_access.require_park(db, user, park_id, manage=True)
     try:
         row = _receipt(db, park_id, receipt_id, lock=True)
         if row.status != "draft":
             raise inventory_stock.InventoryConflict("inventory_receipt_not_draft")
+        if revision != _revision(row, _lines(db, row.id)):
+            raise inventory_stock.InventoryConflict("inventory_receipt_stale")
         if "lines" in changes:
             normalized = _normalized_lines(db, changes["lines"])
             for line in _lines(db, row.id):
@@ -370,18 +391,26 @@ def _canonical_line_groups(
     return result
 
 
-def post_receipt(db: Session, user: User, *, park_id: int, receipt_id: int) -> InventoryReceipt:
+def post_receipt(
+    db: Session, user: User, *, park_id: int, receipt_id: int, revision: str
+) -> InventoryReceipt:
     _require_document_post(db, user, park_id)
     try:
         _stabilize_catalog_aliases(db)
         row = _receipt(db, park_id, receipt_id, lock=True)
         if row.status == "posted":
+            lines = _lines(db, row.id)
+            if revision not in {_revision(row, lines), _revision(row, lines, status="draft")}:
+                raise inventory_stock.InventoryConflict("inventory_receipt_stale")
             db.commit()
             db.refresh(row)
             return row
         if row.status != "draft":
             raise inventory_stock.InventoryConflict("inventory_receipt_not_draft")
-        groups = _canonical_line_groups(db, park_id=park_id, lines=_lines(db, row.id))
+        lines = _lines(db, row.id)
+        if revision != _revision(row, lines):
+            raise inventory_stock.InventoryConflict("inventory_receipt_stale")
+        groups = _canonical_line_groups(db, park_id=park_id, lines=lines)
         for canonical_id, lines in groups:
             for line in lines:
                 inventory_stock.apply_stock_delta(
@@ -407,16 +436,23 @@ def post_receipt(db: Session, user: User, *, park_id: int, receipt_id: int) -> I
         raise
 
 
-def cancel_receipt(db: Session, user: User, *, park_id: int, receipt_id: int) -> InventoryReceipt:
+def cancel_receipt(
+    db: Session, user: User, *, park_id: int, receipt_id: int, revision: str
+) -> InventoryReceipt:
     inventory_access.require_park(db, user, park_id, manage=True)
     try:
         row = _receipt(db, park_id, receipt_id, lock=True)
         if row.status == "cancelled":
+            lines = _lines(db, row.id)
+            if revision not in {_revision(row, lines), _revision(row, lines, status="draft")}:
+                raise inventory_stock.InventoryConflict("inventory_receipt_stale")
             db.commit()
             db.refresh(row)
             return row
         if row.status != "draft":
             raise inventory_stock.InventoryConflict("inventory_receipt_not_draft")
+        if revision != _revision(row, _lines(db, row.id)):
+            raise inventory_stock.InventoryConflict("inventory_receipt_stale")
         row.status = "cancelled"
         _audit(db, user, row, "inventory.receipt.cancelled", ["status"])
         db.commit()

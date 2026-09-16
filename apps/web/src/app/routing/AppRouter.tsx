@@ -1,5 +1,5 @@
 /* eslint-disable react/only-export-components */
-import { lazy, Suspense, type ReactElement } from 'react'
+import { Component, lazy, Suspense, type ReactElement } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AppShell } from '../shell/AppShell'
 import { ParkProvider } from '../../ParkProvider'
@@ -44,6 +44,25 @@ function RouteFallback() {
 
 function RouteModuleFallback() {
   return <div className="page page-center" role="status"><Spinner label={ru.loading} /></div>
+}
+
+class RouteLoadBoundary extends Component<{ children: ReactElement }, { failed: boolean }> {
+  state = { failed: false }
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true }
+  }
+
+  render() {
+    if (this.state.failed) {
+      return <div className="page page-center" role="alert">
+        <h2>Не удалось открыть экран</h2>
+        <p>Возможно, сайт обновился. Перезагрузите страницу, чтобы продолжить.</p>
+        <a className="btn" href={window.location.href}>Перезагрузить страницу</a>
+      </div>
+    }
+    return this.props.children
+  }
 }
 
 export const ROUTE_ELEMENTS: Record<AppRouteId, ReactElement> = {
@@ -111,9 +130,11 @@ function ShellBoundary() {
 function gatedElement(routeId: AppRouteId) {
   return (
     <RouteGate loadingElement={<RouteFallback />} routeId={routeId}>
-      <Suspense fallback={<RouteModuleFallback />}>
-        {ROUTE_ELEMENTS[routeId]}
-      </Suspense>
+      <RouteLoadBoundary>
+        <Suspense fallback={<RouteModuleFallback />}>
+          {ROUTE_ELEMENTS[routeId]}
+        </Suspense>
+      </RouteLoadBoundary>
     </RouteGate>
   )
 }

@@ -1,6 +1,6 @@
 [project]
 name = "robopark-api"
-version = "0.1.35"
+version = "0.1.36"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115.0",

@@ -62,7 +62,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     return authenticatedUser
   }
 
-  const refreshUser = async () => {
+  const refreshUser = useCallback(async () => {
     const generation = sessionGeneration.current
     try {
       const authenticatedUser = await api.me()
@@ -74,7 +74,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       }
       throw error
     }
-  }
+  }, [clearSessionState])
 
   const logout = async () => {
     const generation = clearSessionState()

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, ApiError } from '../../api'
 import { installMatchMedia, renderApp, testUser } from '../../test/renderApp'
+import { ROUTE_ELEMENTS } from './AppRouter'
 
 const north = { id: 7, name: 'Северный', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
 
@@ -30,6 +31,24 @@ describe('AppRouter', () => {
 
     expect(screen.getByText('Загрузка…')).toBeVisible()
     expect(await screen.findByRole('heading', { name: 'Работа' })).toBeVisible()
+  })
+
+  it('offers a page reload when an outdated route module fails to load', async () => {
+    const original = ROUTE_ELEMENTS.work
+    function MissingChunk(): never {
+      throw new TypeError('Failed to fetch dynamically imported module')
+    }
+    ROUTE_ELEMENTS.work = <MissingChunk />
+    try {
+      renderApp('/work?park=7', testUser({
+        permissions: ['nav.dashboard', 'nav.tasks', 'tracker.read'],
+        parks: [north],
+      }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось открыть экран')
+      expect(screen.getByRole('link', { name: 'Перезагрузить страницу' })).toHaveAttribute('href', window.location.href)
+    } finally {
+      ROUTE_ELEMENTS.work = original
+    }
   })
 
   it.each(['/overview', '/dashboard', '/operator', '/admin/tracker'])(

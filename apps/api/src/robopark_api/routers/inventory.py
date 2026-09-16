@@ -33,6 +33,7 @@ from robopark_api.inventory_schemas import (
     InventoryReceiptListOut,
     InventoryReceiptOut,
     InventoryReceiptReversalIn,
+    InventoryReceiptRevisionIn,
     InventoryReceiptUpdateIn,
     InventoryStockOut,
     InventoryStockUpdateIn,
@@ -257,7 +258,8 @@ def update_inventory_receipt(
             user,
             park_id=park_id,
             receipt_id=receipt_id,
-            changes=payload.model_dump(exclude_unset=True),
+            revision=payload.revision,
+            changes=payload.model_dump(exclude_unset=True, exclude={"revision"}),
         )
     )
     return inventory_receipts.receipt_out(db, row)
@@ -267,11 +269,14 @@ def update_inventory_receipt(
 def post_inventory_receipt(
     park_id: int,
     receipt_id: int,
+    payload: InventoryReceiptRevisionIn,
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
     row = _run(
-        lambda: inventory_receipts.post_receipt(db, user, park_id=park_id, receipt_id=receipt_id)
+        lambda: inventory_receipts.post_receipt(
+            db, user, park_id=park_id, receipt_id=receipt_id, revision=payload.revision
+        )
     )
     return inventory_receipts.receipt_out(db, row)
 
@@ -280,11 +285,14 @@ def post_inventory_receipt(
 def cancel_inventory_receipt(
     park_id: int,
     receipt_id: int,
+    payload: InventoryReceiptRevisionIn,
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
     row = _run(
-        lambda: inventory_receipts.cancel_receipt(db, user, park_id=park_id, receipt_id=receipt_id)
+        lambda: inventory_receipts.cancel_receipt(
+            db, user, park_id=park_id, receipt_id=receipt_id, revision=payload.revision
+        )
     )
     return inventory_receipts.receipt_out(db, row)
 

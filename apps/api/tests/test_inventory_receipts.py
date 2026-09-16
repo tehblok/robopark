@@ -111,10 +111,12 @@ def test_receipt_lifecycle_normalizes_lines_and_post_is_idempotent(
     assert listed.json()["total"] == 1
 
     posted = client.post(
-        f"/inventory/parks/{seed_park_with_tracker.id}/receipts/{created['id']}/post"
+        f"/inventory/parks/{seed_park_with_tracker.id}/receipts/{created['id']}/post",
+        json={"revision": created["revision"]},
     )
     retried = client.post(
-        f"/inventory/parks/{seed_park_with_tracker.id}/receipts/{created['id']}/post"
+        f"/inventory/parks/{seed_park_with_tracker.id}/receipts/{created['id']}/post",
+        json={"revision": created["revision"]},
     )
 
     assert posted.status_code == retried.status_code == 200
@@ -213,7 +215,8 @@ def test_receipt_access_and_document_post_capability_are_independent(
     db_session.commit()
     assert (
         client.post(
-            f"/inventory/parks/{seed_park_with_tracker.id}/receipts/{created['id']}/post"
+            f"/inventory/parks/{seed_park_with_tracker.id}/receipts/{created['id']}/post",
+            json={"revision": created["revision"]},
         ).status_code
         == 403
     )
@@ -229,11 +232,15 @@ def test_posted_receipt_cannot_be_edited_or_cancelled_but_draft_can(
     posted = client.post(base, json=_payload(part.id)).json()
     draft = client.post(base, json=_payload(part.id, document_number="DRAFT")).json()
 
-    updated = client.patch(f"{base}/{draft['id']}", json={"supplier": "  Новый завод  "})
+    updated = client.patch(
+        f"{base}/{draft['id']}", json={"revision": draft["revision"], "supplier": "  Новый завод  "}
+    )
     invalid_date = client.patch(f"{base}/{draft['id']}", json={"received_on": None})
     invalid_lines = client.patch(f"{base}/{draft['id']}", json={"lines": None})
-    cancelled = client.post(f"{base}/{draft['id']}/cancel")
-    client.post(f"{base}/{posted['id']}/post")
+    cancelled = client.post(
+        f"{base}/{draft['id']}/cancel", json={"revision": updated.json()["revision"]}
+    )
+    client.post(f"{base}/{posted['id']}/post", json={"revision": posted["revision"]})
 
     assert updated.status_code == 200
     assert updated.json()["supplier"] == "Новый завод"
@@ -241,8 +248,111 @@ def test_posted_receipt_cannot_be_edited_or_cancelled_but_draft_can(
     assert invalid_lines.status_code == 422
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
-    assert client.patch(f"{base}/{posted['id']}", json={"comment": "changed"}).status_code == 409
-    assert client.post(f"{base}/{posted['id']}/cancel").status_code == 409
+    assert (
+        client.patch(
+            f"{base}/{posted['id']}", json={"revision": posted["revision"], "comment": "changed"}
+        ).status_code
+        == 409
+    )
+    assert (
+        client.post(
+            f"{base}/{posted['id']}/cancel", json={"revision": posted["revision"]}
+        ).status_code
+        == 409
+    )
+
+
+def test_stale_receipt_patch_cannot_replace_newer_lines(client, db_session, seed_park_with_tracker):
+    mechanic = _user(db_session, "mechanic", "receipt-stale", [seed_park_with_tracker])
+    part = _part(db_session, mechanic, article="STALE")
+    login_as(client, mechanic.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/receipts"
+    created = client.post(base, json=_payload(part.id)).json()
+    revision = created["revision"]
+
+    first = client.patch(
+        f"{base}/{created['id']}",
+        json={"revision": revision, "lines": [{"catalog_part_id": part.id, "quantity": 7}]},
+    )
+    stale = client.patch(
+        f"{base}/{created['id']}",
+        json={"revision": revision, "lines": [{"catalog_part_id": part.id, "quantity": 9}]},
+    )
+
+    assert first.status_code == 200, first.text
+    assert first.json()["revision"] != revision
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["detail"] == {"code": "inventory_receipt_stale"}
+    listed = client.get(base).json()["items"][0]
+    assert listed["lines"][0]["quantity"] == 7
+    assert listed["revision"] == first.json()["revision"]
+
+
+def test_receipt_patch_requires_revision(client, db_session, seed_park_with_tracker):
+    mechanic = _user(db_session, "mechanic", "receipt-no-revision", [seed_park_with_tracker])
+    part = _part(db_session, mechanic, article="NO-REVISION")
+    login_as(client, mechanic.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/receipts"
+    created = client.post(base, json=_payload(part.id)).json()
+
+    response = client.patch(f"{base}/{created['id']}", json={"comment": "overwrite"})
+
+    assert response.status_code == 422
+    assert client.get(base).json()["items"][0]["comment"] == "Приемка"
+
+
+@pytest.mark.parametrize("action", ["post", "cancel"])
+def test_stale_receipt_action_cannot_use_unseen_lines(
+    client, db_session, seed_park_with_tracker, action
+):
+    mechanic = _user(db_session, "mechanic", f"receipt-stale-{action}", [seed_park_with_tracker])
+    part = _part(db_session, mechanic, article=f"STALE-{action}")
+    login_as(client, mechanic.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/receipts"
+    opened = client.post(base, json=_payload(part.id)).json()
+    updated = client.patch(
+        f"{base}/{opened['id']}",
+        json={
+            "revision": opened["revision"],
+            "lines": [{"catalog_part_id": part.id, "quantity": 7}],
+        },
+    )
+    assert updated.status_code == 200, updated.text
+
+    stale = client.post(f"{base}/{opened['id']}/{action}", json={"revision": opened["revision"]})
+
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["detail"] == {"code": "inventory_receipt_stale"}
+    listed = client.get(base).json()["items"][0]
+    assert listed["status"] == "draft"
+    assert listed["lines"][0]["quantity"] == 7
+    assert db_session.scalar(select(func.count(InventoryMovement.id))) == 0
+
+    current = client.post(
+        f"{base}/{opened['id']}/{action}", json={"revision": updated.json()["revision"]}
+    )
+    retry = client.post(
+        f"{base}/{opened['id']}/{action}", json={"revision": updated.json()["revision"]}
+    )
+    old_retry = client.post(
+        f"{base}/{opened['id']}/{action}", json={"revision": opened["revision"]}
+    )
+    assert current.status_code == retry.status_code == 200
+    assert old_retry.status_code == 409
+
+
+@pytest.mark.parametrize("action", ["post", "cancel"])
+def test_receipt_action_requires_revision(client, db_session, seed_park_with_tracker, action):
+    mechanic = _user(db_session, "mechanic", f"receipt-bodyless-{action}", [seed_park_with_tracker])
+    part = _part(db_session, mechanic, article=f"BODYLESS-{action}")
+    login_as(client, mechanic.username, "secret")
+    base = f"/inventory/parks/{seed_park_with_tracker.id}/receipts"
+    opened = client.post(base, json=_payload(part.id)).json()
+
+    response = client.post(f"{base}/{opened['id']}/{action}")
+
+    assert response.status_code == 422
+    assert client.get(base).json()["items"][0]["status"] == "draft"
 
 
 def test_posted_receipt_reversal_requires_reason_and_preserves_original_history(
@@ -253,7 +363,7 @@ def test_posted_receipt_reversal_requires_reason_and_preserves_original_history(
     login_as(client, mechanic.username, "secret")
     base = f"/inventory/parks/{seed_park_with_tracker.id}/receipts"
     receipt = client.post(base, json=_payload(part.id)).json()
-    client.post(f"{base}/{receipt['id']}/post")
+    client.post(f"{base}/{receipt['id']}/post", json={"revision": receipt["revision"]})
     original = db_session.scalar(
         select(InventoryMovement).where(InventoryMovement.source_kind == "receipt")
     )
@@ -296,7 +406,12 @@ def test_posted_receipt_remains_reversible_after_its_part_is_archived(
         base,
         json=_payload(part.id, document_number="ARCHIVED-DRAFT"),
     ).json()
-    assert client.post(f"{base}/{receipt['id']}/post").status_code == 200
+    assert (
+        client.post(
+            f"{base}/{receipt['id']}/post", json={"revision": receipt["revision"]}
+        ).status_code
+        == 200
+    )
     original = db_session.scalar(
         select(InventoryMovement).where(InventoryMovement.source_kind == "receipt")
     )
@@ -314,7 +429,7 @@ def test_posted_receipt_remains_reversible_after_its_part_is_archived(
             "quantity": 1,
         },
     )
-    ordinary_post = client.post(f"{base}/{draft['id']}/post")
+    ordinary_post = client.post(f"{base}/{draft['id']}/post", json={"revision": draft["revision"]})
     reversed_response = client.post(
         f"{base}/{receipt['id']}/reverse",
         json={"reason": "archive correction"},
@@ -368,7 +483,12 @@ def test_archived_receipt_reversal_rejects_insufficient_existing_stock_atomicall
     login_as(client, admin.username, "secret")
     base = f"/inventory/parks/{seed_park_with_tracker.id}/receipts"
     receipt = client.post(base, json=_payload(part.id)).json()
-    assert client.post(f"{base}/{receipt['id']}/post").status_code == 200
+    assert (
+        client.post(
+            f"{base}/{receipt['id']}/post", json={"revision": receipt["revision"]}
+        ).status_code
+        == 200
+    )
     writeoff = client.post(
         f"/inventory/parts/{part.id}/movements",
         json={
@@ -422,7 +542,12 @@ def test_archived_receipt_reversal_does_not_create_missing_stock(
     login_as(client, admin.username, "secret")
     base = f"/inventory/parks/{seed_park_with_tracker.id}/receipts"
     receipt = client.post(base, json=_payload(part.id)).json()
-    assert client.post(f"{base}/{receipt['id']}/post").status_code == 200
+    assert (
+        client.post(
+            f"{base}/{receipt['id']}/post", json={"revision": receipt["revision"]}
+        ).status_code
+        == 200
+    )
     stock = db_session.scalar(select(InventoryParkStock))
     db_session.delete(stock)
     part.is_active = False
@@ -452,7 +577,7 @@ def test_reverse_receipt_service_rejects_blank_reason(client, db_session, seed_p
     login_as(client, mechanic.username, "secret")
     base = f"/inventory/parks/{seed_park_with_tracker.id}/receipts"
     receipt = client.post(base, json=_payload(part.id)).json()
-    client.post(f"{base}/{receipt['id']}/post")
+    client.post(f"{base}/{receipt['id']}/post", json={"revision": receipt["revision"]})
 
     with pytest.raises(ValueError, match="inventory_receipt_reversal_reason_required"):
         inventory_receipts.reverse_receipt(
@@ -482,8 +607,11 @@ def test_receipt_mutations_write_attributed_audit_in_the_same_transaction(
     login_as(client, mechanic.username, "secret")
     base = f"/inventory/parks/{seed_park_with_tracker.id}/receipts"
     receipt = client.post(base, json=_payload(part.id)).json()
-    client.patch(f"{base}/{receipt['id']}", json={"comment": "updated"})
-    client.post(f"{base}/{receipt['id']}/post")
+    client.patch(
+        f"{base}/{receipt['id']}", json={"revision": receipt["revision"], "comment": "updated"}
+    )
+    updated = client.get(base).json()["items"][0]
+    client.post(f"{base}/{receipt['id']}/post", json={"revision": updated["revision"]})
 
     rows = list(
         db_session.scalars(select(AuditLog).where(AuditLog.target_type == "inventory_receipt"))
@@ -530,7 +658,7 @@ def test_receipt_post_rolls_back_all_lines_status_and_audit_on_failure(
         return real_apply(*args, **kwargs)
 
     monkeypatch.setattr(inventory_receipts.inventory_stock, "apply_stock_delta", fail_second)
-    response = client.post(f"{base}/{receipt['id']}/post")
+    response = client.post(f"{base}/{receipt['id']}/post", json={"revision": receipt["revision"]})
 
     assert response.status_code == 502
     db_session.expire_all()
@@ -565,7 +693,9 @@ def test_receipt_line_source_identity_survives_merge_before_post_and_after_post(
         ),
     ).json()
     inventory_catalog.merge_parts(db_session, admin, source.id, target.id)
-    posted_before = client.post(f"{base}/{before['id']}/post")
+    posted_before = client.post(
+        f"{base}/{before['id']}/post", json={"revision": before["revision"]}
+    )
     assert posted_before.status_code == 200
     reopened = next(item for item in client.get(base).json()["items"] if item["id"] == before["id"])
     source_line = next(line for line in reopened["lines"] if line["catalog_part_id"] == source.id)
@@ -606,7 +736,10 @@ def test_receipt_line_source_identity_survives_merge_before_post_and_after_post(
             ],
         ),
     ).json()
-    assert client.post(f"{base}/{after['id']}/post").status_code == 200
+    assert (
+        client.post(f"{base}/{after['id']}/post", json={"revision": after["revision"]}).status_code
+        == 200
+    )
     inventory_catalog.merge_parts(db_session, admin, source.id, target.id)
     assert (
         client.post(
@@ -806,15 +939,18 @@ def test_postgresql_receipt_acquires_alias_lock_before_receipt_row_lock(monkeypa
 
     def record_receipt_row_lock(*_args, **_kwargs):
         events.append("receipt-row-lock")
-        return SimpleNamespace(status="posted")
+        return SimpleNamespace(id=11, status="posted")
 
     monkeypatch.setattr(inventory_receipts, "_receipt", record_receipt_row_lock)
+    monkeypatch.setattr(inventory_receipts, "_lines", lambda *_args: [])
+    monkeypatch.setattr(inventory_receipts, "_revision", lambda *_args, **_kwargs: "expected")
 
     inventory_receipts.post_receipt(
         RecordingSession(),
         object(),
         park_id=7,
         receipt_id=11,
+        revision="expected",
     )
 
     assert len(events) == 2
@@ -880,6 +1016,7 @@ def test_concurrent_alias_receipts_prelock_canonical_stocks_in_sorted_order(
                 session.get(User, admin_id),
                 park_id=park_id,
                 receipt_id=receipt_id,
+                revision=first["revision"] if receipt_id == first["id"] else second["revision"],
             ).status
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -917,7 +1054,9 @@ def test_concurrent_receipt_post_retries_apply_each_line_once(
 
     def post_once(_):
         with TestClient(client.app, cookies=cookies) as parallel_client:
-            response = parallel_client.post(f"{base}/{receipt['id']}/post")
+            response = parallel_client.post(
+                f"{base}/{receipt['id']}/post", json={"revision": receipt["revision"]}
+            )
             return response.status_code, response.json()
 
     try:

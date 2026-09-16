@@ -178,6 +178,7 @@ class InventoryReceiptCreateIn(BaseModel):
 
 
 class InventoryReceiptUpdateIn(BaseModel):
+    revision: str = Field(min_length=1)
     supplier: str | None = Field(default=None, max_length=256)
     document_number: str | None = Field(default=None, max_length=128)
     received_on: date | None = None
@@ -193,6 +194,10 @@ class InventoryReceiptUpdateIn(BaseModel):
         return self
 
 
+class InventoryReceiptRevisionIn(BaseModel):
+    revision: str = Field(min_length=1)
+
+
 class InventoryReceiptLineOut(BaseModel):
     id: int
     catalog_part_id: int
@@ -206,6 +211,7 @@ class InventoryReceiptLineOut(BaseModel):
 
 class InventoryReceiptOut(BaseModel):
     id: int
+    revision: str
     park_id: int
     supplier: str | None
     document_number: str | None

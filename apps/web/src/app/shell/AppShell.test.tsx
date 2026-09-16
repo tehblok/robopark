@@ -52,11 +52,12 @@ function HistoryControls() {
 }
 
 function renderShellPath(path: string, currentUser = operator) {
-  return render(
+  const refreshUser = vi.fn().mockResolvedValue(currentUser)
+  const tree = (nextUser: User) => (
     <MemoryRouter initialEntries={[path]}>
       <ThemeProvider>
-        <AuthContext.Provider value={{ user: currentUser, loading: false,
-          login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn() }}>
+        <AuthContext.Provider value={{ user: nextUser, loading: false,
+          login: vi.fn(), refreshUser, logout: vi.fn() }}>
           <ParkProvider>
             <Routes><Route element={<AppShell />}>
               <Route path="*" element={<h1>Рабочий экран</h1>} />
@@ -64,8 +65,10 @@ function renderShellPath(path: string, currentUser = operator) {
           </ParkProvider>
         </AuthContext.Provider>
       </ThemeProvider>
-    </MemoryRouter>,
+    </MemoryRouter>
   )
+  const result = render(tree(currentUser))
+  return { ...result, refreshUser, rerenderAuth: (nextUser: User) => result.rerender(tree(nextUser)) }
 }
 
 function renderShellWithParkScope(
@@ -211,6 +214,24 @@ describe('AppShell', () => {
     await waitFor(() => expect(changed).toHaveBeenCalledOnce())
     expect((changed.mock.calls[0][0] as CustomEvent<number>).detail).toBe(7)
     window.removeEventListener(INVENTORY_REVISION_CHANGED, changed)
+  })
+
+  it('does not poll park revisions while viewing inventory exports', async () => {
+    renderShellWithParkScope('royal', vi.fn(), [north], false,
+      '/inventory?park=7&view=export', ['nav.inventory'])
+
+    await waitFor(() => expect(api.reportsBadge).toHaveBeenCalled())
+    expect(api.changeRevision).not.toHaveBeenCalled()
+  })
+
+  it('does not restart a denied revision feed when auth refresh retains the same scope', async () => {
+    vi.mocked(api.changeRevision).mockRejectedValue({ status: 403 })
+    const shell = renderShellPath('/work')
+    await waitFor(() => expect(shell.refreshUser).toHaveBeenCalledTimes(1))
+
+    shell.rerenderAuth({ ...operator })
+    await new Promise(resolve => window.setTimeout(resolve, 30))
+    expect(api.changeRevision).toHaveBeenCalledTimes(1)
   })
 
   it.each([

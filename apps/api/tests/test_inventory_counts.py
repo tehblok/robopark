@@ -1042,7 +1042,8 @@ def test_receipt_post_rejects_int64_stock_overflow_and_rolls_back_every_line(
     ).json()
 
     response = client.post(
-        f"/inventory/parks/{seed_park_with_tracker.id}/receipts/{receipt['id']}/post"
+        f"/inventory/parks/{seed_park_with_tracker.id}/receipts/{receipt['id']}/post",
+        json={"revision": receipt["revision"]},
     )
 
     assert response.status_code == 422

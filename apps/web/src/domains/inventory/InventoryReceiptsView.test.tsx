@@ -5,7 +5,7 @@ import { ApiError, type InventoryCatalogSearchItem, type InventoryReceipt } from
 import { InventoryReceiptsView } from './InventoryReceiptsView'
 
 const part: InventoryCatalogSearchItem = { id: 31, component_id: 4, component_name: 'Подвязка', name: 'Тяга', article: 'ABC-1', is_active: true, has_photo: false, quantity: '5', minimum_quantity: '2', location: 'А-1', stock_is_active: true }
-const receipt: InventoryReceipt = { id: 91, park_id: 7, supplier: 'Завод', document_number: null, received_on: '2026-09-12', comment: null, status: 'draft', created_by: 1, posted_by: null, created_at: '2026-09-12T10:00:00Z', posted_at: null, lines: [{ id: 1, catalog_part_id: 31, catalog_part_name: 'Тяга', catalog_part_article: 'ABC-1', catalog_component_id: 4, catalog_component_name: 'Подвязка', quantity: '10', note: null }] }
+const receipt: InventoryReceipt = { id: 91, park_id: 7, revision: 'original', supplier: 'Завод', document_number: null, received_on: '2026-09-12', comment: null, status: 'draft', created_by: 1, posted_by: null, created_at: '2026-09-12T10:00:00Z', posted_at: null, lines: [{ id: 1, catalog_part_id: 31, catalog_part_name: 'Тяга', catalog_part_article: 'ABC-1', catalog_component_id: 4, catalog_component_name: 'Подвязка', quantity: '10', note: null }] }
 
 function client(overrides = {}) {
   return {
@@ -82,7 +82,7 @@ it('keeps the created receipt id for a failed post retry and blocks duplicate co
   await userEvent.click(screen.getByRole('button', { name: 'Провести поставку' })); await userEvent.click(await screen.findByRole('button', { name: 'Подтвердить проведение' }))
   expect(apiClient.createInventoryReceipt).toHaveBeenCalledTimes(1)
   expect(apiClient.updateInventoryReceipt).not.toHaveBeenCalled()
-  expect(postInventoryReceipt).toHaveBeenNthCalledWith(2, 7, 91)
+  expect(postInventoryReceipt).toHaveBeenNthCalledWith(2, 7, 91, 'original')
 })
 
 it('shows list failures with retry and enforces effective permissions', async () => {
@@ -124,7 +124,7 @@ it('lets post-only users post an existing receipt without editing it', async () 
   expect(screen.queryByRole('button', { name: 'Сохранить черновик' })).not.toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name: 'Провести поставку' }))
   await userEvent.click(await screen.findByRole('button', { name: 'Подтвердить проведение' }))
-  await waitFor(() => expect(apiClient.postInventoryReceipt).toHaveBeenCalledWith(7, 91))
+  await waitFor(() => expect(apiClient.postInventoryReceipt).toHaveBeenCalledWith(7, 91, 'original'))
   expect(apiClient.updateInventoryReceipt).not.toHaveBeenCalled()
 })
 
@@ -136,7 +136,7 @@ it('posts an unchanged historical receipt directly', async () => {
   expect(screen.getByText('Источник A · A-OLD')).toBeVisible()
   await userEvent.click(screen.getByRole('button', { name: 'Провести поставку' }))
   await userEvent.click(await screen.findByRole('button', { name: 'Подтвердить проведение' }))
-  await waitFor(() => expect(apiClient.postInventoryReceipt).toHaveBeenCalledWith(7, 91))
+  await waitFor(() => expect(apiClient.postInventoryReceipt).toHaveBeenCalledWith(7, 91, 'original'))
   expect(apiClient.updateInventoryReceipt).not.toHaveBeenCalled()
 })
 
@@ -217,7 +217,7 @@ it.each([
     { catalog_part_id: 31, quantity: '9007199254740993', note: 'Historical note' },
     { catalog_part_id: 32, quantity, note: null },
   ] }))
-  expect(apiClient.postInventoryReceipt).toHaveBeenCalledWith(7, 91)
+  expect(apiClient.postInventoryReceipt).toHaveBeenCalledWith(7, 91, 'original')
   expect(screen.getByText('Источник A · A-OLD')).toBeVisible()
   expect(stored.lines[1]).toMatchObject({ id: 1, catalog_part_id: 31, note: 'Historical note' })
 })
@@ -229,12 +229,12 @@ it('posts a supplier-null draft for a post-only user without a silent dialog no-
   await userEvent.click(within(await screen.findByRole('article', { name: 'Поставка №91' })).getByRole('button', { name: 'Открыть' }))
   await userEvent.click(screen.getByRole('button', { name: 'Провести поставку' }))
   await userEvent.click(await screen.findByRole('button', { name: 'Подтвердить проведение' }))
-  await waitFor(() => expect(apiClient.postInventoryReceipt).toHaveBeenCalledWith(7, 91))
+  await waitFor(() => expect(apiClient.postInventoryReceipt).toHaveBeenCalledWith(7, 91, 'original'))
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 })
 
 it('patches a real edit once and uses the saved baseline on a failed post retry', async () => {
-  const saved = { ...receipt, comment: 'Изменено', lines: [{ ...receipt.lines[0], note: 'Заметка' }] }
+  const saved = { ...receipt, revision: 'saved', comment: 'Изменено', lines: [{ ...receipt.lines[0], note: 'Заметка' }] }
   const apiClient = client({
     inventoryReceipts: vi.fn(async () => ({ items: [receipt], limit: 25, offset: 0, total: 1 })),
     updateInventoryReceipt: vi.fn(async () => saved),
@@ -246,7 +246,7 @@ it('patches a real edit once and uses the saved baseline on a failed post retry'
   await userEvent.click(screen.getByRole('button', { name: 'Провести поставку' }))
   await userEvent.click(await screen.findByRole('button', { name: 'Подтвердить проведение' }))
   await waitFor(() => expect(apiClient.updateInventoryReceipt).toHaveBeenCalledTimes(1))
-  expect(apiClient.updateInventoryReceipt).toHaveBeenCalledWith(7, 91, { supplier: 'Завод', document_number: null, received_on: '2026-09-12', comment: 'Изменено', lines: [{ catalog_part_id: 31, quantity: '10', note: null }] })
+  expect(apiClient.updateInventoryReceipt).toHaveBeenCalledWith(7, 91, { revision: 'original', supplier: 'Завод', document_number: null, received_on: '2026-09-12', comment: 'Изменено', lines: [{ catalog_part_id: 31, quantity: '10', note: null }] })
   expect(await screen.findByText('Не удалось изменить поставку.')).toBeVisible()
   expect(screen.getByLabelText('Комментарий')).toHaveValue('Изменено')
   fireEvent.change(screen.getByLabelText('Комментарий'), { target: { value: 'Другое' } })
@@ -257,5 +257,82 @@ it('patches a real edit once and uses the saved baseline on a failed post retry'
   expect(await screen.findByText('Поставка проведена')).toBeVisible()
   expect(apiClient.updateInventoryReceipt).toHaveBeenCalledTimes(1)
   expect(apiClient.postInventoryReceipt).toHaveBeenCalledTimes(2)
-  expect(apiClient.postInventoryReceipt).toHaveBeenCalledWith(7, 91)
+  expect(apiClient.postInventoryReceipt).toHaveBeenCalledWith(7, 91, 'saved')
+})
+
+it('preserves local edits and requires refresh after a concurrent draft change', async () => {
+  const newer = { ...receipt, revision: 'newer', lines: [{ ...receipt.lines[0], quantity: '12' as const }] }
+  let stored = receipt
+  const apiClient = client({
+    inventoryReceipts: vi.fn(async () => ({ items: [stored], limit: 25, offset: 0, total: 1 })),
+    updateInventoryReceipt: vi.fn(async () => { throw new ApiError(409, { code: 'inventory_receipt_stale' }) }),
+  })
+  render(<InventoryReceiptsView apiClient={apiClient} parkId={7} />)
+  await userEvent.click(within(await screen.findByRole('article', { name: 'Поставка №91' })).getByRole('button', { name: 'Открыть' }))
+  fireEvent.change(screen.getByLabelText('Количество ABC-1'), { target: { value: '11' } })
+  stored = newer
+  await userEvent.click(screen.getByRole('button', { name: 'Сохранить черновик' }))
+
+  expect(apiClient.updateInventoryReceipt).toHaveBeenCalledWith(7, 91, expect.objectContaining({ revision: 'original' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Поставка изменена другим пользователем')
+  expect(screen.getByLabelText('Количество ABC-1')).toHaveValue('11')
+  expect(screen.getByRole('button', { name: 'Сохранить черновик' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Провести поставку' })).toBeDisabled()
+  await userEvent.click(screen.getByRole('button', { name: 'Обновить поставку' }))
+  await userEvent.click(within(await screen.findByRole('article', { name: 'Поставка №91' })).getByRole('button', { name: 'Открыть' }))
+  expect(screen.getByLabelText('Количество ABC-1')).toHaveValue('12')
+  expect(apiClient.updateInventoryReceipt).toHaveBeenCalledTimes(1)
+})
+
+it('keeps locally edited lines when a refreshed list reports a newer revision', async () => {
+  let stored = receipt
+  const apiClient = client({ inventoryReceipts: vi.fn(async () => ({ items: [stored], limit: 25, offset: 0, total: 1 })) })
+  const { rerender } = render(<InventoryReceiptsView apiClient={apiClient} parkId={7} refreshVersion={0} />)
+  await userEvent.click(within(await screen.findByRole('article', { name: 'Поставка №91' })).getByRole('button', { name: 'Открыть' }))
+  fireEvent.change(screen.getByLabelText('Количество ABC-1'), { target: { value: '11' } })
+  stored = { ...receipt, revision: 'newer', lines: [{ ...receipt.lines[0], quantity: '12' }] }
+
+  rerender(<InventoryReceiptsView apiClient={apiClient} parkId={7} refreshVersion={1} />)
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Поставка изменена другим пользователем')
+  expect(screen.getByLabelText('Количество ABC-1')).toHaveValue('11')
+  expect(screen.getByRole('button', { name: 'Сохранить черновик' })).toBeDisabled()
+  expect(apiClient.updateInventoryReceipt).not.toHaveBeenCalled()
+})
+
+it.each([
+  ['Провести поставку', 'Подтвердить проведение', 'postInventoryReceipt'],
+  ['Отменить черновик', 'Подтвердить отмену', 'cancelInventoryReceipt'],
+] as const)('guards an unchanged draft when %s encounters a newer revision', async (action, confirmation, method) => {
+  const apiClient = client({
+    inventoryReceipts: vi.fn(async () => ({ items: [receipt], limit: 25, offset: 0, total: 1 })),
+    [method]: vi.fn(async () => { throw new ApiError(409, { code: 'inventory_receipt_stale' }) }),
+  })
+  render(<InventoryReceiptsView apiClient={apiClient} parkId={7} />)
+  await userEvent.click(within(await screen.findByRole('article', { name: 'Поставка №91' })).getByRole('button', { name: 'Открыть' }))
+  await userEvent.click(screen.getByRole('button', { name: action }))
+  await userEvent.click(await screen.findByRole('button', { name: confirmation }))
+
+  expect(apiClient[method]).toHaveBeenCalledWith(7, 91, 'original')
+  expect(await screen.findByRole('alert')).toHaveTextContent('Поставка изменена другим пользователем')
+  expect(screen.getByRole('button', { name: 'Сохранить черновик' })).toBeDisabled()
+})
+
+it.each([
+  ['Провести поставку', 'Подтвердить проведение', 'postInventoryReceipt'],
+  ['Отменить черновик', 'Подтвердить отмену', 'cancelInventoryReceipt'],
+] as const)('closes %s confirmation when another user changes the receipt', async (action, confirmation, method) => {
+  let stored = receipt
+  const apiClient = client({ inventoryReceipts: vi.fn(async () => ({ items: [stored], limit: 25, offset: 0, total: 1 })) })
+  const { rerender } = render(<InventoryReceiptsView apiClient={apiClient} parkId={7} refreshVersion={0} />)
+  await userEvent.click(within(await screen.findByRole('article', { name: 'Поставка №91' })).getByRole('button', { name: 'Открыть' }))
+  await userEvent.click(screen.getByRole('button', { name: action }))
+  expect(screen.getByRole('button', { name: confirmation })).toBeInTheDocument()
+
+  stored = { ...receipt, revision: 'newer', lines: [{ ...receipt.lines[0], quantity: '100' }] }
+  rerender(<InventoryReceiptsView apiClient={apiClient} parkId={7} refreshVersion={1} />)
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Поставка изменена другим пользователем')
+  expect(screen.queryByRole('button', { name: confirmation })).not.toBeInTheDocument()
+  expect(apiClient[method]).not.toHaveBeenCalled()
 })
