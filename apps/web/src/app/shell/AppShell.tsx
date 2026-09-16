@@ -311,21 +311,38 @@ export function AppShell() {
     setMoreOpen(false)
     const focusNavigationType = navigationTypeRef.current
 
+    let observer: MutationObserver | undefined
+    let observerTimeout: number | undefined
     const timer = window.setTimeout(() => {
       const main = document.querySelector<HTMLElement>('#main-content')
       if (!main) return
-      const heading = main.querySelector<HTMLElement>('h1')
-      const target = heading ?? main
-      const addedTabIndex = heading != null && !heading.hasAttribute('tabindex')
-      if (addedTabIndex) heading.setAttribute('tabindex', '-1')
-      if (focusNavigationType === 'POP') target.focus({ preventScroll: true })
-      else target.focus()
-      if (addedTabIndex) {
-        heading.addEventListener('blur', () => heading.removeAttribute('tabindex'), { once: true })
+      const focus = (target: HTMLElement) => {
+        const addedTabIndex = target !== main && !target.hasAttribute('tabindex')
+        if (addedTabIndex) target.setAttribute('tabindex', '-1')
+        if (focusNavigationType === 'POP') target.focus({ preventScroll: true })
+        else target.focus()
+        if (addedTabIndex) {
+          target.addEventListener('blur', () => target.removeAttribute('tabindex'), { once: true })
+        }
       }
+      const heading = main.querySelector<HTMLElement>('h1')
+      if (heading) { focus(heading); return }
+      focus(main)
+      observer = new MutationObserver(() => {
+        const loadedHeading = main.querySelector<HTMLElement>('h1')
+        if (!loadedHeading) return
+        observer?.disconnect()
+        if (document.activeElement === main) focus(loadedHeading)
+      })
+      observer.observe(main, { childList: true, subtree: true })
+      observerTimeout = window.setTimeout(() => observer?.disconnect(), 5_000)
     }, 0)
 
-    return () => window.clearTimeout(timer)
+    return () => {
+      window.clearTimeout(timer)
+      window.clearTimeout(observerTimeout)
+      observer?.disconnect()
+    }
   }, [location.pathname])
 
   useEffect(() => {

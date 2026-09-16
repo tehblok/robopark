@@ -22,6 +22,16 @@ describe('AppRouter', () => {
 
   afterEach(() => vi.restoreAllMocks())
 
+  it('shows the route fallback while loading work screen code', async () => {
+    renderApp('/work?park=7', testUser({
+      permissions: ['nav.dashboard', 'nav.tasks', 'tracker.read'],
+      parks: [north],
+    }))
+
+    expect(screen.getByText('Загрузка…')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Работа' })).toBeVisible()
+  })
+
   it.each(['/overview', '/dashboard', '/operator', '/admin/tracker'])(
     'redirects the retired %s surface to Work and retains park', async (path) => {
     const approvedOperator = testUser({
@@ -61,7 +71,7 @@ describe('AppRouter', () => {
   ])('registers canonical operational content for %s', async (path, expected, heading) => {
     renderApp(path, testUser({ permissions: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'tracker.read'], parks: [north] }))
     expect(await screen.findByRole('heading', { name: heading })).toBeVisible()
-    expect(screen.getByTestId('location').textContent).toBe(expected)
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe(expected))
   })
 
   it.each(['/work/ROBOPARK-42?park=7', '/robots/YASADR00000000447/check?park=7', '/emergency?q=447&park=7'])('gates direct protected route %s before its data effects', async path => {

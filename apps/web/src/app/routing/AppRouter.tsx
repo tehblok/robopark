@@ -1,22 +1,12 @@
 /* eslint-disable react/only-export-components */
-import type { ReactElement } from 'react'
+import { lazy, Suspense, type ReactElement } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AppShell } from '../shell/AppShell'
 import { ParkProvider } from '../../ParkProvider'
 import { Spinner } from '../../components/ui/Feedback'
 import { ru } from '../../i18n/ru'
 import { useAuth } from '../../auth-context'
-import { Admin } from '../../pages/Admin'
-import { ManagementPage } from '../../domains/management/ManagementPage'
-import { UserManagementPage } from '../../domains/management/UserManagementPage'
-import { RoleManagementPage } from '../../domains/management/RoleManagementPage'
-import { AdminEmergencyConfig } from '../../pages/AdminEmergencyConfig'
-import { Analytics } from '../../pages/Analytics'
 import { ChangePassword } from '../../pages/ChangePassword'
-import { WorkPage } from '../../domains/work/WorkPage'
-import { RobotsPage } from '../../domains/robots/RobotsPage'
-import { RobotPage } from '../../domains/robots/RobotPage'
-import { RobotCheckPage } from '../../domains/robots/RobotCheckPage'
 import { Home } from '../../pages/Home'
 import { Login } from '../../pages/Login'
 import { MechanicNoPark } from '../../pages/MechanicNoPark'
@@ -25,13 +15,24 @@ import { OperatorParks } from '../../pages/OperatorParks'
 import { OperatorPending } from '../../pages/OperatorPending'
 import { OperatorRejected } from '../../pages/OperatorRejected'
 import { Register } from '../../pages/Register'
-import { Reports } from '../../pages/Reports'
-import { CampaignsPage } from '../../domains/campaigns/CampaignsPage'
-import { InventoryPage } from '../../domains/inventory/InventoryPage'
 import { LegacyEmergencyRedirect } from './LegacyEmergencyRedirect'
 import { landingPathForUser } from './accessPolicy'
 import { ROUTE_MANIFEST, type AppRouteId } from './routeManifest'
 import { RouteGate } from './RouteGate'
+
+const Admin = lazy(() => import('../../pages/Admin').then(module => ({ default: module.Admin })))
+const ManagementPage = lazy(() => import('../../domains/management/ManagementPage').then(module => ({ default: module.ManagementPage })))
+const UserManagementPage = lazy(() => import('../../domains/management/UserManagementPage').then(module => ({ default: module.UserManagementPage })))
+const RoleManagementPage = lazy(() => import('../../domains/management/RoleManagementPage').then(module => ({ default: module.RoleManagementPage })))
+const AdminEmergencyConfig = lazy(() => import('../../pages/AdminEmergencyConfig').then(module => ({ default: module.AdminEmergencyConfig })))
+const Analytics = lazy(() => import('../../pages/Analytics').then(module => ({ default: module.Analytics })))
+const WorkPage = lazy(() => import('../../domains/work/WorkPage').then(module => ({ default: module.WorkPage })))
+const RobotsPage = lazy(() => import('../../domains/robots/RobotsPage').then(module => ({ default: module.RobotsPage })))
+const RobotPage = lazy(() => import('../../domains/robots/RobotPage').then(module => ({ default: module.RobotPage })))
+const RobotCheckPage = lazy(() => import('../../domains/robots/RobotCheckPage').then(module => ({ default: module.RobotCheckPage })))
+const Reports = lazy(() => import('../../pages/Reports').then(module => ({ default: module.Reports })))
+const CampaignsPage = lazy(() => import('../../domains/campaigns/CampaignsPage').then(module => ({ default: module.CampaignsPage })))
+const InventoryPage = lazy(() => import('../../domains/inventory/InventoryPage').then(module => ({ default: module.InventoryPage })))
 
 function RouteFallback() {
   return (
@@ -39,6 +40,10 @@ function RouteFallback() {
       <Spinner label={ru.loading} />
     </main>
   )
+}
+
+function RouteModuleFallback() {
+  return <div className="page page-center" role="status"><Spinner label={ru.loading} /></div>
 }
 
 export const ROUTE_ELEMENTS: Record<AppRouteId, ReactElement> = {
@@ -106,7 +111,9 @@ function ShellBoundary() {
 function gatedElement(routeId: AppRouteId) {
   return (
     <RouteGate loadingElement={<RouteFallback />} routeId={routeId}>
-      {ROUTE_ELEMENTS[routeId]}
+      <Suspense fallback={<RouteModuleFallback />}>
+        {ROUTE_ELEMENTS[routeId]}
+      </Suspense>
     </RouteGate>
   )
 }
