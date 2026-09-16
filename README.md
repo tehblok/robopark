@@ -1,6 +1,6 @@
 # Robopark
 
-Для установочного архива **0.1.36** на Armbian/Debian/Ubuntu используйте [руководство оператора](deploy/INSTALL-ARMBIAN-RU.md) и [приёмку 200 пользователей](deploy/CAPACITY-RU.md). Реальная проверка systemd/Docker/Tuna и нагрузки остаётся **НЕ ВЫПОЛНЕНО** до запуска на устройстве. Ниже сохранён существующий ручной Compose-путь.
+Для установочного архива **0.1.37** на Armbian/Debian/Ubuntu используйте [руководство оператора](deploy/INSTALL-ARMBIAN-RU.md) и [приёмку 200 пользователей](deploy/CAPACITY-RU.md). Реальная проверка systemd/Docker/Tuna и нагрузки остаётся **НЕ ВЫПОЛНЕНО** до запуска на устройстве. Ниже сохранён существующий ручной Compose-путь.
 
 Web-first fleet operations system (admin / operator / mechanic).
 

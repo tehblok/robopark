@@ -15,10 +15,21 @@ install_packages() {
     fi
     retry_network apt-get -o DPkg::Lock::Timeout=120 update
     retry_network apt-get -o DPkg::Lock::Timeout=120 install -y ca-certificates curl gnupg jq rsync python3 python3-cryptography
+    docker_installed=0
+    docker_compose_available=0
+    docker_buildx_available=0
+    if docker --version >/dev/null 2>&1; then
+        docker_installed=1
+        if docker compose version >/dev/null 2>&1; then docker_compose_available=1; fi
+        if docker buildx version >/dev/null 2>&1; then docker_buildx_available=1; fi
+    fi
+    docker_repo_needed=0
+    if [ "$docker_installed" = 0 ] || [ "$docker_compose_available" = 0 ] || [ "$docker_buildx_available" = 0 ]; then docker_repo_needed=1; fi
     apt_etc=${ROBOPARK_ROOT%/}/etc/apt
     mkdir -p "$apt_etc/keyrings" "$apt_etc/sources.list.d"
     chmod 755 "$apt_etc/keyrings" "$apt_etc/sources.list.d"
     for repository in docker tuna; do
+        if [ "$repository" = docker ] && [ "$docker_repo_needed" = 0 ]; then continue; fi
         case "$repository" in
             docker) repo_key_url="https://download.docker.com/linux/$APT_OS/gpg" ;;
             tuna) repo_key_url=https://repo.tuna.am/apt/gpg.key ;;
@@ -30,16 +41,26 @@ install_packages() {
         mv -f "$key_tmp.gpg" "$apt_etc/keyrings/$repository.gpg"
         rm -f "$key_tmp"
     done
-    source_tmp=$(mktemp "$apt_etc/sources.list.d/.docker.XXXXXX")
-    printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/%s %s stable\n' "$APT_ARCH" "$APT_OS" "$APT_CODENAME" >"$source_tmp"
-    chmod 644 "$source_tmp"
-    mv -f "$source_tmp" "$apt_etc/sources.list.d/docker.list"
+    if [ "$docker_repo_needed" = 1 ]; then
+        source_tmp=$(mktemp "$apt_etc/sources.list.d/.docker.XXXXXX")
+        printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/%s %s stable\n' "$APT_ARCH" "$APT_OS" "$APT_CODENAME" >"$source_tmp"
+        chmod 644 "$source_tmp"
+        mv -f "$source_tmp" "$apt_etc/sources.list.d/docker.list"
+    fi
     source_tmp=$(mktemp "$apt_etc/sources.list.d/.tuna.XXXXXX")
     printf '%s\n' 'deb [signed-by=/etc/apt/keyrings/tuna.gpg] https://repo.tuna.am/apt/ /' >"$source_tmp"
     chmod 644 "$source_tmp"
     mv -f "$source_tmp" "$apt_etc/sources.list.d/tuna.list"
     retry_network apt-get -o DPkg::Lock::Timeout=120 update
-    retry_network apt-get -o DPkg::Lock::Timeout=120 install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin tuna.am
+    if [ "$docker_installed" = 0 ]; then
+        retry_network apt-get -o DPkg::Lock::Timeout=120 install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin tuna.am
+    else
+        set -- tuna.am
+        if [ "$docker_compose_available" = 0 ]; then set -- docker-compose-plugin "$@"; fi
+        if [ "$docker_buildx_available" = 0 ]; then set -- docker-buildx-plugin "$@"; fi
+        retry_network apt-get -o DPkg::Lock::Timeout=120 install -y "$@"
+    fi
     docker compose version >/dev/null 2>&1 || die compose_unavailable
+    docker buildx version >/dev/null 2>&1 || die buildx_unavailable
     tuna help >/dev/null 2>&1 || die tuna_unavailable
 }

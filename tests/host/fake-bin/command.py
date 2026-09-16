@@ -39,6 +39,12 @@ elif name == 'dpkg':
 elif name == 'apt-get':
     if os.environ.get('APT_FAIL') == '1':
         sys.exit(1)
+    if 'docker-ce' in args:
+        (root / 'docker-installed').touch()
+    if 'docker-compose-plugin' in args:
+        (root / 'compose-installed').touch()
+    if 'docker-buildx-plugin' in args:
+        (root / 'buildx-installed').touch()
 elif name == 'curl':
     if '--output' in args:
         Path(args[args.index('--output') + 1]).write_text('fake signed repository key')
@@ -78,6 +84,13 @@ elif name == 'chown':
         for path in args[1:]:
             os.chown(path, owner, group)
 elif name == 'docker':
+    installed = os.environ.get('DOCKER_PREINSTALLED') == '1' or (root / 'docker-installed').exists()
+    if args == ['--version'] and not installed:
+        sys.exit(1)
+    if args == ['compose', 'version'] and not (root / 'compose-installed').exists() and not (installed and os.environ.get('COMPOSE_MISSING') != '1'):
+        sys.exit(1)
+    if args == ['buildx', 'version'] and not (root / 'buildx-installed').exists() and not (installed and os.environ.get('BUILDX_MISSING') != '1'):
+        sys.exit(1)
     if args == ['info'] or 'build' in args or args[:2] == ['image', 'inspect']:
         if os.environ.get('DOCKER_STOPPED') == '1' and not (root / 'docker-running').exists():
             sys.exit(1)

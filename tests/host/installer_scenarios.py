@@ -327,6 +327,41 @@ class InstallerScenarios(unittest.TestCase):
         (self.root / 'etc/os-release').write_text('ID=ubuntu\nVERSION_CODENAME=noble\n')
         self.run_installer(ARCH='x86_64')
         self.assertIn('linux/ubuntu', (self.root / 'etc/apt/sources.list.d/docker.list').read_text())
+        self.assertTrue(any('docker-ce' in call['args'] for call in self.commands('apt-get')))
+
+    def test_ubuntu_jammy_arm64_preserves_working_docker(self):
+        (self.root / 'etc/os-release').write_text('ID=ubuntu\nVERSION_ID=22.04\nVERSION_CODENAME=jammy\n')
+        self.run_installer(DOCKER_PREINSTALLED='1', DOCKER_STOPPED='1')
+        self.assertEqual(self.state()['phase'], 'complete')
+        self.assertFalse(any('docker-ce' in call['args'] for call in self.commands('apt-get')))
+        self.assertFalse((self.root / 'etc/apt/sources.list.d/docker.list').exists())
+        self.assertTrue(any(call['args'] == ['start', 'docker.service'] for call in self.commands('systemctl')))
+        self.assertIn("UVICORN_WORKERS='2'", (self.root / 'etc/robopark/host.env').read_text())
+
+    def test_ubuntu_jammy_arm64_uses_large_ram_profile(self):
+        (self.root / 'etc/os-release').write_text('ID=ubuntu\nVERSION_ID=22.04\nVERSION_CODENAME=jammy\n')
+        (self.root / 'proc').mkdir()
+        (self.root / 'proc/meminfo').write_text('MemTotal:       33554432 kB\n')
+        self.run_installer()
+        self.assertIn("UVICORN_WORKERS='4'", (self.root / 'etc/robopark/host.env').read_text())
+        self.assertIn(' jammy stable', (self.root / 'etc/apt/sources.list.d/docker.list').read_text())
+
+    def test_existing_docker_missing_buildx_installs_plugin_without_replacing_engine(self):
+        (self.root / 'etc/os-release').write_text('ID=ubuntu\nVERSION_ID=22.04\nVERSION_CODENAME=jammy\n')
+        self.run_installer(DOCKER_PREINSTALLED='1', BUILDX_MISSING='1')
+        packages = [call['args'] for call in self.commands('apt-get') if 'install' in call['args']]
+        self.assertTrue(any('docker-buildx-plugin' in args for args in packages))
+        self.assertFalse(any('docker-ce' in args or 'containerd.io' in args for args in packages))
+
+    def test_armbian_26_uses_underlying_ubuntu_codename(self):
+        (self.root / 'etc/os-release').write_text(
+            'ID=armbian\nID_LIKE=ubuntu\nVERSION_ID=26.8\nVERSION_CODENAME=armbian\nUBUNTU_CODENAME=jammy\n'
+        )
+        (self.root / 'proc').mkdir()
+        (self.root / 'proc/meminfo').write_text('MemTotal:        8388608 kB\n')
+        self.run_installer()
+        self.assertIn('linux/ubuntu jammy stable', (self.root / 'etc/apt/sources.list.d/docker.list').read_text())
+        self.assertIn("UVICORN_WORKERS='2'", (self.root / 'etc/robopark/host.env').read_text())
 
     def test_preflight_failures_never_mutate_host(self):
         for env in ({'ARCH': 'armv7l'}, {'FREE_GIB': '5'}):

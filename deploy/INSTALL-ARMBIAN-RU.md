@@ -1,12 +1,12 @@
-# Установка Robopark на Armbian и безопасные обновления
+# Установка СУРП на Armbian и Ubuntu и безопасные обновления
 
-Версия этого руководства и корневого `VERSION`: **0.1.36**. Основной целевой хост — Armbian 26 ARM64 с 8 GiB RAM. Installer допускает Armbian, Debian и Ubuntu, архитектуры ARM64 (`aarch64`/`arm64`) и AMD64 (`x86_64`/`amd64`), с `apt`, работающим systemd и системным Python **3.11+** (Debian 12+, Ubuntu 24.04+ или подходящая база Armbian). Старые дистрибутивы с Python 3.10/3.9 не входят в целевой профиль. Для 32 GiB предусмотрен профиль на четыре API-процесса. ARM32 и системы без systemd не поддерживаются. Проверка на macOS использует временный корень и подменяет внешние команды; работоспособность настоящих Linux/systemd/Docker/Tuna и 200 пользователей подтверждает только целевой стенд.
+Версия этого руководства и корневого `VERSION`: **0.1.37**. Целевые хосты — действующий Armbian 26 ARM64 с 8 GiB RAM и новый Ubuntu 22.04 ARM64 на Orin. Установщик не ограничивает номер версии ОС: он использует `apt` и кодовое имя базы из `/etc/os-release`, проверяет systemd, ARM64/AMD64 и свободное место. Хостовые скрипты рассчитаны на Python 3.10+; API внутри Docker использует Python 3.12. При первой установке профиль выбирается по ОЗУ: до 24 GiB — два API-процесса, от 24 GiB — четыре. Работающий Docker с Compose и Buildx сохраняется; при отсутствии плагина устанавливается только плагин. ARM32 и системы без systemd не поддерживаются. Проверка на macOS использует временный корень и подменяет внешние команды; настоящие Linux/systemd/Docker/Tuna и нагрузку 200 пользователей должен подтвердить целевой стенд.
 
 ## Простая установка
 
 Распакуйте архив в отдельную папку. Перетащите файл `START.sh` из этой папки в
 терминал и нажмите Enter. Введите пароль sudo и оставшиеся данные в том же окне.
-Установщик сам поставит Docker и Tuna, развернёт Robopark, настроит GitHub OTA,
+Установщик сохранит работающий Docker Compose либо поставит недостающий, установит Tuna, развернёт Robopark, настроит GitHub OTA,
 автозапуск, диагностику и watchdog, затем проверит публичный HTTPS и сертификат.
 Для адреса в зоне `ru.tuna.am` отдельный сертификат на локальном ПК не нужен:
 TLS обслуживает Tuna. Для Armbian с 8 GiB установщик выберет два API worker,
@@ -40,11 +40,11 @@ TLS обслуживает Tuna. Для Armbian с 8 GiB установщик в
 
 Получите из доверенного канала публичный Ed25519-ключ `release-public-key.pem` и автономный `verify-artifact.py` из каталога `scripts` проверенного исходного релиза. Не запускайте проверяющий код и не берите ключ из ещё не проверенного архива. Сверьте fingerprint публичного ключа по независимому каналу. Закрытый ключ на целевой хост не передаётся.
 
-Скачайте комплект файлов с одинаковым базовым именем: `.tar.gz`, `.tar.gz.sig`, `.tar.gz.sha256`, `.tar.gz.json`. Для самостоятельного release ZIP нужен такой же набор `.zip` и трёх sidecar-файлов. На машине проверки нужны Python 3.11+ и `cryptography` (в поддерживаемом Debian/Ubuntu пакет `python3-cryptography`).
+Скачайте комплект файлов с одинаковым базовым именем: `.tar.gz`, `.tar.gz.sig`, `.tar.gz.sha256`, `.tar.gz.json`. Для самостоятельного release ZIP нужен такой же набор `.zip` и трёх sidecar-файлов. На машине проверки нужны Python 3.10+ и `cryptography` (в Debian/Ubuntu пакет `python3-cryptography`).
 
 ```sh
-python3 verify-artifact.py --public-key release-public-key.pem robopark-installer-0.1.36.tar.gz
-python3 verify-artifact.py --public-key release-public-key.pem robopark-release-0.1.36.zip
+python3 verify-artifact.py --public-key release-public-key.pem robopark-installer-0.1.37.tar.gz
+python3 verify-artifact.py --public-key release-public-key.pem robopark-release-0.1.37.zip
 ```
 
 Продолжайте только после кода выхода 0. Внешняя утилита проверяет Ed25519-подпись всего архива, SHA-256, metadata, внутреннюю подпись манифеста, пути и хеши файлов. Сам локальный установщик и OTA сейчас не проверяют криптографическую подпись архива. Один checksum рядом с архивом не заменяет проверку подписи. Ошибка проверки означает остановку; не распаковывайте архив с обходом валидации.
@@ -52,9 +52,9 @@ python3 verify-artifact.py --public-key release-public-key.pem robopark-release-
 Ручной эквивалент простого запуска:
 
 ```sh
-mkdir robopark-installer-0.1.36
-tar -xzf robopark-installer-0.1.36.tar.gz -C robopark-installer-0.1.36
-cd robopark-installer-0.1.36
+mkdir robopark-installer-0.1.37
+tar -xzf robopark-installer-0.1.37.tar.gz -C robopark-installer-0.1.37
+cd robopark-installer-0.1.37
 ./START.sh
 ```
 
@@ -174,7 +174,7 @@ Secret scan не должен печатать найденные значени
 |---|---|---|
 | Идентификация устройства | Модель, архитектура, OS release/kernel, дата | **НЕ ВЫПОЛНЕНО** |
 | Ресурсы | RAM, CPU, свободные GiB/inodes на /opt и /var/lib | **НЕ ВЫПОЛНЕНО** |
-| Подписи | Версия 0.1.36, публичный fingerprint, hashes артефактов | **НЕ ВЫПОЛНЕНО** |
+| Подписи | Версия 0.1.37, публичный fingerprint, hashes артефактов | **НЕ ВЫПОЛНЕНО** |
 | Чистая установка | Длительность, завершённые этапы, версия | **НЕ ВЫПОЛНЕНО** |
 | Resume/idempotence | Прерванный этап, успешный resume, сохранение конфигурации | **НЕ ВЫПОЛНЕНО** |
 | Docker/Compose/Tuna | Установленные версии, активные службы/timers | **НЕ ВЫПОЛНЕНО** |
