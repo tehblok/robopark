@@ -23,6 +23,7 @@ import { periodicDelay, resumeDelay, retryAfterMs } from './pollingSchedule'
 const LS_PREFIX = 'robopark:res:'
 const LS_VERSION = 1
 export const RESOURCE_REFRESH_MS = 30_000
+const MEMORY_MAX_ENTRIES = 128
 /** Drop persisted snapshots older than this; next visit is a cold load. */
 export const LS_MAX_AGE_MS = 12 * 60 * 60 * 1000
 
@@ -93,16 +94,29 @@ class ResourceStore {
   private mem = new Map<string, StoredEntry>()
   private subs = new Map<string, Set<() => void>>()
 
+  private remember(key: string, entry: StoredEntry): void {
+    this.mem.delete(key)
+    this.mem.set(key, entry)
+    while (this.mem.size > MEMORY_MAX_ENTRIES) {
+      const oldest = this.mem.keys().next().value
+      if (oldest === undefined) break
+      this.mem.delete(oldest)
+    }
+  }
+
   get<T>(key: string): T | undefined {
     const hit = this.mem.get(key)
     if (hit) {
-      if (isFresh(hit)) return hit.data as T
+      if (isFresh(hit)) {
+        this.remember(key, hit)
+        return hit.data as T
+      }
       this.mem.delete(key)
       removeFromStorage(key)
     }
     const parsed = readFromStorage(key)
     if (parsed && isFresh(parsed)) {
-      this.mem.set(key, parsed)
+      this.remember(key, parsed)
       return parsed.data as T
     }
     if (parsed) removeFromStorage(key)
@@ -121,7 +135,7 @@ class ResourceStore {
 
   set(key: string, data: unknown, persist: boolean): void {
     const entry: StoredEntry = { v: LS_VERSION, updatedAt: Date.now(), data }
-    this.mem.set(key, entry)
+    this.remember(key, entry)
     if (persist) writeToStorage(key, entry)
     this.notify(key)
   }
@@ -143,9 +157,13 @@ class ResourceStore {
           notified.add(k)
         }
       }
+      for (const k of this.subs.keys()) {
+        if (k.startsWith(keyOrPrefix)) notified.add(k)
+      }
       removeFromStorageByPrefix(keyOrPrefix)
     } else {
-      if (this.mem.delete(keyOrPrefix)) notified.add(keyOrPrefix)
+      this.mem.delete(keyOrPrefix)
+      notified.add(keyOrPrefix)
       removeFromStorage(keyOrPrefix)
     }
     for (const k of notified) this.notify(k)

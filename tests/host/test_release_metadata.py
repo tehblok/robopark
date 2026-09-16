@@ -47,6 +47,35 @@ def metadata_pack(packaging, tmp_path, metadata, version="1.2.3"):
     return result, output
 
 
+def test_release_accepts_installed_0133_migration_head():
+    from robopark_host.release import check_compatibility
+
+    metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
+    files = {
+        path: {}
+        for path in (
+            "deploy/Dockerfile.api-tests",
+            "apps/api/Dockerfile",
+            "apps/api/uv.lock",
+            "apps/api/pyproject.toml",
+            "apps/web/Dockerfile",
+            "apps/web/package-lock.json",
+            "apps/web/package.json",
+            "scripts/verify.sh",
+        )
+    }
+    candidate = {
+        "files": files,
+        "app_version": (ROOT / "VERSION").read_text().strip(),
+        "min_installer_version": "1.0.0",
+        "required_capabilities": [],
+        **metadata,
+    }
+    current = {"app_version": "0.1.33", "migration_head": "0026_global_inventory_workflows"}
+
+    check_compatibility(candidate, current)
+
+
 def test_production_metadata_is_signed_and_matches_both_verifiers(packaging, tmp_path):
     from robopark_api.services.ops.archives import inspect_archive
     from robopark_host.release import verify_archive

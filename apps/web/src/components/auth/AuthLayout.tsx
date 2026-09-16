@@ -1,5 +1,5 @@
 import type { PropsWithChildren } from 'react'
-import robotImage from '../../assets/robots/isometric.png'
+import robotImage from '../../assets/robots/isometric.webp'
 import { useTheme, type ThemePreference } from '../../design-system/theme/ThemeProvider'
 import { ru } from '../../i18n/ru'
 import './auth.css'

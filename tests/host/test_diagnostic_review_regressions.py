@@ -304,7 +304,7 @@ def test_swap_exhaustion_and_naive_backup_timestamp_are_nonhealthy(host_paths):
 
     class SwapRunner(ReviewRunner):
         def __call__(self, command, *, timeout, max_output):
-            if command[:2] == ["free", "-m"]:
+            if command == ["env", "LC_ALL=C", "free", "-m"]:
                 return CommandResult(stdout="Mem: 4096 1000 1000 0 2000 2000\nSwap: 1000 1000 0\n")
             if command[-2:] == ["alembic", "current"]:
                 return CommandResult(stdout="head (head)\n")
@@ -314,6 +314,17 @@ def test_swap_exhaustion_and_naive_backup_timestamp_are_nonhealthy(host_paths):
 
     assert report.by_code("memory_load_swap").status == "failed"
     assert report.by_code("backup").status == "warning"
+
+
+def test_memory_check_uses_stable_locale_for_host_metrics():
+    from robopark_host.doctor import _memory_check
+
+    def runner(command, *, timeout, max_output):
+        if command == ["env", "LC_ALL=C", "free", "-m"]:
+            return CommandResult(stdout="Mem: 4096 1000 1000 0 2000 2000\nSwap: 1000 100 900\n")
+        return CommandResult(stdout="Память: 4096 1000 1000 0 2000 2000\nПодкачка: 1000 100 900\n")
+
+    assert _memory_check(runner).status == "ok"
 
 
 def test_runner_timeout_terminates_descendants_holding_pipes_open():

@@ -53,6 +53,31 @@ describe('resourceStore', () => {
     expect(resourceStore.get('now-report:all')).toEqual({ totals: { blocker: 3 } })
   })
 
+  it('releases old ticket responses during a long browser session', () => {
+    for (let index = 0; index < 129; index += 1) {
+      resourceStore.set(`tracker:issue:${index}`, { index }, false)
+    }
+
+    expect(resourceStore.get('tracker:issue:0')).toBeUndefined()
+    expect(resourceStore.get('tracker:issue:128')).toEqual({ index: 128 })
+  })
+
+  it('notifies mounted screens when an evicted key is invalidated', () => {
+    const listener = vi.fn()
+    const unsubscribe = resourceStore.subscribe('work:7:issue:old', listener)
+    resourceStore.set('work:7:issue:old', { value: 'stale' }, false)
+    for (let index = 0; index < 128; index += 1) {
+      resourceStore.set(`work:7:issue:${index}`, { index }, false)
+    }
+    listener.mockClear()
+
+    resourceStore.invalidate('work:7:issue:', { prefix: true })
+
+    expect(listener).toHaveBeenCalledOnce()
+    expect(resourceStore.get('work:7:issue:old')).toBeUndefined()
+    unsubscribe()
+  })
+
   it('invalidates a single key without touching neighbors', () => {
     resourceStore.set('tracker:issue:A', { key: 'A' }, false)
     resourceStore.set('tracker:issue:B', { key: 'B' }, false)
