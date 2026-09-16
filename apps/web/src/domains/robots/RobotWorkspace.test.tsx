@@ -193,7 +193,7 @@ it('legacy check URL exposes the same identity and related tasks with its select
   await screen.findByRole('heading', { name: 'Робот 447' })
   expect(screen.getByRole('tabpanel')).toHaveAccessibleName('Схема')
   const photo = within(screen.getByRole('tabpanel')).getByRole('img')
-  expect(photo).toHaveAttribute('src', expect.stringContaining('top.png'))
+  expect(photo).toHaveAttribute('src', expect.stringContaining('top.webp'))
   expect(photo).toHaveAttribute('loading', 'lazy')
   expect(screen.getByLabelText('Адрес')).toHaveTextContent('park=8&tab=scheme')
   await waitFor(() => expect(screen.getByLabelText('Адрес')).not.toHaveTextContent('/check'))

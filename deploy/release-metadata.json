@@ -1,8 +1,8 @@
 {
-  "migration_head": "0027_emergency_readings",
+  "migration_head": "0028_reliable_task_workflow",
   "migration_compatibility": {
-    "from_heads": ["0022_tracker_collaboration", "0024_inventory", "0025_local_task_claims"],
+    "from_heads": ["0022_tracker_collaboration", "0024_inventory", "0025_local_task_claims", "0026_global_inventory_workflows", "0027_emergency_readings"],
     "reversible": true
   },
-  "update_notes": "Механик получил быстрый поиск запчастей, приход поставок, инвентаризацию, выгрузку своего парка и списание из взятой задачи. Каталог запчастей единый, а остатки, места и документы разделены по паркам. Администратор и royal управляют каталогом и выгружают все парки. Интерфейс адаптирован для телефона и ПК."
+  "update_notes": "СУРП 0.1.35: исправлен отказ OTA request_superseded при возобновлении нового обновления после предыдущего релиза. Ошибка теперь показывается понятно. Сокращён объём иллюстраций робота для медленного Wi-Fi, ограничена память браузерного кэша и исправлена диагностика памяти на русской локали. Возможности 0.1.34 сохранены."
 }

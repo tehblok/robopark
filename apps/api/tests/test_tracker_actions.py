@@ -5,8 +5,7 @@ from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, Report, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings
-from robopark_api.services import reports as reports_svc
-from robopark_api.services.rbac import RoleSlug
+from robopark_api.task_workflow_models import ReliableAction, TaskReview
 
 
 def _seed_operator(db_session, park):
@@ -21,6 +20,7 @@ def _seed_operator(db_session, park):
     db_session.flush()
     db_session.add(UserPark(user_id=operator.id, park_id=park.id))
     db_session.commit()
+    return operator
 
 
 def test_tracker_action_comment(client, db_session, seed_park_with_tracker, monkeypatch):
@@ -405,7 +405,7 @@ def _mock_close_tracker(monkeypatch, *, key: str = "ROBOPARK-1"):
     return issue
 
 
-def test_mechanic_close_creates_close_review(
+def test_mechanic_cannot_use_legacy_final_close(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
@@ -424,21 +424,14 @@ def test_mechanic_close_creates_close_review(
     login_as(client, "mech1", "secret")
     response = client.post("/tracker/issues/ROBOPARK-1/close")
 
-    assert response.status_code == 200
-    assert response.json()["action"] == "close"
-
-    report = db_session.query(Report).one()
-    assert report.kind == reports_svc.KIND_TICKET_CLOSE_REVIEW
-    assert report.status == reports_svc.STATUS_OPEN
-    assert report.park_id == seed_park_with_tracker.id
-    assert report.author_user_id == seed_mechanic.id
-    assert report.target_role == RoleSlug.OPERATOR
-    assert report.tracker_key == "ROBOPARK-1"
-    assert report.tracker_url == "https://st.yandex-team.ru/ROBOPARK-1"
-    assert report.title == "Закрытие ROBOPARK-1"
+    assert response.status_code == 403
+    assert response.json()["detail"] == "task_review_operator_required"
+    assert db_session.query(Report).count() == 0
 
 
-def test_mechanic_close_without_park_rejected_before_tracker(client, db_session, monkeypatch):
+def test_mechanic_close_without_park_is_still_rejected_as_review_approval(
+    client, db_session, monkeypatch
+):
     from robopark_api.services import tracker_client
 
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
@@ -466,7 +459,53 @@ def test_mechanic_close_without_park_rejected_before_tracker(client, db_session,
     login_as(client, "mech_nopark", "secret")
     response = client.post("/tracker/issues/ROBOPARK-1/close")
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "mechanic_park_required_for_close_review"
+    assert response.status_code == 403
+    assert response.json()["detail"] == "task_review_operator_required"
     assert transition_called is False
     assert db_session.query(Report).count() == 0
+
+
+def test_legacy_close_delegates_to_pending_review_approval_without_upstream_write(
+    client,
+    db_session,
+    seed_mechanic,
+    seed_park_with_tracker,
+    monkeypatch,
+):
+    operator = _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    _mock_close_tracker(monkeypatch)
+    from robopark_api.services import tracker_client
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key="ROBOPARK-1",
+        park_id=seed_park_with_tracker.id,
+    )
+    db_session.add(
+        TaskReview(
+            id="legacy-close-review",
+            issue_key="ROBOPARK-1",
+            state="pending",
+            actor_user_id=seed_mechanic.id,
+            created_at=1,
+            updated_at=1,
+        )
+    )
+    db_session.commit()
+    written = []
+    monkeypatch.setattr(tracker_client, "transition_issue", lambda **kw: written.append(kw))
+    login_as(client, operator.username, "secret")
+
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/close",
+        headers={"Idempotency-Key": "legacy-close-pending"},
+    )
+
+    assert response.status_code == 200
+    assert db_session.query(TaskReview).one().state == "closed"
+    assert db_session.query(ReliableAction).filter_by(action="close").count() == 1
+    assert written == []

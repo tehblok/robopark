@@ -18,6 +18,38 @@
   gap: var(--rp-space-4);
 }
 
+.rp-work-summary {
+  background: var(--rp-surface);
+  border: 1px solid var(--rp-border);
+  border-radius: var(--rp-radius-panel);
+  display: grid;
+  gap: var(--rp-space-3);
+  padding: var(--rp-space-3);
+}
+
+.rp-work-summary > button {
+  background: transparent;
+  border: 0;
+  color: var(--rp-text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: var(--rp-font-weight-bold);
+  min-height: var(--rp-control-min-size);
+  text-align: left;
+}
+
+.rp-work-summary__metrics {
+  display: grid;
+  gap: var(--rp-space-2);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 899px) {
+  .rp-work-summary__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .rp-workbench .rp-master-detail {
   align-items: start;
 }

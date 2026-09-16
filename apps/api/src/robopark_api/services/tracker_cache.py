@@ -192,6 +192,7 @@ def clear_all() -> None:
     """Drop every cached Tracker response (e.g. after a token rotation)."""
     for cache in _ALL_CACHES:
         cache.clear()
+    tracker_client.clear_issue_status_history_cache()
 
 
 def clear_all_for_tests() -> None:

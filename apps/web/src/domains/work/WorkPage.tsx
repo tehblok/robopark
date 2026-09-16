@@ -1,6 +1,6 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { api, type User } from '../../api'
+import { api, type DashboardSummary, type User } from '../../api'
 import { useAuth } from '../../auth-context'
 import {
   EmptyState,
@@ -10,6 +10,7 @@ import {
 import { PageLayout } from '../../design-system/layout/PageLayout'
 import { useParkScope } from '../../app/park/parkScope'
 import { classifyApiError, type DomainError } from '../../shared/api/classifyApiError'
+import { useCachedResource } from '../../lib/resource'
 import {
   IssueWorkbench,
   type IssueWorkbenchApiClient,
@@ -25,7 +26,7 @@ import {
 export function WorkPage({
   apiClient = api,
 }: {
-  apiClient?: IssueWorkbenchApiClient
+  apiClient?: IssueWorkbenchApiClient & Pick<typeof api, 'dashboardSummary'>
 }) {
   const { user } = useAuth()
   if (!user) return null
@@ -37,7 +38,7 @@ function WorkPageOwner({
   apiClient,
   user,
 }: {
-  apiClient: IssueWorkbenchApiClient
+  apiClient: IssueWorkbenchApiClient & Pick<typeof api, 'dashboardSummary'>
   user: User
 }) {
   const { refreshUser } = useAuth()
@@ -46,7 +47,26 @@ function WorkPageOwner({
   const navigate = useNavigate()
   const { parkId, selectedPark, loading } = useParkScope()
   const refreshStarted = useRef(false)
+  const [now, setNow] = useState(() => Date.now())
   const [authorizationFailure, setAuthorizationFailure] = useState<DomainError | null>(null)
+  const [summaryOpen, setSummaryOpen] = useState(false)
+  const summary = useCachedResource<DashboardSummary>(
+    `dashboard:summary:${parkId ?? 'none'}`,
+    () => apiClient.dashboardSummary(parkId as number),
+    { enabled: summaryOpen && parkId != null },
+  )
+  useEffect(() => {
+    let timer = 0
+    const schedule = () => {
+      const delay = 60_000 - (Date.now() % 60_000)
+      timer = window.setTimeout(() => {
+        setNow(Date.now())
+        schedule()
+      }, delay)
+    }
+    schedule()
+    return () => window.clearTimeout(timer)
+  }, [])
   const observeAuthorizationFailure = useCallback(async (error: unknown) => {
     if (refreshStarted.current) return
     refreshStarted.current = true
@@ -91,7 +111,7 @@ function WorkPageOwner({
 
   const state = parseWorkUrl(params, {
     queue,
-    status: user.role === 'driver' ? 'new' : user.role === 'mechanic' ? 'all' : 'queued',
+    status: 'queued',
   })
   const writeState = (
     next: WorkUrlState,
@@ -113,6 +133,19 @@ function WorkPageOwner({
       description={`Парк: ${selectedPark.name} · открытые блокеры`}
       title="Работа"
     >
+      <section className="rp-work-summary">
+        <button aria-expanded={summaryOpen} onClick={() => setSummaryOpen(open => !open)} type="button">Сводка смены</button>
+        {summaryOpen ? <div className="rp-work-summary__content">
+          {summary.error ? <p role="alert">Не удалось загрузить сводку.</p> : null}
+          {!summary.data && summary.isLoading ? <p>Загружаем сводку…</p> : null}
+          {summary.data ? <div className="rp-work-summary__metrics">
+            <span>Пришли: {summary.data.arrived}</span>
+            <span>Ушли: {summary.data.done}</span>
+            <span>В очереди: {summary.data.queued}</span>
+            <span>В пути: {summary.data.in_transit}</span>
+          </div> : null}
+        </div> : null}
+      </section>
       <IssueWorkbench
         apiClient={apiClient}
         issueKey={issueKey}
@@ -123,6 +156,7 @@ function WorkPageOwner({
         onOpenIssue={(key) => navigate(workIssueHref(key, { ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, parkId))}
         onOpenRelatedIssue={(key) => navigate(workIssueHref(key, { ...state, rootIssue: key === (state.rootIssue ?? issueKey) ? undefined : state.rootIssue ?? issueKey, detailTab: undefined, checkTab: undefined }, parkId))}
         onStateChange={writeState}
+        now={now}
         selectedPark={selectedPark}
         state={state}
         user={user}

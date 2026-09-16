@@ -1,11 +1,16 @@
+import threading
+import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
 from conftest import login_as, role_id_for
+from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import AccessStatus, Park, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings
+from robopark_api.task_workflow_models import HiddenTask
 
 
 def _seed_operator(db_session, park):
@@ -94,7 +99,7 @@ def test_tracker_list_honors_oldest_and_newest_sort(
     assert [item["key"] for item in newest] == ["ROBOPARK-2", "ROBOPARK-1"]
 
 
-def test_tracker_list_uses_issue_key_as_a_deterministic_sort_tiebreaker(
+def test_tracker_list_preserves_upstream_order_for_equal_queue_timestamps(
     client, db_session, seed_park_with_tracker, monkeypatch
 ):
     _seed_operator(db_session, seed_park_with_tracker)
@@ -114,8 +119,381 @@ def test_tracker_list_uses_issue_key_as_a_deterministic_sort_tiebreaker(
     oldest = client.get("/tracker/issues?sort=oldest").json()["items"]
     newest = client.get("/tracker/issues?sort=newest").json()["items"]
 
-    assert [item["key"] for item in oldest] == ["ROBOPARK-1", "ROBOPARK-2"]
+    assert [item["key"] for item in oldest] == ["ROBOPARK-2", "ROBOPARK-1"]
     assert [item["key"] for item in newest] == ["ROBOPARK-2", "ROBOPARK-1"]
+
+
+def test_tracker_owned_list_uses_local_claims_before_pagination_and_scope(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    other_park = Park(
+        name="Beta", tag="Beta", is_active=True, tracker_queue="ROBOPARK", feature_blockers=True
+    )
+    other_owner = User(
+        username="mech2",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "mechanic"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add_all([other_park, other_owner])
+    db_session.flush()
+    claims = [
+        ("ROBOPARK-OWN-OLD", seed_park_with_tracker.id, seed_mechanic.id),
+        ("ROBOPARK-OTHER-OWNER", seed_park_with_tracker.id, other_owner.id),
+        ("ROBOPARK-OTHER-PARK", other_park.id, seed_mechanic.id),
+        ("ROBOPARK-HIDDEN", seed_park_with_tracker.id, seed_mechanic.id),
+        ("ROBOPARK-OWN-NEW", seed_park_with_tracker.id, seed_mechanic.id),
+    ]
+    db_session.add_all(
+        [
+            TrackerClaim(
+                issue_key=key,
+                park_id=park_id,
+                owner_user_id=owner_id,
+                updated_by_user_id=owner_id,
+                updated_at=1,
+            )
+            for key, park_id, owner_id in claims
+        ]
+    )
+    db_session.add(
+        HiddenTask(
+            id="hidden-owned",
+            issue_key="ROBOPARK-HIDDEN",
+            park_id=seed_park_with_tracker.id,
+            reason="duplicate",
+            actor_user_id=other_owner.id,
+            created_at=1,
+            updated_at=1,
+        )
+    )
+    db_session.commit()
+
+    issues = [
+        {**_scoped_issue("ROBOPARK-OWN-NEW", "2026-01-05T00:00:00Z"), "assignee": None},
+        # Upstream tags are stale; the local claim park remains authoritative.
+        _scoped_issue("ROBOPARK-OTHER-PARK", "2026-01-03T00:00:00Z"),
+        {**_scoped_issue("ROBOPARK-OTHER-OWNER", "2026-01-02T00:00:00Z")},
+        {**_scoped_issue("ROBOPARK-HIDDEN", "2026-01-04T00:00:00Z")},
+        {
+            **_scoped_issue("ROBOPARK-OWN-OLD", "2026-01-01T00:00:00Z"),
+            "assignee": {"login": "stale.tracker", "display": "stale.tracker"},
+        },
+    ]
+    captured = {}
+
+    from robopark_api.services import tracker_client
+
+    def fake_search(**kwargs):
+        captured.update(kwargs)
+        return issues
+
+    monkeypatch.setattr(tracker_client, "search_issues", fake_search)
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.get("/tracker/issues?owned_by_me=true&sort=oldest&limit=1&offset=1")
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
+    assert [item["key"] for item in response.json()["items"]] == ["ROBOPARK-OWN-NEW"]
+    assert response.json()["items"][0]["assignee"]["login"] == seed_mechanic.username
+    assert "Assignee:" not in captured["query"]
+    assert "Tags:" not in captured["query"]
+    assert captured["filter_open"] is True
+
+
+def test_tracker_list_prefers_queue_history_and_exposes_exact_five_hour_sla(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    historical = {
+        **_scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"),
+        "status_history": [
+            {
+                "updatedAt": "2026-01-03T09:15:00Z",
+                "fields": [
+                    {"field": {"id": "status"}, "to": {"key": "queued", "display": "В очереди"}}
+                ],
+            }
+        ],
+    }
+    fallback = _scoped_issue("ROBOPARK-2", "2026-01-02T10:00:00Z")
+    missing = {**_scoped_issue("ROBOPARK-3", ""), "hours_created": None}
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [historical, fallback, missing],
+    )
+    login_as(client, "op2", "secret")
+
+    items = client.get("/tracker/issues?sort=oldest").json()["items"]
+
+    assert [item["key"] for item in items] == ["ROBOPARK-2", "ROBOPARK-1", "ROBOPARK-3"]
+    assert items[0]["queued_at"] == "2026-01-02T10:00:00Z"
+    assert items[0]["sla_deadline"] == "2026-01-02T15:00:00Z"
+    assert items[0]["sla_source"] == "estimated"
+    assert items[1]["queued_at"] == "2026-01-03T09:15:00Z"
+    assert items[1]["sla_deadline"] == "2026-01-03T14:15:00Z"
+    assert items[1]["sla_source"] == "status_history"
+    assert items[2]["queued_at"] is None
+    assert items[2]["sla_deadline"] is None
+    assert items[2]["sla_source"] is None
+
+
+def test_tracker_work_page_hydrates_only_returned_items_and_orders_exact_queue_times(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    first = _scoped_issue("ROBOPARK-9", "2026-01-02T09:00:00Z")
+    second = _scoped_issue("ROBOPARK-10", "2026-01-02T10:00:00Z")
+    outside_page = _scoped_issue("ROBOPARK-11", "2026-01-02T11:00:00Z")
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [first, second, outside_page],
+    )
+    calls = []
+
+    def history(*, token, key, issue):
+        del issue
+        calls.append((token, key))
+        timestamp = {
+            "ROBOPARK-9": "2026-01-02T12:00:00Z",
+            "ROBOPARK-10": "2026-01-02T11:00:00Z",
+        }[key]
+        return [
+            {
+                "updatedAt": timestamp,
+                "fields": [{"field": {"id": "status"}, "to": {"key": "queued"}}],
+            }
+        ]
+
+    monkeypatch.setattr(tracker_client, "_load_work_status_history", history)
+    login_as(client, "op2", "secret")
+
+    items = client.get("/tracker/issues?sort=oldest&limit=2").json()["items"]
+
+    assert len(calls) == 2
+    assert set(calls) == {("token", "ROBOPARK-9"), ("token", "ROBOPARK-10")}
+    assert [item["key"] for item in items] == ["ROBOPARK-10", "ROBOPARK-9"]
+    assert items[0]["queued_at"] == "2026-01-02T11:00:00Z"
+    assert items[0]["sla_deadline"] == "2026-01-02T16:00:00Z"
+    assert items[0]["sla_source"] == "status_history"
+
+
+def test_tracker_work_history_failure_falls_back_to_estimated_creation(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    issue = _scoped_issue("ROBOPARK-12", "2026-01-02T10:00:00Z")
+    monkeypatch.setattr(tracker_client, "search_issues", lambda **_kwargs: [issue])
+    calls = []
+
+    def failed_history(*, token, key, issue):
+        del issue
+        calls.append((token, key))
+        raise tracker_client.TrackerError("history unavailable")
+
+    monkeypatch.setattr(tracker_client, "_load_work_status_history", failed_history)
+    login_as(client, "op2", "secret")
+
+    item = client.get("/tracker/issues").json()["items"][0]
+
+    assert calls == [("token", "ROBOPARK-12")]
+    assert item["queued_at"] == "2026-01-02T10:00:00Z"
+    assert item["sla_deadline"] == "2026-01-02T15:00:00Z"
+    assert item["sla_source"] == "estimated"
+
+
+def test_tracker_work_cold_page_has_one_short_history_budget_and_bounded_calls(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    issues = [
+        _scoped_issue(f"ROBOPARK-{index}", f"2026-01-{index % 28 + 1:02d}T10:00:00Z")
+        for index in range(200)
+    ]
+    monkeypatch.setattr(tracker_client, "search_issues", lambda **_kwargs: issues)
+    release = threading.Event()
+    calls: list[str] = []
+    calls_lock = threading.Lock()
+
+    def stalled_history(*, token, key, issue):
+        del token, issue
+        with calls_lock:
+            calls.append(key)
+        release.wait(5)
+        raise tracker_client.TrackerError("history unavailable")
+
+    monkeypatch.setattr(tracker_client, "_load_work_status_history", stalled_history)
+    login_as(client, "op2", "secret")
+
+    started = time.monotonic()
+    try:
+        response = client.get("/tracker/issues?limit=200")
+    finally:
+        release.set()
+    elapsed = time.monotonic() - started
+
+    assert response.status_code == 200
+    assert elapsed < 1.0
+    assert len(calls) <= 2
+    assert len(response.json()["items"]) == 200
+    assert {item["sla_source"] for item in response.json()["items"]} == {"estimated"}
+
+
+def test_tracker_work_history_does_not_enqueue_the_inner_tracker_executor(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_api, tracker_client
+
+    def forbidden_general_slot(*_args, **_kwargs):
+        raise AssertionError("Work history must not use the general Tracker slot")
+
+    monkeypatch.setattr(tracker_api, "tracker_slot", forbidden_general_slot)
+
+    inner_release = threading.Event()
+    inner_started = threading.Barrier(tracker_api.MAX_INFLIGHT + 1)
+
+    def occupy_inner_worker():
+        inner_started.wait(timeout=2)
+        inner_release.wait(5)
+
+    inner_futures = [
+        tracker_api._executor.submit(occupy_inner_worker)  # noqa: SLF001
+        for _ in range(tracker_api.MAX_INFLIGHT)
+    ]
+    inner_started.wait(timeout=2)
+
+    history_release = threading.Event()
+    history_calls: list[str] = []
+    history_lock = threading.Lock()
+
+    class StalledChangelog:
+        def __init__(self, key: str):
+            self.key = key
+
+        def get_all(self):
+            with history_lock:
+                history_calls.append(self.key)
+            history_release.wait(5)
+            return []
+
+    generation = 0
+
+    def search(**_kwargs):
+        nonlocal generation
+        generation += 1
+        return [
+            {
+                **_scoped_issue(f"ROBOPARK-{generation}-{index}", "2026-01-02T10:00:00Z"),
+                "_tracker_resource": SimpleNamespace(
+                    changelog=StalledChangelog(f"ROBOPARK-{generation}-{index}")
+                ),
+            }
+            for index in range(200)
+        ]
+
+    monkeypatch.setattr(tracker_client, "search_issues", search)
+    login_as(client, "op2", "secret")
+
+    try:
+        first = client.get("/tracker/issues?limit=200")
+        second = client.get("/tracker/issues?limit=200")
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert len(history_calls) == 2
+        assert tracker_client._work_history_executor._work_queue.qsize() == 0  # noqa: SLF001
+        assert tracker_api._executor._work_queue.qsize() == 0  # noqa: SLF001
+        assert {item["sla_source"] for item in first.json()["items"]} == {"estimated"}
+        assert {item["sla_source"] for item in second.json()["items"]} == {"estimated"}
+    finally:
+        history_release.set()
+        inner_release.set()
+        for future in inner_futures:
+            future.result(timeout=2)
+
+
+def test_tracker_work_history_hydration_reuses_a_fixed_worker_pool(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [_scoped_issue("ROBOPARK-POOL", "2026-01-02T10:00:00Z")],
+    )
+    release = threading.Event()
+    monkeypatch.setattr(
+        tracker_client,
+        "_load_work_status_history",
+        lambda **_kwargs: release.wait(5) or [],
+    )
+    login_as(client, "op2", "secret")
+
+    try:
+        for _ in range(5):
+            assert client.get("/tracker/issues").status_code == 200
+        workers = [
+            thread
+            for thread in threading.enumerate()
+            if thread.name.startswith("tracker-work-history")
+        ]
+        assert len(workers) <= 2
+    finally:
+        release.set()
+
+
+def test_tracker_work_detail_hydrates_exact_queue_history(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    issue = _scoped_issue("ROBOPARK-13", "2026-01-03T10:00:00Z")
+    monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: issue)
+    calls = []
+
+    def history(*, token, key, issue):
+        del issue
+        calls.append((token, key))
+        return [
+            {
+                "updatedAt": "2026-01-02T08:30:00Z",
+                "fields": [{"field": {"id": "status"}, "to": {"key": "queued"}}],
+            }
+        ]
+
+    monkeypatch.setattr(tracker_client, "get_issue_status_history", history, raising=False)
+    login_as(client, "op2", "secret")
+
+    item = client.get("/tracker/issues/ROBOPARK-13").json()
+
+    assert calls == [("token", "ROBOPARK-13")]
+    assert item["queued_at"] == "2026-01-02T08:30:00Z"
+    assert item["sla_deadline"] == "2026-01-02T13:30:00Z"
+    assert item["sla_source"] == "status_history"
 
 
 def test_tracker_list_exact_robot_filters_before_deduplication_and_pagination(

@@ -1,12 +1,15 @@
 """Collaboration must not repeat upstream writes or cross issue scope."""
 
+import hashlib
 import json
+import time
 from urllib.parse import quote
 
 import pytest
 
 from conftest import login_as
 from robopark_api.services import platform_settings, tracker_client
+from robopark_api.task_workflow_models import ReliableAction
 
 
 @pytest.fixture
@@ -93,11 +96,9 @@ def test_unknown_outcome_never_replayed(client, tracker_setup, monkeypatch):
     assert len(written) == 1
 
 
-def test_old_unknown_outcome_can_be_retried(client, db_session, tracker_setup, monkeypatch):
-    import time
-
-    from robopark_api.collaboration_models import TrackerSubmission
-
+def test_old_unknown_outcome_stays_durable_and_is_never_replayed(
+    client, db_session, tracker_setup, monkeypatch
+):
     written = []
 
     def lost_response(**kw):
@@ -109,7 +110,7 @@ def test_old_unknown_outcome_can_be_retried(client, db_session, tracker_setup, m
         "/tracker/issues/ROBOPARK-1/comment", json={"text": "done"}, headers=headers()
     )
     assert first.status_code == 409
-    row = db_session.query(TrackerSubmission).one()
+    row = db_session.query(ReliableAction).one()
     row.created_at = time.time() - 61
     db_session.commit()
 
@@ -118,7 +119,110 @@ def test_old_unknown_outcome_can_be_retried(client, db_session, tracker_setup, m
     )
 
     assert second.status_code == 409
-    assert len(written) == 2
+    assert second.json()["detail"] == "tracker_submission_uncertain"
+    assert len(written) == 1
+    assert db_session.query(ReliableAction).count() == 1
+    assert db_session.query(ReliableAction).one().state == "needs_attention"
+
+
+def test_tracker_compatibility_uses_canonical_payload_hash(
+    client, db_session, tracker_setup, monkeypatch
+):
+    monkeypatch.setattr(tracker_client, "add_comment", lambda **kw: None)
+
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/comment",
+        json={"text": "готово"},
+        headers=headers("canonical-payload"),
+    )
+
+    assert response.status_code == 200
+    row = db_session.query(ReliableAction).one()
+    canonical = json.dumps(
+        {"text": "готово"}, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    assert row.payload_json == canonical
+    assert row.payload_hash == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def test_tracker_replays_migrated_succeeded_action_with_legacy_payload_hash(
+    client, db_session, seed_mechanic, tracker_setup, monkeypatch
+):
+    payload = {"text": "готово"}
+    legacy = json.dumps(payload, sort_keys=True)
+    saved = {
+        "key": "ROBOPARK-1",
+        "action": "comment",
+        "status": "Open",
+        "actor": "mech1",
+        "performed_at": "2026-09-15T12:00:00+00:00",
+    }
+    db_session.add(
+        ReliableAction(
+            actor_user_id=seed_mechanic.id,
+            resource_type="tracker_issue",
+            resource_id="ROBOPARK-1",
+            action="comment",
+            idempotency_key="migrated-action",
+            payload_hash=hashlib.sha256(legacy.encode()).hexdigest(),
+            payload_json="{}",
+            state="succeeded",
+            result_json=json.dumps(saved),
+            created_at=time.time() - 100,
+            updated_at=time.time() - 100,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        tracker_client,
+        "add_comment",
+        lambda **kw: pytest.fail("saved migrated action must not be sent again"),
+    )
+
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/comment",
+        json=payload,
+        headers=headers("migrated-action"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == saved
+
+
+def test_submission_lookup_is_scoped_to_tracker_issue_resource_type(
+    client, db_session, seed_mechanic, tracker_setup, monkeypatch
+):
+    payload = {"text": "done"}
+    db_session.add(
+        ReliableAction(
+            actor_user_id=seed_mechanic.id,
+            resource_type="inventory",
+            resource_id="ROBOPARK-1",
+            action="comment",
+            idempotency_key="resource-scope",
+            payload_hash=hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest(),
+            payload_json=json.dumps(payload),
+            state="pending",
+            created_at=time.time(),
+            updated_at=time.time(),
+        )
+    )
+    db_session.commit()
+    written = []
+    monkeypatch.setattr(tracker_client, "add_comment", lambda **kw: written.append(kw))
+
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/comment",
+        json=payload,
+        headers=headers("resource-scope"),
+    )
+
+    assert response.status_code == 200
+    assert len(written) == 1
+    assert {row.resource_type for row in db_session.query(ReliableAction)} == {
+        "inventory",
+        "tracker_issue",
+    }
 
 
 def test_conflict_checks_uncached_state_before_write(client, tracker_setup, monkeypatch):
@@ -397,10 +501,7 @@ def test_tracker_uses_the_declared_production_sdk():
     assert tracker_client._import_startrek() is TrackerClient
 
 
-@pytest.mark.parametrize("action", ["transition", "close"])
-def test_successful_workflow_submission_replays_after_transition_disappears(
-    client, tracker_setup, monkeypatch, action
-):
+def test_manual_transition_endpoint_is_disabled(client, tracker_setup, monkeypatch):
     written = []
     transitions = [{"id": "close", "display": "Закрыть"}]
     monkeypatch.setattr(tracker_client, "list_transitions", lambda **kw: list(transitions))
@@ -412,24 +513,28 @@ def test_successful_workflow_submission_replays_after_transition_disappears(
         transitions.clear()
 
     monkeypatch.setattr(tracker_client, "transition_issue", perform)
-    payload = {"transition": "close"} if action == "transition" else None
-    first = client.post(f"/tracker/issues/ROBOPARK-1/{action}", json=payload, headers=headers())
-    assert first.status_code == 200
-    # Browser never receives the first response and retries its durable key.
-    replayed = client.post(f"/tracker/issues/ROBOPARK-1/{action}", json=payload, headers=headers())
-    assert replayed.status_code == 200
-    assert replayed.json() == first.json()
-    assert len(written) == 1
-    tracker_setup["tags"] = ["Other"]
-    assert (
-        client.post(
-            f"/tracker/issues/ROBOPARK-1/{action}", json=payload, headers=headers()
-        ).status_code
-        == 403
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/transition",
+        json={"transition": "close"},
+        headers=headers(),
     )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "tracker_manual_transition_disabled"
+    assert written == []
 
 
-def test_invalid_workflow_does_not_reserve_an_uncertain_submission(
+def test_mechanic_legacy_close_is_rejected(client, tracker_setup, monkeypatch):
+    written = []
+    monkeypatch.setattr(tracker_client, "transition_issue", lambda **kw: written.append(kw))
+
+    response = client.post("/tracker/issues/ROBOPARK-1/close", headers=headers())
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "task_review_operator_required"
+    assert written == []
+
+
+def test_manual_transition_stays_disabled_when_transition_becomes_available(
     client, tracker_setup, monkeypatch
 ):
     transitions = []
@@ -437,20 +542,12 @@ def test_invalid_workflow_does_not_reserve_an_uncertain_submission(
     written = []
     monkeypatch.setattr(tracker_client, "transition_issue", lambda **kw: written.append(kw))
     payload = {"transition": "close"}
-    assert (
-        client.post(
-            "/tracker/issues/ROBOPARK-1/transition", json=payload, headers=headers()
-        ).status_code
-        == 400
-    )
+    first = client.post("/tracker/issues/ROBOPARK-1/transition", json=payload, headers=headers())
+    assert first.status_code == 409
     transitions.append({"id": "close", "display": "Закрыть"})
     from robopark_api.services import tracker_cache
 
     tracker_cache.invalidate_issue("ROBOPARK-1")
-    assert (
-        client.post(
-            "/tracker/issues/ROBOPARK-1/transition", json=payload, headers=headers()
-        ).status_code
-        == 200
-    )
-    assert len(written) == 1
+    second = client.post("/tracker/issues/ROBOPARK-1/transition", json=payload, headers=headers())
+    assert second.status_code == 409
+    assert written == []

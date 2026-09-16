@@ -12,17 +12,17 @@
  * server round-trip is 10+ seconds (Tracker). It also cuts request storms:
  * revisiting a page reuses the last response until the loader completes.
  *
- * Persistence is opt-out per key via `persist: false` — the cache mirror lives
- * under a single localStorage prefix so we can wipe it on login/logout to
- * avoid leaking data between accounts on the same browser.
+ * Persistence is opt-in per key via `persist: true`. Protected responses stay
+ * in bounded memory and are dropped on login/logout or access changes.
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { periodicDelay, resumeDelay, retryAfterMs } from './pollingSchedule'
 
 const LS_PREFIX = 'robopark:res:'
-const LS_VERSION = 1
+const LS_VERSION = 2
 export const RESOURCE_REFRESH_MS = 30_000
+const MEMORY_MAX_ENTRIES = 128
 /** Drop persisted snapshots older than this; next visit is a cold load. */
 export const LS_MAX_AGE_MS = 12 * 60 * 60 * 1000
 
@@ -92,37 +92,56 @@ function invalidateAllPendingLoads(): void {
 class ResourceStore {
   private mem = new Map<string, StoredEntry>()
   private subs = new Map<string, Set<() => void>>()
+  private refreshSubs = new Map<string, Set<() => void>>()
 
-  get<T>(key: string): T | undefined {
+  private remember(key: string, entry: StoredEntry): void {
+    this.mem.delete(key)
+    this.mem.set(key, entry)
+    while (this.mem.size > MEMORY_MAX_ENTRIES) {
+      const oldest = this.mem.keys().next().value
+      if (oldest === undefined) break
+      this.mem.delete(oldest)
+    }
+  }
+
+  get<T>(key: string, allowStorage = false): T | undefined {
     const hit = this.mem.get(key)
     if (hit) {
-      if (isFresh(hit)) return hit.data as T
+      if (isFresh(hit)) {
+        this.remember(key, hit)
+        return hit.data as T
+      }
       this.mem.delete(key)
       removeFromStorage(key)
     }
+    if (!allowStorage) {
+      removeFromStorage(key)
+      return undefined
+    }
     const parsed = readFromStorage(key)
     if (parsed && isFresh(parsed)) {
-      this.mem.set(key, parsed)
+      this.remember(key, parsed)
       return parsed.data as T
     }
     if (parsed) removeFromStorage(key)
     return undefined
   }
 
-  isStale(key: string, staleTimeMs: number): boolean {
-    if (this.get(key) === undefined) return true
+  isStale(key: string, staleTimeMs: number, allowStorage = false): boolean {
+    if (this.get(key, allowStorage) === undefined) return true
     return Date.now() - (this.mem.get(key)?.updatedAt ?? 0) >= staleTimeMs
   }
 
-  updatedAt(key: string): number | null {
-    if (this.get(key) === undefined) return null
+  updatedAt(key: string, allowStorage = false): number | null {
+    if (this.get(key, allowStorage) === undefined) return null
     return this.mem.get(key)?.updatedAt ?? null
   }
 
   set(key: string, data: unknown, persist: boolean): void {
     const entry: StoredEntry = { v: LS_VERSION, updatedAt: Date.now(), data }
-    this.mem.set(key, entry)
+    this.remember(key, entry)
     if (persist) writeToStorage(key, entry)
+    else removeFromStorage(key)
     this.notify(key)
   }
 
@@ -143,12 +162,25 @@ class ResourceStore {
           notified.add(k)
         }
       }
+      for (const k of this.subs.keys()) {
+        if (k.startsWith(keyOrPrefix)) notified.add(k)
+      }
       removeFromStorageByPrefix(keyOrPrefix)
     } else {
-      if (this.mem.delete(keyOrPrefix)) notified.add(keyOrPrefix)
+      this.mem.delete(keyOrPrefix)
+      notified.add(keyOrPrefix)
       removeFromStorage(keyOrPrefix)
     }
     for (const k of notified) this.notify(k)
+  }
+
+  /** Ask mounted consumers to reload in the background, retaining cached data. */
+  revalidate(keyOrPrefix: string, { prefix = false }: { prefix?: boolean } = {}): void {
+    for (const [key, listeners] of this.refreshSubs) {
+      if (prefix ? key.startsWith(keyOrPrefix) : key === keyOrPrefix) {
+        listeners.forEach(listener => listener())
+      }
+    }
   }
 
   clearAll(): void {
@@ -174,6 +206,19 @@ class ResourceStore {
     }
   }
 
+  subscribeRevalidate(key: string, fn: () => void): () => void {
+    let listeners = this.refreshSubs.get(key)
+    if (!listeners) {
+      listeners = new Set()
+      this.refreshSubs.set(key, listeners)
+    }
+    listeners.add(fn)
+    return () => {
+      listeners.delete(fn)
+      if (listeners.size === 0) this.refreshSubs.delete(key)
+    }
+  }
+
   private notify(key: string): void {
     this.subs.get(key)?.forEach((fn) => fn())
   }
@@ -189,7 +234,10 @@ function readFromStorage(key: string): StoredEntry | null {
     const raw = window.localStorage.getItem(LS_PREFIX + key)
     if (!raw) return null
     const parsed = JSON.parse(raw) as StoredEntry
-    if (parsed.v !== LS_VERSION) return null
+    if (parsed.v !== LS_VERSION) {
+      window.localStorage.removeItem(LS_PREFIX + key)
+      return null
+    }
     return parsed
   } catch {
     return null
@@ -224,6 +272,19 @@ function removeFromStorageByPrefix(prefix: string): void {
     }
   } catch {
     // ignore
+  }
+}
+
+/** One-time upgrade cleanup; no current screen opts into disk persistence. */
+export function pruneLegacyResourceSnapshots(): void {
+  if (typeof window === 'undefined') return
+  try {
+    for (let index = window.localStorage.length - 1; index >= 0; index--) {
+      const key = window.localStorage.key(index)
+      if (key?.startsWith(LS_PREFIX)) window.localStorage.removeItem(key)
+    }
+  } catch {
+    // Storage may be disabled; in-memory reads still work.
   }
 }
 
@@ -283,7 +344,7 @@ export function useIsRevalidating(): boolean {
 }
 
 type Options = {
-  /** Mirror successful responses to localStorage (default: true). */
+  /** Mirror only explicitly safe responses to localStorage (default: false). */
   persist?: boolean
   /** Explicit true forces mount refresh; by default only stale data revalidates. */
   refreshOnMount?: boolean
@@ -318,16 +379,16 @@ export function useCachedResource<T>(
   loader: () => Promise<T>,
   opts: Options = {},
 ): CachedResource<T> {
-  const persist = opts.persist ?? true
+  const persist = opts.persist ?? false
   const refreshOnMount = opts.refreshOnMount
   const staleTimeMs = opts.staleTimeMs ?? RESOURCE_REFRESH_MS
   const refreshIntervalMs = opts.refreshIntervalMs ?? RESOURCE_REFRESH_MS
   const enabled = opts.enabled ?? true
   const trackProgress = opts.trackProgress ?? true
 
-  const initial = enabled ? resourceStore.get<T>(key) : undefined
+  const initial = enabled ? resourceStore.get<T>(key, persist) : undefined
   const [data, setData] = useState<T | undefined>(initial)
-  const [syncTime, setSyncTime] = useState(() => ({ key, time: enabled ? resourceStore.updatedAt(key) : null }))
+  const [syncTime, setSyncTime] = useState(() => ({ key, time: enabled ? resourceStore.updatedAt(key, persist) : null }))
   const [error, setError] = useState<unknown>(null)
   const [isRevalidating, setIsRevalidating] = useState(false)
 
@@ -350,14 +411,14 @@ export function useCachedResource<T>(
 
   useEffect(() => {
     if (!enabled) return
-    setData(resourceStore.get<T>(key))
-    setSyncTime({ key, time: resourceStore.updatedAt(key) })
+    setData(resourceStore.get<T>(key, persist))
+    setSyncTime({ key, time: resourceStore.updatedAt(key, persist) })
     const unsub = resourceStore.subscribe(key, () => {
-      setData(resourceStore.get<T>(key))
-      setSyncTime({ key, time: resourceStore.updatedAt(key) })
+      setData(resourceStore.get<T>(key, persist))
+      setSyncTime({ key, time: resourceStore.updatedAt(key, persist) })
     })
     return unsub
-  }, [key, enabled])
+  }, [key, enabled, persist])
 
   const runLoad = useCallback(async (background = false) => {
     if (!enabled) return
@@ -409,21 +470,28 @@ export function useCachedResource<T>(
   ), [])
 
   useEffect(() => {
+    if (!enabled) return
+    return resourceStore.subscribeRevalidate(key, () => {
+      if (canLoadAutomatically()) void runLoad(true)
+    })
+  }, [enabled, key, canLoadAutomatically, runLoad])
+
+  useEffect(() => {
     if (!enabled || !canLoadAutomatically()) return
-    const cached = resourceStore.get<T>(key)
+    const cached = resourceStore.get<T>(key, persist)
     if (cached === undefined || refreshOnMount === true ||
-        (refreshOnMount !== false && resourceStore.isStale(key, staleTimeMs))) {
+        (refreshOnMount !== false && resourceStore.isStale(key, staleTimeMs, persist))) {
       void runLoad(cached !== undefined)
     }
-  }, [enabled, key, refreshOnMount, staleTimeMs, runLoad, canLoadAutomatically])
+  }, [enabled, key, refreshOnMount, staleTimeMs, runLoad, canLoadAutomatically, persist])
 
   useEffect(() => {
     if (!enabled) return
     const refreshIfStale = () => {
       // Draft-backed resources opt out of periodic replacement, but a cold
       // mount deferred while offline still needs its first response on return.
-      if (refreshIntervalMs <= 0 && resourceStore.get(key) !== undefined) return
-      if (!canLoadAutomatically() || inflightLoaders.has(key) || !resourceStore.isStale(key, staleTimeMs)) return
+      if (refreshIntervalMs <= 0 && resourceStore.get(key, persist) !== undefined) return
+      if (!canLoadAutomatically() || inflightLoaders.has(key) || !resourceStore.isStale(key, staleTimeMs, persist)) return
       void runLoad(true)
     }
     let timer: number | undefined
@@ -449,7 +517,7 @@ export function useCachedResource<T>(
       window.removeEventListener('focus', resume)
       window.removeEventListener('online', resume)
     }
-  }, [enabled, key, refreshIntervalMs, staleTimeMs, runLoad, canLoadAutomatically])
+  }, [enabled, key, refreshIntervalMs, staleTimeMs, runLoad, canLoadAutomatically, persist])
 
   const refresh = useCallback(() => runLoad(), [runLoad])
 

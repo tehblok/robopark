@@ -8,10 +8,15 @@ Uses the declared ``yandex-tracker-client`` package:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
-from datetime import UTC, datetime
+import threading
+import time
+from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -50,6 +55,18 @@ _ATTACHMENT_EXT_MIMES = {
 }
 
 _CLIENTS: dict[str, Any] = {}
+
+_WORK_HISTORY_WORKERS = 2
+_WORK_HISTORY_TTL_SECONDS = 60.0
+_WORK_HISTORY_MAX_ENTRIES = 512
+_work_history_executor = ThreadPoolExecutor(
+    max_workers=_WORK_HISTORY_WORKERS,
+    thread_name_prefix="tracker-work-history",
+)
+_work_history_slots = threading.BoundedSemaphore(_WORK_HISTORY_WORKERS)
+_work_history_lock = threading.Lock()
+_work_history_cache: OrderedDict[str, tuple[float, list[Any]]] = OrderedDict()
+_work_history_flights: dict[str, Future[list[Any]]] = {}
 
 
 class TrackerError(Exception):
@@ -272,6 +289,96 @@ def _fmt_hours(value: float | None) -> str | None:
     if value is None:
         return None
     return f"{value:.1f}"
+
+
+def _tracker_datetime(raw: object) -> datetime | None:
+    text = str(raw or "").strip().replace("Z", "+00:00")
+    if len(text) >= 5 and text[-5] in "+-" and text[-3] != ":":
+        text = f"{text[:-2]}:{text[-2:]}"
+    try:
+        value = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _utc_text(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _history_items(issue: Any) -> list[Any]:
+    embedded = _field(issue, "status_history") or _field(issue, "statusHistory")
+    if embedded is not None:
+        try:
+            return list(embedded)
+        except TypeError:
+            return []
+    return []
+
+
+def repair_sla_fields(
+    issue: Any, *, status_history: list[Any] | None = None
+) -> dict[str, str | None]:
+    """Derive the five-hour repair SLA, preferring the latest queued transition."""
+    if status_history is None and (
+        issue.get("sla_source") in {"status_history", "estimated"}
+        if isinstance(issue, dict)
+        else False
+    ):
+        return {
+            "queued_at": issue.get("queued_at"),
+            "sla_deadline": issue.get("sla_deadline"),
+            "sla_source": issue.get("sla_source"),
+        }
+
+    queued: list[datetime] = []
+    for event in status_history if status_history is not None else _history_items(issue):
+        fields = _field(event, "fields") or []
+        for change in fields:
+            field = _field(change, "field")
+            field_name = (
+                str(
+                    _field(field, "id")
+                    or _field(field, "key")
+                    or _field(change, "fieldId")
+                    or field
+                    or ""
+                )
+                .strip()
+                .lower()
+            )
+            if field_name != "status":
+                continue
+            target = _field(change, "to") or _field(change, "newValue")
+            target_text = (
+                " ".join(
+                    str(value or "")
+                    for value in (_field(target, "key"), _field(target, "display"), target)
+                )
+                .lower()
+                .replace("ё", "е")
+            )
+            if "queued" not in target_text and "в очереди" not in target_text:
+                continue
+            changed_at = _tracker_datetime(_field(event, "updatedAt") or _field(event, "createdAt"))
+            if changed_at is not None:
+                queued.append(changed_at)
+
+    source = "status_history" if queued else "estimated"
+    queued_at = (
+        max(queued)
+        if queued
+        else _tracker_datetime(_field(issue, "created") or _field(issue, "createdAt"))
+    )
+    if queued_at is None:
+        return {"queued_at": None, "sla_deadline": None, "sla_source": None}
+    return {
+        "queued_at": _utc_text(queued_at),
+        "sla_deadline": _utc_text(queued_at + timedelta(hours=5)),
+        "sla_source": source,
+    }
 
 
 def _is_relocation_status(status: str) -> bool:
@@ -524,6 +631,7 @@ def issue_to_dict(issue: Any, *, login_cache: dict[str, str] | None = None) -> d
         "attachments": attachments,
         "queue": queue,
         "tags": tags,
+        **repair_sla_fields(issue),
     }
 
 
@@ -639,6 +747,7 @@ def _search(
             item = issue_to_dict(issue, login_cache=login_cache)
             if filter_open and not is_issue_open_item(item):
                 continue
+            item["_tracker_resource"] = issue
             items.append(item)
         return items
 
@@ -728,6 +837,7 @@ def get_issue(*, token: str, key: str) -> dict[str, Any] | None:
                 return None
             raise
         item = issue_to_dict(issue)
+        item["_tracker_resource"] = issue
         return item
 
     try:
@@ -736,6 +846,102 @@ def get_issue(*, token: str, key: str) -> dict[str, Any] | None:
         if type(exc).__name__ in {"NotFound", "NotFoundError"}:
             return None
         raise
+
+
+def get_issue_status_history(*, token: str, key: str, issue: dict[str, Any]) -> list[Any]:
+    resource = issue.get("_tracker_resource")
+    if resource is None:
+        return []
+
+    def _run() -> list[Any]:
+        return list(resource.changelog.get_all())
+
+    return _run_tracked(_run, max_attempts=1, call_timeout=10.0)
+
+
+def _load_work_status_history(*, token: str, key: str, issue: dict[str, Any]) -> list[Any]:
+    """Load one Work changelog in its dedicated, already-bounded worker.
+
+    This path deliberately does not use the general Tracker slot/executor.  A
+    stuck read therefore occupies one of the two Work-history workers only;
+    it cannot poison the general Tracker semaphore or grow its retry queue.
+    """
+    del token, key
+    resource = issue.get("_tracker_resource")
+    if resource is None:
+        return []
+
+    try:
+        return list(resource.changelog.get_all())
+    except TrackerError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        mapped = _map_exc(exc)
+        if mapped is exc:
+            raise
+        raise mapped from exc
+
+
+def schedule_issue_status_history(
+    *, token: str, key: str, issue: dict[str, Any], allow_start: bool = True
+) -> tuple[Future[list[Any]] | None, bool]:
+    """Return cached/shared Work history without growing a request-owned queue.
+
+    At most two list hydrations exist process-wide. Callers may stop admitting
+    new work after their own small request quota while still consuming a cached
+    value or an already-running single flight.
+    """
+    cache_key = f"{hashlib.sha256(token.encode()).hexdigest()}:{key}"
+    now = time.monotonic()
+    with _work_history_lock:
+        hit = _work_history_cache.get(cache_key)
+        if hit is not None and now - hit[0] < _WORK_HISTORY_TTL_SECONDS:
+            _work_history_cache.move_to_end(cache_key)
+            ready: Future[list[Any]] = Future()
+            ready.set_result(hit[1])
+            return ready, False
+        if hit is not None:
+            _work_history_cache.pop(cache_key, None)
+        flight = _work_history_flights.get(cache_key)
+        if flight is not None:
+            return flight, False
+        if not allow_start or not _work_history_slots.acquire(blocking=False):
+            return None, False
+
+        def load() -> list[Any]:
+            try:
+                return _load_work_status_history(token=token, key=key, issue=issue)
+            except TrackerError:
+                return []
+
+        try:
+            flight = _work_history_executor.submit(load)
+        except BaseException:
+            _work_history_slots.release()
+            raise
+        _work_history_flights[cache_key] = flight
+
+    def finish(done: Future[list[Any]]) -> None:
+        try:
+            history = done.result()
+        except BaseException:
+            history = []
+        with _work_history_lock:
+            if _work_history_flights.get(cache_key) is done:
+                _work_history_flights.pop(cache_key, None)
+            _work_history_cache[cache_key] = (time.monotonic(), history)
+            _work_history_cache.move_to_end(cache_key)
+            while len(_work_history_cache) > _WORK_HISTORY_MAX_ENTRIES:
+                _work_history_cache.popitem(last=False)
+        _work_history_slots.release()
+
+    flight.add_done_callback(finish)
+    return flight, True
+
+
+def clear_issue_status_history_cache() -> None:
+    with _work_history_lock:
+        _work_history_cache.clear()
 
 
 def list_comments(*, token: str, key: str) -> list[dict[str, Any]]:

@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -6,6 +8,7 @@ from pathlib import Path
 import pytest
 from alembic import command as alembic_command
 from alembic.config import Config
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -24,11 +27,198 @@ from robopark_api.models import (
 from robopark_api.security import hash_password
 from robopark_api.services import report_attachments as att_svc
 from robopark_api.services import reports as reports_svc
+from robopark_api.task_workflow_models import ReliableAction, TaskAttachment
 
 TINY_PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
     "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
 )
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "content_type", "error"),
+    [
+        ("../done.png", TINY_PNG, "image/png", "task_attachment_filename_invalid"),
+        ("done.txt", b"plain", "text/plain", "task_attachment_invalid_type"),
+        ("done.png", b"", "image/png", "task_attachment_empty"),
+        (
+            "done.png",
+            b"x" * (att_svc.MAX_ATTACHMENT_BYTES + 1),
+            "image/png",
+            "task_attachment_too_large",
+        ),
+    ],
+    ids=["traversal", "unsupported", "empty", "too-large"],
+)
+def test_staged_task_attachment_rejects_unsafe_or_unbounded_input(
+    db_session, seed_royal, test_settings, monkeypatch, filename, content, content_type, error
+):
+    from robopark_api.services import task_timeline
+
+    monkeypatch.setattr(task_timeline, "get_settings", lambda: test_settings)
+    message = task_timeline.append_system_message(
+        db_session, issue_key="ROBOPARK-1", actor=seed_royal, text="Photo"
+    )
+    db_session.commit()
+
+    with pytest.raises(ValueError, match=error):
+        task_timeline.stage_attachment(
+            db_session,
+            actor=seed_royal,
+            issue_key="ROBOPARK-1",
+            message=message,
+            idempotency_key="attachment-0001",
+            filename=filename,
+            content=content,
+            content_type=content_type,
+        )
+
+
+def test_staged_task_attachment_survives_request_completion(
+    client, db_session, seed_royal, test_settings, monkeypatch
+):
+    from robopark_api.services import platform_settings, task_timeline, tracker_cache
+
+    monkeypatch.setattr(task_timeline, "get_settings", lambda: test_settings)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(
+        tracker_cache,
+        "get_issue",
+        lambda **_kwargs: {
+            "key": "ROBOPARK-1",
+            "queue": "ROBOPARK",
+            "tags": ["Alpha"],
+            "status": "Open",
+            "status_key": "open",
+        },
+    )
+    message = task_timeline.append_system_message(
+        db_session, issue_key="ROBOPARK-1", actor=seed_royal, text="Photo"
+    )
+    db_session.commit()
+    _login(client, "royal")
+
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/message-attachments",
+        headers={"Idempotency-Key": "attachment-0001"},
+        data={"message_id": message.id},
+        files={"file": ("done.png", TINY_PNG, "image/png")},
+    )
+
+    assert response.status_code == 201
+    attachment = db_session.get(TaskAttachment, response.json()["id"])
+    action = db_session.get(ReliableAction, response.json()["action_id"])
+    path = task_timeline.staged_attachments_root() / attachment.blob_name
+    assert path.read_bytes() == TINY_PNG
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert attachment.sha256 == hashlib.sha256(TINY_PNG).hexdigest()
+    assert (action.action, action.state) == ("attach", "pending")
+
+
+def test_successful_staged_attachment_retry_reuses_row_action_and_blob(
+    db_session, seed_royal, test_settings, monkeypatch
+):
+    from robopark_api.services import task_timeline
+    from robopark_api.services.reliable_actions import complete_action
+
+    monkeypatch.setattr(task_timeline, "get_settings", lambda: test_settings)
+    message = task_timeline.append_system_message(
+        db_session, issue_key="ROBOPARK-1", actor=seed_royal, text="Photo"
+    )
+    db_session.commit()
+    first, action = task_timeline.stage_attachment(
+        db_session,
+        actor=seed_royal,
+        issue_key="ROBOPARK-1",
+        message=message,
+        idempotency_key="attachment-replay-0001",
+        filename="done.png",
+        content=TINY_PNG,
+        content_type="image/png",
+    )
+    first_path = task_timeline.staged_attachments_root() / first.blob_name
+    first_mtime = first_path.stat().st_mtime_ns
+    complete_action(db_session, action, {"external_id": "tracker-file-1"})
+    db_session.commit()
+
+    replay, replay_action = task_timeline.stage_attachment(
+        db_session,
+        actor=seed_royal,
+        issue_key="ROBOPARK-1",
+        message=message,
+        idempotency_key="attachment-replay-0001",
+        filename="done.png",
+        content=TINY_PNG,
+        content_type="image/png",
+    )
+
+    assert replay.id == first.id
+    assert replay_action.id == action.id
+    assert first_path.stat().st_mtime_ns == first_mtime
+    assert list(task_timeline.staged_attachments_root().iterdir()) == [first_path]
+    assert json.loads(action.payload_json) == {
+        "filename": "done.png",
+        "message_id": message.id,
+        "mime_type": "image/png",
+        "sha256": hashlib.sha256(TINY_PNG).hexdigest(),
+        "size_bytes": len(TINY_PNG),
+    }
+
+
+def test_staged_attachment_idempotency_key_cannot_replay_across_messages(
+    db_session, seed_royal, test_settings, monkeypatch
+):
+    from robopark_api.services import task_timeline
+    from robopark_api.services.reliable_actions import complete_action
+
+    monkeypatch.setattr(task_timeline, "get_settings", lambda: test_settings)
+    first_message = task_timeline.append_system_message(
+        db_session, issue_key="ROBOPARK-1", actor=seed_royal, text="First photo"
+    )
+    second_message = task_timeline.append_system_message(
+        db_session, issue_key="ROBOPARK-1", actor=seed_royal, text="Second photo"
+    )
+    db_session.commit()
+    first, action = task_timeline.stage_attachment(
+        db_session,
+        actor=seed_royal,
+        issue_key="ROBOPARK-1",
+        message=first_message,
+        idempotency_key="attachment-message-scope-0001",
+        filename="done.png",
+        content=TINY_PNG,
+        content_type="image/png",
+    )
+    complete_action(db_session, action, {"external_id": "tracker-file-1"})
+    db_session.commit()
+
+    replay, replay_action = task_timeline.stage_attachment(
+        db_session,
+        actor=seed_royal,
+        issue_key="ROBOPARK-1",
+        message=first_message,
+        idempotency_key="attachment-message-scope-0001",
+        filename="done.png",
+        content=TINY_PNG,
+        content_type="image/png",
+    )
+    with pytest.raises(HTTPException) as error:
+        task_timeline.stage_attachment(
+            db_session,
+            actor=seed_royal,
+            issue_key="ROBOPARK-1",
+            message=second_message,
+            idempotency_key="attachment-message-scope-0001",
+            filename="done.png",
+            content=TINY_PNG,
+            content_type="image/png",
+        )
+
+    assert (replay.id, replay_action.id) == (first.id, action.id)
+    assert error.value.status_code == 409
+    assert error.value.detail == "reliable_action_payload_conflict"
+    attachments = list(db_session.scalars(select(TaskAttachment)).all())
+    assert [(item.id, item.message_id) for item in attachments] == [(action.id, first_message.id)]
 
 
 @pytest.fixture

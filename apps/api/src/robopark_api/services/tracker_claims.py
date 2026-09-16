@@ -29,6 +29,15 @@ def get_claim(db: Session, issue_key: str) -> TrackerClaim | None:
     return db.get(TrackerClaim, issue_key.strip())
 
 
+def owned_issue_keys(db: Session, user: User, *, park_ids: set[int] | None = None) -> set[str]:
+    query = select(TrackerClaim.issue_key).where(TrackerClaim.owner_user_id == user.id)
+    if park_ids is not None:
+        if not park_ids:
+            return set()
+        query = query.where(TrackerClaim.park_id.in_(park_ids))
+    return set(db.scalars(query).all())
+
+
 def claim_issue(
     db: Session,
     *,
@@ -49,8 +58,7 @@ def claim_issue(
         current.updated_by_user_id = actor.id
         current.park_id = park_id
         current.updated_at = time.time()
-        db.commit()
-        db.refresh(current)
+        db.flush()
         return current
     current = TrackerClaim(
         issue_key=key,
@@ -60,8 +68,7 @@ def claim_issue(
         updated_at=time.time(),
     )
     db.add(current)
-    db.commit()
-    db.refresh(current)
+    db.flush()
     return current
 
 
@@ -69,7 +76,7 @@ def release_claim(db: Session, issue_key: str) -> None:
     current = get_claim(db, issue_key)
     if current is not None:
         db.delete(current)
-        db.commit()
+        db.flush()
 
 
 def mechanic_owns_issue(db: Session, user: User, issue: dict) -> bool:

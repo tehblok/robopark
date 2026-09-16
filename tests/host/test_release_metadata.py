@@ -47,6 +47,35 @@ def metadata_pack(packaging, tmp_path, metadata, version="1.2.3"):
     return result, output
 
 
+def test_release_accepts_installed_0133_migration_head():
+    from robopark_host.release import check_compatibility
+
+    metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
+    files = {
+        path: {}
+        for path in (
+            "deploy/Dockerfile.api-tests",
+            "apps/api/Dockerfile",
+            "apps/api/uv.lock",
+            "apps/api/pyproject.toml",
+            "apps/web/Dockerfile",
+            "apps/web/package-lock.json",
+            "apps/web/package.json",
+            "scripts/verify.sh",
+        )
+    }
+    candidate = {
+        "files": files,
+        "app_version": (ROOT / "VERSION").read_text().strip(),
+        "min_installer_version": "1.0.0",
+        "required_capabilities": [],
+        **metadata,
+    }
+    current = {"app_version": "0.1.33", "migration_head": "0026_global_inventory_workflows"}
+
+    check_compatibility(candidate, current)
+
+
 def test_production_metadata_is_signed_and_matches_both_verifiers(packaging, tmp_path):
     from robopark_api.services.ops.archives import inspect_archive
     from robopark_host.release import verify_archive
@@ -79,7 +108,14 @@ def test_production_metadata_is_signed_and_matches_both_verifiers(packaging, tmp
         assert json.loads(archive.read("manifest.json"))["update_notes"] == "Reviewed migration"
 
 
-def test_production_release_accepts_upgrade_from_0_1_18():
+@pytest.mark.parametrize(
+    ("current_version", "current_head"),
+    [
+        ("0.1.18", "0022_tracker_collaboration"),
+        ("0.1.33", "0027_emergency_readings"),
+    ],
+)
+def test_production_release_accepts_supported_upgrade(current_version, current_head):
     from robopark_host.release import check_compatibility
 
     metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
@@ -99,7 +135,7 @@ def test_production_release_accepts_upgrade_from_0_1_18():
             "scripts/verify.sh": {},
         },
     }
-    current = {"app_version": "0.1.18", "migration_head": "0022_tracker_collaboration"}
+    current = {"app_version": current_version, "migration_head": current_head}
 
     check_compatibility(candidate, current)
 

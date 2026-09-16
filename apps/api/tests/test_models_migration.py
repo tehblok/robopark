@@ -5,8 +5,9 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import BigInteger, LargeBinary, create_engine, inspect, text
+from sqlalchemy import BigInteger, LargeBinary, create_engine, inspect, select, text
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.orm import Session
 
 from robopark_api import models
 from robopark_api.models import (
@@ -22,6 +23,7 @@ from robopark_api.models import (
     InventoryReceiptLine,
     User,
 )
+from robopark_api.task_workflow_models import ReliableAction
 
 
 def test_metadata_has_required_tables():
@@ -50,7 +52,11 @@ def test_metadata_has_required_tables():
         "diagnostic_unknowns",
         "diagnostic_unknown_sightings",
         "tracker_presence",
-        "tracker_submissions",
+        "reliable_actions",
+        "task_messages",
+        "task_attachments",
+        "task_reviews",
+        "hidden_tasks",
         "tracker_handoffs",
         "tracker_claims",
         "campaigns",
@@ -97,10 +103,76 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_is_emergency_readings():
+def test_alembic_head_is_reliable_task_workflow():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0027_emergency_readings"]
+    assert script.get_heads() == ["0028_reliable_task_workflow"]
+
+
+def test_reliable_workflow_upgrade_and_downgrade_preserve_legacy_submissions(
+    sqlite_database_url, monkeypatch
+):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0027_emergency_readings")
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.begin() as connection:
+        role_id = connection.execute(text("SELECT id FROM roles ORDER BY id LIMIT 1")).scalar_one()
+        connection.execute(
+            text(
+                "INSERT INTO users (id, username, password_hash, role_id, access_status, "
+                "must_change_password, is_active) "
+                "VALUES (1, 'worker', 'hash', :role_id, 'approved', 0, 1)"
+            ),
+            {"role_id": role_id},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO tracker_submissions "
+                "(id, actor_id, issue_key, action, request_key, payload_hash, state, "
+                "result_json, created_at) VALUES "
+                "(7, 1, 'SDCFLEETOPS-1', 'claim', 'request-0001', 'abc123', "
+                "'succeeded', :result_json, 42.0)"
+            ),
+            {"result_json": '{"ok":true}'},
+        )
+
+    command.upgrade(config, "head")
+    assert "tracker_submissions" not in inspect(engine).get_table_names()
+    action_column = next(
+        column
+        for column in inspect(engine).get_columns("reliable_actions")
+        if column["name"] == "action"
+    )
+    assert action_column["type"].length == 32
+    with Session(engine) as session:
+        action = session.scalar(select(ReliableAction))
+        assert action is not None
+        assert action.resource_type == "tracker_issue"
+        assert action.resource_id == "SDCFLEETOPS-1"
+        assert action.state == "succeeded"
+        assert action.idempotency_key == "request-0001"
+        assert action.result_json == '{"ok":true}'
+
+    command.downgrade(config, "0027_emergency_readings")
+    assert "reliable_actions" not in inspect(engine).get_table_names()
+    with engine.connect() as connection:
+        restored = connection.execute(
+            text(
+                "SELECT actor_id, issue_key, action, request_key, payload_hash, state, "
+                "result_json, created_at FROM tracker_submissions"
+            )
+        ).one()
+    assert tuple(restored) == (
+        1,
+        "SDCFLEETOPS-1",
+        "claim",
+        "request-0001",
+        "abc123",
+        "succeeded",
+        '{"ok":true}',
+        42.0,
+    )
 
 
 def test_emergency_readings_upgrade_from_previous_head(sqlite_database_url, monkeypatch):
@@ -551,7 +623,11 @@ def test_inventory_upgrade_preserves_existing_data(sqlite_database_url, monkeypa
     command.upgrade(config, "head")
     assert {
         "tracker_presence",
-        "tracker_submissions",
+        "reliable_actions",
+        "task_messages",
+        "task_attachments",
+        "task_reviews",
+        "hidden_tasks",
         "tracker_handoffs",
         "campaigns",
         "campaign_parks",

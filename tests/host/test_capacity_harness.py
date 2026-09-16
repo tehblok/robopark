@@ -1,6 +1,7 @@
 """Capacity gate: catch secret disclosure, optimistic math and unsafe workloads."""
 
 import asyncio
+import gzip
 import json
 import runpy
 from pathlib import Path
@@ -27,12 +28,14 @@ def config_file(tmp_path, **changes):
 
 def test_nearest_rank_latency_and_error_math():
     api = module()
-    samples = [api["Sample"](float(n), 200 if n != 100 else 503) for n in range(1, 101)]
+    samples = [api["Sample"](float(n), 200 if n != 100 else 503, body_bytes=20) for n in range(1, 101)]
     result = api["summarize"](samples, elapsed=10)
     assert result["latency_ms"] == {"p50": 50, "p95": 95, "p99": 99}
     assert result["throughput_rps"] == 10
     assert result["error_rate"] == 0.01
     assert result["requests"] == 100
+    assert result["response_bytes_total"] == 2000
+    assert result["response_bytes_per_second"] == 200
     assert api["summarize"]([], elapsed=1)["latency_ms"]["p95"] is None
 
 
@@ -43,6 +46,7 @@ def test_config_defaults_and_safe_public_projection(tmp_path):
     assert config.duration_seconds == 600
     assert config.warmup_seconds == 30
     assert config.writes is False
+    assert "/api/changes?scope=work:mine" in config.public()["read_paths"]
     report = json.dumps(config.public())
     assert "fixture-session-secret" not in report
     assert "park.example" not in report
@@ -112,6 +116,26 @@ def test_transport_errors_and_server_bodies_are_never_published(tmp_path):
     assert result["metrics"]["error_rate"] == 1
     assert result["observed_failures"]["database_lock"] > 0
     assert result["gate"] == "FAIL"
+
+
+def test_transfer_metric_counts_encoded_response_body(tmp_path):
+    api = module()
+    config = api["load_config"](
+        config_file(tmp_path, users=1, duration_seconds=0.01, warmup_seconds=0, think_seconds=0)
+    )
+    encoded = gzip.compress(b"plain body" * 100)
+
+    class EncodedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield encoded
+
+    result = asyncio.run(api["run_load"](
+        config, transport=httpx.MockTransport(lambda _request: httpx.Response(
+            200, stream=EncodedStream(), headers={"content-encoding": "gzip"}
+        ))
+    ))
+    assert result["metrics"]["requests"] > 0
+    assert result["metrics"]["response_bytes_total"] == result["metrics"]["requests"] * len(encoded)
 
 
 def test_no_server_evidence_can_never_pass_target_gate():

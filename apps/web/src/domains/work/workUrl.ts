@@ -7,6 +7,7 @@ export type WorkFilters = {
   assignee?: string
   untagged?: boolean
   ageHours?: number
+  includeHidden?: boolean
 }
 
 export type WorkDetailTab = 'task' | 'open' | 'closed' | 'check' | 'parts'
@@ -63,6 +64,7 @@ export function parseWorkUrl(
   const assignee = text(params, 'assignee')
   const untagged = params.get('untagged') === '1'
   const ageHours = positiveInteger(params.get('age'))
+  const includeHidden = params.get('hidden') === '1'
 
   const view = text(params, 'view')
   const root = text(params, 'blocker')
@@ -78,6 +80,7 @@ export function parseWorkUrl(
       ...(assignee ? { assignee } : {}),
       ...(untagged ? { untagged: true } : {}),
       ...(ageHours ? { ageHours } : {}),
+      ...(includeHidden ? { includeHidden: true } : {}),
     },
     sort: 'oldest',
     page: completedStatus ? 1 : pageNumber(params.get('page')) ?? 1,
@@ -96,6 +99,7 @@ export function buildWorkSearch(state: WorkUrlState, parkId: number | null): str
   if (filters.robot) params.set('robot', filters.robot)
   if (filters.assignee) params.set('assignee', filters.assignee)
   if (filters.untagged) params.set('untagged', '1')
+  if (filters.includeHidden) params.set('hidden', '1')
   if (
     filters.ageHours != null &&
     isPositiveSafeInteger(filters.ageHours)

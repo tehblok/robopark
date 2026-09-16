@@ -1,9 +1,9 @@
-import top from '../../assets/robots/top.png'
-import rear from '../../assets/robots/rear.png'
-import left from '../../assets/robots/left.png'
-import front from '../../assets/robots/front.png'
-import right from '../../assets/robots/right.png'
-import isometric from '../../assets/robots/isometric.png'
+import top from '../../assets/robots/top.webp'
+import rear from '../../assets/robots/rear.webp'
+import left from '../../assets/robots/left.webp'
+import front from '../../assets/robots/front.webp'
+import right from '../../assets/robots/right.webp'
+import isometric from '../../assets/robots/isometric.webp'
 
 // Generic model illustrations, not photographs identifying the selected VIN.
 export const ROBOT_PHOTOS = [

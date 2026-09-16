@@ -28,6 +28,8 @@ import {
   type WorkUrlState,
 } from './workUrl'
 
+type WorkPageApiClient = IssueWorkbenchApiClient & Pick<typeof api, 'dashboardSummary'>
+
 const state: WorkUrlState = {
   filters: { queue: 'ROBOPARK' },
   sort: 'oldest',
@@ -92,7 +94,7 @@ function actionResult(action: string) {
 
 function apiClient(
   overrides: Partial<IssueWorkbenchApiClient> = {},
-): IssueWorkbenchApiClient {
+): WorkPageApiClient {
   return {
     trackerIssues: vi.fn(async () => page()),
     trackerIssue: vi.fn(async () => issue),
@@ -104,14 +106,104 @@ function apiClient(
     trackerUnassign: vi.fn(async () => actionResult('unassign')),
     trackerTransition: vi.fn(async () => actionResult('transition')),
     trackerClose: vi.fn(async () => actionResult('close')),
+    taskRetryNow: vi.fn(async () => ({ ...actionResult('retry_now'), sync_state: 'pending' as const, workflow: null })),
+    taskHide: vi.fn(async () => ({ ...actionResult('hide'), sync_state: 'saved' as const, workflow: null })),
+    taskRestore: vi.fn(async () => ({ ...actionResult('restore'), sync_state: 'saved' as const, workflow: null })),
     inventory: vi.fn(async parkId => ({ park_id: parkId, component_count: 0, part_count: 0, low_stock_count: 0, out_of_stock_count: 0, components: [] })),
     searchInventory: vi.fn(async () => ({ items: [], limit: 200, offset: 0, total: 0 })),
     writeoffInventoryForTask: vi.fn(),
     inventoryComponentPhotoUrl: vi.fn(id => `/api/inventory/components/${id}/photo`),
     inventoryPartPhotoUrl: vi.fn(id => `/api/inventory/parts/${id}/photo`),
+    dashboardSummary: vi.fn(async parkId => ({
+      park_id: parkId, generated_at: '2026-09-15T09:00:00Z', arrived: 0, done: 0,
+      queued: 0, in_transit: 0, moving: [],
+    })),
     ...overrides,
   }
 }
+
+it('lets an admin retry a task needing attention once and announces recovery', async () => {
+  const admin = { ...user, role: 'admin' as const }
+  const attention = {
+    ...issue,
+    workflow: { owner: null, review_state: null, display_status: 'queued' as const, sync_state: 'needs_attention' as const, has_current_cycle_comment: false },
+  }
+  const taskRetryNow = vi.fn(async () => ({ ...actionResult('retry_now'), sync_state: 'pending' as const, workflow: attention.workflow }))
+  const client = apiClient({ trackerIssue: vi.fn(async () => attention), taskRetryNow })
+
+  renderWorkbench({ client, currentUser: admin })
+  fireEvent.click(await screen.findByRole('button', { name: 'Повторить сейчас' }))
+
+  await screen.findByText('Повторная отправка запущена')
+  expect(taskRetryNow).toHaveBeenCalledOnce()
+})
+
+it('requires a reason to hide and restores a hidden task without loading its timeline', async () => {
+  const admin = { ...user, role: 'admin' as const }
+  const taskHide = vi.fn(async () => ({ ...actionResult('hide'), sync_state: 'saved' as const, workflow: null }))
+  const visibleClient = apiClient({
+    trackerIssue: vi.fn(async () => ({ ...issue, workflow: { owner: null, review_state: null, display_status: 'queued' as const, sync_state: 'saved' as const, has_current_cycle_comment: false } })),
+    taskHide,
+  })
+  const visible = renderWorkbench({ client: visibleClient, currentUser: admin })
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Скрыть задачу' }))
+  expect(screen.getByRole('button', { name: 'Подтвердить скрытие' })).toBeDisabled()
+  fireEvent.change(screen.getByRole('textbox', { name: 'Причина скрытия' }), { target: { value: 'Дубль' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Подтвердить скрытие' }))
+  await waitFor(() => expect(taskHide).toHaveBeenCalledOnce())
+  visible.unmount()
+
+  const hidden = {
+    ...issue,
+    workflow: { owner: null, review_state: null, display_status: 'hidden' as const, sync_state: 'saved' as const, has_current_cycle_comment: false,
+      hidden: { reason: 'Дубль', actor: 'admin', created_at: '2026-09-15T09:00:00Z' } },
+  }
+  const taskTimeline = vi.fn(async () => [])
+  const taskRestore = vi.fn(async () => ({ ...actionResult('restore'), sync_state: 'saved' as const, workflow: null }))
+  const hiddenClient = apiClient({ trackerIssue: vi.fn(async () => hidden), taskTimeline, taskRestore })
+  renderWorkbench({ client: hiddenClient, currentUser: admin, currentState: { ...state, filters: { ...state.filters, includeHidden: true } } })
+
+  expect(await screen.findByText('Причина скрытия: Дубль')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Восстановить задачу' }))
+  await waitFor(() => expect(taskRestore).toHaveBeenCalledOnce())
+  expect(taskTimeline).not.toHaveBeenCalled()
+})
+
+it('keeps hidden detail and restore controls on the same phone mount after hiding', async () => {
+  vi.stubGlobal('innerWidth', 390)
+  const admin = { ...user, role: 'admin' as const }
+  const visible = {
+    ...issue,
+    workflow: { owner: null, review_state: null, display_status: 'queued' as const, sync_state: 'saved' as const, has_current_cycle_comment: false },
+  }
+  const hidden = {
+    ...issue,
+    workflow: { ...visible.workflow, display_status: 'hidden' as const,
+      hidden: { reason: 'Дубль с телефона', actor: 'admin', created_at: '2026-09-15T09:00:00Z' } },
+  }
+  const trackerIssue = vi.fn().mockResolvedValueOnce(visible).mockResolvedValue(hidden)
+  const taskTimeline = vi.fn()
+    .mockResolvedValueOnce([])
+    .mockRejectedValue(new ApiError(404, 'task_not_found', 'hidden-comments'))
+  const taskHide = vi.fn(async () => ({ ...actionResult('hide'), sync_state: 'saved' as const, workflow: hidden.workflow }))
+  const client = apiClient({ trackerIssue, taskTimeline, taskHide })
+
+  renderWorkbench({
+    client,
+    currentUser: admin,
+    currentState: { ...state, filters: { ...state.filters, includeHidden: true } },
+  })
+  fireEvent.click(await screen.findByRole('button', { name: 'Скрыть задачу' }))
+  fireEvent.change(screen.getByRole('textbox', { name: 'Причина скрытия' }), {
+    target: { value: 'Дубль с телефона' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Подтвердить скрытие' }))
+
+  expect(await screen.findByText('Причина скрытия: Дубль с телефона')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Восстановить задачу' })).toBeVisible()
+  expect(taskTimeline).toHaveBeenCalledOnce()
+})
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -145,6 +237,36 @@ it('shows a claimed mechanic task only once', async () => {
   expect(await screen.findAllByRole('button', {
     name: `Открыть задачу ${issue.key}: ${issue.summary}`,
   })).toHaveLength(1)
+})
+
+it('pins owned active tasks from an independent query and deduplicates the queue', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
+  const owned = { ...issue, key: 'ROBOPARK-OWNED', summary: 'Моя активная', assignee: { display: 'mech1', login: 'mech1' } }
+  const queued = { ...issue, key: 'ROBOPARK-QUEUE', summary: 'Общая очередь' }
+  const trackerIssues = vi.fn(async (query: Parameters<IssueWorkbenchApiClient['trackerIssues']>[0]) => (
+    query.owned_by_me
+      ? page([owned])
+      : page([queued, owned])
+  ))
+  renderWorkbench({
+    client: apiClient({ trackerIssues }), currentUser: mechanic, selectedIssue: '',
+    currentState: { filters: { queue: 'ROBOPARK', status: 'queued' }, sort: 'oldest', page: 1 },
+  })
+
+  expect(await screen.findByRole('heading', { name: 'Мои задачи в работе' })).toBeVisible()
+  const rows = screen.getAllByRole('article')
+  expect(rows.map(row => row.textContent)).toEqual([
+    expect.stringContaining('ROBOPARK-OWNED'),
+    expect.stringContaining('ROBOPARK-QUEUE'),
+  ])
+  expect(trackerIssues).toHaveBeenCalledWith(expect.objectContaining({
+    owned_by_me: true, open_only: true, sort: 'oldest', limit: 50, offset: 0,
+  }))
+  const ownedQuery = trackerIssues.mock.calls.find(([query]) => query.owned_by_me)?.[0]
+  expect(ownedQuery).not.toHaveProperty('assignee')
+  expect(ownedQuery).not.toHaveProperty('queue')
+  expect(ownedQuery).not.toHaveProperty('park')
+  expect(ownedQuery).not.toHaveProperty('status')
 })
 
 it('displays and writes task parts from the backend claim park despite tag and user-park order', async () => {
@@ -302,6 +424,79 @@ beforeEach(() => {
 })
 
 describe('IssueWorkbench', () => {
+  it('uses workflow owner and server comment eligibility as authoritative state', async () => {
+    const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
+    const workflowIssue: TrackerIssueDetail = {
+      ...issue, assignee: { display: 'stale', login: 'stale' }, claim: { park_id: park.id },
+      workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'saved', has_current_cycle_comment: true },
+    }
+    renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue) }) })
+    expect(await screen.findByRole('button', { name: 'Передать на проверку' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Передать на проверку' }))
+    expect(await screen.findByRole('textbox', { name: 'Добавить уточнение' })).not.toBeRequired()
+  })
+
+  it('retries a locally committed message with the same idempotency key', async () => {
+    const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
+    const workflowIssue: TrackerIssueDetail = { ...issue, claim: { park_id: park.id }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'pending', has_current_cycle_comment: false } }
+    const taskMessage = vi.fn().mockRejectedValueOnce(new Error('response lost')).mockResolvedValueOnce({})
+    renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskMessage }) })
+    const composer = await screen.findByRole('textbox', { name: ru.tracker.comments })
+    fireEvent.change(composer, { target: { value: 'Заменил датчик' } })
+    fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
+    await waitFor(() => expect(taskMessage).toHaveBeenCalledTimes(2))
+    expect(taskMessage.mock.calls[0]?.[2]).toBe(taskMessage.mock.calls[1]?.[2])
+  })
+
+  it('uses lifecycle handoff and keeps its key when the response is lost', async () => {
+    const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
+    const workflowIssue: TrackerIssueDetail = { ...issue, claim: { park_id: park.id }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'saved', has_current_cycle_comment: true } }
+    const taskHandoff = vi.fn().mockRejectedValueOnce(new Error('response lost')).mockResolvedValueOnce({})
+    const client = apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskHandoff })
+    vi.spyOn(api, 'trackerUsers').mockResolvedValue([])
+    renderWorkbench({ currentUser: mechanic, client })
+    fireEvent.click(await screen.findByRole('button', { name: 'Передать смену' }))
+    fireEvent.change(screen.getByLabelText('Логин сменщика'), { target: { value: 'bob' } })
+    fireEvent.change(screen.getByLabelText('Причина передачи'), { target: { value: 'Конец смены' } })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Передать смену' }).at(-1)!)
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getAllByRole('button', { name: 'Передать смену' }).at(-1)!)
+    await waitFor(() => expect(taskHandoff).toHaveBeenCalledTimes(2))
+    expect(taskHandoff.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ assignee: 'bob', reason: 'Конец смены' }))
+    expect(taskHandoff.mock.calls[0]?.[2]).toBe(taskHandoff.mock.calls[1]?.[2])
+    await waitFor(() => expect(vi.mocked(client.trackerIssues).mock.calls.filter(
+      ([query]) => query.owned_by_me,
+    )).toHaveLength(2))
+    await act(async () => { await Promise.resolve() })
+    expect(vi.mocked(client.trackerIssues).mock.calls.filter(
+      ([query]) => query.owned_by_me,
+    )).toHaveLength(2)
+  })
+
+  it('maps workflow status once and keeps unknown values nontechnical', async () => {
+    renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async (): Promise<TrackerIssueDetail> => ({ ...issue, workflow: { owner: null, review_state: null, display_status: 'future' as never, sync_state: 'saved', has_current_cycle_comment: false } })) }) })
+    expect(await screen.findByText('Статус обновляется')).toBeVisible()
+    expect(screen.getAllByText('Статус обновляется')).toHaveLength(1)
+    expect(screen.queryByText('future')).not.toBeInTheDocument()
+  })
+  it('uses one chat and keeps task actions in compact lifecycle order', async () => {
+    const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
+    renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => ({
+      ...issue, assignee: { display: 'mech', login: 'mech' }, claim: { park_id: park.id },
+      workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress' as const, sync_state: 'saved' as const, has_current_cycle_comment: false },
+    })) }) })
+    expect(await screen.findByRole('heading', { name: issue.summary })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'История действий' })).not.toBeInTheDocument()
+    const parts = screen.getByRole('button', { name: 'Заказать запчасть' })
+    const handoff = screen.getByRole('button', { name: 'Передать смену' })
+    expect(parts).toHaveAttribute('aria-expanded', 'false')
+    expect(handoff).toHaveAttribute('aria-expanded', 'false')
+    expect(parts.compareDocumentPosition(handoff) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Статус задачи' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: ru.tracker.actions.openInTracker })).not.toBeInTheDocument()
+  })
   it('shows the write-off control in the main tab only to the mechanic assigned to the task', async () => {
     const mechanic: User = { ...user, role: 'mechanic', username: 'mech', tracker_login: 'Mech.Login' }
     const owned = { ...issue, assignee: { display: 'Mechanic', login: 'mech' } }
@@ -459,10 +654,10 @@ describe('IssueWorkbench', () => {
     expect(screen.getByRole('heading', { name: issue.summary })).toBeInTheDocument()
   })
 
-  it('preserves the original blocker and active tab when changing list filters', async () => {
-    const { onStateChange } = renderWorkbench({ currentState: { ...state, rootIssue: 'ROBOPARK-1', detailTab: 'open', checkTab: 'scheme' } })
+  it('preserves the original blocker and active tab when resetting linked restrictions', async () => {
+    const { onStateChange } = renderWorkbench({ currentState: { ...state, filters: { ...state.filters, status: 'queued', robot: '447' }, rootIssue: 'ROBOPARK-1', detailTab: 'open', checkTab: 'scheme' } })
     await screen.findByRole('heading', { name: 'Открытые задачи робота 447' })
-    fireEvent.change(screen.getByLabelText('Статус открытых блокеров'), { target: { value: 'queued' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Сбросить ограничения' }))
     expect(onStateChange).toHaveBeenCalledWith({
       filters: { queue: 'ROBOPARK', status: 'queued' }, sort: 'oldest', page: 1,
       rootIssue: 'ROBOPARK-1', detailTab: 'open', checkTab: 'scheme',
@@ -856,7 +1051,7 @@ describe('IssueWorkbench', () => {
     expect(trackerTransitions).not.toHaveBeenCalled()
   })
 
-  it('invalidates and refreshes only the selected issue resources after mutation', async () => {
+  it('invalidates the owned list and selected issue resources after mutation', async () => {
     const invalidate = vi.spyOn(resourceStore, 'invalidate')
     const clearAll = vi.spyOn(resourceStore, 'clearAll')
     const client = apiClient()
@@ -869,10 +1064,11 @@ describe('IssueWorkbench', () => {
     fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
 
     await screen.findByText('Действие выполнено')
-    expect(invalidate).toHaveBeenCalledTimes(5)
+    expect(invalidate).toHaveBeenCalledTimes(6)
     expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}list:${park.id}:`, {
       prefix: true,
     })
+    expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}owned:${user.username}`)
     expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}issue:${issue.key}`)
     expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}comments:${issue.key}`)
     expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}transitions:${issue.key}`)
@@ -1134,7 +1330,7 @@ describe('WorkPage cold states', () => {
     loading?: boolean
     selectedPark?: Park | null
     parkId?: number | null
-    client?: IssueWorkbenchApiClient
+    client?: WorkPageApiClient
   } = {}) {
     return render(
       <AuthContext.Provider
@@ -1196,7 +1392,7 @@ describe('WorkPage cold states', () => {
 })
 
 describe('WorkPage authorization lifetime', () => {
-  function renderRefreshingPage(client: IssueWorkbenchApiClient) {
+  function renderRefreshingPage(client: WorkPageApiClient) {
     let replaceUser: (next: User) => void = () => undefined
     const refreshUser = vi.fn(async () => {
       const refreshed = { ...user, parks: [...user.parks] }

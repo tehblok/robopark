@@ -482,7 +482,13 @@ def reconcile_host_job(ops, root):
             job.extra["host_result"] = public_result(result).model_dump(mode="json")
         job.state = "succeeded" if ok else "failed"
         job.phase = "completed" if ok else "failed"
-        job.error = None if ok else "host_operation_failed"
+        job.error = (
+            None
+            if ok
+            else "request_superseded"
+            if update and result.get("error") == "request_superseded"
+            else "host_operation_failed"
+        )
         job.log = "Операция на хосте завершена." if ok else "Операция на хосте завершилась ошибкой."
         job.restart_required = False
         if job.kind == "diagnostics" and ok and result.get("artifact") == job.id + ".zip":

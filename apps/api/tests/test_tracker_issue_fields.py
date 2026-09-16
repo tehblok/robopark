@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from robopark_api.services.tracker_client import issue_to_dict
 
 
-def test_search_reuses_user_lookups_and_does_not_hydrate_display_references(monkeypatch):
+def test_search_reuses_user_lookups_and_never_hydrates_status_history(monkeypatch):
     from yandex_tracker_client import TrackerClient
     from yandex_tracker_client.objects import Reference, Resource
 
@@ -39,6 +39,8 @@ def test_search_reuses_user_lookups_and_does_not_hydrate_display_references(monk
                 {
                     "key": f"ROBOPARK-{i}",
                     "summary": "[447] repair",
+                    "status": {"key": "queued", "display": "В очереди"},
+                    "createdAt": "2026-01-01T00:00:00Z",
                     "assignee": Reference(
                         sdk._connection, "/v2/users/123", {"id": "123", "display": "Механик"}
                     ),

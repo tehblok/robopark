@@ -1,13 +1,57 @@
 import { periodicDelay, resumeDelay, retryAfterMs } from '../../lib/pollingSchedule'
 import { collaborationClient, type Handoff } from './collaborationClient'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError } from '../../api'
+import { api, ApiError, type TrackerUserSuggestion } from '../../api'
 import { Button } from '../../design-system/actions/Button'
+
+export type LifecycleHandoff = {
+  assignee: string
+  reason: string
+  done: string
+  remaining: string
+  obstacles: string
+}
+
+function LifecycleHandoffForm({ canWrite, onHandoff }: { canWrite: boolean; onHandoff: (value: LifecycleHandoff) => Promise<void> }) {
+  const [value, setValue] = useState<LifecycleHandoff>({ assignee: '', reason: '', done: '', remaining: '', obstacles: '' })
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [suggestions, setSuggestions] = useState<TrackerUserSuggestion[]>([])
+  useEffect(() => {
+    const query = value.assignee.trim()
+    if (!canWrite || !query) { setSuggestions([]); return }
+    let cancelled = false
+    const timer = globalThis.setTimeout(() => void api.trackerUsers(query).then(next => {
+      if (!cancelled) setSuggestions(next)
+    }).catch(() => { if (!cancelled) setSuggestions([]) }), 250)
+    return () => { cancelled = true; globalThis.clearTimeout(timer) }
+  }, [canWrite, value.assignee])
+  const submit = async () => {
+    const next = Object.fromEntries(Object.entries(value).map(([key, text]) => [key, text.trim()])) as LifecycleHandoff
+    if (!next.assignee || !next.reason || busy) return
+    setBusy(true)
+    setError('')
+    try { await onHandoff(next) }
+    catch { setError('Не удалось передать смену. Повторите попытку.') }
+    finally { setBusy(false) }
+  }
+  return <section className="issue-collaboration">
+    {error ? <p role="alert">{error}</p> : null}
+    <label className="issue-handoff-field">Логин сменщика<input disabled={!canWrite} list="task-handoff-mechanics" maxLength={128} required value={value.assignee} onChange={event => setValue({ ...value, assignee: event.target.value })} /></label>
+    <datalist id="task-handoff-mechanics">{suggestions.map(person => <option key={person.login} value={person.login}>{person.display}</option>)}</datalist>
+    <label className="issue-handoff-field">Причина передачи<textarea disabled={!canWrite} maxLength={4000} required rows={2} value={value.reason} onChange={event => setValue({ ...value, reason: event.target.value })} /></label>
+    {(['done', 'remaining', 'obstacles'] as const).map((field, index) => <label className="issue-handoff-field" key={field}>
+      {['Сделано', 'Осталось', 'Препятствия'][index]}
+      <textarea disabled={!canWrite} maxLength={4000} rows={2} value={value[field]} onChange={event => setValue({ ...value, [field]: event.target.value })} />
+    </label>)}
+    {canWrite ? <Button busy={busy} disabled={!value.assignee.trim() || !value.reason.trim()} onClick={() => void submit()} type="button">Передать смену</Button> : null}
+  </section>
+}
 
 const empty: Handoff = { revision: 0, done: '', remaining: '', obstacles: '', author: null, updated_at: null }
 
-function Content({ issueKey, owner, active, canWrite, onAuthorizationFailure }: {
-  issueKey: string; owner: string; active: boolean; canWrite: boolean; onAuthorizationFailure?: (error: unknown) => void
+function Content({ issueKey, owner, active, canWrite, onAuthorizationFailure, onSaved }: {
+  issueKey: string; owner: string; active: boolean; canWrite: boolean; onAuthorizationFailure?: (error: unknown) => void; onSaved?: () => void
 }) {
   const [people, setPeople] = useState<string[]>([])
   const [open, setOpen] = useState(false)
@@ -137,6 +181,7 @@ function Content({ issueKey, owner, active, canWrite, onAuthorizationFailure }: 
           return next
         })
       }
+      onSaved?.()
     } catch (caught) {
       if (!alive.current || deniedRef.current) return
       if (observeDenial(caught)) return
@@ -177,6 +222,12 @@ function Content({ issueKey, owner, active, canWrite, onAuthorizationFailure }: 
   </section>
 }
 
-export function TaskCollaboration(props: React.ComponentProps<typeof Content>) {
+type TaskCollaborationProps = React.ComponentProps<typeof Content> & {
+  lifecycle?: boolean
+  onHandoff?: (value: LifecycleHandoff) => Promise<void>
+}
+
+export function TaskCollaboration(props: TaskCollaborationProps) {
+  if (props.lifecycle && props.onHandoff) return <LifecycleHandoffForm canWrite={props.canWrite} onHandoff={props.onHandoff} />
   return <Content {...props} key={JSON.stringify([props.owner, props.issueKey])} />
 }

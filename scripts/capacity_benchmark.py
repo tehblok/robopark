@@ -32,6 +32,7 @@ import httpx
 
 REPO = Path(__file__).resolve().parents[1]
 VIN = "YASADR00000000447"
+LOCAL_ENDPOINT_P95_LIMIT_MS = 1_000
 
 
 class StubServer(ThreadingHTTPServer):
@@ -151,6 +152,7 @@ def summarize(records, elapsed, upstream):
             "p95": percentile(0.95),
             "p99": percentile(0.99),
         },
+        "local_endpoint_p95_limit_ms": LOCAL_ENDPOINT_P95_LIMIT_MS,
         "status_counts": dict(Counter(str(row["status"]) for row in records)),
         "unexpected_responses": sum(not row["ok"] for row in records),
         "server_errors": sum(
@@ -521,7 +523,8 @@ def main():
             for name, phase in phases.items()
             if name != "200_open_clients_realistic_cadence"
         ),
-        "cadence_p95_under_1000ms": (cadence.get("latency_ms", {}).get("p95") or math.inf) < 1000,
+        "cadence_p95_under_1000ms": (cadence.get("latency_ms", {}).get("p95") or math.inf)
+        < LOCAL_ENDPOINT_P95_LIMIT_MS,
         "cadence_achieves_90_percent_target": cadence.get("throughput_rps", 0)
         >= 0.9 * args.users / args.cadence,
         "cold_search_coalesced_to_one": sum(

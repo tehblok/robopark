@@ -11,6 +11,7 @@ describe('Management routes', () => {
   afterEach(() => { resourceStore.clearAll(); vi.restoreAllMocks() })
 
   it('keeps the management parent active and exposes stable subsection navigation on a nested page', async () => {
+    vi.spyOn(api, 'parks').mockResolvedValue([north])
     vi.spyOn(api, 'adminRoles').mockResolvedValue([])
     vi.spyOn(api, 'adminRolePermissionCatalog').mockResolvedValue([])
     renderApp('/admin/roles?park=7', testUser({
@@ -20,7 +21,7 @@ describe('Management routes', () => {
     expect(within(navigation).getByRole('link', { name: 'Администрирование' })).toHaveAttribute('aria-current', 'page')
     const sections = await screen.findByRole('navigation', { name: 'Разделы управления' })
     expect(within(sections).getByRole('link', { name: 'Роли и доступы' })).toHaveAttribute('aria-current', 'page')
-    expect(within(sections).getByRole('link', { name: 'Пользователи' })).toHaveAttribute('href', '/admin/users?park=7')
+    await waitFor(() => expect(within(sections).getByRole('link', { name: 'Пользователи' })).toHaveAttribute('href', '/admin/users?park=7'))
   })
 
   it.each([
@@ -75,7 +76,7 @@ describe('Management routes', () => {
     }))
 
     expect(await screen.findByRole('heading', { name: 'Администрирование' })).toBeVisible()
-    expect(screen.getByTestId('location')).toHaveTextContent('/admin/settings?tab=parks')
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/admin/settings?tab=parks'))
     expect(integration).not.toHaveBeenCalled()
     expect(screen.queryByRole('heading', { name: 'Секреты' })).not.toBeInTheDocument()
   })

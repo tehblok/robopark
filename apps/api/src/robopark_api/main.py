@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
@@ -28,6 +29,7 @@ from robopark_api.routers import (
     analytics,
     auth,
     campaigns,
+    changes,
     dashboard,
     emergency,
     health,
@@ -43,6 +45,7 @@ from robopark_api.routers import (
     parks,
     reports,
     robot_registry,
+    task_timeline,
     tracker_actions,
     tracker_collaboration,
     tracker_read,
@@ -51,6 +54,10 @@ from robopark_api.seed import ensure_seed_user
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.blocker_history_job import run_blocker_history_loop
 from robopark_api.services.cache_cleanup import run_cache_cleanup_loop
+from robopark_api.services.change_revisions import (
+    default_change_revision_store,
+    scope_for_mutation,
+)
 from robopark_api.services.emergency_config import ensure_default_section_roles
 from robopark_api.services.emergency_keepalive import run_keepalive_loop
 from robopark_api.services.live_merge import JobLease, default_live_merge_root, live_merge_enabled
@@ -59,6 +66,7 @@ from robopark_api.services.ops.maintenance import host_maintenance_active
 from robopark_api.services.ops.reconcile import reconcile_pending_rebuild
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
 from robopark_api.services.session_cleanup import run_session_cleanup_loop
+from robopark_api.services.tracker_outbox import run_tracker_outbox_loop
 
 
 def create_app() -> FastAPI:
@@ -103,8 +111,10 @@ def create_app() -> FastAPI:
         stop_event = asyncio.Event()
         job_lease = JobLease(default_live_merge_root(), "lifespan-jobs")
         tasks = []
+        outbox_task: asyncio.Task[None] | None = None
 
         async def start_writers():
+            nonlocal outbox_task
             # Candidate readiness is read-only. Start seeding and workers only
             # after root commits the release and publishes writes_resumed.
             while host_maintenance_active(settings):
@@ -132,6 +142,7 @@ def create_app() -> FastAPI:
             )
             if owns_job_lease:
                 tasks.append(asyncio.create_task(run_cache_cleanup_loop(stop_event)))
+                outbox_task = asyncio.create_task(run_tracker_outbox_loop(SessionLocal, stop_event))
 
         startup = asyncio.create_task(start_writers())
         try:
@@ -148,6 +159,11 @@ def create_app() -> FastAPI:
             for task in tasks:
                 with suppress(asyncio.CancelledError):
                     await task
+            # Cancelling an asyncio.to_thread waiter does not stop its thread.
+            # Keep the lease until the bounded Tracker call and worker exit.
+            if outbox_task is not None:
+                with suppress(asyncio.CancelledError):
+                    await outbox_task
             job_lease.release()
 
     app = FastAPI(
@@ -161,6 +177,22 @@ def create_app() -> FastAPI:
     app.state.ops_dir = resolved_ops_dir(settings)
     app.state.ops_settings = settings
     app.state.session_cookie_name = settings.session_cookie_name
+    app.state.change_revision_store = default_change_revision_store()
+
+    @app.middleware("http")
+    async def publish_change_revision(request: Request, call_next):
+        result = await call_next(request)
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and result.status_code < 400:
+            scopes = set(getattr(request.state, "change_scopes", ()))
+            default_scope = scope_for_mutation(request.url.path)
+            if default_scope:
+                scopes.add(default_scope)
+            for scope in scopes:
+                try:
+                    await asyncio.to_thread(app.state.change_revision_store.mark_changed, scope)
+                except OSError:
+                    logging.getLogger(__name__).exception("change revision publish failed")
+        return result
 
     @app.exception_handler(RequestValidationError)
     async def hide_sensitive_validation_input(request: Request, exc: RequestValidationError):
@@ -209,6 +241,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(auth.router)
     app.include_router(campaigns.router)
+    app.include_router(changes.router)
     app.include_router(inventory.router)
     app.include_router(health.router)
     app.include_router(parks.router)
@@ -234,6 +267,7 @@ def create_app() -> FastAPI:
     app.include_router(tracker_read.router)
     app.include_router(tracker_actions.router)
     app.include_router(tracker_collaboration.router)
+    app.include_router(task_timeline.router)
     app.include_router(dashboard.router)
     app.include_router(robot_registry.router)
     app.include_router(operations.router)

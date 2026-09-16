@@ -461,6 +461,22 @@ def test_orphaned_dispatched_update_releases_api_operation_slot(installed, test_
     assert recovered.error == "host_operation_orphaned"
 
 
+def test_superseded_host_update_keeps_specific_failure_reason(installed, test_settings):
+    ops = Path(test_settings.ops_dir)
+    job = new_job("update", exempt_token_hash="session")
+    job.state = "running"
+    job.extra = {"host_updater": True}
+    save_job(ops, job)
+    (installed / "public/rebuild.result").write_text(
+        json.dumps({"job_id": job.id, "ok": False, "error": "request_superseded"})
+    )
+
+    recovered = host_bridge.reconcile_host_job(ops, installed)
+
+    assert recovered.state == "failed"
+    assert recovered.error == "request_superseded"
+
+
 @pytest.mark.parametrize("active_marker", ["claim", "inbox", "command", "maintenance"])
 def test_dispatched_update_is_preserved_while_host_may_still_be_active(
     installed, test_settings, active_marker

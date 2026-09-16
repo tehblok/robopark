@@ -146,7 +146,7 @@ export function TrackerWorkspace({
     appendRequest.current = { key: currentListKey, base }
     // Route pagination through the same request generation as background reads.
     resourceStore.invalidate(currentListKey)
-    resourceStore.set(currentListKey, base, true)
+    resourceStore.set(currentListKey, base, false)
     try {
       await listRes.refresh()
     } finally {

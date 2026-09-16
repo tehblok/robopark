@@ -200,12 +200,24 @@ def _allow_attempt(paths, request):
 def _superseded_by_successful_update(paths, request):
     try:
         journal = _read(paths.state / "updater-journal.json", limit=65536)
+        candidate = journal["candidate"]
+        if not isinstance(candidate, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._+-]{0,150}", candidate
+        ) or not paths.current.is_symlink():
+            return False
+        # Recovery rewrites a succeeded journal, but does not replace current.
+        installed_after_request = datetime.fromtimestamp(
+            paths.current.lstat().st_mtime, UTC
+        ) > timestamp(request["created_at"])
+        installed_candidate = paths.current.resolve(strict=True) == paths.releases / candidate
         result = _read(paths.ops / "public/rebuild.result")
         successor = str(UUID(journal["job_id"]))
-    except (ReleaseError, KeyError, ValueError, TypeError):
+    except (ReleaseError, KeyError, ValueError, TypeError, OSError, OverflowError):
         return False
     return (
         successor != request["job_id"]
+        and installed_candidate
+        and installed_after_request
         and journal.get("phase") == "succeeded"
         and result.get("job_id") == successor
         and result.get("ok") is True

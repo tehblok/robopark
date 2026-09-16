@@ -1,0 +1,35 @@
+{
+  "generated_at": "2026-09-15T17:18:53Z",
+  "scenario": "SURP task workflow local API and exactly-once outbox replay",
+  "harness": "apps/api/tests/test_task_workflow_load.py",
+  "command": "cd apps/api && .venv/bin/python -m pytest tests/test_task_workflow_load.py -q -s",
+  "isolation": {
+    "database": "fresh temporary SQLite database",
+    "upstream": "in-process deterministic Tracker stub",
+    "network": "no production or external services"
+  },
+  "configuration": {
+    "authenticated_sessions": 200,
+    "requests": 200,
+    "read_mix": [
+      "list",
+      "detail",
+      "timeline"
+    ],
+    "claim_requests": 100,
+    "unique_claim_action_ids": 50,
+    "duplicate_claim_replays": 50,
+    "max_request_workers": 16,
+    "local_endpoint_p95_limit_ms": 1000
+  },
+  "result": {
+    "status_200": 200,
+    "local_endpoint_p95_ms": 304.55,
+    "reliable_actions": 50,
+    "succeeded_actions": 50,
+    "pending_backlog": 0,
+    "upstream_transition_calls": 50,
+    "upstream_calls_bounded_by_unique_action_ids": true,
+    "passed": true
+  }
+}

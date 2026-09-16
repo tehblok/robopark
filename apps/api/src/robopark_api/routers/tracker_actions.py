@@ -4,22 +4,41 @@ import hashlib
 import re
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
-from robopark_api.deps import get_user_parks, require_user
+from robopark_api.deps import require_user
 from robopark_api.models import Park, User
 from robopark_api.schemas import (
+    TaskHandoffIn,
+    TaskHideIn,
+    TaskReviewReturnIn,
     TrackerActionOut,
     TrackerAssignIn,
     TrackerCommentIn,
     TrackerTransitionIn,
 )
-from robopark_api.services import audit, rbac, tracker_cache, tracker_client
+from robopark_api.services import (
+    audit,
+    rbac,
+    reliable_actions,
+    task_lifecycle,
+    tracker_cache,
+    tracker_client,
+)
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import reports as reports_svc
 from robopark_api.services import tracker_signatures as sig_svc
 from robopark_api.services import tracker_submissions as submissions
 from robopark_api.services.login_throttle import client_ip
@@ -30,7 +49,8 @@ from robopark_api.services.tracker_claims import (
     mechanic_owns_issue,
     release_claim,
 )
-from robopark_api.services.tracker_policy import ensure_action_allowed, issue_tags
+from robopark_api.services.tracker_policy import ensure_action_allowed
+from robopark_api.task_workflow_models import HiddenTask
 
 router = APIRouter(prefix="/tracker", tags=["tracker-actions"])
 
@@ -76,6 +96,8 @@ def _get_issue_or_404(token: str, key: str) -> dict:
 def _authorize(db: Session, user: User, issue: dict, action: str, request: Request) -> None:
     """Check the policy and audit a denial before propagating it."""
     try:
+        if task_lifecycle.is_hidden(db, str(issue.get("key") or "")):
+            raise HTTPException(status_code=404)
         ensure_action_allowed(db, user, issue, action)
         if (
             user.role == RoleSlug.MECHANIC
@@ -95,6 +117,20 @@ def _authorize(db: Session, user: User, issue: dict, action: str, request: Reque
             client_ip=client_ip(request),
         )
         raise
+    _mark_park_change(request, db, issue)
+
+
+def _mark_park_change(request: Request, db: Session, issue: dict) -> None:
+    tags = sig_svc.issue_tags(issue)
+    park_ids = set(db.scalars(select(Park.id).where(Park.tag.in_(tags)))) if tags else set()
+    if not park_ids:
+        queue = str(issue.get("queue") or "").strip()
+        if queue:
+            park_ids = set(db.scalars(select(Park.id).where(Park.tracker_queue == queue)))
+    if park_ids:
+        scopes = set(getattr(request.state, "change_scopes", ()))
+        scopes.update(f"work:park:{park_id}" for park_id in park_ids)
+        request.state.change_scopes = tuple(scopes)
 
 
 def _upstream_error(
@@ -161,17 +197,265 @@ def _mutation_lease(
 ):
     _ensure_tracker_user(user, db)
     action = request.url.path.rsplit("/", 1)[-1]
-    if action == "close" and user.role == RoleSlug.MECHANIC and not get_user_parks(db, user):
-        raise HTTPException(400, "mechanic_park_required_for_close_review")
+    if task_lifecycle.is_hidden(db, key):
+        raise HTTPException(status_code=404)
+    if action == "close" and user.role == RoleSlug.MECHANIC:
+        raise HTTPException(403, "task_review_operator_required")
     issue = _get_issue_or_404(_require_token(db), key)
     _authorize(db, user, issue, "attach" if action == "attachments" else action, request)
     with submissions.task_mutation_lease(db, key):
         yield
 
 
+def _lifecycle_issue(
+    db: Session, user: User, key: str, *, request: Request, actions: tuple[str, ...] = ()
+) -> dict:
+    _ensure_tracker_user(user, db)
+    if task_lifecycle.is_hidden(db, key):
+        raise HTTPException(status_code=404)
+    issue = _get_issue_or_404(_require_token(db), key)
+    from robopark_api.services.tracker_policy import enforce_issue_scope
+
+    enforce_issue_scope(db, user, issue)
+    for action in actions:
+        ensure_action_allowed(db, user, issue, action)
+    _mark_park_change(request, db, issue)
+    return issue
+
+
+@router.post("/issues/{key}/claim", response_model=TrackerActionOut)
+def claim_task(
+    key: str,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> TrackerActionOut:
+    issue = _lifecycle_issue(db, user, key, request=request, actions=("assign",))
+    with submissions.task_mutation_lease(db, key):
+        return TrackerActionOut(
+            **task_lifecycle.claim(
+                db,
+                actor=user,
+                issue_key=key,
+                park=task_lifecycle.issue_park(db, issue),
+                idempotency_key=idempotency_key,
+            )
+        )
+
+
+@router.post("/issues/{key}/handoff", response_model=TrackerActionOut)
+def handoff_task(
+    key: str,
+    payload: TaskHandoffIn,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> TrackerActionOut:
+    _lifecycle_issue(db, user, key, request=request, actions=("comment",))
+    with submissions.task_mutation_lease(db, key):
+        return TrackerActionOut(
+            **task_lifecycle.handoff(
+                db,
+                actor=user,
+                issue_key=key,
+                assignee=payload.assignee,
+                reason=payload.reason,
+                done=payload.done,
+                remaining=payload.remaining,
+                obstacles=payload.obstacles,
+                idempotency_key=idempotency_key,
+            )
+        )
+
+
+@router.post("/issues/{key}/submit-review", response_model=TrackerActionOut)
+def submit_task_review(
+    key: str,
+    request: Request,
+    defect_code: str = Form(...),
+    photo: list[UploadFile] = File(...),
+    comment: str | None = Form(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> TrackerActionOut:
+    issue = _lifecycle_issue(
+        db, user, key, request=request, actions=("comment", "attach", "transition")
+    )
+    if len(photo) != 1:
+        raise HTTPException(400, "task_review_exactly_one_photo")
+    upload = photo[0]
+    content = upload.file.read(tracker_client.MAX_ATTACHMENT_BYTES + 1)
+    context = sig_svc.build_signature_context(db, user, issue)
+    with submissions.task_mutation_lease(db, key):
+        try:
+            result = task_lifecycle.submit_review(
+                db,
+                actor=user,
+                issue_key=key,
+                defect_code=defect_code,
+                filename=upload.filename,
+                content=content,
+                content_type=upload.content_type,
+                comment=comment,
+                operator_login=context.operator_login,
+                idempotency_key=idempotency_key,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    return TrackerActionOut(**result)
+
+
+@router.post("/issues/{key}/review/return", response_model=TrackerActionOut)
+def return_task_review(
+    key: str,
+    payload: TaskReviewReturnIn,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> TrackerActionOut:
+    _lifecycle_issue(db, user, key, request=request, actions=("comment", "transition"))
+    with submissions.task_mutation_lease(db, key):
+        return TrackerActionOut(
+            **task_lifecycle.return_review(
+                db,
+                actor=user,
+                issue_key=key,
+                reason=payload.reason,
+                assignee=payload.assignee,
+                idempotency_key=idempotency_key,
+            )
+        )
+
+
+@router.post("/issues/{key}/review/approve", response_model=TrackerActionOut)
+def approve_task_review(
+    key: str,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> TrackerActionOut:
+    _lifecycle_issue(db, user, key, request=request, actions=("close",))
+    with submissions.task_mutation_lease(db, key):
+        return TrackerActionOut(
+            **task_lifecycle.approve_review(
+                db,
+                actor=user,
+                issue_key=key,
+                idempotency_key=idempotency_key,
+            )
+        )
+
+
+@router.post("/issues/{key}/retry-now", response_model=TrackerActionOut)
+def retry_task_now(
+    key: str,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> TrackerActionOut:
+    if not rbac.is_admin_or_royal(user):
+        raise HTTPException(403, "task_retry_manager_required")
+    issue = _lifecycle_issue(db, user, key, request=request)
+    with submissions.task_mutation_lease(db, key):
+        begin = reliable_actions.begin_action(
+            db,
+            actor=user,
+            resource_type="task_control",
+            resource_id=key,
+            action="retry_now",
+            idempotency_key=idempotency_key,
+            payload={},
+        )
+        if begin.result is not None:
+            return TrackerActionOut(**begin.result)
+        changed = reliable_actions.retry_needs_attention(db, resource_id=key)
+        if not changed:
+            raise HTTPException(409, "task_retry_not_needed")
+        workflow = task_lifecycle.workflow(db, issue_key=key, viewer=user, issue=issue)
+        result = TrackerActionOut(
+            key=key,
+            action="retry_now",
+            status="retrying",
+            actor=user.username,
+            performed_at=datetime.fromtimestamp(begin.row.created_at, UTC).isoformat(),
+            sync_state=workflow["sync_state"],
+            workflow=workflow,
+        )
+        reliable_actions.complete_action(db, begin.row, result)
+        audit.record(
+            db,
+            action="tracker.retry_now",
+            actor=user,
+            target_type="tracker_issue",
+            target_id=key,
+            detail=f"actions={changed}",
+            client_ip=client_ip(request),
+        )
+        return result
+
+
+@router.post("/issues/{key}/hide", response_model=TrackerActionOut)
+def hide_task(
+    key: str,
+    payload: TaskHideIn,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> TrackerActionOut:
+    if not rbac.is_admin_or_royal(user):
+        raise HTTPException(403, "task_hide_manager_required")
+    issue = _lifecycle_issue(db, user, key, request=request)
+    with submissions.task_mutation_lease(db, key):
+        return TrackerActionOut(
+            **task_lifecycle.hide(
+                db,
+                actor=user,
+                issue_key=key,
+                park_id=task_lifecycle.issue_park(db, issue).id,
+                reason=payload.reason,
+                idempotency_key=idempotency_key,
+            )
+        )
+
+
+@router.delete("/issues/{key}/hide", response_model=TrackerActionOut)
+def restore_task(
+    key: str,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> TrackerActionOut:
+    if not rbac.is_admin_or_royal(user):
+        raise HTTPException(403, "task_hide_manager_required")
+    hidden = db.scalar(
+        select(HiddenTask).where(HiddenTask.issue_key == key, HiddenTask.restored_at.is_(None))
+    )
+    if hidden is not None:
+        request.state.change_scopes = (f"work:park:{hidden.park_id}",)
+    with submissions.task_mutation_lease(db, key):
+        return TrackerActionOut(
+            **task_lifecycle.restore(
+                db,
+                actor=user,
+                issue_key=key,
+                idempotency_key=idempotency_key,
+            )
+        )
+
+
 @router.post(
     "/issues/{key}/comment",
     response_model=TrackerActionOut,
+    response_model_exclude_unset=True,
+    response_model_exclude_defaults=True,
     dependencies=[Depends(_mutation_lease)],
 )
 def add_comment(
@@ -192,7 +476,7 @@ def add_comment(
         db, user, key, "comment", request, payload.model_dump(), token
     )
     if saved is not None:
-        return TrackerActionOut(**saved)
+        return saved
 
     try:
         tracker_client.add_comment(token=token, key=key, text=signed_text)
@@ -218,6 +502,8 @@ def add_comment(
 @router.post(
     "/issues/{key}/attachments",
     response_model=TrackerActionOut,
+    response_model_exclude_unset=True,
+    response_model_exclude_defaults=True,
     dependencies=[Depends(_mutation_lease)],
 )
 def attach_file(
@@ -271,7 +557,7 @@ def attach_file(
         token,
     )
     if saved is not None:
-        return TrackerActionOut(**saved)
+        return saved
 
     try:
         temp_id = tracker_client.upload_temp_attachment(
@@ -310,7 +596,11 @@ def attach_file(
 
 
 @router.post(
-    "/issues/{key}/assign", response_model=TrackerActionOut, dependencies=[Depends(_mutation_lease)]
+    "/issues/{key}/assign",
+    response_model=TrackerActionOut,
+    response_model_exclude_unset=True,
+    response_model_exclude_defaults=True,
+    dependencies=[Depends(_mutation_lease)],
 )
 def assign_issue(
     key: str,
@@ -375,6 +665,8 @@ def assign_issue(
 @router.post(
     "/issues/{key}/unassign",
     response_model=TrackerActionOut,
+    response_model_exclude_unset=True,
+    response_model_exclude_defaults=True,
     dependencies=[Depends(_mutation_lease)],
 )
 def unassign_issue(
@@ -407,6 +699,8 @@ def unassign_issue(
 @router.post(
     "/issues/{key}/transition",
     response_model=TrackerActionOut,
+    response_model_exclude_unset=True,
+    response_model_exclude_defaults=True,
     dependencies=[Depends(_mutation_lease)],
 )
 def transition_issue(
@@ -416,153 +710,28 @@ def transition_issue(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _ensure_tracker_user(user, db)
-    token = _require_token(db)
-    issue = _get_issue_or_404(token, key)
-    _authorize(db, user, issue, "transition", request)
-
-    def validate_workflow():
-        transitions = tracker_cache.list_transitions(token=token, key=key)
-        transition_ids = {item["id"] for item in transitions}
-        if payload.transition not in transition_ids:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="tracker_transition_invalid",
-            )
-
-    submission, saved = submissions.begin(
-        db,
-        user,
-        key,
-        "transition",
-        request,
-        payload.model_dump(),
-        token,
-        validate=validate_workflow,
-    )
-    if saved is not None:
-        return TrackerActionOut(**saved)
-
-    try:
-        tracker_client.transition_issue(
-            token=token,
-            key=key,
-            transition=payload.transition,
-            resolution=payload.resolution,
-        )
-    except tracker_client.TrackerError as exc:
-        submissions.uncertain(db, submission)
-        raise _upstream_error(db, user, "transition", key, exc, request) from exc
-    tracker_cache.invalidate_issue(key)
-    _publish_bot_note(
-        token,
-        db,
-        user,
-        issue,
-        f"Статус изменён: {payload.transition}",
-    )
-
-    park = sig_svc.resolve_park(db, issue)
-    audit.record(
-        db,
-        action=audit.ACTION_TRACKER_TRANSITION,
-        actor=user,
-        park_id=park.id if park is not None else None,
-        target_type="tracker_issue",
-        target_id=key,
-        detail=f"transition={payload.transition} resolution={payload.resolution or '-'}",
-        client_ip=client_ip(request),
-    )
-    return submissions.finish(db, submission, _ok(key, "transition", user, issue))
+    raise HTTPException(status_code=409, detail="tracker_manual_transition_disabled")
 
 
 @router.post(
-    "/issues/{key}/close", response_model=TrackerActionOut, dependencies=[Depends(_mutation_lease)]
+    "/issues/{key}/close",
+    response_model=TrackerActionOut,
+    response_model_exclude_unset=True,
+    response_model_exclude_defaults=True,
+    dependencies=[Depends(_mutation_lease)],
 )
 def close_issue(
     key: str,
     request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _ensure_tracker_user(user, db)
-    token = _require_token(db)
-
-    parks: list[Park] = []
-    mechanic_park = None
-    if user.role == RoleSlug.MECHANIC:
-        parks = get_user_parks(db, user)
-        if not parks:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="mechanic_park_required_for_close_review",
-            )
-
-    issue = _get_issue_or_404(token, key)
-    _authorize(db, user, issue, "close", request)
-
-    if user.role == RoleSlug.MECHANIC:
-        tags = issue_tags(issue)
-        matched = [park for park in parks if park.tag and str(park.tag).strip() in tags]
-        mechanic_park = matched[0] if matched else parks[0]
-
-    close_transition = None
-
-    def validate_workflow():
-        nonlocal close_transition
-        transitions = tracker_cache.list_transitions(token=token, key=key)
-        close_transition = next(
-            (
-                item
-                for item in transitions
-                if "close" in item["id"].lower() or "закры" in item["display"].lower()
-            ),
-            None,
+    return TrackerActionOut(
+        **task_lifecycle.approve_review(
+            db,
+            actor=user,
+            issue_key=key,
+            idempotency_key=idempotency_key,
         )
-        if not close_transition:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="tracker_close_transition_not_found",
-            )
-
-    submission, saved = submissions.begin(
-        db, user, key, "close", request, {}, token, validate=validate_workflow
     )
-    if saved is not None:
-        return TrackerActionOut(**saved)
-
-    try:
-        tracker_client.transition_issue(token=token, key=key, transition=close_transition["id"])
-    except tracker_client.TrackerError as exc:
-        submissions.uncertain(db, submission)
-        raise _upstream_error(db, user, "close", key, exc, request) from exc
-    tracker_cache.invalidate_issue(key)
-    _publish_bot_note(token, db, user, issue, "Задача закрыта")
-
-    audit.record(
-        db,
-        action=audit.ACTION_TRACKER_CLOSE,
-        actor=user,
-        park_id=mechanic_park.id if mechanic_park else None,
-        target_type="tracker_issue",
-        target_id=key,
-        client_ip=client_ip(request),
-    )
-
-    if mechanic_park is not None:
-        try:
-            reports_svc.get_or_create_close_review(
-                db,
-                author=user,
-                park_id=mechanic_park.id,
-                tracker_key=key,
-                tracker_url=tracker_client.build_issue_url(key),
-                title=f"Закрытие {key}",
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="tracker_closed_report_failed",
-            ) from exc
-
-    return submissions.finish(db, submission, _ok(key, "close", user, issue))

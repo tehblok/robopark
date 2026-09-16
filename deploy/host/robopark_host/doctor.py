@@ -87,7 +87,7 @@ def _df_check(runner: Runner, command: list[str], code: str, label: str) -> Chec
 
 
 def _memory_check(runner: Runner) -> CheckResult:
-    result = execute(runner, ["free", "-m"])
+    result = execute(runner, ["env", "LC_ALL=C", "free", "-m"])
     lines = [line.split() for line in result.stdout.splitlines() if line.startswith("Mem:")]
     if not result.ok or not lines or len(lines[0]) < 7:
         return CheckResult("memory_load_swap", "warning", "Не удалось измерить память и swap", None)

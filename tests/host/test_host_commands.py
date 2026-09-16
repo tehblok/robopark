@@ -2,8 +2,9 @@
 
 import configparser
 import json
+import os
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -420,7 +421,12 @@ def test_successful_newer_local_update_retires_superseded_host_request(host_path
     from robopark_host import commands
     from robopark_host.state import atomic_write_json
 
-    command = request(host_paths, "update", artifact="update-old.zip")
+    command = request(
+        host_paths,
+        "update",
+        artifact="update-old.zip",
+        created_at=(datetime.now(UTC) - timedelta(seconds=30)).isoformat(),
+    )
     atomic_write_json(host_paths.state / "command-request.json", command)
     atomic_write_json(
         host_paths.ops / "public/command-claim.json",
@@ -428,9 +434,12 @@ def test_successful_newer_local_update_retires_superseded_host_request(host_path
         mode=0o644,
     )
     successor = str(uuid4())
+    candidate = host_paths.releases / ("0.1.35-" + successor)
+    candidate.mkdir(parents=True)
+    host_paths.current.symlink_to(candidate)
     atomic_write_json(
         host_paths.state / "updater-journal.json",
-        {"job_id": successor, "phase": "succeeded"},
+        {"job_id": successor, "candidate": candidate.name, "phase": "succeeded"},
     )
     atomic_write_json(
         host_paths.ops / "public/rebuild.result",
@@ -452,6 +461,62 @@ def test_successful_newer_local_update_retires_superseded_host_request(host_path
     assert result == {"job_id": command["job_id"], "ok": False, "error": "request_superseded"}
     assert not (host_paths.state / "command-request.json").exists()
     assert json.loads((host_paths.ops / "public/command-claim.json").read_text())["active"] is False
+
+
+def test_resumed_update_after_previous_success_is_not_superseded(host_paths, monkeypatch):
+    from types import SimpleNamespace
+
+    from robopark_host import commands
+    from robopark_host.state import atomic_write_json
+
+    previous = str(uuid4())
+    candidate = host_paths.releases / ("0.1.33-" + previous)
+    candidate.mkdir(parents=True)
+    host_paths.current.symlink_to(candidate)
+    journal_path = host_paths.state / "updater-journal.json"
+    atomic_write_json(
+        journal_path,
+        {"job_id": previous, "candidate": candidate.name, "phase": "succeeded"},
+    )
+    atomic_write_json(
+        host_paths.ops / "public/rebuild.result",
+        {"job_id": previous, "ok": True, "error": None},
+        mode=0o644,
+    )
+    command = request(
+        host_paths,
+        "update",
+        artifact="update-next.zip",
+        created_at=(
+            datetime.fromtimestamp(host_paths.current.lstat().st_mtime, UTC) + timedelta(seconds=1)
+        ).isoformat(),
+    )
+    atomic_write_json(host_paths.state / "command-request.json", command)
+    # Reconciliation may rewrite the already-successful journal after this request.
+    later = datetime.fromisoformat(command["created_at"]).timestamp() + 1
+    os.utime(journal_path, (later, later))
+    monkeypatch.setattr(
+        "robopark_host.updater.recover_interrupted_update",
+        lambda *args: SimpleNamespace(state="idle"),
+    )
+
+    def launcher(paths, path, runner):
+        atomic_write_json(
+            paths.ops / "public/rebuild.result",
+            {"job_id": command["job_id"], "ok": True, "error": None},
+            mode=0o644,
+        )
+        return 0
+
+    monkeypatch.setattr("robopark_host.launcher.launch_update", launcher)
+
+    assert commands.consume_commands(host_paths, None, None, update_runner=object()) == 0
+    assert json.loads((host_paths.ops / "public/rebuild.result").read_text()) == {
+        "job_id": command["job_id"],
+        "ok": True,
+        "error": None,
+    }
+    assert not (host_paths.state / "command-request.json").exists()
 
 
 def test_expired_approved_diagnostics_publishes_failure_without_work(host_paths, monkeypatch):

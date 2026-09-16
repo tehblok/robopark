@@ -3,6 +3,7 @@ from unittest.mock import patch
 from conftest import login_as, role_id_for
 from robopark_api.models import Park, User, UserPark
 from robopark_api.security import hash_password
+from robopark_api.task_workflow_models import HiddenTask
 
 
 def seed_op_two_queues(db_session):
@@ -49,6 +50,19 @@ def test_robot_search_merges_and_dedupes(client, db_session, seed_royal):
     login_as(client, "royal", "secret")
     client.put("/admin/settings/tracker-token", json={"token": "fake"})
     login_as(client, "op-robot", "secret")
+    park = db_session.query(Park).filter_by(name="A").one()
+    db_session.add(
+        HiddenTask(
+            id="hidden-operator-robot-ticket",
+            issue_key="R-1",
+            park_id=park.id,
+            reason="duplicate",
+            actor_user_id=seed_royal.id,
+            created_at=1,
+            updated_at=1,
+        )
+    )
+    db_session.commit()
 
     def fake_search(*, token, queue, query):
         base = {
@@ -83,8 +97,7 @@ def test_robot_search_merges_and_dedupes(client, db_session, seed_royal):
         r = client.get("/operator/robots/a447/tickets")
     assert r.status_code == 200
     keys = [i["key"] for i in r.json()["items"]]
-    assert len(keys) == 2
-    assert set(keys) == {"R-1", "R-2"}
+    assert keys == ["R-2"]
 
 
 def test_robot_search_ticket_key_rejects_foreign_queue(client, db_session, seed_royal):

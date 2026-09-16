@@ -3,21 +3,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { WorkFilters } from './WorkFilters'
 
 describe('WorkFilters', () => {
-  it.each(['new', 'moving', 'queued', 'diagnostics', 'waiting_team', 'waiting_parts', 'inProgress'])('immediately applies open status %s and resets page with oldest sorting', (status) => {
-    const onApply = vi.fn()
-    render(<WorkFilters loading={false} onApply={onApply} value={{ filters: { queue: 'RP' }, sort: 'newest', page: 2 }} />)
-    fireEvent.change(screen.getByLabelText('Статус открытых блокеров'), { target: { value: status } })
-    expect(onApply).toHaveBeenCalledWith({ filters: { queue: 'RP', status }, sort: 'oldest', page: 1 })
-  })
-
-  it('exposes only a status selector and excludes completed statuses', () => {
+  it('keeps a fixed queue context without a manual status control', () => {
     render(<WorkFilters loading={false} onApply={vi.fn()} value={{ filters: { queue: 'RP' }, sort: 'oldest', page: 1 }} />)
-    expect(screen.getAllByRole('combobox')).toHaveLength(1)
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
-    expect(screen.queryByRole('option', { name: /Закрытые|Решённые/ })).not.toBeInTheDocument()
+    expect(screen.getByText('В очереди')).toBeVisible()
     expect(screen.getByText('От старых к новым')).toBeVisible()
   })
 
@@ -32,15 +25,23 @@ describe('WorkFilters', () => {
     expect(onApply).toHaveBeenCalledWith({ filters: { queue: 'RP', status: 'new' }, sort: 'oldest', page: 1 })
   })
 
-  it('returns to all open blockers without losing linked robot context', () => {
-    const onApply = vi.fn()
-    render(<WorkFilters loading={false} onApply={onApply} value={{ filters: { queue: 'RP', status: 'new', robot: '447' }, sort: 'oldest', page: 4 }} />)
-    fireEvent.change(screen.getByLabelText('Статус открытых блокеров'), { target: { value: '' } })
-    expect(onApply).toHaveBeenCalledWith({ filters: { queue: 'RP', robot: '447' }, sort: 'oldest', page: 1 })
+  it('shows a nondefault deep-link status as read-only context', () => {
+    render(<WorkFilters loading={false} onApply={vi.fn()} value={{ filters: { queue: 'RP', status: 'review' }, sort: 'oldest', page: 1 }} />)
+    expect(screen.getByText('Статус из ссылки: review')).toBeVisible()
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
   })
 
-  it('offers drivers only their permitted workflow statuses', () => {
-    render(<WorkFilters driver loading={false} onApply={vi.fn()} value={{ filters: { queue: 'RP' }, sort: 'oldest', page: 1 }} />)
-    expect(screen.getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['', 'new', 'moving', 'open'])
+  it('lets only managers include hidden tasks through an explicit filter', () => {
+    const onApply = vi.fn()
+    const value = { filters: { queue: 'RP' }, sort: 'oldest' as const, page: 2 }
+    const view = render(<WorkFilters loading={false} manager onApply={onApply} value={value} />)
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Показать скрытые задачи' }))
+    expect(onApply).toHaveBeenCalledWith({
+      filters: { queue: 'RP', includeHidden: true }, sort: 'oldest', page: 1,
+    })
+
+    view.rerender(<WorkFilters loading={false} onApply={onApply} value={value} />)
+    expect(screen.queryByRole('checkbox', { name: 'Показать скрытые задачи' })).not.toBeInTheDocument()
   })
 })

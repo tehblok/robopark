@@ -27,6 +27,16 @@ def accessible_park_ids(db: Session, user: User) -> set[int]:
     return set(db.scalars(statement))
 
 
+def can_view_park(db: Session, user: User, park_id: int) -> bool:
+    """Check one park without materializing every accessible park on each hint poll."""
+    if not can_view_inventory(db, user):
+        return False
+    statement = select(Park.id).where(Park.id == park_id, Park.is_active.is_(True))
+    if user.role not in {"admin", "royal", "operator"}:
+        statement = statement.join(UserPark).where(UserPark.user_id == user.id)
+    return db.scalar(statement) is not None
+
+
 def require_park(db: Session, user: User, park_id: int, *, manage: bool = False) -> Park:
     if park_id not in accessible_park_ids(db, user):
         raise PermissionError("forbidden")

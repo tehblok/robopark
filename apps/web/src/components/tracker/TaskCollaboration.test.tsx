@@ -8,6 +8,19 @@ const saved = { revision: 1, done: 'Мотор', remaining: 'Тест', obstacle
 beforeEach(() => localStorage.clear())
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers() })
 
+it('uses the lifecycle handoff form instead of saving legacy notes', async () => {
+  const onHandoff = vi.fn(async () => undefined)
+  const save = vi.spyOn(collaborationClient, 'save')
+  render(<TaskCollaboration issueKey="RP-1" owner="alice" active canWrite lifecycle onHandoff={onHandoff} />)
+  fireEvent.change(screen.getByLabelText('Логин сменщика'), { target: { value: 'bob' } })
+  fireEvent.change(screen.getByLabelText('Причина передачи'), { target: { value: 'Смена закончилась' } })
+  fireEvent.change(screen.getByLabelText('Сделано'), { target: { value: 'Заменён мотор' } })
+  fireEvent.change(screen.getByLabelText('Осталось'), { target: { value: 'Проверить' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Передать смену' }))
+  await waitFor(() => expect(onHandoff).toHaveBeenCalledWith({ assignee: 'bob', reason: 'Смена закончилась', done: 'Заменён мотор', remaining: 'Проверить', obstacles: '' }))
+  expect(save).not.toHaveBeenCalled()
+})
+
 it('loads handoff only when opened and preserves edited text while showing a conflicting revision', async () => {
   const get = vi.spyOn(collaborationClient, 'handoff').mockResolvedValue(saved)
   vi.spyOn(collaborationClient, 'save').mockRejectedValue(new ApiError(409, 'tracker_handoff_conflict'))

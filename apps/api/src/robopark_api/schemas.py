@@ -543,6 +543,9 @@ class TrackerIssueOut(BaseModel):
     priority: str | None = None
     type: str | None = None
     assignee: TrackerPersonOut | None = None
+    queued_at: str | None = None
+    sla_deadline: str | None = None
+    sla_source: Literal["status_history", "estimated"] | None = None
 
 
 class TrackerIssueCapabilitiesOut(BaseModel):
@@ -558,6 +561,23 @@ class TrackerIssueClaimOut(BaseModel):
     park_id: int
 
 
+class TaskHiddenOut(BaseModel):
+    reason: str
+    actor: str
+    created_at: str
+
+
+class TaskWorkflowOut(BaseModel):
+    owner: TrackerPersonOut | None = None
+    review_state: Literal["pending", "returned", "closed"] | None = None
+    display_status: Literal["queued", "in_progress", "review", "closed", "hidden"]
+    sync_state: Literal["saved", "pending", "synced", "needs_attention"]
+    queued_at: str | None = None
+    queued_at_source: Literal["tracker_history", "created_at_estimate"] | None = None
+    hidden: TaskHiddenOut | None = None
+    has_current_cycle_comment: bool = False
+
+
 class TrackerIssueDetailOut(TrackerIssueOut):
     resolution: str | None = None
     description: str | None = None
@@ -566,6 +586,7 @@ class TrackerIssueDetailOut(TrackerIssueOut):
     attachments: list[TrackerAttachmentOut] = Field(default_factory=list)
     claim: TrackerIssueClaimOut | None = None
     capabilities: TrackerIssueCapabilitiesOut
+    workflow: TaskWorkflowOut
 
 
 class TrackerUserOut(BaseModel):
@@ -602,10 +623,39 @@ class TrackerActionOut(BaseModel):
     status: str
     actor: str
     performed_at: str
+    sync_state: Literal["saved", "pending", "synced", "needs_attention"] = "synced"
+    workflow: TaskWorkflowOut | None = None
 
 
 class TrackerCommentIn(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
+
+
+class TaskTimelineItemOut(BaseModel):
+    id: str
+    kind: Literal["user", "system", "tracker"]
+    author: str
+    text: str
+    created_at: str
+    sync_state: Literal["saved", "pending", "synced", "needs_attention"]
+    attachments: list[TrackerAttachmentOut] = Field(default_factory=list)
+
+
+class TaskAttachmentStagedOut(BaseModel):
+    id: str
+    message_id: str
+    name: str
+    mimetype: str
+    size: int
+    sha256: str
+    action_id: str
+    sync_state: Literal["pending", "needs_attention"] = "pending"
+
+
+class DefectCodeOut(BaseModel):
+    code: str
+    label: str
+    description: str | None = None
 
 
 class TrackerAssignIn(BaseModel):
@@ -615,6 +665,23 @@ class TrackerAssignIn(BaseModel):
 class TrackerTransitionIn(BaseModel):
     transition: str = Field(min_length=1, max_length=128)
     resolution: str | None = Field(default=None, max_length=128)
+
+
+class TaskHandoffIn(BaseModel):
+    assignee: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=1, max_length=4000)
+    done: str = Field(default="", max_length=4000)
+    remaining: str = Field(default="", max_length=4000)
+    obstacles: str = Field(default="", max_length=4000)
+
+
+class TaskReviewReturnIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=4000)
+    assignee: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class TaskHideIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=4000)
 
 
 class TrackerPolicySettingsOut(BaseModel):

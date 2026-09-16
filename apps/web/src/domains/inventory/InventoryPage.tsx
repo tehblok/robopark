@@ -1,4 +1,4 @@
-import { useCallback, useContext, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, type InventoryOverview } from '../../api'
 import { AuthContext } from '../../auth-context'
 import { useParkScope } from '../../app/park/parkScope'
@@ -11,6 +11,7 @@ import { InventoryReceiptsView } from './InventoryReceiptsView'
 import { InventoryCountsView } from './InventoryCountsView'
 import { InventoryExportView } from './InventoryExportView'
 import { InventoryTabs } from './InventoryTabs'
+import { INVENTORY_REVISION_CHANGED } from './inventoryRevision'
 import './inventory.css'
 
 type InventoryApi = Pick<typeof api, 'inventory' | 'inventoryPartPhotoUrl' | 'searchInventory' | 'inventoryCatalogComponents' | 'getInventoryCatalogPart' | 'createInventoryCatalogComponent' | 'createInventoryCatalogPart' | 'updateInventoryCatalogPart' | 'mergeInventoryCatalogPart' | 'updateInventoryStock' | 'inventoryReceipts' | 'createInventoryReceipt' | 'updateInventoryReceipt' | 'postInventoryReceipt' | 'cancelInventoryReceipt' | 'reverseInventoryReceipt' | 'inventoryCounts' | 'createInventoryCount' | 'updateInventoryCount' | 'refreshInventoryCount' | 'postInventoryCount' | 'cancelInventoryCount' | 'downloadInventoryExport'>
@@ -20,6 +21,7 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
   const role = useContext(AuthContext)?.user?.role
   const permissions = useContext(AuthContext)?.user?.permissions
   const [overview, setOverview] = useState<InventoryOverview | null>(null)
+  const [refreshVersion, setRefreshVersion] = useState(0)
   const requestGeneration = useRef(0)
   const parkId = selectedPark?.id
   const loadOverview = useCallback(() => {
@@ -35,19 +37,28 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
     loadOverview()
     return () => { requestGeneration.current += 1 }
   }, [loadOverview])
+  useEffect(() => {
+    const changed = (event: Event) => {
+      if ((event as CustomEvent<number>).detail !== parkId) return
+      loadOverview()
+      setRefreshVersion(current => current + 1)
+    }
+    window.addEventListener(INVENTORY_REVISION_CHANGED, changed)
+    return () => window.removeEventListener(INVENTORY_REVISION_CHANGED, changed)
+  }, [parkId, loadOverview])
   if (loading) return <LoadingState label="Загружаем парк" variant="page" />
   if (!selectedPark) return <EmptyState description="Выберите парк." icon="parks" title="Парк не выбран" />
 
   return <PageLayout description={`Учёт запчастей парка «${selectedPark.name}»`} title="Склад">
     {overview ? <div className="stat-grid inventory-kpis"><MetricCard label="Компоненты" value={overview.component_count} /><MetricCard label="Запчасти" value={overview.part_count} /><MetricCard label="Ниже минимума" tone={overview.low_stock_count ? 'warning' : 'neutral'} value={overview.low_stock_count} /><MetricCard label="Нет на складе" tone={overview.out_of_stock_count ? 'critical' : 'neutral'} value={overview.out_of_stock_count} /></div> : null}
     <InventoryTabs renderPanel={view => view === 'parts'
-      ? <InventoryPartsView apiClient={apiClient} parkId={selectedPark.id} />
+      ? <InventoryPartsView apiClient={apiClient} parkId={selectedPark.id} refreshVersion={refreshVersion} />
       : view === 'receipts'
-        ? <InventoryReceiptsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} permissions={permissions} />
+        ? <InventoryReceiptsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} permissions={permissions} refreshVersion={refreshVersion} />
         : view === 'counts'
-          ? <InventoryCountsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} permissions={permissions} />
+          ? <InventoryCountsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} permissions={permissions} refreshVersion={refreshVersion} />
       : view === 'manage'
-        ? <InventoryManageView apiClient={apiClient} parkId={selectedPark.id} role={role} />
+        ? <InventoryManageView apiClient={apiClient} parkId={selectedPark.id} role={role} refreshVersion={refreshVersion} />
         : <InventoryExportView apiClient={apiClient} parks={parks} permissions={permissions} role={role} selectedPark={selectedPark} />} />
   </PageLayout>
 }

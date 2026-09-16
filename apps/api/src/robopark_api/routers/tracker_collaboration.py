@@ -3,7 +3,7 @@
 import time
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.sqlite import insert
@@ -14,7 +14,7 @@ from robopark_api.collaboration_models import TrackerHandoff, TrackerPresence
 from robopark_api.db import get_db
 from robopark_api.deps import require_user
 from robopark_api.models import User
-from robopark_api.routers.tracker_actions import _require_token
+from robopark_api.routers.tracker_actions import _mark_park_change, _require_token
 from robopark_api.routers.tracker_read import _ensure_tracker_user
 from robopark_api.services import tracker_client
 from robopark_api.services.tracker_policy import enforce_issue_scope, ensure_action_allowed
@@ -102,10 +102,15 @@ class HandoffIn(BaseModel):
 
 @router.put("/{key}/handoff")
 def put_handoff(
-    key: str, payload: HandoffIn, user: User = Depends(require_user), db: Session = Depends(get_db)
+    key: str,
+    payload: HandoffIn,
+    request: Request,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
 ):
     issue = authorized_issue(db, user, key)
     ensure_action_allowed(db, user, issue, "comment")
+    _mark_park_change(request, db, issue)
     values = {
         "done": payload.done.strip(),
         "remaining": payload.remaining.strip(),

@@ -103,7 +103,7 @@ export function TaskPartsPanel({ parkId, issueKey, apiClient = api, onWritten }:
   if (parkId == null) return <div className="task-parts"><ErrorState description="Откройте задачу из доступного вам парка." title="Парк задачи недоступен" /><Button disabled type="button">Списать в задачу</Button></div>
   if (!currentData && !error) return <LoadingState label="Загружаем запчасти" />
   const failure = error ? classifyApiError(error, 'Не удалось списать запчасть.') : null
-  return <div className="task-parts"><p>Выберите компоненту и запчасть. После списания в Tracker появится техническое сообщение.</p>
+  return <div className="task-parts"><p>Выберите компоненту и запчасть. После списания в чате появится системное сообщение.</p>
     {failure ? <ErrorState description={failure.description} title={failure.title} /> : null}
     {currentData ? <form className="form-grid" onSubmit={submit}><label className="field"><span>Компонента</span><select required value={componentId || ''} onChange={event => { idempotencyKey.current = null; setComponentId(Number(event.target.value)); setPartId(0) }}><option value="">Выберите</option>{currentData.components.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       {component?.has_photo ? <img alt={component.name} className="task-parts__component-photo" src={apiClient.inventoryComponentPhotoUrl(component.id)} /> : null}

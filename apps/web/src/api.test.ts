@@ -106,6 +106,39 @@ describe('API transport metadata', () => {
     )
   })
 
+  it('requests locally owned work without Tracker assignee or park filters', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ items: [], total: 0, limit: 50, offset: 0, has_more: false }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.trackerIssues({ owned_by_me: true, open_only: true, limit: 50, offset: 0 })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/tracker/issues?sort=oldest&owned_by_me=true&open_only=true&limit=50&offset=0',
+      expect.objectContaining({ credentials: 'include' }),
+    )
+  })
+
+  it('sends manager task recovery and hide controls to named idempotent routes', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      key: 'ROBOPARK-42', action: 'ok', status: 'saved', actor: 'admin',
+      performed_at: '2026-09-15T09:00:00Z', sync_state: 'pending', workflow: null,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.taskRetryNow('ROBOPARK-42', 'retry-key')
+    await api.taskHide('ROBOPARK-42', 'Дубль', 'hide-key')
+    await api.taskRestore('ROBOPARK-42', 'restore-key')
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/tracker/issues/ROBOPARK-42/retry-now', expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ 'Idempotency-Key': 'retry-key' }) }))
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/tracker/issues/ROBOPARK-42/hide', expect.objectContaining({ method: 'POST', body: JSON.stringify({ reason: 'Дубль' }) }))
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/tracker/issues/ROBOPARK-42/hide', expect.objectContaining({ method: 'DELETE', headers: expect.objectContaining({ 'Idempotency-Key': 'restore-key' }) }))
+  })
+
   it('keeps exact related-robot matching separate from the generic summary search', async () => {
     const fetchMock = vi.fn(async () =>
       new Response(

@@ -35,6 +35,7 @@ export type RouteManifestItem = {
   anyPermissions?: readonly string[]
   prerequisites?: readonly AccessPrerequisite[]
   surface: 'public' | 'standalone' | 'shell'
+  redirectTo?: string
   nav?: RouteNav
 }
 export type NavigationItem = Pick<RouteManifestItem, 'id' | 'path' | 'label' | 'icon'> & {
@@ -92,7 +93,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
   {
     id: 'overview',
     path: '/overview',
-    legacyPaths: ['/dashboard', '/operator'],
+    redirectTo: '/work',
     label: ru.nav.dashboard,
     icon: 'overview',
     permission: 'nav.dashboard',
@@ -111,26 +112,26 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
     icon: 'parks',
     prerequisites: ['password-changed', 'approved'],
     surface: 'shell',
-    nav: { group: 'operations', desktopOrder: 20, mobilePriority: { operator: 2 } },
+    nav: { group: 'operations', desktopOrder: 20 },
   },
   {
     id: 'work',
     path: '/work',
-    legacyPaths: ['/tasks'],
+    legacyPaths: ['/tasks', '/dashboard', '/operator'],
     label: ru.nav.tasks,
     icon: 'work',
-    permission: 'nav.tasks',
+    anyPermissions: ['nav.tasks', 'nav.dashboard', 'nav.admin.tracker'],
     prerequisites: SHELL_PREREQUISITES,
     surface: 'shell',
     nav: {
       group: 'operations',
       desktopOrder: 30,
-      mobilePriority: { royal: 3, admin: 3, operator: 3, mechanic: 1 },
+      mobilePriority: { royal: 3, admin: 3, operator: 2, mechanic: 1 },
     },
   },
   {
     id: 'work-issue', path: '/work/:issueKey', label: 'Работа', icon: 'work',
-    permission: 'nav.tasks', prerequisites: SHELL_PREREQUISITES, surface: 'shell',
+    anyPermissions: ['nav.tasks', 'nav.dashboard', 'nav.admin.tracker'], prerequisites: SHELL_PREREQUISITES, surface: 'shell',
   },
   {
     id: 'robots',
@@ -144,7 +145,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
     nav: {
       group: 'operations',
       desktopOrder: 40,
-      mobilePriority: { operator: 4, mechanic: 3, driver: 2 },
+      mobilePriority: { operator: 3, mechanic: 3, driver: 2 },
     },
   },
   {
@@ -195,7 +196,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
     icon: 'work',
     prerequisites: SHELL_PREREQUISITES,
     surface: 'shell',
-    nav: { group: 'collaboration', desktopOrder: 65 },
+    nav: { group: 'collaboration', desktopOrder: 65, mobilePriority: { operator: 4 } },
   },
   {
     id: 'campaign-detail', path: '/campaigns/:campaignId', label: 'Кампания', icon: 'work',
@@ -273,12 +274,12 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
   {
     id: 'admin-tracker',
     path: '/admin/tracker',
+    redirectTo: '/work',
     label: 'Startrek',
     icon: 'integration',
     permission: 'nav.admin.tracker',
     prerequisites: SHELL_PREREQUISITES,
     surface: 'shell',
-    nav: { group: 'administration', desktopOrder: 90 },
   },
   {
     id: 'admin-robot-check',

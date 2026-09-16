@@ -51,6 +51,7 @@ it.each([
   ['host_work_in_progress', 409, 'Другая операция уже выполняется.'],
   ['job_in_progress', 409, 'Другая операция уже выполняется.'],
   ['host_operation_failed', 400, 'Хост не смог завершить операцию. Соберите диагностику для проверки.'],
+  ['request_superseded', 400, 'Запрос обновления отменён после другой установки. Проверьте текущую версию и повторите при необходимости.'],
 ])('maps host operation error %s without leaking implementation details', (detail, status, expected) => {
   expect(mapApiError(new ApiError(status, detail), 'Ошибка')).toBe(expected)
 })

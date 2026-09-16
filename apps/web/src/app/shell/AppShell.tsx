@@ -9,6 +9,8 @@ import { useTheme } from '../../design-system/theme/ThemeProvider'
 import { DENSITY_MEDIA_QUERY } from '../../design-system/theme/theme'
 import { ru, roleLabel } from '../../i18n/ru'
 import { resourceStore, useCachedResource } from '../../lib/resource'
+import { startChangeFeed } from '../../lib/changeFeed'
+import { INVENTORY_REVISION_CHANGED } from '../../domains/inventory/inventoryRevision'
 import { useParkScope } from '../park/parkScope'
 import { navigationForUser } from '../routing/accessPolicy'
 import type { NavigationItem, NavGroup } from '../routing/routeManifest'
@@ -233,7 +235,7 @@ function NavigationLink({
 }
 
 export function AppShell() {
-  const { user, logout } = useAuth()
+  const { user, logout, refreshUser } = useAuth()
   const { parkId, selectedPark, parks, loading, locked, setParkId, allowAllParks } = useParkScope()
   const {
     preference,
@@ -280,6 +282,29 @@ export function AppShell() {
     : 0
   const refreshBadge = badgeResource.refresh
 
+  const feedScope = location.pathname.startsWith('/work') && user?.permissions?.includes('tracker.read')
+    ? user.role === 'admin' || user.role === 'royal' ? 'work' : 'work:mine'
+    : location.pathname.startsWith('/inventory') && user?.permissions?.includes('nav.inventory') && parkId != null
+      ? `inventory:${parkId}`
+      : null
+
+  useEffect(() => {
+    if (!user || !feedScope) return
+    return startChangeFeed({
+      identity: String(user.id),
+      scope: feedScope,
+      load: async scope => (await api.changeRevision(scope)).revision,
+      onChange: () => {
+        if (feedScope.startsWith('work')) resourceStore.revalidate(`work:${user.id}:`, { prefix: true })
+        else window.dispatchEvent(new CustomEvent(INVENTORY_REVISION_CHANGED, { detail: parkId }))
+      },
+      onAuthorizationFailure: () => {
+        if (feedScope.startsWith('work')) resourceStore.invalidate(`work:${user.id}:`, { prefix: true })
+        void refreshUser().catch(() => {})
+      },
+    })
+  }, [feedScope, user, parkId, refreshUser])
+
   useLayoutEffect(() => {
     if (committedBadgeKey.current === badgeKey) return
     if (committedBadgeKey.current) resourceStore.invalidate(committedBadgeKey.current)
@@ -311,21 +336,38 @@ export function AppShell() {
     setMoreOpen(false)
     const focusNavigationType = navigationTypeRef.current
 
+    let observer: MutationObserver | undefined
+    let observerTimeout: number | undefined
     const timer = window.setTimeout(() => {
       const main = document.querySelector<HTMLElement>('#main-content')
       if (!main) return
-      const heading = main.querySelector<HTMLElement>('h1')
-      const target = heading ?? main
-      const addedTabIndex = heading != null && !heading.hasAttribute('tabindex')
-      if (addedTabIndex) heading.setAttribute('tabindex', '-1')
-      if (focusNavigationType === 'POP') target.focus({ preventScroll: true })
-      else target.focus()
-      if (addedTabIndex) {
-        heading.addEventListener('blur', () => heading.removeAttribute('tabindex'), { once: true })
+      const focus = (target: HTMLElement) => {
+        const addedTabIndex = target !== main && !target.hasAttribute('tabindex')
+        if (addedTabIndex) target.setAttribute('tabindex', '-1')
+        if (focusNavigationType === 'POP') target.focus({ preventScroll: true })
+        else target.focus()
+        if (addedTabIndex) {
+          target.addEventListener('blur', () => target.removeAttribute('tabindex'), { once: true })
+        }
       }
+      const heading = main.querySelector<HTMLElement>('h1')
+      if (heading) { focus(heading); return }
+      focus(main)
+      observer = new MutationObserver(() => {
+        const loadedHeading = main.querySelector<HTMLElement>('h1')
+        if (!loadedHeading) return
+        observer?.disconnect()
+        if (document.activeElement === main) focus(loadedHeading)
+      })
+      observer.observe(main, { childList: true, subtree: true })
+      observerTimeout = window.setTimeout(() => observer?.disconnect(), 5_000)
     }, 0)
 
-    return () => window.clearTimeout(timer)
+    return () => {
+      window.clearTimeout(timer)
+      window.clearTimeout(observerTimeout)
+      observer?.disconnect()
+    }
   }, [location.pathname])
 
   useEffect(() => {
@@ -364,6 +406,7 @@ export function AppShell() {
       </a>
 
       <aside className="sidebar rp-shell__sidebar">
+        <strong aria-label={ru.brandExpanded} className="rp-shell__product-brand">{ru.brand}</strong>
         {!phoneViewport ? (
           <ParkIdentity
             allowAllParks={allowAllParks}
@@ -539,6 +582,7 @@ export function AppShell() {
         <Button leadingIcon="logout" onClick={() => void logout()} variant="secondary">
           {ru.signOut}
         </Button>
+        <footer className="rp-shell__about">Разработчик: tehblokdan</footer>
       </BottomSheet>
     </div>
   )

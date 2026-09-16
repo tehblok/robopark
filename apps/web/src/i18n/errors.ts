@@ -9,6 +9,7 @@ const opsErrors: Record<string, string> = {
   host_work_in_progress: 'Другая операция уже выполняется.',
   job_in_progress: 'Другая операция уже выполняется.',
   host_operation_failed: 'Хост не смог завершить операцию. Соберите диагностику для проверки.',
+  request_superseded: 'Запрос обновления отменён после другой установки. Проверьте текущую версию и повторите при необходимости.',
   host_bridge_unavailable: 'Служба управления хостом недоступна.',
   inspection_not_found: 'Проверка архива устарела. Выберите ZIP заново.',
   inspection_already_approved: 'Этот архив уже передан на установку.',

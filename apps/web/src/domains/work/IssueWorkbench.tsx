@@ -16,7 +16,7 @@ import {
   type Park,
   type Paged,
   type TrackerIssue,
-  type TrackerComment,
+  type TaskTimelineItem,
   type TrackerIssueDetail,
   type User,
 } from '../../api'
@@ -24,10 +24,9 @@ import { SyncStatus } from '../../design-system/status/SyncStatus'
 import { IssueActionsPanel } from '../../components/tracker/IssueActionsPanel'
 import { IssueDetailPanel } from '../../components/tracker/IssueDetailPanel'
 import { IssueRichText } from '../../components/tracker/IssueRichText'
-import { sortCommentsChronologically, splitPlatformComment } from '../../components/tracker/commentChat'
-import { formatAge, formatDateTime, personName, statusTone } from '../../components/tracker/issue-utils'
+import { summarizeIssueDescription } from '../../components/tracker/issueDescription'
+import { formatAge, personName, statusTone } from '../../components/tracker/issue-utils'
 import { Button } from '../../design-system/actions/Button'
-import { ru } from '../../i18n/ru'
 import { EntityRow } from '../../design-system/data/EntityRow'
 import {
   EmptyState,
@@ -44,11 +43,15 @@ import {
   type DomainError,
 } from '../../shared/api/classifyApiError'
 import { resourceStore, useCachedResource } from '../../lib/resource'
-import { safeHttpUrl } from '../../lib/safeUrl'
 import { Tabs, TabPanel } from '../../design-system/navigation/Tabs'
 import { WorkRobotCheck } from './WorkRobotCheck'
 import { TaskPartsPanel } from '../inventory/TaskPartsPanel'
 import { WorkFilters } from './WorkFilters'
+import { RepairSla } from './RepairSla'
+import { SubmitReviewForm } from './SubmitReviewForm'
+import { TaskSyncStatus } from './TaskSyncStatus'
+import { TaskTimeline } from './TaskTimeline'
+import { StableMutationKey } from './stableMutationKey'
 import { loadWorkPage, oldestFirst } from './workData'
 import {
   buildWorkSearch,
@@ -76,7 +79,11 @@ export type IssueWorkbenchApiClient = Pick<
   | 'writeoffInventoryForTask'
   | 'inventoryComponentPhotoUrl'
   | 'inventoryPartPhotoUrl'
->
+> & Partial<Pick<typeof api,
+  | 'taskTimeline' | 'taskDefectCodes' | 'taskMessage' | 'taskClaim' | 'taskHandoff'
+  | 'taskSubmitReview' | 'taskReturnReview' | 'taskApproveReview'
+  | 'taskRetryNow' | 'taskHide' | 'taskRestore'
+>>
 
 export type IssueWorkbenchProps = {
   apiClient?: IssueWorkbenchApiClient
@@ -92,6 +99,7 @@ export type IssueWorkbenchProps = {
   onOpenIssue(key: string): void
   onCloseIssue(): void
   onAuthorizationFailure(error: unknown): Promise<unknown>
+  now?: number
 }
 
 const retainableFailureKinds = new Set<DomainError['kind']>([
@@ -114,41 +122,43 @@ function failureFor(error: unknown, fallback: string): DomainError | null {
 
 function mechanicOwnsIssue(user: User, issue: TrackerIssueDetail): boolean {
   const expected = user.username.trim().toLocaleLowerCase()
+  const owner = issue.workflow ? issue.workflow.owner?.login : issue.assignee?.login
   return user.role === 'mechanic'
     && Boolean(expected)
-    && issue.assignee?.login?.trim().toLocaleLowerCase() === expected
+    && owner?.trim().toLocaleLowerCase() === expected
 }
 
-function significantComments(comments: TrackerComment[]): TrackerComment[] {
-  return sortCommentsChronologically(comments).filter(comment => (
-    splitPlatformComment(comment.text).body.length > 0 || (comment.attachments?.length ?? 0) > 0
-  ))
+function ClosedDisclosure({ title, children }: { title: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false)
+  return <section className="rp-responsive-disclosure"><header className="rp-responsive-disclosure__header">
+    <button aria-expanded={open} className="rp-responsive-disclosure__trigger" onClick={() => setOpen(value => !value)} type="button">{title}</button>
+  </header>{open ? <div className="rp-responsive-disclosure__content">{children}</div> : null}</section>
 }
 
-function WorkCommentHistory({ comments }: { comments: TrackerComment[] }) {
-  const sorted = sortCommentsChronologically(comments)
-  if (sorted.length === 0) return <p className="issue-muted">{ru.tracker.historyEmpty}</p>
-  return <ol className="rp-work-comment-history">
-    {sorted.map(comment => {
-      const { body, signature } = splitPlatformComment(comment.text)
-      return <li key={comment.id}>
-        <p className="rp-work-comment-history__meta">
-          <strong>{comment.author?.trim() || comment.author_login?.trim() || ru.tracker.fields.nobody}</strong>
-          {comment.created_at ? <time>{formatDateTime(comment.created_at)}</time> : null}
-        </p>
-        {body ? <IssueRichText text={body} /> : null}
-        {comment.attachments?.length ? <ul className="issue-attachments">
-          {comment.attachments.map(attachment => {
-            const url = safeHttpUrl(attachment.url)
-            return <li key={attachment.id}>
-              {url ? <a href={url} rel="noreferrer" target="_blank">{attachment.name}</a> : attachment.name}
-            </li>
-          })}
-        </ul> : null}
-        {signature ? <p className="issue-muted">{signature}</p> : null}
-      </li>
-    })}
-  </ol>
+function TaskIssueSummary({ issue, now, onOpenRobotCheck, robotReadOnly }: { issue: TrackerIssueDetail; now: number; onOpenRobotCheck?: () => void; robotReadOnly: boolean }) {
+  const robot = normalizedRobotNumber(issue.robot)
+  const status = taskWorkflowStatus(issue.workflow?.display_status)
+  const description = summarizeIssueDescription(issue.description ?? '')
+  return <article className="issue-detail">
+    <header className="issue-detail-head"><div className="issue-detail-title-row"><a className="issue-detail-key" href={issue.url} rel="noreferrer" target="_blank">{issue.key}</a><StatusBadge tone={status.tone}>{status.label}</StatusBadge></div><h2 className="issue-detail-summary">{issue.summary}</h2></header>
+    <dl className="issue-fields">
+      {robot ? <div className="issue-field"><dt>Робот</dt><dd>{robotReadOnly || !onOpenRobotCheck ? robot : <button className="rp-work-robot-link" onClick={onOpenRobotCheck} type="button">{robot}</button>}</dd></div> : null}
+      <div className="issue-field"><dt>Ответственный</dt><dd>{personName(issue.workflow?.owner ?? issue.assignee)}</dd></div>
+    </dl>
+    <RepairSla deadline={issue.sla_deadline} now={now} source={issue.sla_source} />
+    {description.trim() ? <section className="issue-section"><h3>Описание</h3><IssueRichText text={description} /></section> : null}
+  </article>
+}
+
+function taskWorkflowStatus(value: string | undefined): { label: string; tone: StatusTone } {
+  switch (value) {
+    case 'queued': return { label: 'В очереди', tone: 'neutral' }
+    case 'in_progress': return { label: 'В работе', tone: 'info' }
+    case 'review': return { label: 'На проверке', tone: 'warning' }
+    case 'closed': return { label: 'Закрыта', tone: 'success' }
+    case 'hidden': return { label: 'Скрыта', tone: 'neutral' }
+    default: return { label: 'Статус обновляется', tone: 'neutral' }
+  }
 }
 
 function EmbeddedTaskCollaboration(props: React.ComponentProps<typeof TaskCollaboration>) {
@@ -166,6 +176,7 @@ function EmbeddedTaskCollaboration(props: React.ComponentProps<typeof TaskCollab
 }
 
 const RELATED_PAGE_SIZE = 10
+const FALLBACK_NOW = Date.now()
 
 function normalizedRobotNumber(raw?: string | null): string | null {
   let text = raw?.trim().toUpperCase() ?? ''
@@ -184,16 +195,16 @@ function issueStatusTone(issue: TrackerIssue): StatusTone {
   }
 }
 
-function issueMeta(issue: TrackerIssue): ReactNode {
+function issueMeta(issue: TrackerIssue, now: number): ReactNode {
   const robot = normalizedRobotNumber(issue.robot)
   const age = formatAge(issue.hours_created) || 'неизвестен'
   return <div className="rp-work-issue-meta">
     <span className="rp-work-issue-age">Возраст: <strong>{age}</strong></span>
     <span>{[
       robot ? `Робот ${robot}` : 'Робот не указан',
-      'SLA: нет данных',
       `Ответственный: ${personName(issue.assignee)}`,
     ].join(' · ')}</span>
+    <RepairSla deadline={issue.sla_deadline} now={now} source={issue.sla_source} />
   </div>
 }
 
@@ -204,6 +215,7 @@ function WorkIssueRows({
   user,
   apiClient,
   onClaimed,
+  now,
 }: {
   items: readonly TrackerIssue[]
   selected?: string
@@ -211,6 +223,7 @@ function WorkIssueRows({
   user?: User
   apiClient?: IssueWorkbenchApiClient
   onClaimed?: () => void
+  now: number
 }) {
   const mechanicLogin = (user?.username || '').trim()
   const seen = new Set<string>()
@@ -222,24 +235,32 @@ function WorkIssueRows({
   return <div className="rp-work-entities">
     {uniqueItems.map((item) => <ClaimableIssueRow
       apiClient={apiClient} item={item} key={item.key} mechanicLogin={mechanicLogin}
-      onClaimed={onClaimed} onOpen={onOpen} selected={selected}
+      now={now} onClaimed={onClaimed} onOpen={onOpen} selected={selected}
       requireClaim={user?.role === 'mechanic'} />)}
   </div>
 }
 
-function ClaimableIssueRow({ item, selected, onOpen, requireClaim, mechanicLogin, apiClient, onClaimed }: {
+function ClaimableIssueRow({ item, selected, onOpen, requireClaim, mechanicLogin, apiClient, onClaimed, now }: {
   item: TrackerIssue; selected?: string; onOpen: (key: string) => void; requireClaim: boolean
   mechanicLogin: string; apiClient?: IssueWorkbenchApiClient; onClaimed?: () => void
+  now: number
 }) {
   const [claiming, setClaiming] = useState(false)
   const [claimError, setClaimError] = useState('')
+  const mutationKey = useRef(new StableMutationKey())
   const assigned = item.assignee?.login?.trim() ?? ''
   const mine = Boolean(mechanicLogin && assigned.toLocaleLowerCase() === mechanicLogin.toLocaleLowerCase())
   const claim = async () => {
     if (!apiClient || !mechanicLogin || claiming) return
     setClaiming(true); setClaimError('')
     try {
-      await apiClient.trackerAssign(item.key, mechanicLogin)
+      if (apiClient.taskClaim) {
+        const payload = mechanicLogin
+        const key = mutationKey.current.get('claim', payload)
+        await apiClient.taskClaim(item.key, key)
+        mutationKey.current.succeeded('claim', payload)
+      }
+      else await apiClient.trackerAssign(item.key, mechanicLogin)
       onClaimed?.()
       onOpen(item.key)
     } catch (error) {
@@ -259,7 +280,7 @@ function ClaimableIssueRow({ item, selected, onOpen, requireClaim, mechanicLogin
       : <Button busy={claiming} disabled={!mechanicLogin} onClick={() => void claim()}>Взять в работу</Button>
   return <EntityRow
     actions={<>{action}{claimError ? <span role="alert">{claimError}</span> : null}</>}
-    meta={issueMeta(item)} status={<StatusBadge tone={issueStatusTone(item)}>{item.status}</StatusBadge>}
+    meta={issueMeta(item, now)} status={<StatusBadge tone={issueStatusTone(item)}>{item.status}</StatusBadge>}
     statusLabel={`Статус задачи ${item.key}`}
     title={<><strong>{item.key}</strong><span> · {item.summary}</span></>}
   />
@@ -270,11 +291,13 @@ function RelatedTaskGroup({
   empty,
   resource,
   onOpen,
+  now,
 }: {
   title: string
   empty: string
   resource: ReturnType<typeof useCachedResource<Paged<TrackerIssue>>>
   onOpen: (key: string) => void
+  now: number
 }) {
   const failure = failureFor(resource.error, `Не удалось загрузить раздел «${title}».`)
   const data = resource.data
@@ -287,14 +310,15 @@ function RelatedTaskGroup({
       requestId={failure.requestId}
       title={failure.title}
     /> : resource.isLoading && !data ? <LoadingState label={`Загружаем: ${title.toLocaleLowerCase('ru')}`} />
-      : data?.items.length ? <WorkIssueRows items={data.items} onOpen={onOpen} />
+      : data?.items.length ? <WorkIssueRows items={data.items} now={now} onOpen={onOpen} />
         : <p>{empty}</p>}
   </section>
 }
 
-function RelatedTasksPanel({ apiClient, issueKey, onOpen, park, resourcePrefix, robotNumber, queue, kind }: {
+function RelatedTasksPanel({ apiClient, issueKey, onOpen, park, resourcePrefix, robotNumber, queue, kind, now }: {
   apiClient: IssueWorkbenchApiClient; issueKey: string; onOpen: (key: string) => void
   park?: string; resourcePrefix: string; robotNumber: string; queue: string; kind: 'open' | 'closed'
+  now: number
 }) {
   const [page, setPage] = useState(0)
   const related = useCachedResource<Paged<TrackerIssue>>(
@@ -310,7 +334,7 @@ function RelatedTasksPanel({ apiClient, issueKey, onOpen, park, resourcePrefix, 
     <SyncStatus {...related} />
     <RelatedTaskGroup
       empty={kind === 'open' ? 'Открытых ремонтов по этому роботу нет.' : 'За последние 14 дней закрытых ремонтов по этому роботу нет.'}
-      onOpen={onOpen} resource={related}
+      now={now} onOpen={onOpen} resource={related}
       title={`${kind === 'open' ? 'Открытые' : 'Закрытые'} задачи робота ${robotNumber}`}
     />
     {related.data ? <nav className="rp-work-pagination" aria-label="Страницы ремонтов">
@@ -397,6 +421,7 @@ function IssueWorkbenchOwner({
   onAuthorizationFailure,
   accessKey,
   getAccessGeneration,
+  now = FALLBACK_NOW,
 }: Required<Pick<IssueWorkbenchProps, 'apiClient'>> & Omit<IssueWorkbenchProps, 'apiClient'> & {
   accessKey: string
   getAccessGeneration: () => number
@@ -406,21 +431,32 @@ function IssueWorkbenchOwner({
   const allowUntagged = user.role === 'operator'
     || user.role === 'admin'
     || user.role === 'royal'
+  const manager = user.role === 'admin' || user.role === 'royal'
   const requestState = useMemo<WorkUrlState>(() => {
-    if (allowUntagged || !state.filters.untagged) return state
+    if ((allowUntagged || !state.filters.untagged) && (manager || !state.filters.includeHidden)) return state
     const filters = { ...state.filters }
-    delete filters.untagged
+    if (!allowUntagged) delete filters.untagged
+    if (!manager) delete filters.includeHidden
     return { ...state, filters }
-  }, [allowUntagged, state])
+  }, [allowUntagged, manager, state])
   const listKey = `${accessPrefix}list:${selectedPark.id}:${JSON.stringify({ filters: requestState.filters, sort: requestState.sort, page: requestState.page })}`
-  const detailKey = issueKey ? `${accessPrefix}issue:${issueKey}` : ''
+  const includeHidden = manager && Boolean(requestState.filters.includeHidden)
+  const detailKey = issueKey ? `${accessPrefix}issue:${issueKey}${includeHidden ? ':hidden' : ''}` : ''
   const commentsKey = issueKey ? `${accessPrefix}comments:${issueKey}` : ''
+  const ownedKey = `${accessPrefix}owned:${user.username}`
   const blockedRef = useRef(false)
   const blockedErrorRef = useRef<unknown>(null)
   const refreshStartedRef = useRef(false)
   const ownerGeneration = useRef(0)
   const [authorizationFailure, setAuthorizationFailure] = useState<DomainError | null>(null)
   const [relatedRefreshGeneration, setRelatedRefreshGeneration] = useState(0)
+  const [reviewOpen, setReviewOpen] = useState(false)
+  const [hideOpen, setHideOpen] = useState(false)
+  const [hideReason, setHideReason] = useState('')
+  const [taskControlBusy, setTaskControlBusy] = useState(false)
+  const [taskControlMessage, setTaskControlMessage] = useState('')
+  const [taskControlError, setTaskControlError] = useState('')
+  const mutationKeys = useRef(new StableMutationKey())
 
   useLayoutEffect(() => () => { ++ownerGeneration.current }, [])
 
@@ -462,15 +498,41 @@ function IssueWorkbenchOwner({
     listKey,
     () => guarded(() => loadWorkPage(apiClient, requestState, selectedPark.tag)),
   )
+  const owned = useCachedResource<Paged<TrackerIssue>>(
+    ownedKey,
+    () => guarded(() => apiClient.trackerIssues({
+      owned_by_me: true,
+      open_only: true,
+      sort: 'oldest',
+      limit: 50,
+      offset: 0,
+    }).then(page => ({ ...page, items: oldestFirst(page.items) }))),
+    { enabled: user.role === 'mechanic' && Boolean(user.username.trim()) },
+  )
   const detail = useCachedResource<TrackerIssueDetail>(
     detailKey,
-    () => guarded(() => apiClient.trackerIssue(issueKey as string)),
+    () => guarded(() => includeHidden
+      ? apiClient.trackerIssue(issueKey as string, undefined, true)
+      : apiClient.trackerIssue(issueKey as string)),
     { enabled: Boolean(issueKey) },
   )
-  const comments = useCachedResource(
+  const hiddenDetail = Boolean(detail.data?.workflow?.hidden)
+  const comments = useCachedResource<TaskTimelineItem[]>(
     commentsKey,
-    () => guarded(() => apiClient.trackerComments(issueKey as string)),
-    { enabled: Boolean(issueKey) },
+    () => guarded(async () => apiClient.taskTimeline
+      ? apiClient.taskTimeline(issueKey as string)
+      : (await apiClient.trackerComments(issueKey as string)).map(comment => ({
+          id: comment.id, kind: 'tracker' as const,
+          author: comment.author ?? comment.author_login ?? 'Tracker', text: comment.text,
+          created_at: comment.created_at ?? '', sync_state: 'synced' as const,
+          attachments: comment.attachments ?? [],
+        }))),
+    { enabled: Boolean(issueKey && (!includeHidden || (detail.data && !hiddenDetail))) },
+  )
+  const defectCodes = useCachedResource(
+    `${accessPrefix}defect-codes`,
+    () => guarded(() => apiClient.taskDefectCodes ? apiClient.taskDefectCodes() : Promise.resolve([])),
+    { enabled: Boolean(issueKey && user.role === 'mechanic') },
   )
   const robotNumber = normalizedRobotNumber(detail.data?.robot)
   const relatedQueue = detail.data?.queue?.trim()
@@ -480,9 +542,7 @@ function IssueWorkbenchOwner({
   const relatedPrefix = robotNumber && relatedQueue
     ? `${accessPrefix}related:${issueKey}:${relatedQueue}:${relatedPark ?? 'untagged'}:${robotNumber}`
     : ''
-  const transitionsEnabled = Boolean(
-    issueKey && detail.data?.capabilities.transition,
-  )
+  const transitionsEnabled = false
   const transitionsKey = transitionsEnabled
     ? `${accessPrefix}transitions:${issueKey}`
     : ''
@@ -495,15 +555,17 @@ function IssueWorkbenchOwner({
   // Coalesced same-access reads can outlive their initiating render (including
   // StrictMode cleanup). Only the current resource owner handles their denial.
   useEffect(() => {
-    for (const error of [list.error, detail.error, comments.error, transitions.error]) {
+    for (const error of [list.error, owned.error, detail.error, comments.error, transitions.error]) {
       if (error) observeAuthorizationFailure(error)
     }
-  }, [comments.error, detail.error, list.error, observeAuthorizationFailure, transitions.error])
+  }, [comments.error, detail.error, list.error, observeAuthorizationFailure, owned.error, transitions.error])
 
   const listFailure = failureFor(
     list.error,
     'Не удалось загрузить очередь задач.',
   )
+  const ownedItems = user.role === 'mechanic' ? oldestFirst(owned.data?.items ?? []) : []
+  const ownedKeys = new Set(ownedItems.map(item => item.key))
   const detailFailure = failureFor(
     detail.error,
     'Не удалось загрузить задачу.',
@@ -577,20 +639,22 @@ function IssueWorkbenchOwner({
     onOpenIssue(key)
   }
 
-  const invalidateMutationResources = useCallback(() => {
+  const invalidateMutationResources = useCallback((refreshComments = true) => {
     resourceStore.invalidate(`${accessPrefix}list:${selectedPark.id}:`, {
       prefix: true,
     })
+    resourceStore.invalidate(ownedKey)
     if (!issueKey) return
     resourceStore.invalidate(detailKey)
-    resourceStore.invalidate(commentsKey)
+    if (refreshComments) resourceStore.invalidate(commentsKey)
     resourceStore.invalidate(`${accessPrefix}transitions:${issueKey}`)
     resourceStore.invalidate(`${accessPrefix}related:${issueKey}:`, { prefix: true })
     setRelatedRefreshGeneration((generation) => generation + 1)
     void Promise.allSettled([
       list.refresh(),
+      ...(user.role === 'mechanic' ? [owned.refresh()] : []),
       detail.refresh(),
-      comments.refresh(),
+      ...(refreshComments ? [comments.refresh()] : []),
       ...(transitionsEnabled ? [transitions.refresh()] : []),
     ])
   }, [
@@ -601,12 +665,15 @@ function IssueWorkbenchOwner({
     detailKey,
     issueKey,
     list,
+    owned,
+    ownedKey,
     selectedPark.id,
     transitions,
     transitionsEnabled,
+    user.role,
   ])
 
-  const mutate = useCallback(async (action: (assertCurrent: () => void) => Promise<unknown>, onSuccess?: () => void) => {
+  const mutate = useCallback(async (action: (assertCurrent: () => void) => Promise<unknown>, onSuccess?: () => void, refreshComments = true) => {
     const generation = ownerGeneration.current
     const accessGeneration = getAccessGeneration()
     const assertCurrent = () => {
@@ -620,28 +687,60 @@ function IssueWorkbenchOwner({
       throw error
     }
     if (generation !== ownerGeneration.current || getAccessGeneration() !== accessGeneration) return
-    invalidateMutationResources()
+    invalidateMutationResources(refreshComments)
     onSuccess?.()
   }, [getAccessGeneration, guarded, invalidateMutationResources])
 
+  const lifecycleMutation = useCallback(async <T,>(action: string, payload: unknown, request: (key: string) => Promise<T>): Promise<T> => {
+    const serialized = JSON.stringify(payload)
+    const key = mutationKeys.current.get(action, serialized)
+    const result = await request(key)
+    mutationKeys.current.succeeded(action, serialized)
+    return result
+  }, [])
+
+  const runTaskControl = useCallback(async (
+    action: string,
+    payload: unknown,
+    request: (key: string) => Promise<unknown>,
+    message: string,
+    onSuccess?: () => void,
+    refreshComments = true,
+  ) => {
+    if (taskControlBusy) return
+    setTaskControlBusy(true)
+    setTaskControlMessage('')
+    setTaskControlError('')
+    try {
+      await mutate(() => lifecycleMutation(action, payload, request), onSuccess, refreshComments)
+      setTaskControlMessage(message)
+    } catch (error) {
+      setTaskControlError(classifyApiError(error, 'Не удалось изменить задачу.').description)
+    } finally {
+      setTaskControlBusy(false)
+    }
+  }, [lifecycleMutation, mutate, taskControlBusy])
+
+  const effectiveCommentsFailure = hiddenDetail ? null : commentsFailure
   const detailSideFailure = useMemo(() => {
     const failures = [
       detailFailure,
-      commentsFailure,
+      effectiveCommentsFailure,
       transitionsFailure,
     ].filter((failure): failure is DomainError => failure != null)
     return failures.find((failure) => !canRetainProtectedData(failure))
       ?? failures[0]
       ?? null
-  }, [commentsFailure, detailFailure, transitionsFailure])
+  }, [detailFailure, effectiveCommentsFailure, transitionsFailure])
   const detailSideDataAvailable = Boolean(
     detail.data
-      && comments.data !== undefined
+      && (hiddenDetail || comments.data !== undefined)
       && (!transitionsEnabled || transitions.data !== undefined),
   )
   const canRenderDetailActions = Boolean(
-    detail.data
+      detail.data
       && mechanicCanWork
+      && !hiddenDetail
       && (
         !detailSideFailure
         || (
@@ -651,10 +750,7 @@ function IssueWorkbenchOwner({
       ),
   )
   const taskComments = comments.data ?? []
-  const latestSignificantComment = significantComments(taskComments).at(-1)
-  const previousTaskComments = latestSignificantComment
-    ? taskComments.filter(comment => comment.id !== latestSignificantComment.id)
-    : taskComments
+  const hasQualifyingComment = detail.data?.workflow?.has_current_cycle_comment ?? false
   if (authorizationFailure) {
     return (
       <ErrorState
@@ -671,6 +767,7 @@ function IssueWorkbenchOwner({
         driver={user.role === 'driver'}
         key={buildWorkSearch(state, null)}
         loading={list.isRevalidating}
+        manager={manager}
         onApply={(next) => onStateChange({ ...state, ...next }, { replace: false })}
         value={requestState}
       />
@@ -694,7 +791,7 @@ function IssueWorkbenchOwner({
                 failure={detailSideFailure}
                 onRetry={() => void Promise.allSettled([
                   detail.refresh(),
-                  comments.refresh(),
+                  ...(!hiddenDetail ? [comments.refresh()] : []),
                   ...(transitionsEnabled ? [transitions.refresh()] : []),
                 ])}
               >
@@ -717,17 +814,47 @@ function IssueWorkbenchOwner({
                         panelIdFor={tab => `work-panel-${tab}`} />
                     </> : null}
                     <TabPanel id="work-panel-task" labelledBy="tab-task" active={activeTab === 'task'} key={issueKey}>
-                    <SyncStatus updatedAt={detail.updatedAt !== null && comments.updatedAt !== null ? Math.min(detail.updatedAt, comments.updatedAt) : null}
-                      isRevalidating={detail.isRevalidating || comments.isRevalidating}
-                      error={detail.error || comments.error} />
-                    <IssueDetailPanel
+                    <SyncStatus updatedAt={hiddenDetail ? detail.updatedAt : detail.updatedAt !== null && comments.updatedAt !== null ? Math.min(detail.updatedAt, comments.updatedAt) : null}
+                      isRevalidating={detail.isRevalidating || (!hiddenDetail && comments.isRevalidating)}
+                      error={detail.error || (!hiddenDetail ? comments.error : null)} />
+                    {detail.data?.workflow ? <>
+                      <TaskIssueSummary issue={detail.data} now={now} robotReadOnly={!mechanicCanWork}
+                        onOpenRobotCheck={mechanicCanWork ? () => changeTab('check') : undefined} />
+                      <TaskSyncStatus state={detail.data.workflow.sync_state} />
+                      {manager ? <section aria-label="Управление задачей" className="issue-section">
+                        {detail.data.workflow.hidden ? <>
+                          <p>Причина скрытия: {detail.data.workflow.hidden.reason}</p>
+                          <Button busy={taskControlBusy} onClick={() => void runTaskControl(
+                            'restore-task', {}, key => apiClient.taskRestore!(detail.data!.key, key),
+                            'Задача восстановлена',
+                          )} variant="secondary">Восстановить задачу</Button>
+                        </> : <>
+                          {detail.data.workflow.sync_state === 'needs_attention' ? <Button busy={taskControlBusy} onClick={() => void runTaskControl(
+                            'retry-now', {}, key => apiClient.taskRetryNow!(detail.data!.key, key),
+                            'Повторная отправка запущена',
+                          )} variant="secondary">Повторить сейчас</Button> : null}
+                          {!hideOpen ? <Button onClick={() => setHideOpen(true)} variant="secondary">Скрыть задачу</Button> : <div className="form-grid">
+                            <label className="field"><span className="field-label">Причина скрытия</span><textarea maxLength={4000} onChange={event => setHideReason(event.target.value)} value={hideReason} /></label>
+                            <div className="form-actions"><Button busy={taskControlBusy} disabled={!hideReason.trim()} onClick={() => void runTaskControl(
+                              'hide-task', { reason: hideReason.trim() }, key => apiClient.taskHide!(detail.data!.key, hideReason.trim(), key),
+                              'Задача скрыта', includeHidden ? undefined : onCloseIssue, false,
+                            )} variant="danger">Подтвердить скрытие</Button><Button onClick={() => { setHideOpen(false); setHideReason('') }} variant="secondary">Отмена</Button></div>
+                          </div>}
+                        </>}
+                        {taskControlMessage ? <p role="status">{taskControlMessage}</p> : null}
+                        {taskControlError ? <p role="alert">{taskControlError}</p> : null}
+                      </section> : null}
+                      {!hiddenDetail ? <TaskTimeline items={taskComments} /> : null}
+                    </> : <IssueDetailPanel
                       currentUser={user.tracker_login ?? user.username} accountKey={user.username}
                       commentsLoading={comments.isLoading && !comments.data}
-                      comments={latestSignificantComment ? [latestSignificantComment] : []} issue={detail.data ?? null}
-                      loading={detail.isLoading && !detail.data} showRobotCheck={false}
-                      robotReadOnly={!mechanicCanWork}
-                      onOpenRobotCheck={mechanicCanWork ? () => changeTab('check') : undefined}
-                    />
+                      comments={taskComments.length ? [{
+                        id: taskComments.at(-1)!.id, text: taskComments.at(-1)!.text,
+                        author: taskComments.at(-1)!.author, created_at: taskComments.at(-1)!.created_at,
+                        attachments: taskComments.at(-1)!.attachments,
+                      }] : []} issue={detail.data ?? null} loading={detail.isLoading && !detail.data}
+                      showRobotCheck={false} robotReadOnly={!mechanicCanWork}
+                      onOpenRobotCheck={mechanicCanWork ? () => changeTab('check') : undefined} />}
                     {detail.data && user.role === 'mechanic' && !mechanicCanWork ? (
                       <p className="panel-hint" role="status">
                         {detail.data.assignee
@@ -741,18 +868,31 @@ function IssueWorkbenchOwner({
                         draftOwner={user.username}
                         currentUser={user.tracker_login ?? user.username}
                         issueKey={detail.data.key}
-                        issueUrl={detail.data.url}
+                        role={detail.data.workflow ? user.role : undefined}
+                        reviewState={detail.data.workflow?.review_state}
                         onAssign={(assignee) => mutate(
                           (assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'assign', { assignee }, headers => apiClient.trackerAssign(detail.data!.key, assignee, headers), assertCurrent),
                         )}
-                        onAttach={(file) => mutate(
+                        onAttach={detail.data.workflow ? undefined : (file) => mutate(
                           async (assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'attach', await attachmentIdentity(file), headers => apiClient.trackerAttach(detail.data!.key, file, headers), assertCurrent),
                         )}
-                        onClose={() => mutate((assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'close', {}, headers => apiClient.trackerClose(detail.data!.key, headers), assertCurrent), onCloseIssue)}
+                        onClose={detail.data.workflow ? async () => undefined : () => mutate((assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'close', {}, headers => apiClient.trackerClose(detail.data!.key, headers), assertCurrent), onCloseIssue)}
                         onComment={(text) => mutate(
-                          (assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'comment', { text }, headers => apiClient.trackerComment(detail.data!.key, text, headers), assertCurrent),
+                          (assertCurrent) => detail.data!.workflow && apiClient.taskMessage
+                            ? lifecycleMutation('message', text, key => apiClient.taskMessage!(detail.data!.key, text, key))
+                            : runTrackerSubmission(user.username, detail.data!, 'comment', { text }, headers => apiClient.trackerComment(detail.data!.key, text, headers), assertCurrent),
                         )}
-                        onTransition={(transition) => mutate(
+                        onSubmitReview={async () => { setReviewOpen(true) }}
+                        onReturnReview={async () => {
+                          const response = window.prompt('Причина возврата')
+                          if (response == null) { mutationKeys.current.cancel('return-review'); return }
+                          const reason = response.trim()
+                          if (reason && apiClient.taskReturnReview) await mutate(() => lifecycleMutation('return-review', { reason }, key => apiClient.taskReturnReview!(detail.data!.key, reason, undefined, key)))
+                        }}
+                        onApproveReview={async () => {
+                          if (apiClient.taskApproveReview) await mutate(() => lifecycleMutation('approve-review', {}, key => apiClient.taskApproveReview!(detail.data!.key, key)), onCloseIssue)
+                        }}
+                        onTransition={detail.data.workflow ? async () => undefined : (transition) => mutate(
                           (assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'transition', { transition }, headers => apiClient.trackerTransition(detail.data!.key, transition, undefined, headers), assertCurrent),
                         )}
                         onUnassign={() => mutate(
@@ -761,25 +901,38 @@ function IssueWorkbenchOwner({
                         transitions={transitions.data ?? []}
                       />
                     ) : null}
-                    {detail.data ? <ResponsiveDisclosureGroup label="Дополнительные разделы задачи">
+                    {reviewOpen && detail.data && user.role === 'mechanic' ? <SubmitReviewForm
+                      defectCodes={defectCodes.data ?? []} hasQualifyingComment={Boolean(hasQualifyingComment)}
+                      onSubmit={async value => {
+                        if (!apiClient.taskSubmitReview) return
+                        const payload = { defectCode: value.defectCode, comment: value.comment ?? '', photo: {
+                          name: value.photo.name, type: value.photo.type, size: value.photo.size, lastModified: value.photo.lastModified,
+                        } }
+                        await mutate(() => lifecycleMutation('submit-review', payload, key => apiClient.taskSubmitReview!(detail.data!.key, value, key)))
+                        setReviewOpen(false)
+                      }} /> : null}
+                    {detail.data?.workflow ? <div aria-label="Дополнительные разделы задачи" className="rp-responsive-disclosure-group" role="group">
                       {user.role === 'mechanic' && mechanicCanWork ? (
-                        <ResponsiveDisclosure id="parts" title="Использовать запчасть">
+                        <ClosedDisclosure title="Заказать запчасть">
                           <div id="parts">
                             <TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={taskParkId} />
                           </div>
-                        </ResponsiveDisclosure>
+                        </ClosedDisclosure>
                       ) : null}
-                      <ResponsiveDisclosure id="history" title={ru.tracker.history}>
-                        <div id="history"><WorkCommentHistory comments={previousTaskComments} /></div>
-                      </ResponsiveDisclosure>
-                      <ResponsiveDisclosure id="handoff" title="Передача смены">
+                      <ClosedDisclosure title="Передать смену">
                         <div id="handoff">
                           <EmbeddedTaskCollaboration issueKey={detail.data.key} owner={user.username}
                             active={activeTab === 'task' && mechanicCanWork}
                             canWrite={detail.data.capabilities.comment && mechanicCanWork}
+                            lifecycle
+                            onHandoff={value => mutate(() => lifecycleMutation('handoff', value, key => apiClient.taskHandoff!(detail.data!.key, value, key)))}
                             onAuthorizationFailure={observeAuthorizationFailure} />
                         </div>
-                      </ResponsiveDisclosure>
+                      </ClosedDisclosure>
+                    </div> : detail.data ? <ResponsiveDisclosureGroup label="Дополнительные разделы задачи">
+                      {user.role === 'mechanic' && mechanicCanWork ? <ResponsiveDisclosure id="parts" title="Использовать запчасть"><TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={taskParkId} /></ResponsiveDisclosure> : null}
+                      <ResponsiveDisclosure id="history" title="История действий"><TaskTimeline items={taskComments.slice(0, -1)} /></ResponsiveDisclosure>
+                      <ResponsiveDisclosure id="handoff" title="Передача смены"><EmbeddedTaskCollaboration issueKey={detail.data.key} owner={user.username} active={activeTab === 'task' && mechanicCanWork} canWrite={detail.data.capabilities.comment && mechanicCanWork} onAuthorizationFailure={observeAuthorizationFailure} /></ResponsiveDisclosure>
                     </ResponsiveDisclosureGroup> : null}
                     </TabPanel>
                     {(['open', 'closed'] as const).map(kind => <TabPanel key={kind} id={`work-panel-${kind}`} labelledBy={`tab-${kind}`} active={activeTab === kind}>
@@ -787,6 +940,7 @@ function IssueWorkbenchOwner({
                         apiClient={apiClient} issueKey={issueKey ?? ''} kind={kind}
                         key={`${relatedPrefix}:${relatedRefreshGeneration}:${kind}`}
                         onOpen={onOpenRelatedIssue ?? saveAndOpenIssue} park={relatedPark}
+                        now={now}
                         resourcePrefix={relatedPrefix} robotNumber={robotNumber} queue={relatedQueue}
                       /> : <p>Робот в задаче не указан — связанные задачи недоступны.</p> : null}
                     </TabPanel>)}
@@ -817,7 +971,7 @@ function IssueWorkbenchOwner({
             >
               {list.isLoading && !list.data ? (
                 <LoadingState label="Загружаем очередь задач" />
-              ) : !listFailure && list.data?.items.length === 0 ? (
+              ) : !listFailure && list.data?.items.length === 0 && ownedItems.length === 0 ? (
                 <EmptyState
                   description="Измените фильтры или проверьте выбранный парк."
                   icon="work"
@@ -826,25 +980,26 @@ function IssueWorkbenchOwner({
               ) : list.data ? (
                 <div className="rp-work-list-scroll" ref={listScrollRef}>
                   <p className="rp-work-list-count">Показано {list.data.items.length}{list.data.total > list.data.items.length ? ` из ${list.data.total}` : ''}</p>
-                  {user.role === 'mechanic' && list.data.items.some(item => item.assignee?.login?.toLocaleLowerCase() === user.username.toLocaleLowerCase()) ? <>
+                  {ownedItems.length ? <>
                     <h3>Мои задачи в работе</h3>
                     <WorkIssueRows
                       apiClient={apiClient}
-                      items={oldestFirst(list.data.items).filter(item => item.assignee?.login?.toLocaleLowerCase() === user.username.toLocaleLowerCase())}
-                      onClaimed={() => void list.refresh()}
+                      items={ownedItems}
+                      onClaimed={() => { void list.refresh(); void owned.refresh() }}
                       onOpen={saveAndOpenIssue}
                       selected={issueKey}
+                      now={now}
                       user={user}
                     />
                     <h3>Очередь парка</h3>
                   </> : null}
                   <WorkIssueRows
                     apiClient={apiClient}
-                    items={oldestFirst(list.data.items).filter(item => user.role !== 'mechanic'
-                      || item.assignee?.login?.toLocaleLowerCase() !== user.username.toLocaleLowerCase())}
-                    onClaimed={() => void list.refresh()}
+                    items={oldestFirst(list.data.items).filter(item => !ownedKeys.has(item.key))}
+                    onClaimed={() => { void list.refresh(); void owned.refresh() }}
                     onOpen={saveAndOpenIssue}
                     selected={issueKey}
+                    now={now}
                     user={user}
                   />
                 </div>

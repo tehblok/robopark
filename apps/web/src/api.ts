@@ -341,6 +341,9 @@ export type TrackerIssue = {
   priority?: string | null
   type?: string | null
   assignee?: TrackerPerson | null
+  queued_at?: string | null
+  sla_deadline?: string | null
+  sla_source?: 'status_history' | 'estimated' | null
 }
 
 export type Paged<T> = {
@@ -375,6 +378,18 @@ export type TrackerIssueCapabilities = {
   attach: boolean
 }
 
+export type TaskSyncState = 'saved' | 'pending' | 'synced' | 'needs_attention'
+export type TaskWorkflow = {
+  owner: TrackerPerson | null
+  review_state: 'pending' | 'returned' | 'closed' | null
+  display_status: 'queued' | 'in_progress' | 'review' | 'closed' | 'hidden'
+  sync_state: TaskSyncState
+  queued_at?: string | null
+  queued_at_source?: 'tracker_history' | 'created_at_estimate' | null
+  hidden?: { reason: string; actor: string; created_at: string } | null
+  has_current_cycle_comment: boolean
+}
+
 export type TrackerIssueDetail = TrackerIssue & {
   resolution?: string | null
   description?: string | null
@@ -383,6 +398,7 @@ export type TrackerIssueDetail = TrackerIssue & {
   attachments?: TrackerAttachment[]
   claim?: { park_id: number } | null
   capabilities: TrackerIssueCapabilities
+  workflow?: TaskWorkflow
 }
 
 export type TrackerAttachment = {
@@ -408,6 +424,16 @@ export type TrackerComment = {
 }
 export type TrackerTransition = { id: string; display: string }
 export type TrackerActionResult = { key: string; action: string; status: string; actor: string; performed_at: string }
+export type TaskActionResult = TrackerActionResult & { sync_state: TaskSyncState; workflow: TaskWorkflow | null }
+export type TaskTimelineItem = {
+  id: string; kind: 'user' | 'system' | 'tracker'; author: string; text: string
+  created_at: string; sync_state: TaskSyncState; attachments: TrackerAttachment[]
+}
+export type TaskAttachmentStaged = {
+  id: string; message_id: string; name: string; mimetype: string; size: number
+  sha256: string; action_id: string; sync_state: 'pending' | 'needs_attention'
+}
+export type DefectCode = { code: string; label: string; description: string | null }
 
 export type DashboardMovingItem = {
   key: string
@@ -1071,6 +1097,7 @@ async function requestForm<T>(path: string, formData: FormData, headers?: Record
 }
 
 export const api = {
+  changeRevision: (scope: string) => request<{ revision: number }>(`/changes?scope=${encodeURIComponent(scope)}`),
   emergencyReadings: async (signal?: AbortSignal): Promise<EmergencyReadingCatalog> => {
     const result = await emergencyReadingRequest<EmergencyReading[]>('', { signal })
     return { readings: result.data, etag: result.etag }
@@ -1382,6 +1409,8 @@ export const api = {
     sort?: 'oldest' | 'newest'
     limit?: number
     offset?: number
+    owned_by_me?: boolean
+    include_hidden?: boolean
   }) => {
     const q = new URLSearchParams({ sort: params.sort ?? 'oldest' })
     Object.entries(params).forEach(([key, value]) => {
@@ -1411,13 +1440,35 @@ export const api = {
     return request<Paged<AuditEntry>>(`/admin/audit?${q.toString()}`)
   },
   auditActions: () => request<string[]>('/admin/audit/actions'),
-  trackerIssue: (key: string, signal?: AbortSignal) =>
+  trackerIssue: (key: string, signal?: AbortSignal, includeHidden = false) =>
     request<TrackerIssueDetail>(
-      `/tracker/issues/${encodeURIComponent(key)}`,
+      `/tracker/issues/${encodeURIComponent(key)}${includeHidden ? '?include_hidden=true' : ''}`,
       signal ? { signal } : undefined,
     ),
   trackerComments: (key: string) =>
     request<TrackerComment[]>(`/tracker/issues/${encodeURIComponent(key)}/comments`),
+  taskTimeline: (key: string) =>
+    request<TaskTimelineItem[]>(`/tracker/issues/${encodeURIComponent(key)}/timeline`),
+  taskDefectCodes: () => request<DefectCode[]>('/tracker/defect-codes'),
+  taskMessage: (key: string, text: string, idempotencyKey: string) =>
+    request<TaskTimelineItem>(`/tracker/issues/${encodeURIComponent(key)}/messages`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ text }),
+    }),
+  taskMessageAttachment: (key: string, messageId: string, file: File, idempotencyKey: string) => {
+    const form = new FormData(); form.append('message_id', messageId); form.append('file', file, file.name)
+    return requestForm<TaskAttachmentStaged>(`/tracker/issues/${encodeURIComponent(key)}/message-attachments`, form, { 'Idempotency-Key': idempotencyKey })
+  },
+  taskClaim: (key: string, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/claim`, { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey } }),
+  taskHandoff: (key: string, value: { assignee: string; reason: string; done?: string; remaining?: string; obstacles?: string }, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/handoff`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(value) }),
+  taskSubmitReview: (key: string, value: { defectCode: string; photo: File; comment?: string }, idempotencyKey: string) => {
+    const form = new FormData(); form.append('defect_code', value.defectCode); form.append('photo', value.photo, value.photo.name); if (value.comment?.trim()) form.append('comment', value.comment.trim())
+    return requestForm<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/submit-review`, form, { 'Idempotency-Key': idempotencyKey })
+  },
+  taskReturnReview: (key: string, reason: string, assignee: string | undefined, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/review/return`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ reason, assignee }) }),
+  taskApproveReview: (key: string, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/review/approve`, { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey } }),
+  taskRetryNow: (key: string, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/retry-now`, { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey } }),
+  taskHide: (key: string, reason: string, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/hide`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ reason }) }),
+  taskRestore: (key: string, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/hide`, { method: 'DELETE', headers: { 'Idempotency-Key': idempotencyKey } }),
   trackerTransitions: (key: string) =>
     request<TrackerTransition[]>(`/tracker/transitions/${encodeURIComponent(key)}`),
   trackerComment: (key: string, text: string, headers?: Record<string, string>) =>

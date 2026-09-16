@@ -1,24 +1,12 @@
 /* eslint-disable react/only-export-components */
-import type { ReactElement } from 'react'
+import { lazy, Suspense, type ReactElement } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AppShell } from '../shell/AppShell'
 import { ParkProvider } from '../../ParkProvider'
 import { Spinner } from '../../components/ui/Feedback'
 import { ru } from '../../i18n/ru'
 import { useAuth } from '../../auth-context'
-import { Admin } from '../../pages/Admin'
-import { ManagementPage } from '../../domains/management/ManagementPage'
-import { UserManagementPage } from '../../domains/management/UserManagementPage'
-import { RoleManagementPage } from '../../domains/management/RoleManagementPage'
-import { AdminEmergencyConfig } from '../../pages/AdminEmergencyConfig'
-import { AdminTrackerWorkspace } from '../../pages/AdminTrackerWorkspace'
-import { Analytics } from '../../pages/Analytics'
 import { ChangePassword } from '../../pages/ChangePassword'
-import { OverviewPage } from '../../domains/shift/OverviewPage'
-import { WorkPage } from '../../domains/work/WorkPage'
-import { RobotsPage } from '../../domains/robots/RobotsPage'
-import { RobotPage } from '../../domains/robots/RobotPage'
-import { RobotCheckPage } from '../../domains/robots/RobotCheckPage'
 import { Home } from '../../pages/Home'
 import { Login } from '../../pages/Login'
 import { MechanicNoPark } from '../../pages/MechanicNoPark'
@@ -27,13 +15,24 @@ import { OperatorParks } from '../../pages/OperatorParks'
 import { OperatorPending } from '../../pages/OperatorPending'
 import { OperatorRejected } from '../../pages/OperatorRejected'
 import { Register } from '../../pages/Register'
-import { Reports } from '../../pages/Reports'
-import { CampaignsPage } from '../../domains/campaigns/CampaignsPage'
-import { InventoryPage } from '../../domains/inventory/InventoryPage'
 import { LegacyEmergencyRedirect } from './LegacyEmergencyRedirect'
 import { landingPathForUser } from './accessPolicy'
 import { ROUTE_MANIFEST, type AppRouteId } from './routeManifest'
 import { RouteGate } from './RouteGate'
+
+const Admin = lazy(() => import('../../pages/Admin').then(module => ({ default: module.Admin })))
+const ManagementPage = lazy(() => import('../../domains/management/ManagementPage').then(module => ({ default: module.ManagementPage })))
+const UserManagementPage = lazy(() => import('../../domains/management/UserManagementPage').then(module => ({ default: module.UserManagementPage })))
+const RoleManagementPage = lazy(() => import('../../domains/management/RoleManagementPage').then(module => ({ default: module.RoleManagementPage })))
+const AdminEmergencyConfig = lazy(() => import('../../pages/AdminEmergencyConfig').then(module => ({ default: module.AdminEmergencyConfig })))
+const Analytics = lazy(() => import('../../pages/Analytics').then(module => ({ default: module.Analytics })))
+const WorkPage = lazy(() => import('../../domains/work/WorkPage').then(module => ({ default: module.WorkPage })))
+const RobotsPage = lazy(() => import('../../domains/robots/RobotsPage').then(module => ({ default: module.RobotsPage })))
+const RobotPage = lazy(() => import('../../domains/robots/RobotPage').then(module => ({ default: module.RobotPage })))
+const RobotCheckPage = lazy(() => import('../../domains/robots/RobotCheckPage').then(module => ({ default: module.RobotCheckPage })))
+const Reports = lazy(() => import('../../pages/Reports').then(module => ({ default: module.Reports })))
+const CampaignsPage = lazy(() => import('../../domains/campaigns/CampaignsPage').then(module => ({ default: module.CampaignsPage })))
+const InventoryPage = lazy(() => import('../../domains/inventory/InventoryPage').then(module => ({ default: module.InventoryPage })))
 
 function RouteFallback() {
   return (
@@ -41,6 +40,10 @@ function RouteFallback() {
       <Spinner label={ru.loading} />
     </main>
   )
+}
+
+function RouteModuleFallback() {
+  return <div className="page page-center" role="status"><Spinner label={ru.loading} /></div>
 }
 
 export const ROUTE_ELEMENTS: Record<AppRouteId, ReactElement> = {
@@ -52,7 +55,7 @@ export const ROUTE_ELEMENTS: Record<AppRouteId, ReactElement> = {
   'access-pending': <OperatorPending />,
   'access-rejected': <OperatorRejected />,
   'mechanic-no-park': <MechanicNoPark />,
-  overview: <OverviewPage />,
+  overview: <LegacyRedirect to="/work" />,
   'operator-parks': <OperatorParks />,
   work: <WorkPage />,
   'work-issue': <WorkPage />,
@@ -71,7 +74,7 @@ export const ROUTE_ELEMENTS: Record<AppRouteId, ReactElement> = {
   'admin-settings': <Admin />,
   'admin-users': <UserManagementPage />,
   'admin-roles': <RoleManagementPage />,
-  'admin-tracker': <AdminTrackerWorkspace />,
+  'admin-tracker': <LegacyRedirect to="/work" />,
   'admin-robot-check': <AdminEmergencyConfig />,
   'not-found': <RouteFallback />,
 }
@@ -108,7 +111,9 @@ function ShellBoundary() {
 function gatedElement(routeId: AppRouteId) {
   return (
     <RouteGate loadingElement={<RouteFallback />} routeId={routeId}>
-      {ROUTE_ELEMENTS[routeId]}
+      <Suspense fallback={<RouteModuleFallback />}>
+        {ROUTE_ELEMENTS[routeId]}
+      </Suspense>
     </RouteGate>
   )
 }
@@ -117,7 +122,8 @@ export function AppRouter() {
   const publicAndStandaloneRoutes = ROUTE_MANIFEST.filter(
     (route) => route.surface !== 'shell' && route.id !== 'not-found',
   )
-  const shellRoutes = ROUTE_MANIFEST.filter((route) => route.surface === 'shell')
+  const redirectRoutes = ROUTE_MANIFEST.filter((route) => route.redirectTo)
+  const shellRoutes = ROUTE_MANIFEST.filter((route) => route.surface === 'shell' && !route.redirectTo)
   const legacyRoutes = ROUTE_MANIFEST.flatMap((route) =>
     (route.legacyPaths ?? []).map((path) => ({ path, canonicalPath: route.path })),
   )
@@ -134,6 +140,10 @@ export function AppRouter() {
           key={path}
           path={path}
         />
+      ))}
+
+      {redirectRoutes.map((route) => (
+        <Route element={<LegacyRedirect to={route.redirectTo as string} />} key={route.id} path={route.path} />
       ))}
 
       <Route element={<ShellBoundary />}>
