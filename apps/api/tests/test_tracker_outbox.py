@@ -1,10 +1,12 @@
 import asyncio
 import hashlib
 import json
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from robopark_api.models import Campaign, CampaignSubmission, Report
 from robopark_api.task_workflow_models import ReliableAction, TaskAttachment, TaskMessage
 
 TINY_PNG = bytes.fromhex(
@@ -32,6 +34,46 @@ def _action(db, actor, *, action="comment", payload=None, state="pending", lease
     db.add(row)
     db.commit()
     return row
+
+
+def _campaign_review_action(db, actor, park):
+    campaign = Campaign(
+        kind="service_company",
+        name="СК",
+        tracker_tag="service-2026",
+        starts_on=date.today(),
+        due_on=date.today(),
+        created_by=actor.id,
+    )
+    report = Report(
+        kind="campaign_review",
+        status="open",
+        park_id=park.id,
+        author_user_id=actor.id,
+        target_role="operator",
+        tracker_key="ROBOPARK-1",
+        title="Проверка",
+        body="Готово",
+    )
+    db.add_all((campaign, report))
+    db.flush()
+    submission = CampaignSubmission(
+        campaign_id=campaign.id,
+        issue_key="ROBOPARK-1",
+        park_id=park.id,
+        comment="Готово",
+        author_user_id=actor.id,
+        report_id=report.id,
+        tracker_transition="pending",
+    )
+    db.add(submission)
+    db.flush()
+    return _action(
+        db,
+        actor,
+        action="campaign_review",
+        payload={"campaign_submission_id": submission.id, "report_id": report.id},
+    )
 
 
 def _run_one_cycle(factory, stop_event, monkeypatch):
@@ -98,6 +140,151 @@ def test_worker_delivers_signed_comment_completes_action_and_invalidates_cache(
     assert f"surp-action:{action_id}" in delivered[0]["text"]
     assert "Время: 01.01.1970 03:00 МСК" in delivered[0]["text"]
     assert invalidated == ["ROBOPARK-1"]
+
+
+def test_campaign_review_replay_recognizes_operator_review_status_without_duplicate_transition(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    action = _campaign_review_action(db_session, seed_mechanic, seed_park_with_tracker)
+    calls = []
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **kwargs: {"key": "ROBOPARK-1", "status": "Проверка оператором"},
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_transitions",
+        lambda **kwargs: [{"id": "review", "display": "Проверка оператором"}],
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "transition_issue",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    assert tracker_outbox._process_batch(sessionmaker(bind=db_engine, future=True)) == 1
+    db_session.expire_all()
+    assert db_session.get(ReliableAction, action.id).state == "succeeded"
+    assert calls == []
+
+
+def test_returned_campaign_report_cancels_delayed_tracker_transition(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    action = _campaign_review_action(db_session, seed_mechanic, seed_park_with_tracker)
+    submission = db_session.scalar(select(CampaignSubmission))
+    db_session.get(Report, submission.report_id).status = "returned"
+    db_session.commit()
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("stale transition delivered")),
+    )
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda _db: "token")
+
+    assert tracker_outbox._process_batch(sessionmaker(bind=db_engine, future=True)) == 1
+    db_session.expire_all()
+    assert db_session.get(ReliableAction, action.id).state == "succeeded"
+    assert db_session.get(CampaignSubmission, submission.id).tracker_transition == "cancelled"
+
+
+def test_superseded_campaign_review_is_cancelled_without_poisoning_new_submission(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    old = _campaign_review_action(db_session, seed_mechanic, seed_park_with_tracker)
+    submission = db_session.scalar(select(CampaignSubmission))
+    db_session.get(Report, submission.report_id).status = "returned"
+    replacement = Report(
+        kind="campaign_review",
+        status="open",
+        park_id=seed_park_with_tracker.id,
+        author_user_id=seed_mechanic.id,
+        target_role="operator",
+        tracker_key="ROBOPARK-1",
+        title="Повторная проверка",
+        body="Исправлено",
+    )
+    db_session.add(replacement)
+    db_session.flush()
+    submission.report_id = replacement.id
+    new_payload = json.dumps({"campaign_submission_id": submission.id, "report_id": replacement.id})
+    newer = ReliableAction(
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id="ROBOPARK-1",
+        action="campaign_review",
+        idempotency_key="campaign-review-resubmitted",
+        payload_hash=hashlib.sha256(new_payload.encode()).hexdigest(),
+        payload_json=new_payload,
+        state="pending",
+        next_attempt_at=9999999999.0,
+        created_at=2.0,
+        updated_at=2.0,
+    )
+    db_session.add(newer)
+    db_session.commit()
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda _db: None)
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("old action reached Tracker")),
+    )
+
+    factory = sessionmaker(bind=db_engine, future=True)
+    assert tracker_outbox._process_batch(factory) == 1
+    db_session.expire_all()
+    assert db_session.get(ReliableAction, old.id).state == "succeeded"
+    assert (
+        json.loads(db_session.get(ReliableAction, old.id).result_json)["transition_state"]
+        == "cancelled"
+    )
+    assert db_session.get(ReliableAction, newer.id).state == "pending"
+    assert db_session.get(CampaignSubmission, submission.id).tracker_transition == "pending"
+
+
+def test_campaign_review_timeout_retries_without_repeating_accepted_transition(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    action = _campaign_review_action(db_session, seed_mechanic, seed_park_with_tracker)
+    remote = {"key": "ROBOPARK-1", "status": "Открыт"}
+    calls = []
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(tracker_outbox.tracker_client, "get_issue", lambda **kwargs: dict(remote))
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_transitions",
+        lambda **kwargs: [{"id": "review", "display": "Проверка оператором"}],
+    )
+
+    def accepted_then_timeout(**kwargs):
+        calls.append(kwargs)
+        remote["status"] = "Проверка оператором"
+        raise tracker_outbox.tracker_client.TrackerError("request timeout")
+
+    monkeypatch.setattr(tracker_outbox.tracker_client, "transition_issue", accepted_then_timeout)
+    factory = sessionmaker(bind=db_engine, future=True)
+
+    assert tracker_outbox._process_batch(factory) == 1
+    db_session.expire_all()
+    assert db_session.get(ReliableAction, action.id).state == "retry_wait"
+    with factory() as db:
+        db.get(ReliableAction, action.id).next_attempt_at = 0
+        db.commit()
+
+    assert tracker_outbox._process_batch(factory) == 1
+    db_session.expire_all()
+    assert db_session.get(ReliableAction, action.id).state == "succeeded"
+    assert len(calls) == 1
 
 
 def test_worker_schedules_transient_retry_and_marks_permanent_error_for_attention(

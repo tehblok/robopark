@@ -47,6 +47,8 @@ def _report_out(report: Report) -> ReportOut:
 def _run_svc(fn: Callable[[], T]) -> T:
     try:
         return fn()
+    except reports_svc.ReportLinkedError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except LookupError:
@@ -55,6 +57,11 @@ def _run_svc(fn: Callable[[], T]) -> T:
         ) from None
     except PermissionError:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden") from None
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="report_delete_storage_unavailable",
+        ) from exc
 
 
 @router.post("", response_model=ReportOut, status_code=status.HTTP_201_CREATED)
@@ -154,6 +161,15 @@ def get_report(
 ) -> ReportOut:
     report = _run_svc(lambda: reports_svc.get_report(db, user, report_id))
     return _report_out(report)
+
+
+@router.delete("/{report_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_report(
+    report_id: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> None:
+    _run_svc(lambda: reports_svc.delete_report(db, user, report_id))
 
 
 @router.post("/{report_id}/return", response_model=ReportOut)

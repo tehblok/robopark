@@ -29,11 +29,11 @@ export function ParkMultiSelect({ parks, value, onChange, disabled = false, labe
   useEffect(() => {
     if (!open) return
     filterInput.current?.focus()
-    const closeOnOutsidePointer = (event: MouseEvent) => {
+    const closeOnOutsideClick = (event: MouseEvent) => {
       if (root.current && !root.current.contains(event.target as Node)) setOpen(false)
     }
-    document.addEventListener('mousedown', closeOnOutsidePointer)
-    return () => document.removeEventListener('mousedown', closeOnOutsidePointer)
+    document.addEventListener('click', closeOnOutsideClick)
+    return () => document.removeEventListener('click', closeOnOutsideClick)
   }, [open])
 
   const update = (next: number[]) => onChange(uniqueSorted(next))

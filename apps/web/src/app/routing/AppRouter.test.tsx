@@ -85,8 +85,8 @@ describe('AppRouter', () => {
     ['/tasks?park=7&status=open', '/work?park=7&status=open', 'Работа'],
     ['/robots/search?q=447&park=7', '/robots?q=447&park=7', 'Роботы'],
     ['/work/ROBOPARK-42?park=7&status=open', '/work/ROBOPARK-42?park=7&status=open', 'Работа'],
-    ['/robots/YASADR00000000447/check?park=7&tab=map', '/robots/YASADR00000000447?park=7&tab=map', 'Рабочее пространство робота'],
-    ['/robots/YASADR00000000447?park=7', '/robots/YASADR00000000447?park=7', 'Рабочее пространство робота'],
+    ['/robots/YASADR00000000447/check?park=7&tab=map', '/robots/YASADR00000000447?park=7&tab=map', 'Проверка робота'],
+    ['/robots/YASADR00000000447?park=7', '/robots/YASADR00000000447?park=7', 'Проверка робота'],
   ])('registers canonical operational content for %s', async (path, expected, heading) => {
     renderApp(path, testUser({ permissions: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'tracker.read'], parks: [north] }))
     expect(await screen.findByRole('heading', { name: heading })).toBeVisible()

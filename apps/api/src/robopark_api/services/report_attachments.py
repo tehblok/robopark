@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
+import time
 from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
@@ -47,6 +49,104 @@ def attachments_root() -> Path:
     if settings.report_attachments_dir:
         return Path(settings.report_attachments_dir)
     return _API_ROOT / "data" / "report-attachments"
+
+
+def prune_deleted_report_files(*, now: float | None = None, max_age_seconds: float = 3600) -> int:
+    """Retry final unlink of files moved out of a deleted report transaction."""
+    staging = attachments_root().resolve() / ".delete-staging"
+    if not staging.is_dir():
+        return 0
+    cutoff = (time.time() if now is None else now) - max_age_seconds
+    removed = 0
+    for path in staging.iterdir():
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            if path.stat().st_mtime <= cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _delete_marker(report_id: int) -> Path:
+    return attachments_root().resolve() / ".delete-pending" / f"{report_id}.json"
+
+
+def mark_report_files_for_deletion(report_id: int, storage_keys: list[str]) -> None:
+    """Durably record files before DB deletion; files remain live until commit."""
+    for key in storage_keys:
+        if not isinstance(key, str) or not key.startswith(f"{report_id}/"):
+            raise LookupError("report_attachment_not_found")
+        _resolve_storage_key(key)
+    marker = _delete_marker(report_id)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".report-delete-", dir=marker.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(storage_keys))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, marker)
+        directory = os.open(marker.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        with suppress(OSError):
+            temporary.unlink()
+
+
+def clear_report_delete_marker(report_id: int) -> None:
+    with suppress(FileNotFoundError):
+        _delete_marker(report_id).unlink()
+
+
+def reconcile_pending_report_deletions(db: Session) -> int:
+    """After a crash, keep files if the report survived; otherwise finish deletion."""
+    pending = attachments_root().resolve() / ".delete-pending"
+    if not pending.is_dir():
+        return 0
+    removed = 0
+    for marker in pending.iterdir():
+        if marker.is_symlink() or not re.fullmatch(r"[1-9]\d*\.json", marker.name):
+            continue
+        report_id = int(marker.stem)
+        try:
+            if marker.stat().st_size > 65536:
+                continue
+            keys = json.loads(marker.read_text(encoding="utf-8"))
+            if not isinstance(keys, list) or not all(
+                isinstance(key, str) and key.startswith(f"{report_id}/") for key in keys
+            ):
+                continue
+            # Referenced keys mean the DB deletion never committed. Comparing
+            # keys also handles a database that later reuses the numeric ID.
+            if (
+                keys
+                and db.scalar(
+                    select(ReportAttachment.id)
+                    .where(ReportAttachment.storage_key.in_(keys))
+                    .limit(1)
+                )
+                is not None
+            ):
+                marker.unlink()
+                continue
+            paths = [_resolve_storage_key(key) for key in keys]
+            for path in paths:
+                path.unlink(missing_ok=True)
+                with suppress(OSError):
+                    path.parent.rmdir()
+            marker.unlink()
+            removed += 1
+        except (OSError, ValueError, LookupError):
+            # Keep the marker for retry; never remove a live report's file.
+            continue
+    return removed
 
 
 def sanitize_filename(name: str | None, *, fallback: str) -> str:
@@ -128,6 +228,7 @@ def add_attachment(
     filename: str | None,
     content: bytes,
     content_type: str | None,
+    commit: bool = True,
 ) -> ReportAttachment:
     from robopark_api.services.reports import _load_report, _require_view
 
@@ -177,7 +278,10 @@ def add_attachment(
         _atomic_write(destination, content)
         placed = True
         row.storage_key = relative
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
     except Exception:
         try:
             db.rollback()

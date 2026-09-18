@@ -5,7 +5,6 @@ import { canAccessRoute, type AccessUser } from '../../app/routing/accessPolicy'
 import { InspectionMap } from '../../components/emergency/InspectionMap'
 import { Button } from '../../design-system/actions/Button'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
-import { MasterDetail } from '../../design-system/layout/MasterDetail'
 import type { DomainError } from '../../shared/api/classifyApiError'
 import { useOnlineStatus } from '../../shared/browser/useOnlineStatus'
 import { RobotCheckSummary } from './RobotCheckSummary'
@@ -39,9 +38,9 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
   const [errors, setErrors] = useState<Record<string, DomainError | null>>({})
   const [denied, setDenied] = useState<DomainError | null>(null)
   const [follow, setFollow] = useState(true)
+  const [schemeHost, setSchemeHost] = useState<HTMLDivElement | null>(null)
   const [diagnosticSelection, setDiagnosticSelection] = useState<{ view: DiagnosticView; eventId: string | null; blockId: string | null }>({ view: 'top', eventId: null, blockId: sections[0]?.id ?? null })
   // Owned by the same VIN/access/park lifetime as the snapshot, never by a tab.
-  const manualView = useRef(false)
   const manualBlock = useRef(false)
   const manualEventId = useRef<string | null>(null)
   // This cache belongs to one VIN/access lifetime and never persists to disk.
@@ -94,7 +93,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
         const manualEvent = events.find(event => event.id === manualEventId.current)
         if (!manualEvent) manualEventId.current = null
         setDiagnosticSelection(current => ({
-          view: manualView.current ? current.view : automatic.view,
+          view: manualEvent?.view ?? automatic.view,
           blockId: manualBlock.current && sections.some(section => section.id === current.blockId) ? current.blockId : automatic.blockId,
           eventId: manualEvent?.id ?? automatic.eventId,
         }))
@@ -114,12 +113,10 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
   const events = snapshot?.diagnostic_events ?? []
   const showEvent = (event: DiagnosticEvent) => {
     if (!isLocalizedEvent(event)) return
-    manualView.current = true
     manualEventId.current = event.id
     setDiagnosticSelection(current => ({ ...current, view: event.view, eventId: event.id }))
   }
   const showLeadingError = () => {
-    manualView.current = false
     manualEventId.current = null
     setDiagnosticSelection(current => ({ ...current, view: chooseAutomaticView(events), eventId: leadingDiagnosticEvent(events)?.id ?? null }))
   }
@@ -134,6 +131,10 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
         </section>}
       {snapshotError && (!renderSummary || !snapshot) ? <div className="rp-check-warning"><CheckError failure={snapshotError} user={user} onRetry={refresh} />{snapshot ? <p>Показаны последние полученные данные.</p> : null}
         {snapshotError.kind === 'not-found' ? <Link to="/robots">К поиску роботов</Link> : null}</div> : null}
+      {snapshot ? <RobotDiagnosticDiagram faults={snapshot.wheels_fault} events={events} readings={snapshot.readings ?? []} blocks={sections} selectedBlockId={diagnosticSelection.blockId} view={diagnosticSelection.view} selectedEventId={diagnosticSelection.eventId} detailHost={tab.kind === 'scheme' ? schemeHost : null}
+        onSelectEvent={event => { manualEventId.current = event.id; setDiagnosticSelection(current => ({ ...current, eventId: event.id })) }}
+        onBlockChange={blockId => { manualBlock.current = true; setDiagnosticSelection(current => ({ ...current, blockId })) }}
+        onShowError={showLeadingError} onRevealEvent={showEvent} onOpenErrors={() => onTabChange('errors')} /> : null}
     </div>
   const detail = <div className="rp-check-detail">
       <RobotCheckNavigation tabs={tabs} activeId={tab.id} onChange={onTabChange} />
@@ -159,11 +160,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
         {tab.kind === 'telemetry' ? <dl className="rp-check-telemetry">
           {([['Скорость', snapshot?.speed, 'м/с'], ['Заряд', snapshot?.charge_percent, '%'], ['Батарея 1', snapshot?.battery1_percent, '%'], ['Батарея 2', snapshot?.battery2_percent, '%'], ['Диск', snapshot?.disk_percent, '%'], ['Режим', formatRobotMode(snapshot?.mode)], ['ICP', snapshot?.icp_label], ['LTE', snapshot?.lte_label], ['Соединение', snapshot?.connection === 'wire' ? 'Проводное' : snapshot?.connection === 'lte' ? 'Мобильное' : null]] as const).map(([label, value, unit]) => <div key={label}><dt>{label}</dt><dd>{value == null ? 'Нет данных' : `${value}${unit ? ` ${unit}` : ''}`}</dd></div>)}
         </dl> : null}
-        {tab.kind === 'scheme' ? snapshot ? <RobotDiagnosticDiagram faults={snapshot.wheels_fault} events={events} readings={snapshot.readings ?? []} blocks={sections} selectedBlockId={diagnosticSelection.blockId} view={diagnosticSelection.view} selectedEventId={diagnosticSelection.eventId}
-          onViewChange={view => { manualView.current = true; setDiagnosticSelection(current => ({ ...current, view })) }}
-          onSelectEvent={event => { manualView.current = true; manualEventId.current = event.id; setDiagnosticSelection(current => ({ ...current, eventId: event.id })) }}
-          onBlockChange={blockId => { manualBlock.current = true; setDiagnosticSelection(current => ({ ...current, blockId })) }}
-          onShowError={showLeadingError} onRevealEvent={showEvent} onOpenErrors={() => onTabChange('errors')} /> : <EmptyState title="Данные диагностики не получены" /> : null}
+        {tab.kind === 'scheme' ? snapshot ? <div ref={setSchemeHost} className="rp-check-scheme-host" /> : <EmptyState title="Данные диагностики не получены" /> : null}
         {tab.kind === 'section' ? <>
           {sectionError ? <CheckError failure={sectionError} user={user} onRetry={refresh} /> : null}
           {section ? section.fields.length ? section.fields.map((field, index) => <div className="rp-check-field" key={`${field.label}-${index}`}><h3>{field.label}</h3><pre className="rp-check-field-lines">{field.lines.length ? field.lines.join('\n') : 'Нет данных'}</pre></div>) : <EmptyState title="В разделе пока нет данных" />
@@ -172,7 +169,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
       </section>
     </div>
   return <div className="rp-check-workspace" data-unified={Boolean(renderSummary)}>
-    {renderSummary ? <MasterDetail list={identity} detail={detail} detailOpen onBack={() => onTabChange('state')} /> : <>{identity}{detail}</>}
+    <div className="rp-check-layout"><div className="rp-check-layout__overview">{identity}</div><div className="rp-check-layout__details">{detail}</div></div>
   </div>
 }
 export function RobotCheckWorkspace(props: RobotCheckWorkspaceProps) {

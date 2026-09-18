@@ -49,7 +49,7 @@
 }
 
 .rp-shell__product-brand {
-  color: var(--rp-action);
+  color: var(--rp-text);
   font-size: 1.25rem;
   letter-spacing: 0.04em;
 }

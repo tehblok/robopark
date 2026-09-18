@@ -1,4 +1,4 @@
-import { type CSSProperties, type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import { type CSSProperties, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   api,
@@ -20,7 +20,7 @@ import { refreshReportsBadge } from '../../reports-badge'
 import { classifyApiError } from '../../shared/api/classifyApiError'
 import './campaigns.css'
 
-type CampaignApi = Pick<typeof api, 'campaigns' | 'campaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>
+type CampaignApi = Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>
 
 const kindLabel = (kind: Campaign['kind']) => kind === 'service_company' ? 'Сервисная компания' : 'Оклейка'
 const campaignStatusLabel = (campaign: Campaign) => !campaign.is_active ? 'Завершена' : campaign.overdue ? 'Просрочена' : 'Активна'
@@ -81,7 +81,7 @@ function CampaignCreateForm({ apiClient, onCreated }: { apiClient: CampaignApi; 
     <form className="form-grid campaign-create" onSubmit={submit}>
       <label className="field"><span>Тип</span><select value={payload.kind} onChange={event => setPayload(current => ({ ...current, kind: event.target.value as Campaign['kind'] }))}><option value="service_company">Сервисная компания</option><option value="wrapping">Оклейка</option></select></label>
       <label className="field"><span>Название</span><input required maxLength={128} value={payload.name} onChange={event => setPayload(current => ({ ...current, name: event.target.value }))} /></label>
-      <label className="field"><span>Тег в Tracker</span><input required maxLength={128} value={payload.tracker_tag} onChange={event => setPayload(current => ({ ...current, tracker_tag: event.target.value }))} /></label>
+      <label className="field"><span>Часть названия тикета</span><input required minLength={3} maxLength={128} value={payload.tracker_tag} onChange={event => setPayload(current => ({ ...current, tracker_tag: event.target.value }))} /></label>
       <label className="field"><span>Начало</span><input required type="date" value={payload.starts_on} onChange={event => setPayload(current => ({ ...current, starts_on: event.target.value }))} /></label>
       <label className="field"><span>Срок</span><input required min={payload.starts_on} type="date" value={payload.due_on} onChange={event => setPayload(current => ({ ...current, due_on: event.target.value }))} /></label>
       <ParkMultiSelect label="Парки кампании" onChange={park_ids => setPayload(current => ({ ...current, park_ids }))} parks={parks} value={payload.park_ids} />
@@ -117,10 +117,12 @@ function CampaignList({ apiClient }: { apiClient: CampaignApi }) {
 }
 
 function transitionLabel(value: string | null) {
+  if (value === 'pending') return 'Отправка в Tracker ожидается'
   if (value === 'review') return 'Tracker: Проверка'
   if (value === 'diagnostics') return 'Tracker: Диагностика'
   if (value === 'failed') return 'Не удалось сменить статус в Tracker'
   if (value === 'unavailable') return 'Нет перехода в Проверку или Диагностику'
+  if (value === 'cancelled') return 'Отправка отменена после возврата результата'
   return null
 }
 
@@ -129,12 +131,18 @@ function TicketCard({ ticket, campaign, apiClient, reload, editing, onEditingCha
   const [photo, setPhoto] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const submitAttempt = useRef<{ fingerprint: string; key: string } | null>(null)
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!photo) return
     setBusy(true); setError(null)
     try {
-      await apiClient.completeCampaignTicket(campaign.id, ticket.key, ticket.park_id, comment, photo)
+      const fingerprint = `${ticket.key}:${ticket.park_id}:${comment}:${photo.name}:${photo.size}:${photo.lastModified}`
+      if (submitAttempt.current?.fingerprint !== fingerprint) {
+        submitAttempt.current = { fingerprint, key: globalThis.crypto?.randomUUID?.() ?? `campaign-${Date.now()}-${Math.random()}` }
+      }
+      await apiClient.completeCampaignTicket(campaign.id, ticket.key, ticket.park_id, comment, photo, submitAttempt.current.key)
+      submitAttempt.current = null
       refreshReportsBadge(); reload()
     } catch (reason) { setError(classifyApiError(reason, 'Не удалось отправить тикет оператору.').description) }
     finally { setBusy(false) }
@@ -158,21 +166,50 @@ function TicketCard({ ticket, campaign, apiClient, reload, editing, onEditingCha
 
 function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; apiClient: CampaignApi }) {
   const { user } = useAuth()
+  const navigate = useNavigate()
   const [data, setData] = useState<CampaignDetail | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [query, setQuery] = useState('')
   const [editingTicketKey, setEditingTicketKey] = useState<string | null>(null)
+  const [refreshMessage, setRefreshMessage] = useState<string | null>(null)
   const load = useCallback(() => { setError(null); apiClient.campaign(campaignId).then(setData).catch(setError) }, [apiClient, campaignId])
   useEffect(load, [load])
+  useEffect(() => {
+    if (data?.snapshot_state !== 'pending' && data?.snapshot_state !== 'running') return
+    const timer = window.setInterval(load, 3000)
+    return () => window.clearInterval(timer)
+  }, [data?.snapshot_state, load])
+  const refresh = async () => {
+    setRefreshMessage(null)
+    try {
+      await apiClient.refreshCampaign(campaignId)
+      setRefreshMessage('Обновление запрошено. Пока показаны последние сохранённые данные.')
+      load()
+    } catch (reason) {
+      setRefreshMessage(classifyApiError(reason, 'Не удалось запросить обновление.').description)
+    }
+  }
+  const remove = async () => {
+    if (!window.confirm('Удалить кампанию? Если проверки уже отправлены, репорты и результаты сохранятся в архиве.')) return
+    try {
+      await apiClient.deleteCampaign(campaignId)
+      navigate('/campaigns')
+    } catch (reason) {
+      setRefreshMessage(classifyApiError(reason, 'Не удалось удалить кампанию.').description)
+    }
+  }
   const open = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase('ru')
     return data?.open_tickets.filter(ticket => !needle || `${ticket.robot || ''} ${ticket.key} ${ticket.summary}`.toLocaleLowerCase('ru').includes(needle)) ?? []
   }, [data, query])
   const manager = user?.role === 'admin' || user?.role === 'royal'
   const failure = error ? classifyApiError(error, 'Не удалось загрузить кампанию.') : null
-  if (failure) return <PageLayout title="СК и оклейка"><ErrorState description={failure.description} onRetry={failure.retryable ? load : undefined} title={failure.title} /></PageLayout>
+  if (failure && !data) return <PageLayout title="СК и оклейка"><ErrorState description={failure.description} onRetry={failure.retryable ? load : undefined} title={failure.title} /></PageLayout>
   if (!data) return <PageLayout title="СК и оклейка"><LoadingState label="Загружаем кампанию" variant="page" /></PageLayout>
-  return <PageLayout actions={manager ? <Button onClick={() => void apiClient.updateCampaign(data.id, { is_active: !data.is_active }).then(load)} variant="secondary">{data.is_active ? 'Завершить кампанию' : 'Возобновить кампанию'}</Button> : null} description={`${data.park_names.join(', ')} · тег ${data.tracker_tag} · ${dateLabel(data.starts_on)} — ${dateLabel(data.due_on)}`} eyebrow={<Link to="/campaigns">СК и оклейка</Link>} title={data.name}>
+  return <PageLayout actions={<><Button onClick={() => void refresh()} variant="secondary">Обновить из Tracker</Button>{manager ? <><Button onClick={() => void apiClient.updateCampaign(data.id, { is_active: !data.is_active }).then(load)} variant="secondary">{data.is_active ? 'Завершить кампанию' : 'Возобновить кампанию'}</Button><Button onClick={() => void remove()} variant="ghost">Удалить кампанию</Button></> : null}</>} description={`${data.park_names.join(', ')} · ${data.tracker_tag} · ${dateLabel(data.starts_on)} — ${dateLabel(data.due_on)}`} eyebrow={<Link to="/campaigns">СК и оклейка</Link>} title={data.name}>
+    <p role="status">{data.snapshot_at ? `Последнее обновление: ${new Date(data.snapshot_at).toLocaleString('ru-RU')}. ` : 'Данные Tracker ещё не получены. '}{data.snapshot_state === 'error' ? 'Tracker временно недоступен; показаны сохранённые данные.' : data.snapshot_state === 'pending' || data.snapshot_state === 'running' ? 'Обновляем в фоне.' : null}</p>
+    {refreshMessage ? <p role="status">{refreshMessage}</p> : null}
+    {failure ? <p role="status">Показаны последние полученные данные. Обновление не удалось: {failure.description}</p> : null}
     <ResponsiveDisclosureGroup label="Разделы кампании"><ResponsiveDisclosure id="metrics" summary={`${data.percent_complete}% · ${data.completed_count} из ${data.total_count}`} title="Метрики"><CampaignMetrics campaign={data} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>
     <div className="campaign-columns">
       <Panel density="dense" title={`Открытые · ${data.open_tickets.length}`}><label className="field campaign-search"><span>Поиск по роботу</span><input onChange={event => setQuery(event.target.value)} placeholder="Номер робота или тикет" value={query} /></label>

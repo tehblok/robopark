@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
-import type { Paged, TrackerActionResult, TrackerIssueDetail } from '../../src/api'
-import { FIXED_TIME, installOperational, issue, operationalRoutes, settlePage } from './fixtures'
+import type { Paged, TrackerIssueDetail } from '../../src/api'
+import { FIXED_TIME, installOperational, issue, settlePage } from './fixtures'
 
 test('deep-link restores filters, pagination and detail after reload', async ({ page }) => {
   const queries: URLSearchParams[] = []
@@ -8,7 +8,7 @@ test('deep-link restores filters, pagination and detail after reload', async ({ 
   await installOperational(page, { role: 'operator' })
   await page.goto('/work?park=7&status=open&sort=newest&page=2&robot=447&assignee=mechanic.test&age=2')
   await expect(page.getByLabel('Очередь', { exact: true })).toHaveCount(0)
-  await expect(page.getByLabel('Статус открытых блокеров', { exact: true })).toHaveValue('open')
+  await expect(page.getByLabel('Статус открытых блокеров', { exact: true })).toHaveCount(0)
   await expect(page.getByText('От старых к новым', { exact: true })).toBeVisible()
   await expect(page.getByRole('option', { name: 'Сначала новые' })).toHaveCount(0)
   await expect(page.getByText('Робот: 447', { exact: true })).toBeVisible()
@@ -25,7 +25,8 @@ test('deep-link restores filters, pagination and detail after reload', async ({ 
   await page.reload()
   await expect(page).toHaveURL(detailUrl)
   await expect(page.getByRole('heading', { name: 'Задача ROBOPARK-42', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Закрыть тикет', exact: true })).toBeVisible()
+  await expect(page.getByText(/Обновите страницу.*действия временно недоступны/)).toBeVisible()
+  await expect(page.locator('.issue-actions')).toHaveCount(0)
 })
 
 test('phone back restores list scroll and saved filters', async ({ page }) => {
@@ -50,14 +51,11 @@ test('phone back restores list scroll and saved filters', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(saved)
 })
 
-test('attachment-only capabilities expose only the attachment mutation', async ({ page }) => {
+test('attachment capability cannot bypass missing workflow state', async ({ page }) => {
   await installOperational(page, { issue: { ...issue, capabilities: { comment: false, assign: false, unassign: false, transition: false, close: false, attach: true } } })
   await page.goto('/work/ROBOPARK-42?park=7')
-  const actions = page.locator('.issue-actions')
-  await expect(actions.getByRole('button', { name: 'Выбрать фото', exact: true })).toBeVisible()
-  await expect(actions.getByRole('button', { name: /Закрыть тикет|Решить|Назначить|Снять исполнителя|Отправить/ })).toHaveCount(0)
-  await expect(actions.locator('textarea')).toHaveCount(0)
-  await expect(actions.getByLabel('Логин исполнителя')).toHaveCount(0)
+  await expect(page.getByText(/Обновите страницу.*действия временно недоступны/)).toBeVisible()
+  await expect(page.locator('.issue-actions')).toHaveCount(0)
 })
 
 test('foreign mechanic detail-check link stays read-only without Emergency requests', async ({ page }) => {
@@ -89,59 +87,48 @@ test('foreign mechanic detail-check link stays read-only without Emergency reque
   expect(presenceRequests).toEqual([])
 })
 
-test('close requires confirmation, preserves failure, then closes and refreshes local resources', async ({ page }) => {
-  let closes = 0
-  const reads: string[] = []
-  page.on('request', request => { if (request.method() === 'GET' && new URL(request.url()).pathname.startsWith('/api/tracker/')) reads.push(new URL(request.url()).pathname) })
-  await installOperational(page, { routes: [{ method: 'POST', path: '/api/tracker/issues/ROBOPARK-42/close', handler: () => {
-    closes += 1
-    return closes === 1
-      ? { status: 409, headers: { 'x-request-id': 'close-conflict-42' }, json: { detail: 'tracker_transition_invalid' } }
-      : { json: { key: issue.key, action: 'close', status: 'ok', actor: 'mechanic.test', performed_at: FIXED_TIME } satisfies TrackerActionResult }
-  } }] })
+test('stale tracker detail never exposes manual close or sends a close request', async ({ page }) => {
+  const closes: string[] = []
+  page.on('request', request => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/close')) closes.push(request.url())
+  })
+  await installOperational(page)
   await page.goto('/work/ROBOPARK-42?park=7')
-  await page.getByRole('button', { name: 'Закрыть тикет', exact: true }).click()
-  const dialog = page.getByRole('alertdialog', { name: 'Закрыть задачу?' })
-  await expect(dialog).toBeVisible()
-  expect(closes).toBe(0)
-  await dialog.getByRole('button', { name: 'Отмена', exact: true }).click()
-  expect(closes).toBe(0)
-  await page.getByRole('button', { name: 'Закрыть тикет', exact: true }).click()
-  await dialog.getByRole('button', { name: 'Подтвердить закрытие' }).click()
-  await expect(dialog.getByRole('alert')).toContainText('Этот переход недоступен для тикета.')
-  await expect(dialog.getByRole('alert')).toContainText('close-conflict-42')
-  await expect(page).toHaveURL(/\/work\/ROBOPARK-42/)
-  const before = reads.length
-  await dialog.getByRole('button', { name: 'Подтвердить закрытие' }).click()
-  await expect(dialog).toBeHidden()
-  await expect(page).toHaveURL(/\/work\?park=7/)
-  await expect.poll(() => reads.slice(before)).toEqual(expect.arrayContaining(['/api/tracker/issues', '/api/tracker/issues/ROBOPARK-42', '/api/tracker/issues/ROBOPARK-42/comments', '/api/tracker/transitions/ROBOPARK-42']))
-  expect(closes).toBe(2)
+  await expect(page.getByRole('heading', { name: issue.summary })).toBeVisible()
+  await expect(page.getByText(/Обновите страницу.*действия временно недоступны/)).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Закрыть тикет', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('alertdialog', { name: 'Закрыть задачу?' })).toHaveCount(0)
+  expect(closes).toEqual([])
 })
 
-test('comment, assignment, transition and attachment use their complete action contracts', async ({ page }) => {
+test('workflow message and review approval use lifecycle actions without manual status controls', async ({ page }) => {
   const actions: string[] = []
-  const routes = operationalRoutes()
-  for (const route of routes) {
-    if (route.method !== 'POST' || !String(route.path).includes('tracker')) continue
-    const handler = route.handler
-    route.handler = request => { actions.push(new URL(request.url).pathname.split('/').at(-1)!); return handler(request) }
-  }
-  await installOperational(page, { role: 'operator', routes })
+  const timeline: Array<{ id: string; kind: 'user'; author: string; text: string; created_at: string; sync_state: 'saved'; attachments: [] }> = []
+  const workflow = { owner: { display: 'Механик смены', login: 'mechanic-e2e' }, review_state: 'pending' as const,
+    display_status: 'review' as const, sync_state: 'saved' as const, has_current_cycle_comment: true }
+  await installOperational(page, { role: 'operator', issue: { ...issue, workflow }, routes: [
+    { method: 'GET', path: '/api/tracker/issues/ROBOPARK-42/timeline', handler: () => ({ json: timeline }) },
+    { method: 'POST', path: '/api/tracker/issues/ROBOPARK-42/messages', handler: async request => {
+      actions.push('message')
+      const { text } = await request.json() as { text: string }
+      const message = { id: 'message-1', kind: 'user' as const, author: 'operator.test', text, created_at: FIXED_TIME, sync_state: 'saved' as const, attachments: [] as [] }
+      timeline.push(message)
+      return { json: message }
+    } },
+    { method: 'POST', path: '/api/tracker/issues/ROBOPARK-42/review/approve', handler: () => {
+      actions.push('approve')
+      return { json: { key: issue.key, action: 'approve-review', status: 'Закрыт', actor: 'operator.test', performed_at: FIXED_TIME, sync_state: 'saved', workflow: { ...workflow, review_state: 'closed', display_status: 'closed' } } }
+    } },
+  ] })
   await page.goto('/work/ROBOPARK-42?park=7')
   await page.getByRole('textbox', { name: 'Комментарии', exact: true }).fill('Проверка колеса выполнена')
   await page.getByRole('button', { name: 'Отправить', exact: true }).click()
   await expect(page.getByText('Проверка колеса выполнена', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: 'Назначить на себя', exact: true }).click()
-  await expect.poll(() => actions).toContain('assign')
-  await page.getByRole('button', { name: 'Решить', exact: true }).click()
-  await expect(page.locator('.issue-detail').getByText('Закрыт', { exact: true })).toBeVisible()
-  await page.locator('.issue-actions input[type=file]').setInputFiles({ name: 'wheel.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA/0AAAAASUVORK5CYII=', 'base64') })
-  await page.getByRole('button', { name: 'Прикрепить', exact: true }).click()
-  await expect(page.locator('.issue-attachments')).toContainText('wheel.png')
-  await expect(page.locator('.issue-attach-preview')).toHaveCount(0)
-  await page.getByRole('button', { name: 'Снять исполнителя', exact: true }).click()
-  await expect.poll(() => actions).toEqual(['comment', 'assign', 'transition', 'attachments', 'unassign'])
+  await expect(page.getByRole('button', { name: 'Решить', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Закрыть тикет', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Принять и закрыть' }).click()
+  await expect(page).toHaveURL(/\/work\?park=7/)
+  expect(actions).toEqual(['message', 'approve'])
 })
 
 test('empty 200 response offers filter recovery', async ({ page }) => {
@@ -170,7 +157,7 @@ for (const failure of [
 }
 
 
-test('status-only filtering updates immediately and makes task age prominent', async ({ page }) => {
+test('work list defaults to the oldest queued tasks without manual status controls', async ({ page }) => {
   const queries: URLSearchParams[] = []
   page.on('request', request => {
     const url = new URL(request.url())
@@ -179,21 +166,15 @@ test('status-only filtering updates immediately and makes task age prominent', a
   await installOperational(page)
   await page.goto('/work?park=7&queue=OBSOLETE&sort=newest&page=2')
   const filters = page.locator('.rp-work-filters')
-  await expect(filters.getByRole('combobox')).toHaveValue('')
-  await expect.poll(() => queries.at(-1)?.has('status')).toBe(false)
+  await expect(filters).toContainText('В очереди')
+  await expect(filters).toContainText('От старых к новым')
   await expect(filters.locator('input')).toHaveCount(0)
-  await expect(filters.getByRole('combobox')).toHaveCount(1)
+  await expect(filters.getByRole('combobox')).toHaveCount(0)
   await expect(filters.getByRole('button')).toHaveCount(0)
-  await expect(page.locator('.rp-work-issue-age').first()).toContainText('Возраст:')
-  await page.getByLabel('Статус открытых блокеров').selectOption('diagnostics')
-  await expect(page).toHaveURL(/status=diagnostics$/)
-  await expect.poll(() => Object.fromEntries(queries.at(-1)!)).toMatchObject({
-    queue: 'ROBOPARK', park: 'north', status: 'diagnostics', open_only: 'true', sort: 'oldest', offset: '0',
+  await expect.poll(() => Object.fromEntries(queries.find(query => query.get('queue') === 'ROBOPARK')!)).toMatchObject({
+    queue: 'ROBOPARK', park: 'north', status: 'queued', open_only: 'true', sort: 'oldest', offset: '50',
   })
-  await page.getByLabel('Статус открытых блокеров').selectOption('')
-  await expect(page).toHaveURL(/work\?park=7&queue=ROBOPARK&status=all$/)
-  await expect.poll(() => queries.at(-1)?.has('status')).toBe(false)
   await page.reload()
-  await expect(page.getByLabel('Статус открытых блокеров')).toHaveValue('')
-  await expect.poll(() => queries.at(-1)?.has('status')).toBe(false)
+  await expect(filters).toContainText('В очереди')
+  await expect.poll(() => queries.filter(query => query.get('queue') === 'ROBOPARK').at(-1)?.get('status')).toBe('queued')
 })

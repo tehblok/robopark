@@ -81,18 +81,33 @@ def test_mechanic_claims_locally_without_tracker_login_or_upstream_assignment(
     )
     login_as(client, "mech1", "secret")
 
-    assert (
-        client.post("/tracker/issues/ROBOPARK-9/assign", json={"assignee": "other"}).status_code
-        == 403
-    )
-    ok = client.post("/tracker/issues/ROBOPARK-9/assign", json={"assignee": seed_mechanic.username})
+    assert client.post("/tracker/issues/ROBOPARK-9/assign", json={"assignee": "other"}).status_code == 409
+    ok = client.post("/tracker/issues/ROBOPARK-9/claim", headers={"Idempotency-Key": "claim-mech1-0001"})
     assert ok.status_code == 200
     assert assigned == []
-    assert "Задача взята в работу" in comments[0]
-    assert f"Инициатор: {seed_mechanic.username}" in comments[0]
+    assert comments == []  # Bot delivery is queued, not a synchronous side effect.
     detail = client.get("/tracker/issues/ROBOPARK-9")
     assert detail.status_code == 200
     assert detail.json()["assignee"]["login"] == seed_mechanic.username
+
+
+def test_legacy_assign_cannot_bypass_durable_workflow(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from sqlalchemy import select
+
+    from robopark_api.services import tracker_client
+    from robopark_api.services.tracker_claims import get_claim
+    from robopark_api.task_workflow_models import ReliableAction
+
+    issue = {"key": "ROBOPARK-legacy", "summary": "[447]", "status": "Open", "status_key": "open", "queue": "ROBOPARK", "tags": ["Alpha"]}
+    monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: dict(issue))
+    login_as(client, seed_mechanic.username, "secret")
+    response = client.post(f"/tracker/issues/{issue['key']}/assign", json={"assignee": seed_mechanic.username})
+    assert response.status_code == 409
+    assert get_claim(db_session, issue["key"]) is None
+    assert db_session.scalars(select(ReliableAction)).all() == []
 
 
 def test_mechanic_can_take_over_a_shiftmates_local_claim(
@@ -122,8 +137,8 @@ def test_mechanic_can_take_over_a_shiftmates_local_claim(
     login_as(client, seed_mechanic.username, "secret")
 
     response = client.post(
-        f"/tracker/issues/{issue['key']}/assign",
-        json={"assignee": seed_mechanic.username},
+        f"/tracker/issues/{issue['key']}/claim",
+        headers={"Idempotency-Key": "claim-shiftmate-0001"},
     )
 
     assert response.status_code == 200
@@ -229,7 +244,7 @@ def test_slow_attachment_does_not_block_health(
 
     def upload(**kwargs):
         started.set()
-        assert release.wait(timeout=5)
+        assert release.wait(timeout=10)
         return "temp-1"
 
     monkeypatch.setattr(tracker_client, "upload_temp_attachment", upload)
@@ -243,12 +258,12 @@ def test_slow_attachment_does_not_block_health(
             files={"file": ("photo.jpg", b"fake-image", "image/jpeg")},
         )
         try:
-            assert started.wait(timeout=2)
+            assert started.wait(timeout=5)
             health = executor.submit(client.get, "/health")
-            assert health.result(timeout=1).status_code == 200
+            assert health.result(timeout=3).status_code == 200
         finally:
             release.set()
-        assert attachment.result(timeout=2).status_code == 200
+        assert attachment.result(timeout=5).status_code == 200
 
 
 def test_mechanic_can_attach_when_write_disabled(

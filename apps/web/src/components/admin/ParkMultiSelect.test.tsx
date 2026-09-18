@@ -50,7 +50,7 @@ it('selects all active parks, clears selections, and closes on Escape or outside
   fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: /Парки.*Выбрано: 1/ }))
-  fireEvent.mouseDown(screen.getByRole('button', { name: 'Вне' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Вне' }))
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 })
 

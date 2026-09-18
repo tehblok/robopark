@@ -135,6 +135,18 @@ describe('RobotResolver', () => {
     expect(screen.queryByRole('button', { name: 'Сканировать' })).not.toBeInTheDocument()
   })
 
+  it('offers camera scanning and manual entry without BarcodeDetector', () => {
+    const original = navigator.mediaDevices
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: vi.fn() } })
+    try {
+      render(<RobotResolver apiClient={{ emergencyResolve: vi.fn() }} onResolved={vi.fn()} onValueChange={vi.fn()} userId={7} value="" />)
+      expect(screen.getByRole('button', { name: 'Сканировать' })).toBeInTheDocument()
+      expect(screen.getByLabelText('Номер или VIN робота')).toBeInTheDocument()
+    } finally {
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: original })
+    }
+  })
+
   it('generates a VIN label locally without resolving or changing the search', async () => {
     const emergencyResolve = vi.fn()
     render(robotsPageTree({ apiClient: { emergencyResolve } }))

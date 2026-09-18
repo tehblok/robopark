@@ -122,11 +122,6 @@
   }
 }
 
-@media (min-width: 900px) {
-  .rp-robot-scan-action {
-    display: none;
-  }
-}
 
 @media (min-width: 1200px) {
   .rp-robots-recent-list {

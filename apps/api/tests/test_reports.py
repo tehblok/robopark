@@ -1,9 +1,22 @@
+from datetime import date
+
 import pytest
 from fastapi.testclient import TestClient
 
 from conftest import login_as, role_id_for
-from robopark_api.models import AccessStatus, Park, Report, User, UserPark
+from robopark_api.models import (
+    AccessStatus,
+    AuditLog,
+    Campaign,
+    CampaignSubmission,
+    Park,
+    Report,
+    ReportAttachment,
+    User,
+    UserPark,
+)
 from robopark_api.security import hash_password
+from robopark_api.services import report_attachments as attachments_svc
 from robopark_api.services import reports as reports_svc
 from robopark_api.services.rbac import RoleSlug
 
@@ -589,6 +602,149 @@ def test_badge_counts_admin_open_escalations(
 
 def _login(client: TestClient, username: str) -> None:
     login_as(client, username, "secret")
+
+
+def test_manager_cannot_delete_campaign_result_until_submission_is_removed(
+    client, db_session, seed_admin, seed_mechanic, seed_park_with_tracker, tmp_path, monkeypatch
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+    campaign = Campaign(
+        kind="service_company",
+        name="Test",
+        tracker_tag="SC",
+        starts_on=date(2026, 9, 1),
+        due_on=date(2026, 9, 30),
+        created_by=seed_admin.id,
+    )
+    db_session.add(campaign)
+    db_session.flush()
+    submission = CampaignSubmission(
+        campaign_id=campaign.id,
+        issue_key="ROBO-1",
+        park_id=seed_park_with_tracker.id,
+        comment="Работа выполнена",
+        author_user_id=seed_mechanic.id,
+        report_id=report.id,
+    )
+    child = Report(
+        author_user_id=seed_mechanic.id,
+        park_id=seed_park_with_tracker.id,
+        kind=reports_svc.KIND_ESCALATION,
+        status="open",
+        target_role=RoleSlug.ADMIN,
+        title="Связанный репорт",
+        body="",
+        parent_report_id=report.id,
+    )
+    db_session.add_all([submission, child])
+    db_session.flush()
+    attachment = ReportAttachment(
+        report_id=report.id,
+        kind="client_log",
+        filename="log.txt",
+        content_type="text/plain",
+        size_bytes=4,
+        storage_key=f"{report.id}/test-file",
+    )
+    db_session.add(attachment)
+    db_session.commit()
+    monkeypatch.setattr(attachments_svc, "attachments_root", lambda: tmp_path)
+    file_path = tmp_path / str(report.id) / "test-file"
+    file_path.parent.mkdir()
+    file_path.write_bytes(b"test")
+    report_id, child_id, submission_id = report.id, child.id, submission.id
+
+    _login(client, "mech1")
+    assert client.delete(f"/reports/{report_id}").status_code == 403
+    _login(client, "admin1")
+    conflict = client.delete(f"/reports/{report_id}")
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == "report_linked_to_campaign"
+    db_session.expire_all()
+    assert db_session.get(CampaignSubmission, submission_id).report_id == report_id
+    assert file_path.read_bytes() == b"test"
+
+    db_session.delete(db_session.get(CampaignSubmission, submission_id))
+    db_session.commit()
+    assert client.delete(f"/reports/{report_id}").status_code == 204
+    assert client.get(f"/reports/{report_id}").status_code == 404
+    db_session.expire_all()
+    assert db_session.get(Report, report_id) is None
+    assert db_session.get(Report, child_id).parent_report_id is None
+    assert db_session.get(CampaignSubmission, submission_id) is None
+    assert not file_path.exists()
+
+
+def test_report_delete_recovers_file_cleanup_after_interruption(
+    client, db_session, seed_admin, seed_mechanic, seed_park_with_tracker, tmp_path, monkeypatch
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+    db_session.add(
+        ReportAttachment(
+            report_id=report.id,
+            kind="client_log",
+            filename="log.txt",
+            content_type="text/plain",
+            size_bytes=4,
+            storage_key=f"{report.id}/test-file",
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(attachments_svc, "attachments_root", lambda: tmp_path)
+    file_path = tmp_path / str(report.id) / "test-file"
+    file_path.parent.mkdir()
+    file_path.write_bytes(b"test")
+    finish = attachments_svc.reconcile_pending_report_deletions
+    monkeypatch.setattr(attachments_svc, "reconcile_pending_report_deletions", lambda _db: 0)
+    _login(client, "admin1")
+    response = client.delete(f"/reports/{report.id}")
+    assert response.status_code == 204
+    db_session.expire_all()
+    assert db_session.get(Report, report.id) is None
+    assert file_path.read_bytes() == b"test"
+    assert (tmp_path / ".delete-pending" / f"{report.id}.json").exists()
+    assert (
+        db_session.query(AuditLog)
+        .filter_by(action="reports.delete", target_id=str(report.id))
+        .count()
+        == 1
+    )
+    assert finish(db_session) == 1
+    assert not file_path.exists()
+    assert not (tmp_path / ".delete-pending" / f"{report.id}.json").exists()
+
+
+def test_crash_before_report_delete_commit_keeps_report_attachment(
+    db_session, seed_mechanic, seed_park_with_tracker, tmp_path, monkeypatch
+):
+    report = _create_open_report(
+        db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id
+    )
+    monkeypatch.setattr(attachments_svc, "attachments_root", lambda: tmp_path)
+    key = f"{report.id}/test-file"
+    path = tmp_path / key
+    path.parent.mkdir()
+    path.write_bytes(b"test")
+    db_session.add(
+        ReportAttachment(
+            report_id=report.id,
+            kind="client_log",
+            filename="log.txt",
+            content_type="text/plain",
+            size_bytes=4,
+            storage_key=key,
+        )
+    )
+    db_session.commit()
+    attachments_svc.mark_report_files_for_deletion(report.id, [key])
+    assert attachments_svc.reconcile_pending_report_deletions(db_session) == 0
+    assert db_session.get(Report, report.id) is not None
+    assert path.read_bytes() == b"test"
+    assert not (tmp_path / ".delete-pending" / f"{report.id}.json").exists()
 
 
 def test_http_mechanic_create_report(client: TestClient, seed_mechanic, seed_park_with_tracker):

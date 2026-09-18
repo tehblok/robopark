@@ -1,9 +1,9 @@
 """Short-lived caches over the Tracker (Startrek) client.
 
 Multiple mechanics and operators typically open the same task board or
-robot page within seconds of each other. Without a shared cache each
-request pays a full Startrek round-trip; with the cache the first caller
-does the work and everyone within the TTL window reuses the result.
+robot page within seconds of each other. Each worker reuses short-lived
+results; JSON-safe lookup results may additionally be shared across workers.
+Issue objects retain live SDK resources and must stay in process memory.
 
 Each wrapper preserves the signature of the underlying ``tracker_client``
 function so router code stays a one-line swap. Cache keys never include
@@ -39,9 +39,11 @@ _TTL_ROBOT_TICKETS = 30.0
 _TTL_COUNTS = 20.0
 
 _issues_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
-    _TTL_ISSUES, name="tracker.issues"
+    _TTL_ISSUES, name="tracker.issues", shared=False
 )
-_issue_cache: ResponseCache[dict[str, Any] | None] = _TrackerCache(_TTL_ISSUE, name="tracker.issue")
+_issue_cache: ResponseCache[dict[str, Any] | None] = _TrackerCache(
+    _TTL_ISSUE, name="tracker.issue", shared=False
+)
 _comments_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
     _TTL_COMMENTS, name="tracker.comments"
 )
@@ -49,10 +51,10 @@ _transitions_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
     _TTL_TRANSITIONS, name="tracker.transitions"
 )
 _blockers_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
-    _TTL_BLOCKERS, name="tracker.blockers"
+    _TTL_BLOCKERS, name="tracker.blockers", shared=False
 )
 _robot_tickets_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
-    _TTL_ROBOT_TICKETS, name="tracker.robot_tickets"
+    _TTL_ROBOT_TICKETS, name="tracker.robot_tickets", shared=False
 )
 _count_cache: ResponseCache[int] = _TrackerCache(_TTL_COUNTS, name="tracker.counts")
 _metrics_cache: ResponseCache[dict[str, int]] = _TrackerCache(_TTL_COUNTS, name="tracker.metrics")

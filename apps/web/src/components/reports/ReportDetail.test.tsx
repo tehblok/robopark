@@ -1,7 +1,7 @@
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { api, type Report } from '../../api'
+import { ApiError, api, type Report } from '../../api'
 import type { ReportsApiClient } from '../../domains/reports/reports'
 import { ReportDetail } from './ReportDetail'
 
@@ -32,6 +32,46 @@ const report: Report = {
 
 describe('ReportDetail', () => {
   afterEach(() => vi.restoreAllMocks())
+
+  it('requires confirmation before a manager permanently deletes a report', async () => {
+    const actor = userEvent.setup()
+    const reportDelete = vi.fn(async (_id: number) => undefined)
+    const onDeleted = vi.fn()
+    render(<ReportDetail
+      apiClient={{ ...api, reportDelete } as ReportsApiClient}
+      canAct={false}
+      canDelete
+      onClose={vi.fn()}
+      onDeleted={onDeleted}
+      onUpdated={vi.fn()}
+      ownerKey="manager"
+      report={report}
+      showEscalate={false}
+    />)
+
+    await actor.click(screen.getByRole('button', { name: 'Удалить репорт' }))
+    expect(screen.getByRole('alertdialog')).toBeVisible()
+    expect(reportDelete).not.toHaveBeenCalled()
+    await actor.type(screen.getByRole('textbox', { name: /Введите.*УДАЛИТЬ/ }), 'УДАЛИТЬ')
+    await actor.click(screen.getByRole('button', { name: 'Удалить безвозвратно' }))
+    expect(reportDelete).toHaveBeenCalledWith(42)
+    expect(onDeleted).toHaveBeenCalledOnce()
+  })
+
+  it('explains why a campaign result cannot be deleted', async () => {
+    const actor = userEvent.setup()
+    const onDeleted = vi.fn()
+    render(<ReportDetail
+      apiClient={{ ...api, reportDelete: vi.fn(async () => { throw new ApiError(409, 'report_linked_to_campaign') }) } as ReportsApiClient}
+      canAct={false} canDelete onClose={vi.fn()} onDeleted={onDeleted}
+      onUpdated={vi.fn()} ownerKey="manager" report={report} showEscalate={false}
+    />)
+    await actor.click(screen.getByRole('button', { name: 'Удалить репорт' }))
+    await actor.type(screen.getByRole('textbox', { name: /Введите.*УДАЛИТЬ/ }), 'УДАЛИТЬ')
+    await actor.click(screen.getByRole('button', { name: 'Удалить безвозвратно' }))
+    expect((await screen.findAllByText('Этот репорт связан с результатом СК/оклейки, поэтому удалить его нельзя.')).length).toBeGreaterThan(0)
+    expect(onDeleted).not.toHaveBeenCalled()
+  })
 
   it('exposes an authorized attachment download link for the selected report', () => {
     render(<ReportDetail

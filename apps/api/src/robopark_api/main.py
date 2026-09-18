@@ -54,6 +54,7 @@ from robopark_api.seed import ensure_seed_user
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.blocker_history_job import run_blocker_history_loop
 from robopark_api.services.cache_cleanup import run_cache_cleanup_loop
+from robopark_api.services.campaigns import run_refresh_loop as run_campaign_refresh_loop
 from robopark_api.services.change_revisions import (
     default_change_revision_store,
     scope_for_mutation,
@@ -112,9 +113,10 @@ def create_app() -> FastAPI:
         job_lease = JobLease(default_live_merge_root(), "lifespan-jobs")
         tasks = []
         outbox_task: asyncio.Task[None] | None = None
+        campaign_task: asyncio.Task[None] | None = None
 
         async def start_writers():
-            nonlocal outbox_task
+            nonlocal outbox_task, campaign_task
             # Candidate readiness is read-only. Start seeding and workers only
             # after root commits the release and publishes writes_resumed.
             while host_maintenance_active(settings):
@@ -143,6 +145,7 @@ def create_app() -> FastAPI:
             if owns_job_lease:
                 tasks.append(asyncio.create_task(run_cache_cleanup_loop(stop_event)))
                 outbox_task = asyncio.create_task(run_tracker_outbox_loop(SessionLocal, stop_event))
+                campaign_task = asyncio.create_task(run_campaign_refresh_loop(SessionLocal, stop_event))
 
         startup = asyncio.create_task(start_writers())
         try:
@@ -164,6 +167,9 @@ def create_app() -> FastAPI:
             if outbox_task is not None:
                 with suppress(asyncio.CancelledError):
                     await outbox_task
+            if campaign_task is not None:
+                with suppress(asyncio.CancelledError):
+                    await campaign_task
             job_lease.release()
 
     app = FastAPI(

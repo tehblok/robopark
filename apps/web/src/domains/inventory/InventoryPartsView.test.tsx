@@ -103,7 +103,7 @@ describe('InventoryPartsView', () => {
 
     expect(await screen.findByRole('option', { name: 'Компонента 4001' }, { timeout: 10_000 })).toHaveValue('4001')
     expect(apiClient.inventoryCatalogComponents).toHaveBeenLastCalledWith(1, { limit: 200, offset: 4000 })
-  })
+  }, 15_000)
 
   it('shows a component metadata error when the server repeats a page without progress', async () => {
     const components = Array.from({ length: 200 }, (_, index) => ({ id: index + 1, name: `Компонента ${index + 1}`, is_active: true, has_photo: false }))

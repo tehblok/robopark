@@ -166,6 +166,14 @@ class Campaign(Base):
     kind: Mapped[str] = mapped_column(String(32), index=True)
     name: Mapped[str] = mapped_column(String(128))
     tracker_tag: Mapped[str] = mapped_column(String(128), index=True)
+    selection_mode: Mapped[str] = mapped_column(String(16), default="tag", server_default="tag")
+    rule_revision: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
+    snapshot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    snapshot_state: Mapped[str] = mapped_column(String(16), default="idle", server_default="idle")
+    snapshot_error: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    snapshot_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    snapshot_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     starts_on: Mapped[date] = mapped_column()
     due_on: Mapped[date] = mapped_column()
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
@@ -188,6 +196,32 @@ class CampaignPark(Base):
     )
 
 
+class CampaignSnapshotTicket(Base):
+    __tablename__ = "campaign_snapshot_tickets"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "issue_key", name="uq_campaign_snapshot_issue"),
+        Index(
+            "ix_campaign_snapshot_campaign_revision_park",
+            "campaign_id",
+            "rule_revision",
+            "park_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"))
+    issue_key: Mapped[str] = mapped_column(String(128))
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"))
+    summary: Mapped[str] = mapped_column(String(512))
+    status: Mapped[str] = mapped_column(String(128))
+    status_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    robot: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tracker_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    rule_revision: Mapped[int] = mapped_column(Integer)
+
+
 class CampaignSubmission(Base):
     __tablename__ = "campaign_submissions"
     __table_args__ = (
@@ -206,6 +240,8 @@ class CampaignSubmission(Base):
     author_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     report_id: Mapped[int] = mapped_column(ForeignKey("reports.id"), unique=True)
     tracker_transition: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    completion_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    completion_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     completed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

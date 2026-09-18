@@ -1,15 +1,27 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from robopark_api.models import AccessStatus, Park, Report, Role, User, UserPark
+from robopark_api.models import (
+    AccessStatus,
+    AuditLog,
+    CampaignSubmission,
+    Park,
+    Report,
+    Role,
+    User,
+    UserPark,
+)
+from robopark_api.services import audit, rbac, report_attachments
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import rbac
 from robopark_api.services.rbac import RoleSlug
+
+logger = logging.getLogger(__name__)
 
 KIND_TICKET_QUESTION = "ticket_question"
 KIND_TICKET_CLOSE_REVIEW = "ticket_close_review"
@@ -22,6 +34,10 @@ STATUS_RETURNED = "returned"
 STATUS_DONE = "done"
 
 MANUAL_KINDS = frozenset({KIND_TICKET_QUESTION, KIND_MECHANIC_PROBLEM})
+
+
+class ReportLinkedError(ValueError):
+    """A completed campaign still depends on this report."""
 
 
 def create_manual_report(
@@ -351,6 +367,50 @@ def get_report(db: Session, user: User, report_id: int) -> Report:
     report = _load_report(db, report_id)
     _require_view(db, user, report)
     return report
+
+
+def delete_report(db: Session, user: User, report_id: int) -> None:
+    """Remove an ordinary report; preserve linked campaign results by refusing deletion."""
+    if not _is_approved(user) or not rbac.is_admin_or_royal(user):
+        raise PermissionError("forbidden")
+    report = _load_report(db, report_id)
+    if not _in_scope(db, user, report):
+        raise PermissionError("forbidden")
+    if db.scalar(select(CampaignSubmission.id).where(CampaignSubmission.report_id == report_id)):
+        raise ReportLinkedError("report_linked_to_campaign")
+    park_id = report.park_id
+    storage_keys = [attachment.storage_key for attachment in report.attachments]
+    try:
+        if storage_keys:
+            report_attachments.mark_report_files_for_deletion(report_id, storage_keys)
+        db.execute(
+            update(Report).where(Report.parent_report_id == report_id).values(parent_report_id=None)
+        )
+        db.delete(report)
+        db.add(
+            AuditLog(
+                action="reports.delete",
+                actor_user_id=user.id,
+                actor_username=user.username,
+                actor_role=user.role,
+                park_id=park_id,
+                target_type="report",
+                target_id=str(report_id),
+                outcome=audit.OUTCOME_SUCCESS,
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        report_attachments.clear_report_delete_marker(report_id)
+        raise
+    if storage_keys:
+        try:
+            report_attachments.reconcile_pending_report_deletions(db)
+        except Exception:
+            # The DB deletion has committed. The durable marker lets cleanup
+            # retry without incorrectly reporting the user action as failed.
+            logger.exception("Report %s deleted; attachment cleanup pending", report_id)
 
 
 def return_report(db: Session, user: User, report_id: int, comment: str) -> Report:

@@ -6,6 +6,7 @@ import { ru, reportKindLabel, reportStatusLabel } from '../../i18n/ru'
 import { Alert } from '../PageShell'
 import { Spinner } from '../ui/Feedback'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
+import { ConfirmDialog } from '../../design-system/overlays/ConfirmDialog'
 import { ResponsiveDisclosure, ResponsiveDisclosureGroup } from '../../design-system/layout/ResponsiveDisclosure'
 import { formatReportDate, trackerHref } from './report-utils'
 
@@ -15,9 +16,11 @@ type ReportDetailProps = {
   ownerKey: string
   parkName?: string
   canAct: boolean
+  canDelete?: boolean
   canResubmit?: boolean
   showEscalate: boolean
   onClose: () => void
+  onDeleted?: () => void
   onUpdated: () => void
 }
 
@@ -32,9 +35,11 @@ export function ReportDetail({
   ownerKey,
   parkName,
   canAct,
+  canDelete = false,
   canResubmit = false,
   showEscalate,
   onClose,
+  onDeleted,
   onUpdated,
 }: ReportDetailProps) {
   const [error, setError] = useState('')
@@ -43,6 +48,7 @@ export function ReportDetail({
   const [returnComment, setReturnComment] = useState('')
   const [escalateComment, setEscalateComment] = useState('')
   const [actionMode, setActionMode] = useState<'idle' | 'return' | 'escalate'>('idle')
+  const [deleteOpen, setDeleteOpen] = useState(false)
   const [editTitle, setEditTitle] = useState(report.title)
   const [editBody, setEditBody] = useState(report.body)
   const [editTrackerKey, setEditTrackerKey] = useState(report.tracker_key ?? '')
@@ -68,6 +74,7 @@ export function ReportDetail({
     setReturnComment('')
     setEscalateComment('')
     setActionMode('idle')
+    setDeleteOpen(false)
   }, [ownerKey])
 
   const trackerLink = trackerHref(report.tracker_key, report.tracker_url)
@@ -129,6 +136,26 @@ export function ReportDetail({
       tracker_key: trackerKey || null,
       tracker_url: trackerKey ? `https://st.yandex-team.ru/${trackerKey}` : null,
     }))
+  }
+
+  async function handleDelete() {
+    const generation = generationRef.current
+    const requestedOwner = ownerKey
+    const current = () => mountedRef.current
+      && generationRef.current === generation
+      && ownerRef.current === requestedOwner
+    setBusy(true)
+    setError('')
+    try {
+      await apiClient.reportDelete(report.id)
+      if (!current()) return
+      setDeleteOpen(false)
+      onDeleted?.()
+    } catch (actionError) {
+      if (current()) setError(mapApiError(actionError, 'Не удалось удалить репорт.'))
+    } finally {
+      if (current()) setBusy(false)
+    }
   }
 
   return (
@@ -278,6 +305,7 @@ export function ReportDetail({
           <button className="btn btn-secondary" disabled={busy} onClick={onClose} type="button">
             {ru.reports.actions.close}
           </button>
+          {canDelete ? <button className="btn btn-ghost" disabled={busy} onClick={() => setDeleteOpen(true)} type="button">Удалить репорт</button> : null}
           {actionsEnabled && (
             <>
               <button
@@ -316,6 +344,18 @@ export function ReportDetail({
           )}
         </div>
       )}
+      <ConfirmDialog
+        confirmLabel="Удалить безвозвратно"
+        confirmationPhrase="УДАЛИТЬ"
+        description={`Репорт «${report.title}» и его вложения будут удалены без возможности восстановления. Если он связан с результатом СК/оклейки, сначала удалите или отмените этот результат.`}
+        error={error}
+        onConfirm={handleDelete}
+        onOpenChange={setDeleteOpen}
+        open={deleteOpen}
+        pending={busy}
+        title="Удалить репорт?"
+        tone="danger"
+      />
     </article>
   )
 }

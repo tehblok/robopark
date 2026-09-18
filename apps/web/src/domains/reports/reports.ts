@@ -4,6 +4,7 @@ import { REPORT_DRAFT_STORAGE_PREFIX } from '../../shared/auth/protectedBrowserS
 export type ReportsApiClient = Pick<typeof api,
   | 'createReport'
   | 'report'
+  | 'reportDelete'
   | 'reportAttach'
   | 'reportAttachmentUrl'
   | 'reportDone'

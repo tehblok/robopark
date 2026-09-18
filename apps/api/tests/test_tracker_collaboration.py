@@ -389,11 +389,10 @@ def test_submission_identity_isolated_by_actor_task_and_action(
         ).status_code
         == 200
     )
-    assert client.post("/tracker/issues/ROBOPARK-2/unassign", headers=headers()).status_code == 200
+    assert client.post("/tracker/issues/ROBOPARK-2/unassign", headers=headers()).status_code == 409
     assert written == [
         ("comment", "ROBOPARK-1"),
         ("comment", "ROBOPARK-1"),
-        ("comment", "ROBOPARK-2"),
         ("comment", "ROBOPARK-2"),
     ]
 
@@ -461,25 +460,22 @@ def test_assignments_are_local_and_staff_can_take_over(
     )
 
     login_as(client, seed_mechanic.username, "secret")
-    assert (
-        client.post(
-            "/tracker/issues/ROBOPARK-1/assign",
-            json={"assignee": seed_mechanic.username},
-        ).status_code
-        == 200
-    )
+    assert client.post(
+        "/tracker/issues/ROBOPARK-1/claim",
+        headers={"Idempotency-Key": "claim-local-0001"},
+    ).status_code == 200
     login_as(client, seed_royal.username, "secret")
     assert (
         client.post(
             "/tracker/issues/ROBOPARK-1/assign",
             json={"assignee": seed_royal.username},
         ).status_code
-        == 200
+        == 409
     )
 
     from robopark_api.services.tracker_claims import local_assignee
 
-    assert local_assignee(db_session, issue)["login"] == seed_royal.username
+    assert local_assignee(db_session, issue)["login"] == seed_mechanic.username
 
 
 def test_sdk_retries_disabled_for_durable_mutations(monkeypatch):

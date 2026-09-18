@@ -16,6 +16,8 @@ export type RobotScannerProps = {
   onDetected: (value: string) => void
   mediaDevices?: Pick<MediaDevices, 'getUserMedia'>
   Detector?: BarcodeDetectorConstructor
+  loadFallback?: () => Promise<BarcodeDetectorLike>
+  secureContext?: boolean
 }
 
 function browserDetector(): BarcodeDetectorConstructor | undefined {
@@ -28,10 +30,35 @@ function browserMediaDevices(): Pick<MediaDevices, 'getUserMedia'> | undefined {
   return navigator.mediaDevices
 }
 
+function browserSecureContext(): boolean {
+  if (typeof window === 'undefined') return false
+  if (typeof window.isSecureContext === 'boolean') return window.isSecureContext
+  return window.location.protocol === 'https:' || ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)
+}
+
+async function loadBrowserFallback(): Promise<BarcodeDetectorLike> {
+  const { createQrDetector } = await import('./robotScannerFallback')
+  return createQrDetector()
+}
+
+function cameraError(reason: unknown): string {
+  const name = reason instanceof Error ? reason.name : ''
+  if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+    return 'Нет разрешения на камеру. Разрешите доступ в настройках браузера или введите номер вручную.'
+  }
+  if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+    return 'Камера не найдена. Подключите камеру или введите номер вручную.'
+  }
+  if (name === 'NotReadableError' || name === 'TrackStartError' || name === 'SecurityError') {
+    return 'Камера занята или заблокирована системой. Проверьте настройки устройства или введите номер вручную.'
+  }
+  return 'Не удалось открыть камеру. Введите номер робота вручную.'
+}
+
 // This feature check is intentionally exported for the resolver's progressive enhancement.
 // oxlint-disable-next-line react/only-export-components
 export function scannerSupported(): boolean {
-  return Boolean(browserDetector() && browserMediaDevices()?.getUserMedia)
+  return Boolean(browserSecureContext() && browserMediaDevices()?.getUserMedia)
 }
 
 export function RobotScanner({
@@ -40,11 +67,14 @@ export function RobotScanner({
   onDetected,
   mediaDevices = browserMediaDevices(),
   Detector = browserDetector(),
+  loadFallback = loadBrowserFallback,
+  secureContext = browserSecureContext(),
 }: RobotScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const frameRef = useRef<number | null>(null)
   const generationRef = useRef(0)
+  const [started, setStarted] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const stopCamera = useCallback(() => {
@@ -60,16 +90,27 @@ export function RobotScanner({
 
   const cancel = useCallback(() => {
     stopCamera()
+    setStarted(false)
+    setError(null)
     onCancel()
   }, [onCancel, stopCamera])
 
   useEffect(() => {
     if (!open) {
+      setStarted(false)
       stopCamera()
       return
     }
-    if (!mediaDevices || !Detector) {
-      setError('Сканирование камерой недоступно в этом браузере.')
+    if (!started) {
+      stopCamera()
+      return
+    }
+    if (!secureContext) {
+      setError('Для камеры откройте сайт через HTTPS или localhost. Номер робота можно ввести вручную.')
+      return stopCamera
+    }
+    if (!mediaDevices?.getUserMedia) {
+      setError('Камера недоступна в этом браузере. Введите номер робота вручную.')
       return stopCamera
     }
 
@@ -77,21 +118,15 @@ export function RobotScanner({
     const generation = ++generationRef.current
     let disposed = false
     const active = () => !disposed && generation === generationRef.current
-    let detector: BarcodeDetectorLike
-    try {
-      detector = new Detector({ formats: ['qr_code', 'code_128'] })
-    } catch {
-      setError('Не удалось открыть сканер. Введите номер робота вручную.')
-      return stopCamera
-    }
 
-    const fail = () => {
+    const fail = (reason: unknown) => {
       if (!active()) return
-      setError('Не удалось открыть камеру. Введите номер робота вручную.')
+      setError(cameraError(reason))
+      setStarted(false)
       stopCamera()
     }
 
-    const scheduleDetection = () => {
+    const scheduleDetection = (detector: BarcodeDetectorLike) => {
       if (!active()) return
       frameRef.current = window.requestAnimationFrame(() => {
         if (!active() || !videoRef.current) return
@@ -100,18 +135,52 @@ export function RobotScanner({
           const value = codes.find((code) => code.rawValue?.trim())?.rawValue?.trim()
           if (value) {
             stopCamera()
+            setStarted(false)
             onDetected(value)
             return
           }
-          scheduleDetection()
+          scheduleDetection(detector)
         }).catch(fail)
       })
     }
 
-    void mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' } },
-      audio: false,
-    }).then((stream) => {
+    const start = async () => {
+      let detector: BarcodeDetectorLike
+      try {
+        if (Detector) {
+          try {
+            detector = new Detector({ formats: ['qr_code', 'code_128'] })
+          } catch {
+            detector = await loadFallback()
+          }
+        } else {
+          detector = await loadFallback()
+        }
+      } catch {
+        if (active()) {
+          setError('Сканер кода недоступен. Введите номер робота вручную.')
+          setStarted(false)
+        }
+        return
+      }
+      if (!active()) return
+
+      let stream: MediaStream
+      try {
+        stream = await mediaDevices.getUserMedia({ video: { facingMode: { exact: 'environment' } }, audio: false })
+      } catch (reason) {
+        const name = reason instanceof Error ? reason.name : ''
+        if (name !== 'OverconstrainedError' && name !== 'NotFoundError') {
+          fail(reason)
+          return
+        }
+        try {
+          stream = await mediaDevices.getUserMedia({ video: true, audio: false })
+        } catch (fallbackReason) {
+          fail(fallbackReason)
+          return
+        }
+      }
       if (!active()) {
         stream.getTracks().forEach((track) => track.stop())
         return
@@ -123,16 +192,29 @@ export function RobotScanner({
         return
       }
       video.srcObject = stream
-      return video.play()
-    }).then(() => {
-      if (active()) scheduleDetection()
-    }).catch(fail)
+      try {
+        await video.play()
+        if (active()) scheduleDetection(detector)
+      } catch (reason) {
+        fail(reason)
+      }
+    }
+
+    const onVisibilityChange = () => {
+      if (document.hidden && active()) {
+        setError('Камера остановлена. Нажмите «Включить камеру», чтобы продолжить.')
+        setStarted(false)
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    void start()
 
     return () => {
       disposed = true
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       stopCamera()
     }
-  }, [Detector, mediaDevices, onDetected, open, stopCamera])
+  }, [Detector, loadFallback, mediaDevices, onDetected, open, secureContext, started, stopCamera])
 
   return (
     <BottomSheet
@@ -144,8 +226,11 @@ export function RobotScanner({
     >
       <div className="rp-robot-scanner">
         <video muted playsInline ref={videoRef} />
-        {error ? <p role="alert">{error}</p> : <p>Наведите камеру на код робота.</p>}
+        {!secureContext ? <p role="alert">Для камеры откройте сайт через HTTPS или localhost. Номер робота можно ввести вручную.</p> : error ? <p role="alert">{error}</p> : started ? <p>Наведите камеру на код робота.</p> : <p>Для сканирования потребуется разрешение на камеру. Снимок никуда не отправляется.</p>}
         <div className="rp-robot-scanner__actions">
+          {!started && secureContext && mediaDevices?.getUserMedia ? (
+            <Button onClick={() => { setError(null); setStarted(true) }} type="button">Включить камеру</Button>
+          ) : null}
           <Button onClick={cancel} type="button" variant="secondary">Отменить</Button>
           <Button onClick={cancel} type="button" variant="secondary">Ввести номер вручную</Button>
         </div>

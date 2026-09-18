@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -181,6 +182,21 @@ def _connection(payload: dict[str, Any], online: bool | None) -> str | None:
     return None
 
 
+def _sim_signals(payload: dict[str, Any]) -> list[float]:
+    lte = payload.get("lte")
+    if not isinstance(lte, dict):
+        return []
+    signals = []
+    for key, value in lte.items():
+        if re.fullmatch(r"lte\d+", str(key)):
+            signal = _as_float(value)
+            if signal is not None:
+                signals.append(signal)
+        if len(signals) == 2:
+            break
+    return signals
+
+
 def _wheel_slots(raw: Any) -> list[str]:
     if raw in (None, False, "", [], {}):
         return []
@@ -346,6 +362,7 @@ def parse_emergency_snapshot(
         "lte_label": _status_label(lte_raw, fallback="LTE"),
         "lte_ok": _status_ok(lte_raw),
         "connection": _connection(payload, online),
+        "sim_signals": _sim_signals(payload),
         "error_banner": _error_banner(payload),
         "diagnostic_events": match_diagnostic_events(db, payload) if db is not None else [],
         "readings": render_readings(db, payload, role)

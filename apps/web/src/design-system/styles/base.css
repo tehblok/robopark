@@ -16,7 +16,7 @@ body {
 }
 
 button,
-input,
+input:not([type='checkbox']):not([type='radio']),
 select,
 textarea,
 [role='button'],
@@ -25,6 +25,15 @@ textarea,
   min-height: var(--rp-control-min-size);
   font-family: var(--rp-font-sans);
   font-size: var(--rp-font-size-body);
+}
+
+input[type='checkbox'],
+input[type='radio'] {
+  min-width: 18px;
+  min-height: 18px;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
 }
 
 [role='row'],

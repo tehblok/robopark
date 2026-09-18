@@ -217,7 +217,7 @@ for (const reference of ['447', 'YASADR00000000447', 'https://robopark.example.i
 
 test('short route canonicalizes to the compact summary without loading a competing identity photo', async ({ page }) => {
   const photos: string[] = []
-  page.on('request', request => { if (request.resourceType() === 'image' && /\/assets\/robots\/.+\.png/.test(request.url())) photos.push(new URL(request.url()).pathname.split('/').at(-1)!) })
+  page.on('request', request => { if (request.resourceType() === 'image' && /\/assets\/robots\/.+\.webp/.test(request.url())) photos.push(new URL(request.url()).pathname.split('/').at(-1)!) })
   await installOperational(page)
   await page.goto('/robots/447?park=7')
   await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7`)
@@ -226,7 +226,7 @@ test('short route canonicalizes to the compact summary without loading a competi
   await expect(summary.locator('div').filter({ has: page.getByText('АКБ 2', { exact: true }) }).first()).toContainText('83 %')
   await expect(page.getByText(snapshot.vin, { exact: true })).toBeHidden()
   await settlePage(page)
-  expect(photos).toEqual([])
+  expect(photos).toEqual(['top.webp'])
   await expect(page.locator('.rp-robot-identity')).toHaveCount(0)
 })
 
@@ -403,40 +403,46 @@ test('scanner cancellation stops the fake camera track', async ({ page }) => {
   await page.getByRole('button', { name: 'Сканировать', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Сканировать робота' })
   await expect(dialog).toBeVisible()
+  expect(await page.evaluate(() => Reflect.get(window, '__cameraTest').requested)).toBe(false)
+  await dialog.getByRole('button', { name: 'Включить камеру', exact: true }).click()
   await expect.poll(() => page.evaluate(() => Reflect.get(window, '__cameraTest').requested)).toBe(true)
   await dialog.getByRole('button', { name: 'Отменить', exact: true }).click()
   await expect(dialog).toBeHidden()
   expect(await page.evaluate(() => Reflect.get(window, '__cameraTest').stopped)).toBe(true)
 })
 
-test('all six original views load only on selection with correct visible wheel mapping', async ({ page }) => {
-  const images: string[] = []
-  page.on('request', request => { if (request.resourceType() === 'image' && /\/assets\/robots\/.+\.png/.test(request.url())) images.push(new URL(request.url()).pathname.split('/').at(-1)!) })
-  await installOperational(page)
-  await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=scheme`)
-  const views = [
-    { label: 'Сверху', file: 'top.png', width: 2269, height: 2347, wheels: ['Переднее левое', 'Среднее левое', 'Заднее левое', 'Переднее правое', 'Среднее правое', 'Заднее правое'] },
-    { label: 'Спереди', file: 'front.png', width: 1547, height: 2176, wheels: ['Переднее правое', 'Переднее левое'] },
-    { label: 'Сзади', file: 'rear.png', width: 1454, height: 2204, wheels: ['Заднее левое', 'Заднее правое'] },
-    { label: 'Слева', file: 'left.png', width: 1610, height: 2263, wheels: ['Переднее левое', 'Среднее левое', 'Заднее левое'] },
-    { label: 'Справа', file: 'right.png', width: 1638, height: 2325, wheels: ['Заднее правое', 'Среднее правое', 'Переднее правое'] },
-    { label: 'Изометрия', file: 'isometric.png', width: 1962, height: 2225, wheels: [] },
-  ]
-  for (const [index, view] of views.entries()) {
-    await page.getByRole('group', { name: 'Ракурс модели' }).getByRole('button', { name: view.label, exact: true }).click()
+for (const view of [
+  { id: 'top', label: 'сверху', width: 1200, height: 1242 },
+  { id: 'front', label: 'спереди', width: 1200, height: 1688 },
+  { id: 'rear', label: 'сзади', width: 1200, height: 1819 },
+  { id: 'left', label: 'слева', width: 1200, height: 1687 },
+  { id: 'right', label: 'справа', width: 1200, height: 1704 },
+  { id: 'isometric', label: 'изометрия', width: 1200, height: 1361 },
+] as const) {
+  test(`active diagnostic event automatically selects ${view.id} WebP view`, async ({ page }) => {
+    const images: string[] = []
+    page.on('request', request => { if (request.resourceType() === 'image' && /\/assets\/robots\/.+\.webp/.test(request.url())) images.push(new URL(request.url()).pathname.split('/').at(-1)!) })
+    const event = {
+      id: `event-${view.id}`, rule_id: 1, source_path: 'errors.0', source_segments: ['errors', 0],
+      raw_value: 'FAULT', title: 'Активная ошибка', description: 'Проверить робот.', severity: 'critical' as const,
+      sort_order: 0, part: 'Робот', view: view.id, x: .5, y: .5, indicator: 'point' as const,
+    }
+    await installOperational(page, { snapshot: { ...snapshot, diagnostic_events: [event] } })
+    await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=scheme`)
     const photo = page.locator('.rp-check-photo-frame img')
     await photo.scrollIntoViewIfNeeded()
-    await expect(photo).toHaveCount(1)
+    await expect(photo).toHaveAttribute('alt', new RegExp(view.label))
     await expect.poll(() => photo.evaluate((element: HTMLImageElement) => [element.naturalWidth, element.naturalHeight])).toEqual([view.width, view.height])
-    expect(images).toEqual(Array.from(new Set(views.slice(0, index + 1).map(item => item.file))))
+    await expect(page.getByRole('button', { name: 'Ошибка: Активная ошибка' })).toBeVisible()
+    expect(images).toEqual([`${view.id}.webp`])
+    await expect(page.getByRole('group', { name: 'Ракурс модели' })).toHaveCount(0)
     await expect(page.locator('.rp-check-wheel')).toHaveCount(0)
-  }
-  await selectSecondaryTab(page, 'Колёса')
-})
+  })
+}
 
 test('photo failure uses neutral fallback and unknown faults never invent body or sensor markers', async ({ page }) => {
   await installOperational(page, { snapshot: { ...snapshot, wheels_fault: ['body', 'unknown-sensor'] } })
-  await page.route(/\/assets\/robots\/top\.png(?:\?.*)?$/, route => route.request().resourceType() === 'image' ? route.abort() : route.continue())
+  await page.route(/\/assets\/robots\/top\.webp(?:\?.*)?$/, route => route.request().resourceType() === 'image' ? route.abort() : route.continue())
   await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=scheme`)
   await page.locator('.rp-check-photo-frame').scrollIntoViewIfNeeded()
   await expect(page.getByRole('img', { name: 'Схема модели робота', exact: true })).toBeVisible()

@@ -283,6 +283,7 @@ export type EmergencySnapshot = {
   lte_label: string | null
   lte_ok: boolean | null
   connection: 'lte' | 'wire' | null
+  sim_signals?: number[]
   error_banner: string | null
   lat: number | null
   lon: number | null
@@ -539,6 +540,9 @@ export type Campaign = {
   remaining_count: number
   percent_complete: number
   overdue: boolean
+  snapshot_at?: string | null
+  snapshot_state?: 'idle' | 'pending' | 'running' | 'ready' | 'error'
+  snapshot_error?: string | null
 }
 
 export type CampaignDetail = Campaign & {
@@ -1539,11 +1543,13 @@ export const api = {
   campaigns: (parkId?: number) =>
     request<Campaign[]>(parkId == null ? '/campaigns' : `/campaigns?park_id=${parkId}`),
   campaign: (id: number) => request<CampaignDetail>(`/campaigns/${id}`),
+  refreshCampaign: (id: number) => request<{ snapshot_state: string; snapshot_at: string | null }>(`/campaigns/${id}/refresh`, { method: 'POST' }),
+  deleteCampaign: (id: number) => request<{ result: 'deleted' | 'archived' }>(`/campaigns/${id}`, { method: 'DELETE' }),
   createCampaign: (payload: CampaignCreatePayload) =>
     request<Campaign>('/campaigns', { method: 'POST', body: JSON.stringify(payload) }),
   updateCampaign: (id: number, payload: Partial<CampaignCreatePayload & { is_active: boolean }>) =>
     request<Campaign>(`/campaigns/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
-  completeCampaignTicket: (campaignId: number, ticketKey: string, parkId: number, comment: string, photo: File) => {
+  completeCampaignTicket: (campaignId: number, ticketKey: string, parkId: number, comment: string, photo: File, idempotencyKey?: string) => {
     const form = new FormData()
     form.append('park_id', String(parkId))
     form.append('comment', comment)
@@ -1551,6 +1557,7 @@ export const api = {
     return requestForm<CampaignSubmission>(
       `/campaigns/${campaignId}/tickets/${encodeURIComponent(ticketKey)}/complete`,
       form,
+      idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
     )
   },
   inventory: (parkId: number) => inventoryRequest<InventoryOverview>(`/inventory?park_id=${parkId}`),
@@ -1630,6 +1637,7 @@ export const api = {
         : `/reports/inbox?park_id=${parkId}`,
     ),
   report: (id: number) => request<Report>(`/reports/${id}`),
+  reportDelete: (id: number) => request<void>(`/reports/${id}`, { method: 'DELETE' }),
   reportAttach: (id: number, kind: ReportAttachmentKind, file: File) => {
     const form = new FormData()
     form.append('kind', kind)

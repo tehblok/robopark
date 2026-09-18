@@ -58,6 +58,9 @@ class CampaignOut(BaseModel):
     remaining_count: int
     percent_complete: int
     overdue: bool
+    snapshot_at: datetime | None = None
+    snapshot_state: str = "idle"
+    snapshot_error: str | None = None
 
 
 class CampaignDetailOut(CampaignOut):

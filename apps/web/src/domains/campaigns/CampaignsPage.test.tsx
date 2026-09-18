@@ -20,11 +20,11 @@ const detail: CampaignDetail = {
   ],
 }
 
-function renderPage(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>) {
-  return render(<MemoryRouter initialEntries={['/campaigns/4']}><AuthContext.Provider value={{ user, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={apiClient} />} path="/campaigns/:campaignId" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>)
+function renderPage(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>, currentUser: User = user) {
+  return render(<MemoryRouter initialEntries={['/campaigns/4']}><AuthContext.Provider value={{ user: currentUser, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={apiClient} />} path="/campaigns/:campaignId" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>)
 }
 
-function renderList(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>) {
+function renderList(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>) {
   return render(<MemoryRouter initialEntries={['/campaigns']}><AuthContext.Provider value={{ user, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={apiClient} />} path="/campaigns" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>)
 }
 
@@ -84,6 +84,43 @@ it('shows progress, open and closed campaign tickets and filters by robot', asyn
   expect(screen.getByText('Открытые тикеты не найдены.')).toBeVisible()
 })
 
+it('explains that a locally completed ticket is still waiting for Tracker', async () => {
+  const waiting = { ...detail, closed_tickets: [{ ...detail.closed_tickets[0], tracker_transition: 'pending' }] }
+  renderPage({ ...api, campaign: vi.fn(async () => waiting) })
+  expect(await screen.findByText('Отправка в Tracker ожидается')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Обновить из Tracker' })).toBeVisible()
+})
+
+it('keeps the previous campaign visible when a refresh fails', async () => {
+  const campaign = vi.fn().mockResolvedValueOnce(detail).mockRejectedValueOnce(new Error('Tracker offline'))
+  renderPage({ ...api, campaign, refreshCampaign: vi.fn(async () => ({ snapshot_state: 'pending', snapshot_at: null })) })
+  expect(await screen.findByRole('heading', { name: 'СК Альфа' })).toBeVisible()
+  await userEvent.click(screen.getByRole('button', { name: 'Обновить из Tracker' }))
+  expect(await screen.findByText(/Показаны последние полученные данные/)).toBeVisible()
+  expect(screen.getByRole('heading', { name: 'СК Альфа' })).toBeVisible()
+})
+
+it('requests a coalesced Tracker refresh and shows saved snapshot age while it runs', async () => {
+  const pending = { ...detail, snapshot_state: 'pending' as const, snapshot_at: '2026-09-10T08:00:00Z' }
+  const campaign = vi.fn(async () => pending)
+  const refreshCampaign = vi.fn(async () => ({ snapshot_state: 'pending', snapshot_at: pending.snapshot_at }))
+  renderPage({ ...api, campaign, refreshCampaign })
+  expect(await screen.findByText(/Последнее обновление/)).toBeVisible()
+  await userEvent.click(screen.getByRole('button', { name: 'Обновить из Tracker' }))
+  await waitFor(() => expect(refreshCampaign).toHaveBeenCalledWith(4))
+  expect(screen.getByText(/Обновление запрошено/)).toBeVisible()
+})
+
+it('lets a manager confirm campaign deletion and removes the detail view', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  const deleteCampaign = vi.fn(async () => ({ result: 'archived' as const }))
+  renderPage({ ...api, campaign: vi.fn(async () => detail), deleteCampaign }, { ...user, role: 'royal' })
+  expect(await screen.findByRole('heading', { name: 'СК Альфа' })).toBeVisible()
+  await userEvent.click(screen.getByRole('button', { name: 'Удалить кампанию' }))
+  await waitFor(() => expect(deleteCampaign).toHaveBeenCalledWith(4))
+  expect(screen.queryByRole('heading', { name: 'СК Альфа' })).not.toBeInTheDocument()
+})
+
 it('sends a comment and photo to operator review', async () => {
   const complete = vi.fn(async () => ({ id: 1, issue_key: 'RP-1', report_id: 10, review_status: 'open', tracker_transition: 'review', completed_at: '2026-09-10T10:00:00Z' }))
   const campaign = vi.fn(async () => detail)
@@ -95,7 +132,7 @@ it('sends a comment and photo to operator review', async () => {
   const photo = new File(['photo'], 'done.jpg', { type: 'image/jpeg' })
   await userEvent.upload(within(openPanel).getByLabelText('Фото'), photo)
   fireEvent.submit(within(openPanel).getByRole('button', { name: 'Отправить оператору' }).closest('form')!)
-  await waitFor(() => expect(complete).toHaveBeenCalledWith(4, 'RP-1', 7, 'Всё готово', photo))
+  await waitFor(() => expect(complete).toHaveBeenCalledWith(4, 'RP-1', 7, 'Всё готово', photo, expect.any(String)))
   expect(campaign).toHaveBeenCalledTimes(2)
 })
 

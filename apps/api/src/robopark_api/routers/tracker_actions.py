@@ -15,7 +15,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
@@ -43,12 +43,7 @@ from robopark_api.services import tracker_signatures as sig_svc
 from robopark_api.services import tracker_submissions as submissions
 from robopark_api.services.login_throttle import client_ip
 from robopark_api.services.rbac import RoleSlug
-from robopark_api.services.tracker_claims import (
-    claim_issue,
-    local_assignee,
-    mechanic_owns_issue,
-    release_claim,
-)
+from robopark_api.services.tracker_claims import mechanic_owns_issue
 from robopark_api.services.tracker_policy import ensure_action_allowed
 from robopark_api.task_workflow_models import HiddenTask
 
@@ -609,57 +604,8 @@ def assign_issue(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _ensure_tracker_user(user, db)
-    token = _require_token(db)
-    issue = _get_issue_or_404(token, key)
-    _authorize(db, user, issue, "assign", request)
-    requested = payload.assignee.strip()
-    if user.role == RoleSlug.MECHANIC:
-        own_names = {user.username.casefold()}
-        if user.tracker_login:
-            own_names.add(user.tracker_login.casefold())
-        if requested.casefold() not in own_names:
-            raise HTTPException(status_code=403, detail="mechanic_can_only_claim_self")
-        owner = user
-    else:
-        owner = db.scalar(
-            select(User).where(
-                User.is_active.is_(True),
-                or_(User.username == requested, User.tracker_login == requested),
-            )
-        )
-        if owner is None:
-            raise HTTPException(status_code=400, detail="tracker_local_assignee_not_found")
-
-    park = sig_svc.resolve_park(db, issue)
-    if park is None:
-        raise HTTPException(status_code=409, detail="tracker_issue_park_required")
-
-    try:
-        claim_issue(
-            db,
-            actor=user,
-            owner=owner,
-            issue_key=key,
-            park_id=park.id,
-            replace=True,
-        )
-    except PermissionError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
-
-    _publish_bot_note(token, db, user, issue, f"Задача взята в работу: {owner.username}")
-
-    audit.record(
-        db,
-        action=audit.ACTION_TRACKER_ASSIGN,
-        actor=user,
-        park_id=park.id if park is not None else None,
-        target_type="tracker_issue",
-        target_id=key,
-        detail=f"assignee={owner.username}",
-        client_ip=client_ip(request),
-    )
-    return _ok(key, "assign", user, {**issue, "assignee": local_assignee(db, issue)})
+    """Retired compatibility route: use the durable /claim or /handoff command."""
+    raise HTTPException(status_code=409, detail="task_workflow_required")
 
 
 @router.post(
@@ -675,25 +621,8 @@ def unassign_issue(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _ensure_tracker_user(user, db)
-    token = _require_token(db)
-    issue = _get_issue_or_404(token, key)
-    _authorize(db, user, issue, "unassign", request)
-
-    _publish_bot_note(token, db, user, issue, "Задача освобождена")
-    release_claim(db, key)
-
-    park = sig_svc.resolve_park(db, issue)
-    audit.record(
-        db,
-        action=audit.ACTION_TRACKER_UNASSIGN,
-        actor=user,
-        park_id=park.id if park is not None else None,
-        target_type="tracker_issue",
-        target_id=key,
-        client_ip=client_ip(request),
-    )
-    return _ok(key, "unassign", user, issue)
+    """Unassign without a handoff would lose the local owner and bot audit."""
+    raise HTTPException(status_code=409, detail="task_workflow_required")
 
 
 @router.post(

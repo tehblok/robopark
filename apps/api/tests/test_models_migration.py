@@ -62,6 +62,7 @@ def test_metadata_has_required_tables():
         "campaigns",
         "campaign_parks",
         "campaign_submissions",
+        "campaign_snapshot_tickets",
         "inventory_components",
         "inventory_parts",
         "inventory_movements",
@@ -103,10 +104,79 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_is_reliable_task_workflow():
+def test_alembic_head_is_campaign_snapshot():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0028_reliable_task_workflow"]
+    assert script.get_heads() == ["0029_campaign_snapshot"]
+
+
+def test_campaign_snapshot_upgrade_preserves_legacy_selection_and_indexes(
+    sqlite_database_url, monkeypatch
+):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0028_reliable_task_workflow")
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.begin() as connection:
+        role_id = connection.execute(text("SELECT id FROM roles ORDER BY id LIMIT 1")).scalar_one()
+        connection.execute(
+            text(
+                "INSERT INTO users (id, username, password_hash, role_id, access_status, "
+                "must_change_password, is_active) "
+                "VALUES (1, 'campaign_admin', 'hash', :role_id, 'approved', 0, 1)"
+            ),
+            {"role_id": role_id},
+        )
+        connection.execute(
+            text("INSERT INTO parks (id, name, tag, is_active) VALUES (1, 'Park', 'park', 1)")
+        )
+        connection.execute(
+            text(
+                "INSERT INTO campaigns "
+                "(id, kind, name, tracker_tag, starts_on, due_on, created_by) "
+                "VALUES (1, 'wrapping', 'Existing', 'legacy-tag', '2026-09-01', '2026-10-01', 1)"
+            )
+        )
+
+    command.upgrade(config, "head")
+    with engine.begin() as connection:
+        assert connection.execute(
+            text(
+                "SELECT selection_mode, rule_revision, snapshot_state, snapshot_at "
+                "FROM campaigns WHERE id = 1"
+            )
+        ).one() == ("tag", 1, "idle", None)
+        connection.execute(
+            text(
+                "INSERT INTO campaign_snapshot_tickets "
+                "(campaign_id, issue_key, park_id, summary, status, rule_revision) "
+                "VALUES (1, 'TEST-1', 1, 'Replace wrap', 'Open', 1)"
+            )
+        )
+        assert connection.execute(
+            text("SELECT issue_key FROM campaign_snapshot_tickets WHERE campaign_id = 1")
+        ).scalar_one() == "TEST-1"
+        assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
+
+    inspector = inspect(engine)
+    assert "campaign_snapshot_tickets" in inspector.get_table_names()
+    assert "ix_campaign_snapshot_campaign_revision_park" in {
+        index["name"] for index in inspector.get_indexes("campaign_snapshot_tickets")
+    }
+    assert any(
+        constraint["name"] == "uq_campaign_snapshot_issue"
+        and constraint["column_names"] == ["campaign_id", "issue_key"]
+        for constraint in inspector.get_unique_constraints("campaign_snapshot_tickets")
+    )
+    assert any(
+        fk["referred_table"] == "campaigns" and fk["options"].get("ondelete") == "CASCADE"
+        for fk in inspector.get_foreign_keys("campaign_snapshot_tickets")
+    )
+
+    command.downgrade(config, "0028_reliable_task_workflow")
+    assert "campaign_snapshot_tickets" not in inspect(engine).get_table_names()
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT tracker_tag FROM campaigns WHERE id = 1")).scalar_one() == "legacy-tag"
 
 
 def test_reliable_workflow_upgrade_and_downgrade_preserve_legacy_submissions(

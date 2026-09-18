@@ -1,6 +1,6 @@
-# Установка СУРП на Armbian и Ubuntu и безопасные обновления
+# Установка Robopark на Armbian и Ubuntu и безопасные обновления
 
-Версия этого руководства и корневого `VERSION`: **0.1.37**. Целевые хосты — действующий Armbian 26 ARM64 с 8 GiB RAM и новый Ubuntu 22.04 ARM64 на Orin. Установщик не ограничивает номер версии ОС: он использует `apt` и кодовое имя базы из `/etc/os-release`, проверяет systemd, ARM64/AMD64 и свободное место. Хостовые скрипты рассчитаны на Python 3.10+; API внутри Docker использует Python 3.12. При первой установке профиль выбирается по ОЗУ: до 24 GiB — два API-процесса, от 24 GiB — четыре. Работающий Docker с Compose и Buildx сохраняется; при отсутствии плагина устанавливается только плагин. ARM32 и системы без systemd не поддерживаются. Проверка на macOS использует временный корень и подменяет внешние команды; настоящие Linux/systemd/Docker/Tuna и нагрузку 200 пользователей должен подтвердить целевой стенд.
+Версия этого руководства и корневого `VERSION`: **0.1.38**. Целевые хосты — действующий Armbian 26 ARM64 с 8 GiB RAM и новый Ubuntu 22.04 ARM64 на Orin. Установщик не ограничивает номер версии ОС: он использует `apt` и кодовое имя базы из `/etc/os-release`, проверяет systemd, ARM64/AMD64 и свободное место. Хостовые скрипты рассчитаны на Python 3.10+; API внутри Docker использует Python 3.12. При первой установке профиль выбирается по ОЗУ: до 24 GiB — два API-процесса, от 24 GiB — четыре. Работающий Docker с Compose и Buildx сохраняется; при отсутствии плагина устанавливается только плагин. ARM32 и системы без systemd не поддерживаются. Проверка на macOS использует временный корень и подменяет внешние команды; настоящие Linux/systemd/Docker/Tuna и нагрузку 200 пользователей должен подтвердить целевой стенд.
 
 ## Простая установка
 
@@ -43,8 +43,8 @@ TLS обслуживает Tuna. Для Armbian с 8 GiB установщик в
 Скачайте комплект файлов с одинаковым базовым именем: `.tar.gz`, `.tar.gz.sig`, `.tar.gz.sha256`, `.tar.gz.json`. Для самостоятельного release ZIP нужен такой же набор `.zip` и трёх sidecar-файлов. На машине проверки нужны Python 3.10+ и `cryptography` (в Debian/Ubuntu пакет `python3-cryptography`).
 
 ```sh
-python3 verify-artifact.py --public-key release-public-key.pem robopark-installer-0.1.37.tar.gz
-python3 verify-artifact.py --public-key release-public-key.pem robopark-release-0.1.37.zip
+python3 verify-artifact.py --public-key release-public-key.pem robopark-installer-0.1.38.tar.gz
+python3 verify-artifact.py --public-key release-public-key.pem robopark-release-0.1.38.zip
 ```
 
 Продолжайте только после кода выхода 0. Внешняя утилита проверяет Ed25519-подпись всего архива, SHA-256, metadata, внутреннюю подпись манифеста, пути и хеши файлов. Сам локальный установщик и OTA сейчас не проверяют криптографическую подпись архива. Один checksum рядом с архивом не заменяет проверку подписи. Ошибка проверки означает остановку; не распаковывайте архив с обходом валидации.
@@ -52,9 +52,9 @@ python3 verify-artifact.py --public-key release-public-key.pem robopark-release-
 Ручной эквивалент простого запуска:
 
 ```sh
-mkdir robopark-installer-0.1.37
-tar -xzf robopark-installer-0.1.37.tar.gz -C robopark-installer-0.1.37
-cd robopark-installer-0.1.37
+mkdir robopark-installer-0.1.38
+tar -xzf robopark-installer-0.1.38.tar.gz -C robopark-installer-0.1.38
+cd robopark-installer-0.1.38
 ./START.sh
 ```
 
@@ -174,7 +174,7 @@ Secret scan не должен печатать найденные значени
 |---|---|---|
 | Идентификация устройства | Модель, архитектура, OS release/kernel, дата | **НЕ ВЫПОЛНЕНО** |
 | Ресурсы | RAM, CPU, свободные GiB/inodes на /opt и /var/lib | **НЕ ВЫПОЛНЕНО** |
-| Подписи | Версия 0.1.37, публичный fingerprint, hashes артефактов | **НЕ ВЫПОЛНЕНО** |
+| Подписи | Версия 0.1.38, публичный fingerprint, hashes артефактов | **НЕ ВЫПОЛНЕНО** |
 | Чистая установка | Длительность, завершённые этапы, версия | **НЕ ВЫПОЛНЕНО** |
 | Resume/idempotence | Прерванный этап, успешный resume, сохранение конфигурации | **НЕ ВЫПОЛНЕНО** |
 | Docker/Compose/Tuna | Установленные версии, активные службы/timers | **НЕ ВЫПОЛНЕНО** |

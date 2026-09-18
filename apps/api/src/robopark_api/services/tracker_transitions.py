@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-TransitionPurpose = Literal["start", "review", "return", "close"]
+TransitionPurpose = Literal["start", "review", "diagnostics", "return", "close"]
 
 _ALIASES: dict[TransitionPurpose, tuple[str, ...]] = {
     "start": (
@@ -25,6 +25,7 @@ _ALIASES: dict[TransitionPurpose, tuple[str, ...]] = {
         "на проверку",
         "передать на проверку",
     ),
+    "diagnostics": ("diagnostics", "diagnostic", "диагностика", "на диагностику"),
     "return": (
         "return",
         "return to work",
@@ -50,7 +51,14 @@ _ALIASES: dict[TransitionPurpose, tuple[str, ...]] = {
 
 _TARGET_STATUS_ALIASES: dict[TransitionPurpose, tuple[str, ...]] = {
     "start": ("in progress", "inprogress", "в работе"),
-    "review": ("review", "verification", "проверка"),
+    "review": (
+        "review",
+        "verification",
+        "проверка",
+        "проверка оператором",
+        "на проверке",
+    ),
+    "diagnostics": ("diagnostics", "diagnostic", "диагностика", "на диагностике"),
     "return": ("in progress", "inprogress", "в работе"),
     "close": (
         "close",

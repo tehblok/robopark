@@ -27,7 +27,7 @@ afterEach(() => vi.restoreAllMocks())
 it.each(['447', VIN.toLowerCase()])('canonicalizes literal %s, keeps numeric park and valid tab, remembers current success', async reference => {
   const resolver = { emergencyResolve: vi.fn(async () => ({ vin: VIN, sections })) }
   render(tree(resolver, { reference })); await waitFor(() => expect(screen.getByLabelText('Адрес')).toHaveTextContent(`/robots/${VIN}?park=7&tab=wheels`))
-  expect(await screen.findByRole('heading', { name: 'Рабочее пространство робота' })).toBeInTheDocument()
+  expect(await screen.findByRole('heading', { name: 'Проверка робота' })).toBeInTheDocument()
   expect(screen.queryByRole('link', { name: 'Карточка робота' })).not.toBeInTheDocument()
   expect(loadRecentRobots(user.id)[0].vin).toBe(VIN)
 })

@@ -52,7 +52,7 @@ describe('buildWatermarkLabel', () => {
   it('includes username and user id', () => {
     expect(buildWatermarkLabel('operator1', 42)).toContain('operator1')
     expect(buildWatermarkLabel('operator1', 42)).toContain('#42')
-    expect(buildWatermarkLabel('operator1', 42)).toContain('СУРП')
+    expect(buildWatermarkLabel('operator1', 42)).toContain('Робопарк')
   })
 })
 

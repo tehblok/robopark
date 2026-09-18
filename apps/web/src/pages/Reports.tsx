@@ -169,6 +169,12 @@ function ReportsOwner({
     resourceStore.invalidate(mineKey)
     refreshReportsBadge()
   }
+  const handleDetailDeleted = () => {
+    resourceStore.invalidate(detailKey)
+    closeDetail()
+    void refreshLists()
+    refreshReportsBadge()
+  }
 
   const mine = mineRes.data ?? []
   const inbox = inboxRes.data ?? []
@@ -339,9 +345,11 @@ function ReportsOwner({
             <ReportDetail
               apiClient={apiClient}
               canAct={visiblePane === 'inbox' && inboxEnabled}
+              canDelete={role === 'admin' || role === 'royal'}
               canResubmit={selectedReport.author_user_id === user.id && selectedReport.status === 'returned'}
               key={selectedReport.id}
               onClose={closeDetail}
+              onDeleted={handleDetailDeleted}
               onUpdated={() => void handleDetailUpdated()}
               ownerKey={identity}
               parkName={parkNameForReport(selectedReport)}

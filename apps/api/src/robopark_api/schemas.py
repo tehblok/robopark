@@ -364,6 +364,7 @@ class EmergencySnapshotOut(BaseModel):
     lte_label: str | None = None
     lte_ok: bool | None = None
     connection: Literal["lte", "wire"] | None = None
+    sim_signals: list[float] = Field(default_factory=list)
     error_banner: str | None = None
     diagnostic_events: list[DiagnosticEvent] = Field(default_factory=list)
     readings: list[EmergencyReadingValue] = Field(default_factory=list)

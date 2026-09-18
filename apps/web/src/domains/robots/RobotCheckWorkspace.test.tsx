@@ -67,7 +67,7 @@ it('summarizes charge and the leading diagnostic and opens it on the scheme', as
   fireEvent.click(within(summary).getByRole('button', { name: 'Показать неисправность' }))
   expect(onTabChange).toHaveBeenCalledWith('scheme')
   view.rerender(tree(apiClient, 'scheme', { onTabChange }))
-  expect(screen.getByRole('button', { name: 'Спереди', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('img', { name: /вид спереди/ })).toBeInTheDocument()
   expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(lidar.description)
 })
 it('renders the five decision values independently, including zero and a disconnected battery', async () => {
@@ -78,6 +78,7 @@ it('renders the five decision values independently, including zero and a disconn
     battery2_percent: null,
     battery2_connected: true,
     disk_percent: 0,
+    sim_signals: [7000, 8400],
   })) }), 'state'))
 
   const summary = await screen.findByRole('region', { name: 'Состояние робота' })
@@ -85,7 +86,10 @@ it('renders the five decision values independently, including zero and a disconn
   expect(within(summary).getByText('АКБ 2').parentElement).toHaveTextContent('Нет данных')
   expect(within(summary).getByText('Скорость').parentElement).toHaveTextContent('0 м/с')
   expect(within(summary).getByText('Диск').parentElement).toHaveTextContent('0 %')
-  expect(within(summary).getByText('Связь').parentElement).toHaveTextContent('Робот на связи')
+  expect(within(summary).getByText('LTE').parentElement).toHaveTextContent('Робот на связи')
+  expect(summary).toHaveTextContent('Соединение: Мобильное')
+  expect(summary).toHaveTextContent('SIM 1: 7000')
+  expect(summary).toHaveTextContent('SIM 2: 8400')
 })
 it('uses explicit stale age from the API instead of certifying a last-good snapshot', async () => {
   render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({
@@ -98,7 +102,7 @@ it('uses explicit stale age from the API instead of certifying a last-good snaps
   expect(summary).toHaveTextContent('Данные устарели · 37 с')
   expect(summary).not.toHaveTextContent('Активных ошибок нет')
 })
-it('automatically selects the critical reading block and preserves a valid manual block and view', async () => {
+it('automatically selects the critical reading block and preserves a valid manual block', async () => {
   const apiClient = client({ emergencySnapshot: vi.fn(async () => snapshot({ readings: [
     { id: 1, section_id: 'wheels', label: 'Ток колеса', display: '4 А', state: 'normal', view: 'front', x: .3, y: .6, label_direction: 'left' },
     { id: 2, section_id: 'power', label: 'Температура АКБ', display: '92 °C', state: 'critical', view: 'rear', x: .5, y: .5, label_direction: 'right' },
@@ -106,17 +110,15 @@ it('automatically selects the critical reading block and preserves a valid manua
   render(tree(apiClient, 'scheme'))
 
   expect(await screen.findByRole('button', { name: 'Питание', expanded: true })).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Сзади', pressed: true })).toBeInTheDocument()
+  expect(screen.getAllByRole('img', { name: /вид сзади/ }).length).toBeGreaterThan(0)
   expect(screen.getAllByRole('region', { name: /Диагностический блок/ })).toHaveLength(1)
   fireEvent.click(screen.getByRole('button', { name: 'Колёса' }))
-  fireEvent.click(screen.getByRole('button', { name: 'Слева' }))
   vi.mocked(apiClient.emergencySnapshot).mockResolvedValue(snapshot({ readings: [
     { id: 3, section_id: 'power', label: 'Новая тревога', display: '99 °C', state: 'critical', view: 'top', x: .5, y: .5, label_direction: 'auto' },
   ] } as EmergencySnapshot))
   vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange'))
   await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2))
   expect(screen.getByRole('button', { name: 'Колёса', expanded: true })).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Слева', pressed: true })).toBeInTheDocument()
 })
 it('keeps available readings visible when a sibling reading is unavailable and toggles ordinary labels', async () => {
   render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({ readings: [
@@ -126,11 +128,11 @@ it('keeps available readings visible when a sibling reading is unavailable and t
 
   const reading = await screen.findByRole('button', { name: 'Показание: Ток колеса, 4 А' })
   expect(screen.getByRole('region', { name: 'Диагностический блок «Колёса»' })).toHaveTextContent('ПарктроникНет данных')
-  expect(screen.queryByText('Ток колеса: 4 А')).not.toBeInTheDocument()
+  expect(reading).toHaveAttribute('aria-pressed', 'false')
   fireEvent.click(reading)
-  expect(screen.getByText('Ток колеса: 4 А')).toBeInTheDocument()
+  expect(reading).toHaveAttribute('aria-pressed', 'true')
   fireEvent.click(reading)
-  expect(screen.queryByText('Ток колеса: 4 А')).not.toBeInTheDocument()
+  expect(reading).toHaveAttribute('aria-pressed', 'false')
 })
 it('does not certify a stale clean snapshot as error-free', async () => {
   const apiClient = client({ emergencySnapshot: vi.fn(async () => snapshot({
@@ -236,73 +238,67 @@ it('renders missing telemetry as unknown and never fetches a static section', as
 it('uses selected photo and a truthful textual wheel-fault summary, with fallback', async () => {
   render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({ wheels_fault: ['fl', 'body', 'sensor-unknown'] })) }), 'scheme'))
   await screen.findByRole('heading', { name: 'Робот 447' })
-  expect(screen.getByRole('button', { name: 'Сверху', pressed: true })).toBeInTheDocument()
+  expect(screen.queryByRole('group', { name: 'Ракурс модели' })).not.toBeInTheDocument()
   expect(screen.getAllByRole('img')).toHaveLength(1)
   expect(screen.getByRole('img')).toHaveAttribute('src', expect.stringContaining('top.webp'))
   expect(screen.queryAllByRole('button', { name: /колесо/i })).toHaveLength(0)
   expect(screen.getByText('Неисправность: Переднее левое колесо')).toBeInTheDocument()
   expect(screen.getByText('Неисправность колёс: точное расположение не определено')).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /корпус/i })).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: 'Спереди' }))
-  expect(screen.getByRole('img')).toHaveAttribute('src', expect.stringContaining('front.webp'))
-  expect(screen.queryAllByRole('button', { name: /колесо/i })).toHaveLength(0)
-  fireEvent.click(screen.getByRole('button', { name: 'Изометрия' }))
   fireEvent.error(screen.getByRole('img'))
   expect(screen.getByRole('img', { name: 'Схема модели робота' })).toBeInTheDocument()
-  expect(screen.getByText('Иллюстрация модели')).toBeInTheDocument()
+  expect(screen.getByText('Робот и ошибки')).toBeInTheDocument()
   expect(screen.queryAllByRole('button', { name: /колесо/i })).toHaveLength(0)
   expect(screen.getByText('Неисправность: Переднее левое колесо')).toBeInTheDocument()
 })
-it('automatically opens the leading event, preserves manual view across polling and tabs, and explicitly resets', async () => {
+it('automatically opens the leading event across polling and tabs', async () => {
   const apiClient = client({ emergencySnapshot: vi.fn(async () => snapshot({ diagnostic_events: [battery, lidar] })) })
   const view = render(tree(apiClient, 'scheme'))
-  expect(await screen.findByRole('button', { name: 'Спереди', pressed: true })).toBeInTheDocument()
+  expect(await screen.findByRole('img', { name: /вид спереди/ })).toBeInTheDocument()
   expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(lidar.description)
-  fireEvent.click(screen.getByRole('button', { name: 'Слева' }))
   vi.mocked(apiClient.emergencySnapshot).mockResolvedValue(snapshot({ diagnostic_events: [{ ...battery, severity: 'critical', sort_order: -1 }, lidar] }))
   vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange'))
   await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2))
-  expect(screen.getByRole('button', { name: 'Слева', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('img', { name: /вид сзади/ })).toBeInTheDocument()
   view.rerender(tree(apiClient, 'telemetry')); await act(async () => undefined)
   view.rerender(tree(apiClient, 'scheme')); await act(async () => undefined)
-  expect(screen.getByRole('button', { name: 'Слева', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('img', { name: /вид сзади/ })).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'Показать ошибку' }))
-  expect(screen.getByRole('button', { name: 'Сзади', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('img', { name: /вид сзади/ })).toBeInTheDocument()
   expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(battery.description)
 })
 it('recomputes automatic event selection as active events change', async () => {
   const apiClient = client(); render(tree(apiClient, 'scheme'))
-  await screen.findByRole('button', { name: 'Сверху', pressed: true })
+  await screen.findByRole('img', { name: /вид сверху/ })
   vi.mocked(apiClient.emergencySnapshot).mockResolvedValue(snapshot({ diagnostic_events: [lidar] }))
   vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange'))
-  await screen.findByRole('button', { name: 'Спереди', pressed: true })
+  await screen.findByRole('img', { name: /вид спереди/ })
   vi.mocked(apiClient.emergencySnapshot).mockResolvedValue(snapshot({ diagnostic_events: [] }))
   vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange')); await act(async () => undefined)
   expect(screen.queryByRole('region', { name: 'Выбранная ошибка' })).not.toBeInTheDocument()
   vi.mocked(apiClient.emergencySnapshot).mockResolvedValue(snapshot({ diagnostic_events: [battery] }))
   vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange')); await act(async () => undefined)
-  expect(screen.getByRole('button', { name: 'Сзади', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('img', { name: /вид сзади/ })).toBeInTheDocument()
 })
 it('promotes a later critical event over the previously selected warning', async () => {
   const apiClient = client({ emergencySnapshot: vi.fn()
     .mockResolvedValueOnce(snapshot({ diagnostic_events: [battery] }))
     .mockResolvedValue(snapshot({ diagnostic_events: [lidar, battery] })) })
   render(tree(apiClient, 'scheme'))
-  expect(await screen.findByRole('button', { name: 'Сзади', pressed: true })).toBeInTheDocument()
+  expect(await screen.findByRole('img', { name: /вид сзади/ })).toBeInTheDocument()
   expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(battery.description)
 
   vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange'))
   await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2))
-  expect(screen.getByRole('button', { name: 'Спереди', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('img', { name: /вид спереди/ })).toBeInTheDocument()
   expect(screen.getByRole('region', { name: 'Выбранная ошибка' })).toHaveTextContent(lidar.description)
 })
-it('keeps a manual view chosen before events arrive', async () => {
+it('switches to the active error automatically when it arrives', async () => {
   const apiClient = client(); render(tree(apiClient, 'scheme'))
-  await screen.findByRole('button', { name: 'Сверху', pressed: true })
-  fireEvent.click(screen.getByRole('button', { name: 'Справа' }))
+  await screen.findByRole('img', { name: /вид сверху/ })
   vi.mocked(apiClient.emergencySnapshot).mockResolvedValue(snapshot({ diagnostic_events: [lidar] }))
   vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange')); await act(async () => undefined)
-  expect(screen.getByRole('button', { name: 'Справа', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('img', { name: /вид спереди/ })).toBeInTheDocument()
 })
 it('keeps real diagnostic markers clickable without permanent wheel buttons', async () => {
   const outlined = { ...battery, view: 'front' as const, indicator: 'outline' as const }
@@ -358,13 +354,13 @@ it('uses wrapped label height when preventing diagram collisions', async () => {
     if (this.hasAttribute('data-rp-check-label-measure')) return rectangle(0, 0, 96, 96)
     return rectangle(0, 0, 0, 0)
   })
-  render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({ readings: [
-    { id: 1, section_id: 'wheels', label: 'A', display: '1', state: 'critical', view: 'top', x: 0, y: .35, label_direction: 'left' },
-    { id: 2, section_id: 'wheels', label: 'B', display: '2', state: 'critical', view: 'top', x: 0, y: .65, label_direction: 'left' },
-  ] } as EmergencySnapshot)) }), 'scheme'))
+  render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({ diagnostic_events: [
+    { ...lidar, id: 'a', view: 'top', x: 0, y: .35 },
+    { ...lidar, id: 'b', view: 'top', x: 0, y: .65 },
+  ] })) }), 'scheme'))
 
   const collapsed = await screen.findByRole('list', { name: 'Метки рядом со схемой' })
-  expect(within(collapsed).getAllByRole('listitem')).toHaveLength(1)
+  expect(within(collapsed).getAllByRole('listitem')).toHaveLength(2)
 })
 it('shows unknown raw errors safely in the errors list with no invented marker and opens localized events on the scheme', async () => {
   const onTabChange = vi.fn()
@@ -378,7 +374,7 @@ it('shows unknown raw errors safely in the errors list with no invented marker a
   fireEvent.click(within(item).getByRole('button', { name: 'Посмотреть на схеме' }))
   expect(onTabChange).toHaveBeenCalledWith('scheme')
   view.rerender(tree(apiClient, 'scheme', { onTabChange })); await act(async () => undefined)
-  expect(screen.getByRole('button', { name: 'Сзади', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('img', { name: /вид сзади/ })).toBeInTheDocument()
   expect(screen.getByRole('button', { name: `Ошибка: ${battery.title}` })).toHaveClass('rp-check-event-marker--zone')
   expect(screen.queryByRole('button', { name: `Ошибка: ${unknown.title}` })).not.toBeInTheDocument()
 })
@@ -397,13 +393,12 @@ it('resets selection for a new robot and ignores the old robot snapshot', async 
   const late = deferred<EmergencySnapshot>()
   const apiClient = client({ emergencySnapshot: vi.fn().mockResolvedValueOnce(snapshot({ diagnostic_events: [lidar] })).mockReturnValueOnce(late.promise).mockResolvedValue(snapshot({ vin: 'NEW-VIN', diagnostic_events: [battery] })) })
   const view = render(tree(apiClient, 'scheme'))
-  await screen.findByRole('button', { name: 'Спереди', pressed: true })
-  fireEvent.click(screen.getByRole('button', { name: 'Слева' }))
+  await screen.findByRole('img', { name: /вид спереди/ })
   vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange')); await act(async () => undefined)
   view.rerender(tree(apiClient, 'scheme', { vin: 'NEW-VIN' }))
-  await screen.findByRole('button', { name: 'Сзади', pressed: true })
+  await screen.findByRole('img', { name: /вид сзади/ })
   await act(async () => late.resolve(snapshot({ diagnostic_events: [lidar] })))
-  expect(screen.getByRole('button', { name: 'Сзади', pressed: true })).toBeInTheDocument()
+  expect(screen.getByRole('img', { name: /вид сзади/ })).toBeInTheDocument()
   expect(screen.queryByText(lidar.description)).not.toBeInTheDocument()
 })
 it.each([401, 403])('clears markers and explanations on snapshot denial %s', async status => {

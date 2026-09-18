@@ -124,6 +124,14 @@ def test_parse_snapshot_happy_path():
     assert snap["wheels_fault"] == ["fl", "rr"]
 
 
+def test_parse_snapshot_keeps_both_sim_signal_values():
+    snapshot = parse_emergency_snapshot(
+        {"isOnline": True, "lte": {"lte50": 7000, "lte24": 8400}},
+        vin="YASADR00000000447",
+    )
+    assert snapshot["sim_signals"] == [7000, 8400]
+
+
 def test_parse_snapshot_nested_velocity_and_missing_fields():
     snap = parse_emergency_snapshot({"velocity": {"value": 2}}, vin="YASADR00000000001")
     assert snap["speed"] == 2.0

@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from typing import TypeVar
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from robopark_api.campaign_schemas import (
@@ -70,6 +70,15 @@ def update_campaign(
     return service.campaign_shell(row)
 
 
+@router.delete("/{campaign_id}")
+def delete_campaign(
+    campaign_id: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    return {"result": _run(lambda: service.delete_campaign(db, user, campaign_id))}
+
+
 @router.get("/{campaign_id}", response_model=CampaignDetailOut)
 def campaign_detail(
     campaign_id: int,
@@ -77,6 +86,16 @@ def campaign_detail(
     db: Session = Depends(get_db),
 ):
     return _run(lambda: service.campaign_detail(db, user, campaign_id))
+
+
+@router.post("/{campaign_id}/refresh", status_code=status.HTTP_202_ACCEPTED)
+def refresh_campaign(
+    campaign_id: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    row = _run(lambda: service.request_refresh(db, user, campaign_id))
+    return {"snapshot_state": row.snapshot_state, "snapshot_at": row.snapshot_at}
 
 
 @router.post(
@@ -90,6 +109,7 @@ async def complete_campaign_ticket(
     park_id: int = Form(...),
     comment: str = Form(..., min_length=1, max_length=4000),
     photo: UploadFile = File(...),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
@@ -105,6 +125,7 @@ async def complete_campaign_ticket(
             filename=photo.filename,
             content=content,
             content_type=photo.content_type,
+            idempotency_key=idempotency_key,
         )
     )
     return CampaignSubmissionOut(

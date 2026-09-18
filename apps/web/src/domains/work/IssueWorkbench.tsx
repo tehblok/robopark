@@ -848,11 +848,10 @@ function IssueWorkbenchOwner({
                     </> : <IssueDetailPanel
                       currentUser={user.tracker_login ?? user.username} accountKey={user.username}
                       commentsLoading={comments.isLoading && !comments.data}
-                      comments={taskComments.length ? [{
-                        id: taskComments.at(-1)!.id, text: taskComments.at(-1)!.text,
-                        author: taskComments.at(-1)!.author, created_at: taskComments.at(-1)!.created_at,
-                        attachments: taskComments.at(-1)!.attachments,
-                      }] : []} issue={detail.data ?? null} loading={detail.isLoading && !detail.data}
+                      comments={taskComments.map(item => ({
+                        id: item.id, text: item.text, author: item.author,
+                        created_at: item.created_at, attachments: item.attachments,
+                      }))} issue={detail.data ?? null} loading={detail.isLoading && !detail.data}
                       showRobotCheck={false} robotReadOnly={!mechanicCanWork}
                       onOpenRobotCheck={mechanicCanWork ? () => changeTab('check') : undefined} />}
                     {detail.data && user.role === 'mechanic' && !mechanicCanWork ? (
@@ -862,7 +861,10 @@ function IssueWorkbenchOwner({
                           : 'Для изменений сначала возьмите задачу в работу в списке.'}
                       </p>
                     ) : null}
-                    {canRenderDetailActions && detail.data ? (
+                    {detail.data && !detail.data.workflow ? (
+                      <p className="panel-hint" role="status">Обновите страницу, чтобы получить актуальное состояние задачи: действия временно недоступны.</p>
+                    ) : null}
+                    {canRenderDetailActions && detail.data?.workflow ? (
                       <IssueActionsPanel
                         capabilities={detail.data.capabilities}
                         draftOwner={user.username}
@@ -931,7 +933,6 @@ function IssueWorkbenchOwner({
                       </ClosedDisclosure>
                     </div> : detail.data ? <ResponsiveDisclosureGroup label="Дополнительные разделы задачи">
                       {user.role === 'mechanic' && mechanicCanWork ? <ResponsiveDisclosure id="parts" title="Использовать запчасть"><TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={taskParkId} /></ResponsiveDisclosure> : null}
-                      <ResponsiveDisclosure id="history" title="История действий"><TaskTimeline items={taskComments.slice(0, -1)} /></ResponsiveDisclosure>
                       <ResponsiveDisclosure id="handoff" title="Передача смены"><EmbeddedTaskCollaboration issueKey={detail.data.key} owner={user.username} active={activeTab === 'task' && mechanicCanWork} canWrite={detail.data.capabilities.comment && mechanicCanWork} onAuthorizationFailure={observeAuthorizationFailure} /></ResponsiveDisclosure>
                     </ResponsiveDisclosureGroup> : null}
                     </TabPanel>

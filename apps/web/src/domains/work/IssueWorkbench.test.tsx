@@ -1,4 +1,3 @@
-import { webcrypto } from 'node:crypto'
 import { Profiler, type ReactNode, useLayoutEffect, useState } from 'react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -11,6 +10,8 @@ import {
   type Paged,
   type TrackerIssue,
   type TrackerIssueDetail,
+  type TaskActionResult,
+  type TaskTimelineItem,
   type User,
 } from '../../api'
 import { AuthContext } from '../../auth-context'
@@ -72,6 +73,16 @@ const issue: TrackerIssueDetail = {
   capabilities,
 }
 
+const queuedWorkflowIssue: TrackerIssueDetail = {
+  ...issue,
+  workflow: { owner: null, review_state: null, display_status: 'queued', sync_state: 'saved', has_current_cycle_comment: false },
+}
+
+const reviewWorkflowIssue: TrackerIssueDetail = {
+  ...queuedWorkflowIssue,
+  workflow: { ...queuedWorkflowIssue.workflow!, review_state: 'pending', display_status: 'review' },
+}
+
 function page(items: TrackerIssue[] = [issue]): Paged<TrackerIssue> {
   return {
     items,
@@ -90,6 +101,14 @@ function actionResult(action: string) {
     actor: user.username,
     performed_at: '2026-09-02T09:00:00Z',
   }
+}
+
+function taskActionResult(action: string): TaskActionResult {
+  return { ...actionResult(action), sync_state: 'saved', workflow: reviewWorkflowIssue.workflow! }
+}
+
+function taskMessageResult(text: string): TaskTimelineItem {
+  return { id: 'message-1', kind: 'user', author: user.username, text, created_at: '2026-09-02T09:00:00Z', sync_state: 'saved', attachments: [] }
 }
 
 function apiClient(
@@ -424,6 +443,15 @@ beforeEach(() => {
 })
 
 describe('IssueWorkbench', () => {
+  it('keeps a task read-only when the server has not supplied workflow state', async () => {
+    renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => issue) }) })
+    expect(await screen.findByRole('heading', { name: issue.summary })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Статус задачи' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Исполнитель' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: ru.tracker.actions.close })).not.toBeInTheDocument()
+    expect(screen.getByText(/Обновите страницу.*действия/)).toBeVisible()
+  })
+
   it('uses workflow owner and server comment eligibility as authoritative state', async () => {
     const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
     const workflowIssue: TrackerIssueDetail = {
@@ -574,7 +602,8 @@ describe('IssueWorkbench', () => {
       removeEventListener: vi.fn(),
     }))
     const mechanic = { ...user, role: 'mechanic' as const }
-    const currentIssue = { ...issue, assignee: { display: 'Operator', login: 'operator' } }
+    const currentIssue = { ...queuedWorkflowIssue, assignee: { display: 'Operator', login: 'operator' },
+      workflow: { ...queuedWorkflowIssue.workflow!, owner: { display: 'Operator', login: 'operator' } } }
     const client = apiClient({
       trackerIssue: vi.fn(async () => currentIssue),
       trackerComments: vi.fn(async () => [
@@ -589,18 +618,18 @@ describe('IssueWorkbench', () => {
     renderWorkbench({ client, currentUser: mechanic })
 
     expect(await screen.findByRole('heading', { name: currentIssue.summary })).toBeVisible()
-    expect(screen.getAllByText(currentIssue.status).some(element => element.closest('.issue-detail'))).toBe(true)
+    expect(screen.getAllByText('В очереди').some(element => element.closest('.issue-detail'))).toBe(true)
     expect(screen.getByText('Operator')).toBeVisible()
     expect(screen.getByText('Последняя важная деталь')).toBeVisible()
-    expect(screen.queryByText('Старый комментарий')).not.toBeInTheDocument()
+    expect(screen.getByText('Старый комментарий')).toBeVisible()
     expect(screen.getByRole('textbox', { name: ru.tracker.comments })).toBeVisible()
-    for (const name of ['Использовать запчасть', 'Статус задачи', 'Исполнитель', ru.tracker.history]) {
-      expect(screen.getByRole('button', { name })).toHaveAttribute('aria-expanded', 'false')
-    }
-    expect(screen.getByRole('button', { name: 'Передача смены' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('button', { name: ru.tracker.history })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Статус задачи' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Исполнитель' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Передать смену' })).toHaveAttribute('aria-expanded', 'false')
     expect(document.querySelector('.issue-collaboration')).not.toBeInTheDocument()
     expect(screen.queryByText('Загружаем передачу смены…')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Передача смены' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Передать смену' }))
     expect(document.querySelector('.issue-collaboration')).toBeInTheDocument()
   })
 
@@ -772,16 +801,17 @@ describe('IssueWorkbench', () => {
         .mockResolvedValueOnce(page())
         .mockRejectedValueOnce(new ApiError(502, 'tracker_upstream_error'))
         .mockResolvedValueOnce(page()),
+      trackerIssue: vi.fn(async () => reviewWorkflowIssue),
     })
 
     renderWorkbench({ client })
 
     expect(await screen.findByRole('heading', { name: issue.summary })).toBeVisible()
-    expect(await screen.findByRole('button', { name: ru.tracker.actions.close })).toBeEnabled()
+    expect(await screen.findByRole('button', { name: 'Принять и закрыть' })).toBeEnabled()
     fireEvent.click(screen.getByRole('tab', { name: 'Открытые задачи' }))
     expect(await screen.findByRole('heading', { name: 'Сервис временно недоступен' })).toBeVisible()
     fireEvent.click(screen.getByRole('tab', { name: 'Задача' }))
-    expect(screen.getByRole('button', { name: ru.tracker.actions.close })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Принять и закрыть' })).toBeEnabled()
   })
 
   it.each(['success', 'error'] as const)(
@@ -904,12 +934,12 @@ describe('IssueWorkbench', () => {
     ['issue', 'success'], ['issue', '401'],
     ['park', 'success'], ['park', '401'],
     ['principal', 'success'], ['principal', '401'],
-  ] as const)('ignores a pending close %s replacement followed by old %s', async (change, result) => {
-    const pending = deferred<ReturnType<typeof actionResult>>()
-    const nextIssue = { ...issue, key: change === 'issue' ? 'ROBOPARK-99' : issue.key, summary: 'Новый открытый экран' }
+  ] as const)('ignores a pending review approval %s replacement followed by old %s', async (change, result) => {
+    const pending = deferred<TaskActionResult>()
+    const nextIssue = { ...reviewWorkflowIssue, key: change === 'issue' ? 'ROBOPARK-99' : issue.key, summary: 'Новый открытый экран' }
     const nextPark = change === 'park' ? { ...park, id: 8, tag: 'Beta' } : park
     const nextUser = change === 'principal' ? { ...user, id: 4, username: 'next-operator' } : user
-    const client = apiClient({ trackerClose: vi.fn(() => pending.promise) })
+    const client = apiClient({ trackerIssue: vi.fn(async () => reviewWorkflowIssue), taskApproveReview: vi.fn(() => pending.promise) })
     const onCloseIssue = vi.fn()
     const onAuthorizationFailure = vi.fn(async () => undefined)
     const tree = (replacement: boolean) => <Harness><IssueWorkbench apiClient={client}
@@ -919,16 +949,15 @@ describe('IssueWorkbench', () => {
       onOpenIssue={vi.fn()} onStateChange={vi.fn()} /></Harness>
     const view = render(tree(false), { reactStrictMode: true })
     await screen.findByRole('heading', { name: issue.summary })
-    fireEvent.click(screen.getByRole('button', { name: ru.tracker.actions.close }))
-    fireEvent.click(screen.getByRole('button', { name: 'Подтвердить закрытие' }))
-    await waitFor(() => expect(client.trackerClose).toHaveBeenCalledWith(issue.key, expect.objectContaining({ 'Idempotency-Key': expect.any(String), 'X-Tracker-State': expect.any(String) })))
+    fireEvent.click(screen.getByRole('button', { name: 'Принять и закрыть' }))
+    await waitFor(() => expect(client.taskApproveReview).toHaveBeenCalledWith(issue.key, expect.any(String)))
     vi.mocked(client.trackerIssue).mockResolvedValue(nextIssue)
     view.rerender(tree(true))
     await screen.findByRole('heading', { name: nextIssue.summary })
     const invalidate = vi.spyOn(resourceStore, 'invalidate')
     const readCounts = [vi.mocked(client.trackerIssues).mock.calls.length, vi.mocked(client.trackerIssue).mock.calls.length]
     await act(async () => {
-      if (result === 'success') pending.resolve(actionResult('close'))
+      if (result === 'success') pending.resolve(taskActionResult('approve-review'))
       else pending.reject(new ApiError(401))
     })
 
@@ -959,15 +988,14 @@ describe('IssueWorkbench', () => {
     expect(screen.getByRole('heading', { name: currentIssue.summary })).toBeInTheDocument()
   })
 
-  it('still closes and refreshes the current owner after StrictMode re-setup', async () => {
-    const pending = deferred<ReturnType<typeof actionResult>>()
-    const client = apiClient({ trackerClose: vi.fn(() => pending.promise) })
+  it('still approves and refreshes the current owner after StrictMode re-setup', async () => {
+    const pending = deferred<TaskActionResult>()
+    const client = apiClient({ trackerIssue: vi.fn(async () => reviewWorkflowIssue), taskApproveReview: vi.fn(() => pending.promise) })
     const { onCloseIssue } = renderWorkbench({ client, strictMode: true })
     await screen.findByRole('heading', { name: issue.summary })
-    fireEvent.click(screen.getByRole('button', { name: ru.tracker.actions.close }))
-    fireEvent.click(screen.getByRole('button', { name: 'Подтвердить закрытие' }))
-    await waitFor(() => expect(client.trackerClose).toHaveBeenCalledOnce())
-    await act(async () => { pending.resolve(actionResult('close')) })
+    fireEvent.click(screen.getByRole('button', { name: 'Принять и закрыть' }))
+    await waitFor(() => expect(client.taskApproveReview).toHaveBeenCalledOnce())
+    await act(async () => { pending.resolve(taskActionResult('approve-review')) })
     expect(onCloseIssue).toHaveBeenCalledOnce()
     expect(client.trackerIssue).toHaveBeenCalledTimes(3)
   })
@@ -1054,7 +1082,7 @@ describe('IssueWorkbench', () => {
   it('invalidates the owned list and selected issue resources after mutation', async () => {
     const invalidate = vi.spyOn(resourceStore, 'invalidate')
     const clearAll = vi.spyOn(resourceStore, 'clearAll')
-    const client = apiClient()
+    const client = apiClient({ trackerIssue: vi.fn(async () => queuedWorkflowIssue), taskMessage: vi.fn(async () => taskMessageResult('Новая деталь')) })
     renderWorkbench({ client })
 
     await screen.findByRole('heading', { name: issue.summary })
@@ -1076,7 +1104,7 @@ describe('IssueWorkbench', () => {
   })
 
   it('keeps cached protected work visible only for a transient revalidation failure', async () => {
-    seedCurrentWork()
+    seedCurrentWork(user, queuedWorkflowIssue)
     const transient = new TypeError('offline')
     const client = apiClient({
       trackerIssues: vi.fn(async () => { throw transient }),
@@ -1174,7 +1202,8 @@ describe('IssueWorkbench', () => {
   it('routes mutation authorization failures through the same fail-closed boundary', async () => {
     const onAuthorizationFailure = vi.fn(async () => undefined)
     const client = apiClient({
-      trackerComment: vi.fn(async () => {
+      trackerIssue: vi.fn(async () => queuedWorkflowIssue),
+      taskMessage: vi.fn(async () => {
         throw new ApiError(401, 'session_expired')
       }),
     })
@@ -1474,30 +1503,30 @@ describe('WorkPage authorization lifetime', () => {
   })
 })
 
-beforeEach(() => { vi.stubGlobal('crypto', webcrypto) })
-
-it('does not send a mutation if the principal changes while its payload is being hashed', async () => {
-  const hash = deferred<ArrayBuffer>()
-  vi.spyOn(crypto.subtle, 'digest').mockReturnValueOnce(hash.promise)
-  const client = apiClient()
+it('does not publish a lifecycle message result after the principal changes', async () => {
+  const pending = deferred<TaskTimelineItem>()
+  const client = apiClient({ trackerIssue: vi.fn(async () => queuedWorkflowIssue), taskMessage: vi.fn(() => pending.promise) })
   const tree = (nextUser = user) => <Harness><IssueWorkbench apiClient={client}
     user={nextUser} selectedPark={park} issueKey={issue.key} state={state}
     onCloseIssue={vi.fn()} onAuthorizationFailure={vi.fn(async () => undefined)}
     onOpenIssue={vi.fn()} onStateChange={vi.fn()} /></Harness>
   const view = render(tree())
   await screen.findByRole('heading', { name: issue.summary })
-  fireEvent.click(screen.getByRole('button', { name: ru.tracker.actions.close }))
-  fireEvent.click(screen.getByRole('button', { name: 'Подтвердить закрытие' }))
+  fireEvent.change(screen.getByRole('textbox', { name: ru.tracker.comments }), { target: { value: 'Работа начата' } })
+  fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
+  await waitFor(() => expect(client.taskMessage).toHaveBeenCalledOnce())
+  vi.mocked(client.trackerIssue).mockImplementation(() => new Promise(() => undefined))
   view.rerender(tree({ ...user, id: 99, username: 'different-principal' }))
-  await act(async () => { hash.resolve(new ArrayBuffer(32)) })
-  expect(client.trackerClose).not.toHaveBeenCalled()
+  await act(async () => { pending.resolve(taskMessageResult('Работа начата')) })
+  expect(screen.queryByText('Действие выполнено')).not.toBeInTheDocument()
+  expect(screen.queryByText(issue.summary)).not.toBeInTheDocument()
 })
 
-it('refreshes a conflicting status immediately and preserves the comment draft for review', async () => {
-  const client = apiClient({ trackerComment: vi.fn(async () => { throw new ApiError(409, 'tracker_state_conflict') }) })
+it('refreshes a conflicting workflow immediately and preserves the message draft for review', async () => {
+  const client = apiClient({ trackerIssue: vi.fn(async () => queuedWorkflowIssue), taskMessage: vi.fn(async () => { throw new ApiError(409, 'tracker_state_conflict') }) })
   renderWorkbench({ client })
   await screen.findByRole('heading', { name: issue.summary })
-  vi.mocked(client.trackerIssue).mockResolvedValue({ ...issue, status: 'На проверке', status_key: 'review' })
+  vi.mocked(client.trackerIssue).mockResolvedValue(reviewWorkflowIssue)
   fireEvent.change(screen.getByRole('textbox', { name: ru.tracker.comments }), { target: { value: 'Не потерять этот черновик' } })
   fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
   await screen.findByText(/Статус или исполнитель изменились/)

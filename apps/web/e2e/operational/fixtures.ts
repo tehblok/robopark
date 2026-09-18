@@ -168,6 +168,10 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
       return { json: { items, total, limit, offset, has_more: offset + limit < total } satisfies Paged<TrackerIssueDetail> }
     } },
     { method: 'GET', path: /^\/api\/tracker\/issues\/ROBOPARK-42$/, handler: () => ({ json: currentIssue }) },
+    { method: 'GET', path: /^\/api\/tracker\/issues\/ROBOPARK-42\/timeline$/, handler: () => ({ json: comments.map(comment => ({
+      id: comment.id, kind: 'tracker', author: comment.author, text: comment.text,
+      created_at: comment.created_at, sync_state: 'synced', attachments: comment.attachments ?? [],
+    })) }) },
     { method: 'GET', path: /^\/api\/tracker\/issues\/ROBOPARK-42\/comments$/, handler: () => ({ json: comments }) },
     { method: 'GET', path: /^\/api\/tracker\/transitions\/ROBOPARK-42$/, handler: () => ({ json: [{ id: 'resolve', display: 'Решить' }] satisfies TrackerTransition[] }) },
     { method: 'GET', path: '/api/tracker/users', handler: () => ({ json: [] }) },

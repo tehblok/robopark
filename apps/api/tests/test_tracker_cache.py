@@ -1,6 +1,28 @@
 """Integration tests for the tracker_cache facade: wraps tracker_client with TTL + single-flight."""
 
-from robopark_api.services import tracker_cache, tracker_client
+from robopark_api.services import response_cache, tracker_cache, tracker_client
+from robopark_api.services.live_merge import LiveMergeStore
+
+
+def test_issue_cache_keeps_sdk_resource_without_json_serialization(monkeypatch, tmp_path):
+    """The queue and detail retain SDK resources for SLA history, not JSON blobs."""
+    store = LiveMergeStore(tmp_path)
+    monkeypatch.setattr(response_cache, "get_live_merge_store", lambda: store)
+    tracker_cache.clear_all()
+    resource = object()
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [{"key": "SD-RESOURCE", "_tracker_resource": resource}],
+    )
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {"key": "SD-RESOURCE", "_tracker_resource": resource},
+    )
+
+    assert tracker_cache.search_issues(token="t", query="resource-test")[0]["_tracker_resource"] is resource
+    assert tracker_cache.get_issue(token="t", key="SD-RESOURCE")["_tracker_resource"] is resource
 
 
 def test_search_issues_shares_upstream_call(monkeypatch):

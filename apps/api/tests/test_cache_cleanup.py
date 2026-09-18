@@ -40,13 +40,44 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         "prune_tracker_outbox",
         lambda session, **kwargs: calls.append(("outbox", session, kwargs)) or (0, 0),
     )
+    monkeypatch.setattr(
+        cache_cleanup,
+        "prune_deleted_report_files",
+        lambda **kwargs: calls.append(("report-files", kwargs)) or 0,
+    )
+    monkeypatch.setattr(
+        cache_cleanup,
+        "reconcile_pending_report_deletions",
+        lambda session: calls.append(("pending-reports", session)) or 0,
+    )
 
     assert cache_cleanup.prune_cache_once(now=now) == (4, 3)
     assert calls == [
         ("files", {"now": now.timestamp()}),
         ("unknowns", db, {"now": now}),
         ("outbox", db, {"now": now.timestamp()}),
+        ("pending-reports", db),
+        ("report-files", {"now": now.timestamp()}),
     ]
+
+
+def test_deleted_report_file_cleanup_only_removes_old_quarantine_files(tmp_path, monkeypatch):
+    from robopark_api.services import report_attachments
+
+    monkeypatch.setattr(report_attachments, "attachments_root", lambda: tmp_path)
+    stage = tmp_path / ".delete-staging"
+    stage.mkdir()
+    old = stage / "old-file"
+    fresh = stage / "new-file"
+    old.write_bytes(b"old")
+    fresh.write_bytes(b"new")
+    import os
+
+    os.utime(old, (1000, 1000))
+    os.utime(fresh, (5000, 5000))
+    assert report_attachments.prune_deleted_report_files(now=5000, max_age_seconds=3600) == 1
+    assert not old.exists()
+    assert fresh.read_bytes() == b"new"
 
 
 def test_cleanup_loop_runs_without_sleeping_and_stops_on_event(monkeypatch):

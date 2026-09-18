@@ -163,7 +163,7 @@ function RobotUserPage({ apiClient, resolverClient, checkClient, user, refreshUs
     } else if (failure.kind === 'forbidden') setForbidden({ identity, failure })
   }, [identity, user.id])
   const denial = unauthorized ?? (forbidden?.identity === identity ? forbidden.failure : null)
-  return <PageLayout title="Рабочее пространство робота">
+  return <PageLayout title="Проверка робота">
     <nav className="rp-check-backlinks" aria-label="Навигация робота"><Link to={`/robots${parkId == null ? '' : `?park=${parkId}`}`}>Все роботы</Link></nav>
     {denial ? <CheckError failure={denial} user={user} />
       : !reference ? <ErrorState title="Робот не указан" description="Проверьте номер или VIN робота." />

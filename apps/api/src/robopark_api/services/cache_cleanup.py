@@ -14,6 +14,10 @@ from robopark_api.db import SessionLocal
 from robopark_api.services.diagnostic_unknowns import prune_diagnostic_unknowns
 from robopark_api.services.live_merge import get_live_merge_store
 from robopark_api.services.ops.maintenance import host_maintenance_active
+from robopark_api.services.report_attachments import (
+    prune_deleted_report_files,
+    reconcile_pending_report_deletions,
+)
 from robopark_api.services.task_timeline import staged_attachments_root
 from robopark_api.task_workflow_models import ReliableAction, TaskAttachment
 
@@ -74,6 +78,8 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
     with SessionLocal() as db:
         unknowns_removed = prune_diagnostic_unknowns(db, now=current)
         actions_removed, attachments_removed = prune_tracker_outbox(db, now=current.timestamp())
+        pending_reports_removed = reconcile_pending_report_deletions(db)
+    deleted_report_files = prune_deleted_report_files(now=current.timestamp())
     if files_removed or unknowns_removed:
         logger.info(
             "Pruned %s live-merge file(s) and %s diagnostic unknown(s)",
@@ -86,6 +92,10 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
             actions_removed,
             attachments_removed,
         )
+    if deleted_report_files:
+        logger.info("Pruned %s deleted-report quarantine file(s)", deleted_report_files)
+    if pending_reports_removed:
+        logger.info("Completed %s pending report deletion(s)", pending_reports_removed)
     return files_removed, unknowns_removed
 
 

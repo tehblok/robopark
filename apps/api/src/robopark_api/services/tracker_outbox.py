@@ -15,9 +15,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from robopark_api.models import User
+from robopark_api.models import CampaignSubmission, Report, User
+from robopark_api.services import audit, tracker_cache, tracker_client, tracker_signatures
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_cache, tracker_client, tracker_signatures
 from robopark_api.services.reliable_actions import (
     claim_due_batch,
     complete_action,
@@ -229,10 +229,27 @@ def _deliver_transition(
     return {"transition": transition_id}
 
 
+def _deliver_campaign_review(
+    action: ReliableAction, *, token: str, issue: dict
+) -> dict[str, str | bool]:
+    # Campaign results prefer operator review, but some Tracker queues expose
+    # only diagnostics. A fresh issue read makes a timeout after remote success
+    # safe to replay without sending the transition a second time.
+    for purpose in ("review", "diagnostics"):
+        if target_status_reached(issue, purpose):
+            return {"already_applied": True, "transition_state": purpose}
+    transitions = tracker_client.list_transitions(token=token, key=action.resource_id)
+    for purpose in ("review", "diagnostics"):
+        transition_id = resolve_transition(transitions, purpose)
+        if transition_id is not None:
+            tracker_client.transition_issue(
+                token=token, key=action.resource_id, transition=transition_id
+            )
+            return {"transition": transition_id, "transition_state": purpose}
+    raise DeliveryError("tracker_transition_missing")
+
+
 def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
-    token = settings_svc.get_tracker_token(db)
-    if not token:
-        raise DeliveryError("authentication")
     actor = db.get(User, action.actor_user_id)
     if actor is None:
         raise DeliveryError("invalid_payload")
@@ -242,6 +259,19 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
         raise DeliveryError("invalid_payload") from exc
     if not isinstance(payload, dict):
         raise DeliveryError("invalid_payload")
+    if action.action == "campaign_review":
+        submission = _campaign_submission(db, action)
+        if submission is None:
+            # A newer submission superseded this result while Tracker was offline.
+            return {"transition_state": "cancelled"}
+        report = db.get(Report, submission.report_id)
+        if report is None or report.status != "open":
+            # The operator returned or closed the result before the delayed send.
+            return {"transition_state": "cancelled"}
+
+    token = settings_svc.get_tracker_token(db)
+    if not token:
+        raise DeliveryError("authentication")
 
     if action.action in {"comment", "attach"}:
         external_id = _reconciled_external_id(action, token=token)
@@ -270,6 +300,8 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
         return {"external_id": _external_id(result)}
     if action.action == "attach":
         return _deliver_attachment(db, action, token=token, issue=issue, actor=actor)
+    if action.action == "campaign_review":
+        return _deliver_campaign_review(action, token=token, issue=issue)
     if action.action in _TRANSITION_ACTIONS:
         return _deliver_transition(action, token=token, issue=issue)
     if action.action == "set_field":
@@ -372,6 +404,57 @@ def _sync_message(db: Session, action: ReliableAction) -> None:
     message.updated_at = action.updated_at
 
 
+def _campaign_submission(db: Session, action: ReliableAction) -> CampaignSubmission | None:
+    if action.action != "campaign_review":
+        return None
+    try:
+        payload = json.loads(action.payload_json)
+        submission_id = payload["campaign_submission_id"]
+        report_id = payload["report_id"]
+        if not isinstance(submission_id, int) or not isinstance(report_id, int):
+            return None
+    except (TypeError, ValueError, KeyError):
+        return None
+    submission = db.get(CampaignSubmission, submission_id)
+    # A returned result may have been resubmitted with a new report. An old
+    # outbox action must never overwrite that new cycle's sync state.
+    return submission if submission is not None and submission.report_id == report_id else None
+
+
+def _sync_campaign_submission(db: Session, action: ReliableAction) -> bool:
+    submission = _campaign_submission(db, action)
+    if submission is None:
+        return False
+    if action.state == "succeeded":
+        result = json.loads(action.result_json or "{}")
+        submission.tracker_transition = str(result.get("transition_state") or "failed")
+    elif action.state == "needs_attention":
+        submission.tracker_transition = "failed"
+    else:
+        submission.tracker_transition = "pending"
+    return True
+
+
+def _audit_campaign_action(db: Session, action: ReliableAction) -> None:
+    if action.state not in {"succeeded", "needs_attention"}:
+        return
+    submission = _campaign_submission(db, action)
+    if submission is None:
+        return
+    if submission.tracker_transition == "cancelled":
+        return
+    audit.record(
+        db,
+        action=audit.ACTION_TRACKER_TRANSITION,
+        actor=db.get(User, action.actor_user_id),
+        park_id=submission.park_id,
+        target_type="tracker_issue",
+        target_id=action.resource_id,
+        outcome=(audit.OUTCOME_SUCCESS if action.state == "succeeded" else audit.OUTCOME_FAILURE),
+        detail=(f"campaign={submission.campaign_id}; transition={submission.tracker_transition}"),
+    )
+
+
 def _process_batch(session_factory) -> int:
     with session_factory() as db:
         actions = claim_due_batch(db)
@@ -392,16 +475,22 @@ def _process_batch(session_factory) -> int:
                 result = _deliver_action(db, action)
                 complete_action(db, action, result)
                 _sync_message(db, action)
+                _sync_campaign_submission(db, action)
                 db.commit()
+                _audit_campaign_action(db, action)
                 tracker_cache.invalidate_issue(action.resource_id)
             except DeliveryError as exc:
                 mark_needs_attention(db, action, error_code=exc.code)
                 _sync_message(db, action)
+                _sync_campaign_submission(db, action)
                 db.commit()
+                _audit_campaign_action(db, action)
             except tracker_client.TrackerError as exc:
                 schedule_retry(db, action, error_code=_tracker_error_code(exc))
                 _sync_message(db, action)
+                _sync_campaign_submission(db, action)
                 db.commit()
+                _audit_campaign_action(db, action)
             except Exception:  # noqa: BLE001
                 db.rollback()
                 logger.exception("Unexpected Tracker outbox delivery failure for %s", action.id)
