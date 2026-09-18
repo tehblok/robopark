@@ -232,6 +232,48 @@ def _sync_state(db: Session, issue_key: str) -> str:
     return "synced" if states else "saved"
 
 
+def tracker_issue_is_closed(issue: dict | None) -> bool:
+    if not issue:
+        return False
+    status_key = str(issue.get("status_key") or "").strip().lower()
+    status_text = str(issue.get("status") or "").strip().lower().replace("ё", "е")
+    return status_key in {"closed", "resolved", "cancelled", "canceled"} or status_text in {
+        "закрыт", "закрыта", "закрыто", "решен", "решена", "отменен", "отменена"
+    }
+
+
+def reconcile_external_closure(db: Session, issue: dict) -> None:
+    """Finish stale local ownership when Tracker itself says the task is closed."""
+    if not tracker_issue_is_closed(issue):
+        return
+    issue_key = str(issue.get("key") or "").strip()
+    if not issue_key:
+        return
+    review = _active_review(db, issue_key, for_update=True)
+    claim = get_claim(db, issue_key)
+    if review is None and claim is None:
+        return
+    now = time.time()
+    if review is not None:
+        review.state = "closed"
+        review.closed_at = now
+        review.updated_at = now
+    park_id = claim.park_id if claim is not None else None
+    release_claim(db, issue_key)
+    db.add(TaskMessage(
+        id=str(uuid4()), issue_key=issue_key, kind="system", author_user_id=None,
+        author_name="Tracker", text="Задача закрыта в Трекере; работа в системе завершена.",
+        external_id="tracker-external-close", sync_state="synced",
+        created_at=now, updated_at=now,
+    ))
+    db.add(AuditLog(
+        action="task.external_close", actor_user_id=None, actor_username="Tracker",
+        actor_role="system", park_id=park_id, target_type="tracker_issue",
+        target_id=issue_key, outcome="success",
+    ))
+    db.commit()
+
+
 def workflow(
     db: Session,
     *,
@@ -252,8 +294,8 @@ def workflow(
             "actor": hidden_actor.username if hidden_actor is not None else "",
             "created_at": datetime.fromtimestamp(hidden.created_at, UTC).isoformat(),
         }
-    display_status = "hidden" if hidden is not None else "queued"
-    if hidden is None and review is not None:
+    display_status = "closed" if tracker_issue_is_closed(issue) else "hidden" if hidden is not None else "queued"
+    if display_status != "closed" and hidden is None and review is not None:
         if review.state == "pending":
             display_status = "review"
         elif review.state == "closed":

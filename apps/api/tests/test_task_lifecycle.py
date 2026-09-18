@@ -94,6 +94,31 @@ def _submit(client, *, key="review-task-51", comment=None, code="BD-01", files=N
     )
 
 
+def test_external_tracker_close_finishes_local_review_and_claim_once(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    operator = _operator(db_session, seed_park_with_tracker)
+    assert _claim(client, seed_mechanic).status_code == 200
+    assert _submit(client, comment="Исправлено").status_code == 200
+    from robopark_api.services import tracker_cache, tracker_client
+
+    monkeypatch.setattr(
+        tracker_client, "get_issue", lambda **_kwargs: {**_issue(), "status": "Закрыта", "status_key": "closed"}
+    )
+    tracker_cache.invalidate_issue(ISSUE_KEY)
+    login_as(client, operator.username, "secret")
+    first = client.get(f"/tracker/issues/{ISSUE_KEY}")
+    second = client.get(f"/tracker/issues/{ISSUE_KEY}")
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["workflow"]["display_status"] == "closed"
+    assert second.json()["workflow"]["display_status"] == "closed"
+    assert db_session.query(TaskReview).one().state == "closed"
+    assert db_session.query(TrackerClaim).count() == 0
+    assert db_session.query(TaskMessage).filter(TaskMessage.external_id == "tracker-external-close").count() == 1
+
+
 def test_claim_is_atomic_idempotent_and_never_calls_tracker_mutations(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):

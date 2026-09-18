@@ -327,7 +327,7 @@ def test_list_inbox_admin_sees_open_escalations(
 
     inbox = reports_svc.list_inbox(db_session, seed_admin)
 
-    assert [r.id for r in inbox] == [escalation.id]
+    assert [r.id for r in inbox] == [escalation.id, parent.id]
     assert escalation.kind == reports_svc.KIND_ESCALATION
     assert escalation.target_role == RoleSlug.ADMIN
 
@@ -594,7 +594,7 @@ def test_badge_counts_admin_open_escalations(
     )
     reports_svc.escalate_report(db_session, seed_operator_with_park, parent.id, "Need help")
 
-    assert reports_svc.badge_counts(db_session, seed_admin) == {"count": 1}
+    assert reports_svc.badge_counts(db_session, seed_admin) == {"count": 2}
 
 
 # --- HTTP router tests ---

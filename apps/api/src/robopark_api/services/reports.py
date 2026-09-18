@@ -297,7 +297,7 @@ def _can_act_on_report(db: Session, user: User, report: Report) -> bool:
     if report.target_role == RoleSlug.ADMIN:
         return _is_admin_inbox_user(user)
     if report.target_role == RoleSlug.OPERATOR:
-        return _is_approved_operator(user)
+        return _is_approved_operator(user) or _is_admin_inbox_user(user)
     return False
 
 
@@ -322,17 +322,8 @@ def list_inbox(db: Session, user: User, *, park_id: int | None = None) -> list[R
     if not _can_resolve(db, user):
         raise PermissionError("forbidden")
     scope = _scope_clause(db, user, park_id)
-    if _is_royal_inbox_user(user):
+    if _is_admin_inbox_user(user):
         stmt = select(Report).options(selectinload(Report.attachments))
-    elif _is_admin_inbox_user(user):
-        stmt = (
-            select(Report)
-            .options(selectinload(Report.attachments))
-            .where(
-                Report.status == STATUS_OPEN,
-                Report.target_role == RoleSlug.ADMIN,
-            )
-        )
     elif _is_approved_operator(user):
         stmt = (
             select(Report)
@@ -501,10 +492,8 @@ def badge_counts(db: Session, user: User, *, park_id: int | None = None) -> dict
         raise PermissionError("forbidden")
     visible = [and_(Report.author_user_id == user.id, Report.status == STATUS_RETURNED)]
     if _can_resolve(db, user):
-        if _is_royal_inbox_user(user):
+        if _is_admin_inbox_user(user):
             visible.append(Report.status == STATUS_OPEN)
-        elif _is_admin_inbox_user(user):
-            visible.append(and_(Report.target_role == RoleSlug.ADMIN, Report.status == STATUS_OPEN))
         elif _is_approved_operator(user):
             visible.append(
                 and_(Report.target_role == RoleSlug.OPERATOR, Report.status == STATUS_OPEN)

@@ -205,10 +205,14 @@ def test_royal_routes_all_reports_without_widening_other_role_boundaries(
     assert reports_svc.badge_counts(db_session, royal) == {"count": 5}
 
     assert {row.id for row in reports_svc.list_inbox(db_session, admin)} == {
+        operator_report.id,
         admin_report.id,
+        royal_open_report.id,
+        returned_report.id,
+        done_report.id,
         stale_cookie_report.id,
     }
-    assert reports_svc.badge_counts(db_session, admin) == {"count": 2}
+    assert reports_svc.badge_counts(db_session, admin) == {"count": 4}
 
     assert [row.id for row in reports_svc.list_inbox(db_session, operator)] == [operator_report.id]
     assert reports_svc.badge_counts(db_session, operator) == {"count": 1}
@@ -235,10 +239,8 @@ def test_royal_routes_all_reports_without_widening_other_role_boundaries(
     operator_action = _report(db_session, seed_mechanic, alpha, target="operator")
     assert reports_svc.done_report(db_session, royal, admin_action.id).status == "done"
     assert reports_svc.done_report(db_session, operator, operator_action.id).status == "done"
-    with pytest.raises(PermissionError):
-        reports_svc.done_report(db_session, royal, operator_report.id)
-    with pytest.raises(PermissionError):
-        reports_svc.done_report(db_session, admin, operator_report.id)
+    assert reports_svc.done_report(db_session, royal, operator_report.id).status == "done"
+    assert reports_svc.done_report(db_session, admin, royal_open_report.id).status == "done"
     with pytest.raises(PermissionError):
         reports_svc.done_report(db_session, seed_mechanic, operator_report.id)
     with pytest.raises(PermissionError):
