@@ -74,6 +74,8 @@ def test_metadata_has_required_tables():
         "inventory_counts",
         "inventory_count_lines",
         "inventory_migration_conflicts",
+        "ip_geo_cache",
+        "ip_geo_quota",
     }
 
 
@@ -104,10 +106,10 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_is_campaign_snapshot():
+def test_alembic_head_is_user_activity():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0029_campaign_snapshot"]
+    assert script.get_heads() == ["0030_user_activity"]
 
 
 def test_campaign_snapshot_upgrade_preserves_legacy_selection_and_indexes(
@@ -497,6 +499,10 @@ def test_models_match_required_schema():
         "must_change_password",
         "is_active",
         "created_at",
+        "last_seen_at",
+        "last_ip",
+        "last_device",
+        "last_location",
     }
     assert set(AuthSession.__table__.columns.keys()) == {
         "id",

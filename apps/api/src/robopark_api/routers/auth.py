@@ -1,7 +1,7 @@
 import logging
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
@@ -26,7 +26,7 @@ from robopark_api.security import (
     validate_password,
     verify_password,
 )
-from robopark_api.services import audit, rbac
+from robopark_api.services import audit, ip_location, rbac, user_activity
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.login_throttle import (
     client_ip,
@@ -175,6 +175,7 @@ def login(
     credentials: LoginRequest,
     request: Request,
     response: Response,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> None:
@@ -230,7 +231,12 @@ def login(
             expires_at=now + timedelta(seconds=settings.session_idle_seconds),
         )
     )
+    lookup_ip = user_activity.record_activity(
+        db, user, ip=client_ip(request), user_agent=request.headers.get("user-agent")
+    )
     db.commit()
+    if lookup_ip:
+        background_tasks.add_task(ip_location.resolve_for_user, user.id, lookup_ip)
     common = {
         "key": settings.session_cookie_name,
         "value": raw_token,

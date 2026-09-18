@@ -101,6 +101,10 @@ class User(Base):
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_device: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_location: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
     role_ref: Mapped[Role] = relationship(lazy="joined")
     sessions: Mapped[list[AuthSession]] = relationship(back_populates="user")
@@ -125,6 +129,21 @@ class AuthSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class IpGeoCache(Base):
+    __tablename__ = "ip_geo_cache"
+
+    ip: Mapped[str] = mapped_column(String(64), primary_key=True)
+    location: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class IpGeoQuota(Base):
+    __tablename__ = "ip_geo_quota"
+
+    day: Mapped[str] = mapped_column(String(10), primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Park(Base):

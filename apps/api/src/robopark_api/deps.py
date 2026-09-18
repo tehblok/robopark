@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
@@ -8,7 +8,8 @@ from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
 from robopark_api.models import AccessStatus, AuthSession, Park, Role, User, UserPark
 from robopark_api.security import hash_session_token
-from robopark_api.services import rbac
+from robopark_api.services import ip_location, rbac, user_activity
+from robopark_api.services.login_throttle import client_ip
 from robopark_api.services.ops.maintenance import host_maintenance_active
 
 #: Paths allowed while ``must_change_password`` is set (SPA + API).
@@ -45,6 +46,7 @@ def _touch_session(
 
 def require_user(
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> User:
@@ -71,6 +73,17 @@ def require_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
     _touch_session(db, auth_session, settings, now)
+
+    prior_activity = user.last_seen_at
+    prior_ip = user.last_ip
+    prior_device = user.last_device
+    lookup_ip = user_activity.record_activity(
+        db, user, ip=client_ip(request), user_agent=request.headers.get("user-agent")
+    )
+    if user.last_seen_at != prior_activity or user.last_ip != prior_ip or user.last_device != prior_device:
+        db.commit()
+    if lookup_ip:
+        background_tasks.add_task(ip_location.resolve_for_user, user.id, lookup_ip)
 
     if user.must_change_password and request.url.path not in _MUST_CHANGE_PASSWORD_ALLOW:
         raise HTTPException(

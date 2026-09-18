@@ -41,6 +41,10 @@ const managedUser: AdminUser = {
   parks: [{ id: 2, name: 'Архив', tag: 'archive', is_active: false }],
   permissions: ['reports.create'],
   role_permissions: ['reports.create'],
+  last_seen_at: '2026-09-19T06:30:00Z',
+  last_ip: '203.0.113.11',
+  last_device: 'Android · Chrome',
+  last_location: 'Москва, Москва, Россия',
 }
 
 afterEach(() => { vi.restoreAllMocks(); resourceStore.clearAll() })
@@ -87,6 +91,9 @@ it('updates a user with the controlled park selection without changing the park_
   )
 
   fireEvent.click(await screen.findByRole('button', { name: /Парки.*Выбрано: 1/ }))
+  expect(screen.getByText('IP: 203.0.113.11')).toBeVisible()
+  expect(screen.getByText('Устройство: Android · Chrome')).toBeVisible()
+  expect(screen.getByText('Примерное местоположение по IP: Москва, Москва, Россия')).toBeVisible()
   fireEvent.click(screen.getByRole('checkbox', { name: 'Север' }))
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
 

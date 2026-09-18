@@ -99,6 +99,18 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
+.rp-user-activity {
+  display: grid;
+  gap: var(--rp-space-1);
+  min-inline-size: 0;
+  padding: var(--rp-space-3);
+  border: 1px solid var(--rp-border);
+  border-radius: var(--rp-radius-control);
+  overflow-wrap: anywhere;
+}
+
+.rp-user-activity small { color: var(--rp-text-muted); }
+
 .rp-management :is(.admin-perm-check, .toggle, .btn, input:not([type='checkbox']), select) {
   min-block-size: var(--rp-control-min-size);
 }

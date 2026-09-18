@@ -128,6 +128,10 @@ export type AdminUser = {
   parks: Park[]
   permissions: string[]
   role_permissions: string[]
+  last_seen_at?: string | null
+  last_ip?: string | null
+  last_device?: string | null
+  last_location?: string | null
 }
 
 export type IntegrationSettings = {

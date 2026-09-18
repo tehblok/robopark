@@ -60,6 +60,15 @@ function draftFromUser(user: AdminUser): UserDraft {
   }
 }
 
+function activityTime(value?: string | null): string {
+  if (!value) return 'Нет данных'
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? 'Нет данных' : new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).format(parsed)
+}
+
 export function AdminUsersPanel({ parks }: { parks: Park[] }) {
   const { user } = useAuth()
   return <AdminUsersScope key={adminResourceKey('workspace', user)} parks={parks} />
@@ -434,6 +443,14 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
         >
           {selectedUser ? (
             <div className="form-grid">
+              <div className="rp-user-activity" aria-label="Последняя активность">
+                <strong>Последняя активность</strong>
+                <span>{activityTime(selectedUser.last_seen_at)} МСК</span>
+                <span>IP: {selectedUser.last_ip || 'Нет данных'}</span>
+                <span>Устройство: {selectedUser.last_device || 'Нет данных'}</span>
+                <span>Примерное местоположение по IP: {selectedUser.last_location || 'Недоступно'}</span>
+                <small>Местоположение по IP не подтверждает присутствие в парке или офисе.</small>
+              </div>
               <label className="field">
                 <span className="field-label">Роль</span>
                 <select

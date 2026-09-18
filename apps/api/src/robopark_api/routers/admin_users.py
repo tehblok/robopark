@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, update
@@ -28,6 +30,10 @@ class UserAdminOut(BaseModel):
     parks: list[ParkOut]
     permissions: list[str] = []
     role_permissions: list[str] = []
+    last_seen_at: datetime | None = None
+    last_ip: str | None = None
+    last_device: str | None = None
+    last_location: str | None = None
 
 
 class UserCreate(BaseModel):
@@ -73,6 +79,10 @@ def _user_out(db: Session, user: User, parks: list[Park]) -> UserAdminOut:
         parks=[ParkOut.model_validate(park) for park in parks],
         permissions=sorted(rbac.permissions_for_user(db, user)),
         role_permissions=sorted(rbac.role_permission_keys(db, user)),
+        last_seen_at=user.last_seen_at,
+        last_ip=user.last_ip,
+        last_device=user.last_device,
+        last_location=user.last_location,
     )
 
 
