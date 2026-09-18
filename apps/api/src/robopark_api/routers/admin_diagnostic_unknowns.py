@@ -1,4 +1,4 @@
-"""Strict admin triage of unknown diagnostic samples and live raw-error suppression."""
+"""Admin and royal triage of unknown samples and live raw-error suppression."""
 
 import json
 from datetime import UTC, datetime
@@ -10,7 +10,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
-from robopark_api.deps import require_builtin_admin
+from robopark_api.deps import require_builtin_admin_or_royal
 from robopark_api.models import DiagnosticRule, DiagnosticUnknown, User
 from robopark_api.routers.admin_diagnostic_rules import (
     RuleId,
@@ -156,7 +156,7 @@ def classify_unknown(
     payload: UnknownClassify,
     response: Response,
     db: Session = Depends(get_db),
-    actor: User = Depends(require_builtin_admin),
+    actor: User = Depends(require_builtin_admin_or_royal),
 ) -> DiagnosticRuleOut:
     _canonicalize_rule(payload.rule)
     _validate_rule(payload.rule)
@@ -235,7 +235,7 @@ def ignore_unknown(
     unknown_id: RuleId,
     response: Response,
     db: Session = Depends(get_db),
-    actor: User = Depends(require_builtin_admin),
+    actor: User = Depends(require_builtin_admin_or_royal),
 ) -> UnknownStateOut:
     return _change_state(unknown_id, "ignored", response, db, actor)
 
@@ -245,6 +245,6 @@ def reopen_unknown(
     unknown_id: RuleId,
     response: Response,
     db: Session = Depends(get_db),
-    actor: User = Depends(require_builtin_admin),
+    actor: User = Depends(require_builtin_admin_or_royal),
 ) -> UnknownStateOut:
     return _change_state(unknown_id, "new", response, db, actor)

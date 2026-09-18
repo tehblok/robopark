@@ -342,12 +342,13 @@ def test_capture_preparation_failure_keeps_snapshot(admin_client, snapshot, monk
     "role,status",
     [
         ("admin", "approved"),
+        ("royal", "approved"),
         ("custom-admin", "approved"),
         ("admin", "pending"),
         ("royal", "pending"),
     ],
 )
-def test_strict_builtin_approved_admin_gate(client, db_session, role, status):
+def test_approved_admin_or_royal_gate(client, db_session, role, status):
     from robopark_api.models import Permission, Role
 
     if role == "custom-admin":
@@ -376,7 +377,9 @@ def test_strict_builtin_approved_admin_gate(client, db_session, role, status):
         client.post(BASE + "/1/reopen"),
     ]
     assert [r.status_code for r in responses] == (
-        [200, 404, 404, 404, 404] if role == "admin" and status == "approved" else [403] * 5
+        [200, 404, 404, 404, 404]
+        if role in {"admin", "royal"} and status == "approved"
+        else [403] * 5
     )
 
 

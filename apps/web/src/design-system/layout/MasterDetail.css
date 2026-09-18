@@ -141,6 +141,11 @@
 }
 
 @media (max-width: 599px) {
+  .rp-master-detail__list,
+  .rp-master-detail__detail {
+    padding-inline: var(--rp-space-2);
+  }
+
   .rp-entity-row {
     grid-template-columns: minmax(0, 1fr) auto;
   }

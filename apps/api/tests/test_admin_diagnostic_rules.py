@@ -104,7 +104,7 @@ def test_other_roles_cannot_use_any_rule_endpoint(client, db_session, role):
     assert db_session.scalar(select(DiagnosticRule)) is None
 
 
-@pytest.mark.parametrize("role", ["admin"])
+@pytest.mark.parametrize("role", ["admin", "royal"])
 def test_built_in_admin_roles_can_manage_rules(client, db_session, role):
     user = User(
         username="allowed",

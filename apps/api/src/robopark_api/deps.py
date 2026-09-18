@@ -98,6 +98,13 @@ def require_builtin_admin(user: User = Depends(require_user)) -> User:
     return user
 
 
+def require_builtin_admin_or_royal(user: User = Depends(require_user)) -> User:
+    rbac.assert_approved(user)
+    if not rbac.is_admin_or_royal(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    return user
+
+
 def require_approved(user: User = Depends(require_user)) -> User:
     if user.access_status != AccessStatus.approved.value:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)

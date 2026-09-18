@@ -1,4 +1,4 @@
-"""Strict-admin CRUD and safe discovery for the global Emergency readings catalog."""
+"""Admin and royal CRUD with safe discovery for global Emergency readings."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ from robopark_api.services.emergency_reading_paths import safe_reading_key, safe
 
 def require_readings_admin(user: User = Depends(require_user)) -> User:
     rbac.assert_approved(user)
-    if user.role != rbac.RoleSlug.ADMIN:
+    if not rbac.is_admin_or_royal(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return user
 

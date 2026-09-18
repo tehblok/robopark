@@ -640,6 +640,9 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
             <Link className="btn btn-secondary" to="/admin/emergency/config">
               Настройки проверки робота
             </Link>
+            <Link className="btn btn-secondary" to="/admin/emergency/config?tab=errors">
+              Разметка и игнорирование ошибок
+            </Link>
           </div>
         </Panel>
       </TabPanel>}

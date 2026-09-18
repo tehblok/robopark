@@ -17,7 +17,7 @@ it('shows section search and identities before one explicitly selected editor at
   expect(screen.getByLabelText('Название state')).toBeVisible()
 })
 
-it('shows Errors to approved admin and royal, while Readings stays admin-only', async () => {
+it('lets approved royal open every robot-check setting including error mapping', async () => {
   vi.spyOn(api, 'adminEmergencySections').mockResolvedValue([])
   const admin = renderApp('/admin/emergency/config', testUser({ role: 'admin', permissions: ['nav.admin.emergency'] }))
   expect(await screen.findByRole('tab', { name: 'Ошибки' })).toBeVisible()
@@ -27,7 +27,6 @@ it('shows Errors to approved admin and royal, while Readings stays admin-only', 
   renderApp('/admin/emergency/config', testUser({ role: 'royal', permissions: ['nav.admin.emergency'] }))
   expect(await screen.findByRole('searchbox', { name: 'Поиск разделов' })).toBeVisible()
   expect(screen.getByRole('tab', { name: 'Ошибки' })).toBeVisible()
-  expect(screen.queryByRole('tab', { name: 'Показания' })).not.toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Новое правило' })).not.toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Новый раздел' })).not.toBeInTheDocument()
+  expect(screen.getByRole('tab', { name: 'Показания' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Новый раздел' })).toBeVisible()
 })

@@ -6,7 +6,6 @@ import { DiagnosticRuleEditor } from '../domains/diagnostics/DiagnosticRuleEdito
 import { ReadingCatalogEditor } from '../domains/diagnostics/ReadingCatalogEditor'
 import {
   api,
-  type DiagnosticCatalog,
   type EmergencyAdminSection,
   type EmergencyViewerRole,
 } from '../api'
@@ -22,8 +21,8 @@ const roles: EmergencyViewerRole[] = ['mechanic', 'operator', 'admin', 'royal', 
 export function AdminEmergencyConfig() {
   const { user } = useAuth()
   const [params, setParams] = useSearchParams()
-  const canEditCatalog = user?.access_status === 'approved' && user.role === 'admin'
-  const canEditErrors = user?.access_status === 'approved' && (user.role === 'admin' || user.role === 'royal')
+  const canEditCatalog = user?.access_status === 'approved' && (user.role === 'admin' || user.role === 'royal')
+  const canEditErrors = canEditCatalog
   const requestedTab = params.get('tab')
   const tab = canEditErrors && (requestedTab === 'indication' || requestedTab === 'errors')
     ? 'errors'
@@ -35,28 +34,9 @@ export function AdminEmergencyConfig() {
       items={[{ id: 'fields', label: 'Разделы и поля' }, ...(canEditErrors ? [{ id: 'errors', label: 'Ошибки' }] : []), ...(canEditCatalog ? [{ id: 'readings', label: 'Показания' }] : [])]}
       onChange={id => { const next = new URLSearchParams(params); next.set('tab', id); next.delete('rule'); setParams(next) }} /></div>
     <TabPanel id={`check-settings-${tab}`} labelledBy={`tab-${tab}`} active>
-      {tab === 'errors' ? canEditCatalog ? <DiagnosticRuleEditor /> : <DiagnosticRuleCatalog /> : tab === 'readings' ? <ReadingCatalogEditor /> : <EmergencyFieldsConfig readOnly={!canEditCatalog} />}
+      {tab === 'errors' ? <DiagnosticRuleEditor /> : tab === 'readings' ? <ReadingCatalogEditor /> : <EmergencyFieldsConfig readOnly={!canEditCatalog} />}
     </TabPanel>
   </PageShell>
-}
-
-function DiagnosticRuleCatalog() {
-  const { user } = useAuth()
-  const rules = useCachedResource<DiagnosticCatalog>(
-    `diagnostic-rule-view:${user?.id ?? 'anonymous'}:${user?.role ?? ''}`,
-    () => api.diagnosticRules(),
-  )
-  return <Panel title="Каталог ошибок">
-    <p className="panel-hint">Правила общие для всех парков. Изменить разметку может администратор.</p>
-    {rules.isLoading && !rules.data ? <SkeletonList /> : null}
-    {rules.error ? <Alert tone="error">Не удалось загрузить правила ошибок.</Alert> : null}
-    {rules.data?.rules.length === 0 ? <EmptyBlock title="Правил пока нет" /> : null}
-    {rules.data?.rules.map(rule => <section key={rule.id} className="rp-diagnostic-view-rule">
-      <h3>{rule.title}</h3>
-      <p>{rule.description}</p>
-      <p>{rule.part} · {rule.is_enabled ? 'Включено' : 'Отключено'}</p>
-    </section>)}
-  </Panel>
 }
 
 function EmergencyFieldsConfig({ readOnly }: { readOnly: boolean }) {

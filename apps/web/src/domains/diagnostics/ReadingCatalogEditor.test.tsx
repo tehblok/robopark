@@ -36,9 +36,9 @@ const baseReading: EmergencyReading = {
 }
 const secondReading: EmergencyReading = { ...baseReading, id: 2, path: 'velocity', label: 'Скорость', sort_order: 1 }
 
-function tree() {
+function tree(currentUser: User = admin) {
   return <MemoryRouter initialEntries={['/admin/emergency/config?tab=readings']}>
-    <AuthContext.Provider value={{ user: admin, loading: false, login: async () => admin, refreshUser: async () => admin, logout: async () => undefined }}>
+    <AuthContext.Provider value={{ user: currentUser, loading: false, login: async () => currentUser, refreshUser: async () => currentUser, logout: async () => undefined }}>
       <AdminEmergencyConfig />
     </AuthContext.Provider>
   </MemoryRouter>
@@ -65,6 +65,12 @@ beforeEach(() => {
 })
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); resourceStore.clearAll() })
+
+it('lets royal edit the shared readings catalog', async () => {
+  render(tree({ ...admin, role: 'royal' }))
+  expect(await screen.findByRole('heading', { name: 'Каталог показаний' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Новое показание' })).toBeVisible()
+})
 
 it('preserves reading ETags and sends discovery and mutation contracts without server-owned fields', async () => {
   vi.restoreAllMocks()

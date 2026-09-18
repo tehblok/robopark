@@ -71,6 +71,30 @@ function renderShellPath(path: string, currentUser = operator) {
   return { ...result, refreshUser, rerenderAuth: (nextUser: User) => result.rerender(tree(nextUser)) }
 }
 
+it('offers installation in More and triggers the browser install prompt', async () => {
+  installMatchMedia({ width: 390 })
+  const prompt = vi.fn().mockResolvedValue(undefined)
+  const installEvent = new Event('beforeinstallprompt', { cancelable: true }) as Event & {
+    prompt: () => Promise<void>
+    userChoice: Promise<{ outcome: string }>
+  }
+  installEvent.prompt = prompt
+  installEvent.userChoice = Promise.resolve({ outcome: 'accepted' })
+  fireEvent(window, installEvent)
+  renderShellPath('/overview')
+  fireEvent.click(screen.getByRole('button', { name: 'Ещё' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Установить приложение' }))
+  await waitFor(() => expect(prompt).toHaveBeenCalledOnce())
+})
+
+it('shows manual installation help when the browser omits an install prompt', () => {
+  installMatchMedia({ width: 390 })
+  renderShellPath('/overview')
+  fireEvent.click(screen.getByRole('button', { name: 'Ещё' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Установить приложение' }))
+  expect(screen.getByRole('status')).toHaveTextContent('Добавить на главный экран')
+})
+
 function renderShellWithParkScope(
   role: User['role'],
   setParkId = vi.fn(),

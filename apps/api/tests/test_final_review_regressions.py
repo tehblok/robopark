@@ -169,7 +169,7 @@ def test_configuration_write_permission_matrix(client, db_session, role):
         client.request(method, path, **({"json": body} if body is not None else {})).status_code
         for method, path, body in writes
     ]
-    if role == "admin":
+    if role in {"admin", "royal"}:
         assert all(code != 403 for code in statuses), statuses
         assert statuses[0] == statuses[4] == statuses[11] == 201
     else:

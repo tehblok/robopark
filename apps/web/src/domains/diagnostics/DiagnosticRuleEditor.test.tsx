@@ -196,13 +196,11 @@ it('does not expose the rule editor to a custom role with settings navigation pe
   expect(requests.some(request => request.path.startsWith('/api/admin/diagnostic-rules'))).toBe(false)
 })
 
-it('lets royal view the shared error catalog without forbidden editing controls', async () => {
+it('lets royal map and ignore shared errors', async () => {
   render(tree({ ...user, role: 'royal', username: 'owner' }, '/admin/emergency/config?park=7&tab=errors&rule=1'))
   expect(await screen.findByRole('heading', { name: 'Каталог ошибок' })).toBeVisible()
-  expect(await screen.findByRole('heading', { name: 'Лидар' })).toBeVisible()
-  expect(screen.getByText(/Изменить разметку может администратор/)).toBeVisible()
-  expect(screen.queryByRole('button', { name: 'Сохранить правило' })).not.toBeInTheDocument()
-  expect(screen.queryByRole('tab', { name: 'Неизвестные ошибки' })).not.toBeInTheDocument()
+  expect(await screen.findByRole('button', { name: 'Сохранить правило' })).toBeVisible()
+  expect(screen.getByRole('tab', { name: 'Неизвестные ошибки' })).toBeVisible()
   expect(requests.every(request => !request.init.method || request.init.method === 'GET')).toBe(true)
 })
 

@@ -204,9 +204,9 @@ def test_schemas_forbid_extra_fields_and_bound_catalog_values(admin_client):
 
 @pytest.mark.parametrize(
     "role,status",
-    [("royal", "approved"), ("admin", "pending"), ("mechanic", "approved")],
+    [("admin", "pending"), ("mechanic", "approved")],
 )
-def test_every_endpoint_requires_approved_builtin_admin(client, db_session, role, status):
+def test_every_endpoint_rejects_unapproved_or_non_admin_roles(client, db_session, role, status):
     add_user(db_session, role, status=status)
     assert login_as(client, f"{role}-{status}", "secret").status_code == 204
 
@@ -219,6 +219,14 @@ def test_every_endpoint_requires_approved_builtin_admin(client, db_session, role
         client.delete(BASE + "/1"),
     ]
     assert [response.status_code for response in responses] == [403] * len(responses)
+
+
+def test_approved_royal_can_manage_global_readings(client, db_session):
+    add_user(db_session, "royal")
+    assert login_as(client, "royal-approved", "secret").status_code == 204
+    created = client.post(BASE, json=READING)
+    assert created.status_code == 201
+    assert client.patch(f"{BASE}/{created.json()['id']}", json={"is_enabled": False}).status_code == 200
 
 
 def test_discovery_normalizes_vin_uses_cache_and_returns_only_bounded_safe_scalars(

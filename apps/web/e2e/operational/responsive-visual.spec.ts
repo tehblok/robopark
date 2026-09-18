@@ -43,6 +43,18 @@ const states = [
   { name: 'inventory', path: '/inventory?park=7', ready: '[data-inventory-workflow="parts"]' },
 ] as const
 
+test('legacy settings page keeps a readable phone gutter', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 })
+  await installOperational(page, { role: 'royal' })
+  await page.goto('/admin/emergency/config?tab=errors')
+  const heading = page.getByRole('heading', { name: 'Настройки проверки робота' })
+  await expect(heading).toBeVisible()
+  const bounds = await heading.boundingBox()
+  expect(bounds).toBeTruthy()
+  expect(bounds!.x).toBeGreaterThanOrEqual(10)
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(380)
+})
+
 test('inventory selection box remains compact on a phone', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 })
   await installOperational(page, { role: 'mechanic' })

@@ -199,6 +199,12 @@
   text-decoration: none;
 }
 
+button.rp-shell__more-link {
+  background: transparent;
+  text-align: left;
+  width: 100%;
+}
+
 .rp-shell__desktop-link:hover,
 .rp-shell__more-link:hover,
 .rp-shell__mobile-link:hover {
@@ -450,6 +456,14 @@
 }
 
 @media (max-width: 599px) {
+  .rp-shell__content {
+    padding-inline: 0;
+  }
+
+  .rp-shell__content > :is(.page-content, .rp-management) {
+    padding-inline: var(--rp-space-3);
+  }
+
   .rp-shell__topbar-actions {
     margin-left: auto;
   }

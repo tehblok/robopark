@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
-from robopark_api.deps import require_builtin_admin, require_user
+from robopark_api.deps import require_builtin_admin_or_royal, require_user
 from robopark_api.models import DiagnosticRule, User
 from robopark_api.schemas import (
     DiagnosticEvent,
@@ -226,7 +226,7 @@ def create_rule(
     payload: DiagnosticRuleCreate,
     response: Response,
     db: Session = Depends(get_db),
-    actor: User = Depends(require_builtin_admin),
+    actor: User = Depends(require_builtin_admin_or_royal),
 ) -> DiagnosticRuleOut:
     _canonicalize_rule(payload)
     _validate_rule(payload)
@@ -254,7 +254,7 @@ def reorder_rules(
     response: Response,
     if_match: str | None = Header(default=None),
     db: Session = Depends(get_db),
-    actor: User = Depends(require_builtin_admin),
+    actor: User = Depends(require_builtin_admin_or_royal),
 ) -> list[DiagnosticRuleOut]:
     if if_match is None:
         raise HTTPException(status_code=428, detail="diagnostic_rules_precondition_required")
@@ -347,7 +347,7 @@ def update_rule(
     payload: DiagnosticRuleUpdate,
     response: Response,
     db: Session = Depends(get_db),
-    actor: User = Depends(require_builtin_admin),
+    actor: User = Depends(require_builtin_admin_or_royal),
 ) -> DiagnosticRuleOut:
     changes = payload.model_dump(exclude_unset=True)
     with _write(db):
@@ -377,7 +377,7 @@ def disable_rule(
     rule_id: RuleId,
     response: Response,
     db: Session = Depends(get_db),
-    actor: User = Depends(require_builtin_admin),
+    actor: User = Depends(require_builtin_admin_or_royal),
 ) -> DiagnosticRuleOut:
     with _write(db):
         rule = _get_rule(db, rule_id)

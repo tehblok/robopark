@@ -127,6 +127,22 @@ def test_operator_gets_403_for_admin_emergency(client, db_session):
     assert _create_section(client).status_code == 403
 
 
+def test_approved_royal_can_edit_robot_check_sections(client, db_session):
+    royal = User(
+        username="owner-emergency-test",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "royal"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(royal)
+    db_session.commit()
+    assert login_as(client, "owner-emergency-test", "secret").status_code == 204
+    created = _create_section(client)
+    assert created.status_code == 201
+    assert client.patch("/admin/emergency/sections/status", json={"title": "Робот"}).status_code == 200
+
+
 def test_emergency_settings_viewer_can_read_sections_but_cannot_mutate(client, db_session):
     viewer = User(
         username="emergency-settings-viewer",

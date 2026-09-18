@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from robopark_api.db import get_db
-from robopark_api.deps import require_builtin_admin, require_permission
+from robopark_api.deps import require_builtin_admin_or_royal, require_permission
 from robopark_api.models import EmergencyField, EmergencySection, EmergencySectionRole, User
 from robopark_api.schemas import (
     EmergencyFieldAdminOut,
@@ -102,7 +102,7 @@ def list_sections(
 def create_section(
     payload: EmergencySectionCreate,
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_builtin_admin),
+    _admin: User = Depends(require_builtin_admin_or_royal),
 ) -> EmergencySectionAdminOut:
     if db.get(EmergencySection, payload.id) is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT)
@@ -140,7 +140,7 @@ def create_section(
 def reorder_sections(
     payload: EmergencySectionsReorder,
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_builtin_admin),
+    _admin: User = Depends(require_builtin_admin_or_royal),
 ) -> list[EmergencySectionAdminOut]:
     sections = db.scalars(_section_query()).all()
     by_id = {section.id: section for section in sections}
@@ -160,7 +160,7 @@ def update_section(
     section_id: str,
     payload: EmergencySectionUpdate,
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_builtin_admin),
+    _admin: User = Depends(require_builtin_admin_or_royal),
 ) -> EmergencySectionAdminOut:
     section = _get_section(db, section_id)
     changes = payload.model_dump(exclude_unset=True)
@@ -184,7 +184,7 @@ def update_section(
 def delete_section(
     section_id: str,
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_builtin_admin),
+    _admin: User = Depends(require_builtin_admin_or_royal),
 ) -> Response:
     db.delete(_get_section(db, section_id))
     _commit_write(db)
@@ -200,7 +200,7 @@ def create_field(
     section_id: str,
     payload: EmergencyFieldCreate,
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_builtin_admin),
+    _admin: User = Depends(require_builtin_admin_or_royal),
 ) -> EmergencyFieldAdminOut:
     _get_section(db, section_id)
     sort_order = db.scalar(
@@ -223,7 +223,7 @@ def update_field(
     field_id: int,
     payload: EmergencyFieldUpdate,
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_builtin_admin),
+    _admin: User = Depends(require_builtin_admin_or_royal),
 ) -> EmergencyFieldAdminOut:
     field = _get_field(db, field_id)
     changes = payload.model_dump(exclude_unset=True)
@@ -239,7 +239,7 @@ def update_field(
 def delete_field(
     field_id: int,
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_builtin_admin),
+    _admin: User = Depends(require_builtin_admin_or_royal),
 ) -> Response:
     db.delete(_get_field(db, field_id))
     _commit_write(db)

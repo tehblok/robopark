@@ -16,6 +16,7 @@ import { navigationForUser } from '../routing/accessPolicy'
 import type { NavigationItem, NavGroup } from '../routing/routeManifest'
 import { REPORTS_BADGE_REFRESH } from '../../reports-badge'
 import { reportsAccessIdentity } from '../../domains/reports/reports'
+import { clearInstallPrompt, currentInstallPrompt, subscribeInstallPrompt } from '../../pwa/installPrompt'
 import './AppShell.css'
 
 const GROUPS: readonly NavGroup[] = [
@@ -250,9 +251,43 @@ export function AppShell() {
   const navigationTypeRef = useRef(navigationType)
   const previousPathname = useRef(location.pathname)
   const [moreOpen, setMoreOpen] = useState(false)
+  const [installPrompt, setInstallPrompt] = useState(currentInstallPrompt)
+  const [installHelp, setInstallHelp] = useState('')
   const [railCollapsed, setRailCollapsed] = useState(false)
   const phoneViewport = useMediaQuery(DENSITY_MEDIA_QUERY)
   const splitTablet = useMediaQuery('(min-width: 900px) and (max-width: 1199px)')
+
+  useEffect(() => {
+    const onInstalled = () => {
+      setInstallHelp('Приложение установлено.')
+    }
+    const unsubscribe = subscribeInstallPrompt((event) => {
+      setInstallPrompt(event)
+      if (event) setInstallHelp('')
+    })
+    window.addEventListener('appinstalled', onInstalled)
+    return () => {
+      unsubscribe()
+      window.removeEventListener('appinstalled', onInstalled)
+    }
+  }, [])
+
+  const installApp = async () => {
+    if (!installPrompt) {
+      setInstallHelp(window.isSecureContext === false
+        ? 'Для установки откройте сайт по HTTPS, затем в меню браузера выберите «Добавить на главный экран».'
+        : 'В меню браузера выберите «Добавить на главный экран» или «Установить приложение».')
+      return
+    }
+    try {
+      await installPrompt.prompt()
+      const choice = await installPrompt.userChoice
+      clearInstallPrompt()
+      if (choice.outcome !== 'accepted') setInstallHelp('Установку можно повторить через меню браузера: «Добавить на главный экран».')
+    } catch {
+      setInstallHelp('В меню браузера выберите «Добавить на главный экран».')
+    }
+  }
 
   const desktopItems = useMemo(
     () => user ? navigationForUser(user, 'desktop') : [],
@@ -539,7 +574,12 @@ export function AppShell() {
             <Icon name="settings" size={20} />
             <span className="rp-shell__nav-label">Сменить пароль</span>
           </Link>
+          <button className="rp-shell__more-link" onClick={() => void installApp()} type="button">
+            <Icon name="download" size={20} />
+            <span className="rp-shell__nav-label">Установить приложение</span>
+          </button>
         </nav>
+        {installHelp ? <p role="status">{installHelp}</p> : null}
 
         <fieldset className="rp-shell__preference-group" role="radiogroup">
           <legend>{ru.appShell.themeLabel}</legend>

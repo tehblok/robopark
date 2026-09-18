@@ -63,6 +63,12 @@ describe('Admin Emergency cookie validation', () => {
     expect(screen.queryByRole('button', { name: 'Свернуть: Быстрые переходы' })).not.toBeInTheDocument()
   })
 
+  it('links directly to error mapping and ignoring from administration', async () => {
+    setup()
+    expect(await screen.findByRole('link', { name: 'Разметка и игнорирование ошибок' }))
+      .toHaveAttribute('href', '/admin/emergency/config?tab=errors')
+  })
+
   it('never includes integration secret names or values in collapsed summaries', async () => {
     setup()
     await screen.findByRole('button', { name: 'Свернуть: Секреты' })

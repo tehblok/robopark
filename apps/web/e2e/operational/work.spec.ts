@@ -60,6 +60,24 @@ for (const width of [320, 390]) {
   })
 }
 
+for (const width of [390, 412]) {
+  test(`work cards use phone width at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await installOperational(page, { role: 'mechanic' })
+    await page.goto('/work?park=7')
+
+    const list = page.locator('.rp-master-detail__list')
+    const card = list.locator('.rp-entity-row').first()
+    await expect(card).toBeVisible()
+    const listBox = await list.boundingBox()
+    const cardBox = await card.boundingBox()
+    expect(listBox && cardBox).toBeTruthy()
+    expect(listBox!.width).toBeGreaterThanOrEqual(width - 32)
+    expect(cardBox!.width).toBeGreaterThanOrEqual(width - 60)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
+  })
+}
+
 test('phone back restores list scroll and saved filters', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 })
   await installOperational(page, { role: 'operator', listCount: 50 })

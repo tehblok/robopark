@@ -97,6 +97,11 @@
 }
 
 @media (max-width: 599px) {
+  .rp-page-layout {
+    padding-inline: calc(var(--rp-space-3) + env(safe-area-inset-left))
+      calc(var(--rp-space-3) + env(safe-area-inset-right));
+  }
+
   .rp-page-layout__header,
   .rp-panel__header {
     align-items: stretch;

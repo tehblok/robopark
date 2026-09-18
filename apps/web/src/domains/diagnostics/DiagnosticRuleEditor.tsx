@@ -62,7 +62,7 @@ export function DiagnosticRuleEditor() {
     setOwner({ user, park, generation: owner.generation + 1 })
     return null
   }
-  if (!user || user.access_status !== 'approved' || user.role !== 'admin') return null
+  if (!user || user.access_status !== 'approved' || (user.role !== 'admin' && user.role !== 'royal')) return null
   return <DiagnosticCatalogEditor key={owner.generation} user={user} />
 }
 
@@ -213,7 +213,7 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
 
   if (denied) return <ErrorState title="Каталог недоступен" description={error} />
   return <div className="rp-diagnostic-editor">
-    <Tabs items={[{ id: 'catalog', label: 'Каталог ошибок' }, ...(user.role === 'admin' ? [{ id: 'unknowns', label: 'Неизвестные ошибки' }] : [])]} value={section} onChange={value => { advancePreviewOwner(); setSection(value); if (value === 'unknowns') setInboxOpened(true) }} />
+    <Tabs items={[{ id: 'catalog', label: 'Каталог ошибок' }, { id: 'unknowns', label: 'Неизвестные ошибки' }]} value={section} onChange={value => { advancePreviewOwner(); setSection(value); if (value === 'unknowns') setInboxOpened(true) }} />
     <div hidden={section !== 'catalog'} className="rp-diagnostic-panel" role="tabpanel" aria-label="Каталог ошибок">
     <p className="rp-diagnostic-hint">Правила действуют во всех парках. Выберите ошибку или создайте правило и укажите её место на изображении.</p>
     {error ? <ErrorState title="Не удалось обновить каталог" description={error} onRetry={() => { void reload().catch(() => undefined) }} /> : null}

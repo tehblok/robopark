@@ -143,14 +143,14 @@ export function ReadingCatalogEditor() {
   }, [deny])
 
   useEffect(() => {
-    if (!user || user.access_status !== 'approved' || user.role !== 'admin') return
+    if (!user || user.access_status !== 'approved' || (user.role !== 'admin' && user.role !== 'royal')) return
     mounted.current = true
     const controller = new AbortController()
     void reload(controller.signal)
     return () => { mounted.current = false; controller.abort() }
   }, [reload, user])
 
-  if (!user || user.access_status !== 'approved' || user.role !== 'admin') return null
+  if (!user || user.access_status !== 'approved' || (user.role !== 'admin' && user.role !== 'royal')) return null
   if (denied) return <ErrorState title="Каталог недоступен" description={error || 'Нет доступа к настройке показаний.'} />
 
   const edit = (changes: Partial<EmergencyReadingDraft>) => {
