@@ -4,7 +4,7 @@
 
 Restore camera scanning, make the repair SLA accurate, preserve useful screens across navigation, remove redundant success noise, and expose limited last-activity metadata to user managers. Keep the existing React/FastAPI architecture and the signed OTA path. Do not turn the service worker into an authenticated API cache.
 
-Exact GPS is outside this release. The browser cannot provide it without device/browser permission; an approximate site label inferred from a known network is a separate decision. This release records the observed public IP and user-agent/device, never claims they prove presence at a park or office, and makes no external GeoIP requests.
+Exact GPS is outside this release. The browser cannot provide it without device/browser permission. This release records the observed public IP and user-agent/device and adds an approximate city/region/country derived from public IP. No result is presented as proof of presence at a park or office.
 
 ## Camera
 
@@ -12,7 +12,7 @@ The shipped nginx `Permissions-Policy` currently says `camera=()` on the app she
 
 ## Repair SLA
 
-The source is the latest actual Tracker transition into «В очереди». The clock consumes five working hours in `Europe/Moscow`, daily 09:00–21:00. A transition outside the window starts counting at the next 09:00. A deadline is not fabricated from issue creation when the transition is unknown; the UI shows «Нет данных о начале очереди». The existing server response carries the deadline; list and detail render the same rule. A shared page-level minute tick updates the displayed remainder without a network request or per-card timer. Ongoing time outside work hours does not reduce the remaining SLA.
+The source is the latest actual Tracker transition into «В очереди». The clock consumes five working hours in `Europe/Moscow`, daily 09:00–21:00. A transition outside the window starts counting at the next 09:00. A deadline is not fabricated from issue creation when the transition is unknown; the UI shows «Нет данных о начале очереди». The existing server response carries the deadline; list and detail render the same rule. A shared page-level minute tick updates the displayed remainder without a network request or per-card timer. Ongoing time outside work hours does not reduce the remaining SLA. Display the remaining working hours to one decimal place (`5.0 ч` down to `0.0 ч`); determine overdue state from the exact deadline, not the rounded display value, and show overdue time separately.
 
 ## Navigation and mutations
 
@@ -24,7 +24,9 @@ Suppress success-state `Сохранено` badges and other repeated confirmati
 
 ## User activity
 
-Store one latest-activity record per user: server-observed IP, bounded/sanitized user-agent or derived device label, and timestamp. Update on successful login and at a throttled interval during authenticated use, not for every request. Show it only through the existing user-management permission gate; never expose it in public/auth endpoints. Show an explicit «нет данных» state. Do not retain a trail of IPs or user agents and do not call a third-party lookup service. Approximate park/office network labels and GPS are deferred until their inputs and trust limits are agreed.
+Store one latest-activity record per user: server-observed IP, bounded/sanitized user-agent or derived device label, timestamp, and approximate city/region/country. Update on successful login and at a throttled interval during authenticated use, not for every request. Show it only through the existing user-management permission gate; never expose it in public/auth endpoints. Show an explicit «нет данных» state. Do not retain a trail of IPs or user agents.
+
+Resolve public IPs asynchronously on the server using the HTTPS `ipwho.is` free endpoint, with a 2-second timeout, temporary per-IP seven-day cache, a local cap of 800 lookups per day, and graceful unknown result during outage or quota exhaustion. Expire and purge cached IP records; this cache is not a per-user movement history. Validate IPs before placing them in the fixed provider URL; never query private/reserved addresses. The lookup must never block login, page navigation, or user management. This sends the observed IP to a third-party provider; the user must approve this disclosure in the spec review. Do not call the provider from the browser or ship its approximate coordinates as GPS. The provider documents city/region/country, commercial free use, HTTPS, a 1,000/day cap, and no uptime guarantee: https://ipwhois.io/documentation.
 
 ## Verification
 
