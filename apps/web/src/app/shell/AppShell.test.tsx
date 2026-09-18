@@ -165,7 +165,7 @@ describe('AppShell', () => {
   it('shows the product identity and developer attribution', async () => {
     const actor = userEvent.setup()
     renderShellPath('/work')
-    expect(screen.getByText('Робопарк')).toHaveAccessibleName('Система управления робопарками')
+    expect(screen.getByLabelText('Система управления робопарками')).toHaveTextContent('Парки')
     await actor.click(screen.getByRole('button', { name: 'Ещё' }))
     expect(screen.getByText(/tehblokdan/)).toBeVisible()
   })

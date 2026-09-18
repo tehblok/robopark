@@ -251,7 +251,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
       .catch(() => setRegistrationSettings(null))
   }, [user?.role, success])
 
-  const run = async (action: () => Promise<unknown>, message = 'Сохранено') => {
+  const run = async (action: () => Promise<unknown>, message = '') => {
     setError('')
     setSuccess('')
     setBusy(true)
