@@ -234,15 +234,29 @@ def test_tracker_list_prefers_queue_history_and_exposes_exact_five_hour_sla(
     items = client.get("/tracker/issues?sort=oldest").json()["items"]
 
     assert [item["key"] for item in items] == ["ROBOPARK-2", "ROBOPARK-1", "ROBOPARK-3"]
-    assert items[0]["queued_at"] == "2026-01-02T10:00:00Z"
-    assert items[0]["sla_deadline"] == "2026-01-02T15:00:00Z"
-    assert items[0]["sla_source"] == "estimated"
+    assert items[0]["queued_at"] is None
+    assert items[0]["sla_deadline"] is None
+    assert items[0]["sla_source"] is None
     assert items[1]["queued_at"] == "2026-01-03T09:15:00Z"
     assert items[1]["sla_deadline"] == "2026-01-03T14:15:00Z"
     assert items[1]["sla_source"] == "status_history"
     assert items[2]["queued_at"] is None
     assert items[2]["sla_deadline"] is None
     assert items[2]["sla_source"] is None
+
+
+def test_repair_sla_counts_only_moscow_working_hours():
+    from datetime import UTC, datetime
+
+    from robopark_api.services.tracker_client import repair_sla_deadline
+
+    cases = [
+        (datetime(2026, 9, 18, 17, tzinfo=UTC), datetime(2026, 9, 19, 10, tzinfo=UTC)),
+        (datetime(2026, 9, 18, 19, tzinfo=UTC), datetime(2026, 9, 19, 11, tzinfo=UTC)),
+        (datetime(2026, 9, 18, 6, tzinfo=UTC), datetime(2026, 9, 18, 11, tzinfo=UTC)),
+    ]
+    for queued_at, expected in cases:
+        assert repair_sla_deadline(queued_at) == expected
 
 
 def test_tracker_work_page_hydrates_only_returned_items_and_orders_exact_queue_times(
@@ -289,7 +303,7 @@ def test_tracker_work_page_hydrates_only_returned_items_and_orders_exact_queue_t
     assert items[0]["sla_source"] == "status_history"
 
 
-def test_tracker_work_history_failure_falls_back_to_estimated_creation(
+def test_tracker_work_history_failure_does_not_invent_queue_start(
     client, db_session, seed_park_with_tracker, monkeypatch
 ):
     _seed_operator(db_session, seed_park_with_tracker)
@@ -311,9 +325,9 @@ def test_tracker_work_history_failure_falls_back_to_estimated_creation(
     item = client.get("/tracker/issues").json()["items"][0]
 
     assert calls == [("token", "ROBOPARK-12")]
-    assert item["queued_at"] == "2026-01-02T10:00:00Z"
-    assert item["sla_deadline"] == "2026-01-02T15:00:00Z"
-    assert item["sla_source"] == "estimated"
+    assert item["queued_at"] is None
+    assert item["sla_deadline"] is None
+    assert item["sla_source"] is None
 
 
 def test_tracker_work_cold_page_has_one_short_history_budget_and_bounded_calls(
@@ -353,7 +367,7 @@ def test_tracker_work_cold_page_has_one_short_history_budget_and_bounded_calls(
     assert elapsed < 1.0
     assert len(calls) <= 2
     assert len(response.json()["items"]) == 200
-    assert {item["sla_source"] for item in response.json()["items"]} == {"estimated"}
+    assert {item["sla_source"] for item in response.json()["items"]} == {None}
 
 
 def test_tracker_work_history_does_not_enqueue_the_inner_tracker_executor(
@@ -422,8 +436,8 @@ def test_tracker_work_history_does_not_enqueue_the_inner_tracker_executor(
         assert len(history_calls) == 2
         assert tracker_client._work_history_executor._work_queue.qsize() == 0  # noqa: SLF001
         assert tracker_api._executor._work_queue.qsize() == 0  # noqa: SLF001
-        assert {item["sla_source"] for item in first.json()["items"]} == {"estimated"}
-        assert {item["sla_source"] for item in second.json()["items"]} == {"estimated"}
+        assert {item["sla_source"] for item in first.json()["items"]} == {None}
+        assert {item["sla_source"] for item in second.json()["items"]} == {None}
     finally:
         history_release.set()
         inner_release.set()

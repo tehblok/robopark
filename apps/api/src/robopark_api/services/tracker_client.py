@@ -18,6 +18,7 @@ from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -318,12 +319,34 @@ def _history_items(issue: Any) -> list[Any]:
     return []
 
 
+_MOSCOW = ZoneInfo("Europe/Moscow")
+
+
+def repair_sla_deadline(queued_at: datetime) -> datetime:
+    """Return the deadline after five hours inside 09:00–21:00 Moscow time."""
+    cursor = queued_at.astimezone(_MOSCOW)
+    remaining = timedelta(hours=5)
+    while remaining > timedelta(0):
+        start = cursor.replace(hour=9, minute=0, second=0, microsecond=0)
+        end = cursor.replace(hour=21, minute=0, second=0, microsecond=0)
+        if cursor < start:
+            cursor = start
+        elif cursor >= end:
+            cursor = start + timedelta(days=1)
+            end = cursor.replace(hour=21)
+        available = end - cursor
+        used = min(available, remaining)
+        cursor += used
+        remaining -= used
+    return cursor.astimezone(UTC)
+
+
 def repair_sla_fields(
     issue: Any, *, status_history: list[Any] | None = None
 ) -> dict[str, str | None]:
-    """Derive the five-hour repair SLA, preferring the latest queued transition."""
+    """Derive the five-working-hour repair SLA from an actual queued transition."""
     if status_history is None and (
-        issue.get("sla_source") in {"status_history", "estimated"}
+        issue.get("sla_source") == "status_history"
         if isinstance(issue, dict)
         else False
     ):
@@ -366,18 +389,13 @@ def repair_sla_fields(
             if changed_at is not None:
                 queued.append(changed_at)
 
-    source = "status_history" if queued else "estimated"
-    queued_at = (
-        max(queued)
-        if queued
-        else _tracker_datetime(_field(issue, "created") or _field(issue, "createdAt"))
-    )
-    if queued_at is None:
+    if not queued:
         return {"queued_at": None, "sla_deadline": None, "sla_source": None}
+    queued_at = max(queued)
     return {
         "queued_at": _utc_text(queued_at),
-        "sla_deadline": _utc_text(queued_at + timedelta(hours=5)),
-        "sla_source": source,
+        "sla_deadline": _utc_text(repair_sla_deadline(queued_at)),
+        "sla_source": "status_history",
     }
 
 

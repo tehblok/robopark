@@ -4,6 +4,7 @@ import { EntityRow } from '../../design-system/data/EntityRow'
 import { EmptyState } from '../../design-system/feedback/AsyncState'
 import { Panel } from '../../design-system/layout/PageLayout'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
+import { formatDurationHours } from '../../lib/timeFormat'
 import type { OperationalOverviewModel } from './overviewModel'
 
 function taskCount(value: number | null): string {
@@ -53,7 +54,7 @@ export function OverviewAttentionQueue({ attentionQueue, attentionTruncated }: P
       {attentionQueue.map((item) => <EntityRow
         actions={<Link aria-label={`Открыть задачу ${item.key}`} to={item.href}>Открыть</Link>}
         key={item.key}
-        meta={<>{item.robot ? `Робот ${item.robot} · ` : ''}{item.kind === 'overdue' ? `Просрочено на ${item.overdueHours ?? 'неизвестно'} ч` : item.ageHours == null ? 'Возраст неизвестен' : `Возраст ${item.ageHours} ч`}</>}
+        meta={<>{item.robot ? `Робот ${item.robot} · ` : ''}{item.kind === 'overdue' ? `Просрочено на ${item.overdueHours == null ? 'неизвестно' : formatDurationHours(item.overdueHours)}` : item.ageHours == null ? 'Возраст неизвестен' : `Возраст ${formatDurationHours(item.ageHours)}`}</>}
         status={<StatusBadge tone={item.kind === 'overdue' ? 'critical' : 'neutral'}>{item.kind === 'overdue' ? 'Просрочено SLA' : item.status}</StatusBadge>}
         title={<><strong>{item.key}</strong><span> · </span><span>{item.summary}</span></>}
       />)}
@@ -69,7 +70,7 @@ export function OverviewWorkload({ workload }: Pick<OperationalOverviewModel, 'w
     <div className="rp-overview-entities">
       {workload.map((person) => <EntityRow
         key={person.login ?? person.display}
-        meta={`Открыто: ${taskCount(person.open_count)} · Просрочено: ${taskCount(person.overdue_count)} · Самая старая: ${person.oldest_hours == null ? 'нет данных' : `${person.oldest_hours} ч`}`}
+        meta={`Открыто: ${taskCount(person.open_count)} · Просрочено: ${taskCount(person.overdue_count)} · Самая старая: ${person.oldest_hours == null ? 'нет данных' : formatDurationHours(person.oldest_hours)}`}
         title={person.display}
       />)}
     </div>

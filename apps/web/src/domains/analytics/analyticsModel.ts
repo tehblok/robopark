@@ -1,4 +1,5 @@
 import type { Park, User } from '../../api'
+import { formatDurationHours } from '../../lib/timeFormat'
 
 export type AnalyticsBucket = '2h' | '1d'
 export type AnalyticsPeriod = { start: string; end: string }
@@ -68,7 +69,9 @@ export function analyticsSearch(current: URLSearchParams, query: AnalyticsQuery)
   return next
 }
 export function analyticsValue(metric: AnalyticsMetric): string {
-  return metric.value === null ? 'Нет наблюдений' : `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(metric.value)} ${ANALYTICS_UNITS[metric.unit]}`
+  if (metric.value === null) return 'Нет наблюдений'
+  if (metric.unit === 'hours') return formatDurationHours(metric.value)
+  return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(metric.value)} ${ANALYTICS_UNITS[metric.unit]}`
 }
 export function analyticsDate(value: string): string {
   return new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(value))

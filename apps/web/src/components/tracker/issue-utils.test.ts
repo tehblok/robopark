@@ -34,15 +34,15 @@ describe('parseTrackerDate', () => {
 
 describe('formatAge', () => {
   it('formats sub-hour age', () => {
-    expect(formatAge('0.5')).toBe('<1 ч')
+    expect(formatAge('0.5')).toBe('0.5 ч')
   })
 
   it('formats hours', () => {
-    expect(formatAge('3')).toBe('3 ч')
+    expect(formatAge('3')).toBe('3.0 ч')
   })
 
   it('formats days', () => {
-    expect(formatAge('48')).toBe('2 д')
+    expect(formatAge('48')).toBe('48.0 ч')
   })
 
   it('returns empty for missing or invalid values', () => {

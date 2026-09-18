@@ -1,5 +1,6 @@
 import type { TrackerIssue, TrackerPerson } from '../../api'
 import { ru } from '../../i18n/ru'
+import { formatDurationHours } from '../../lib/timeFormat'
 
 /** Status buckets used by the tasks filter bar. */
 export const TASK_FILTERS = [
@@ -36,14 +37,12 @@ export function formatDateTime(raw?: string | null): string {
   })
 }
 
-/** Compact age used on issue cards: 3 ч / 2 д. */
+/** Task age is a duration, shown with the same precision everywhere. */
 export function formatAge(hours?: string | null): string {
   if (!hours) return ''
   const value = Number(hours)
   if (!Number.isFinite(value) || value < 0) return ''
-  if (value < 1) return '<1 ч'
-  if (value < 24) return `${Math.round(value)} ч`
-  return `${Math.floor(value / 24)} д`
+  return formatDurationHours(value)
 }
 
 export function formatFileSize(bytes?: number | null): string {

@@ -73,10 +73,10 @@ def age_hours(item: dict, now: datetime) -> float | None:
 
 
 def queued_working_hours(item: dict, now: datetime) -> float | None:
-    """Working hours since creation for tasks currently in the queued stage."""
+    """Working hours since an observed queue transition, never issue creation."""
     if issue_status_bucket(item) != "queued":
         return None
-    raw = item.get("created")
+    raw = tracker_client.repair_sla_fields(item)["queued_at"]
     if not raw:
         return None
     try:
@@ -216,12 +216,12 @@ def sla_policy_key(park_id: int) -> str:
 def get_sla_target(db: Session, park_id: int) -> int | None:
     row = platform_settings.get_setting(db, sla_policy_key(park_id))
     if row is None:
-        return 4
+        return 5
     try:
         value = json.loads(row.value)
     except (ValueError, TypeError):
-        return 4
-    return value if type(value) is int and 1 <= value <= 8760 else 4
+        return 5
+    return value if type(value) is int and 1 <= value <= 8760 else 5
 
 
 def require_operations_park(db: Session, user: User, park_id: int) -> Park:

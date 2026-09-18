@@ -12,12 +12,14 @@ NOW = datetime(2026, 9, 3, 12, 30, tzinfo=UTC)
 
 
 def issue(key="ROBOPARK-1", status="new", age=12, login="operator.one"):
+    created = (NOW - timedelta(hours=age)).isoformat()
     return {
         "key": key,
         "summary": key,
         "status": status,
         "status_key": status,
-        "created": (NOW - timedelta(hours=age)).isoformat(),
+        "created": created,
+        "status_history": ([{"updatedAt": created, "fields": [{"field": {"id": "status"}, "to": {"key": "queued"}}]}] if status == "queued" else []),
         "hours_created": str(age),
         "queue": "ROBOPARK",
         "tags": ["Alpha"],
@@ -89,7 +91,7 @@ def test_status_classification_is_exact(key, display, want):
     )
 
 
-def test_sla_calendar_hours_boundaries_and_unknown_dates():
+def test_sla_working_hours_boundaries_and_unknown_queue_times():
     from robopark_api.services.operations import calculate_sla
 
     rows = [
@@ -99,8 +101,8 @@ def test_sla_calendar_hours_boundaries_and_unknown_dates():
         issue("warning", status="queued", age=8),
         issue("safe", status="queued", age=7.99),
         issue("future", status="queued", age=-1),
-        {**issue("invalid", status="queued"), "created": "nonsense"},
-        {**issue("missing", status="queued"), "created": None},
+        {**issue("invalid", status="queued"), "created": "nonsense", "status_history": []},
+        {**issue("missing", status="queued"), "created": None, "status_history": []},
     ]
     result = calculate_sla(rows, target_hours=10, now=NOW)
     assert result.evaluated_count == 5
@@ -128,6 +130,7 @@ def test_sla_counts_only_queued_working_hours_in_moscow():
     now = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)  # 15:00 Moscow
     queued = issue("queued", status="queued")
     queued["created"] = "2026-09-02T17:00:00+00:00"  # 20:00 Moscow: 1h + 6h
+    queued["status_history"][0]["updatedAt"] = queued["created"]
     diagnostics = {
         **queued,
         "key": "diagnostics",
@@ -365,14 +368,14 @@ def test_sla_policy_roundtrip_clear_and_audit(client, db_session, seed_park_with
     account(db_session, seed_park_with_tracker, "admin")
     login_as(client, "subject", "secret")
     url = f"/operations/sla-policy?park_id={seed_park_with_tracker.id}"
-    assert client.get(url).json() == {"park_id": seed_park_with_tracker.id, "target_hours": 4}
+    assert client.get(url).json() == {"park_id": seed_park_with_tracker.id, "target_hours": 5}
     response = client.put(url, json={"target_hours": 24})
     assert response.status_code == 200
     assert client.get(url).json()["target_hours"] == 24
     row = db_session.get(PlatformSetting, f"operations.sla.park.{seed_park_with_tracker.id}")
     assert row.value == "24"
     assert client.put(url, json={"target_hours": None}).status_code == 200
-    assert client.get(url).json()["target_hours"] == 4
+    assert client.get(url).json()["target_hours"] == 5
     edits = db_session.scalars(
         select(AuditLog).where(AuditLog.action == "operations.sla_policy.updated")
     ).all()

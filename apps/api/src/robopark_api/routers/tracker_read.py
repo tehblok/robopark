@@ -124,7 +124,8 @@ def _issue_out(
 
 def _ordered_by_queue(items: list[dict], *, newest: bool) -> list[dict]:
     def timestamp(issue: dict) -> float | None:
-        raw = tracker_client.repair_sla_fields(issue)["queued_at"]
+        # Creation time is only a stable ordering fallback, never an SLA start.
+        raw = tracker_client.repair_sla_fields(issue)["queued_at"] or issue.get("created")
         try:
             return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
         except (TypeError, ValueError):
@@ -217,6 +218,7 @@ def _normalized_robot_number(raw: object) -> str | None:
 def _detail_out(
     issue: dict, *, db: Session, user: User, include_hidden: bool = False
 ) -> TrackerIssueDetailOut:
+    task_lifecycle.reconcile_external_closure(db, issue)
     attachments = [TrackerAttachmentOut(**item) for item in (issue.get("attachments") or [])]
     claim = get_claim(db, str(issue.get("key") or ""))
     writable = can_write_tracker(db, user)
