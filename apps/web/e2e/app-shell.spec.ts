@@ -39,7 +39,7 @@ test('PWA manifest installs the same product icon without requiring user data', 
     icons: { src: string; sizes: string; type: string }[]
   }
   expect(manifest).toMatchObject({
-    name: 'Робопарк', short_name: 'Робопарк',
+    name: 'Работа', short_name: 'Работа',
     start_url: '/', scope: '/', display: 'standalone',
   })
   for (const size of [192, 512]) {
