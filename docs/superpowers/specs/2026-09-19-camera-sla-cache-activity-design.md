@@ -12,7 +12,11 @@ The shipped nginx `Permissions-Policy` currently says `camera=()` on the app she
 
 ## Repair SLA
 
-The source is the latest actual Tracker transition into «В очереди». The clock consumes five working hours in `Europe/Moscow`, daily 09:00–21:00. A transition outside the window starts counting at the next 09:00. A deadline is not fabricated from issue creation when the transition is unknown; the UI shows «Нет данных о начале очереди». The existing server response carries the deadline; list and detail render the same rule. A shared page-level minute tick updates the displayed remainder without a network request or per-card timer. Ongoing time outside work hours does not reduce the remaining SLA. Display the remaining working hours to one decimal place (`5.0 ч` down to `0.0 ч`); determine overdue state from the exact deadline, not the rounded display value, and show overdue time separately.
+The source is the latest actual Tracker transition into «В очереди». The clock consumes five working hours in `Europe/Moscow`, daily 09:00–21:00. A transition outside the window starts counting at the next 09:00. A deadline is not fabricated from issue creation when the transition is unknown; the UI shows «Нет данных о начале очереди». The existing server response carries the deadline; list and detail render the same rule. A shared page-level minute tick updates the displayed remainder without a network request or per-card timer. Ongoing time outside work hours does not reduce the remaining SLA. Determine overdue state from the exact deadline, not a rounded display value, and show overdue time separately.
+
+## Time presentation throughout the product
+
+Display calculated durations and time totals throughout the web interface in hours rounded to one decimal place (`5.0 ч`, `0.0 ч`), including task age, SLA remainder/overdue, dashboard/analytics duration metrics, and elapsed work intervals. Use one shared formatter so cards, details, and charts agree. Rounding is presentation-only: sorting, threshold checks, aggregates, SLA transitions, and API values keep their original precision. Keep calendar dates, event timestamps (`14:35`), schedule boundaries (`09:00–21:00`), and user-entered policy values in their existing date/time formats; they are not durations.
 
 ## Navigation and mutations
 
@@ -30,4 +34,4 @@ Resolve public IPs asynchronously on the server using the HTTPS `ipwho.is` free 
 
 ## Verification
 
-Add regression tests that fail against the current camera policy, current calendar-hour deadline, static timer, and route-unmount cache eviction. Test user activity visibility, throttling, absent metadata, and role denial. Verify nginx configuration, API/Web tests, production build, mobile and desktop UI behavior, and representative repeated-navigation/request-count checks before issuing a new signed release artifact.
+Add regression tests that fail against the current camera policy, current calendar-hour deadline, static timer, route-unmount cache eviction, and inconsistent duration presentation. Test user activity visibility, throttling, absent metadata, and role denial. Verify nginx configuration, API/Web tests, production build, mobile and desktop UI behavior, and representative repeated-navigation/request-count checks before issuing a new signed release artifact.
