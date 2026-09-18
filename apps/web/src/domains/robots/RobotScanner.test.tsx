@@ -247,6 +247,23 @@ describe('RobotScanner', () => {
     expect(screen.getByRole('button', { name: 'Ввести номер вручную' })).toBeInTheDocument()
   })
 
+  it('identifies a site policy block separately from a user permission denial', async () => {
+    Object.defineProperty(document, 'permissionsPolicy', {
+      configurable: true,
+      value: { allowsFeature: (feature: string) => feature !== 'camera' },
+    })
+    try {
+      const getUserMedia = vi.fn().mockRejectedValue(Object.assign(new Error('policy blocked'), { name: 'NotAllowedError' }))
+      const Detector = class { detect = vi.fn(async () => []) } as unknown as BarcodeDetectorConstructor
+      render(<RobotScanner Detector={Detector} mediaDevices={{ getUserMedia } as Pick<MediaDevices, 'getUserMedia'>} onCancel={vi.fn()} onDetected={vi.fn()} open />)
+      fireEvent.click(screen.getByRole('button', { name: 'Включить камеру' }))
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Сайт запрещает доступ к камере'))
+      expect(screen.getByRole('button', { name: 'Ввести номер вручную' })).toBeInTheDocument()
+    } finally {
+      Reflect.deleteProperty(document, 'permissionsPolicy')
+    }
+  })
+
   it('distinguishes a missing camera from denied access', async () => {
     const getUserMedia = vi.fn().mockRejectedValue(Object.assign(new Error('missing'), { name: 'NotFoundError' }))
     const Detector = class { detect = vi.fn(async () => []) } as unknown as BarcodeDetectorConstructor

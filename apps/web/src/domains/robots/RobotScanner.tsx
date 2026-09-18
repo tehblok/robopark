@@ -44,6 +44,14 @@ async function loadBrowserFallback(): Promise<BarcodeDetectorLike> {
 function cameraError(reason: unknown): string {
   const name = reason instanceof Error ? reason.name : ''
   if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+    const policyDocument = document as Document & {
+      permissionsPolicy?: { allowsFeature: (feature: string) => boolean }
+      featurePolicy?: { allowsFeature: (feature: string) => boolean }
+    }
+    const policy = policyDocument.permissionsPolicy ?? policyDocument.featurePolicy
+    if (policy && !policy.allowsFeature('camera')) {
+      return 'Сайт запрещает доступ к камере. Обратитесь к администратору или введите номер вручную.'
+    }
     return 'Нет разрешения на камеру. Разрешите доступ в настройках браузера или введите номер вручную.'
   }
   if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {

@@ -125,6 +125,23 @@ def test_report_attachment_upload_and_persistent_storage_are_aligned():
     assert "REPORT_ATTACHMENTS_DIR: /data/report-attachments" in compose
 
 
+def test_web_document_and_redeclared_headers_allow_own_camera_only():
+    nginx = (REPO_ROOT / "apps/web/nginx.conf").read_text(encoding="utf-8")
+    headers = [
+        line.strip().split('"', 2)[1]
+        for line in nginx.splitlines()
+        if line.strip().startswith("add_header Permissions-Policy ")
+    ]
+    assert len(headers) == 4
+    for policy in headers:
+        directives = dict(part.strip().split("=", 1) for part in policy.split(","))
+        assert directives == {
+            "camera": "(self)",
+            "microphone": "()",
+            "geolocation": "()",
+        }
+
+
 def test_api_dockerfile_uses_pinned_frozen_runtime_dependencies():
     text = (API_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert f"FROM {API_IMAGE}" in text
