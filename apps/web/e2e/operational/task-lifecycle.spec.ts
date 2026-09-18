@@ -59,7 +59,11 @@ async function drain(bridge: Bridge) {
 
 async function openIssue(page: Page) {
   if (await page.getByRole('heading', { name: /Проверить колесо робота/ }).isVisible().catch(() => false)) return
-  await page.getByRole('button', { name: /Открыть задачу ROBOPARK-42/ }).click()
+  const overviewLink = page.getByRole('link', { name: 'Открыть задачу ROBOPARK-42' }).first()
+  const workButton = page.getByRole('button', { name: /Открыть задачу ROBOPARK-42/ })
+  await expect(overviewLink.or(workButton)).toBeVisible()
+  if (await overviewLink.isVisible().catch(() => false)) await overviewLink.click()
+  else await workButton.click()
   await expect(page.getByRole('heading', { name: /Проверить колесо робота/ })).toBeVisible()
 }
 

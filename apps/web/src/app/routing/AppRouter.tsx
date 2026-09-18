@@ -27,6 +27,7 @@ const RoleManagementPage = lazy(() => import('../../domains/management/RoleManag
 const AdminEmergencyConfig = lazy(() => import('../../pages/AdminEmergencyConfig').then(module => ({ default: module.AdminEmergencyConfig })))
 const Analytics = lazy(() => import('../../pages/Analytics').then(module => ({ default: module.Analytics })))
 const WorkPage = lazy(() => import('../../domains/work/WorkPage').then(module => ({ default: module.WorkPage })))
+const OverviewPage = lazy(() => import('../../domains/shift/OverviewPage').then(module => ({ default: module.OverviewPage })))
 const RobotsPage = lazy(() => import('../../domains/robots/RobotsPage').then(module => ({ default: module.RobotsPage })))
 const RobotPage = lazy(() => import('../../domains/robots/RobotPage').then(module => ({ default: module.RobotPage })))
 const RobotCheckPage = lazy(() => import('../../domains/robots/RobotCheckPage').then(module => ({ default: module.RobotCheckPage })))
@@ -74,7 +75,7 @@ export const ROUTE_ELEMENTS: Record<AppRouteId, ReactElement> = {
   'access-pending': <OperatorPending />,
   'access-rejected': <OperatorRejected />,
   'mechanic-no-park': <MechanicNoPark />,
-  overview: <LegacyRedirect to="/work" />,
+  overview: <OverviewPage />,
   'operator-parks': <OperatorParks />,
   work: <WorkPage />,
   'work-issue': <WorkPage />,

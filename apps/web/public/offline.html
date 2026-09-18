@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#243344" />
+    <title>Нет соединения — Робопарк</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { min-height: 100dvh; margin: 0; display: grid; place-items: center; background: #f5f7f9; color: #243344; }
+      main { max-width: 28rem; padding: 2rem; text-align: center; }
+      p { line-height: 1.5; }
+      button { min-height: 44px; padding: .65rem 1.4rem; border: 0; border-radius: .7rem; background: #243344; color: #fff; font: inherit; cursor: pointer; }
+      @media (prefers-color-scheme: dark) { body { background: #18222e; color: #fff; } button { background: #ffc04d; color: #18222e; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Нет соединения</h1>
+      <p>Данные задач и роботов доступны только при подключении к серверу. Проверьте сеть и попробуйте снова.</p>
+      <form action="/" method="get"><button type="submit">Повторить</button></form>
+    </main>
+  </body>
+</html>

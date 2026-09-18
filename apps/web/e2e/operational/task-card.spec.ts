@@ -31,7 +31,7 @@ test('390x844 lifecycle card is ordered, keyboard reachable and does not overflo
 
   const composer = page.getByRole('textbox', { name: 'Комментарии', exact: true })
   const review = page.getByRole('button', { name: 'Передать на проверку', exact: true })
-  const parts = page.getByRole('button', { name: 'Заказать запчасть', exact: true })
+  const parts = page.getByRole('button', { name: 'Списать запчасть', exact: true })
   const handoff = page.getByRole('button', { name: 'Передать смену', exact: true }).first()
   await expect(composer).toBeVisible()
   await expect(page.getByRole('status').filter({ hasText: 'Отправляется в Tracker' }).first()).toBeVisible()

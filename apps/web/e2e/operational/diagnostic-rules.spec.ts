@@ -44,7 +44,7 @@ for (const width of [390, 1440]) test(`persisted rule controls real Emergency sn
     await expect(page.getByLabel('Название ошибки')).toHaveValue(title)
 
     await page.goto(`/robots/${snapshot.vin}?park=7&tab=scheme`)
-    await expect(page.getByRole('button', { name: 'Спереди', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByRole('img', { name: 'Робот: вид спереди' })).toBeVisible()
     await expect(page.locator('.rp-check-event-marker')).toHaveCount(1)
     const marker = page.getByRole('button', { name: `Ошибка: ${title}`, exact: true })
     await marker.tap()
@@ -56,7 +56,6 @@ for (const width of [390, 1440]) test(`persisted rule controls real Emergency sn
     const list = page.getByRole('list', { name: 'Диагностические события' })
     await expect(list).toContainText('UNMAPPED_SENSOR_42'); await expect(list).toContainText('Без локализации')
     await page.getByRole('tab', { name: 'Схема', exact: true }).click()
-    await page.getByRole('button', { name: 'Сверху', exact: true }).click()
     await expect(page.locator('.rp-check-wheel-details')).toContainText('Переднее левое колесо')
 
     const { id: _id, ...second } = saved
@@ -72,7 +71,7 @@ for (const width of [390, 1440]) test(`persisted rule controls real Emergency sn
     const stale = await api.call({ method: 'PUT', path: `${base}/reorder`, headers: { 'content-type': 'application/json', 'if-match': ordered.headers!.etag }, body: JSON.stringify({ ids: parse<DiagnosticRule[]>(ordered).map(rule => rule.id) }) })
     expect(stale.status).toBe(409)
     await page.goto(`/robots/${snapshot.vin}?park=7&tab=scheme`)
-    await expect(page.getByRole('button', { name: 'Сверху', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByRole('img', { name: 'Робот: вид сверху' })).toBeVisible()
     await expect(page.locator('.rp-check-event-marker')).toHaveCount(0)
     await page.getByRole('button', { name: /^Все ошибки/ }).click()
     await expect(page.getByRole('list', { name: 'Диагностические события' })).toContainText(raw)

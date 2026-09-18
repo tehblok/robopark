@@ -76,6 +76,23 @@ def excluded(relative):
     name = relative.name.lower()
     if any(p.lower() in EXCLUDED_DIRS or p.endswith(".egg-info") for p in parts):
         return True
+    # Release images build from source, but never execute repository tests or
+    # browser fixtures. Leaving them out also avoids shipping old screenshots
+    # and diagnostic traces as part of a fresh installer.
+    if parts[:3] in (("apps", "api", "tests"), ("apps", "web", "e2e")):
+        return True
+    if parts[:4] == ("apps", "web", "src", "test"):
+        return True
+    if parts[:3] == ("apps", "web", "src") and name.endswith(
+        (".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx")
+    ):
+        return True
+    if parts[:3] == ("apps", "web", "scripts") and (
+        name.endswith(".test.mjs") or name == "generate-pwa-icons.mjs"
+    ):
+        return True
+    if relative.as_posix() == "apps/web/playwright.config.ts":
+        return True
     if (
         parts[:3] == ("apps", "api", "data")
         and relative.as_posix() != "apps/api/data/emergency_sections.json"

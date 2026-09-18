@@ -1462,6 +1462,10 @@ export const api = {
     const form = new FormData(); form.append('message_id', messageId); form.append('file', file, file.name)
     return requestForm<TaskAttachmentStaged>(`/tracker/issues/${encodeURIComponent(key)}/message-attachments`, form, { 'Idempotency-Key': idempotencyKey })
   },
+  taskPhoto: (key: string, file: File, idempotencyKey: string) => {
+    const form = new FormData(); form.append('file', file, file.name)
+    return requestForm<TaskAttachmentStaged>(`/tracker/issues/${encodeURIComponent(key)}/photos`, form, { 'Idempotency-Key': idempotencyKey })
+  },
   taskClaim: (key: string, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/claim`, { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey } }),
   taskHandoff: (key: string, value: { assignee: string; reason: string; done?: string; remaining?: string; obstacles?: string }, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/handoff`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(value) }),
   taskSubmitReview: (key: string, value: { defectCode: string; photo: File; comment?: string }, idempotencyKey: string) => {

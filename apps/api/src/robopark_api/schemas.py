@@ -650,7 +650,7 @@ class TaskAttachmentStagedOut(BaseModel):
     size: int
     sha256: str
     action_id: str
-    sync_state: Literal["pending", "needs_attention"] = "pending"
+    sync_state: Literal["pending", "synced", "needs_attention"] = "pending"
 
 
 class DefectCodeOut(BaseModel):

@@ -1,6 +1,16 @@
 import { Button } from '../../design-system/actions/Button'
 import type { WorkUrlState } from './workUrl'
 
+const viewingStatuses = [
+  { key: 'all', label: 'Все открытые' },
+  { key: 'queued', label: 'В очереди' },
+  { key: 'new', label: 'Новые' },
+  { key: 'moving', label: 'Перемещение' },
+  { key: 'diagnostics', label: 'Диагностика' },
+  { key: 'waiting_team', label: 'Ждём смежников' },
+  { key: 'waiting_parts', label: 'Ожидание поставки' },
+] as const
+
 export type WorkFiltersProps = {
   value: WorkUrlState
   driver?: boolean
@@ -11,8 +21,9 @@ export type WorkFiltersProps = {
 
 export function WorkFilters({ value, driver = false, manager = false, loading, onApply }: WorkFiltersProps) {
   const { filters } = value
-  void driver
-  void loading
+  const statuses = driver ? viewingStatuses.filter(({ key }) => key === 'new' || key === 'moving') : viewingStatuses
+  const selectedStatus = filters.status ?? 'all'
+  const linkedStatus = !driver && !statuses.some(({ key }) => key === selectedStatus) ? selectedStatus : null
   const restrictions = [
     filters.robot ? `Робот: ${filters.robot}` : null,
     filters.assignee ? `Ответственный: ${filters.assignee}` : null,
@@ -22,9 +33,16 @@ export function WorkFilters({ value, driver = false, manager = false, loading, o
 
   return (
     <div className="rp-work-filters">
-      <p className="rp-work-filters__ordering">
-        {filters.status === 'queued' || !filters.status ? 'В очереди' : `Статус из ссылки: ${filters.status}`}
-      </p>
+      <label className="rp-work-filters__status">Статус задач
+        <select disabled={loading} onChange={(event) => onApply({
+          ...value,
+          filters: { ...filters, status: event.target.value === 'all' ? undefined : event.target.value },
+          page: 1,
+        })} value={selectedStatus}>
+          {statuses.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
+          {linkedStatus ? <option value={linkedStatus}>{linkedStatus}</option> : null}
+        </select>
+      </label>
       <p className="rp-work-filters__ordering">От старых к новым</p>
       {manager ? <label className="checkbox-field">
         <input checked={Boolean(filters.includeHidden)} disabled={loading} onChange={(event) => onApply({

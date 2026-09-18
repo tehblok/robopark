@@ -35,6 +35,8 @@ it('uses the issue-park global catalog result and writes off through its negativ
   render(<TaskPartsPanel apiClient={apiClient} issueKey="RP-77" parkId={77} />)
 
   expect(await screen.findByRole('option', { name: 'Колёса' })).toBeInTheDocument()
+  expect(screen.getByText(/остаток на складе уменьшится сразу/i)).toBeVisible()
+  expect(screen.getByText(/оператор оформит расход в большой системе учёта/i)).toBeVisible()
   await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Компонента' }), '22')
   await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Запчасть' }), String(issueParkPart.id))
 

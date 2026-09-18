@@ -137,6 +137,13 @@ def test_release_reproducible_with_normalized_zip_and_standalone_verifier(packag
         "apps/api/src/data/report-attachments/private-photo.bin",
         "apps/web/test-results/inventory/trace.zip",
         "apps/web/playwright-report/index.html",
+        "apps/api/tests/test_task_timeline.py",
+        "apps/web/e2e/operational/work.spec.ts",
+        "apps/web/src/domains/work/WorkPage.test.tsx",
+        "apps/web/src/test/setup.ts",
+        "apps/web/scripts/build-sw.test.mjs",
+        "apps/web/scripts/generate-pwa-icons.mjs",
+        "apps/web/playwright.config.ts",
     ],
 )
 def test_release_excludes_runtime_and_secrets(packaging, tmp_path, name):

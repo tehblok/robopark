@@ -80,7 +80,7 @@ export type IssueWorkbenchApiClient = Pick<
   | 'inventoryComponentPhotoUrl'
   | 'inventoryPartPhotoUrl'
 > & Partial<Pick<typeof api,
-  | 'taskTimeline' | 'taskDefectCodes' | 'taskMessage' | 'taskClaim' | 'taskHandoff'
+  | 'taskTimeline' | 'taskDefectCodes' | 'taskMessage' | 'taskPhoto' | 'taskClaim' | 'taskHandoff'
   | 'taskSubmitReview' | 'taskReturnReview' | 'taskApproveReview'
   | 'taskRetryNow' | 'taskHide' | 'taskRestore'
 >>
@@ -875,9 +875,15 @@ function IssueWorkbenchOwner({
                         onAssign={(assignee) => mutate(
                           (assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'assign', { assignee }, headers => apiClient.trackerAssign(detail.data!.key, assignee, headers), assertCurrent),
                         )}
-                        onAttach={detail.data.workflow ? undefined : (file) => mutate(
-                          async (assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'attach', await attachmentIdentity(file), headers => apiClient.trackerAttach(detail.data!.key, file, headers), assertCurrent),
-                        )}
+                        onAttach={detail.data.workflow
+                          ? apiClient.taskPhoto ? (file) => mutate(async assertCurrent => {
+                            const identity = JSON.stringify([detail.data!.key, user.id, await attachmentIdentity(file)])
+                            assertCurrent()
+                            await lifecycleMutation('photo', identity, key => apiClient.taskPhoto!(detail.data!.key, file, key))
+                          }) : undefined
+                          : (file) => mutate(
+                            async (assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'attach', await attachmentIdentity(file), headers => apiClient.trackerAttach(detail.data!.key, file, headers), assertCurrent),
+                          )}
                         onClose={detail.data.workflow ? async () => undefined : () => mutate((assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'close', {}, headers => apiClient.trackerClose(detail.data!.key, headers), assertCurrent), onCloseIssue)}
                         onComment={(text) => mutate(
                           (assertCurrent) => detail.data!.workflow && apiClient.taskMessage
@@ -915,7 +921,7 @@ function IssueWorkbenchOwner({
                       }} /> : null}
                     {detail.data?.workflow ? <div aria-label="Дополнительные разделы задачи" className="rp-responsive-disclosure-group" role="group">
                       {user.role === 'mechanic' && mechanicCanWork ? (
-                        <ClosedDisclosure title="Заказать запчасть">
+                        <ClosedDisclosure title="Списать запчасть">
                           <div id="parts">
                             <TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={taskParkId} />
                           </div>

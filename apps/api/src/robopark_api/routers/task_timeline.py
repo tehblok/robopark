@@ -137,6 +137,50 @@ def post_message(
 
 
 @router.post(
+    "/issues/{key}/photos",
+    response_model=TaskAttachmentStagedOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def post_photo(
+    key: str,
+    request: Request,
+    file: UploadFile = File(...),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> TaskAttachmentStagedOut:
+    _issue(db, user, key, "attach", request)
+    content = file.file.read(tracker_client.MAX_ATTACHMENT_BYTES + 1)
+    try:
+        attachment, action = stage_attachment(
+            db,
+            actor=user,
+            issue_key=key,
+            message=None,
+            idempotency_key=idempotency_key,
+            filename=file.filename,
+            content=content,
+            content_type=file.content_type,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return TaskAttachmentStagedOut(
+        id=attachment.id,
+        message_id=attachment.message_id,
+        name=attachment.original_name,
+        mimetype=attachment.mime_type,
+        size=attachment.size_bytes,
+        sha256=attachment.sha256,
+        action_id=action.id,
+        sync_state="synced"
+        if action.state == "succeeded"
+        else "needs_attention"
+        if action.state == "needs_attention"
+        else "pending",
+    )
+
+
+@router.post(
     "/issues/{key}/message-attachments",
     response_model=TaskAttachmentStagedOut,
     status_code=status.HTTP_201_CREATED,
@@ -176,5 +220,9 @@ def post_message_attachment(
         size=attachment.size_bytes,
         sha256=attachment.sha256,
         action_id=action.id,
-        sync_state="needs_attention" if action.state == "needs_attention" else "pending",
+        sync_state="synced"
+        if action.state == "succeeded"
+        else "needs_attention"
+        if action.state == "needs_attention"
+        else "pending",
     )

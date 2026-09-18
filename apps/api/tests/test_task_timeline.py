@@ -20,6 +20,10 @@ ISSUE = {
     "queue": "ROBOPARK",
     "tags": ["Alpha"],
 }
+PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+)
 
 
 def test_timeline_orders_merges_deduplicates_and_hides_action_secrets(
@@ -170,6 +174,79 @@ def test_post_message_commits_local_message_and_reliable_action_together(
     assert (message.text, message.sync_state) == ("Заменил крепёж", "pending")
     assert (action.action, action.state) == ("comment", "pending")
     assert json.loads(action.payload_json) == {"text": "Заменил крепёж"}
+
+
+def test_standalone_photo_is_one_idempotent_message_and_one_attachment_action(
+    client, db_session, seed_royal, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_cache
+
+    monkeypatch.setattr(tracker_cache, "get_issue", lambda **_kwargs: dict(ISSUE))
+    login_as(client, "royal", "secret")
+    headers = {"Idempotency-Key": "photo-one-comment-0001"}
+    first = client.post(
+        "/tracker/issues/ROBOPARK-1/photos",
+        headers=headers,
+        files={"file": ("robot.png", PNG, "image/png")},
+    )
+    replay = client.post(
+        "/tracker/issues/ROBOPARK-1/photos",
+        headers=headers,
+        files={"file": ("robot.png", PNG, "image/png")},
+    )
+    changed = client.post(
+        "/tracker/issues/ROBOPARK-1/photos",
+        headers=headers,
+        files={"file": ("other.png", PNG, "image/png")},
+    )
+
+    assert first.status_code == replay.status_code == 201, replay.json()
+    assert first.json() == replay.json()
+    assert changed.status_code == 409
+    assert changed.json()["detail"] == "reliable_action_payload_conflict"
+    actions = db_session.scalars(
+        select(ReliableAction).where(ReliableAction.resource_id == "ROBOPARK-1")
+    ).all()
+    messages = db_session.scalars(
+        select(TaskMessage).where(TaskMessage.issue_key == "ROBOPARK-1")
+    ).all()
+    attachments = db_session.scalars(select(TaskAttachment)).all()
+    assert [(action.action, action.state) for action in actions] == [("attach", "pending")]
+    assert [(message.text, message.action_id) for message in messages] == [("Фото", actions[0].id)]
+    assert [(attachment.message_id, attachment.id) for attachment in attachments] == [
+        (messages[0].id, actions[0].id)
+    ]
+    from robopark_api.services.reliable_actions import complete_action
+
+    complete_action(db_session, actions[0], {"external_id": "tracker-photo-1"})
+    db_session.commit()
+    delivered_replay = client.post(
+        "/tracker/issues/ROBOPARK-1/photos",
+        headers=headers,
+        files={"file": ("robot.png", PNG, "image/png")},
+    )
+    assert delivered_replay.status_code == 201
+    assert delivered_replay.json()["sync_state"] == "synced"
+
+
+def test_standalone_photo_requires_mechanic_claim(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_cache
+
+    monkeypatch.setattr(tracker_cache, "get_issue", lambda **_kwargs: dict(ISSUE))
+    login_as(client, seed_mechanic.username, "secret")
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/photos",
+        headers={"Idempotency-Key": "unclaimed-photo-0001"},
+        files={"file": ("robot.png", PNG, "image/png")},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "tracker_issue_claim_required"
+    assert db_session.scalars(select(TaskAttachment)).all() == []
 
 
 def test_successful_message_retry_returns_existing_message(db_session, seed_royal):

@@ -8,7 +8,7 @@ test('deep-link restores filters, pagination and detail after reload', async ({ 
   await installOperational(page, { role: 'operator' })
   await page.goto('/work?park=7&status=open&sort=newest&page=2&robot=447&assignee=mechanic.test&age=2')
   await expect(page.getByLabel('Очередь', { exact: true })).toHaveCount(0)
-  await expect(page.getByLabel('Статус открытых блокеров', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('combobox', { name: 'Статус задач' })).toHaveValue('open')
   await expect(page.getByText('От старых к новым', { exact: true })).toBeVisible()
   await expect(page.getByRole('option', { name: 'Сначала новые' })).toHaveCount(0)
   await expect(page.getByText('Робот: 447', { exact: true })).toBeVisible()
@@ -28,6 +28,37 @@ test('deep-link restores filters, pagination and detail after reload', async ({ 
   await expect(page.getByText(/Обновите страницу.*действия временно недоступны/)).toBeVisible()
   await expect(page.locator('.issue-actions')).toHaveCount(0)
 })
+
+test('viewing-status selector changes the task query while keeping park and oldest-first ordering', async ({ page }) => {
+  const queries: URLSearchParams[] = []
+  page.on('request', request => { const url = new URL(request.url()); if (url.pathname === '/api/tracker/issues') queries.push(url.searchParams) })
+  await installOperational(page, { role: 'operator' })
+  await page.goto('/work?park=7')
+
+  await expect(page.getByRole('combobox', { name: 'Статус задач' })).toHaveValue('queued')
+  await page.getByRole('combobox', { name: 'Статус задач' }).selectOption('diagnostics')
+  await expect(page).toHaveURL(/\/work\?park=7&queue=ROBOPARK&status=diagnostics$/)
+  await expect.poll(() => queries.some(query => query.get('status') === 'diagnostics' && query.get('sort') === 'oldest' && query.get('open_only') === 'true')).toBe(true)
+})
+
+for (const width of [320, 390]) {
+  test(`viewing-status selector stays usable at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await installOperational(page, { role: 'operator' })
+    await page.goto('/work?park=7')
+
+    const filters = page.locator('.rp-work-filters')
+    const selector = filters.getByRole('combobox', { name: 'Статус задач' })
+    await expect(selector).toBeVisible()
+    const filterBox = await filters.boundingBox()
+    const selectorBox = await selector.boundingBox()
+    expect(filterBox && selectorBox).toBeTruthy()
+    expect(selectorBox!.height).toBeGreaterThanOrEqual(44)
+    expect(selectorBox!.width).toBeGreaterThanOrEqual(filterBox!.width - 48)
+    expect(selectorBox!.x + selectorBox!.width).toBeLessThanOrEqual(filterBox!.x + filterBox!.width)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
+  })
+}
 
 test('phone back restores list scroll and saved filters', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 })
@@ -157,7 +188,7 @@ for (const failure of [
 }
 
 
-test('work list defaults to the oldest queued tasks without manual status controls', async ({ page }) => {
+test('work list defaults to the oldest queued tasks with a viewing-only status selector', async ({ page }) => {
   const queries: URLSearchParams[] = []
   page.on('request', request => {
     const url = new URL(request.url())
@@ -169,7 +200,7 @@ test('work list defaults to the oldest queued tasks without manual status contro
   await expect(filters).toContainText('В очереди')
   await expect(filters).toContainText('От старых к новым')
   await expect(filters.locator('input')).toHaveCount(0)
-  await expect(filters.getByRole('combobox')).toHaveCount(0)
+  await expect(filters.getByRole('combobox', { name: 'Статус задач' })).toHaveValue('queued')
   await expect(filters.getByRole('button')).toHaveCount(0)
   await expect.poll(() => Object.fromEntries(queries.find(query => query.get('queue') === 'ROBOPARK')!)).toMatchObject({
     queue: 'ROBOPARK', park: 'north', status: 'queued', open_only: 'true', sort: 'oldest', offset: '50',

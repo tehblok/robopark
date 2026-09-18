@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import { type DashboardSummary, type User } from '../../api'
 import { ParkScopeContext } from '../../app/park/parkScope'
@@ -17,19 +17,25 @@ const summary: DashboardSummary = {
   queued: 2, in_transit: 1, moving: [],
 }
 
-function renderPage(dashboardSummary = vi.fn(async () => summary), currentUser = user) {
+function Location() {
+  const location = useLocation()
+  return <output data-testid="location">{location.pathname}{location.search}</output>
+}
+
+function renderPage(dashboardSummary = vi.fn(async () => summary), currentUser = user, url = '/work?park=7') {
   const apiClient = {
     trackerIssues: vi.fn(async () => ({ items: [], total: 0, limit: 50, offset: 0, has_more: false })),
     dashboardSummary,
   } as unknown as IssueWorkbenchApiClient & { dashboardSummary: typeof dashboardSummary }
   render(
-    <MemoryRouter initialEntries={['/work?park=7']}>
+    <MemoryRouter initialEntries={[url]}>
       <AuthContext.Provider value={{ user: currentUser, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}>
         <ParkScopeContext.Provider value={{
           parkId: 7, selectedPark: park, parks: [park], loading: false, locked: false,
           allowAllParks: false, setParkId: vi.fn(), refreshParks: vi.fn(),
         }}>
           <Routes><Route path="/work" element={<WorkPage apiClient={apiClient} />} /></Routes>
+          <Location />
         </ParkScopeContext.Provider>
       </AuthContext.Provider>
     </MemoryRouter>,
@@ -55,11 +61,32 @@ describe('WorkPage operations summary', () => {
     expect(screen.getByText('В пути: 1')).toBeVisible()
   })
 
-  it('defaults every role to the queued work view', async () => {
+  it('defaults mechanics to the queued work view', async () => {
     const mechanic = { ...user, username: 'mechanic', role: 'mechanic' as const }
     const { apiClient } = renderPage(undefined, mechanic)
     await waitFor(() => expect(apiClient.trackerIssues).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'queued' }),
     ))
+  })
+
+  it('defaults drivers to an API-permitted viewing status', async () => {
+    const driver = { ...user, username: 'driver', role: 'driver' as const }
+    const { apiClient } = renderPage(undefined, driver)
+
+    await waitFor(() => expect(apiClient.trackerIssues).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'new', open_only: true }),
+    ))
+    expect(screen.getByRole('combobox', { name: 'Статус задач' })).toHaveValue('new')
+  })
+
+  it('does not request a forbidden driver status from a stale deep link', async () => {
+    const driver = { ...user, username: 'driver', role: 'driver' as const }
+    const { apiClient } = renderPage(undefined, driver, '/work?park=7&status=queued&robot=447')
+
+    await waitFor(() => expect(apiClient.trackerIssues).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'new', open_only: true, robot: '447' }),
+    ))
+    expect(screen.getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['new', 'moving'])
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/work?park=7&status=new&robot=447'))
   })
 })

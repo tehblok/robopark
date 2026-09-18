@@ -33,7 +33,16 @@ function AttachmentActions({
 }) {
   const [photoFile, setPhotoFile] = useState<File | null>(null)
   const [photoPreview, setPhotoPreview] = useState('')
+  const [isPhone, setIsPhone] = useState(() => window.matchMedia('(max-width: 899px)').matches)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const cameraInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 899px)')
+    const change = (event: MediaQueryListEvent) => setIsPhone(event.matches)
+    media.addEventListener('change', change)
+    return () => media.removeEventListener('change', change)
+  }, [])
 
   useEffect(() => {
     if (!photoFile) {
@@ -50,6 +59,7 @@ function AttachmentActions({
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
+    if (cameraInputRef.current) cameraInputRef.current.value = ''
   }
 
   const handlePhotoPick = (event: ChangeEvent<HTMLInputElement>) => {
@@ -83,13 +93,16 @@ function AttachmentActions({
       <p className="issue-muted">{ru.tracker.attachPhotoHint}</p>
       <input
         accept="image/*"
-        capture="environment"
+        aria-label="Выбрать фото"
         className="issue-attach-input"
         disabled={Boolean(busy)}
         onChange={handlePhotoPick}
         ref={fileInputRef}
         type="file"
       />
+      {isPhone ? <input accept="image/*" aria-label="Сделать фото" capture="environment"
+        className="issue-attach-input" disabled={Boolean(busy)} onChange={handlePhotoPick}
+        ref={cameraInputRef} type="file" /> : null}
       <div className="issue-action-row">
         <Button
           disabled={Boolean(busy)}
@@ -99,6 +112,7 @@ function AttachmentActions({
         >
           {ru.tracker.attachPhotoPick}
         </Button>
+        {isPhone ? <Button disabled={Boolean(busy)} onClick={() => cameraInputRef.current?.click()} type="button" variant="secondary">Сделать фото</Button> : null}
         {photoFile && (
           <Button
             busy={busy === 'attach'}
@@ -282,7 +296,7 @@ function IssueActionsPanelContent({
       {success && <p aria-live="polite">{success}</p>}
 
       <div className="issue-action-primary" id="comment">
-        {effectiveCapabilities.attach && !role && (
+        {effectiveCapabilities.attach && onAttach && (
           <AttachmentActions
             busy={busy}
             onAttach={onAttach}

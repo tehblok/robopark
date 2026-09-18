@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from fastapi import HTTPException
 from sqlalchemy import insert, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
@@ -20,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
 from robopark_api.models import User
-from robopark_api.services.reliable_actions import begin_action
+from robopark_api.services.reliable_actions import begin_action, canonical_payload
 from robopark_api.services.tracker_client import (
     ALLOWED_ATTACHMENT_MIMES,
     MAX_ATTACHMENT_BYTES,
@@ -211,7 +212,7 @@ def stage_attachment(
     *,
     actor: User,
     issue_key: str,
-    message: TaskMessage,
+    message: TaskMessage | None,
     idempotency_key: str | None,
     filename: str | None,
     content: bytes,
@@ -227,10 +228,34 @@ def stage_attachment(
     )
     if not resolved_type or resolved_type not in ALLOWED_ATTACHMENT_MIMES:
         raise ValueError("task_attachment_invalid_type")
-    if message.issue_key != issue_key:
+    if message is not None and message.issue_key != issue_key:
         raise LookupError("task_message_not_found")
 
     digest = hashlib.sha256(content).hexdigest()
+    payload = {
+        "filename": original_name,
+        **({"message_id": message.id} if message is not None else {"text": "Фото"}),
+        "mime_type": resolved_type,
+        "sha256": digest,
+        "size_bytes": len(content),
+    }
+    if idempotency_key:
+        existing_action = db.scalar(
+            select(ReliableAction).where(
+                ReliableAction.actor_user_id == actor.id,
+                ReliableAction.resource_type == "tracker_issue",
+                ReliableAction.resource_id == issue_key,
+                ReliableAction.action == "attach",
+                ReliableAction.idempotency_key == idempotency_key,
+            )
+        )
+        if existing_action is not None:
+            _, payload_hash = canonical_payload(payload)
+            if existing_action.payload_hash != payload_hash:
+                raise HTTPException(409, "reliable_action_payload_conflict")
+            existing_attachment = db.get(TaskAttachment, existing_action.id)
+            if existing_attachment is not None:
+                return existing_attachment, existing_action
     begun = begin_action(
         db,
         actor=actor,
@@ -238,13 +263,7 @@ def stage_attachment(
         resource_id=issue_key,
         action="attach",
         idempotency_key=idempotency_key,
-        payload={
-            "filename": original_name,
-            "message_id": message.id,
-            "mime_type": resolved_type,
-            "sha256": digest,
-            "size_bytes": len(content),
-        },
+        payload=payload,
     )
     if not begun.created:
         existing = db.get(TaskAttachment, begun.row.id)
@@ -258,6 +277,21 @@ def stage_attachment(
     try:
         path = _write_staged_blob(blob_name, content)
         now = time.time()
+        if message is None:
+            message = TaskMessage(
+                id=str(uuid4()),
+                issue_key=issue_key,
+                kind="user",
+                author_user_id=actor.id,
+                author_name=actor.username,
+                text="Фото",
+                action_id=attachment_id,
+                sync_state="pending",
+                created_at=begun.row.created_at,
+                updated_at=begun.row.created_at,
+            )
+            db.add(message)
+            db.flush()
         row = TaskAttachment(
             id=attachment_id,
             message_id=message.id,

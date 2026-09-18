@@ -65,6 +65,16 @@
   padding: var(--rp-density-panel-padding);
 }
 
+.rp-work-filters__status {
+  display: grid;
+  gap: var(--rp-space-1);
+}
+
+.rp-work-filters__status select {
+  width: 100%;
+  min-height: var(--rp-control-min-size);
+}
+
 .rp-work-filters__context {
   align-items: center;
   display: flex;

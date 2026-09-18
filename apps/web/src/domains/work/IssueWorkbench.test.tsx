@@ -464,6 +464,43 @@ describe('IssueWorkbench', () => {
     expect(await screen.findByRole('textbox', { name: 'Добавить уточнение' })).not.toBeRequired()
   })
 
+  it('uploads an ordinary photo as one workflow chat message without closing the task', async () => {
+    const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
+    const workflowIssue: TrackerIssueDetail = { ...issue, claim: { park_id: park.id }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'saved', has_current_cycle_comment: true } }
+    const taskMessage = vi.fn(async (_key: string, text: string) => taskMessageResult(text))
+    const taskPhoto = vi.fn(async () => ({ id: 'photo-1', message_id: 'message-1', name: 'robot.jpg', mimetype: 'image/jpeg', size: 5, sha256: 'abc', action_id: 'action-1', sync_state: 'pending' as const }))
+    const trackerAttach = vi.fn(async () => actionResult('attach'))
+    renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskMessage, taskPhoto, trackerAttach } as Partial<IssueWorkbenchApiClient>) })
+
+    expect(await screen.findByText(ru.tracker.attachPhoto)).toBeVisible()
+    const photo = new File(['image'], 'robot.jpg', { type: 'image/jpeg' })
+    fireEvent.change(document.querySelector('.issue-attach-group input[type="file"]')!, { target: { files: [photo] } })
+    fireEvent.click(screen.getByRole('button', { name: ru.tracker.attachPhotoSubmit }))
+
+    await waitFor(() => expect(taskPhoto).toHaveBeenCalledOnce())
+    expect(taskPhoto).toHaveBeenCalledWith(issue.key, photo, expect.any(String))
+    expect(taskMessage).not.toHaveBeenCalled()
+    expect(trackerAttach).not.toHaveBeenCalled()
+  })
+
+  it('retries an ordinary photo with the same idempotency key', async () => {
+    const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
+    const workflowIssue: TrackerIssueDetail = { ...issue, claim: { park_id: park.id }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'saved', has_current_cycle_comment: true } }
+    const taskMessage = vi.fn(async (_key: string, text: string) => taskMessageResult(text))
+    const taskPhoto = vi.fn().mockRejectedValueOnce(new Error('network lost')).mockResolvedValueOnce({ id: 'photo-1' })
+    renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskMessage, taskPhoto } as Partial<IssueWorkbenchApiClient>) })
+
+    await screen.findByText(ru.tracker.attachPhoto)
+    fireEvent.change(document.querySelector('.issue-attach-group input[type="file"]')!, { target: { files: [new File(['image'], 'robot.jpg', { type: 'image/jpeg' })] } })
+    fireEvent.click(screen.getByRole('button', { name: ru.tracker.attachPhotoSubmit }))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: ru.tracker.attachPhotoSubmit }))
+    await waitFor(() => expect(taskPhoto).toHaveBeenCalledTimes(2))
+
+    expect(taskMessage).not.toHaveBeenCalled()
+    expect(taskPhoto.mock.calls[0]?.[2]).toBe(taskPhoto.mock.calls[1]?.[2])
+  })
+
   it('retries a locally committed message with the same idempotency key', async () => {
     const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
     const workflowIssue: TrackerIssueDetail = { ...issue, claim: { park_id: park.id }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'pending', has_current_cycle_comment: false } }
@@ -517,7 +554,7 @@ describe('IssueWorkbench', () => {
     })) }) })
     expect(await screen.findByRole('heading', { name: issue.summary })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'История действий' })).not.toBeInTheDocument()
-    const parts = screen.getByRole('button', { name: 'Заказать запчасть' })
+    const parts = screen.getByRole('button', { name: 'Списать запчасть' })
     const handoff = screen.getByRole('button', { name: 'Передать смену' })
     expect(parts).toHaveAttribute('aria-expanded', 'false')
     expect(handoff).toHaveAttribute('aria-expanded', 'false')

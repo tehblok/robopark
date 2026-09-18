@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, type DashboardSummary, type User } from '../../api'
 import { useAuth } from '../../auth-context'
 import {
@@ -44,6 +44,7 @@ function WorkPageOwner({
   const { refreshUser } = useAuth()
   const { issueKey } = useParams<{ issueKey?: string }>()
   const [params] = useSearchParams()
+  const location = useLocation()
   const navigate = useNavigate()
   const { parkId, selectedPark, loading } = useParkScope()
   const refreshStarted = useRef(false)
@@ -55,6 +56,14 @@ function WorkPageOwner({
     () => apiClient.dashboardSummary(parkId as number),
     { enabled: summaryOpen && parkId != null },
   )
+  useEffect(() => {
+    if (user.role !== 'driver') return
+    const status = params.get('status')
+    if (!status || status === 'new' || status === 'moving') return
+    const normalized = new URLSearchParams(params)
+    normalized.set('status', 'new')
+    navigate({ pathname: location.pathname, search: normalized.toString() }, { replace: true })
+  }, [location.pathname, navigate, params, user.role])
   useEffect(() => {
     let timer = 0
     const schedule = () => {
@@ -109,10 +118,13 @@ function WorkPageOwner({
     )
   }
 
-  const state = parseWorkUrl(params, {
+  const parsedState = parseWorkUrl(params, {
     queue,
-    status: 'queued',
+    status: user.role === 'driver' ? 'new' : 'queued',
   })
+  const state = user.role === 'driver' && parsedState.filters.status !== 'new' && parsedState.filters.status !== 'moving'
+    ? { ...parsedState, filters: { ...parsedState.filters, status: 'new' } }
+    : parsedState
   const writeState = (
     next: WorkUrlState,
     options: { replace?: boolean } = {},

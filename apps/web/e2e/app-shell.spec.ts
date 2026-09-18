@@ -19,6 +19,43 @@ test.beforeEach(async ({ page }) => {
   await page.clock.setFixedTime(new Date('2026-09-02T09:05:00Z'))
 })
 
+test('browser tab uses the local robot icon', async ({ page }) => {
+  await installMockApi(page, { user: operatorUser, parks: operatorUser.parks, routes: currentOverviewRoutes })
+  await page.goto('/')
+  const icon = page.locator('link[rel="icon"]')
+  await expect(icon).toHaveAttribute('href', '/favicon.svg')
+  const response = await page.request.get('/favicon.svg')
+  expect(response.status()).toBe(200)
+  expect(await response.text()).toContain('<svg')
+})
+
+test('PWA manifest installs the same product icon without requiring user data', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.locator('link[rel="manifest"]')).toHaveAttribute('href', '/manifest.webmanifest')
+  const response = await page.request.get('/manifest.webmanifest')
+  expect(response.ok()).toBe(true)
+  const manifest = await response.json() as {
+    name: string; short_name: string; start_url: string; scope: string; display: string
+    icons: { src: string; sizes: string; type: string }[]
+  }
+  expect(manifest).toMatchObject({
+    name: 'Робопарк', short_name: 'Робопарк',
+    start_url: '/', scope: '/', display: 'standalone',
+  })
+  for (const size of [192, 512]) {
+    const icon = manifest.icons.find(item => item.sizes === `${size}x${size}`)
+    expect(icon?.type).toBe('image/png')
+    const iconResponse = await page.request.get(icon!.src)
+    expect(iconResponse.ok()).toBe(true)
+    const png = await iconResponse.body()
+    expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a')
+    expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([size, size])
+  }
+  const offline = await page.request.get('/offline.html')
+  expect(offline.ok()).toBe(true)
+  expect(await offline.text()).toContain('Нет соединения')
+})
+
 async function waitForStableAudit(page: import('@playwright/test').Page) {
   await expect(page.locator('.global-progress')).toHaveAttribute('aria-hidden', 'true')
   await page.evaluate(async () => {

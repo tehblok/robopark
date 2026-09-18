@@ -81,7 +81,6 @@ describe('ROUTE_MANIFEST', () => {
       {
         id: 'overview',
         path: '/overview',
-        redirectTo: '/work',
         label: 'Обзор',
         icon: 'overview',
         permission: 'nav.dashboard',

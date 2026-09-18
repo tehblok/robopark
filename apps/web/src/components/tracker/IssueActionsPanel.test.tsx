@@ -205,6 +205,21 @@ describe('IssueActionsPanel', () => {
     expect(screen.queryByText(ru.tracker.actionsDisabled)).not.toBeInTheDocument()
   })
 
+  it('shows standalone photo upload in a claimed workflow when attachment is allowed', () => {
+    render(<IssueActionsPanel {...baseProps} role="mechanic" capabilities={{ ...disabledCapabilities, attach: true }} onAttach={noop} />)
+    expect(screen.getByText(ru.tracker.attachPhoto)).toBeVisible()
+    expect(screen.getByRole('button', { name: ru.tracker.attachPhotoPick })).toBeVisible()
+  })
+
+  it('offers a gallery picker as well as a camera control on phones', () => {
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
+    render(<IssueActionsPanel {...baseProps} role="mechanic" capabilities={{ ...disabledCapabilities, attach: true }} onAttach={noop} />)
+    expect(screen.getByRole('button', { name: ru.tracker.attachPhotoPick })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Сделать фото' })).toBeVisible()
+    expect(document.querySelector('.issue-attach-group input[aria-label="Выбрать фото"]')).not.toHaveAttribute('capture')
+    expect(document.querySelector('.issue-attach-group input[aria-label="Сделать фото"]')).toHaveAttribute('capture', 'environment')
+  })
+
   it('does not render write actions when canWrite is false', () => {
     render(
       <IssueActionsPanel

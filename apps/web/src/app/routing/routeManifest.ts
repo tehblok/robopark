@@ -93,7 +93,6 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
   {
     id: 'overview',
     path: '/overview',
-    redirectTo: '/work',
     label: ru.nav.dashboard,
     icon: 'overview',
     permission: 'nav.dashboard',
