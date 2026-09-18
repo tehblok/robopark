@@ -38,7 +38,8 @@ export type RouteManifestItem = {
   redirectTo?: string
   nav?: RouteNav
 }
-export type NavigationItem = Pick<RouteManifestItem, 'id' | 'path' | 'label' | 'icon'> & {
+export type NavigationItem = Omit<Pick<RouteManifestItem, 'id' | 'path' | 'label' | 'icon'>, 'id'> & {
+  id: AppRouteId | 'work-mine'
   group: NavGroup
   priority: number
 }

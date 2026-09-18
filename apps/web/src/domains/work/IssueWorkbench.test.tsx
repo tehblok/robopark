@@ -293,6 +293,17 @@ it('pins owned active tasks from an independent query and deduplicates the queue
   expect(ownedQuery).not.toHaveProperty('status')
 })
 
+it('opens My Tasks directly from the mechanic navigation URL', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
+  const owned = { ...issue, key: 'ROBOPARK-OWNED', assignee: { display: 'mech1', login: 'mech1' } }
+  const queued = { ...issue, key: 'ROBOPARK-QUEUE' }
+  const client = apiClient({ trackerIssues: vi.fn(async query => page(query.owned_by_me ? [owned] : [queued])) })
+  renderWorkbench({ client, currentUser: mechanic, selectedIssue: '', initialPath: '/work?view=mine' })
+  expect(await screen.findByRole('heading', { name: 'Мои задачи' })).toBeVisible()
+  expect(screen.getByRole('button', { name: /Открыть задачу ROBOPARK-OWNED/ })).toBeVisible()
+  expect(screen.queryByRole('button', { name: /Открыть задачу ROBOPARK-QUEUE/ })).not.toBeInTheDocument()
+})
+
 it('displays and writes task parts from the backend claim park despite tag and user-park order', async () => {
   const claimPark = { ...park, id: 7, name: 'A', tag: 'Alpha' }
   const otherPark = { ...park, id: 8, name: 'B', tag: 'Beta' }
@@ -372,6 +383,7 @@ function renderWorkbench({
   selectedPark = park,
   onAuthorizationFailure = vi.fn(async () => undefined),
   strictMode = false,
+  initialPath = '/',
 }: {
   client?: IssueWorkbenchApiClient
   selectedIssue?: string
@@ -380,6 +392,7 @@ function renderWorkbench({
   selectedPark?: Park
   onAuthorizationFailure?: () => Promise<unknown>
   strictMode?: boolean
+  initialPath?: string
 } = {}) {
   const onStateChange = vi.fn()
   const onOpenIssue = vi.fn()
@@ -391,7 +404,10 @@ function renderWorkbench({
       onStateChange={(next, options) => { onStateChange(next, options); setValue(next) }}
       selectedPark={selectedPark} state={value} user={currentUser} />
   }
-  const view = render(<ControlledWorkbench />, { wrapper: Harness, reactStrictMode: strictMode })
+  const view = render(<ControlledWorkbench />, {
+    wrapper: ({ children }) => <MemoryRouter initialEntries={[initialPath]}>{children}</MemoryRouter>,
+    reactStrictMode: strictMode,
+  })
   return {
     ...view,
     onAuthorizationFailure,

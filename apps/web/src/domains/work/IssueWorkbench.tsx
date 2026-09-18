@@ -9,7 +9,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import {
   api,
   ApiError,
@@ -456,7 +456,12 @@ function IssueWorkbenchOwner({
   const [taskControlBusy, setTaskControlBusy] = useState(false)
   const [taskControlMessage, setTaskControlMessage] = useState('')
   const [taskControlError, setTaskControlError] = useState('')
-  const [taskView, setTaskView] = useState<'queue' | 'mine'>('queue')
+  const location = useLocation()
+  const [taskView, setTaskView] = useState<'queue' | 'mine'>(() =>
+    user.role === 'mechanic' && new URLSearchParams(location.search).get('view') === 'mine' ? 'mine' : 'queue')
+  useEffect(() => {
+    setTaskView(user.role === 'mechanic' && new URLSearchParams(location.search).get('view') === 'mine' ? 'mine' : 'queue')
+  }, [location.search, user.role])
   const mutationKeys = useRef(new StableMutationKey())
 
   useLayoutEffect(() => () => { ++ownerGeneration.current }, [])

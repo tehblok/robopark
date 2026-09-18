@@ -182,6 +182,17 @@ describe('AppShell', () => {
     ])
   })
 
+  it('shows a separate My Tasks destination to mechanics on phone and desktop', () => {
+    act(() => media.setWidth(390))
+    renderShellPath('/work?view=mine', testUser({
+      role: 'mechanic', parks: [north], permissions: ['nav.tasks', 'tracker.read'],
+    }))
+    for (const navigation of screen.getAllByRole('navigation', { name: 'Основная навигация' })) {
+      expect(within(navigation).getByRole('link', { name: 'Мои задачи' }))
+        .toHaveAttribute('href', '/work?view=mine')
+    }
+  })
+
   it('does not expose the retired Startrek workspace in navigation', () => {
     renderShellPath('/work', testUser({
       role: 'admin', parks: [north], permissions: ['nav.tasks', 'nav.admin.tracker'],

@@ -196,11 +196,28 @@ function ParkIdentity({
   )
 }
 
-function currentNavigationItem(items: readonly NavigationItem[], pathname: string) {
+function currentNavigationItem(items: readonly NavigationItem[], pathname: string, search = '') {
   return items.reduce<NavigationItem | undefined>((current, item) => {
-    const matches = pathname === item.path || pathname.startsWith(`${item.path}/`)
+    const myTasks = pathname === '/work' && new URLSearchParams(search).get('view') === 'mine'
+    const matches = item.id === 'work-mine'
+      ? myTasks
+      : item.id === 'work' && myTasks
+        ? false
+        : pathname === item.path || pathname.startsWith(`${item.path}/`)
     return matches && (!current || item.path.length > current.path.length) ? item : current
   }, undefined)
+}
+
+function withMechanicTasks(items: NavigationItem[], user: User | null): NavigationItem[] {
+  if (user?.role !== 'mechanic') return items
+  const workIndex = items.findIndex(item => item.id === 'work')
+  if (workIndex < 0) return items
+  const result = [...items]
+  result.splice(workIndex + 1, 0, {
+    id: 'work-mine', path: '/work?view=mine', label: 'Мои задачи', icon: 'work',
+    group: 'operations', priority: items[workIndex].priority + 0.5,
+  })
+  return result
 }
 
 function NavigationLink({
@@ -290,17 +307,17 @@ export function AppShell() {
   }
 
   const desktopItems = useMemo(
-    () => user ? navigationForUser(user, 'desktop') : [],
+    () => user ? withMechanicTasks(navigationForUser(user, 'desktop'), user) : [],
     [user],
   )
   const mobileItems = useMemo(
-    () => user ? navigationForUser(user, 'mobile') : [],
+    () => user ? withMechanicTasks(navigationForUser(user, 'mobile'), user) : [],
     [user],
   )
   const primaryMobileItems = mobileItems.slice(0, 4)
   const secondaryMobileItems = mobileItems.slice(4)
-  const desktopCurrent = currentNavigationItem(desktopItems, location.pathname)
-  const mobileCurrent = currentNavigationItem(mobileItems, location.pathname)
+  const desktopCurrent = currentNavigationItem(desktopItems, location.pathname, location.search)
+  const mobileCurrent = currentNavigationItem(mobileItems, location.pathname, location.search)
   const moreCurrent = secondaryMobileItems.some((item) => item.id === mobileCurrent?.id)
   const badgeParkId = user?.role === 'royal' ? undefined : parkId ?? undefined
   const badgeIdentity = user ? reportsAccessIdentity(user, user.role === 'royal' ? null : selectedPark) : ''
