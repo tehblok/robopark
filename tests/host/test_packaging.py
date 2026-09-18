@@ -157,6 +157,26 @@ def test_release_excludes_runtime_and_secrets(packaging, tmp_path, name):
         assert name not in archive.namelist()
 
 
+def test_release_rejects_public_key_that_disagrees_with_signer(packaging, tmp_path):
+    source, _, _, key, _ = packaging
+    public = source / "deploy/keys/release-public-key.pem"
+    public.parent.mkdir(parents=True)
+    public.write_bytes(
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    )
+    output = tmp_path / "release.zip"
+    assert pack(packaging, output).returncode != 0
+    assert not output.exists()
+    public.write_bytes(
+        key.public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    )
+    assert pack(packaging, output).returncode == 0
+
+
 @pytest.mark.parametrize(
     "name",
     [

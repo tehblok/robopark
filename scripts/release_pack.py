@@ -354,6 +354,11 @@ def build_release(args):
     output = validate_output(args.output, [*forbidden, args.signing_key, metadata_path])
     key, private = signing_key(args.signing_key)
     files = source_files(root, args.repository)
+    included_key = files.get("deploy/keys/release-public-key.pem")
+    if included_key is not None and included_key != key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    ):
+        raise ValueError("signing_key_mismatch")
     metadata = release_metadata(args, files)
     # Release construction imports only checked repository code. Installer
     # construction never needs to import API source modules at all.
