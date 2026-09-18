@@ -162,10 +162,11 @@ function declaredCssValue(element: Element, property: string): string {
 }
 
 describe('AppShell', () => {
-  it('shows the product identity and developer attribution', async () => {
+  it('keeps product branding out of the shell and shows developer attribution', async () => {
     const actor = userEvent.setup()
     renderShellPath('/work')
-    expect(screen.getByLabelText('Система управления робопарками')).toHaveTextContent('Парки')
+    expect(screen.queryByText('Робопарк')).not.toBeInTheDocument()
+    expect(document.querySelector('.rp-shell__product-brand')).toBeNull()
     await actor.click(screen.getByRole('button', { name: 'Ещё' }))
     expect(screen.getByText(/tehblokdan/)).toBeVisible()
   })

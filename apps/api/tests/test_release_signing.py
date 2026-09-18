@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import runpy
 import stat
 import subprocess
 import sys
@@ -50,6 +51,23 @@ def release_tree(tmp_path: Path) -> Path:
     root = tmp_path / "release"
     (root / "apps" / "api").mkdir(parents=True)
     (root / "apps" / "api" / "main.py").write_text("VERSION = '1.2.3'\n", encoding="utf-8")
+    return root
+
+
+def isolated_checkout(tmp_path: Path, public_key: bytes) -> Path:
+    """Package an isolated checkout whose pinned key matches the test signer."""
+    source_root = Path(__file__).parents[3]
+    files = runpy.run_path(str(source_root / "scripts/release_pack.py"))["source_files"](
+        source_root, True
+    )
+    root = tmp_path / "checkout"
+    for name, content in files.items():
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        if name.endswith(".sh"):
+            target.chmod(0o755)
+    (root / "deploy/keys/release-public-key.pem").write_bytes(public_key)
     return root
 
 
@@ -333,12 +351,13 @@ def test_pack_release_wrapper_propagates_reviewed_migration_metadata(
     key_path = tmp_path / "release-key.pem"
     key_path.write_bytes(private)
     key_path.chmod(0o600)
-    root = Path(__file__).parents[3]
+    root = isolated_checkout(tmp_path, public)
     output = tmp_path / "release.zip"
     env = {
         **os.environ,
         "ROBOPARK_SIGNING_KEY_FILE": str(key_path),
         "ROBOPARK_RELEASE_VERSION": "1.2.3",
+        "ROBOPARK_RELEASE_GIT_SHA": "a" * 40,
     }
 
     packed = subprocess.run(
@@ -372,11 +391,11 @@ def test_pack_release_wrapper_propagates_reviewed_migration_metadata(
 def test_pack_release_keeps_api_ops_code_and_excludes_runtime_state(
     tmp_path: Path, ed25519_keys: tuple[bytes, bytes]
 ):
-    private, _public = ed25519_keys
+    private, public = ed25519_keys
     key_path = tmp_path / "release-key.pem"
     key_path.write_bytes(private)
     key_path.chmod(0o600)
-    root = Path(__file__).parents[3]
+    root = isolated_checkout(tmp_path, public)
     runtime_state = root / "apps" / "api" / "data" / "ops" / "task1-pack-state.json"
     attachment_data_root = root / "apps" / "api" / "src" / "data"
     runtime_attachment = attachment_data_root / "report-attachments" / "task11-pack-runtime"
@@ -398,6 +417,7 @@ def test_pack_release_keeps_api_ops_code_and_excludes_runtime_state(
         **os.environ,
         "ROBOPARK_SIGNING_KEY_FILE": str(key_path),
         "ROBOPARK_RELEASE_VERSION": "1.2.3",
+        "ROBOPARK_RELEASE_GIT_SHA": "a" * 40,
     }
 
     try:

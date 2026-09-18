@@ -34,14 +34,14 @@ describe('authentication pages', () => {
     document.documentElement.dataset.theme = 'light'
   })
 
-  it('gives unauthenticated users the product context and a working theme choice', async () => {
+  it('gives unauthenticated users context without branding and a working theme choice', async () => {
     const user = userEvent.setup()
     renderAuthPage(<Login />)
 
     expect(screen.getByRole('heading', { name: 'Вход' })).toBeVisible()
-    expect(screen.getByText('Управление парками')).toBeVisible()
+    expect(screen.queryByText('Управление парками')).not.toBeInTheDocument()
     expect(screen.queryByText('РобоПарк')).not.toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Управление парками' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Возможности' })).toBeVisible()
     expect(screen.getByRole('img', { name: 'Робот-доставщик' })).toBeVisible()
     expect(screen.getByRole('textbox', { name: 'Логин' })).toHaveAttribute('autocomplete', 'username')
     expect(screen.getByLabelText('Пароль')).toHaveAttribute('autocomplete', 'current-password')
@@ -58,7 +58,7 @@ describe('authentication pages', () => {
 
     expect(screen.getByRole('heading', { name: 'Создание аккаунта' })).toBeVisible()
     expect(screen.queryByRole('heading', { name: 'Вся смена — в одном понятном контуре' })).not.toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Управление парками' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Возможности' })).toBeVisible()
     expect(screen.getByText('Доступ активирует владелец')).toBeVisible()
     expect(screen.getByText('Проверка робота и задачи перемещения')).toBeVisible()
     expect(screen.getByLabelText('Общий пароль')).not.toHaveFocus()

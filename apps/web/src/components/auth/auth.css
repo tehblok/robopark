@@ -38,17 +38,8 @@
   min-height: 76px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: var(--rp-space-4);
-}
-
-.rp-auth__brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 1.02rem;
-  font-weight: var(--rp-font-weight-bold);
-  letter-spacing: -0.02em;
 }
 
 .rp-auth__themes {

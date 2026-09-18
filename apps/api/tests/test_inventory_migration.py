@@ -6,7 +6,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from robopark_api.models import (
     InventoryCatalogComponent,
@@ -19,6 +19,10 @@ from robopark_api.services import inventory_catalog, inventory_stock
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
 
 API_DIR = Path(__file__).parents[1]
+LEGACY_USER_COLUMNS = (
+    defer(User.last_seen_at), defer(User.last_ip),
+    defer(User.last_device), defer(User.last_location),
+)
 
 
 @pytest.mark.parametrize(
@@ -57,9 +61,9 @@ def test_runtime_merge_downgrade_preserves_total_and_legacy_history(
                 )
             )
     command.upgrade(config, "0026_global_inventory_workflows")
-    with Session(engine) as session:
+    with Session(engine, expire_on_commit=False) as session:
         ensure_rbac_catalog(session)
-        actor = session.get(User, 999)
+        actor = session.get(User, 999, options=LEGACY_USER_COLUMNS)
         source = session.scalar(
             select(InventoryCatalogPart).where(InventoryCatalogPart.article == "SOURCE")
         )
@@ -354,7 +358,7 @@ def test_upgrade_normalizes_blank_locations_and_expanding_unicode_keys(
         ensure_rbac_catalog(session)
         stock = session.scalar(select(InventoryParkStock))
         part = session.scalar(select(InventoryCatalogPart))
-        actor = session.get(User, 999)
+        actor = session.get(User, 999, options=LEGACY_USER_COLUMNS)
         assert stock.location is None
         assert part.normalized_name == "ss" * 128
         assert part.normalized_article == "ss" * 128

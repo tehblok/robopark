@@ -50,7 +50,7 @@ const allPermissions = [
 describe('ROUTE_MANIFEST', () => {
   it('keeps every canonical route and compatibility alias in one explicit record', () => {
     expect(ROUTE_MANIFEST).toEqual([
-      { id: 'home', path: '/', label: 'Парки', icon: 'overview', surface: 'public' },
+      { id: 'home', path: '/', label: 'Главная', icon: 'overview', surface: 'public' },
       { id: 'login', path: '/login', label: 'Вход', icon: 'forward', surface: 'public' },
       { id: 'register', path: '/register', label: 'Регистрация', icon: 'users', surface: 'public' },
       { id: 'change-password', path: '/change-password', label: 'Смена пароля', icon: 'settings', surface: 'standalone' },

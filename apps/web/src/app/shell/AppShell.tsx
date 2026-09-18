@@ -461,7 +461,6 @@ export function AppShell() {
       </a>
 
       <aside className="sidebar rp-shell__sidebar">
-        <strong aria-label={ru.brandExpanded} className="rp-shell__product-brand">{ru.brand}</strong>
         {!phoneViewport ? (
           <ParkIdentity
             allowAllParks={allowAllParks}

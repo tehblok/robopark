@@ -5,7 +5,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import create_engine, delete, select, text
 from sqlalchemy.orm import Session
 
 from robopark_api.models import Permission, Role, RolePermission, User, UserPermission
@@ -62,14 +62,15 @@ def test_existing_driver_upgrade_preserves_user_denies_and_other_role_revokes(
                 RolePermission.permission_id == perm_ids["reports.create"],
             )
         )
-        user = User(username="driver-denied", password_hash="unused", role_id=driver.id)
-        db.add(user)
-        db.flush()
+        user_id = db.execute(
+            text("INSERT INTO users (username, password_hash, role_id, access_status, must_change_password, is_active) "
+                 "VALUES ('driver-denied', 'unused', :role_id, 'approved', 0, 1)"),
+            {"role_id": driver.id},
+        ).lastrowid
         db.add(
-            UserPermission(user_id=user.id, permission_id=perm_ids["reports.create"], granted=False)
+            UserPermission(user_id=user_id, permission_id=perm_ids["reports.create"], granted=False)
         )
         db.commit()
-        user_id = user.id
 
     command.upgrade(config, "head")
     with Session(engine) as db:

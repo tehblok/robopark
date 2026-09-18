@@ -48,12 +48,6 @@
   top: 0;
 }
 
-.rp-shell__product-brand {
-  color: var(--rp-text);
-  font-size: 1.25rem;
-  letter-spacing: 0.04em;
-}
-
 .rp-shell__about {
   color: var(--rp-text-muted);
   font-size: var(--rp-font-size-body);

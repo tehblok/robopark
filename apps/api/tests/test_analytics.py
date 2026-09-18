@@ -183,8 +183,10 @@ def test_age_bands_sla_and_workload_are_historical_means_with_real_keys(
     bands = {row["key"]: row for row in data["backlog_age_bands"]}
     assert bands["under_24h"]["value"] == 0.5
     assert bands["24_to_72h"]["value"] == 1
-    assert data["sla_trend"]["value"] == 0
-    assert data["sla_trend"]["sample_count"] == 2
+    # Historic snapshots retain issue age, not the queue-transition time.
+    # Do not invent an SLA start from creation.
+    assert data["sla_trend"]["value"] is None
+    assert data["sla_trend"]["sample_count"] == 0
     assert data["drilldown_task_keys"] == ["ROBOPARK-1", "ROBOPARK-2"]
     workload = {row["key"]: row for row in data["workload"]}
     assert workload["diagnostics"]["value"] == 0.5

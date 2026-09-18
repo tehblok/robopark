@@ -1,7 +1,5 @@
 export const ru = {
-  brand: 'Парки',
-  brandExpanded: 'Система управления робопарками',
-  tagline: 'Система управления робопарками',
+  brand: 'Главная',
 
   nav: {
     dashboard: 'Обзор',
@@ -19,13 +17,12 @@ export const ru = {
     themeLight: 'Светлая тема',
     themeDark: 'Тёмная тема',
     admin: 'Администрирование',
-    brand: 'Парки',
+    brand: 'Главная',
     more: 'Ещё',
     close: 'Закрыть',
   },
 
   auth: {
-    identity: 'Управление парками',
     loginTitle: 'Вход',
     rememberMe: 'Запомнить меня',
   },

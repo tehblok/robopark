@@ -1,7 +1,6 @@
 import type { PropsWithChildren } from 'react'
 import robotImage from '../../assets/robots/isometric.webp'
 import { useTheme, type ThemePreference } from '../../design-system/theme/ThemeProvider'
-import { ru } from '../../i18n/ru'
 import './auth.css'
 
 const THEME_OPTIONS: readonly { value: ThemePreference; label: string; shortLabel: string }[] = [
@@ -35,12 +34,11 @@ export function AuthLayout({ children }: PropsWithChildren) {
   return (
     <main className="rp-auth">
       <header className="rp-auth__topbar">
-        <div className="rp-auth__brand">{ru.auth.identity}</div>
         <AuthThemePicker />
       </header>
 
       <div className="rp-auth__stage">
-        <section aria-label={ru.auth.identity} className="rp-auth__story">
+        <section aria-label="Возможности" className="rp-auth__story">
           <div className="rp-auth__story-copy">
             <span className="rp-auth__eyebrow">Рабочее пространство команды</span>
             <p className="rp-auth__story-title">Вся смена — в одном понятном контуре</p>
