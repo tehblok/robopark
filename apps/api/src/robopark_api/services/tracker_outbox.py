@@ -215,6 +215,13 @@ def _deliver_transition(
     purpose: TransitionPurpose = action.action  # type: ignore[assignment]
     if target_status_reached(issue, purpose):
         return {"already_applied": True}
+    if purpose == "start" and not issue.get("components"):
+        _set_issue_field(
+            token=token,
+            key=action.resource_id,
+            field_id="components",
+            value=["ROBOT_SUSPENSION"],
+        )
     transitions = tracker_client.list_transitions(token=token, key=action.resource_id)
     transition_id = resolve_transition(transitions, purpose)
     if transition_id is None:

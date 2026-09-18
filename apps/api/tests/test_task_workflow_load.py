@@ -15,7 +15,13 @@ from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
 from robopark_api.models import AuthSession, Base, Park, User, UserPark
 from robopark_api.security import hash_session_token
-from robopark_api.services import platform_settings, rbac, tracker_cache, tracker_client
+from robopark_api.services import (
+    platform_settings,
+    rbac,
+    tracker_cache,
+    tracker_client,
+    tracker_outbox,
+)
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
 from robopark_api.services.tracker_outbox import _process_batch
 from robopark_api.task_workflow_models import ReliableAction
@@ -146,6 +152,12 @@ def test_200_authenticated_sessions_keep_local_p95_and_duplicate_delivery_bounde
     def transition(**_kwargs):
         upstream["transition"] += 1
 
+    def set_field(**kwargs):
+        assert kwargs["field_id"] == "components"
+        assert kwargs["value"] == ["ROBOT_SUSPENSION"]
+        upstream["component"] += 1
+
+    monkeypatch.setattr(tracker_outbox, "_set_issue_field", set_field)
     monkeypatch.setattr(tracker_client, "transition_issue", transition)
     monkeypatch.setattr(main, "SessionLocal", factory)
     monkeypatch.setattr(main, "get_settings", lambda: settings)
@@ -212,6 +224,7 @@ def test_200_authenticated_sessions_keep_local_p95_and_duplicate_delivery_bounde
         assert len(actions) == 50
         assert all(action.state == "succeeded" for action in actions)
     assert processed == 50
+    assert upstream["component"] == 50
     assert upstream["transition"] == 50
     print(
         {

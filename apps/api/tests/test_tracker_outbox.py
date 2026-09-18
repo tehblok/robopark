@@ -362,6 +362,121 @@ def test_worker_recovers_expired_transition_lease_without_duplicate_delivery(
     assert transitions == []
 
 
+def test_start_sets_default_component_before_transition_when_empty(
+    db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    action = _action(db_session, seed_mechanic, action="start")
+    operations = []
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_transitions",
+        lambda **_kwargs: [{"id": "start", "display": "В работу"}],
+    )
+    monkeypatch.setattr(
+        tracker_outbox,
+        "_set_issue_field",
+        lambda **kwargs: operations.append(("field", kwargs)),
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "transition_issue",
+        lambda **kwargs: operations.append(("transition", kwargs)),
+    )
+
+    tracker_outbox._deliver_transition(
+        action,
+        token="bot-token",
+        issue={"key": "ROBOPARK-1", "status": "В очереди", "components": []},
+    )
+
+    assert operations == [
+        (
+            "field",
+            {
+                "token": "bot-token",
+                "key": "ROBOPARK-1",
+                "field_id": "components",
+                "value": ["ROBOT_SUSPENSION"],
+            },
+        ),
+        (
+            "transition",
+            {
+                "token": "bot-token",
+                "key": "ROBOPARK-1",
+                "transition": "start",
+                "resolution": None,
+            },
+        ),
+    ]
+
+
+def test_start_keeps_existing_components(db_session, seed_mechanic, monkeypatch):
+    from robopark_api.services import tracker_outbox
+
+    action = _action(db_session, seed_mechanic, action="start")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_transitions",
+        lambda **_kwargs: [{"id": "start", "display": "В работу"}],
+    )
+    monkeypatch.setattr(
+        tracker_outbox,
+        "_set_issue_field",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("overwrote components")),
+    )
+    transitions = []
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "transition_issue",
+        lambda **kwargs: transitions.append(kwargs),
+    )
+
+    tracker_outbox._deliver_transition(
+        action,
+        token="bot-token",
+        issue={"key": "ROBOPARK-1", "status": "В очереди", "components": ["WHEELS"]},
+    )
+
+    assert len(transitions) == 1
+
+
+def test_start_does_not_transition_if_default_component_write_fails(
+    db_session, seed_mechanic, monkeypatch
+):
+    import pytest
+
+    from robopark_api.services import tracker_outbox
+
+    action = _action(db_session, seed_mechanic, action="start")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_transitions",
+        lambda **_kwargs: [{"id": "start", "display": "В работу"}],
+    )
+    monkeypatch.setattr(
+        tracker_outbox,
+        "_set_issue_field",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            tracker_outbox.tracker_client.TrackerError("request timeout")
+        ),
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "transition_issue",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("transition delivered")),
+    )
+
+    with pytest.raises(tracker_outbox.tracker_client.TrackerError, match="timeout"):
+        tracker_outbox._deliver_transition(
+            action,
+            token="bot-token",
+            issue={"key": "ROBOPARK-1", "status": "В очереди", "components": []},
+        )
+
+
 def test_worker_recognizes_return_transition_target_status_after_restart(
     db_engine, db_session, seed_mechanic, monkeypatch
 ):
