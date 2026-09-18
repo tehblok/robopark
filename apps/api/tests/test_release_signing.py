@@ -352,7 +352,7 @@ def test_pack_release_wrapper_propagates_reviewed_migration_metadata(
 
     assert packed.returncode == 0, packed.stderr
     meta = inspect_archive(output.read_bytes(), expected_kind=KIND_RELEASE, public_key=public)
-    assert meta.migration_head == "0029_campaign_snapshot"
+    assert meta.migration_head == "0030_user_activity"
     with zipfile.ZipFile(output) as archive:
         manifest = json.loads(archive.read("manifest.json"))
     assert manifest["migration_compatibility"] == {
@@ -363,6 +363,7 @@ def test_pack_release_wrapper_propagates_reviewed_migration_metadata(
             "0026_global_inventory_workflows",
             "0027_emergency_readings",
             "0028_reliable_task_workflow",
+            "0029_campaign_snapshot",
         ],
         "reversible": True,
     }

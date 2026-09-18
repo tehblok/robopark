@@ -1,8 +1,8 @@
 {
-  "migration_head": "0029_campaign_snapshot",
+  "migration_head": "0030_user_activity",
   "migration_compatibility": {
-    "from_heads": ["0022_tracker_collaboration", "0024_inventory", "0025_local_task_claims", "0026_global_inventory_workflows", "0027_emergency_readings", "0028_reliable_task_workflow"],
+    "from_heads": ["0022_tracker_collaboration", "0024_inventory", "0025_local_task_claims", "0026_global_inventory_workflows", "0027_emergency_readings", "0028_reliable_task_workflow", "0029_campaign_snapshot"],
     "reversible": true
   },
-  "update_notes": "Робопарк 0.1.40: royal может настраивать ошибки, игнорирование и показания; добавлены установка PWA из меню и более широкая мобильная компоновка. Схема БД не меняется."
+  "update_notes": "0.1.41: исправлены права на репорты, синхронизация закрытия задач с Трекером, камера, SLA и навигация механика; добавлены активность пользователей и кеширование переходов."
 }
