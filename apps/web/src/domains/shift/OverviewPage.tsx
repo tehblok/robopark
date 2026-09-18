@@ -65,7 +65,7 @@ function OverviewResource({ resourceKey, load, parkId, role, selectable, statusH
   onAuthorizationFailure: (error: unknown) => void
 }) {
   const resource = useCachedResource(resourceKey, load, { persist: false })
-  useLayoutEffect(() => () => resourceStore.invalidate(resourceKey), [resourceKey])
+  useLayoutEffect(() => () => resourceStore.cancelPending(resourceKey), [resourceKey])
   useEffect(() => { if (resource.error) onAuthorizationFailure(resource.error) }, [onAuthorizationFailure, resource.error])
   const data = resource.data?.park_id === parkId ? resource.data : undefined
   const failure = resource.error ? classifyApiError(resource.error, 'Не удалось загрузить обзор смены.') : null

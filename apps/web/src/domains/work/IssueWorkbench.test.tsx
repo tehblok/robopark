@@ -273,6 +273,11 @@ it('pins owned active tasks from an independent query and deduplicates the queue
   })
 
   expect(await screen.findByRole('heading', { name: 'Мои задачи в работе' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: /Мои задачи \(1\)/ }))
+  expect(screen.getAllByRole('article')).toHaveLength(1)
+  expect(screen.getByRole('button', { name: /Открыть задачу ROBOPARK-OWNED/ })).toBeVisible()
+  expect(screen.queryByRole('button', { name: /Открыть задачу ROBOPARK-QUEUE/ })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Очередь' }))
   const rows = screen.getAllByRole('article')
   expect(rows.map(row => row.textContent)).toEqual([
     expect.stringContaining('ROBOPARK-OWNED'),
@@ -676,14 +681,14 @@ describe('IssueWorkbench', () => {
     expect(await screen.findByRole('button', { name: 'Свернуть: Задача ROBOPARK-42' })).toBeVisible()
   })
 
-  it('never paints a released detail on a synchronous same-scope full remount', async () => {
+  it('paints settled same-scope detail immediately on route return', async () => {
     const client = apiClient()
     const first = renderWorkbench({ client })
     await screen.findByRole('heading', { name: issue.summary })
     vi.mocked(client.trackerIssue).mockImplementation(() => new Promise(() => undefined))
     first.unmount()
     renderWorkbench({ client })
-    expect(screen.queryByRole('heading', { name: issue.summary })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: issue.summary })).toBeInTheDocument()
   })
 
   it.each(['pending', 'cached'] as const)('releases %s first-A detail across A unmount, B unmount, A', async (mode) => {
@@ -1116,8 +1121,8 @@ describe('IssueWorkbench', () => {
     expect(trackerTransitions).not.toHaveBeenCalled()
   })
 
-  it('invalidates the owned list and selected issue resources after mutation', async () => {
-    const invalidate = vi.spyOn(resourceStore, 'invalidate')
+  it('refreshes the owned list and selected issue without clearing visible data', async () => {
+    const revalidate = vi.spyOn(resourceStore, 'revalidate')
     const clearAll = vi.spyOn(resourceStore, 'clearAll')
     const client = apiClient({ trackerIssue: vi.fn(async () => queuedWorkflowIssue), taskMessage: vi.fn(async () => taskMessageResult('Новая деталь')) })
     renderWorkbench({ client })
@@ -1129,14 +1134,14 @@ describe('IssueWorkbench', () => {
     fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
 
     await screen.findByText('Действие выполнено')
-    expect(invalidate).toHaveBeenCalledTimes(6)
-    expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}list:${park.id}:`, {
+    expect(revalidate).toHaveBeenCalledTimes(6)
+    expect(revalidate).toHaveBeenCalledWith(`${accessPrefix()}list:${park.id}:`, {
       prefix: true,
     })
-    expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}owned:${user.username}`)
-    expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}issue:${issue.key}`)
-    expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}comments:${issue.key}`)
-    expect(invalidate).toHaveBeenCalledWith(`${accessPrefix()}transitions:${issue.key}`)
+    expect(revalidate).toHaveBeenCalledWith(`${accessPrefix()}owned:${user.username}`)
+    expect(revalidate).toHaveBeenCalledWith(`${accessPrefix()}issue:${issue.key}`)
+    expect(revalidate).toHaveBeenCalledWith(`${accessPrefix()}comments:${issue.key}`)
+    expect(revalidate).toHaveBeenCalledWith(`${accessPrefix()}transitions:${issue.key}`)
     expect(clearAll).not.toHaveBeenCalled()
   })
 

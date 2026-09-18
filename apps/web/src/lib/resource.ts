@@ -93,6 +93,7 @@ class ResourceStore {
   private mem = new Map<string, StoredEntry>()
   private subs = new Map<string, Set<() => void>>()
   private refreshSubs = new Map<string, Set<() => void>>()
+  private activeScopes = new Map<string, string>()
 
   private remember(key: string, entry: StoredEntry): void {
     this.mem.delete(key)
@@ -174,6 +175,18 @@ class ResourceStore {
     for (const k of notified) this.notify(k)
   }
 
+  /** Retire unfinished requests on route exit but keep settled in-memory data. */
+  cancelPending(keyOrPrefix: string, { prefix = false }: { prefix?: boolean } = {}): void {
+    invalidatePendingLoads(keyOrPrefix, prefix)
+  }
+
+  /** Switching an authorization scope invalidates its previously cached data. */
+  activateScope(family: string, prefix: string): void {
+    const previous = this.activeScopes.get(family)
+    if (previous && previous !== prefix) this.invalidate(previous, { prefix: true })
+    this.activeScopes.set(family, prefix)
+  }
+
   /** Ask mounted consumers to reload in the background, retaining cached data. */
   revalidate(keyOrPrefix: string, { prefix = false }: { prefix?: boolean } = {}): void {
     for (const [key, listeners] of this.refreshSubs) {
@@ -185,6 +198,7 @@ class ResourceStore {
 
   clearAll(): void {
     invalidateAllPendingLoads()
+    this.activeScopes.clear()
     const keys = Array.from(this.subs.keys())
     this.mem.clear()
     removeFromStorageByPrefix('')

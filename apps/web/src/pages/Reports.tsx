@@ -74,7 +74,8 @@ function ReportsOwner({
   const [params, setParams] = useSearchParams()
   const createEnabled = canCreateReports(user)
   const inboxEnabled = hasInbox(user)
-  const inboxParkId = user.role === 'royal' ? undefined : parkId ?? undefined
+  const leader = user.role === 'royal' || user.role === 'admin'
+  const inboxParkId = leader ? undefined : parkId ?? undefined
   const listRoute = location.pathname === '/reports'
   const createRoute = location.pathname === '/reports/new'
   const parsedReportId = reportIdParam && /^\d+$/.test(reportIdParam)
@@ -105,7 +106,7 @@ function ReportsOwner({
   const inboxRes = useCachedResource<Report[]>(
     inboxKey,
     () => apiClient.reportsInbox(inboxParkId),
-    { enabled: (listRoute || detailRoute) && inboxEnabled && (user.role === 'royal' || parkId != null) && !parksLoading, persist: false, refreshIntervalMs: listRoute && visiblePane === 'inbox' ? RESOURCE_REFRESH_MS : 0 },
+    { enabled: (listRoute || detailRoute) && inboxEnabled && (leader || parkId != null) && !parksLoading, persist: false, refreshIntervalMs: listRoute && visiblePane === 'inbox' ? RESOURCE_REFRESH_MS : 0 },
   )
   const detailKey = `${resourcePrefix}detail:${parsedReportId ?? 'none'}`
   const detailRes = useCachedResource<Report>(
@@ -143,20 +144,17 @@ function ReportsOwner({
     return parks.find((park) => park.id === report.park_id)?.name ?? `Парк #${report.park_id}`
   }
   const refreshLists = useCallback(async () => {
-    for (const key of [mineKey, inboxKey]) {
-      const cached = resourceStore.get<Report[]>(key)
-      resourceStore.invalidate(key)
-      if (cached) resourceStore.set(key, cached, false)
-    }
+    resourceStore.cancelPending(mineKey)
+    resourceStore.cancelPending(inboxKey)
     await Promise.all([
       createEnabled ? mineRes.refresh() : Promise.resolve(),
-      inboxEnabled && (user.role === 'royal' || parkId != null) ? inboxRes.refresh() : Promise.resolve(),
+      inboxEnabled && (leader || parkId != null) ? inboxRes.refresh() : Promise.resolve(),
     ])
   }, [createEnabled, inboxEnabled, inboxKey, inboxRes, mineKey, mineRes, parkId, user.role])
   const handleDetailUpdated = async () => {
     const requestedNavigation = navigation.current
     const isCurrent = () => active.current && navigation.current === requestedNavigation
-    resourceStore.invalidate(detailKey)
+    resourceStore.cancelPending(detailKey)
     await detailRes.refresh()
     if (!isCurrent()) return
     await refreshLists()
@@ -166,7 +164,7 @@ function ReportsOwner({
     if (fresh && fresh.status !== 'open') closeDetail()
   }
   const handleCreated = () => {
-    resourceStore.invalidate(mineKey)
+    void refreshLists()
     refreshReportsBadge()
   }
   const handleDetailDeleted = () => {
@@ -189,11 +187,9 @@ function ReportsOwner({
   const detailLoading = detailRes.isLoading && !selectedReport && !detailError
   const role = user.role
   const isAdminInbox = role === 'admin' || role === 'royal'
-  const inboxTitle = isAdminInbox ? 'Эскалации' : 'Входящие'
-  const inboxHint = role === 'royal'
+  const inboxTitle = isAdminInbox ? 'Все репорты' : 'Входящие'
+  const inboxHint = isAdminInbox
     ? 'Все репорты и системные уведомления по доступным паркам.'
-    : isAdminInbox
-    ? 'Открытые эскалации от операторов. Фильтр по парку — в верхней панели.'
     : 'Открытые репорты по выбранному парку.'
   const currentSearch = searchString(params)
 
@@ -320,7 +316,7 @@ function ReportsOwner({
           ) : (
             <Panel collapsible hint={inboxHint} storageKey="reports-inbox" title={inboxTitle}>
               <ReportList
-                emptyMessage={role === 'royal' ? 'Репортов пока нет.' : 'Нет открытых репортов для выбранного парка.'}
+                emptyMessage={isAdminInbox ? 'Репортов пока нет.' : 'Нет открытых репортов для выбранного парка.'}
                 loading={showListSkeleton && visiblePane === 'inbox'}
                 onSelect={(report) => openReport(report, true)}
                 parkNameForReport={parkNameForReport}
@@ -367,7 +363,7 @@ export function Reports({ apiClient = api }: { apiClient?: ReportsApiClient } = 
   const { user } = useAuth()
   const { parkId, parks, parksLoading } = useParkContext()
   const selectedPark = parks.find((park) => park.id === parkId) ?? null
-  const identity = user ? reportsAccessIdentity(user, user.role === 'royal' ? null : selectedPark) : ''
+  const identity = user ? reportsAccessIdentity(user, user.role === 'royal' || user.role === 'admin' ? null : selectedPark) : ''
   const resourcePrefix = user ? `reports:${user.id}:${identity}:` : ''
   const draftKey = user && parkId != null ? reportDraftKey(user.id, parkId) : null
   const committed = useRef({ identity, resourcePrefix, draftKey })
@@ -394,7 +390,7 @@ export function Reports({ apiClient = api }: { apiClient?: ReportsApiClient } = 
 
   useLayoutEffect(() => () => {
     if (committed.current.resourcePrefix) {
-      resourceStore.invalidate(committed.current.resourcePrefix, { prefix: true })
+      resourceStore.cancelPending(committed.current.resourcePrefix, { prefix: true })
     }
   }, [])
 

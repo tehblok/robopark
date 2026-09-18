@@ -143,7 +143,7 @@ function AnalyticsOwner({ apiClient, parks, days, bucket, resourceKey, onAuthori
     } finally { activeLoads.current -= 1 }
   }, { persist: false, refreshIntervalMs: 120_000, staleTimeMs: 120_000 })
   // Retain settled history, but do not lend a retired owner's request to a remount.
-  useLayoutEffect(() => () => { if (activeLoads.current > 0) resourceStore.invalidate(resourceKey) }, [resourceKey])
+  useLayoutEffect(() => () => { if (activeLoads.current > 0) resourceStore.cancelPending(resourceKey) }, [resourceKey])
   const failure = useMemo(() => resource.error ? classifyApiError(resource.error, 'Не удалось загрузить историю процесса.') : null, [resource.error])
   useEffect(() => {
     if (failure?.kind === 'forbidden' || failure?.kind === 'unauthorized') onAuthorizationFailure(failure)

@@ -53,6 +53,15 @@ describe('resourceStore', () => {
     expect(resourceStore.get('now-report:all')).toEqual({ totals: { blocker: 3 } })
   })
 
+  it('keeps settled data on route exit but drops it when access scope changes', () => {
+    resourceStore.activateScope('work', 'work:7:access-a:')
+    resourceStore.set('work:7:access-a:list', { value: 'ready' }, false)
+    resourceStore.cancelPending('work:7:access-a:', { prefix: true })
+    expect(resourceStore.get('work:7:access-a:list')).toEqual({ value: 'ready' })
+    resourceStore.activateScope('work', 'work:7:access-b:')
+    expect(resourceStore.get('work:7:access-a:list')).toBeUndefined()
+  })
+
   it('releases old ticket responses during a long browser session', () => {
     for (let index = 0; index < 129; index += 1) {
       resourceStore.set(`tracker:issue:${index}`, { index }, false)

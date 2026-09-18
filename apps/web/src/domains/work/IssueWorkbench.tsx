@@ -456,6 +456,7 @@ function IssueWorkbenchOwner({
   const [taskControlBusy, setTaskControlBusy] = useState(false)
   const [taskControlMessage, setTaskControlMessage] = useState('')
   const [taskControlError, setTaskControlError] = useState('')
+  const [taskView, setTaskView] = useState<'queue' | 'mine'>('queue')
   const mutationKeys = useRef(new StableMutationKey())
 
   useLayoutEffect(() => () => { ++ownerGeneration.current }, [])
@@ -640,15 +641,19 @@ function IssueWorkbenchOwner({
   }
 
   const invalidateMutationResources = useCallback((refreshComments = true) => {
-    resourceStore.invalidate(`${accessPrefix}list:${selectedPark.id}:`, {
-      prefix: true,
-    })
-    resourceStore.invalidate(ownedKey)
+    resourceStore.cancelPending(`${accessPrefix}list:${selectedPark.id}:`, { prefix: true })
+    resourceStore.cancelPending(ownedKey)
+    resourceStore.revalidate(`${accessPrefix}list:${selectedPark.id}:`, { prefix: true })
+    resourceStore.revalidate(ownedKey)
     if (!issueKey) return
-    resourceStore.invalidate(detailKey)
-    if (refreshComments) resourceStore.invalidate(commentsKey)
-    resourceStore.invalidate(`${accessPrefix}transitions:${issueKey}`)
-    resourceStore.invalidate(`${accessPrefix}related:${issueKey}:`, { prefix: true })
+    resourceStore.cancelPending(detailKey)
+    if (refreshComments) resourceStore.cancelPending(commentsKey)
+    resourceStore.cancelPending(`${accessPrefix}transitions:${issueKey}`)
+    resourceStore.cancelPending(`${accessPrefix}related:${issueKey}:`, { prefix: true })
+    resourceStore.revalidate(detailKey)
+    if (refreshComments) resourceStore.revalidate(commentsKey)
+    resourceStore.revalidate(`${accessPrefix}transitions:${issueKey}`)
+    resourceStore.revalidate(`${accessPrefix}related:${issueKey}:`, { prefix: true })
     setRelatedRefreshGeneration((generation) => generation + 1)
     void Promise.allSettled([
       list.refresh(),
@@ -969,7 +974,11 @@ function IssueWorkbenchOwner({
           </div>}
           detailOpen={Boolean(issueKey)}
           list={<div className="rp-work-list-pane">
-            <h2>Очередь задач</h2>
+            <h2>{taskView === 'mine' && user.role === 'mechanic' ? 'Мои задачи' : 'Очередь задач'}</h2>
+            {user.role === 'mechanic' ? <div aria-label="Раздел задач" className="rp-work-view-switch">
+              <button aria-pressed={taskView === 'queue'} onClick={() => setTaskView('queue')} type="button">Очередь</button>
+              <button aria-pressed={taskView === 'mine'} onClick={() => setTaskView('mine')} type="button">Мои задачи ({ownedItems.length})</button>
+            </div> : null}
             <SyncStatus {...list} />
             <ResourceBoundary
               dataAvailable={list.data !== undefined}
@@ -978,6 +987,14 @@ function IssueWorkbenchOwner({
             >
               {list.isLoading && !list.data ? (
                 <LoadingState label="Загружаем очередь задач" />
+              ) : taskView === 'mine' && user.role === 'mechanic' ? (
+                owned.isLoading && !owned.data ? <LoadingState label="Загружаем мои задачи" /> :
+                ownedItems.length ? <div className="rp-work-list-scroll" ref={listScrollRef}>
+                  <h3>Мои задачи в работе</h3>
+                  <WorkIssueRows apiClient={apiClient} items={ownedItems}
+                    onClaimed={() => { void list.refresh(); void owned.refresh() }}
+                    onOpen={saveAndOpenIssue} selected={issueKey} now={now} user={user} />
+                </div> : <EmptyState description="Взятые вами задачи появятся здесь." icon="work" title="Моих задач пока нет" />
               ) : !listFailure && list.data?.items.length === 0 && ownedItems.length === 0 ? (
                 <EmptyState
                   description="Измените фильтры или проверьте выбранный парк."
@@ -1012,7 +1029,7 @@ function IssueWorkbenchOwner({
                 </div>
               ) : null}
 
-              {list.data ? (
+              {list.data && taskView === 'queue' ? (
                 <nav aria-label="Страницы задач" className="rp-work-pagination">
                   <Button
                     aria-label="Предыдущая страница"
@@ -1061,12 +1078,12 @@ export function IssueWorkbench({
   const committedAccessPrefix = useRef(accessPrefix)
   useLayoutEffect(() => {
     mounted.current = true
+    resourceStore.activateScope('work', accessPrefix)
     return () => {
       mounted.current = false
-      // Release synchronously: even an immediate new mount must not paint this
-      // owner's protected cache. StrictMode replay safely starts a fresh read.
+      // Retire in-flight reads, retaining completed same-access data for navigation.
       currentAccess.current.generation += 1
-      resourceStore.invalidate(committedAccessPrefix.current, { prefix: true })
+      resourceStore.cancelPending(committedAccessPrefix.current, { prefix: true })
     }
   }, [])
   useLayoutEffect(() => {
@@ -1078,6 +1095,7 @@ export function IssueWorkbench({
       // coalesce A's obsolete request. Mounted same-access navigation keeps cache.
       resourceStore.invalidate(committedAccessPrefix.current, { prefix: true })
       committedAccessPrefix.current = accessPrefix
+      resourceStore.activateScope('work', accessPrefix)
     }
   }, [accessKey, accessPrefix])
   const ownerKey = [

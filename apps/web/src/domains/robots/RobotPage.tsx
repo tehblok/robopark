@@ -31,7 +31,7 @@ function RelatedWorkOwner({ apiClient, user, reference, resourceKey, onAuthoriza
   const deniedRef = useRef<unknown>(null)
   useLayoutEffect(() => {
     generation.current += 1
-    return () => { generation.current += 1; resourceStore.invalidate(resourceKey) }
+    return () => { generation.current += 1; resourceStore.cancelPending(resourceKey) }
   }, [resourceKey])
   const allowed = (user.permissions ?? []).includes('tracker.read')
   const work = useCachedResource(resourceKey, async () => {
