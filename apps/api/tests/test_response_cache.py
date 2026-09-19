@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from robopark_api.services.live_merge import LiveMergeStore
 from robopark_api.services.response_cache import ResponseCache
 
 
@@ -23,6 +24,32 @@ def test_get_or_load_caches_first_result():
     assert first == {"n": 1}
     assert second == {"n": 1}
     assert calls == 1
+
+
+def test_shared_payload_transform_keeps_leader_value_and_projects_follower(tmp_path):
+    store = LiveMergeStore(tmp_path)
+    leader: ResponseCache[dict] = ResponseCache(
+        60,
+        name="projected",
+        shared=store,
+        shared_payload=lambda value: {"key": value["key"]},
+    )
+    follower: ResponseCache[dict] = ResponseCache(
+        60,
+        name="projected",
+        shared=store,
+        shared_payload=lambda value: {"key": value["key"]},
+    )
+    opaque = object()
+
+    leader_value = leader.get_or_load("key", lambda: {"key": "SD-1", "opaque": opaque})
+    follower_value = follower.get_or_load(
+        "key",
+        lambda: (_ for _ in ()).throw(AssertionError("shared cache missed")),
+    )
+
+    assert leader_value["opaque"] is opaque
+    assert follower_value == {"key": "SD-1"}
 
 
 def test_expired_entry_triggers_refetch():

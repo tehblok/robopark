@@ -24,7 +24,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from robopark_api.services.live_merge import LiveMergeStore, get_live_merge_store
 
@@ -51,6 +51,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         *,
         name: str = "cache",
         shared: LiveMergeStore | None | bool = True,
+        shared_payload: Callable[[T], Any] | None = None,
         max_entries: int = DEFAULT_MAX_ENTRIES,
         max_stale_seconds: float = DEFAULT_MAX_STALE_SECONDS,
     ) -> None:
@@ -70,6 +71,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         # True → look up the process-wide store each call (tests may disable it).
         # LiveMergeStore → always that store. False/None → in-process only.
         self._shared: LiveMergeStore | None | bool = shared
+        self._shared_payload = shared_payload
 
     @property
     def name(self) -> str:
@@ -186,7 +188,13 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         error: BaseException | None = None
         try:
             if merge is not None:
-                value = merge.merge_load(self._name, key, self._ttl, loader)
+                value = merge.merge_load(
+                    self._name,
+                    key,
+                    self._ttl,
+                    loader,
+                    shared_payload=self._shared_payload,
+                )
             else:
                 value = loader()
         except BaseException as exc:  # last-good or fan-out one shared error

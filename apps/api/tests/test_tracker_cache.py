@@ -28,6 +28,35 @@ def test_issue_cache_keeps_sdk_resource_without_json_serialization(monkeypatch, 
     assert tracker_cache.get_issue(token="t", key="SD-RESOURCE")["_tracker_resource"] is resource
 
 
+def test_issue_cache_shares_sanitized_payload_without_dropping_leader_resource(tmp_path):
+    store = LiveMergeStore(tmp_path)
+    leader = tracker_cache._TrackerCache(
+        60,
+        name="tracker.issue.test",
+        shared=store,
+        shared_payload=tracker_cache._shared_issue_payload,
+    )
+    follower = tracker_cache._TrackerCache(
+        60,
+        name="tracker.issue.test",
+        shared=store,
+        shared_payload=tracker_cache._shared_issue_payload,
+    )
+    resource = object()
+
+    leader_value = leader.get_or_load(
+        "SD-RESOURCE",
+        lambda: {"key": "SD-RESOURCE", "_tracker_resource": resource},
+    )
+    follower_value = follower.get_or_load(
+        "SD-RESOURCE",
+        lambda: (_ for _ in ()).throw(AssertionError("shared cache missed")),
+    )
+
+    assert leader_value["_tracker_resource"] is resource
+    assert follower_value == {"key": "SD-RESOURCE"}
+
+
 def test_search_issues_shares_upstream_call(monkeypatch):
     calls = 0
 

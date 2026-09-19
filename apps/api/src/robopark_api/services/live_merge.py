@@ -344,6 +344,7 @@ class LiveMergeStore:
         max_stale_seconds: float = 60.0,
         stale_if: Callable[[BaseException], bool] | None = None,
         on_stale: Callable[[], None] | None = None,
+        shared_payload: Callable[[T], Any] | None = None,
     ) -> T:
         from robopark_api.db import release_request_session
 
@@ -381,6 +382,7 @@ class LiveMergeStore:
 
         try:
             value = loader()
+            persisted_value = shared_payload(value) if shared_payload is not None else value
         except BaseException as exc:
             if not isinstance(exc, Exception):
                 with self._exclusive(namespace, key, timeout=self.waiter_timeout):
@@ -408,7 +410,7 @@ class LiveMergeStore:
             if is_current is not None and not is_current():
                 self._clear_inflight(namespace, key, claim)
                 return value
-            self._write_result(namespace, key, value)
+            self._write_result(namespace, key, persisted_value)
             self._clear_error(namespace, key)
             self._clear_inflight(namespace, key, claim)
         return value
