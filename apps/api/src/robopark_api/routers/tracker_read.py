@@ -222,6 +222,13 @@ def _detail_out(
     attachments = [TrackerAttachmentOut(**item) for item in (issue.get("attachments") or [])]
     claim = get_claim(db, str(issue.get("key") or ""))
     writable = can_write_tracker(db, user)
+    workflow = task_lifecycle.workflow(
+        db,
+        issue_key=str(issue.get("key") or ""),
+        viewer=user,
+        issue=issue,
+        include_hidden=include_hidden,
+    )
     return TrackerIssueDetailOut(
         **_issue_out(issue, db=db).model_dump(),
         resolution=str(issue.get("resolution") or ""),
@@ -232,19 +239,15 @@ def _detail_out(
         claim=TrackerIssueClaimOut(park_id=claim.park_id) if claim is not None else None,
         capabilities=TrackerIssueCapabilitiesOut(
             comment=writable,
-            assign=writable,
-            unassign=writable,
-            transition=writable,
-            close=writable,
+            assign=False,
+            unassign=False,
+            transition=False,
+            close=writable
+            and rbac.role_slug(user) in {RoleSlug.OPERATOR, RoleSlug.ADMIN, RoleSlug.ROYAL}
+            and workflow["review_state"] == "pending",
             attach=rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_ATTACH),
         ),
-        workflow=task_lifecycle.workflow(
-            db,
-            issue_key=str(issue.get("key") or ""),
-            viewer=user,
-            issue=issue,
-            include_hidden=include_hidden,
-        ),
+        workflow=workflow,
     )
 
 
