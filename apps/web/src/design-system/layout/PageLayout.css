@@ -75,7 +75,7 @@
   background: var(--rp-surface);
   border: 1px solid var(--rp-border);
   border-radius: var(--rp-radius-panel);
-  box-shadow: var(--rp-shadow-panel);
+  box-shadow: none;
   display: grid;
   gap: var(--rp-space-4);
   padding: var(--rp-density-panel-padding);

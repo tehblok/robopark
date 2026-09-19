@@ -13,8 +13,8 @@
   align-items: center;
   background: transparent;
   border: 0;
-  border-bottom: var(--rp-space-1) solid transparent;
-  border-radius: var(--rp-radius-control) var(--rp-radius-control) 0 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
   color: var(--rp-text-muted);
   cursor: pointer;
   display: inline-flex;
@@ -39,7 +39,7 @@
 }
 
 .rp-tabs__tab[aria-selected='true'] {
-  background: var(--rp-state-selected);
+  background: transparent;
   border-bottom-color: var(--rp-action);
   color: var(--rp-text);
   font-weight: var(--rp-font-weight-bold);

@@ -17,8 +17,9 @@
   --rp-space-4: 16px;
   --rp-space-6: 24px;
   --rp-space-8: 32px;
-  --rp-radius-control: 10px;
-  --rp-radius-panel: 16px;
+  --rp-radius-control: 8px;
+  --rp-radius-panel: 12px;
+  --rp-radius-card: 12px;
   --rp-motion-fast: 120ms;
   --rp-motion-normal: 180ms;
 }
@@ -47,10 +48,10 @@
 }
 
 :root[data-theme='light'] {
-  --rp-canvas: #f4f3ef;
+  --rp-canvas: #f6f7f8;
   --rp-surface: #ffffff;
   --rp-surface-elevated: #ffffff;
-  --rp-surface-sunken: #e9ecef;
+  --rp-surface-sunken: #f0f2f4;
   --rp-text: #171a1d;
   --rp-text-muted: #59636d;
   --rp-text-inverse: #ffffff;
