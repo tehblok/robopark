@@ -165,6 +165,8 @@ def _install_stubs():
     tracker_client.search_robot_tickets = lambda *, token, **kw: _stub("search_robot_tickets", **kw)
     tracker_client.fetch_park_blockers = lambda *, token, **kw: _stub("fetch_park_blockers", **kw)
     tracker_client.count_issues = lambda *, token, **kw: _stub("count_issues", **kw)
+    tracker_client.get_issue_status_history = lambda **_kw: []
+    tracker_client._load_work_status_history = lambda **_kw: []
     emergency_client.fetch_robot_payload = lambda *, cookie, **kw: _stub("emergency", **kw)
 
 

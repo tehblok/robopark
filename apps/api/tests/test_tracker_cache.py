@@ -1,5 +1,7 @@
 """Integration tests for the tracker_cache facade: wraps tracker_client with TTL + single-flight."""
 
+from types import SimpleNamespace
+
 from robopark_api.services import response_cache, tracker_cache, tracker_client
 from robopark_api.services.live_merge import LiveMergeStore
 
@@ -55,6 +57,68 @@ def test_issue_cache_shares_sanitized_payload_without_dropping_leader_resource(t
 
     assert leader_value["_tracker_resource"] is resource
     assert follower_value == {"key": "SD-RESOURCE"}
+
+
+def test_shared_issue_keeps_public_sla_equal_without_sdk_resource(monkeypatch, tmp_path):
+    history = [
+        {
+            "updatedAt": "2026-09-19T07:00:00Z",
+            "fields": [
+                {
+                    "field": {"id": "status"},
+                    "to": {"key": "queued", "display": "В очереди"},
+                }
+            ],
+        }
+    ]
+    resource = SimpleNamespace(changelog=SimpleNamespace(get_all=lambda: history))
+    monkeypatch.setattr(
+        tracker_client,
+        "_client",
+        lambda _token: SimpleNamespace(issues={"SD-RESOURCE": resource}),
+    )
+    monkeypatch.setattr(tracker_client, "_run_tracked", lambda operation, **_kwargs: operation())
+    store = LiveMergeStore(tmp_path)
+    leader = tracker_cache._TrackerCache(
+        60,
+        name="tracker.issue.sla",
+        shared=store,
+        shared_payload=tracker_cache._shared_issue_payload,
+    )
+    follower = tracker_cache._TrackerCache(
+        60,
+        name="tracker.issue.sla",
+        shared=store,
+        shared_payload=tracker_cache._shared_issue_payload,
+    )
+    leader_issue = leader.get_or_load(
+        "SD-RESOURCE",
+        lambda: {"key": "SD-RESOURCE", "_tracker_resource": resource},
+    )
+    follower_issue = follower.get_or_load(
+        "SD-RESOURCE",
+        lambda: (_ for _ in ()).throw(AssertionError("shared cache missed")),
+    )
+
+    leader_sla = tracker_client.repair_sla_fields(
+        leader_issue,
+        status_history=tracker_client.get_issue_status_history(
+            token="t", key="SD-RESOURCE", issue=leader_issue
+        ),
+    )
+    follower_sla = tracker_client.repair_sla_fields(
+        follower_issue,
+        status_history=tracker_client.get_issue_status_history(
+            token="t", key="SD-RESOURCE", issue=follower_issue
+        ),
+    )
+
+    assert follower_sla == leader_sla
+    assert follower_sla["queued_at"] == "2026-09-19T07:00:00Z"
+    assert (
+        tracker_client._load_work_status_history(token="t", key="SD-RESOURCE", issue=follower_issue)
+        == history
+    )
 
 
 def test_search_issues_shares_upstream_call(monkeypatch):

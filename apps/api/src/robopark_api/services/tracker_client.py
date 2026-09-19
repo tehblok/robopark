@@ -866,10 +866,11 @@ def get_issue(*, token: str, key: str) -> dict[str, Any] | None:
 
 def get_issue_status_history(*, token: str, key: str, issue: dict[str, Any]) -> list[Any]:
     resource = issue.get("_tracker_resource")
-    if resource is None:
-        return []
 
     def _run() -> list[Any]:
+        nonlocal resource
+        if resource is None:
+            resource = _client(token).issues[key]
         return list(resource.changelog.get_all())
 
     return _run_tracked(_run, max_attempts=1, call_timeout=10.0)
@@ -882,12 +883,11 @@ def _load_work_status_history(*, token: str, key: str, issue: dict[str, Any]) ->
     stuck read therefore occupies one of the two Work-history workers only;
     it cannot poison the general Tracker semaphore or grow its retry queue.
     """
-    del token, key
     resource = issue.get("_tracker_resource")
-    if resource is None:
-        return []
 
     try:
+        if resource is None:
+            resource = _client(token).issues[key]
         return list(resource.changelog.get_all())
     except TrackerError:
         raise
