@@ -19,7 +19,16 @@ def issue(key="ROBOPARK-1", status="new", age=12, login="operator.one"):
         "status": status,
         "status_key": status,
         "created": created,
-        "status_history": ([{"updatedAt": created, "fields": [{"field": {"id": "status"}, "to": {"key": "queued"}}]}] if status == "queued" else []),
+        "status_history": (
+            [
+                {
+                    "updatedAt": created,
+                    "fields": [{"field": {"id": "status"}, "to": {"key": "queued"}}],
+                }
+            ]
+            if status == "queued"
+            else []
+        ),
         "hours_created": str(age),
         "queue": "ROBOPARK",
         "tags": ["Alpha"],

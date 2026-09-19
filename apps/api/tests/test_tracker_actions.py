@@ -81,8 +81,13 @@ def test_mechanic_claims_locally_without_tracker_login_or_upstream_assignment(
     )
     login_as(client, "mech1", "secret")
 
-    assert client.post("/tracker/issues/ROBOPARK-9/assign", json={"assignee": "other"}).status_code == 409
-    ok = client.post("/tracker/issues/ROBOPARK-9/claim", headers={"Idempotency-Key": "claim-mech1-0001"})
+    assert (
+        client.post("/tracker/issues/ROBOPARK-9/assign", json={"assignee": "other"}).status_code
+        == 409
+    )
+    ok = client.post(
+        "/tracker/issues/ROBOPARK-9/claim", headers={"Idempotency-Key": "claim-mech1-0001"}
+    )
     assert ok.status_code == 200
     assert assigned == []
     assert comments == []  # Bot delivery is queued, not a synchronous side effect.
@@ -101,10 +106,19 @@ def test_legacy_assign_cannot_bypass_durable_workflow(
     from robopark_api.services.tracker_claims import get_claim
     from robopark_api.task_workflow_models import ReliableAction
 
-    issue = {"key": "ROBOPARK-legacy", "summary": "[447]", "status": "Open", "status_key": "open", "queue": "ROBOPARK", "tags": ["Alpha"]}
+    issue = {
+        "key": "ROBOPARK-legacy",
+        "summary": "[447]",
+        "status": "Open",
+        "status_key": "open",
+        "queue": "ROBOPARK",
+        "tags": ["Alpha"],
+    }
     monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: dict(issue))
     login_as(client, seed_mechanic.username, "secret")
-    response = client.post(f"/tracker/issues/{issue['key']}/assign", json={"assignee": seed_mechanic.username})
+    response = client.post(
+        f"/tracker/issues/{issue['key']}/assign", json={"assignee": seed_mechanic.username}
+    )
     assert response.status_code == 409
     assert get_claim(db_session, issue["key"]) is None
     assert db_session.scalars(select(ReliableAction)).all() == []

@@ -460,10 +460,13 @@ def test_assignments_are_local_and_staff_can_take_over(
     )
 
     login_as(client, seed_mechanic.username, "secret")
-    assert client.post(
-        "/tracker/issues/ROBOPARK-1/claim",
-        headers={"Idempotency-Key": "claim-local-0001"},
-    ).status_code == 200
+    assert (
+        client.post(
+            "/tracker/issues/ROBOPARK-1/claim",
+            headers={"Idempotency-Key": "claim-local-0001"},
+        ).status_code
+        == 200
+    )
     login_as(client, seed_royal.username, "secret")
     assert (
         client.post(

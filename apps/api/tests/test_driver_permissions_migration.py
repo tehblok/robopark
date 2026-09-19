@@ -63,8 +63,10 @@ def test_existing_driver_upgrade_preserves_user_denies_and_other_role_revokes(
             )
         )
         user_id = db.execute(
-            text("INSERT INTO users (username, password_hash, role_id, access_status, must_change_password, is_active) "
-                 "VALUES ('driver-denied', 'unused', :role_id, 'approved', 0, 1)"),
+            text(
+                "INSERT INTO users (username, password_hash, role_id, access_status, must_change_password, is_active) "
+                "VALUES ('driver-denied', 'unused', :role_id, 'approved', 0, 1)"
+            ),
             {"role_id": driver.id},
         ).lastrowid
         db.add(

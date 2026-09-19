@@ -104,7 +104,9 @@ def test_external_tracker_close_finishes_local_review_and_claim_once(
     from robopark_api.services import tracker_cache, tracker_client
 
     monkeypatch.setattr(
-        tracker_client, "get_issue", lambda **_kwargs: {**_issue(), "status": "Закрыта", "status_key": "closed"}
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {**_issue(), "status": "Закрыта", "status_key": "closed"},
     )
     tracker_cache.invalidate_issue(ISSUE_KEY)
     login_as(client, operator.username, "secret")
@@ -116,7 +118,12 @@ def test_external_tracker_close_finishes_local_review_and_claim_once(
     assert second.json()["workflow"]["display_status"] == "closed"
     assert db_session.query(TaskReview).one().state == "closed"
     assert db_session.query(TrackerClaim).count() == 0
-    assert db_session.query(TaskMessage).filter(TaskMessage.external_id == "tracker-external-close").count() == 1
+    assert (
+        db_session.query(TaskMessage)
+        .filter(TaskMessage.external_id == "tracker-external-close")
+        .count()
+        == 1
+    )
 
 
 def test_claim_is_atomic_idempotent_and_never_calls_tracker_mutations(

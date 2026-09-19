@@ -80,7 +80,11 @@ def require_user(
     lookup_ip = user_activity.record_activity(
         db, user, ip=client_ip(request), user_agent=request.headers.get("user-agent")
     )
-    if user.last_seen_at != prior_activity or user.last_ip != prior_ip or user.last_device != prior_device:
+    if (
+        user.last_seen_at != prior_activity
+        or user.last_ip != prior_ip
+        or user.last_device != prior_device
+    ):
         db.commit()
     if lookup_ip:
         background_tasks.add_task(ip_location.resolve_for_user, user.id, lookup_ip)

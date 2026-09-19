@@ -346,9 +346,7 @@ def repair_sla_fields(
 ) -> dict[str, str | None]:
     """Derive the five-working-hour repair SLA from an actual queued transition."""
     if status_history is None and (
-        issue.get("sla_source") == "status_history"
-        if isinstance(issue, dict)
-        else False
+        issue.get("sla_source") == "status_history" if isinstance(issue, dict) else False
     ):
         return {
             "queued_at": issue.get("queued_at"),

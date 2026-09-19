@@ -40,7 +40,8 @@ def _reserve_lookup() -> bool:
     today = now.date().isoformat()
     with SessionLocal() as db:
         updated = db.execute(
-            update(IpGeoQuota).where(IpGeoQuota.day == today, IpGeoQuota.count < LOOKUPS_PER_DAY)
+            update(IpGeoQuota)
+            .where(IpGeoQuota.day == today, IpGeoQuota.count < LOOKUPS_PER_DAY)
             .values(count=IpGeoQuota.count + 1)
         )
         if updated.rowcount:
@@ -50,7 +51,11 @@ def _reserve_lookup() -> bool:
             return False
         try:
             db.add(IpGeoQuota(day=today, count=1))
-            db.execute(delete(IpGeoQuota).where(IpGeoQuota.day < (now.date() - timedelta(days=7)).isoformat()))
+            db.execute(
+                delete(IpGeoQuota).where(
+                    IpGeoQuota.day < (now.date() - timedelta(days=7)).isoformat()
+                )
+            )
             db.execute(delete(IpGeoCache).where(IpGeoCache.expires_at < now))
             db.commit()
             return True

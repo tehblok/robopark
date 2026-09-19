@@ -21,7 +21,10 @@ def test_issue_cache_keeps_sdk_resource_without_json_serialization(monkeypatch, 
         lambda **_kwargs: {"key": "SD-RESOURCE", "_tracker_resource": resource},
     )
 
-    assert tracker_cache.search_issues(token="t", query="resource-test")[0]["_tracker_resource"] is resource
+    assert (
+        tracker_cache.search_issues(token="t", query="resource-test")[0]["_tracker_resource"]
+        is resource
+    )
     assert tracker_cache.get_issue(token="t", key="SD-RESOURCE")["_tracker_resource"] is resource
 
 

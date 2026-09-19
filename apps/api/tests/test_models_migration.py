@@ -155,9 +155,12 @@ def test_campaign_snapshot_upgrade_preserves_legacy_selection_and_indexes(
                 "VALUES (1, 'TEST-1', 1, 'Replace wrap', 'Open', 1)"
             )
         )
-        assert connection.execute(
-            text("SELECT issue_key FROM campaign_snapshot_tickets WHERE campaign_id = 1")
-        ).scalar_one() == "TEST-1"
+        assert (
+            connection.execute(
+                text("SELECT issue_key FROM campaign_snapshot_tickets WHERE campaign_id = 1")
+            ).scalar_one()
+            == "TEST-1"
+        )
         assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
 
     inspector = inspect(engine)
@@ -178,7 +181,10 @@ def test_campaign_snapshot_upgrade_preserves_legacy_selection_and_indexes(
     command.downgrade(config, "0028_reliable_task_workflow")
     assert "campaign_snapshot_tickets" not in inspect(engine).get_table_names()
     with engine.connect() as connection:
-        assert connection.execute(text("SELECT tracker_tag FROM campaigns WHERE id = 1")).scalar_one() == "legacy-tag"
+        assert (
+            connection.execute(text("SELECT tracker_tag FROM campaigns WHERE id = 1")).scalar_one()
+            == "legacy-tag"
+        )
 
 
 def test_reliable_workflow_upgrade_and_downgrade_preserve_legacy_submissions(

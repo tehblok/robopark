@@ -20,8 +20,10 @@ from robopark_api.services.rbac_seed import ensure_rbac_catalog
 
 API_DIR = Path(__file__).parents[1]
 LEGACY_USER_COLUMNS = (
-    defer(User.last_seen_at), defer(User.last_ip),
-    defer(User.last_device), defer(User.last_location),
+    defer(User.last_seen_at),
+    defer(User.last_ip),
+    defer(User.last_device),
+    defer(User.last_location),
 )
 
 
