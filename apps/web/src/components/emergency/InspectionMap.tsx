@@ -50,8 +50,11 @@ export function InspectionMap({
   useEffect(() => {
     if (!rootRef.current || mapRef.current) return
     const map = L.map(rootRef.current, { zoomControl: true }).setView([55.75, 37.62], 16)
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap',
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      // OSM requires a Referer. Send only the site origin, never a robot VIN
+      // or task/query parameters; keep the site's global policy unchanged.
+      referrerPolicy: 'strict-origin',
     }).addTo(map)
     map.on('dragstart', () => onUserPanRef.current())
     map.on('zoomstart', () => {

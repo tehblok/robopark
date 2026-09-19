@@ -35,6 +35,8 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.rp-management small { font-size:var(--rp-font-size-body); }
+
 .rp-management-nav {
   display: flex;
   flex-wrap: wrap;

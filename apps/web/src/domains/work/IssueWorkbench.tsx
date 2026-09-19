@@ -775,7 +775,7 @@ function IssueWorkbenchOwner({
   }
 
   return (
-    <div className="rp-work-domain">
+    <div className="rp-work-domain" data-has-detail={Boolean(issueKey)}>
       <WorkFilters
         driver={user.role === 'driver'}
         key={buildWorkSearch(state, null)}
@@ -813,9 +813,11 @@ function IssueWorkbenchOwner({
                 ) : (
                   <>
                     {detail.data ? <>
+                      {state.rootIssue && state.rootIssue !== issueKey ? (
                       <nav className="rp-work-origin" aria-label="Возврат к главному блокеру">
                         <Link to={rootHref}>К главному блокеру {rootIssue}</Link>
                       </nav>
+                      ) : null}
                       <Tabs ariaLabel="Разделы задачи" value={activeTab}
                         items={[
                           { id: 'task', label: 'Задача' },

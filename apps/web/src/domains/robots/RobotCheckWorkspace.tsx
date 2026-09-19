@@ -122,6 +122,9 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
   }
   const section = details[tab.id]
   const sectionError = errors[tab.id]
+  const sectionReadings = tab.kind === 'section' ? snapshot?.readings?.filter(reading => reading.section_id === tab.id) ?? [] : []
+  const hasSectionReadings = sectionReadings.length > 0
+  const diagnosticBlocks = tab.kind === 'section' ? sections.filter(block => block.id === tab.id) : sections
   const identity = <div className="rp-check-first-level">
       {snapshot ? renderSummary ? renderSummary(snapshot, snapshotError, refresh) : <RobotCheckSummary snapshot={snapshot} online={online} failed={Boolean(snapshotError)} pending={pending} onRefresh={refresh} onShowDiagnostic={() => { showLeadingError(); onTabChange('scheme') }} />
         : <section className="rp-check-summary" aria-busy={pending}>
@@ -131,7 +134,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
         </section>}
       {snapshotError && (!renderSummary || !snapshot) ? <div className="rp-check-warning"><CheckError failure={snapshotError} user={user} onRetry={refresh} />{snapshot ? <p>Показаны последние полученные данные.</p> : null}
         {snapshotError.kind === 'not-found' ? <Link to="/robots">К поиску роботов</Link> : null}</div> : null}
-      {snapshot ? <RobotDiagnosticDiagram faults={snapshot.wheels_fault} events={events} readings={snapshot.readings ?? []} blocks={sections} selectedBlockId={diagnosticSelection.blockId} view={diagnosticSelection.view} selectedEventId={diagnosticSelection.eventId} detailHost={tab.kind === 'scheme' ? schemeHost : null}
+      {snapshot ? <RobotDiagnosticDiagram faults={snapshot.wheels_fault} events={events} readings={snapshot.readings ?? []} blocks={diagnosticBlocks} selectedBlockId={tab.kind === 'section' ? tab.id : diagnosticSelection.blockId} view={diagnosticSelection.view} selectedEventId={diagnosticSelection.eventId} detailHost={tab.kind === 'scheme' || hasSectionReadings ? schemeHost : null}
         onSelectEvent={event => { manualEventId.current = event.id; setDiagnosticSelection(current => ({ ...current, eventId: event.id })) }}
         onBlockChange={blockId => { manualBlock.current = true; setDiagnosticSelection(current => ({ ...current, blockId })) }}
         onShowError={showLeadingError} onRevealEvent={showEvent} onOpenErrors={() => onTabChange('errors')} /> : null}
@@ -162,9 +165,13 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
         </dl> : null}
         {tab.kind === 'scheme' ? snapshot ? <div ref={setSchemeHost} className="rp-check-scheme-host" /> : <EmptyState title="Данные диагностики не получены" /> : null}
         {tab.kind === 'section' ? <>
+          {hasSectionReadings ? <div ref={setSchemeHost} className="rp-check-scheme-host" />
+            : snapshot ? <p role="status">Настроенные показания для раздела недоступны.</p> : null}
           {sectionError ? <CheckError failure={sectionError} user={user} onRetry={refresh} /> : null}
-          {section ? section.fields.length ? section.fields.map((field, index) => <div className="rp-check-field" key={`${field.label}-${index}`}><h3>{field.label}</h3><pre className="rp-check-field-lines">{field.lines.length ? field.lines.join('\n') : 'Нет данных'}</pre></div>) : <EmptyState title="В разделе пока нет данных" />
-            : !sectionError ? online ? <LoadingState label="Загружаем раздел" /> : <EmptyState title="Раздел ещё не загружен" /> : null}
+          <details className="rp-check-supplementary"><summary>Технические данные</summary>
+            {section ? section.fields.length ? section.fields.map((field, index) => <div className="rp-check-field" key={`${field.label}-${index}`}><h3>{field.label}</h3><pre className="rp-check-field-lines">{field.lines.length ? field.lines.join('\n') : 'Нет данных'}</pre></div>) : <EmptyState title="В разделе пока нет данных" />
+              : !sectionError ? online ? <LoadingState label="Загружаем раздел" /> : <EmptyState title="Раздел ещё не загружен" /> : null}
+          </details>
         </> : null}
       </section>
     </div>

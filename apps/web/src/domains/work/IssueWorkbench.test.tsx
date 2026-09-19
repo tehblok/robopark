@@ -762,6 +762,23 @@ describe('IssueWorkbench', () => {
     expect(document.querySelector('.robot-check')).toBeNull()
   })
 
+  it('marks selected-task mode and omits an origin link back to the same task', async () => {
+    renderWorkbench()
+
+    await screen.findByRole('heading', { name: issue.summary })
+    expect(document.querySelector('.rp-work-domain')).toHaveAttribute('data-has-detail', 'true')
+    expect(screen.queryByRole('navigation', { name: 'Возврат к главному блокеру' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the origin link when a related task differs from its main blocker', async () => {
+    renderWorkbench({ currentState: { ...state, rootIssue: 'ROBOPARK-1' } })
+
+    await screen.findByRole('heading', { name: issue.summary })
+    expect(screen.getByRole('link', { name: 'К главному блокеру ROBOPARK-1' })).toHaveAttribute(
+      'href', expect.stringContaining('/work/ROBOPARK-1'),
+    )
+  })
+
   it('loads repairs without carrying the main blocker status, assignee or age restrictions', async () => {
     const client = apiClient()
     renderWorkbench({ client, currentState: {

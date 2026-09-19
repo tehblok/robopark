@@ -107,7 +107,7 @@ function routeReadyMarker(page: Page, routeId: AppRouteId) {
     case 'admin-settings': return page.getByText('Tracker OAuth', { exact: true })
     case 'admin-users': return page.getByRole('button', { name: 'Открыть аккаунт route-admin', exact: true })
     case 'admin-roles': return page.getByText('Механик', { exact: true })
-    case 'admin-tracker': return page.getByRole('button', { name: 'Настроить политику Tracker', exact: true })
+    case 'admin-tracker': return page.locator('.rp-work-entities').first()
     case 'admin-robot-check': return page.getByRole('button', { name: 'Открыть раздел Колёса', exact: true })
     default: return page.locator('main')
   }

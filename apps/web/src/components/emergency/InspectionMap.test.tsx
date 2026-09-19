@@ -26,7 +26,7 @@ it('changes resolved theme on the same map and preserves provider attribution an
   fireEvent.click(screen.getByRole('button', { name: 'light' }))
   expect(view.container.querySelector('.inspection-map')).toHaveAttribute('data-map-theme', 'light')
   expect(mocks.create).toHaveBeenCalledTimes(1)
-  expect(mocks.tiles).toHaveBeenCalledWith('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', expect.objectContaining({ attribution: expect.stringContaining('OpenStreetMap') }))
+  expect(mocks.tiles).toHaveBeenCalledWith('https://tile.openstreetmap.org/{z}/{x}/{y}.png', expect.objectContaining({ attribution: expect.stringContaining('OpenStreetMap'), referrerPolicy: 'strict-origin' }))
   const drag = mocks.map.on.mock.calls.find(call => call[0] === 'dragstart')![1]; drag(); expect(pan).toHaveBeenCalledOnce()
   view.rerender(tree(56, false, pan)); expect(mocks.map.panTo).not.toHaveBeenCalled()
 })

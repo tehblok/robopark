@@ -176,14 +176,16 @@ function AnalyticsSession({ apiClient, user }: { apiClient: AnalyticsApiClient; 
   const refreshStarted = useRef(new Set<string>())
   const contextFailure = authorizationFailure?.failure.kind === 'unauthorized' || authorizationFailure?.context === identity ? authorizationFailure?.failure : null
   const onAuthorizationFailure = useCallback((failure: DomainError) => {
-    resourceStore.invalidate(`analytics:${user.id}:`, { prefix: true })
     setAuthorizationFailure({ context: identity, failure })
     const refreshKey = failure.kind === 'unauthorized' ? 'session' : identity
     if (!refreshStarted.current.has(refreshKey)) {
       refreshStarted.current.add(refreshKey)
       void refreshUser().catch(() => undefined)
     }
-  }, [identity, refreshUser, user.id, setAuthorizationFailure])
+  }, [identity, refreshUser, setAuthorizationFailure])
+  useEffect(() => {
+    if (authorizationFailure) resourceStore.invalidate(`analytics:${user.id}:`, { prefix: true })
+  }, [authorizationFailure, user.id])
   const update = (next: AnalyticsQuery) => setParams(analyticsSearch(params, next), { replace: true })
   const canRead = user.access_status === 'approved' && !user.must_change_password && ['nav.analytics', 'tracker.read'].every(permission => user.permissions?.includes(permission))
   return <PageLayout title="Аналитика" description="Как меняется процесс и на каких этапах накапливается задержка.">

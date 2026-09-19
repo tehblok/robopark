@@ -173,19 +173,25 @@ it('reuses fresh history on remount and refreshes stale history on focus', async
 it.each([401, 403])('clears cached history after automatic %s revalidation and halts retries', async status => {
   const user = makeUser()
   const refreshUser = vi.fn(async () => user)
-  const client = { analytics: vi.fn().mockResolvedValueOnce(fixture()).mockRejectedValue(new ApiError(status)) }
+  const denied = deferred<ReturnType<typeof fixture>>()
+  const client = { analytics: vi.fn().mockResolvedValueOnce(fixture()).mockImplementationOnce(() => denied.promise).mockRejectedValue(new ApiError(status)) }
   render(tree({ client, user, refreshUser }))
   await screen.findByRole('region', { name: 'История парка Север' })
   vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
   fireEvent.focus(window)
+  await waitFor(() => expect(client.analytics).toHaveBeenCalledTimes(2))
+  await act(async () => {
+    denied.reject(new ApiError(status))
+    await denied.promise.catch(() => undefined)
+    fireEvent.focus(window)
+    fireEvent(window, new Event('online'))
+  })
   await screen.findByRole(
     'heading',
     { name: status === 401 ? 'Сессия истекла' : 'Нет доступа' },
     { timeout: 3_000 },
   )
   expect(screen.queryByRole('region', { name: 'История парка Север' })).not.toBeInTheDocument()
-  fireEvent.focus(window)
-  fireEvent(window, new Event('online'))
   expect(client.analytics).toHaveBeenCalledTimes(2)
   expect(refreshUser).toHaveBeenCalledTimes(1)
 })

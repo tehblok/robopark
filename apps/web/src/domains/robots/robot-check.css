@@ -1,6 +1,6 @@
 .rp-check-workspace {
   display: grid;
-  gap: var(--rp-space-6);
+  gap: var(--rp-space-4);
   min-width: 0;
   max-width: 1440px;
   margin-inline: auto;
@@ -19,15 +19,20 @@
   box-shadow: var(--rp-shadow-panel);
   overflow-wrap: anywhere;
 }
-.rp-check-summary { display: grid; justify-items: start; gap: var(--rp-space-2); padding: var(--rp-space-3); }
+.rp-page-layout:has(> .rp-page-layout__content > .rp-check-backlinks) { gap: var(--rp-space-3); }
+.rp-check-summary { display: grid; justify-items: start; gap: var(--rp-space-1); padding: var(--rp-space-2); }
 .rp-check-summary h2, .rp-check-summary p { margin: 0; }
-.rp-check-summary-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--rp-space-2); width: 100%; margin: 0; }
-.rp-check-summary-values > div { min-width: 0; padding: var(--rp-space-2); border-radius: var(--rp-radius-control); background: var(--rp-surface-sunken); }
+.rp-check-summary-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--rp-space-1) var(--rp-space-2); width: 100%; }
+.rp-check-summary-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--rp-space-1); width: 100%; margin: 0; }
+.rp-check-summary-values > div { min-width: 0; padding: var(--rp-space-1) var(--rp-space-2); border-radius: var(--rp-radius-control); background: var(--rp-surface-sunken); }
 .rp-check-summary-values dt { color: var(--rp-text-muted); font-size: var(--rp-font-size-body); }
 .rp-check-summary-values dd { margin: var(--rp-space-1) 0 0; font-weight: var(--rp-font-weight-medium); overflow-wrap: anywhere; }
 .rp-check-summary-values > div:last-child { grid-column: 1 / -1; }
-.rp-check-connection-card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--rp-space-3); }
-.rp-check-connection-card dt, .rp-check-connection-card dd:first-of-type { grid-column: 1 / -1; }
+.rp-check-connection-card { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--rp-space-1) var(--rp-space-2); }
+.rp-check-connection-card > dd:first-of-type { justify-self: end; margin-block-start: 0; }
+.rp-check-connection-values { grid-column: 1 / -1; margin-block-start: 0 !important; }
+.rp-check-connection-values ul { display: grid; grid-template-columns: minmax(0, 1.5fr) repeat(2, minmax(0, .75fr)); gap: var(--rp-space-2); list-style: none; margin: 0; padding: 0; font-weight: var(--rp-font-weight-regular); }
+.rp-check-connection-values li { min-width: 0; overflow-wrap: anywhere; }
 .rp-check-vin { font-family: var(--rp-font-mono); overflow-wrap: anywhere; }
 .rp-check-summary time { color: var(--rp-text-muted); }
 .rp-check-charge { font-weight: var(--rp-font-weight-medium); }
@@ -59,7 +64,7 @@
 .rp-check-tabs [aria-selected='true'] { background: var(--rp-state-selected); border-color: var(--rp-action); }
 .rp-check-tabs button:focus-visible, .rp-check-more button:focus-visible { outline: 3px solid var(--rp-focus); outline-offset: 2px; }
 .rp-check-panel { margin-block-start: var(--rp-space-2); }
-.rp-check-backlinks { display: flex; flex-wrap: wrap; gap: var(--rp-space-4); margin-block-end: var(--rp-space-4); }
+.rp-check-backlinks { display: flex; flex-wrap: wrap; gap: var(--rp-space-2); margin-block-end: 0; }
 .rp-check-backlinks a { display: inline-flex; align-items: center; min-height: 44px; color: var(--rp-info); }
 .rp-check-field-lines { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--rp-font-mono); margin: 0; }
 .rp-check-field { padding-block: var(--rp-space-3); border-bottom: 1px solid var(--rp-divider); }
@@ -193,7 +198,8 @@
   .rp-check-diagnostic-details { margin-block: var(--rp-space-4); }
 }
 @media (max-width: 599px) {
-  .rp-check-overlay-frame { min-height: 20rem; padding: var(--rp-space-3); }
+  .rp-check-overlay-frame { min-height: 18rem; padding: var(--rp-space-2); }
+  .rp-check-photo-frame { width: min(74vw, 280px); }
   .rp-check-summary-values { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (prefers-reduced-motion: reduce) {

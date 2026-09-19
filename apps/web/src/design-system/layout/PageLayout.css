@@ -59,6 +59,18 @@
   gap: var(--rp-density-gap);
 }
 
+/* Run only when a page mounts, not when its live data refreshes. */
+@media (prefers-reduced-motion: no-preference) {
+  .rp-page-layout__content {
+    animation: rp-content-enter var(--rp-motion-fast) ease-out;
+  }
+}
+
+@keyframes rp-content-enter {
+  from { opacity: .92; }
+  to { opacity: 1; }
+}
+
 .rp-panel {
   background: var(--rp-surface);
   border: 1px solid var(--rp-border);

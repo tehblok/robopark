@@ -34,7 +34,10 @@ function renderPage(dashboardSummary = vi.fn(async () => summary), currentUser =
           parkId: 7, selectedPark: park, parks: [park], loading: false, locked: false,
           allowAllParks: false, setParkId: vi.fn(), refreshParks: vi.fn(),
         }}>
-          <Routes><Route path="/work" element={<WorkPage apiClient={apiClient} />} /></Routes>
+          <Routes>
+            <Route path="/work" element={<WorkPage apiClient={apiClient} />} />
+            <Route path="/work/:issueKey" element={<WorkPage apiClient={apiClient} />} />
+          </Routes>
           <Location />
         </ParkScopeContext.Provider>
       </AuthContext.Provider>
@@ -44,6 +47,12 @@ function renderPage(dashboardSummary = vi.fn(async () => summary), currentUser =
 }
 
 describe('WorkPage operations summary', () => {
+  it('marks a selected task so its mobile layout can lead with task content', () => {
+    renderPage(undefined, user, '/work/ROBOPARK-42?park=7')
+
+    expect(document.querySelector('.rp-page-layout')).toHaveClass('rp-work-page--detail')
+  })
+
   it('does not request dashboard data while the compact summary is collapsed', async () => {
     const { dashboardSummary } = renderPage()
     expect(await screen.findByRole('heading', { name: 'Работа' })).toBeVisible()

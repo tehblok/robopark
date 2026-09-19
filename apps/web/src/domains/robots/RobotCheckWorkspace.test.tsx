@@ -91,6 +91,30 @@ it('renders the five decision values independently, including zero and a disconn
   expect(summary).toHaveTextContent('SIM 1: 7000')
   expect(summary).toHaveTextContent('SIM 2: 8400')
 })
+it('renders only the active section mapped readings and keeps raw fields collapsed', async () => {
+  render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({ readings: [
+    { id: 1, section_id: 'wheels', label: 'Ток колеса', display: '4 А', state: 'normal', view: 'front', x: .3, y: .6, label_direction: 'left' },
+    { id: 2, section_id: 'power', label: 'Температура АКБ', display: '92 °C', state: 'critical', view: 'rear', x: .5, y: .5, label_direction: 'right' },
+  ] })) })))
+
+  const panel = await screen.findByRole('tabpanel', { name: 'Колёса' })
+  expect(within(panel).getByRole('region', { name: 'Диагностический блок «Колёса»' })).toHaveTextContent('Ток колеса4 А')
+  expect(within(panel).queryByText('Температура АКБ')).not.toBeInTheDocument()
+  expect(within(panel).getByRole('img', { name: /вид спереди/ })).toBeInTheDocument()
+  const technical = within(panel).getByText('Технические данные').closest('details')!
+  expect(technical).not.toHaveAttribute('open')
+  expect(within(technical).getByText('Секция получена')).not.toBeVisible()
+  fireEvent.click(within(technical).getByText('Технические данные'))
+  expect(within(technical).getByText('Секция получена')).toBeVisible()
+})
+it('states that mapping is unavailable while retaining raw section data', async () => {
+  render(tree(client()))
+
+  const panel = await screen.findByRole('tabpanel', { name: 'Колёса' })
+  expect(within(panel).getByRole('status')).toHaveTextContent('Настроенные показания для раздела недоступны')
+  const technical = within(panel).getByText('Технические данные').closest('details')!
+  expect(within(technical).getByText('Секция получена')).toBeInTheDocument()
+})
 it('uses explicit stale age from the API instead of certifying a last-good snapshot', async () => {
   render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({
     stale: true,

@@ -263,7 +263,18 @@ button.rp-shell__more-link {
 .rp-shell__content {
   min-width: 0;
   overflow: visible;
-  padding: var(--rp-density-panel-padding);
+  padding: var(--rp-space-4) var(--rp-space-6);
+}
+
+/* One owner for page gutters: legacy and new layouts share the same edge. */
+.rp-shell__content > :is(.rp-page-layout, .page-content, .rp-management, .rp-reports) {
+  width: 100%;
+  max-width: 1440px;
+  margin-inline: auto;
+}
+
+.rp-shell__content > .rp-page-layout {
+  padding: 0;
 }
 
 .rp-shell__content :where(h1, button, a, input, select, textarea) {
@@ -460,11 +471,12 @@ button.rp-shell__more-link {
 
 @media (max-width: 599px) {
   .rp-shell__content {
-    padding-inline: 0;
+    padding-inline: calc(var(--rp-space-3) + env(safe-area-inset-left))
+      calc(var(--rp-space-3) + env(safe-area-inset-right));
   }
 
   .rp-shell__content > :is(.page-content, .rp-management) {
-    padding-inline: var(--rp-space-3);
+    padding-inline: 0;
   }
 
   .rp-shell__topbar-actions {

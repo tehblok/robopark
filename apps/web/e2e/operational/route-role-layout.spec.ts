@@ -65,21 +65,10 @@ test('route fixtures prove loaded operator, campaign, report-detail and administ
   await expect(page.getByText('Робот требует осмотра.', { exact: true })).toBeVisible()
 
   for (const routeId of ['admin-settings', 'admin-users', 'admin-roles', 'admin-tracker', 'admin-robot-check'] as const) {
+    await openRouteFixture(page, routeId, userForRole('royal'))
     if (routeId === 'admin-tracker') {
-      let releasePolicy!: () => void
-      const policyGate = new Promise<void>((resolve) => { releasePolicy = resolve })
-      const trackerReady = openRouteFixture(page, routeId, userForRole('royal'), {
-        routes: [{ method: 'GET', path: '/api/admin/settings/tracker-policy', handler: async () => {
-          await policyGate
-          return { json: { operator_show_untagged: true, operator_show_raw: false, operator_show_firmware_profile: false, mechanic_can_write: true } }
-        } }],
-      })
-      await expect(page.getByRole('heading', { name: 'Рабочий стол Startrek', exact: true, level: 1 })).toBeVisible()
-      expect(await Promise.race([trackerReady.then(() => true), new Promise<false>((resolve) => setTimeout(() => resolve(false), 250))])).toBe(false)
-      releasePolicy()
-      await trackerReady
-    } else {
-      await openRouteFixture(page, routeId, userForRole('royal'))
+      await expect(page).toHaveURL(/\/work\?/)
+      await expect(page.getByRole('heading', { name: 'Рабочий стол Startrek', exact: true })).toHaveCount(0)
     }
     const marker = routeId === 'admin-settings'
       ? page.getByText('Tracker OAuth', { exact: true })
@@ -88,7 +77,7 @@ test('route fixtures prove loaded operator, campaign, report-detail and administ
         : routeId === 'admin-roles'
           ? page.getByText('Механик', { exact: true })
           : routeId === 'admin-tracker'
-            ? page.getByRole('button', { name: 'Настроить политику Tracker', exact: true })
+            ? page.getByRole('heading', { name: 'Очередь задач', exact: true })
           : page.getByRole('button', { name: 'Открыть раздел Колёса', exact: true })
     await expect(marker).toBeVisible()
   }

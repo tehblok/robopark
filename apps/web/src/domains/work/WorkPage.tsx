@@ -142,6 +142,7 @@ function WorkPageOwner({
 
   return (
     <PageLayout
+      className={issueKey ? 'rp-work-page--detail' : undefined}
       description={`Парк: ${selectedPark.name} · открытые блокеры`}
       title="Работа"
     >

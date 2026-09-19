@@ -29,20 +29,24 @@ export function RobotCheckSummary({ snapshot, online, failed, pending, onRefresh
     ? 'Не подключена'
     : percent == null ? 'Нет данных' : `${percent} %`
   return <section className="rp-check-summary" aria-label="Состояние робота" aria-busy={pending}>
-    <h2>Робот {model.shortNumber}</h2>
+    <header className="rp-check-summary-header">
+      <h2>Робот {model.shortNumber}</h2>
+      {snapshot.stale ? <StatusBadge tone="warning" className="rp-freshness-badge">Данные устарели · {Math.round(snapshot.stale_age_seconds ?? 0)} с</StatusBadge>
+        : <StaleBadge state={failed ? 'stale' : model.freshness} updatedAt={snapshot.observed_at} />}
+    </header>
     <dl className="rp-check-summary-values">
       <div><dt>АКБ 1</dt><dd>{battery(snapshot.battery1_connected, snapshot.battery1_percent)}</dd></div>
       <div><dt>АКБ 2</dt><dd>{battery(snapshot.battery2_connected, snapshot.battery2_percent)}</dd></div>
       <div><dt>Скорость</dt><dd>{snapshot.speed == null ? 'Нет данных' : `${snapshot.speed} м/с`}</dd></div>
       <div><dt>Диск</dt><dd>{snapshot.disk_percent == null ? 'Нет данных' : `${snapshot.disk_percent} %`}</dd></div>
       <div className="rp-check-connection-card"><dt>LTE</dt><dd><StatusBadge tone={model.connection.tone}>{model.connection.label}</StatusBadge></dd>
-        <dd>Соединение: {snapshot.connection === 'lte' ? 'Мобильное' : snapshot.connection === 'wire' ? 'Проводное' : 'Нет данных'}</dd>
-        <dd>SIM 1: {snapshot.sim_signals?.[0] ?? 'Нет данных'}</dd>
-        <dd>SIM 2: {snapshot.sim_signals?.[1] ?? 'Нет данных'}</dd>
+        <dd className="rp-check-connection-values"><ul aria-label="Параметры связи">
+          <li>Соединение: {snapshot.connection === 'lte' ? 'Мобильное' : snapshot.connection === 'wire' ? 'Проводное' : 'Нет данных'}</li>
+          <li>SIM 1: {snapshot.sim_signals?.[0] ?? 'Нет данных'}</li>
+          <li>SIM 2: {snapshot.sim_signals?.[1] ?? 'Нет данных'}</li>
+        </ul></dd>
       </div>
     </dl>
-    {snapshot.stale ? <StatusBadge tone="warning" className="rp-freshness-badge">Данные устарели · {Math.round(snapshot.stale_age_seconds ?? 0)} с</StatusBadge>
-      : <StaleBadge state={failed ? 'stale' : model.freshness} updatedAt={snapshot.observed_at} />}
     {leading ? <div className="rp-check-leading-diagnostic">
       <strong>{leading.title}</strong>
       <p>{leading.description}</p>
