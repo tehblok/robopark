@@ -84,6 +84,14 @@ describe('IssueActionsPanel', () => {
     expect(screen.getByRole('button', { name: 'Принять и закрыть' })).toBeVisible()
   })
 
+  it('does not announce success when merely opening the return form', async () => {
+    const open = vi.fn(async () => undefined)
+    render(<IssueActionsPanel {...baseProps} role="operator" reviewState="pending" onReturnReview={open} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Вернуть в работу' }))
+    await waitFor(() => expect(open).toHaveBeenCalledOnce())
+    expect(screen.queryByText('Действие выполнено')).not.toBeInTheDocument()
+  })
+
   it('keeps the phone comment and photo composer visible while secondary actions stay collapsed', () => {
     vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
       matches: true,

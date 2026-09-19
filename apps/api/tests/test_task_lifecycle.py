@@ -1,6 +1,7 @@
 import json
 from itertools import pairwise
 
+import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -92,6 +93,81 @@ def _submit(client, *, key="review-task-51", comment=None, code="BD-01", files=N
         data=data,
         files=files or [("photo", ("robot.png", PNG, "image/png"))],
     )
+
+
+def test_closed_tracker_status_wins_over_stale_local_ownership(
+    db_session, seed_mechanic, seed_park_with_tracker
+):
+    from robopark_api.services import task_lifecycle
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(db_session, actor=seed_mechanic, owner=seed_mechanic,
+                issue_key=ISSUE_KEY, park_id=seed_park_with_tracker.id)
+    result = task_lifecycle.workflow(
+        db_session, issue_key=ISSUE_KEY, viewer=seed_mechanic,
+        issue={**_issue(), "status_key": "closed", "status": "Закрыта"},
+    )
+    assert result["display_status"] == "closed"
+
+
+@pytest.mark.parametrize("queued_at", [None, "2026-09-15T09:30:00Z"])
+def test_workflow_uses_actual_queue_time_not_creation_time(db_session, seed_mechanic, queued_at):
+    from robopark_api.services import task_lifecycle
+
+    result = task_lifecycle.workflow(
+        db_session, issue_key=ISSUE_KEY, viewer=seed_mechanic,
+        issue={**_issue(), "queued_at": queued_at},
+    )
+    assert result["queued_at"] == queued_at
+    assert result["queued_at_source"] == ("tracker_history" if queued_at else None)
+
+
+def test_cannot_claim_task_already_closed_in_tracker(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    from robopark_api.services import tracker_cache, tracker_client
+
+    assert tracker_cache.get_issue(token="token", key=ISSUE_KEY)["status_key"] == "queued"
+
+    monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: {
+        **_issue(), "status_key": "closed", "status": "Закрыта",
+    })
+    response = _claim(client, seed_mechanic)
+    assert response.status_code == 409
+    assert response.json()["detail"] == "task_already_closed"
+    assert db_session.query(TrackerClaim).count() == 0
+    assert db_session.query(ReliableAction).count() == 0
+
+
+def test_failed_close_is_not_presented_as_confirmed_closure(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    operator = _operator(db_session, seed_park_with_tracker)
+    assert _claim(client, seed_mechanic).status_code == 200
+    assert _submit(client, comment="Исправлено").status_code == 200
+    login_as(client, operator.username, "secret")
+    result = client.post(f"/tracker/issues/{ISSUE_KEY}/review/approve", headers={"Idempotency-Key": "close-not-confirmed"})
+    assert result.status_code == 200
+    assert result.json()["workflow"]["display_status"] == "closing"
+    action = db_session.scalar(select(ReliableAction).where(ReliableAction.action == "close"))
+    action.state = "needs_attention"
+    action.error_code = "tracker_transition_missing"
+    db_session.commit()
+    result = client.get(f"/tracker/issues/{ISSUE_KEY}")
+    assert result.json()["workflow"]["display_status"] == "closing"
+    assert result.json()["workflow"]["sync_error_code"] == "tracker_transition_missing"
+    login_as(client, seed_mechanic.username, "secret")
+    blocked = client.post(f"/tracker/issues/{ISSUE_KEY}/claim", headers={"Idempotency-Key": "claim-before-close-delivered"})
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"] == "task_closing_pending"
+    assert db_session.query(TrackerClaim).count() == 0
+    action.state = "succeeded"
+    db_session.commit()
+    # Queue automation can move a successfully transitioned ticket elsewhere.
+    result = client.get(f"/tracker/issues/{ISSUE_KEY}")
+    assert result.json()["workflow"]["display_status"] == "closing"
 
 
 def test_external_tracker_close_finishes_local_review_and_claim_once(
@@ -549,12 +625,17 @@ def test_approve_replay_returns_cycle_one_result_without_mutating_cycle_two(
     )
     assert first.status_code == 200
 
+    close_action = db_session.scalar(select(ReliableAction).where(ReliableAction.action == "close"))
+    close_action.state = "succeeded"
+    db_session.commit()
     login_as(client, seed_mechanic.username, "secret")
     claimed = client.post(
         f"/tracker/issues/{ISSUE_KEY}/claim",
         headers={"Idempotency-Key": "claim-cycle-two"},
     )
     assert claimed.status_code == 200
+    assert claimed.json()["workflow"]["display_status"] == "in_progress"
+    assert claimed.json()["workflow"]["review_state"] is None
     assert _submit(client, key="review-cycle-two", comment="Починил ещё").status_code == 200
     cycle_two = db_session.query(TaskReview).order_by(TaskReview.created_at.desc()).first()
     assert cycle_two.state == "pending"

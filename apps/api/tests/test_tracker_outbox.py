@@ -3,6 +3,8 @@ import hashlib
 import json
 from datetime import date
 
+import pytest
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -34,6 +36,19 @@ def _action(db, actor, *, action="comment", payload=None, state="pending", lease
     db.add(row)
     db.commit()
     return row
+
+
+@pytest.mark.parametrize("purpose", ["start", "return", "review"])
+@pytest.mark.parametrize("issue", [{"status_key": "closed"}, {"status_key": "cancelled"}, {"status": "Закрыта"}])
+def test_delayed_transition_cannot_reopen_externally_closed_issue(db_session, seed_mechanic, monkeypatch, purpose, issue):
+    from robopark_api.services import tracker_outbox
+
+    action = _action(db_session, seed_mechanic, action=purpose)
+    monkeypatch.setattr(tracker_outbox, "_set_issue_field", lambda **_kwargs: (_ for _ in ()).throw(AssertionError("closed issue must not be edited")))
+    monkeypatch.setattr(tracker_outbox.tracker_client, "list_transitions", lambda **_kwargs: (_ for _ in ()).throw(AssertionError("closed issue must not transition")))
+    with pytest.raises(tracker_outbox.DeliveryError) as exc:
+        tracker_outbox._deliver_transition(action, token="token", issue=issue)
+    assert exc.value.code == "task_already_closed"
 
 
 def _campaign_review_action(db, actor, park):

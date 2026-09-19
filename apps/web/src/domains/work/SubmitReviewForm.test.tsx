@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { SubmitReviewForm } from './SubmitReviewForm'
+import { ApiError } from '../../api'
 
 const codes = [{ code: 'BD-01', label: 'Вмятина', description: null }]
 
@@ -9,6 +10,25 @@ beforeEach(() => {
   vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: vi.fn() })
 })
 afterEach(() => vi.unstubAllGlobals())
+
+it('blocks duplicate submissions and preserves the form after a rejected action', async () => {
+  let reject!: (reason: unknown) => void
+  const onSubmit = vi.fn(() => new Promise<void>((_, fail) => { reject = fail }))
+  render(<SubmitReviewForm defectCodes={codes} hasQualifyingComment onSubmit={onSubmit} />)
+  const code = screen.getByRole('combobox', { name: 'Код дефекта' })
+  fireEvent.change(code, { target: { value: 'BD-01' } })
+  fireEvent.change(screen.getByLabelText('Выбрать файл'), { target: { files: [new File(['image'], 'fixed.jpg', { type: 'image/jpeg' })] } })
+  const form = code.closest('form')!
+  fireEvent.submit(form)
+  fireEvent.submit(form)
+  expect(onSubmit).toHaveBeenCalledTimes(1)
+  expect(code).toBeDisabled()
+  reject(new ApiError(409, 'task_already_closed'))
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Задача уже закрыта'))
+  expect(code).toHaveValue('BD-01')
+  expect(screen.getByRole('img', { name: 'Предпросмотр fixed.jpg' })).toBeVisible()
+  expect(code).not.toBeDisabled()
+})
 
 it('requires a completion note when the current cycle has no mechanic comment', async () => {
   const onSubmit = vi.fn(async () => undefined)

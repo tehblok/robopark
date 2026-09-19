@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
 import { api, type InventoryCatalogSearchItem } from '../../api'
@@ -45,7 +45,7 @@ it('uses the issue-park global catalog result and writes off through its negativ
   await userEvent.type(screen.getByRole('textbox', { name: 'Списать, шт.' }), '9007199254740993')
   await userEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
 
-  expect(searchInventory).toHaveBeenCalledWith({ parkId: 77, stockFilter: 'in_stock', limit: 200, offset: 0 })
+  expect(searchInventory).toHaveBeenCalledWith({ parkId: 77, query: '', limit: 200, offset: 0 })
   await waitFor(() => expect(writeoff).toHaveBeenCalledWith('RP-77', -issueParkPart.id, '9007199254740993', expect.any(String)))
 })
 
@@ -71,7 +71,7 @@ it('reuses the same idempotency key when a writeoff response is retried', async 
   expect(writeoff.mock.calls[0][3]).toBe(writeoff.mock.calls[1][3])
 })
 
-it('retains the idempotency key when the writeoff succeeds but inventory reload fails', async () => {
+it('retries only inventory loading when a confirmed writeoff is followed by a reload failure', async () => {
   const writeoff = vi.fn<typeof api.writeoffInventoryForTask>(async () => ({
     id: 1, part_id: -issueParkPart.id, catalog_part_id: issueParkPart.id, park_id: 77,
     actor_user_id: 4, actor_username: 'mech', kind: 'task_writeoff', delta: '-1',
@@ -90,10 +90,12 @@ it('retains the idempotency key when the writeoff succeeds but inventory reload 
 
   await userEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
   await screen.findByRole('alert')
-  await userEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
+  expect(screen.getByRole('status')).toHaveTextContent('Списано: Шина · 1 шт.')
+  expect(screen.getByRole('alert')).toHaveTextContent('Списание повторять не нужно')
+  await userEvent.click(screen.getByRole('button', { name: 'Обновить остатки' }))
 
-  await waitFor(() => expect(writeoff).toHaveBeenCalledTimes(2))
-  expect(writeoff.mock.calls[0][3]).toBe(writeoff.mock.calls[1][3])
+  await waitFor(() => expect(searchInventory).toHaveBeenCalledTimes(3))
+  expect(writeoff).toHaveBeenCalledTimes(1)
 })
 
 it('loads the next server page and exposes the 201st issue-park part', async () => {
@@ -118,7 +120,7 @@ it('loads the next server page and exposes the 201st issue-park part', async () 
   await userEvent.click(await screen.findByRole('button', { name: 'Загрузить ещё' }))
 
   expect(await screen.findByRole('option', { name: 'Дальше' })).toBeInTheDocument()
-  expect(searchInventory).toHaveBeenNthCalledWith(2, { parkId: 77, stockFilter: 'in_stock', limit: 200, offset: 200 })
+  expect(searchInventory).toHaveBeenNthCalledWith(2, { parkId: 77, query: '', limit: 200, offset: 200 })
   expect(screen.queryByRole('button', { name: 'Загрузить ещё' })).not.toBeInTheDocument()
 })
 
@@ -131,6 +133,19 @@ it('does not query another park when the task claim park is unavailable', () => 
 
   expect(screen.getByRole('alert')).toHaveTextContent('Парк задачи недоступен')
   expect(searchInventory).not.toHaveBeenCalled()
+  expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
+})
+
+it('finds an absent catalog part by article without allowing a writeoff', async () => {
+  const searchInventory = vi.fn(async () => ({ items: [{ ...issueParkPart, quantity: '0' as const, stock_is_active: false }], limit: 200, offset: 0, total: 1 }))
+  render(<TaskPartsPanel apiClient={{ inventory: vi.fn(), searchInventory, writeoffInventoryForTask: vi.fn(), inventoryComponentPhotoUrl: vi.fn(), inventoryPartPhotoUrl: vi.fn() }} issueKey="RP-EMPTY" parkId={77} />)
+  await screen.findByRole('combobox', { name: 'Компонента' })
+  await userEvent.type(screen.getByRole('searchbox', { name: 'Название или артикул' }), 'WH-900')
+  await userEvent.click(screen.getByRole('button', { name: 'Найти' }))
+  await waitFor(() => expect(searchInventory).toHaveBeenLastCalledWith({ parkId: 77, query: 'WH-900', limit: 200, offset: 0 }))
+  await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Компонента' }), '22')
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Запчасть' }), String(issueParkPart.id))
+  expect(screen.getByText('Нет на складе')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
 })
 
@@ -156,4 +171,25 @@ it('ignores a pending load-more page after the claim park changes', async () => 
   await act(async () => { resolveOldPage({ items: [stalePart], limit: 200, offset: 200, total: 201 }); await oldPage })
 
   expect(screen.queryByRole('option', { name: 'Старый парк' })).not.toBeInTheDocument()
+})
+
+it('allows only one in-flight writeoff and isolates a different task', async () => {
+  let complete!: () => void
+  const pending = new Promise<void>(resolve => { complete = resolve })
+  const writeoff = vi.fn(async () => { await pending; return { id: 1 } })
+  const onWritten = vi.fn()
+  const apiClient = { inventory: vi.fn(), searchInventory: vi.fn(async () => ({ items: [issueParkPart], limit: 200, offset: 0, total: 1 })), writeoffInventoryForTask: writeoff as unknown as typeof api.writeoffInventoryForTask, inventoryComponentPhotoUrl: vi.fn(), inventoryPartPhotoUrl: vi.fn() }
+  const view = render(<TaskPartsPanel apiClient={apiClient} issueKey="RP-OLD" parkId={77} onWritten={onWritten} />)
+  await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Компонента' }), '22')
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Запчасть' }), String(issueParkPart.id))
+  const form = screen.getByRole('button', { name: 'Списать в задачу' }).closest('form')!
+  fireEvent.submit(form)
+  fireEvent.submit(form)
+  expect(writeoff).toHaveBeenCalledTimes(1)
+  expect(screen.getByRole('combobox', { name: 'Запчасть' })).toBeDisabled()
+  view.rerender(<TaskPartsPanel apiClient={apiClient} issueKey="RP-NEW" parkId={77} onWritten={onWritten} />)
+  expect(await screen.findByRole('combobox', { name: 'Компонента' })).toHaveValue('')
+  await act(async () => { complete(); await pending })
+  expect(onWritten).not.toHaveBeenCalled()
+  expect(screen.queryByRole('status')).not.toBeInTheDocument()
 })

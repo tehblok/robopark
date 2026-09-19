@@ -81,8 +81,13 @@ def _require_token(db: Session) -> str:
     return token
 
 
-def _get_issue_or_404(token: str, key: str) -> dict:
-    issue = tracker_cache.get_issue(token=token, key=key)
+def _get_issue_or_404(token: str, key: str, *, fresh: bool = False) -> dict:
+    try:
+        issue = (tracker_client.get_issue if fresh else tracker_cache.get_issue)(token=token, key=key)
+    except tracker_client.TrackerError as exc:
+        if not fresh:
+            raise
+        raise HTTPException(status_code=502, detail="tracker_upstream_error") from exc
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     return issue
@@ -203,12 +208,12 @@ def _mutation_lease(
 
 
 def _lifecycle_issue(
-    db: Session, user: User, key: str, *, request: Request, actions: tuple[str, ...] = ()
+    db: Session, user: User, key: str, *, request: Request, actions: tuple[str, ...] = (), fresh: bool = False
 ) -> dict:
     _ensure_tracker_user(user, db)
     if task_lifecycle.is_hidden(db, key):
         raise HTTPException(status_code=404)
-    issue = _get_issue_or_404(_require_token(db), key)
+    issue = _get_issue_or_404(_require_token(db), key, fresh=fresh)
     from robopark_api.services.tracker_policy import enforce_issue_scope
 
     enforce_issue_scope(db, user, issue)
@@ -226,7 +231,9 @@ def claim_task(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    issue = _lifecycle_issue(db, user, key, request=request, actions=("assign",))
+    issue = _lifecycle_issue(db, user, key, request=request, actions=("assign",), fresh=True)
+    if task_lifecycle.tracker_issue_is_closed(issue):
+        raise HTTPException(status_code=409, detail="task_already_closed")
     with submissions.task_mutation_lease(db, key):
         return TrackerActionOut(
             **task_lifecycle.claim(

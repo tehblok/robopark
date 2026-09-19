@@ -25,6 +25,7 @@ from robopark_api.services.reliable_actions import (
     schedule_retry,
 )
 from robopark_api.services.task_timeline import staged_attachments_root
+from robopark_api.services.task_lifecycle import tracker_issue_is_closed
 from robopark_api.services.tracker_transitions import (
     TransitionPurpose,
     resolve_transition,
@@ -215,6 +216,8 @@ def _deliver_transition(
     purpose: TransitionPurpose = action.action  # type: ignore[assignment]
     if target_status_reached(issue, purpose):
         return {"already_applied": True}
+    if purpose != "close" and (tracker_issue_is_closed(issue) or target_status_reached(issue, "close")):
+        raise DeliveryError("task_already_closed")
     if purpose == "start" and not issue.get("components"):
         _set_issue_field(
             token=token,

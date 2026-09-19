@@ -92,6 +92,7 @@ def run():
         }
 
         def tracker_issue(**_kwargs):
+            require_tracker()
             return {
                 "key": "ROBOPARK-42",
                 "summary": "Проверить колесо робота [447]",

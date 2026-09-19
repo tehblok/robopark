@@ -332,7 +332,7 @@ it('displays and writes task parts from the backend claim park despite tag and u
   expect(screen.getByText('Склад парка A')).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
 
-  expect(searchInventory).toHaveBeenCalledWith({ parkId: 7, stockFilter: 'in_stock', limit: 200, offset: 0 })
+  expect(searchInventory).toHaveBeenCalledWith({ parkId: 7, query: '', limit: 200, offset: 0 })
   expect(searchInventory).not.toHaveBeenCalledWith(expect.objectContaining({ parkId: 8 }))
   await waitFor(() => expect(writeoffInventoryForTask).toHaveBeenCalledWith(issue.key, -91, '1', expect.any(String)))
 })

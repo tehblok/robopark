@@ -137,5 +137,7 @@ it('resets an invalid write-off quantity after inventory refresh', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
 
   await waitFor(() => expect(client.inventory).toHaveBeenCalledTimes(2))
+  expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Запчасть' }), '3')
   expect(screen.getByRole('textbox', { name: 'Списать, шт.' })).toHaveValue('1')
 })

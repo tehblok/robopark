@@ -571,8 +571,9 @@ class TaskHiddenOut(BaseModel):
 class TaskWorkflowOut(BaseModel):
     owner: TrackerPersonOut | None = None
     review_state: Literal["pending", "returned", "closed"] | None = None
-    display_status: Literal["queued", "in_progress", "review", "closed", "hidden"]
+    display_status: Literal["queued", "in_progress", "review", "closing", "closed", "hidden"]
     sync_state: Literal["saved", "pending", "synced", "needs_attention"]
+    sync_error_code: str | None = None
     queued_at: str | None = None
     queued_at_source: Literal["tracker_history", "created_at_estimate"] | None = None
     hidden: TaskHiddenOut | None = None

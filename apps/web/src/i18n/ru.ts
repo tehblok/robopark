@@ -151,6 +151,8 @@ export const ru = {
         'Для неразмеченных укажите очередь (например SDCFLEETOPS).',
       tracker_write_disabled: 'Запись в Startrek отключена политикой.',
       tracker_issue_claim_required: 'Сначала возьмите задачу в работу.',
+      task_already_closed: 'Задача уже закрыта в Трекере. Обновите список задач.',
+      task_closing_pending: 'Закрытие этой задачи ещё не подтверждено Трекером. Обратитесь к оператору или администратору.',
       tracker_issue_already_claimed: 'Задача уже находится в работе у другого механика.',
       mechanic_can_only_claim_self: 'Механик может взять задачу только на себя.',
       tracker_upstream_error: 'Ошибка интеграции со Startrek.',

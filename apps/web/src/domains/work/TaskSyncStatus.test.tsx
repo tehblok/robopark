@@ -2,6 +2,13 @@ import { render, screen } from '@testing-library/react'
 import { it, expect } from 'vitest'
 import { TaskSyncStatus } from './TaskSyncStatus'
 
+it('explains a missing Tracker transition without exposing unknown error text', () => {
+  const view = render(<TaskSyncStatus state="needs_attention" errorCode="tracker_transition_missing" />)
+  expect(screen.getByRole('status')).toHaveTextContent('В Трекере нет доступного перехода')
+  view.rerender(<TaskSyncStatus state="needs_attention" errorCode="secret upstream error" />)
+  expect(screen.getByRole('status')).not.toHaveTextContent('secret')
+})
+
 it.each([
   ['pending', 'Отправляется в Tracker'],
   ['needs_attention', 'Требует внимания'],

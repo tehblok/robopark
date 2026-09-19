@@ -49,6 +49,7 @@ import { TaskPartsPanel } from '../inventory/TaskPartsPanel'
 import { WorkFilters } from './WorkFilters'
 import { RepairSla } from './RepairSla'
 import { SubmitReviewForm } from './SubmitReviewForm'
+import { ReturnReviewForm } from './ReturnReviewForm'
 import { TaskSyncStatus } from './TaskSyncStatus'
 import { TaskTimeline } from './TaskTimeline'
 import { StableMutationKey } from './stableMutationKey'
@@ -155,6 +156,7 @@ function taskWorkflowStatus(value: string | undefined): { label: string; tone: S
     case 'queued': return { label: 'В очереди', tone: 'neutral' }
     case 'in_progress': return { label: 'В работе', tone: 'info' }
     case 'review': return { label: 'На проверке', tone: 'warning' }
+    case 'closing': return { label: 'Закрытие не подтверждено', tone: 'warning' }
     case 'closed': return { label: 'Закрыта', tone: 'success' }
     case 'hidden': return { label: 'Скрыта', tone: 'neutral' }
     default: return { label: 'Статус обновляется', tone: 'neutral' }
@@ -451,6 +453,7 @@ function IssueWorkbenchOwner({
   const [authorizationFailure, setAuthorizationFailure] = useState<DomainError | null>(null)
   const [relatedRefreshGeneration, setRelatedRefreshGeneration] = useState(0)
   const [reviewOpen, setReviewOpen] = useState(false)
+  const [returnReviewOpen, setReturnReviewOpen] = useState(false)
   const [hideOpen, setHideOpen] = useState(false)
   const [hideReason, setHideReason] = useState('')
   const [taskControlBusy, setTaskControlBusy] = useState(false)
@@ -830,7 +833,7 @@ function IssueWorkbenchOwner({
                     {detail.data?.workflow ? <>
                       <TaskIssueSummary issue={detail.data} now={now} robotReadOnly={!mechanicCanWork}
                         onOpenRobotCheck={mechanicCanWork ? () => changeTab('check') : undefined} />
-                      <TaskSyncStatus state={detail.data.workflow.sync_state} />
+                      <TaskSyncStatus state={detail.data.workflow.sync_state} errorCode={detail.data.workflow.sync_error_code} />
                       {manager ? <section aria-label="Управление задачей" className="issue-section">
                         {detail.data.workflow.hidden ? <>
                           <p>Причина скрытия: {detail.data.workflow.hidden.reason}</p>
@@ -901,12 +904,7 @@ function IssueWorkbenchOwner({
                             : runTrackerSubmission(user.username, detail.data!, 'comment', { text }, headers => apiClient.trackerComment(detail.data!.key, text, headers), assertCurrent),
                         )}
                         onSubmitReview={async () => { setReviewOpen(true) }}
-                        onReturnReview={async () => {
-                          const response = window.prompt('Причина возврата')
-                          if (response == null) { mutationKeys.current.cancel('return-review'); return }
-                          const reason = response.trim()
-                          if (reason && apiClient.taskReturnReview) await mutate(() => lifecycleMutation('return-review', { reason }, key => apiClient.taskReturnReview!(detail.data!.key, reason, undefined, key)))
-                        }}
+                        onReturnReview={async () => { setReturnReviewOpen(true) }}
                         onApproveReview={async () => {
                           if (apiClient.taskApproveReview) await mutate(() => lifecycleMutation('approve-review', {}, key => apiClient.taskApproveReview!(detail.data!.key, key)), onCloseIssue)
                         }}
@@ -919,7 +917,15 @@ function IssueWorkbenchOwner({
                         transitions={transitions.data ?? []}
                       />
                     ) : null}
-                    {reviewOpen && detail.data && user.role === 'mechanic' ? <SubmitReviewForm
+                    {returnReviewOpen && detail.data?.workflow?.review_state === 'pending' && user.role !== 'mechanic' ? <ReturnReviewForm key={detail.data.key}
+                      onCancel={() => { setReturnReviewOpen(false); mutationKeys.current.cancel('return-review') }}
+                      onSubmit={async reason => {
+                        if (!apiClient.taskReturnReview) throw new Error('Return action unavailable')
+                        await mutate(() => lifecycleMutation('return-review', { reason }, key => apiClient.taskReturnReview!(detail.data!.key, reason, undefined, key)))
+                        setReturnReviewOpen(false)
+                      }} /> : null}
+                    {reviewOpen && detail.data && user.role === 'mechanic' ? <SubmitReviewForm key={detail.data.key}
+                      onCancel={() => { setReviewOpen(false); mutationKeys.current.cancel('submit-review') }}
                       defectCodes={defectCodes.data ?? []} hasQualifyingComment={Boolean(hasQualifyingComment)}
                       onSubmit={async value => {
                         if (!apiClient.taskSubmitReview) return

@@ -285,6 +285,8 @@ def workflow(
     claim = get_claim(db, issue_key)
     owner = db.get(User, claim.owner_user_id) if claim is not None else None
     review = _latest_review(db, issue_key)
+    if review is not None and review.state == "closed" and claim is not None and claim.updated_at > review.updated_at:
+        review = None  # The previous repair cycle must not lock a newly reopened task.
     hidden = _active_hidden(db, issue_key)
     hidden_out = None
     if hidden is not None and include_hidden and rbac.is_admin_or_royal(viewer):
@@ -299,12 +301,22 @@ def workflow(
         if review.state == "pending":
             display_status = "review"
         elif review.state == "closed":
-            display_status = "closed"
+            # Acceptance by the operator is not proof of the remote final status.
+            # Only the authoritative issue status above confirms closure.
+            display_status = "closing"
         else:
             display_status = "in_progress"
-    elif hidden is None and claim is not None:
+    elif display_status != "closed" and hidden is None and claim is not None:
         display_status = "in_progress"
-    queued_at = str((issue or {}).get("created") or "") or None
+    queued_at = str((issue or {}).get("queued_at") or "") or None
+    sync_error = db.scalar(select(ReliableAction.error_code).where(
+        ReliableAction.resource_type == "tracker_issue",
+        ReliableAction.resource_id == issue_key,
+        ReliableAction.state == "needs_attention",
+    ).order_by(ReliableAction.updated_at.desc()).limit(1))
+    # Only stable public reason codes, never upstream exception text or credentials.
+    if sync_error not in {"task_already_closed", "tracker_transition_missing", "authentication", "401", "403", "forbidden", "invalid_payload", "prerequisite_failed", "duplicate_remote_action"}:
+        sync_error = None
     return {
         "owner": (
             {"login": owner.username, "display": owner.username}
@@ -314,8 +326,9 @@ def workflow(
         "review_state": review.state if review is not None else None,
         "display_status": display_status,
         "sync_state": _sync_state(db, issue_key),
+        "sync_error_code": sync_error,
         "queued_at": queued_at,
-        "queued_at_source": "created_at_estimate" if queued_at else None,
+        "queued_at_source": "tracker_history" if queued_at else None,
         "hidden": hidden_out,
         "has_current_cycle_comment": bool(
             claim is not None
@@ -361,6 +374,14 @@ def claim(
 ) -> dict:
     if _role(actor) != rbac.RoleSlug.MECHANIC:
         raise HTTPException(403, "task_claim_mechanic_required")
+    pending_close = db.scalar(select(ReliableAction.id).where(
+        ReliableAction.resource_type == "tracker_issue",
+        ReliableAction.resource_id == issue_key,
+        ReliableAction.action == "close",
+        ReliableAction.state != "succeeded",
+    ).limit(1))
+    if pending_close is not None:
+        raise HTTPException(409, "task_closing_pending")
     payload = {"owner_user_id": actor.id, "park_id": park.id}
     begun = _transition_action(
         db,

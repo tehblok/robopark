@@ -387,8 +387,9 @@ export type TaskSyncState = 'saved' | 'pending' | 'synced' | 'needs_attention'
 export type TaskWorkflow = {
   owner: TrackerPerson | null
   review_state: 'pending' | 'returned' | 'closed' | null
-  display_status: 'queued' | 'in_progress' | 'review' | 'closed' | 'hidden'
+  display_status: 'queued' | 'in_progress' | 'review' | 'closing' | 'closed' | 'hidden'
   sync_state: TaskSyncState
+  sync_error_code?: string | null
   queued_at?: string | null
   queued_at_source?: 'tracker_history' | 'created_at_estimate' | null
   hidden?: { reason: string; actor: string; created_at: string } | null

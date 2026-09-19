@@ -104,8 +104,9 @@ async function submitReview(page: Page, input: { clarification?: string; camera?
 }
 
 async function returnReview(page: Page) {
-  page.once('dialog', dialog => dialog.accept('Повторить проверку'))
   await page.getByRole('button', { name: 'Вернуть в работу', exact: true }).click()
+  await page.getByRole('textbox', { name: 'Что нужно исправить' }).fill('Повторить проверку')
+  await page.getByRole('button', { name: 'Вернуть задачу', exact: true }).click()
   await expect(page.getByText('Повторить проверку', { exact: false })).toBeVisible()
 }
 
@@ -123,11 +124,20 @@ async function runLifecycle(page: Page, width: number) {
     await installLifecycle(page, bridge, session)
     await page.setViewportSize({ width, height: mobile ? 844 : 900 })
     await page.goto('/work?park=7')
+    await expect(page.getByRole('button', { name: 'Взять в работу', exact: true })).toBeVisible()
 
-    if (mobile) await bridgeCall(bridge, { control: 'tracker', available: false })
+    if (mobile) {
+      await bridgeCall(bridge, { control: 'tracker', available: false })
+      await page.getByRole('button', { name: 'Взять в работу', exact: true }).click()
+      await expect(page.getByRole('alert').first()).toBeVisible()
+      expect((await snapshot(bridge)).actions).toHaveLength(0)
+      await bridgeCall(bridge, { control: 'tracker', available: true })
+      await page.reload()
+    }
     await page.getByRole('button', { name: 'Взять в работу', exact: true }).dblclick()
     await expect(page.getByRole('heading', { name: /Проверить колесо робота/ })).toBeVisible()
     if (mobile) {
+      await bridgeCall(bridge, { control: 'tracker', available: false })
       await drain(bridge)
       expect((await snapshot(bridge)).actions.some(action => action.state === 'retry_wait')).toBe(true)
       await bridgeCall(bridge, { control: 'tracker', available: true })
@@ -154,6 +164,7 @@ async function runLifecycle(page: Page, width: number) {
 
     await switchUser(page, 'operator-browser')
     await page.getByRole('button', { name: 'Принять и закрыть', exact: true }).click()
+    await expect(page.getByRole('heading', { name: /Проверить колесо робота/ })).not.toBeVisible()
     await drain(bridge)
 
     await openIssue(page)

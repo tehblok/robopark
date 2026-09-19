@@ -239,7 +239,8 @@ function IssueActionsPanelContent({
     if (name === 'close') setCloseError(null)
     try {
       await action()
-      setSuccess('Действие выполнено')
+      // Review/return only open a form; no mutation has been submitted yet.
+      if (name !== 'review' && name !== 'return') setSuccess('Действие выполнено')
       return true
     } catch (caught) {
       const safeMessage = trackerReliabilityError(caught) || mapApiError(caught) || ru.tracker.actions.failed

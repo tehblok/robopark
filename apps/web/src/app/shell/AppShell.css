@@ -449,7 +449,7 @@ button.rp-shell__more-link {
   }
 
   .rp-shell__mobile-link[data-route-id="work-mine"] .rp-shell__nav-label {
-    font-size: 0.75rem;
+    font-size: 0.875rem;
     line-height: 1.1;
     max-width: 3.8rem;
     text-align: center;
