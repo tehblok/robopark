@@ -144,7 +144,10 @@ def test_repeated_bounded_key_and_live_merge_cycles_plateau(tmp_path, monkeypatc
         assert len(emergency_cache._cache) == 16
         assert emergency_cache._flights == {}
 
-    assert file_counts == [48, 48, 48]
+    # Each VIN retains one lock and one result. Namespace invalidation also
+    # keeps a single guard lock, whose count must plateau across every cycle.
+    expected_files = len(vins) * 2 + 1
+    assert file_counts == [expected_files, expected_files, expected_files]
     assert not list(store.root.rglob("*.inflight"))
     assert not list(store.root.rglob("*.error"))
     assert not list(store.root.rglob("*.tmp"))
@@ -184,5 +187,5 @@ def test_one_hour_rss_soak_plateaus_after_warmup(tmp_path, monkeypatch):
     assert warm_rss > 0
     assert _rss_bytes() <= warm_rss * 1.10
     assert len(emergency_cache._cache) <= emergency_cache.PAYLOAD_CACHE_MAX_ENTRIES
-    assert sum(path.is_file() for path in store.root.rglob("*")) == len(vins) * 2
+    assert sum(path.is_file() for path in store.root.rglob("*")) == len(vins) * 2 + 1
     assert emergency_cache._flights == {}
