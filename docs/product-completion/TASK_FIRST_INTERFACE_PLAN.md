@@ -19,7 +19,7 @@
 - Проверка прав, актуальных остатков, идемпотентность и действия Tracker остаются на сервере.
 - Основные области нажатия не менее 44 px.
 - Все разделы и вложенные формы входят в результат; fallback на старую страницу не считается переработкой.
-- Ни OTA, ни установка на хост не входят в этот план. Рабочие данные не менять тестами.
+- По последнему запросу OTA входит в конечный результат; установка на хост автоматически не выполняется. Рабочие данные не менять тестами.
 
 ## Review Focus
 
@@ -84,7 +84,7 @@ export async function selectInterface(page: Page, label: 'Классически
 Helper применяется после авторизации fixture. Public routes проверяются отдельным
 переключателем в AuthLayout, без открытия аккаунта из storage.
 
-## Этап 1. Эталон, переключатель и сохранение состояния
+### Task 1: Эталон, переключатель и сохранение состояния
 
 **Файлы:** новые app/interface файлы выше и их `.test.tsx`/`.test.ts`;
 `apps/web/src/main.tsx`, `app/shell/AppShell.tsx`, `api.ts`;
@@ -124,7 +124,7 @@ export async function trackInterfaceMutation<T>(
 - [ ] Добавить radio group «Интерфейс» в меню, `pendingMode` → «Переключим после завершения операции». Сохранять живой компонент экрана при смене режима; не создавать два дерева с display:none.
 - [ ] Запустить unit suite, `interface-mode.spec.ts`, build; проверить классический baseline. Коммит `feat(web): add account-scoped interface mode`.
 
-## Этап 2. Новая оболочка, public screens и общий UX
+### Task 2: Новая оболочка, public screens и общий UX
 
 **Файлы:** `app/shell/AppShell.tsx`/CSS; `app/routing/AppRouter.tsx`;
 `components/auth/AuthLayout.tsx`; `pages/{Home,Login,Register,ChangePassword,NoCabinet,MechanicNoPark,OperatorPending,OperatorRejected}.tsx`;
@@ -153,7 +153,7 @@ function TaskFirstLayout({ primary, context, actions }: TaskFirstSlots) {
 - [ ] Переработать public screens: одно главное действие, обратная связь поля рядом с ним, отдельные состояния ожидания/отказа/нет парка; role gate остаётся общим. Перед входом выбор режима не читает preference другого аккаунта.
 - [ ] Проверить 320/390/1440, темы, фокус, landscape/клавиатуру, reduced motion. Запустить полный web suite/build. Коммит `feat(web): introduce task-first shell and access screens`.
 
-## Этап 3. Работа и роботы — полноценный сценарий А
+### Task 3: Работа и роботы — полноценный сценарий А
 
 **Файлы:** `domains/work/{WorkPage,IssueWorkbench}.tsx`; `domains/robots/{RobotsPage,RobotPage,RobotCheckPage,RobotCheckWorkspace,RobotCheckSummary,RobotDiagnosticDiagram}.tsx`;
 новые presentation-файлы `domains/work/TaskFirstWorkbench.tsx`, `domains/robots/TaskFirstRobotLayout.tsx`;
@@ -167,7 +167,7 @@ function TaskFirstLayout({ primary, context, actions }: TaskFirstSlots) {
 - [ ] Сетевой regression: считать реальные intercepted GET для одного snapshot; переключение режима со свежими данными не увеличивает счётчик. Для denied response проверить исчезновение защищённого содержимого в обоих режимах.
 - [ ] Прогнать перечисленные E2E в обоих режимах + полный suite/build. Проверить комментарий, фото, дефект и статус в контрактных тестах без production Tracker. Коммит `feat(web): rebuild work and robot workflows in interface A`.
 
-## Этап 4. Склад, поставки и инвентаризация
+### Task 4: Склад, поставки и инвентаризация
 
 **Файлы:** `domains/inventory/{InventoryPage,InventoryPartsView,InventoryManageView,InventoryReceiptsView,InventoryCountsView,InventoryExportView,InventoryTabs}.tsx`;
 `e2e/operational/inventory-workflows.spec.ts`, новый `interface-inventory.spec.ts`.
@@ -178,7 +178,7 @@ function TaskFirstLayout({ primary, context, actions }: TaskFirstSlots) {
 - [ ] В тестах задержать post документа, повторно нажать и сменить режим; assert одна мутация и отображение подтверждённого результата. При offline/409 показывать конфликт, не уменьшать остаток как подтверждённый.
 - [ ] Снять оба режима с длинным артикулом, отсутствующим фото/остатком, сотнями результатов с пагинацией; проверить этикетки/экспорт отдельно. Полный suite/build. Коммит `feat(web): rebuild inventory workflows in interface A`.
 
-## Этап 5. Репорты и сервисные кампании
+### Task 5: Репорты и сервисные кампании
 
 **Файлы:** `pages/Reports.tsx`, `components/reports/{ReportList,ReportDetail,ReportForms}.tsx`;
 `domains/campaigns/CampaignsPage.tsx`; `e2e/operational/{admin-reports,report-photo-drafts}.spec.ts`;
@@ -190,7 +190,7 @@ function TaskFirstLayout({ primary, context, actions }: TaskFirstSlots) {
 - [ ] Переиспользовать existing controllers и callbacks; формы creation/edit сохраняют draft вне сменяемой презентации. File не сериализовать в localStorage. UI удаляет карточку только после успешного API; ошибка сохраняет её.
 - [ ] Прогнать E2E с 403, пустым списком, ошибкой отправки фото, повтором; полный suite/build. Коммит `feat(web): rebuild reports and campaigns in interface A`.
 
-## Этап 6. Обзор, аналитика и парки оператора
+### Task 6: Обзор, аналитика и парки оператора
 
 **Файлы:** `domains/shift/{OverviewPage,OverviewSections}.tsx`; `domains/analytics/AnalyticsWorkspace.tsx`;
 `domains/insights/{InsightsPage,OperationsPanels}.tsx`; `pages/OperatorParks.tsx`;
@@ -201,7 +201,7 @@ function TaskFirstLayout({ primary, context, actions }: TaskFirstSlots) {
 - [ ] Аналитика: фильтры в одном месте, основной график и раскрываемая детализация, читабельные подписи на телефоне. Сохранить модель/агрегацию и кэш. Парки оператора: текущие подключения, доступные парки и статусы заявок как отдельные понятные секции.
 - [ ] Проверить период/парки в URL, пустые/ошибочные данные, stale labels; полный suite/build. Коммит `feat(web): rebuild overview and analytics in interface A`.
 
-## Этап 7. Управление и настройка диагностики
+### Task 7: Управление и настройка диагностики
 
 **Файлы:** `domains/management/{ManagementPage,UserManagementPage,RoleManagementPage}.tsx`;
 `pages/{Admin,AdminEmergencyConfig}.tsx`; `components/admin/{AdminUsersPanel,AdminRolesPanel,AdminOpsPanel,SystemHealthPanel,HostHealthPanel}.tsx`;
@@ -214,7 +214,7 @@ function TaskFirstLayout({ primary, context, actions }: TaskFirstSlots) {
 - [ ] OTA/диагностика А: текущая операция, прогресс/ошибка/восстановление, доступные действия; кнопки учитывают реально активную операцию. Режим не запускает дополнительные polling/job requests.
 - [ ] Проверить по E2E все вложенные вкладки, focus/touch targets, недоступные права, незавершённые операции; полный suite/build. Коммит `feat(web): rebuild management and diagnostics editors in interface A`.
 
-## Этап 8. Общая приёмка, PWA и нагрузка
+### Task 8: Общая приёмка, PWA и нагрузка
 
 **Файлы:** `e2e/operational/route-role-layout.spec.ts`, новый `interface-parity.spec.ts`;
 `scripts/{build-sw.mjs,sw-template.js}`, существующие SW tests;
@@ -257,6 +257,14 @@ cases открывать напрямую после installOperational и пр�
 - [ ] Коммит `test(web): verify complete dual-interface parity and performance`. Финальный отчёт не называет этап завершённым при незакрытой строке карты экранов.
 
 ## Порядок и метод выполнения
+
+### После приёмки — OTA (добавлено по запросу пользователя)
+
+- [ ] Прочитать действующие release/OTA инструкции проекта и использовать существующий упаковщик, не создавать новый формат архива.
+- [ ] Повысить версию по действующим правилам проекта; проверить состав архива: без секретов, dev-зависимостей, локальных прототипов и тестовых пользовательских данных.
+- [ ] Проверить манифест, контрольные суммы, применяемую политику подписи и совместимость миграций штатными инструментами; защиту не отключать для обхода ошибки упаковки.
+- [ ] На изолированном стенде проверить обновление поверх поддерживаемой версии и возврат в classic после установки. Зафиксировать реально проверенную платформу; не объявлять локальный desktop build проверкой ARM-хоста.
+- [ ] Передать архив, SHA-256, версию и краткую инструкцию переключения интерфейса. Указать непроверенные условия и известные ограничения. На рабочий хост самостоятельно не устанавливать.
 
 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8. Классический эталон и общий owner state — обязательная
 зависимость всех областей. Этапы 4–7 допускают изолированных исполнителей только

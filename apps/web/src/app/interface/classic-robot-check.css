@@ -1,0 +1,49 @@
+/* Approved classic baseline: 5b465cc + robot-check-ux/proposal.css. */
+html:not([data-interface='task-first']) {
+  .rp-page-layout:has(.rp-check-workspace) { gap: 8px; }
+  .rp-page-layout:has(.rp-check-workspace) .rp-page-layout__title { font-size: 22px; }
+  .rp-check-backlinks { margin: 0; }
+  .rp-check-layout { grid-template-columns: minmax(320px, .9fr) minmax(0, 1.25fr); gap: 20px; }
+  .rp-check-first-level { border: 1px solid var(--rp-border); background: var(--rp-surface); border-radius: 12px; padding: 16px; gap: 8px; }
+  .rp-check-summary { padding: 0; border: 0; background: transparent; gap: 8px; }
+  .rp-check-summary-header { padding-bottom: 8px; border-bottom: 1px solid var(--rp-divider); }
+  .rp-check-summary-values { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .rp-check-summary-values > div { padding: 4px 0 8px; }
+  .rp-check-summary-values dd { font-size: 16px; }
+  .rp-check-summary-values > div:last-child { grid-column: 1/-1; border-bottom: 1px solid var(--rp-divider); }
+  .rp-check-connection-values ul { grid-template-columns: minmax(0, 1.3fr) repeat(2, minmax(0, .8fr)); font-size: 14px; }
+  .rp-check-connection-values li { line-height: 1.4; }
+  .rp-check-summary .rp-check-critical { width: 100%; padding: 8px 12px; border-radius: 6px; }
+  .rp-check-supplementary summary { min-height: 44px; }
+  .rp-check-diagram figure { margin: 0; }
+  .rp-check-overlay-frame { min-height: 250px; padding: 12px; }
+  .rp-check-photo-frame { width: min(100%, 240px); }
+  .rp-check-diagram figcaption { margin: 0; font-size: 12px; }
+  .rp-check-wheel-details { padding: 8px 12px; background: transparent; border-top: 1px solid var(--rp-divider); border-radius: 0; }
+  .rp-check-wheel-details ul { margin: 0; padding-left: 16px; }
+  .rp-check-navigation { background: var(--rp-surface); padding: 0 8px; border: 1px solid var(--rp-border); border-radius: 10px; }
+  .rp-check-tabs { padding: 0; gap: 4px; }
+  .rp-check-tabs button { font-size: 14px; }
+  .rp-check-panel { border: 1px solid var(--rp-border); padding: 16px; margin-top: 12px; }
+  .rp-check-diagnostic-block { background: transparent; padding: 0; border: 0; }
+  .rp-check-block-selector { border-bottom: 1px solid var(--rp-divider); padding-bottom: 12px; }
+  .rp-check-block-photo-viewport { min-height: 240px; margin: 0; }
+  .rp-check-block-photo-frame { inline-size: min(100%, 190px); }
+  .rp-check-diagnostic-block dl { gap: 0; }
+  .rp-check-diagnostic-block dl > div { padding: 12px; border-radius: 0; border-bottom: 1px solid var(--rp-divider); }
+  @media (max-width: 899px) {
+    .rp-check-layout { grid-template-columns: 1fr; gap: 12px; }
+    .rp-check-first-level { padding: 12px; gap: 4px; }
+    .rp-check-summary-header h2 { font-size: 20px; }
+    .rp-check-summary-values dt { font-size: 12px; }
+    .rp-check-summary-values dd { font-size: 14px; }
+    .rp-check-connection-values ul { font-size: 12px; }
+    .rp-check-overlay-frame { min-height: 190px; padding: 4px 12px; }
+    .rp-check-photo-frame { width: 180px; }
+    .rp-check-diagram-content { gap: 8px; }
+    .rp-check-navigation { padding-inline: 4px; }
+    .rp-check-panel { padding: 12px; }
+    .rp-check-block-photo-viewport { min-height: 210px; padding-block: 8px; }
+    .rp-check-block-photo-frame { inline-size: min(100%, 170px); }
+  }
+}

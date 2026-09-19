@@ -9,6 +9,7 @@ import { api, ApiError, type User } from './api'
 import { AuthContext } from './auth-context'
 import { pruneLegacyResourceSnapshots, resourceStore } from './lib/resource'
 import { clearProtectedBrowserStorage } from './shared/auth/protectedBrowserStorage'
+import { InterfaceModeProvider } from './app/interface/InterfaceModeProvider'
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const [user, setUser] = useState<User | null>(null)
@@ -87,7 +88,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   return (
     <AuthContext.Provider value={{ user, loading, login, refreshUser, logout }}>
-      {children}
+      <InterfaceModeProvider accountId={user?.id ?? null}>{children}</InterfaceModeProvider>
     </AuthContext.Provider>
   )
 }

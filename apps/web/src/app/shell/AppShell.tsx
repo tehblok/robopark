@@ -18,6 +18,7 @@ import { REPORTS_BADGE_REFRESH } from '../../reports-badge'
 import { reportsAccessIdentity } from '../../domains/reports/reports'
 import { clearInstallPrompt, currentInstallPrompt, subscribeInstallPrompt } from '../../pwa/installPrompt'
 import './AppShell.css'
+import { InterfaceChoice } from '../interface/InterfaceChoice'
 
 const GROUPS: readonly NavGroup[] = [
   'operations',
@@ -638,6 +639,7 @@ export function AppShell() {
           {phoneViewport ? <p>{ru.appShell.phoneDensity}</p> : null}
         </fieldset>
 
+        <InterfaceChoice />
         <Button leadingIcon="logout" onClick={() => void logout()} variant="secondary">
           {ru.signOut}
         </Button>

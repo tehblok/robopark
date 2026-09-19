@@ -1,4 +1,5 @@
 import type { AnalyticsBucket, HistoricalAnalytics } from './domains/analytics/analyticsModel'
+import { interfaceModeStore, trackInterfaceMutation } from './app/interface/interfaceModeStore'
 import type {
   InventoryCatalogComponent,
   InventoryCatalogPart,
@@ -808,6 +809,15 @@ const BLOB_TIMEOUT_MS = 60_000
 const FORM_TIMEOUT_MS = 90_000
 
 async function fetchWithTimeout<T>(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+  consume: (response: Response) => Promise<T>,
+): Promise<T> {
+  return trackInterfaceMutation(interfaceModeStore, init.method ?? 'GET', () => consumeWithTimeout(input, init, timeoutMs, consume))
+}
+
+async function consumeWithTimeout<T>(
   input: RequestInfo | URL,
   init: RequestInit,
   timeoutMs: number,
