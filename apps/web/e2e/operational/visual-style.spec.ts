@@ -2,6 +2,15 @@ import { expect, test } from '@playwright/test'
 import { openRouteFixture, assertResponsiveContracts } from './routeFixtures'
 import { userForRole } from './fixtures'
 
+test('legacy diagnostic tabs are flat and touch-sized', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 })
+  await openRouteFixture(page, 'admin-robot-check', userForRole('royal'))
+  await page.getByRole('tab', { name: 'Ошибки', exact: true }).click()
+  const tab = page.getByRole('tab', { name: 'Каталог ошибок', exact: true })
+  await expect(tab).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+  expect((await tab.boundingBox())!.height).toBeGreaterThanOrEqual(44)
+})
+
 for (const theme of ['light', 'dark'] as const) test(`legacy operator parks use flat panels in ${theme}`, async ({ page }) => {
   await page.addInitScript(theme => localStorage.setItem('robopark-theme', theme), theme)
   await openRouteFixture(page, 'operator-parks', userForRole('operator'))

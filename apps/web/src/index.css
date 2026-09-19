@@ -1909,8 +1909,10 @@ textarea {
   gap: var(--space-2);
   padding: 0.5rem 1rem;
   border: 0;
-  border-bottom: var(--rp-space-1) solid transparent;
-  border-radius: var(--rp-radius-control) var(--rp-radius-control) 0 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  min-height: var(--rp-control-min-size);
+  min-width: var(--rp-control-min-size);
   background: transparent;
   color: var(--text-muted);
   font-weight: 600;
@@ -1926,7 +1928,7 @@ textarea {
 }
 
 .tab.is-active {
-  background: var(--rp-state-selected);
+  background: transparent;
   color: var(--rp-text);
   border-bottom-color: var(--rp-action);
 }
