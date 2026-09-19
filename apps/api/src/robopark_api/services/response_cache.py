@@ -94,7 +94,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         merge = self._merge()
         if merge is None:
             return True
-        return merge.result_mtime(self._name, key) == hit[2]
+        return hit[2] is not None and merge.result_mtime(self._name, key) == hit[2]
 
     def _prune_expired_locked(self, now: float) -> None:
         retention = max(self._ttl, self._max_stale)

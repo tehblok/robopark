@@ -132,6 +132,37 @@ def test_invalidate_drops_blob_for_other_cache(tmp_path):
     assert second.get_or_load("k", lambda: 2) == 2
 
 
+def test_invalidate_during_flight_cannot_restore_stale_value(tmp_path):
+    store = LiveMergeStore(tmp_path, waiter_timeout=2.0)
+    old_cache: ResponseCache[str] = ResponseCache(60, name="race", shared=store)
+    new_cache: ResponseCache[str] = ResponseCache(60, name="race", shared=store)
+    observer: ResponseCache[str] = ResponseCache(60, name="race", shared=store)
+    old_started = threading.Event()
+    release_old = threading.Event()
+    old_result: list[str] = []
+
+    def old_loader() -> str:
+        old_started.set()
+        assert release_old.wait(timeout=2.0)
+        return "stale"
+
+    thread = threading.Thread(
+        target=lambda: old_result.append(old_cache.get_or_load("k", old_loader))
+    )
+    thread.start()
+    assert old_started.wait(timeout=2.0)
+
+    new_cache.invalidate("k")
+    assert new_cache.get_or_load("k", lambda: "fresh") == "fresh"
+    release_old.set()
+    thread.join(timeout=2.0)
+
+    assert not thread.is_alive()
+    assert old_result == ["fresh"]
+    assert observer.get_or_load("k", lambda: "unexpected") == "fresh"
+    assert old_cache.get_or_load("k", lambda: "unexpected") == "fresh"
+
+
 def test_dead_pid_inflight_is_ignored(tmp_path):
     store = LiveMergeStore(tmp_path)
     store._atomic_write(

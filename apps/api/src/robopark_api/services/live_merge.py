@@ -266,6 +266,10 @@ class LiveMergeStore:
                 return
         path.unlink(missing_ok=True)
 
+    def _claim_is_current(self, namespace: str, key: str, claim: str) -> bool:
+        current = self._read_json(self.inflight_path(namespace, key))
+        return current is not None and current.get("claim") == claim
+
     def _write_result(self, namespace: str, key: str, payload: Any) -> None:
         self._atomic_write(
             self.result_path(namespace, key),
@@ -389,30 +393,62 @@ class LiveMergeStore:
                     self._clear_inflight(namespace, key, claim)
                 raise
             stale_allowed = stale_if(exc) if stale_if is not None else True
+            superseded = False
             with self._exclusive(namespace, key, timeout=self.waiter_timeout):
-                if is_current is not None and not is_current():
+                if not self._claim_is_current(namespace, key, claim):
+                    superseded = True
+                elif is_current is not None and not is_current():
                     self._clear_inflight(namespace, key, claim)
                     raise
-                self._write_error(
+                else:
+                    self._write_error(
+                        namespace,
+                        key,
+                        exc,
+                        stale_allowed=stale_allowed,
+                    )
+                    self._clear_inflight(namespace, key, claim)
+                    stale = self._read_stale_payload(namespace, key, max_stale_seconds)
+            if superseded:
+                return self.merge_load(
                     namespace,
                     key,
-                    exc,
-                    stale_allowed=stale_allowed,
+                    ttl,
+                    loader,
+                    is_current,
+                    max_stale_seconds=max_stale_seconds,
+                    stale_if=stale_if,
+                    on_stale=on_stale,
+                    shared_payload=shared_payload,
                 )
-                self._clear_inflight(namespace, key, claim)
-                stale = self._read_stale_payload(namespace, key, max_stale_seconds)
             if stale_allowed and stale is not _MISSING:
                 if on_stale is not None:
                     on_stale()
                 return stale  # type: ignore[return-value]
             raise
+        superseded = False
         with self._exclusive(namespace, key, timeout=self.waiter_timeout):
-            if is_current is not None and not is_current():
+            if not self._claim_is_current(namespace, key, claim):
+                superseded = True
+            elif is_current is not None and not is_current():
                 self._clear_inflight(namespace, key, claim)
                 return value
-            self._write_result(namespace, key, persisted_value)
-            self._clear_error(namespace, key)
-            self._clear_inflight(namespace, key, claim)
+            else:
+                self._write_result(namespace, key, persisted_value)
+                self._clear_error(namespace, key)
+                self._clear_inflight(namespace, key, claim)
+        if superseded:
+            return self.merge_load(
+                namespace,
+                key,
+                ttl,
+                loader,
+                is_current,
+                max_stale_seconds=max_stale_seconds,
+                stale_if=stale_if,
+                on_stale=on_stale,
+                shared_payload=shared_payload,
+            )
         return value
 
     def _prune_lock(
@@ -461,10 +497,11 @@ class LiveMergeStore:
         from robopark_api.services.ops.maintenance import require_application_writes
 
         require_application_writes()
-        _, result, inflight, error = self._paths(namespace, key)
-        result.unlink(missing_ok=True)
-        inflight.unlink(missing_ok=True)
-        error.unlink(missing_ok=True)
+        with self._exclusive(namespace, key, timeout=self.waiter_timeout):
+            _, result, inflight, error = self._paths(namespace, key)
+            result.unlink(missing_ok=True)
+            inflight.unlink(missing_ok=True)
+            error.unlink(missing_ok=True)
 
     def invalidate_prefix(self, namespace: str, prefix: str) -> None:
         from robopark_api.services.ops.maintenance import require_application_writes
