@@ -88,7 +88,7 @@ def excluded(relative):
     ):
         return True
     if parts[:3] == ("apps", "web", "scripts") and (
-        name.endswith(".test.mjs") or name == "generate-pwa-icons.mjs"
+        name.endswith(".test.mjs") or name in {"generate-pwa-icons.mjs", "interface-load.mjs", "operational-demo.mjs"}
     ):
         return True
     if relative.as_posix() == "apps/web/playwright.config.ts":

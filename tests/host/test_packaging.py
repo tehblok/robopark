@@ -143,6 +143,8 @@ def test_release_reproducible_with_normalized_zip_and_standalone_verifier(packag
         "apps/web/src/test/setup.ts",
         "apps/web/scripts/build-sw.test.mjs",
         "apps/web/scripts/generate-pwa-icons.mjs",
+        "apps/web/scripts/interface-load.mjs",
+        "apps/web/scripts/operational-demo.mjs",
         "apps/web/playwright.config.ts",
     ],
 )
