@@ -369,7 +369,7 @@ def main():
     parser.add_argument(
         "--presence",
         action="store_true",
-        help="Replace about 10% of sustained reads with task-presence writes",
+        help="Replace about 10%% of sustained reads with task-presence writes",
     )
     args = parser.parse_args()
     if (
