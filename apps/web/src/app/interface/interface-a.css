@@ -181,6 +181,48 @@ html[data-interface='task-first'] {
   .rp-operator-parks .panel { padding: 20px; border-radius: 12px; }
   .rp-operator-parks .park-card { padding: 16px; border: 1px solid var(--rp-border); border-radius: 8px; background: var(--rp-surface); }
 
+  /* Management uses entity navigation; host operations remain separate. */
+  .rp-management { display: grid; gap: 20px; }
+  .rp-management-nav { display: flex; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid var(--rp-border); padding-bottom: 12px; }
+  .rp-management-nav a { padding: 10px 14px; min-height: 44px; border-radius: 8px; }
+  .rp-management-nav a[aria-current='page'] { box-shadow: inset 0 -3px var(--rp-action); }
+  .rp-management-metrics { gap: 12px; }
+  .management-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  .rp-management .rp-master-detail { grid-template-columns: minmax(240px, .6fr) minmax(0, 1.4fr); gap: 24px; align-items: start; }
+  .rp-management .rp-master-detail__list { background: var(--rp-surface-muted); border-radius: 12px; padding: 16px; }
+  .rp-management .rp-master-detail__detail { background: var(--rp-surface); border-radius: 12px; padding: 20px; }
+  .rp-management .form-grid { gap: 16px; }
+  .rp-management .admin-perm-grid { gap: 8px; }
+  .rp-management .admin-perm-check { min-height: 44px; padding: 8px; align-items: center; }
+  .rp-danger-zone { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--rp-border); }
+  .ops-stack { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
+  .ops-stack > .panel { margin: 0; padding: 20px; border-radius: 12px; }
+  .ops-stack > :has(.ops-health-summary), .ops-stack > .alert { grid-column: 1/-1; }
+  .ops-health-summary { padding-bottom: 12px; gap: 12px; }
+  .ops-update-progress { padding: 16px; border-radius: 8px; background: var(--rp-surface-muted); }
+  .ops-stack .form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ops-checks { gap: 8px; }
+  .rp-diagnostic-editor .rp-master-detail { grid-template-columns: minmax(240px, .5fr) minmax(0, 1.5fr); gap: 24px; }
+  .rp-diagnostic-editor .rp-master-detail__list { padding: 16px; background: var(--rp-surface-muted); border-radius: 12px; }
+  .rp-diagnostic-editor .rp-master-detail__detail { padding: 0; border: 0; background: transparent; }
+  .rp-diagnostic-editor .rp-master-detail__detail > .rp-panel { padding: 0; border: 0; background: transparent; }
+  .rp-diagnostic-form { padding: 20px; border: 1px solid var(--rp-border); border-radius: 12px; background: var(--rp-surface); gap: 20px; }
+  .rp-diagnostic-placement { padding: 16px; border: 1px solid var(--rp-border); border-radius: 8px; background: var(--rp-canvas); }
+  .rp-diagnostic-list { gap: 8px; }
+  .rp-diagnostic-select { border-radius: 8px; background: var(--rp-surface); padding: 12px; }
+  .rp-diagnostic-select[aria-pressed='true'] { box-shadow: inset 3px 0 var(--rp-action); }
+  .rp-diagnostic-save, .rp-reading-actions { border-top: 1px solid var(--rp-border); padding-top: 16px; gap: 8px; }
+  .rp-reading-discovery { padding: 16px; background: var(--rp-surface); border-radius: 8px; }
+  .emergency-config-section { border-radius: 12px; padding: 20px; }
+  .emergency-config-field-row { padding-block: 12px; border-bottom: 1px solid var(--rp-border); }
+  @media (min-width: 1400px) {
+    .rp-diagnostic-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+    .rp-diagnostic-form > .rp-diagnostic-placement { grid-column: 2; grid-row: 1 / span 3; }
+    .rp-diagnostic-form > .rp-diagnostic-fields, .rp-diagnostic-form > .rp-form-field { grid-column: 1; }
+    .rp-diagnostic-save, .rp-reading-actions, .rp-diagnostic-preview { grid-column: 1/-1; }
+    .rp-diagnostic-form > .rp-diagnostic-fields { grid-template-columns: minmax(0, 1fr); }
+  }
+
   /* Public/access screens: clear form first, quieter product context. */
   .rp-auth { background: var(--rp-canvas); }
   .rp-auth::before, .rp-auth__orbit { display: none; }
@@ -264,6 +306,12 @@ html[data-interface='task-first'] {
     .rp-overview-alerts { order: -2; }
     .rp-analytics-park, .rp-operator-parks .panel { padding: 14px; }
     .rp-analytics-controls, .rp-insights-controls { padding: 12px; }
+    .rp-management .rp-master-detail, .rp-diagnostic-editor .rp-master-detail, .management-grid, .ops-stack { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+    .rp-management .rp-master-detail__list, .rp-management .rp-master-detail__detail, .rp-diagnostic-editor .rp-master-detail__list, .rp-diagnostic-form, .ops-stack > .panel, .emergency-config-section { padding: 14px; }
+    .rp-management-nav { flex-wrap: wrap; max-width: 100%; }
+    .rp-management-nav a { flex: 1 1 auto; }
+    .rp-diagnostic-fields { grid-template-columns: minmax(0, 1fr); }
+    .rp-diagnostic-placement { padding: 12px; }
   }
   @media (prefers-reduced-motion: no-preference) {
     .rp-shell__desktop-link, .rp-shell__mobile-link { transition: background-color 120ms ease, color 120ms ease; }

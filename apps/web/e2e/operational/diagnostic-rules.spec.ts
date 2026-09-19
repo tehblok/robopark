@@ -86,7 +86,7 @@ for (const actor of ['operator', 'custom-admin', 'admin', 'royal'] as const) tes
   try {
     await installOperational(page, { routes: api.routes })
     await page.goto('/admin/emergency/config?park=7&tab=indication')
-    const allowed = actor === 'admin'
+    const allowed = actor === 'admin' || actor === 'royal'
     const methods = [['GET', base], ['POST', base], ['PATCH', `${base}/1`], ['POST', `${base}/1/disable`], ['PUT', `${base}/reorder`], ['POST', `${base}/preview`]]
     if (allowed) {
       await expect(page.getByRole('button', { name: 'Новое правило' })).toBeVisible()
@@ -103,8 +103,7 @@ for (const actor of ['operator', 'custom-admin', 'admin', 'royal'] as const) tes
       await expect(page.getByRole('tab', { name: 'Ошибки и индикация' })).toHaveCount(0)
       for (const [method, path] of methods) {
         const response = await api.call({ method, path, body: '{}', headers: { 'content-type': 'application/json' } })
-        const viewer = actor === 'royal' && (method === 'GET' || path.endsWith('/preview'))
-        expect(response.status).toBe(viewer ? method === 'GET' ? 200 : 422 : 403)
+        expect(response.status).toBe(403)
       }
     }
   } finally { await api.close() }
