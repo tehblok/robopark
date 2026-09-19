@@ -30,6 +30,61 @@ html[data-interface='task-first'] {
   .a-actions { grid-column: 1/-1; display: flex; flex-wrap: wrap; gap: 8px; }
   .a-layout:not(:has(> .a-context)) { grid-template-columns: minmax(0, 1fr); }
 
+  /* Work: selected task becomes the workspace, not a card within a card. */
+  .rp-work-domain[data-has-detail='true'] > .rp-work-filters { display: none; }
+  .rp-workbench[data-has-detail='true'] .rp-master-detail { grid-template-columns: minmax(0, 1fr); }
+  .rp-workbench[data-has-detail='true'] .rp-master-detail__list { display: none; }
+  .rp-workbench[data-has-detail='true'] .rp-master-detail__detail { border: 0; padding: 0; background: transparent; overflow: visible; }
+  .rp-workbench[data-has-detail='true'] .rp-master-detail__detail-actions { display: block; }
+  .rp-workbench[data-has-detail='true'] .rp-master-detail__back { display: inline-flex; }
+  .rp-work-detail-pane > .rp-panel { border: 0; padding: 0; background: transparent; }
+  .rp-work-detail-pane > .rp-panel > .rp-panel__header { padding-block: 8px; }
+  .rp-work-sections { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 20px; border-bottom: 1px solid var(--rp-border); }
+  .rp-work-sections > .rp-tabs { flex: 1; min-width: 0; border: 0; }
+  .a-work-related { display: flex; gap: 4px; flex-wrap: wrap; }
+  .a-work-related button { min-height: 44px; padding: 8px 12px; border: 0; border-radius: 6px; color: var(--rp-text-muted); background: transparent; font: inherit; font-size: 14px; cursor: pointer; }
+  .a-work-related button[aria-pressed='true'] { color: var(--rp-text); background: var(--rp-state-hover); text-decoration: underline; }
+  .rp-work-detail-pane .issue-detail { padding: 20px; background: var(--rp-surface); border: 1px solid var(--rp-border); border-radius: 12px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, .45fr); gap: 16px 24px; }
+  .rp-work-detail-pane .issue-detail-head { grid-column: 1; grid-row: 1; }
+  .rp-work-detail-pane .issue-detail .issue-fields { grid-column: 2; grid-row: 1 / span 2; align-self: start; margin: 0; border: 0; padding: 0; }
+  .rp-work-detail-pane .issue-detail .issue-section { grid-column: 1; margin: 0; }
+  .rp-work-detail-pane .issue-detail-summary { font-size: 22px; line-height: 1.3; margin: 8px 0 0; }
+  .rp-work-detail-pane[data-task-view='repair'] .a-work-chat { display: none; }
+  .rp-work-detail-pane[data-task-view='chat'] .issue-detail .issue-section,
+  .rp-work-detail-pane[data-task-view='chat'] #work-panel-task > .rp-responsive-disclosure-group { display: none; }
+  .rp-work-detail-pane .issue-actions { border: 1px solid var(--rp-border); border-radius: 12px; background: var(--rp-surface); padding: 20px; }
+  .rp-work-detail-pane .issue-action-primary { display: flex; flex-direction: column; gap: 16px; }
+  .rp-work-detail-pane .issue-comment-form { order: -1; }
+  .rp-work-detail-pane .issue-attach-group { border-top: 1px solid var(--rp-border); padding-top: 12px; }
+  .rp-work-detail-pane .issue-comment-form textarea { min-height: 100px; }
+  .a-work-chat { min-width: 0; padding: 20px; border: 1px solid var(--rp-border); border-radius: 12px; background: var(--rp-surface); }
+
+  /* Robot: real illustration and readings, separate diagnosis workspace. */
+  .a-robot-layout { grid-template-columns: minmax(300px, .85fr) minmax(0, 1.3fr); gap: 24px; align-items: start; }
+  .rp-check-first-level { background: var(--rp-surface); padding: 20px; border: 1px solid var(--rp-border); border-radius: 12px; gap: 12px; }
+  .rp-check-summary { background: transparent; border: 0; padding: 0; }
+  .rp-check-summary-header { border-bottom: 1px solid var(--rp-border); padding-bottom: 12px; }
+  .rp-check-summary-values { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .rp-check-summary-values > div { padding: 8px 0; min-width: 0; }
+  .rp-check-summary-values dd { font-size: 16px; }
+  .rp-check-summary-values > .rp-check-connection-card { grid-column: 1/-1; padding-top: 12px; border-top: 1px solid var(--rp-border); }
+  .rp-check-connection-values ul { grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 14px; }
+  .rp-check-connection-values li:first-child { grid-column: 1/-1; }
+  .rp-check-photo-frame { width: min(100%, 240px); }
+  .rp-check-overlay-frame { min-height: 240px; padding: 12px; }
+  .rp-check-navigation { background: transparent; border-bottom: 1px solid var(--rp-border); padding: 0; border-radius: 0; }
+  .rp-check-panel { margin-top: 16px; padding: 20px; border: 1px solid var(--rp-border); border-radius: 12px; background: var(--rp-surface); }
+  .rp-check-diagnostic-block { padding: 0; background: transparent; border: 0; }
+  .rp-check-block-selector { border-bottom: 1px solid var(--rp-border); padding-bottom: 12px; }
+  .rp-check-block-photo-frame { inline-size: min(100%, 220px); }
+  .rp-check-block-photo-viewport { min-height: 250px; }
+  .rp-check-supplementary summary { min-height: 44px; display: flex; align-items: center; }
+  .rp-robots-page .rp-page-layout__content { grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); align-items: start; }
+  .rp-robots-search-panel { position: sticky; top: 80px; }
+  .rp-robot-resolver__controls { gap: 8px; }
+  .rp-robots-recent-list { display: grid; grid-template-columns: 1fr; gap: 8px; }
+  .rp-robots-recent-card { padding: 12px; }
+
   /* Public/access screens: clear form first, quieter product context. */
   .rp-auth { background: var(--rp-canvas); }
   .rp-auth::before, .rp-auth__orbit { display: none; }
@@ -52,6 +107,21 @@ html[data-interface='task-first'] {
     .rp-app-shell.is-rail-collapsed { grid-template-columns: 80px minmax(0, 1fr); }
   }
   @media (max-width: 899px) {
+    .rp-work-sections { display: grid; gap: 0; }
+    .rp-work-sections .rp-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .a-work-related { border-top: 1px solid var(--rp-border); }
+    .a-work-related button { font-size: 14px; }
+    .rp-work-detail-pane .issue-detail { display: flex; flex-direction: column; padding: 14px; gap: 12px; }
+    .rp-work-detail-pane .issue-detail-summary { font-size: 20px; }
+    .rp-work-detail-pane .issue-detail .issue-fields { width: 100%; }
+    .rp-work-detail-pane .issue-actions, .a-work-chat { padding: 14px; }
+    .a-robot-layout, .rp-robots-page .rp-page-layout__content { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+    .rp-robots-search-panel { position: static; }
+    .rp-check-first-level, .rp-check-panel { padding: 14px; }
+    .rp-check-photo-frame { width: 190px; }
+    .rp-check-overlay-frame { min-height: 200px; }
+    .rp-check-summary-values dd { font-size: 14px; }
+    .rp-check-block-photo-frame { inline-size: min(100%, 180px); }
     .rp-shell__context { display: none; }
     .rp-shell__topbar { min-height: 60px; padding: 8px 12px; gap: 8px; }
     .rp-shell__park-brand { flex: 1; max-width: none; padding: 8px; min-height: 44px; }

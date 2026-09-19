@@ -11,7 +11,7 @@ async function selectSecondaryTab(page: Page, name: string) {
   await expect(page.getByRole('tab', { name, exact: true })).toHaveAttribute('aria-selected', 'true')
 }
 
-test('only admin can edit the global robot-check configuration', async ({ page }) => {
+for (const role of ['admin', 'royal'] as const) test(`${role} can edit the global robot-check configuration`, async ({ page }) => {
   const sections = [{ id: 'wheels', title: 'Колёса', is_enabled: true, roles: ['mechanic', 'admin'], fields: [{ id: 1, path: 'velocity', label: 'Скорость', sort_order: 0 }], sort_order: 0 }]
   const reading = {
     id: 1, section_id: 'wheels', path: 'parktronics.lt', label: 'Левый парктроник', display_kind: 'distance',
@@ -19,22 +19,10 @@ test('only admin can edit the global robot-check configuration', async ({ page }
     warning_below: 25, warning_above: null, critical_below: 10, critical_above: null,
     view: 'top', x: .24, y: .56, label_direction: 'left', is_enabled: true, sort_order: 0,
   }
-  await installOperational(page, {
-    role: 'royal',
-    routes: [{ method: 'GET', path: '/api/admin/emergency/sections', handler: () => ({ json: sections }) }],
-  })
-  await page.goto('/admin/emergency/config?park=7&tab=readings')
-  await expect(page.getByRole('tab', { name: 'Разделы и поля' })).toBeVisible()
-  await expect(page.getByRole('tab', { name: 'Показания' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Новый раздел' })).toHaveCount(0)
-  await page.getByRole('button', { name: 'Открыть раздел Колёса' }).click()
-  await expect(page.getByLabel('Название wheels')).toHaveAttribute('readonly', '')
-  await expect(page.getByRole('button', { name: 'Сохранить', exact: true })).toHaveCount(0)
-
   let saved = reading
   let written: { endpoint: string; body: Record<string, unknown> } | null = null
   await installOperational(page, {
-    role: 'admin',
+    role,
     routes: [
       { method: 'GET', path: '/api/admin/emergency/sections', handler: () => ({ json: sections }) },
       { method: 'GET', path: '/api/admin/emergency-readings', handler: () => ({ json: [saved], headers: { ETag: '"readings-1"' } }) },

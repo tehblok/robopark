@@ -230,11 +230,13 @@ for (const boundary of [
     await settlePage(page)
     await assertWorkMode(page, boundary.width)
     await expect(page.getByRole('heading', { name: 'Задача ROBOPARK-42', exact: true })).toBeVisible()
-    const columns = await page.locator('.rp-work-filters').evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length)
-    expect(columns).toBe(boundary.filterColumns)
+    // The contract is usable filters without clipping, not a fixed CSS column count.
     if (boundary.mode === 'sequential') {
       await expect(page.getByRole('button', { name: 'Назад к списку', exact: true })).toBeVisible()
+      await page.getByRole('button', { name: 'Назад к списку', exact: true }).click()
+      await expect(page.getByRole('combobox', { name: 'Статус задач' })).toBeVisible()
     } else {
+      await expect(page.getByRole('combobox', { name: 'Статус задач' })).toBeVisible()
       const list = await page.locator('.rp-work-list-pane').boundingBox()
       const detail = await page.locator('.rp-work-detail-pane').boundingBox()
       expect(list!.x + list!.width).toBeLessThanOrEqual(detail!.x)
@@ -290,9 +292,9 @@ test('1440px 200% root text reflow preserves Work triage and detail', async ({ p
   await assertResponsiveContracts(page, 1440)
 })
 
-test('legacy Overview URL redirects to Work with the selected park', async ({ page }) => {
+test('legacy Dashboard URL redirects to Work with the selected park', async ({ page }) => {
   await installOperational(page)
-  await page.goto('/overview?park=7')
+  await page.goto('/dashboard?park=7')
   await expect(page).toHaveURL('/work?park=7')
   await expect(page.getByRole('heading', { name: 'Очередь задач' })).toBeVisible()
 })

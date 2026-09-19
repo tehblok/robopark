@@ -43,7 +43,9 @@ import {
   type DomainError,
 } from '../../shared/api/classifyApiError'
 import { resourceStore, useCachedResource } from '../../lib/resource'
-import { Tabs, TabPanel } from '../../design-system/navigation/Tabs'
+import { TabPanel } from '../../design-system/navigation/Tabs'
+import { useInterfaceMode } from '../../app/interface/InterfaceModeProvider'
+import { TaskFirstWorkbench, type WorkSection } from './TaskFirstWorkbench'
 import { WorkRobotCheck } from './WorkRobotCheck'
 import { TaskPartsPanel } from '../inventory/TaskPartsPanel'
 import { WorkFilters } from './WorkFilters'
@@ -429,6 +431,9 @@ function IssueWorkbenchOwner({
   getAccessGeneration: () => number
 }) {
   const cachePrefix = `work:${user.id}:`
+  const { mode } = useInterfaceMode()
+  const taskFirst = mode === 'task-first'
+  const [taskFocus, setTaskFocus] = useState<'repair' | 'chat'>('repair')
   const accessPrefix = `${cachePrefix}${accessKey}:`
   const allowUntagged = user.role === 'operator'
     || user.role === 'admin'
@@ -790,7 +795,7 @@ function IssueWorkbenchOwner({
         data-has-detail={Boolean(issueKey)}
       >
         <MasterDetail
-          detail={<div className="rp-work-detail-pane">
+          detail={<div className="rp-work-detail-pane" data-task-view={taskFirst ? taskFocus : 'all'}>
             <Panel collapsible density="work" storageKey="work-detail" title={issueKey ? `Задача ${issueKey}` : 'Детали задачи'}>
             {!issueKey ? (
               <EmptyState
@@ -818,17 +823,14 @@ function IssueWorkbenchOwner({
                         <Link to={rootHref}>К главному блокеру {rootIssue}</Link>
                       </nav>
                       ) : null}
-                      <Tabs ariaLabel="Разделы задачи" value={activeTab}
-                        items={[
-                          { id: 'task', label: 'Задача' },
-                          { id: 'open', label: 'Открытые задачи' },
-                          { id: 'closed', label: 'Закрытые задачи' },
-                          ...(mechanicCanWork ? [{ id: 'check', label: 'Проверка робота' }] : []),
-                        ]}
-                        onChange={tab => changeTab(tab as 'task' | 'open' | 'closed' | 'check')}
-                        panelIdFor={tab => `work-panel-${tab}`} />
+                      <TaskFirstWorkbench enabled={taskFirst} activeTab={activeTab as WorkSection}
+                        focus={taskFocus} canCheck={mechanicCanWork}
+                        onChange={tab => {
+                          setTaskFocus(tab === 'chat' ? 'chat' : 'repair')
+                          changeTab(tab === 'chat' ? 'task' : tab)
+                        }} />
                     </> : null}
-                    <TabPanel id="work-panel-task" labelledBy="tab-task" active={activeTab === 'task'} key={issueKey}>
+                    <TabPanel id="work-panel-task" labelledBy={taskFirst && taskFocus === 'chat' ? 'tab-chat' : 'tab-task'} active={activeTab === 'task'} key={issueKey}>
                     <SyncStatus updatedAt={hiddenDetail ? detail.updatedAt : detail.updatedAt !== null && comments.updatedAt !== null ? Math.min(detail.updatedAt, comments.updatedAt) : null}
                       isRevalidating={detail.isRevalidating || (!hiddenDetail && comments.isRevalidating)}
                       error={detail.error || (!hiddenDetail ? comments.error : null)} />
@@ -859,7 +861,7 @@ function IssueWorkbenchOwner({
                         {taskControlMessage ? <p role="status">{taskControlMessage}</p> : null}
                         {taskControlError ? <p role="alert">{taskControlError}</p> : null}
                       </section> : null}
-                      {!hiddenDetail ? <TaskTimeline items={taskComments} /> : null}
+                      {!hiddenDetail ? <div className="a-work-chat"><TaskTimeline items={taskComments} /></div> : null}
                     </> : <IssueDetailPanel
                       currentUser={user.tracker_login ?? user.username} accountKey={user.username}
                       commentsLoading={comments.isLoading && !comments.data}

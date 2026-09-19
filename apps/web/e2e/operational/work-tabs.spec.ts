@@ -24,7 +24,13 @@ async function installWorkTabs(page: Page) {
   const emergency: string[] = []
   const comments = new Map<string, TrackerComment[]>()
   const mutations: { key: string; text: string }[] = []
-  const issues = new Map([issue, firstRepair, secondRepair, ...closedRepairs].map(value => [value.key, value]))
+  const issues = new Map([issue, firstRepair, secondRepair, ...closedRepairs].map(value => [value.key, {
+    ...value, claim: { park_id: 7 }, workflow: {
+      owner: { login: 'mechanic-e2e', display: 'Механик смены' }, review_state: null,
+      display_status: value.status_key === 'closed' ? 'closed' : 'in_progress',
+      sync_state: 'synced', has_current_cycle_comment: false,
+    },
+  }]))
   page.on('request', request => {
     const url = new URL(request.url())
     if (url.pathname.startsWith('/api/emergency/')) emergency.push(url.pathname)
@@ -54,8 +60,12 @@ async function installWorkTabs(page: Page) {
       const key = new URL(request.url).pathname.split('/').at(-2)!
       return { json: comments.get(key) ?? [] }
     } },
+    { method: 'GET', path: /^\/api\/tracker\/issues\/ROBOPARK-\d+\/timeline$/, handler: request => {
+      const key = new URL(request.url).pathname.split('/').at(-2)!
+      return { json: (comments.get(key) ?? []).map(comment => ({ ...comment, kind: 'tracker', sync_state: 'synced' })) }
+    } },
     { method: 'GET', path: /^\/api\/tracker\/transitions\/ROBOPARK-\d+$/, handler: () => ({ json: [] }) },
-    { method: 'POST', path: /^\/api\/tracker\/issues\/ROBOPARK-\d+\/comment$/, handler: async request => {
+    { method: 'POST', path: /^\/api\/tracker\/issues\/ROBOPARK-\d+\/(comment|messages)$/, handler: async request => {
       const key = new URL(request.url).pathname.split('/').at(-2)!
       const { text }: { text: string } = await request.json()
       mutations.push({ key, text })

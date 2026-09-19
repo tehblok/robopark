@@ -17,6 +17,7 @@ import { ROBOT_POLL_MS } from './polling'
 import { formatRobotMode } from './robotDetailModel'
 import { useVisibilityPolling } from './useVisibilityPolling'
 import './robot-check.css'
+import { TaskFirstRobotLayout } from './TaskFirstRobotLayout'
 
 export type RobotCheckApiClient = Pick<typeof api, 'emergencySnapshot' | 'emergencySection'>
 export type RobotCheckWorkspaceProps = {
@@ -176,7 +177,7 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
       </section>
     </div>
   return <div className="rp-check-workspace" data-unified={Boolean(renderSummary)}>
-    <div className="rp-check-layout"><div className="rp-check-layout__overview">{identity}</div><div className="rp-check-layout__details">{detail}</div></div>
+    <TaskFirstRobotLayout identity={identity} detail={detail} />
   </div>
 }
 export function RobotCheckWorkspace(props: RobotCheckWorkspaceProps) {

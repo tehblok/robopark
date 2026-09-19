@@ -81,7 +81,15 @@ async function switchUser(page: Page, username: `${Actor}-browser`) {
 async function comment(page: Page, text: string) {
   await page.getByRole('textbox', { name: 'Комментарии', exact: true }).fill(text)
   await page.getByRole('button', { name: 'Отправить', exact: true }).click()
-  await expect(page.getByText(text, { exact: true })).toBeVisible()
+  await expectChatText(page, text)
+}
+
+async function expectChatText(page: Page, text: string) {
+  const chat = page.getByRole('tab', { name: 'Чат', exact: true })
+  const taskFirst = await chat.isVisible()
+  if (taskFirst) await chat.click()
+  await expect(page.getByRole('region', { name: 'Чат задачи' }).getByText(text, { exact: false })).toBeVisible()
+  if (taskFirst) await page.getByRole('tab', { name: 'Ремонт', exact: true }).click()
 }
 
 async function handoff(page: Page, assignee: string, reason: string) {
@@ -89,7 +97,7 @@ async function handoff(page: Page, assignee: string, reason: string) {
   await page.getByLabel('Логин сменщика').fill(assignee)
   await page.getByLabel('Причина передачи').fill(reason)
   await page.getByRole('button', { name: 'Передать смену', exact: true }).last().click()
-  await expect(page.getByText(reason, { exact: false })).toBeVisible()
+  await expectChatText(page, reason)
 }
 
 async function submitReview(page: Page, input: { clarification?: string; camera?: boolean }) {
@@ -107,7 +115,7 @@ async function returnReview(page: Page) {
   await page.getByRole('button', { name: 'Вернуть в работу', exact: true }).click()
   await page.getByRole('textbox', { name: 'Что нужно исправить' }).fill('Повторить проверку')
   await page.getByRole('button', { name: 'Вернуть задачу', exact: true }).click()
-  await expect(page.getByText('Повторить проверку', { exact: false })).toBeVisible()
+  await expectChatText(page, 'Повторить проверку')
 }
 
 async function assertMobileContract(page: Page) {
@@ -116,12 +124,15 @@ async function assertMobileContract(page: Page) {
   await expect(page.locator('main')).toHaveAttribute('id', 'main-content')
 }
 
-async function runLifecycle(page: Page, width: number) {
+async function runLifecycle(page: Page, width: number, taskFirst = false) {
   const bridge = await startDiagnosticApi()
   const session: Session = { actor: 'mechanic', signedIn: true }
   const mobile = width === 390
   try {
     await installLifecycle(page, bridge, session)
+    if (taskFirst) await page.addInitScript(ids => {
+      for (const id of ids) localStorage.setItem(`robopark:interface:v1:${id}`, 'task-first')
+    }, (['mechanic', 'mechanic-next', 'operator'] as const).map(actor => browserUser(actor).id))
     await page.setViewportSize({ width, height: mobile ? 844 : 900 })
     await page.goto('/work?park=7')
     await expect(page.getByRole('button', { name: 'Взять в работу', exact: true })).toBeVisible()
@@ -168,6 +179,7 @@ async function runLifecycle(page: Page, width: number) {
     await drain(bridge)
 
     await openIssue(page)
+    if (taskFirst) await page.getByRole('tab', { name: 'Чат', exact: true }).click()
     const timeline = page.getByRole('region', { name: 'Чат задачи' }).locator('.task-message .issue-comment-text')
     const expected = ['Задача взята в работу', 'Заменено крепление колеса', 'Конец смены', 'Проверка второй сменой завершена', 'Проверено после передачи', 'Передано на проверку', 'Повторить проверку', 'Исправлено после возврата', 'Уточнение после возврата', 'Передано на проверку']
     await expect.poll(async () => {
@@ -213,4 +225,9 @@ test('desktop completes the full lifecycle through visible controls exactly once
 test('390x844 completes the full lifecycle, outage recovery and mobile contract', async ({ page }) => {
   test.setTimeout(30_000)
   await runLifecycle(page, 390)
+})
+
+for (const width of [390, 1440]) test(`interface A completes full lifecycle at ${width}px`, async ({ page }) => {
+  test.setTimeout(45_000)
+  await runLifecycle(page, width, true)
 })
