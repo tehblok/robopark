@@ -9,7 +9,7 @@ from typing import Any
 from .paths import HostPaths
 
 PROJECT_NAME = "robopark"
-EXPECTED_SERVICES = frozenset({"api", "web"})
+EXPECTED_SERVICES = frozenset({"db", "api", "web"})
 
 
 def compose_command(paths: HostPaths, arguments: Sequence[str]) -> list[str]:
@@ -57,7 +57,7 @@ def safe_compose_services(services: Iterable[Mapping[str, Any]]) -> list[dict[st
 
     output = []
     for service in services:
-        if service.get("Service") not in ("api", "web", "ops-agent"):
+        if service.get("Service") not in ("db", "api", "web", "ops-agent"):
             continue
         item = {"Service": service["Service"]}
         if service.get("State") in (

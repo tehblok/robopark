@@ -377,7 +377,7 @@ def test_doctor_handles_null_readiness_checks_and_malformed_migration_manifest(h
 
 def test_healthy_installed_profile_does_not_require_legacy_ops_agent(host_paths):
     _release(host_paths)
-    healthy = json.dumps([{'Service': name, 'State': 'running', 'Health': 'healthy'} for name in ('api', 'web')])
+    healthy = json.dumps([{'Service': name, 'State': 'running', 'Health': 'healthy'} for name in ('db', 'api', 'web')])
     report = run_doctor(host_paths, ReviewRunner(healthy), ContractHttp())
     assert report.by_code('containers').status == 'ok'
     assert report.by_code('containers').repair is None

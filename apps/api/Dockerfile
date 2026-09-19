@@ -1,6 +1,9 @@
 FROM python:3.12-slim@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217
 
 ARG UV_VERSION=0.11.31
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-17 \
+    && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir "uv==${UV_VERSION}"
 
 WORKDIR /app
@@ -22,9 +25,7 @@ RUN uv sync --frozen --no-dev
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
-# Run as an unprivileged user; /data is the mounted SQLite volume.
-# UVICORN_WORKERS default 2, cap 4. Shared merge and file-SQLite concurrency
-# are covered by API tests; measure on the target host before raising workers.
+# Run as an unprivileged user; /data contains attachments and ops artifacts.
 RUN useradd --create-home --uid 10001 robopark \
     && mkdir -p /data \
     && chown -R robopark:robopark /app /data

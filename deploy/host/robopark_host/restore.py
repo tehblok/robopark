@@ -14,9 +14,10 @@ import re
 import shutil
 import sqlite3
 import stat
+import subprocess
 import time
 import zipfile
-from contextlib import closing
+from contextlib import closing, suppress
 from pathlib import Path
 from uuid import UUID
 
@@ -48,6 +49,53 @@ PHASES = {
     "manual_recovery_required",
 }
 TERMINAL = {"succeeded", "rolled_back", "failed"}
+
+
+def validate_postgres_dump(path, *, expected_head, candidate_dsn, run=None):
+    """Validate a custom dump by restoring only into an isolated candidate DB."""
+    path = Path(path)
+    if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+        raise ReleaseError("snapshot_invalid")
+    execute = run or (
+        lambda argv, **kwargs: subprocess.run(
+            argv, check=True, capture_output=True, text=True, timeout=300, **kwargs
+        ).stdout
+    )
+    if not candidate_dsn.startswith("postgresql://") or candidate_dsn.rstrip("/").endswith(
+        "/robopark"
+    ):
+        raise ReleaseError("snapshot_invalid")
+    try:
+        listing = str(execute(["pg_restore", "--list", str(path)]))
+        if "alembic_version" not in listing:
+            raise ValueError()
+        execute(
+            [
+                "pg_restore",
+                "--clean",
+                "--if-exists",
+                "--no-owner",
+                "--no-privileges",
+                f"--dbname={candidate_dsn}",
+                str(path),
+            ]
+        )
+        head = str(
+            execute(
+                [
+                    "psql",
+                    "--no-psqlrc",
+                    "--tuples-only",
+                    "--no-align",
+                    f"--dbname={candidate_dsn}",
+                    "--command=SELECT version_num FROM alembic_version",
+                ]
+            )
+        ).strip()
+        if head != expected_head:
+            raise ValueError()
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise ReleaseError("snapshot_invalid") from exc
 
 
 def _path(paths):
@@ -170,7 +218,72 @@ def _validate_database(path, head):
         raise ReleaseError("snapshot_invalid") from exc
 
 
-def _prepare(paths, journal):
+def _database_exec(paths, arguments):
+    from .updater import compose
+
+    return compose("robopark", paths.state / "current-compose.json") + [
+        "exec",
+        "-T",
+        "db",
+        *arguments,
+    ]
+
+
+def _validate_postgres_candidate(paths, journal, dump, head, runner):
+    identity = str(UUID(journal["request"]["job_id"]))
+    database = "robopark_restore_" + identity.replace("-", "")
+    container_dump = f"/host-restores/{identity}/candidate/{dump.name}"
+    try:
+        runner.run(_database_exec(paths, ["pg_restore", "--list", container_dump]), timeout=60)
+        runner.run(
+            _database_exec(paths, ["dropdb", "--if-exists", "-U", "robopark", database]),
+            timeout=60,
+        )
+        runner.run(
+            _database_exec(paths, ["createdb", "-U", "robopark", database]), timeout=60
+        )
+        runner.run(
+            _database_exec(
+                paths,
+                [
+                    "pg_restore",
+                    "--no-owner",
+                    "--no-privileges",
+                    "--dbname=" + database,
+                    container_dump,
+                ],
+            ),
+            timeout=600,
+        )
+        output = runner.run(
+            _database_exec(
+                paths,
+                [
+                    "psql",
+                    "-U",
+                    "robopark",
+                    "--dbname=" + database,
+                    "--tuples-only",
+                    "--no-align",
+                    "--command=SELECT version_num FROM alembic_version",
+                ],
+            ),
+            timeout=30,
+            capture=True,
+        )
+        if output.decode("utf-8", "strict").strip() != head:
+            raise ReleaseError("snapshot_invalid")
+    finally:
+        cleanup = getattr(runner, "run_cleanup", None)
+        command = _database_exec(paths, ["dropdb", "--if-exists", "-U", "robopark", database])
+        if cleanup:
+            cleanup(command, timeout=60)
+        else:
+            with suppress(Exception):
+                runner.run(command, timeout=60)
+
+
+def _prepare(paths, journal, runner):
     root = _root(paths, journal)
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     candidate = root / "candidate"
@@ -245,7 +358,8 @@ def _prepare(paths, journal):
             or not isinstance(files, dict)
         ):
             raise ReleaseError("snapshot_invalid")
-        if set(names) != {"manifest.json", *files} or "data/robopark.db" not in files:
+        database_members = {"data/robopark.db", "data/robopark.dump"} & set(files)
+        if set(names) != {"manifest.json", *files} or len(database_members) != 1:
             raise ReleaseError("snapshot_invalid")
         expanded = sum(item.file_size for item in infos)
         live_size = sum(p.stat().st_size for p in (paths.var / "data").rglob("*") if p.is_file())
@@ -290,7 +404,12 @@ def _prepare(paths, journal):
     from .trust import directory_key
 
     release = verify_directory(current, directory_key(paths, current))
-    _validate_database(candidate / "robopark.db", release["migration_head"])
+    if (candidate / "robopark.dump").is_file():
+        _validate_postgres_candidate(
+            paths, journal, candidate / "robopark.dump", release["migration_head"], runner
+        )
+    else:
+        _validate_database(candidate / "robopark.db", release["migration_head"])
     owner = (paths.var / "data").stat()
     for item in [candidate, *candidate.rglob("*")]:
         if (item.stat().st_uid, item.stat().st_gid) != (owner.st_uid, owner.st_gid):
@@ -301,13 +420,32 @@ def _prepare(paths, journal):
     sync_directory(root)
 
 
-def _replace(paths, source, journal):
+def _replace(paths, source, journal, runner=None):
     identity = journal["request"]["job_id"]
     temporary = paths.var / (".manual-restore-" + identity)
     displaced = paths.var / (".manual-displaced-" + identity)
     if temporary.exists():
         shutil.rmtree(temporary)
     durable_copy_tree(source, temporary)
+    database_dump = temporary / "robopark.dump"
+    if database_dump.is_file():
+        database_dump.unlink()
+        relative = source.relative_to(_root(paths, journal)).as_posix()
+        runner.run(
+            _database_exec(
+                paths,
+                [
+                    "pg_restore",
+                    "--clean",
+                    "--if-exists",
+                    "--no-owner",
+                    "--no-privileges",
+                    "--dbname=robopark",
+                    f"/host-restores/{journal['request']['job_id']}/{relative}/robopark.dump",
+                ],
+            ),
+            timeout=600,
+        )
     data = paths.var / "data"
     if data.is_symlink():
         raise ReleaseError("unsafe_data_path")
@@ -370,7 +508,7 @@ def _recover(paths, journal, runner):
     _phase(paths, journal, "rolling_back", error=journal["error"] or "interrupted")
     runner.run(["systemctl", "stop", "robopark.service"], timeout=120)
     if journal["snapshot_done"]:
-        _replace(paths, _root(paths, journal) / "previous", journal)
+        _replace(paths, _root(paths, journal) / "previous", journal, runner)
     _phase(paths, journal, "rollback_starting")
     _ready(paths, runner)
     _phase(
@@ -409,7 +547,7 @@ def run_restore(paths, request, runner):
     try:
         if resumed:
             return _recover(paths, journal, runner)
-        _prepare(paths, journal)
+        _prepare(paths, journal, runner)
         _phase(paths, journal, "prepared")
         _phase(paths, journal, "maintenance")
         _maintenance(paths, True)
@@ -418,11 +556,25 @@ def run_restore(paths, request, runner):
         _phase(paths, journal, "snapshotting")
         root = _root(paths, journal)
         durable_copy_tree(paths.var / "data", root / "previous.partial")
+        if (root / "candidate/robopark.dump").is_file():
+            runner.run(
+                _database_exec(
+                    paths,
+                    [
+                        "pg_dump",
+                        "--format=custom",
+                        f"--file=/host-restores/{journal['request']['job_id']}/previous.partial/robopark.dump",
+                        "--username=robopark",
+                        "--dbname=robopark",
+                    ],
+                ),
+                timeout=300,
+            )
         os.replace(root / "previous.partial", root / "previous")
         sync_directory(root)
         _phase(paths, journal, "snapshotted", snapshot_done=True)
         _phase(paths, journal, "replacing")
-        _replace(paths, root / "candidate", journal)
+        _replace(paths, root / "candidate", journal, runner)
         _phase(paths, journal, "replaced")
         _phase(paths, journal, "starting")
         _ready(paths, runner)

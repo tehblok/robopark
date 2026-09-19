@@ -14,6 +14,13 @@ prepare_layout() {
         chown 0:0 "$host_directory"
         chmod 700 "$host_directory"
     done
+    for private_name in compose restores; do
+        host_directory=$ROBOPARK_VAR/ops/state/$private_name
+        [ ! -L "$host_directory" ] || die symlinked_host_directory
+        mkdir -p "$host_directory"
+        chown 0:0 "$host_directory"
+        chmod 700 "$host_directory"
+    done
     for exchange_name in inbox artifacts; do
         host_directory=$ROBOPARK_VAR/ops/$exchange_name
         [ ! -L "$host_directory" ] || die symlinked_host_directory

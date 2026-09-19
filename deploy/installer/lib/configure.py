@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -17,11 +18,35 @@ HOST_DEFAULTS = {
     'LOGIN_ATTEMPT_WINDOW_SECONDS': '300', 'LOGIN_LOCKOUT_SECONDS': '900',
     'REGISTER_MAX_ATTEMPTS': '10', 'SEED_USERNAME': 'royal', 'SEED_ROLE': 'royal',
     'DEV_SEED': 'false', 'UVICORN_WORKERS': '', 'OPERATOR_SHARED_PASSWORD': '',
+    'ROBOPARK_DATABASE_PROFILE': 'postgresql-17', 'ROBOPARK_HOST_PROFILE': '',
     'SECRET_KEY': '', 'SEED_PASSWORD': '', 'CORS_ORIGINS': '',
 }
 TUNA_DEFAULTS = {'TUNA_TOKEN': '', 'TUNA_LOCATION': 'ru', 'TUNA_SUBDOMAIN': '', 'TUNA_DOMAIN': '', 'TUNA_BIND': '127.0.0.1:8080'}
 UPDATER_DEFAULTS = {'GITHUB_REPOSITORY': 'tehblok/robopark', 'GITHUB_TOKEN': '', 'GITHUB_CHANNEL': 'stable', 'GITHUB_ENABLED': 'true'}
 ALLOWED = set(HOST_DEFAULTS) | set(TUNA_DEFAULTS) | set(UPDATER_DEFAULTS)
+
+
+def validate_clean_data_root(target, *, expected):
+    """Return the exact named Robopark root; reject aliases and broad targets."""
+    target, expected = Path(target), Path(expected)
+    broad = {Path("/"), Path("/var"), Path("/var/lib"), Path.cwd()}
+    if target in broad or target.is_symlink() or expected.is_symlink():
+        raise ValueError("unsafe_data_root")
+    try:
+        resolved = target.resolve(strict=True)
+        named = expected.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("unsafe_data_root") from exc
+    if resolved != named or target.absolute() != expected.absolute() or target.name != "robopark":
+        raise ValueError("unsafe_data_root")
+    return resolved
+
+
+def clean_reinstall_data_root(target, *, expected, confirmation):
+    resolved = validate_clean_data_root(target, expected=expected)
+    if confirmation != 'DELETE ROBOPARK DATA':
+        raise ValueError('confirmation_required')
+    shutil.rmtree(resolved)
 
 
 def read_env(path):
@@ -58,6 +83,25 @@ def atomic_env(path, values):
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def atomic_secret(path, value):
+    if path.exists() or path.is_symlink():
+        if path.is_symlink() or not path.is_file() or stat.S_IMODE(path.stat().st_mode) & 0o077:
+            raise ValueError('invalid_secret_file')
+        return path.read_text().strip()
+    fd, tmp = tempfile.mkstemp(prefix='.' + path.name + '.', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(value + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        return value
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -105,6 +149,11 @@ def validate(values):
     values['GITHUB_ENABLED'] = 'true' if repo else 'false'
     if values['UVICORN_WORKERS'] not in ('2', '4'):
         raise ValueError('invalid_host_profile')
+    expected_profile = 'orin' if values['UVICORN_WORKERS'] == '4' else 'vim4-safe'
+    if values['ROBOPARK_HOST_PROFILE'] != expected_profile:
+        raise ValueError('invalid_host_profile')
+    if values['ROBOPARK_DATABASE_PROFILE'] != 'postgresql-17':
+        raise ValueError('invalid_database_profile')
     for key in ('ROBOPARK_ROLE', 'COOKIE_SECURE', 'PASSWORD_REQUIRE_COMPLEXITY', 'SEED_ROLE', 'DEV_SEED'):
         if values[key] != HOST_DEFAULTS[key]:
             raise ValueError('unsafe_host_setting')
@@ -154,6 +203,10 @@ def configure(root, mode, filename, resume):
         memory = memory_path.read_text() if memory_path.exists() else ''
         total = re.search(r'^MemTotal:\s+(\d+) kB', memory, re.M)
         values['UVICORN_WORKERS'] = '4' if total and int(total.group(1)) >= 24 * 1024 * 1024 else '2'
+    if not values['ROBOPARK_HOST_PROFILE']:
+        values['ROBOPARK_HOST_PROFILE'] = (
+            'orin' if values['UVICORN_WORKERS'] == '4' else 'vim4-safe'
+        )
     validate(values)
     if values['UVICORN_WORKERS'] == '4':
         memory = (Path(root) / 'proc/meminfo').read_text()
@@ -166,11 +219,23 @@ def configure(root, mode, filename, resume):
     os.chmod(etc, 0o700)
     for filename, defaults in (('host.env', HOST_DEFAULTS), ('tuna.env', TUNA_DEFAULTS), ('updater.env', UPDATER_DEFAULTS)):
         atomic_env(etc / filename, {key: values[key] for key in defaults})
+    password = atomic_secret(etc / 'postgres-password', secrets.token_urlsafe(48))
+    pgpass = etc / 'pgpass'
+    atomic_secret(pgpass, f'db:5432:robopark:robopark:{password}')
+    if os.geteuid() == 0:
+        os.chown(pgpass, 10001, 10001)
 
 
 if __name__ == '__main__':
     try:
-        configure(*sys.argv[1:])
+        if sys.argv[1:2] == ['--validate-clean-data-root'] and len(sys.argv) == 4:
+            validate_clean_data_root(Path(sys.argv[2]), expected=Path(sys.argv[3]))
+        elif sys.argv[1:2] == ['--clean-data-root'] and len(sys.argv) == 5:
+            clean_reinstall_data_root(
+                Path(sys.argv[2]), expected=Path(sys.argv[3]), confirmation=sys.argv[4]
+            )
+        else:
+            configure(*sys.argv[1:])
     except (ValueError, OSError, EOFError, subprocess.SubprocessError):
         # Parser/OS exceptions may contain input, paths, or child output.
         print('Некорректная конфигурация или права файла. Проверьте ответы и режим 0600.', file=sys.stderr)

@@ -1,4 +1,4 @@
-"""SQLite + config snapshot trees used inside snapshot ZIPs."""
+"""Database + config snapshot trees used inside snapshot ZIPs."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from robopark_api.models import Base, User
 from robopark_api.security import hash_password
 from robopark_api.services.ops.snapshot import (
+    SNAPSHOT_DUMP_REL,
     build_snapshot_tree,
     restore_snapshot_tree,
     sqlite_path_from_url,
@@ -106,3 +107,52 @@ def test_snapshot_skips_symlinks(tmp_path: Path):
         data_dir=live,
     )
     assert not (tree / "data" / "leak.txt").exists()
+
+
+def test_postgres_snapshot_uses_custom_dump_and_validates_catalog(tmp_path: Path):
+    tree = tmp_path / "tree"
+    calls: list[list[str]] = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        if argv[:2] == ["pg_dump", "--format=custom"]:
+            Path(
+                next(value.removeprefix("--file=") for value in argv if value.startswith("--file="))
+            ).write_bytes(b"PGDMP")
+            return ""
+        if argv[:2] == ["pg_restore", "--list"]:
+            return "TABLE DATA public alembic_version\n"
+        raise AssertionError(argv)
+
+    build_snapshot_tree(
+        tree,
+        database_url="postgresql+psycopg://robopark@db:5432/robopark",
+        config_files={},
+        run=run,
+    )
+
+    assert (tree / SNAPSHOT_DUMP_REL).read_bytes() == b"PGDMP"
+    assert calls[0][:2] == ["pg_dump", "--format=custom"]
+    assert calls[1] == ["pg_restore", "--list", str(tree / SNAPSHOT_DUMP_REL)]
+
+
+def test_postgres_restore_validates_catalog_before_replacing_database(tmp_path: Path):
+    tree = tmp_path / "tree"
+    dump = tree / SNAPSHOT_DUMP_REL
+    dump.parent.mkdir(parents=True)
+    dump.write_bytes(b"PGDMP")
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        return "TABLE DATA public alembic_version\n" if "--list" in argv else ""
+
+    restore_snapshot_tree(
+        tree,
+        database_url="postgresql+psycopg://robopark@db:5432/robopark",
+        config_targets={},
+        run=run,
+    )
+
+    assert calls[0] == ["pg_restore", "--list", str(dump)]
+    assert calls[1][-2:] == ["--dbname=postgresql://robopark@db:5432/robopark", str(dump)]

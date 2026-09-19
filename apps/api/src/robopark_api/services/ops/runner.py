@@ -49,7 +49,6 @@ from robopark_api.services.ops.snapshot import (
     SnapshotError,
     build_snapshot_tree,
     restore_snapshot_tree,
-    sqlite_path_from_url,
 )
 
 RESTORE_PHRASE = "ВОССТАНОВИТЬ"
@@ -297,7 +296,7 @@ def run_restore(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) -
         _require_host_writes(ctx)
         restore_snapshot_tree(
             tree,
-            database_path=sqlite_path_from_url(ctx.database_url),
+            database_url=ctx.database_url,
             config_targets=ctx.config_files,
             data_dir=ctx.data_dir,
             preserve_dirs=[paths["root"]],
@@ -450,7 +449,7 @@ def run_update(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) ->
                 ctx.before_db_replace()
             restore_snapshot_tree(
                 rollback_tree,
-                database_path=sqlite_path_from_url(ctx.database_url),
+                database_url=ctx.database_url,
                 config_targets=ctx.config_files,
                 data_dir=ctx.data_dir,
                 preserve_dirs=[paths["root"]],

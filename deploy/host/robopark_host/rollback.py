@@ -85,7 +85,18 @@ def durable_copy_tree(source, destination):
         sync_directory(path)
 
 
-def snapshot(paths, journal):
+def _database_command(paths, arguments):
+    from .updater import compose
+
+    return compose("robopark", paths.state / "current-compose.json") + [
+        "exec",
+        "-T",
+        "db",
+        *arguments,
+    ]
+
+
+def snapshot(paths, journal, runner=None):
     root = paths.ops / "rollbacks" / journal["job_id"]
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     temporary = root / "data.partial"
@@ -94,6 +105,27 @@ def snapshot(paths, journal):
     durable_copy_tree(paths.var / "data", temporary)
     os.replace(temporary, root / "data")
     sync_directory(root)
+    if runner is not None:
+        target = f"/host-rollbacks/{journal['job_id']}/database.dump"
+        runner.run(
+            _database_command(
+                paths,
+                [
+                    "pg_dump",
+                    "--format=custom",
+                    f"--file={target}",
+                    "--username=robopark",
+                    "--dbname=robopark",
+                ],
+            ),
+            timeout=300,
+        )
+        runner.run(
+            _database_command(paths, ["pg_restore", "--list", target]),
+            timeout=60,
+        )
+        if not (root / "database.dump").is_file():
+            raise ReleaseError("update_failed")
     backup = root / "units"
     backup.mkdir(mode=0o700, exist_ok=True)
     installed = paths.root / "etc/systemd/system"
@@ -116,7 +148,7 @@ def restore_units(paths, journal):
     sync_directory(installed)
 
 
-def restore_data(paths, journal):
+def restore_data(paths, journal, runner=None):
     root = paths.ops / "rollbacks" / journal["job_id"]
     temporary = paths.var / (".restore-" + journal["job_id"])
     saved = paths.var / (".displaced-" + journal["job_id"])
@@ -130,6 +162,23 @@ def restore_data(paths, journal):
         sync_directory(paths.var)
     os.replace(temporary, paths.var / "data")
     sync_directory(paths.var)
+    database = root / "database.dump"
+    if runner is not None and database.is_file():
+        runner.run(
+            _database_command(
+                paths,
+                [
+                    "pg_restore",
+                    "--clean",
+                    "--if-exists",
+                    "--no-owner",
+                    "--no-privileges",
+                    "--dbname=robopark",
+                    f"/host-rollbacks/{journal['job_id']}/database.dump",
+                ],
+            ),
+            timeout=600,
+        )
 
 
 def rollback_release(paths, journal, runner, phase):
@@ -145,7 +194,7 @@ def rollback_release(paths, journal, runner, phase):
     restore_trust(paths, journal)
     runner.run(["systemctl", "stop", "robopark.service"], timeout=120)
     if journal["migration_started"]:
-        restore_data(paths, journal)
+        restore_data(paths, journal, runner)
     atomic_symlink(previous, paths.current)
     atomic_symlink(paths.state / journal["previous_config"], paths.state / "current-compose.json")
     if journal["original_previous"]:

@@ -149,7 +149,8 @@ def test_api_dockerfile_uses_pinned_frozen_runtime_dependencies():
     assert 'pip install --no-cache-dir "uv==${UV_VERSION}"' in text
     assert "COPY pyproject.toml uv.lock ./" in text
     assert "pip install --no-cache-dir . pytest" not in text
-    assert "apt-get" not in text
+    assert "apt-get install -y --no-install-recommends postgresql-client-17" in text
+    assert "rm -rf /var/lib/apt/lists/*" in text
     assert "curl" not in text
 
 

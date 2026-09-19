@@ -15,11 +15,74 @@ import subprocess
 import threading
 from collections import deque
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .paths import HostPaths
 from .rollback import atomic_symlink
 from .state import atomic_write_json
+
+
+@dataclass(frozen=True)
+class HostProfile:
+    """Resource ceilings selected from probes, never from a board name."""
+
+    name: str
+    api_workers: int
+    api_memory: str
+    postgres_memory: str
+    postgres_shared_buffers: str
+    postgres_max_connections: int
+
+
+def select_host_profile(*, memory_kib: int, cpu_count: int) -> HostProfile:
+    if memory_kib >= 24 * 1024 * 1024 and cpu_count >= 8:
+        return HostProfile("orin", 4, "8g", "6g", "2GB", 100)
+    return HostProfile("vim4-safe", 2, "2g", "1536m", "512MB", 40)
+
+
+@dataclass(frozen=True)
+class DatabaseProfile:
+    """Stable PostgreSQL endpoints and commands without embedding credentials."""
+
+    user: str
+    database: str
+    host: str = "db"
+    port: int = 5432
+    password_file: str = "/run/secrets/postgres-password"
+
+    @classmethod
+    def from_environment(cls, values: dict[str, str]) -> DatabaseProfile:
+        user = values.get("POSTGRES_USER", "robopark")
+        database = values.get("POSTGRES_DB", "robopark")
+        password_file = values.get(
+            "POSTGRES_PASSWORD_FILE", "/run/secrets/postgres-password"
+        )
+        if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", user) or not re.fullmatch(
+            r"[a-z_][a-z0-9_]{0,62}", database
+        ):
+            raise ValueError("invalid_database_profile")
+        return cls(user=user, database=database, password_file=password_file)
+
+    @property
+    def dsn(self) -> str:
+        return f"postgresql+psycopg://{self.user}@{self.host}:{self.port}/{self.database}"
+
+    @property
+    def libpq_dsn(self) -> str:
+        return f"postgresql://{self.user}@{self.host}:{self.port}/{self.database}"
+
+    def dump_command(self, target: Path) -> list[str]:
+        return [
+            "pg_dump",
+            "--format=custom",
+            f"--file={target}",
+            f"--dbname={self.libpq_dsn}",
+        ]
+
+    @property
+    def health_command(self) -> list[str]:
+        return ["pg_isready", "-U", self.user, "-d", self.database]
 
 
 def _stream_build(command: Sequence[str], log_path: Path | None) -> str:
@@ -132,13 +195,41 @@ def production_config(document, paths, release, image_tag):
     document = copy.deepcopy(document)
     document["name"] = "robopark"
     document["x-robopark-release"] = str(release)
-    document["services"] = {name: document["services"][name] for name in ("api", "web")}
-    document.pop("volumes", None)
+    document["services"].setdefault(
+        "db",
+        {
+            "image": "postgres:17.6-alpine",
+            "environment": {
+                "POSTGRES_USER": "robopark",
+                "POSTGRES_DB": "robopark",
+                "POSTGRES_PASSWORD_FILE": "/run/secrets/postgres-password",
+            },
+            "secrets": ["postgres-password"],
+            "volumes": [
+                {
+                    "type": "volume",
+                    "source": "robopark_postgres",
+                    "target": "/var/lib/postgresql/data",
+                }
+            ],
+            "ports": [{"host_ip": "127.0.0.1", "published": "5432", "target": 5432}],
+            "healthcheck": {
+                "test": ["CMD-SHELL", "pg_isready -U robopark -d robopark"]
+            },
+        },
+    )
+    document["services"] = {name: document["services"][name] for name in ("db", "api", "web")}
+    document["volumes"] = {"robopark_postgres": {}}
+    document["secrets"] = {
+        "postgres-password": {"file": str(paths.etc / "postgres-password")}
+    }
     api = document["services"]["api"]
+    api["depends_on"] = {"db": {"condition": "service_healthy"}}
     api["env_file"] = [str(paths.etc / "host.env")]
     api["environment"].pop("UVICORN_WORKERS", None)
     api["environment"].update(
-        DATABASE_URL="sqlite:////data/robopark.db",
+        DATABASE_URL="postgresql+psycopg://robopark@db:5432/robopark",
+        PGPASSFILE="/run/secrets/pgpass",
         REPORT_ATTACHMENTS_DIR="/data/report-attachments",
         OPS_DIR="/ops",
         OPS_HOST_ENV_PATH="",
@@ -150,6 +241,12 @@ def production_config(document, paths, release, image_tag):
             "type": "bind",
             "source": str(paths.etc / "release-public-key.pem"),
             "target": "/etc/robopark/release-public-key.pem",
+            "read_only": True,
+        },
+        {
+            "type": "bind",
+            "source": str(paths.etc / "pgpass"),
+            "target": "/run/secrets/pgpass",
             "read_only": True,
         },
         {"type": "bind", "source": str(paths.var / "data"), "target": "/data"},
@@ -170,10 +267,43 @@ def production_config(document, paths, release, image_tag):
             workers = line.partition("=")[2].strip().strip("\"'")
     if workers not in {"2", "4"}:
         raise ValueError("invalid_host_profile")
-    for name, service in document["services"].items():
+    profile = select_host_profile(
+        memory_kib=32 * 1024 * 1024 if workers == "4" else 8 * 1024 * 1024,
+        cpu_count=12 if workers == "4" else 4,
+    )
+    db = document["services"]["db"]
+    db["volumes"] = [
+        *[
+            volume
+            for volume in db.get("volumes", [])
+            if volume.get("target") == "/var/lib/postgresql/data"
+        ],
+        {
+            "type": "bind",
+            "source": str(paths.ops / "rollbacks"),
+            "target": "/host-rollbacks",
+        },
+        {
+            "type": "bind",
+            "source": str(paths.state / "restores"),
+            "target": "/host-restores",
+        },
+    ]
+    db["ports"] = [{"host_ip": "127.0.0.1", "published": "5432", "target": 5432}]
+    db["mem_limit"] = profile.postgres_memory
+    db["pids_limit"] = 256
+    db["command"] = [
+        "postgres",
+        "-c",
+        f"shared_buffers={profile.postgres_shared_buffers}",
+        "-c",
+        f"max_connections={profile.postgres_max_connections}",
+    ]
+    for name in ("api", "web"):
+        service = document["services"][name]
         service["image"] = f"robopark-{name}:{image_tag}"
         service["build"]["context"] = str(release / "apps" / name)
-        service["mem_limit"] = ("12g" if workers == "4" else "3g") if name == "api" else "256m"
+        service["mem_limit"] = profile.api_memory if name == "api" else "256m"
         service["pids_limit"] = 512
         service.setdefault("ulimits", {})["nofile"] = {"soft": 65536, "hard": 65536}
     return document

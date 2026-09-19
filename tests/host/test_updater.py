@@ -66,6 +66,12 @@ class FakeRunner:
             )
         if any("SELECT version_num FROM alembic_version" in str(arg) for arg in argv):
             return json.dumps(self.database_heads).encode()
+        if "pg_dump" in argv:
+            output = next(str(arg) for arg in argv if str(arg).startswith("--file="))
+            relative = output.removeprefix("--file=/host-rollbacks/")
+            target = self.paths.ops / "rollbacks" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"PGDMP fixture")
         if "upgrade" in argv:
             assert (self.paths.state / "maintenance.json").exists()
             (self.paths.var / "data/robopark.db").write_text("migrated")
@@ -353,6 +359,23 @@ def test_failed_pre_cutover_snapshot_records_failed_backup(host, monkeypatch):
     assert json.loads((host.paths.state / "last-backup.json").read_text())["status"] == "failed"
 
 
+def test_pre_cutover_backup_is_postgres_custom_format_and_rollback_restores_it(host):
+    host.runner.health = False
+    request = host.request()
+
+    apply_release(request, host.paths, host.runner)
+
+    commands = [" ".join(command) for command in host.runner.commands]
+    dump = f"/host-rollbacks/{request.job_id}/database.dump"
+    assert any(f"pg_dump --format=custom --file={dump}" in command for command in commands)
+    assert any(f"pg_restore --list {dump}" in command for command in commands)
+    assert any(
+        f"pg_restore --clean --if-exists --no-owner --no-privileges --dbname=robopark {dump}"
+        in command
+        for command in commands
+    )
+
+
 def test_failed_health_restores_previous_code_units_and_snapshot(host):
     host.runner.health = False
     result = apply_release(host.request(), host.paths, host.runner)
@@ -572,34 +595,15 @@ def test_production_config_migrates_legacy_mounts_to_host_owned_data(host):
     config = json.loads(
         (host.paths.state / "compose" / (request.job_id + "-production.json")).read_text()
     )
-    assert config["services"]["api"]["volumes"] == [
-        {
-            "type": "bind",
-            "source": str(host.paths.etc / "release-public-key.pem"),
-            "target": "/etc/robopark/release-public-key.pem",
-            "read_only": True,
-        },
-        {"type": "bind", "source": str(host.paths.var / "data"), "target": "/data"},
-        {"type": "bind", "source": str(host.paths.var / "api-ops"), "target": "/ops"},
-        {
-            "type": "bind",
-            "source": str(host.paths.ops / "inbox"),
-            "target": "/host-ops/inbox",
-            "read_only": False,
-        },
-        {
-            "type": "bind",
-            "source": str(host.paths.ops / "artifacts"),
-            "target": "/host-ops/artifacts",
-            "read_only": False,
-        },
-        {
-            "type": "bind",
-            "source": str(host.paths.ops / "public"),
-            "target": "/host-ops/public",
-            "read_only": True,
-        },
-    ]
+    mounts = {item["target"]: item for item in config["services"]["api"]["volumes"]}
+    assert mounts["/data"]["source"] == str(host.paths.var / "data")
+    assert mounts["/ops"]["source"] == str(host.paths.var / "api-ops")
+    assert mounts["/run/secrets/pgpass"]["source"] == str(host.paths.etc / "pgpass")
+    assert mounts["/run/secrets/pgpass"]["read_only"] is True
+    assert mounts["/host-ops/inbox"]["source"] == str(host.paths.ops / "inbox")
+    assert mounts["/host-ops/artifacts"]["source"] == str(host.paths.ops / "artifacts")
+    assert mounts["/host-ops/public"]["read_only"] is True
+    assert mounts["/etc/robopark/release-public-key.pem"]["read_only"] is True
     assert config["services"]["api"]["environment"]["OPS_DIR"] == "/ops"
 
 
@@ -647,7 +651,31 @@ def test_smoke_data_volume_inherits_image_nonroot_permissions(host):
     )
     volume = config["services"]["api"]["volumes"][0]
     assert volume == {"type": "volume", "source": "candidate_data", "target": "/data"}
-    assert config["volumes"] == {"candidate_data": {}}
+    assert config["volumes"] == {"candidate_data": {}, "candidate_postgres": {}}
+
+
+def test_candidate_smoke_uses_its_own_postgres_volume_and_credentials(host):
+    request = host.request()
+    apply_release(request, host.paths, host.runner)
+    config = json.loads(
+        (host.paths.state / "compose" / (request.job_id + "-smoke.json")).read_text()
+    )
+
+    assert set(config["services"]) == {"db", "api", "web"}
+    assert config["services"]["api"]["depends_on"] == {
+        "db": {"condition": "service_healthy"}
+    }
+    assert config["services"]["api"]["environment"]["DATABASE_URL"].endswith(
+        "@db:5432/robopark"
+    )
+    assert config["services"]["db"]["volumes"] == [
+        {
+            "type": "volume",
+            "source": "candidate_postgres",
+            "target": "/var/lib/postgresql/data",
+        }
+    ]
+    assert set(config["volumes"]) == {"candidate_data", "candidate_postgres"}
 
 
 def test_success_restarts_application_under_new_unit_before_opening_writes(host):

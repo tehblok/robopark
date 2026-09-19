@@ -139,10 +139,11 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
     document = json.loads(target.read_text())
     assert document["x-robopark-release"] == str(release.resolve())
     assert target.stat().st_mode & 0o777 == 0o600
-    assert set(document["services"]) == {"api", "web"}
+    assert set(document["services"]) == {"db", "api", "web"}
     api = document["services"]["api"]
     assert api["image"] == "sha256:" + "1" * 64
     assert document["services"]["web"]["image"] == "sha256:" + "2" * 64
+    assert document["services"]["db"]["image"] == "sha256:" + "2" * 64
     assert "build" not in api
     assert "UVICORN_WORKERS" not in api["environment"]
     mounts = {v["target"]: v for v in api["volumes"]}
@@ -153,6 +154,12 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
     assert key_path == "/etc/robopark/release-public-key.pem"
     assert mounts[key_path]["source"] == str(host_paths.etc / "release-public-key.pem")
     assert mounts[key_path]["read_only"] is True
+    assert mounts["/run/secrets/pgpass"] == {
+        "type": "bind",
+        "source": str(host_paths.etc / "pgpass"),
+        "target": "/run/secrets/pgpass",
+        "read_only": True,
+    }
     assert set(mounts) == {
         "/ops",
         "/data",
@@ -160,6 +167,7 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
         "/host-ops/artifacts",
         "/host-ops/public",
         "/etc/robopark/release-public-key.pem",
+        "/run/secrets/pgpass",
     }
     for command in calls:
         if command[:2] == ["docker", "compose"]:

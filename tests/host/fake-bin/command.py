@@ -96,10 +96,16 @@ elif name == 'docker':
             sys.exit(1)
     if args[:2] == ['image', 'inspect']:
         print('sha256:' + ('1' if 'api' in args[-1] else '2') * 64)
+    elif 'pg_dump' in args:
+        output = next(arg for arg in args if arg.startswith('--file='))
+        relative = output.removeprefix('--file=/host-rollbacks/')
+        target = root / 'var/lib/robopark/ops/rollbacks' / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b'PGDMP fixture')
     elif any('SELECT version_num FROM alembic_version' in arg for arg in args):
         print('["initial"]')
     elif 'config' in args:
-        print(json.dumps({'services': {'api': {'build': {'context': 'api'}, 'environment': {}}, 'web': {'build': {'context': 'web'}}, 'ops-agent': {}}}))
+        print(json.dumps({'services': {'db': {'image': 'postgres:17.6-alpine', 'environment': {}, 'volumes': []}, 'api': {'build': {'context': 'api'}, 'environment': {}}, 'web': {'build': {'context': 'web'}}, 'ops-agent': {}}}))
     elif 'build' in args and os.environ.get('BUILD_FAIL') == '1':
         sys.exit(1)
 elif name == 'systemctl':

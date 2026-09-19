@@ -4,8 +4,8 @@ import pytest
 from robopark_host.runtime import production_config
 
 
-@pytest.mark.parametrize("workers,api_memory", [("2", "3g"), ("4", "12g")])
-def test_profile_limits_follow_root_worker_setting(host_paths, workers, api_memory):
+@pytest.mark.parametrize("workers", ["2", "4"])
+def test_profile_limits_follow_root_worker_setting(host_paths, workers):
     host_paths.etc.mkdir(parents=True)
     (host_paths.etc / "host.env").write_text(
         f"UVICORN_WORKERS='{workers}'\nSECRET_KEY=do-not-export\n"
@@ -23,9 +23,9 @@ def test_profile_limits_follow_root_worker_setting(host_paths, workers, api_memo
     )
     api, web = document["services"]["api"], document["services"]["web"]
     assert "UVICORN_WORKERS" not in api["environment"]
-    assert api["environment"]["DATABASE_URL"] == "sqlite:////data/robopark.db"
+    assert api["environment"]["DATABASE_URL"] == "postgresql+psycopg://robopark@db:5432/robopark"
     assert api["environment"]["REPORT_ATTACHMENTS_DIR"] == "/data/report-attachments"
-    assert api["mem_limit"] == api_memory
+    assert api["mem_limit"] == ("8g" if workers == "4" else "2g")
     assert web["mem_limit"] == "256m"
     assert api["pids_limit"] == 512
     for service in (api, web):

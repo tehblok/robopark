@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -13,7 +14,7 @@ from robopark_api.config import get_settings
 from robopark_api.services.ops.archives import inspect_archive
 from robopark_api.services.ops.context import build_ops_context
 from robopark_api.services.ops.runner import artifact_path, start_and_run
-from robopark_api.services.ops.snapshot import SNAPSHOT_DB_REL
+from robopark_api.services.ops.snapshot import SNAPSHOT_DB_REL, SNAPSHOT_DUMP_REL
 
 
 def main():
@@ -48,11 +49,24 @@ def main():
         raise RuntimeError("snapshot_failed")
     inspect_archive(path.read_bytes())
     with zipfile.ZipFile(path) as archive, tempfile.TemporaryDirectory() as folder:
-        database = Path(folder) / "check.db"
-        database.write_bytes(archive.read(str(SNAPSHOT_DB_REL)))
-        with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
-            if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+        if str(SNAPSHOT_DUMP_REL) in archive.namelist():
+            database = Path(folder) / "check.dump"
+            database.write_bytes(archive.read(str(SNAPSHOT_DUMP_REL)))
+            result = subprocess.run(
+                ["pg_restore", "--list", str(database)],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode or "alembic_version" not in result.stdout:
                 raise RuntimeError("snapshot_database_invalid")
+        else:
+            database = Path(folder) / "check.db"
+            database.write_bytes(archive.read(str(SNAPSHOT_DB_REL)))
+            with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
+                if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+                    raise RuntimeError("snapshot_database_invalid")
     print(path)
 
 

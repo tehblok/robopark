@@ -312,6 +312,13 @@ class InstallerScenarios(unittest.TestCase):
         key = self.root / 'etc/robopark/release-public-key.pem'
         self.assertEqual(key.read_bytes(), (self.bundle / 'keys/release-public-key.pem').read_bytes())
         self.assertEqual(stat.S_IMODE(key.stat().st_mode), 0o644)
+        password = self.root / 'etc/robopark/postgres-password'
+        pgpass = self.root / 'etc/robopark/pgpass'
+        self.assertEqual(stat.S_IMODE(password.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(pgpass.stat().st_mode), 0o600)
+        self.assertIn(':5432:robopark:robopark:', pgpass.read_text())
+        self.assertNotIn('sqlite', (self.root / 'etc/robopark/host.env').read_text().lower())
+        self.assertFalse((self.root / 'var/lib/robopark/data/robopark.db').exists())
         self.assertEqual(key.stat().st_uid, os.getuid())
         self.assertEqual(self.state()['phase'], 'complete')
         self.assertEqual((self.root / 'opt/robopark/current/VERSION').read_text(), '1.0.0\n')

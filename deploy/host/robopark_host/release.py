@@ -19,7 +19,7 @@ MAX_ARCHIVE = 512 * 1024 * 1024
 MAX_EXPANDED = 2 * 1024 * 1024 * 1024
 MAX_MANIFEST = 4 * 1024 * 1024
 INSTALLER_VERSION = "1.0.0"
-CAPABILITIES = {"atomic-ota-v1", "sqlite", "systemd", "docker-compose-v2"}
+CAPABILITIES = {"atomic-ota-v1", "postgresql-17", "systemd", "docker-compose-v2"}
 MANIFEST_KEYS = {
     "kind",
     "format",

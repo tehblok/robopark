@@ -16,7 +16,7 @@ from robopark_api.services.ops.jobs import (
     load_job,
     save_job,
 )
-from robopark_api.services.ops.snapshot import restore_snapshot_tree, sqlite_path_from_url
+from robopark_api.services.ops.snapshot import restore_snapshot_tree
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,7 @@ def reconcile_pending_rebuild(
         if not job.extra.get("host_updater") and rollback.is_dir():
             restore_snapshot_tree(
                 rollback,
-                database_path=sqlite_path_from_url(database_url),
+                database_url=database_url,
                 config_targets=config_files,
                 data_dir=data_dir,
                 preserve_dirs=[paths["root"]],

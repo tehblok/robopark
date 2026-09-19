@@ -419,6 +419,11 @@ class InstalledHost:
             return json.dumps(
                 {
                     "services": {
+                        "db": {
+                            "image": "postgres:17.6-alpine",
+                            "environment": {},
+                            "volumes": [],
+                        },
                         "api": {
                             "build": {"context": "../apps/api"},
                             "environment": {},
@@ -431,6 +436,12 @@ class InstalledHost:
                     }
                 }
             ).encode()
+        if "pg_dump" in argv:
+            output = next(arg for arg in argv if arg.startswith("--file="))
+            relative = output.removeprefix("--file=/host-rollbacks/")
+            target = self.paths.ops / "rollbacks" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"PGDMP fixture")
         if self.fail == "build" and "build" in argv:
             raise self.command_error("command_failed")
         if "upgrade" in argv:
@@ -489,7 +500,7 @@ class InstalledHost:
                 stdout=json.dumps(
                     [
                         {"Service": name, "State": "running", "Health": "healthy", "ExitCode": 0}
-                        for name in ("api", "web")
+                        for name in ("db", "api", "web")
                     ]
                 )
             )

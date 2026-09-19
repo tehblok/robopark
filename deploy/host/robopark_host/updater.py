@@ -11,6 +11,7 @@ import copy
 import json
 import os
 import re
+import secrets
 import selectors
 import shutil
 import signal
@@ -507,6 +508,15 @@ def _render_configs(paths, journal, runner, stage):
     environment_file = work / "test.env"
     environment_file.write_text("SECRET_KEY=isolated-test-key\nDEV_SEED=false\n")
     environment_file.chmod(0o600)
+    candidate_password = secrets.token_urlsafe(32)
+    database_password = work / "postgres-password"
+    database_password.write_text(candidate_password + "\n")
+    database_password.chmod(0o600)
+    database_pgpass = work / "pgpass"
+    database_pgpass.write_text(f"db:5432:robopark:robopark:{candidate_password}\n")
+    database_pgpass.chmod(0o600)
+    if os.geteuid() == 0:
+        os.chown(database_pgpass, 10001, 10001)
     project = "robopark-candidate-" + journal["job_id"]
     raw = runner.run(
         compose(project, stage / "deploy/docker-compose.yml")
@@ -560,7 +570,7 @@ def _render_configs(paths, journal, runner, stage):
     smoke.pop("networks", None)
     smoke.pop("secrets", None)
     smoke.pop("configs", None)
-    smoke["services"] = {key: smoke["services"][key] for key in ("api", "web")}
+    smoke["services"] = {key: smoke["services"][key] for key in ("db", "api", "web")}
     for service in smoke["services"].values():
         for field in (
             "container_name",
@@ -584,13 +594,34 @@ def _render_configs(paths, journal, runner, stage):
                 stage / context.relative_to(paths.releases / journal["candidate"])
             )
         service["restart"] = "no"
-    smoke["volumes"] = {"candidate_data": {}}
+    smoke["volumes"] = {"candidate_data": {}, "candidate_postgres": {}}
+    smoke["secrets"] = {"candidate-postgres-password": {"file": str(database_password)}}
+    smoke["services"]["db"]["volumes"] = [
+        {
+            "type": "volume",
+            "source": "candidate_postgres",
+            "target": "/var/lib/postgresql/data",
+        }
+    ]
+    smoke["services"]["db"]["secrets"] = ["candidate-postgres-password"]
+    smoke["services"]["db"]["environment"] = {
+        "POSTGRES_USER": "robopark",
+        "POSTGRES_DB": "robopark",
+        "POSTGRES_PASSWORD_FILE": "/run/secrets/candidate-postgres-password",
+    }
     smoke["services"]["api"]["volumes"] = [
-        {"type": "volume", "source": "candidate_data", "target": "/data"}
+        {"type": "volume", "source": "candidate_data", "target": "/data"},
+        {
+            "type": "bind",
+            "source": str(database_pgpass),
+            "target": "/run/secrets/pgpass",
+            "read_only": True,
+        },
     ]
     smoke["services"]["api"]["env_file"] = [str(environment_file)]
     smoke["services"]["api"]["environment"] = {
-        "DATABASE_URL": "sqlite:////data/robopark.db",
+        "DATABASE_URL": "postgresql+psycopg://robopark@db:5432/robopark",
+        "PGPASSFILE": "/run/secrets/pgpass",
         "REPORT_ATTACHMENTS_DIR": "/data/attachments",
         "OPS_DIR": "/data/ops",
         "DEV_SEED": "false",
@@ -599,6 +630,7 @@ def _render_configs(paths, journal, runner, stage):
     smoke["services"]["web"]["ports"] = [
         {"target": 80, "published": "0", "host_ip": "127.0.0.1", "protocol": "tcp"}
     ]
+    smoke["services"]["api"]["depends_on"] = {"db": {"condition": "service_healthy"}}
     root = paths.state / "compose"
     atomic_write_json(root / (journal["job_id"] + "-production.json"), production)
     atomic_write_json(root / (journal["job_id"] + "-smoke.json"), smoke)
@@ -795,7 +827,7 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
             runner.run(["systemctl", "stop", "robopark.service"], timeout=120)
             phase("snapshotting")
             try:
-                snapshot(paths, journal)
+                snapshot(paths, journal, runner)
             except Exception:
                 # The status receipt is informational; never hide the original
                 # snapshot failure if its own durable write also fails.

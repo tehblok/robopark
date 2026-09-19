@@ -3,6 +3,33 @@
 # Do not publish 8080 to the internet; tuna agent connects to localhost.
 
 services:
+  db:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_USER: robopark
+      POSTGRES_DB: robopark
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+    secrets:
+      - postgres-password
+    volumes:
+      - ${ROBOPARK_POSTGRES_SOURCE:-robopark_postgres}:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    restart: unless-stopped
+    init: true
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U robopark -d robopark"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 12
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   api:
     build:
       context: ../apps/api
@@ -11,16 +38,21 @@ services:
       # Do not fall back to the example file (empty SECRET_KEY).
       - ${HOST_ENV_FILE:-./host.env}
     environment:
-      DATABASE_URL: sqlite:////data/robopark.db
+      DATABASE_URL: postgresql+psycopg://robopark@db:5432/robopark
+      PGPASSFILE: /run/secrets/pgpass
       REPORT_ATTACHMENTS_DIR: /data/report-attachments
       OPS_DIR: /data/ops
       OPS_HOST_ENV_PATH: /host-repo/deploy/host.env
       # UVICORN_WORKERS comes from host.env; entrypoint defaults to 2.
     volumes:
       - ${ROBOPARK_DATA_SOURCE:-robopark_data}:/data
+      - ${ROBOPARK_PGPASS_FILE:-./pgpass}:/run/secrets/pgpass:ro
       # Royal ZIP updates copy onto the checkout; ops-agent rebuilds images.
       - ..:/host-repo
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     init: true
     mem_limit: 3g
     stop_grace_period: 45s
@@ -88,3 +120,8 @@ services:
 
 volumes:
   robopark_data:
+  robopark_postgres:
+
+secrets:
+  postgres-password:
+    file: ${ROBOPARK_POSTGRES_PASSWORD_FILE:-./postgres-password}

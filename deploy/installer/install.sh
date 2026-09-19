@@ -12,9 +12,11 @@ done
 MODE=interactive
 CONFIG_FILE=
 RESUME=0
+CLEAN_REINSTALL=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --resume) RESUME=1 ;;
+        --clean-reinstall) CLEAN_REINSTALL=1 ;;
         --non-interactive)
             [ "$#" -ge 2 ] || die invalid_arguments
             MODE=non-interactive
@@ -25,12 +27,26 @@ while [ "$#" -gt 0 ]; do
             MODE=interactive
             CONFIG_FILE=$2
             shift ;;
-        --help) printf '%s\n' './START.sh или sudo ./install.sh [--resume] [--defaults CONFIG_FILE] [--non-interactive CONFIG_FILE]'; exit 0 ;;
+        --help) printf '%s\n' './START.sh или sudo ./install.sh [--resume] [--clean-reinstall] [--defaults CONFIG_FILE] [--non-interactive CONFIG_FILE]'; exit 0 ;;
         *) die invalid_arguments ;;
     esac
     shift
 done
 preflight
+if [ "$CLEAN_REINSTALL" = 1 ]; then
+    python3 -I "$INSTALLER_DIR/lib/configure.py" --validate-clean-data-root "$ROBOPARK_VAR" "$ROBOPARK_VAR" || die unsafe_data_root
+    [ -t 0 ] && [ -r /dev/tty ] || die local_confirmation_required
+    printf '\nБудет безвозвратно удалён точный data root Robopark:\n  %s\n' "$ROBOPARK_VAR" >/dev/tty
+    printf 'Введите DELETE ROBOPARK DATA: ' >/dev/tty
+    IFS= read -r CLEAN_CONFIRMATION </dev/tty || die local_confirmation_required
+    [ "$CLEAN_CONFIRMATION" = 'DELETE ROBOPARK DATA' ] || die local_confirmation_required
+    systemctl stop robopark-commands.path robopark-updater.service robopark-tuna.service robopark.service >/dev/null 2>&1 || :
+    docker rm --force robopark-web-1 robopark-api-1 robopark-db-1 >/dev/null 2>&1 || :
+    if docker volume inspect robopark_robopark_postgres >/dev/null 2>&1; then
+        docker volume rm robopark_robopark_postgres >/dev/null 2>&1 || die clean_database_removal_failed
+    fi
+    python3 -I "$INSTALLER_DIR/lib/configure.py" --clean-data-root "$ROBOPARK_VAR" "$ROBOPARK_VAR" "$CLEAN_CONFIRMATION" || die unsafe_data_root
+fi
 # Preflight performs no host writes. Keep the lock outside release directories.
 mkdir -p "$ROBOPARK_VAR/ops/state"
 exec 9>"$ROBOPARK_VAR/ops/install.lock"

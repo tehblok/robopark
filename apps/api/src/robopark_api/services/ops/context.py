@@ -6,10 +6,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from sqlalchemy.engine.url import make_url
+
 from robopark_api.config import _API_ROOT, Settings, get_settings
 from robopark_api.db import get_engine
 from robopark_api.services.ops.runner import OpsContext
-from robopark_api.services.ops.snapshot import sqlite_path_from_url
 
 _REPO_ROOT = _API_ROOT.parent.parent
 APP_VERSION = "0.1.44"
@@ -20,10 +21,12 @@ def resolved_ops_dir(settings: Settings | None = None) -> Path:
     if settings.ops_dir:
         return Path(settings.ops_dir).resolve()
     try:
-        db_parent = sqlite_path_from_url(settings.database_url).parent
-        return (db_parent / "ops").resolve()
+        url = make_url(settings.database_url)
+        if url.drivername.startswith("sqlite") and url.database:
+            return (Path(url.database).resolve().parent / "ops").resolve()
     except Exception:  # noqa: BLE001
-        return (_API_ROOT / "data" / "ops").resolve()
+        pass
+    return (_API_ROOT / "data" / "ops").resolve()
 
 
 def resolved_apply_root(settings: Settings | None = None) -> Path:
@@ -77,12 +80,17 @@ def build_ops_context(settings: Settings | None = None) -> OpsContext:
     from robopark_api.services.ops.host_bridge import host_root
 
     host = host_root(settings) if settings.ops_host_root else None
-    db_path = sqlite_path_from_url(settings.database_url)
+    url = make_url(settings.database_url)
+    data_dir = (
+        Path(url.database).resolve().parent
+        if url.drivername.startswith("sqlite") and url.database
+        else Path(settings.report_attachments_dir).resolve().parent
+    )
     return OpsContext(
         ops_dir=resolved_ops_dir(settings),
         database_url=settings.database_url,
         config_files=_config_files(settings),
-        data_dir=db_path.parent,
+        data_dir=data_dir,
         apply_root=resolved_apply_root(settings),
         app_version=APP_VERSION,
         release_public_key=_release_public_key(settings),
