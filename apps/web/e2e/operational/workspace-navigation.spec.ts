@@ -15,25 +15,25 @@ test('robots navigation remains available while overview is pending', async ({ p
 for (const width of [390, 1440]) {
   test(`shell stays pinned and last work controls remain reachable at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 720 })
-    await installOperational(page, { role: 'admin', listCount: 50, issue: {
+    await installOperational(page, { role: 'mechanic', listCount: 50, issue: {
       ...issue, description: Array.from({ length: 70 }, () => 'Подробности осмотра робота.').join('\n\n'),
+      claim: { park_id: 7 }, workflow: { owner: { login: 'mechanic-e2e', display: 'Механик' }, review_state: null, display_status: 'in_progress', sync_state: 'synced', has_current_cycle_comment: true },
     } })
     await page.goto('/work/ROBOPARK-42?park=7')
     await expect(page.getByRole('heading', { name: issue.summary, exact: true })).toBeVisible()
     await settlePage(page)
-    if (width < 600) await page.getByRole('button', { name: 'Статус задачи', exact: true }).click()
-    await page.getByRole('button', { name: 'Закрыть тикет', exact: true }).scrollIntoViewIfNeeded()
+    await page.getByRole('button', { name: 'Передать на проверку', exact: true }).scrollIntoViewIfNeeded()
     expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(100)
     expect((await page.locator('.rp-shell__topbar').boundingBox())?.y).toBe(0)
     if (width >= 900) {
       expect(Math.abs((await page.locator('.rp-shell__sidebar').boundingBox())?.y ?? Number.NaN)).toBeLessThanOrEqual(0.5)
       await page.locator('.rp-shell__sidebar').evaluate(element => { element.scrollTop = element.scrollHeight })
-      await expect(page.locator('.rp-shell__desktop-nav').getByRole('link', { name: 'Настройка проверки робота' })).toBeInViewport()
+      await expect(page.locator('.rp-shell__desktop-nav').getByRole('link', { name: 'СК и оклейка' })).toBeInViewport()
     } else {
       await expect(page.locator('.rp-shell__bottom-nav')).toBeInViewport()
     }
-    await page.getByRole('button', { name: 'Закрыть тикет', exact: true }).click()
-    await expect(page.getByRole('alertdialog', { name: 'Закрыть задачу?' })).toBeVisible()
+    await page.getByRole('button', { name: 'Передать на проверку', exact: true }).click()
+    await expect(page.getByLabel('Код дефекта')).toBeVisible()
     await page.getByRole('button', { name: 'Отмена', exact: true }).click()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   })
@@ -74,6 +74,7 @@ test('nested work keeps parent navigation and loads each repair tab only when se
   await expect.poll(() => queries.length).toBe(2)
   expect(queries.map(params => params.get('status'))).toEqual([null, 'closed'])
   await expect(page.locator('.rp-shell__desktop-nav').getByRole('link', { name: 'Работа', exact: true })).toHaveAttribute('aria-current', 'page')
-  await page.getByRole('link', { name: 'К главному блокеру ROBOPARK-42' }).click()
+  // This is the root repair itself; a parent link exists only on a child repair.
+  await page.getByRole('tab', { name: 'Задача', exact: true }).click()
   await expect(page.getByRole('tab', { name: 'Задача', exact: true })).toHaveAttribute('aria-selected', 'true')
 })

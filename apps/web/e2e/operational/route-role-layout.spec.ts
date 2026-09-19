@@ -4,15 +4,17 @@ import { ROUTE_MANIFEST } from '../../src/app/routing/routeManifest'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 import { parkNorth, roles, userForRole } from './fixtures'
 import { assertResponsiveContracts, openRouteFixture } from './routeFixtures'
+import { selectInterface } from '../support/interfaceMode'
 
 const widths = [320, 390, 768, 1024, 1440] as const
 
-for (const role of roles) for (const route of ROUTE_MANIFEST.filter(item => item.surface === 'shell')) for (const width of widths) {
-  test(`${role}: ${route.id} at ${width}px`, async ({ page }) => {
+for (const mode of ['Классический', 'Новый А'] as const) for (const role of roles) for (const route of ROUTE_MANIFEST.filter(item => item.surface === 'shell')) for (const width of widths) {
+  test(`${mode} ${role}: ${route.id} at ${width}px`, async ({ page }) => {
     const user = userForRole(role)
     test.skip(!canAccessRoute(user, route.id), 'route denied by access policy')
     await page.setViewportSize({ width, height: 900 })
     await openRouteFixture(page, route.id, user)
+    await selectInterface(page, mode)
     await assertResponsiveContracts(page, width)
     await assertNoSeriousA11yViolations(page)
   })

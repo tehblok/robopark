@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { InventoryCatalogSearchItem, InventoryPageEnvelope, InventorySearchParams, InventoryStockView } from '../../api'
 import { InventoryPartsView } from './InventoryPartsView'
+import { ApiError } from '../../api'
 
 const part: InventoryCatalogSearchItem = {
   id: 31,
@@ -57,6 +58,18 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('InventoryPartsView', () => {
+  it.each([401, 403])('clears protected catalog and selected labels after %s', async status => {
+    const search = vi.fn().mockResolvedValueOnce(page()).mockRejectedValue(new ApiError(status, 'denied'))
+    const apiClient = client(search)
+    const view = render(<InventoryPartsView apiClient={apiClient} parkId={1} />)
+    await screen.findByText('ABC-01')
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Выбрать для печати Тяга' }))
+    view.rerender(<InventoryPartsView apiClient={apiClient} parkId={1} refreshVersion={1} />)
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByText('ABC-01')).not.toBeInTheDocument())
+    expect(screen.queryByText('Полка A-1')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Печатать выбранные (0)' })).toBeDisabled()
+  })
   it('debounces search and renders a compact stock card without global controls', async () => {
     const apiClient = client()
     render(<InventoryPartsView apiClient={apiClient} parkId={1} />)

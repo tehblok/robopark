@@ -32,7 +32,7 @@ for (const width of [390, 1440]) test(`campaign create edit and ticket draft sur
   await selectInterface(page, 'Классический')
   await expect(page.getByRole('textbox', { name: 'Название', exact: true })).toHaveValue('СК сентября')
   await page.getByRole('button', { name: 'Создать кампанию' }).click()
-  await expect(page).toHaveURL('/campaigns/4')
+  await expect(page).toHaveURL(/\/campaigns\/4(?:\?park=7)?$/)
   await selectInterface(page, 'Новый А')
   if (width < 600) await page.getByRole('button', { name: 'Настройки кампании', exact: true }).click()
   await page.getByRole('textbox', { name: 'Часть названия тикета' }).fill('смена подвески')

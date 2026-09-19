@@ -61,7 +61,7 @@ test('worker intercepts only navigation and same-origin hashed assets', async ()
     handlers.get('fetch')(event)
     return event
   }
-  for (const url of ['/api/auth/me', '/api/tracker/issues', 'https://tile.openstreetmap.org/1/1/1.png']) {
+  for (const url of ['/api/auth/me', '/api/tracker/issues', '/api/attachments/photo.png', '/attachments/private-a1.png', 'https://tile.openstreetmap.org/1/1/1.png']) {
     assert.equal(dispatch(url).response, null)
   }
   assert.equal(dispatch('/assets/index-a1.js', { method: 'POST' }).response, null)
@@ -74,4 +74,6 @@ test('worker intercepts only navigation and same-origin hashed assets', async ()
   assert.equal(networkCalls, 1)
   const offline = dispatch('/unavailable', { mode: 'navigate' })
   assert.equal(await (await offline.response).text(), 'Offline')
+  assert.equal([...stored.keys()].some(key => key.includes('private') || key.includes('/api/')), false)
+  assert.doesNotMatch(source, /self\.skipWaiting\s*\(/)
 })

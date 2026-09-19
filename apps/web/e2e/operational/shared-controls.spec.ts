@@ -5,11 +5,11 @@ import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 const sections = [{ id: 'status', title: 'Статус', is_enabled: true, roles: ['mechanic', 'admin'], fields: [{ id: 9, path: 'data.status', label: 'Статус', sort_order: 0 }], sort_order: 0 }]
 
 for (const theme of ['light', 'dark']) {
-  test(`shared Tracker avatars retain readable contrast in ${theme}`, async ({ page }) => {
+  test(`legacy Tracker route opens readable shared work cards in ${theme}`, async ({ page }) => {
     await page.addInitScript(value => localStorage.setItem('robopark-theme', value), theme)
     await installOperational(page, { role: 'admin' })
     await page.goto('/admin/tracker?park=7')
-    await expect(page.locator('.issue-avatar').first()).toBeVisible()
+    await expect(page.locator('.rp-work-entities').first()).toBeVisible()
     await settlePage(page)
     await assertNoSeriousA11yViolations(page)
   })
@@ -32,7 +32,7 @@ for (const theme of ['light', 'dark']) for (const width of [390, 1440]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
     await page.screenshot({ path: info.outputPath(`admin-fields-${theme}-${width}.png`), fullPage: true, animations: 'disabled' })
 
-    await page.getByRole('tab', { name: 'Ошибки и индикация', exact: true }).click()
+    await page.getByRole('tab', { name: 'Ошибки', exact: true }).click()
     await page.getByRole('tab', { name: 'Разделы и поля', exact: true }).click()
     await page.getByRole('button', { name: 'Открыть раздел Статус' }).click()
     await expect(page.getByLabel('Путь поля 9')).toHaveValue('data.status')

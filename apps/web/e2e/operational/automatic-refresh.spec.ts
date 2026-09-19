@@ -7,10 +7,13 @@ test('task and comments update automatically without losing a comment draft', as
   await installOperational(page, { routes: [
     { method: 'GET', path: '/api/tracker/issues/ROBOPARK-42', handler: () => {
       details += 1
-      return { json: { ...issue, description: revision ? 'Новое описание от коллеги' : 'Исходное описание' } }
+      return { json: { ...issue, claim: { park_id: 7 }, workflow: {
+        owner: { login: 'mechanic-e2e', display: 'Механик смены' }, review_state: null,
+        display_status: 'in_progress', sync_state: 'synced', has_current_cycle_comment: true,
+      }, description: revision ? 'Новое описание от коллеги' : 'Исходное описание' } }
     } },
-    { method: 'GET', path: '/api/tracker/issues/ROBOPARK-42/comments', handler: () => ({ json: revision ? [{
-      id: 'incoming', text: 'Комментарий коллеги', author: 'Механик смены', author_login: 'other',
+    { method: 'GET', path: '/api/tracker/issues/ROBOPARK-42/timeline', handler: () => ({ json: revision ? [{
+      id: 'incoming', kind: 'tracker', text: 'Комментарий коллеги', author: 'Механик смены', sync_state: 'synced',
       created_at: '2026-09-02T09:06:00Z', attachments: [],
     }] : [] }) },
   ] })

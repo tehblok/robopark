@@ -84,7 +84,7 @@ function CampaignCreateForm({ apiClient, onCreated, campaign }: { apiClient: Cam
   }
   return <ResponsiveDisclosureGroup label={campaign ? 'Настройки кампании' : 'Создание кампании'}><ResponsiveDisclosure id="create" title={campaign ? 'Настройки кампании' : 'Новая кампания'}>
     <form className="form-grid campaign-create" onSubmit={submit}>
-      <label className="field"><span>Тип</span><select value={payload.kind} onChange={event => setPayload(current => ({ ...current, kind: event.target.value as Campaign['kind'] }))}><option value="service_company">Сервисная компания</option><option value="wrapping">Оклейка</option></select></label>
+      <label className="field"><span>Тип</span><select disabled={Boolean(campaign)} value={payload.kind} onChange={event => setPayload(current => ({ ...current, kind: event.target.value as Campaign['kind'] }))}><option value="service_company">Сервисная компания</option><option value="wrapping">Оклейка</option></select></label>
       <label className="field"><span>Название</span><input required maxLength={128} value={payload.name} onChange={event => setPayload(current => ({ ...current, name: event.target.value }))} /></label>
       <label className="field"><span>Часть названия тикета</span><input required minLength={3} maxLength={128} value={payload.tracker_tag} onChange={event => setPayload(current => ({ ...current, tracker_tag: event.target.value }))} /></label>
       <label className="field"><span>Начало</span><input required type="date" value={payload.starts_on} onChange={event => setPayload(current => ({ ...current, starts_on: event.target.value }))} /></label>

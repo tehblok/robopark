@@ -73,6 +73,7 @@ export function InventoryPartsView({ apiClient = api, canManage = true, canPrint
   const [labelsToPrint, setLabelsToPrint] = useState<InventoryCatalogSearchItem[]>([])
   const partsById = useRef(new Map<number, InventoryCatalogSearchItem>())
   const generation = useRef(0)
+  const accessGeneration = useRef(0)
   const activeParkId = useRef(parkId)
   useEffect(() => { activeParkId.current = parkId }, [parkId])
   const selectedId = selectedCatalogPartId === undefined ? internalSelectedId : selectedCatalogPartId
@@ -94,6 +95,18 @@ export function InventoryPartsView({ apiClient = api, canManage = true, canPrint
         setLoading(false)
       }).catch(reason => {
         if (requestId !== generation.current) return
+        const kind = classifyApiError(reason, '').kind
+        if (kind === 'unauthorized' || kind === 'forbidden') {
+          generation.current += 1
+          accessGeneration.current += 1
+          setResult(null)
+          partsById.current.clear()
+          setKnownComponents([])
+          setSelectedLabelIds(new Set())
+          setLabelsToPrint([])
+          setWorkflow(null)
+          select(null)
+        }
         setError(reason)
         setLoading(false)
       })
@@ -103,10 +116,13 @@ export function InventoryPartsView({ apiClient = api, canManage = true, canPrint
 
   useEffect(() => {
     const requestedParkId = parkId
+    const requestGeneration = accessGeneration.current
+    let active = true
     setComponentError('')
     loadInventoryComponents(apiClient, parkId).then(value => {
-      if (activeParkId.current === requestedParkId) setKnownComponents(value.map(item => ({ id: item.id, name: item.name })))
-    }).catch(() => { if (activeParkId.current === requestedParkId) setComponentError(INVENTORY_COMPONENTS_INCOMPLETE) })
+      if (active && activeParkId.current === requestedParkId && accessGeneration.current === requestGeneration) setKnownComponents(value.map(item => ({ id: item.id, name: item.name })))
+    }).catch(() => { if (active && activeParkId.current === requestedParkId && accessGeneration.current === requestGeneration) setComponentError(INVENTORY_COMPONENTS_INCOMPLETE) })
+    return () => { active = false }
   }, [apiClient, parkId, refreshVersion])
 
   useEffect(() => {

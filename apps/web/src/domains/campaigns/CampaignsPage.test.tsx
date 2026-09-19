@@ -57,6 +57,7 @@ it('lets a manager edit campaign matching rules separately from ticket completio
   const updateCampaign = vi.fn(async () => detail)
   renderPage({ ...api, campaign: vi.fn(async () => detail), updateCampaign }, { ...user, role: 'royal' })
   const title = await screen.findByRole('textbox', { name: 'Название' })
+  expect(screen.getByRole('combobox', { name: 'Тип' })).toBeDisabled()
   await userEvent.clear(title)
   await userEvent.type(title, 'СК Бета')
   await userEvent.click(screen.getByRole('button', { name: 'Сохранить настройки кампании' }))

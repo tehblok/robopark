@@ -9,6 +9,12 @@ const items = [
 ] as const
 
 describe('Tabs', () => {
+  it('keeps a keyboard entry when selection belongs to a related section', () => {
+    render(<Tabs ariaLabel="Разделы" items={items} value="related" onChange={vi.fn()} panelIdFor={id => `panel-${id}`} />)
+    expect(screen.getByRole('tab', { name: 'Обзор' })).toHaveAttribute('tabindex', '0')
+    expect(screen.getAllByRole('tab').filter(tab => tab.tabIndex === 0)).toHaveLength(1)
+    expect(screen.getByRole('tab', { name: 'Обзор' })).toHaveAttribute('aria-selected', 'false')
+  })
   it('links each selected tab to its labelled panel with stable IDs', () => {
     render(
       <>

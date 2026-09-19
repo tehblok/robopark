@@ -17,6 +17,7 @@ export function Tabs({
   panelIdFor: (id: string) => string
 }) {
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const hasSelection = items.some(item => item.id === value)
 
   const selectAndFocus = (index: number) => {
     const item = items[index]
@@ -54,7 +55,7 @@ export function Tabs({
             onKeyDown={(event) => handleKeyDown(event, index)}
             ref={(element) => { tabRefs.current[index] = element }}
             role="tab"
-            tabIndex={active ? 0 : -1}
+            tabIndex={active || (!hasSelection && index === 0) ? 0 : -1}
             type="button"
           >
             <span>{item.label}</span>
