@@ -363,3 +363,14 @@ def test_failure_without_prior_does_not_refetch(tmp_path):
 
     assert calls == 1
     assert len(errors) == 3
+
+
+def test_targeted_payload_invalidation_keeps_unrelated_shared_projection(tmp_path):
+    store = LiveMergeStore(tmp_path)
+    store.merge_load("tracker.issues", "one", 60, lambda: [{"key": "SD-1"}])
+    store.merge_load("tracker.issues", "two", 60, lambda: [{"key": "SD-2"}])
+
+    assert store.invalidate_payload_member("tracker.issues", "SD-1") == 1
+
+    assert store.try_fresh("tracker.issues", "one", 60)[0] is False
+    assert store.try_fresh("tracker.issues", "two", 60) == (True, [{"key": "SD-2"}])

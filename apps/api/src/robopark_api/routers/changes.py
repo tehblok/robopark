@@ -16,14 +16,15 @@ def get_change_store(request: Request) -> ChangeRevisionStore:
     return request.app.state.change_revision_store
 
 
-@router.get("")
+@router.get("", response_model=None)
 def change_revision(
     scope: str,
+    request: Request,
     response: Response,
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
     store: ChangeRevisionStore = Depends(get_change_store),
-) -> dict[str, int]:
+) -> dict[str, int] | Response:
     rbac.assert_approved_or_staff(user)
     allowed = False
     if scope == "work":
@@ -44,11 +45,18 @@ def change_revision(
         raise HTTPException(status_code=404)
     if not allowed:
         raise HTTPException(status_code=403)
-    response.headers["Cache-Control"] = "private, no-store"
     if scope == "work:mine":
         revision = sum(store.current(f"work:park:{park.id}") for park in get_user_parks(db, user))
     else:
         revision = store.current(scope)
     if scope.startswith("inventory:") and scope != "inventory:catalog":
         revision += store.current("inventory:catalog")
+    etag = f'"{revision}"'
+    response.headers["Cache-Control"] = "private, no-cache"
+    response.headers["ETag"] = etag
+    if request.headers.get("if-none-match") == etag:
+        return Response(
+            status_code=304,
+            headers={"Cache-Control": "private, no-cache", "ETag": etag},
+        )
     return {"revision": revision}

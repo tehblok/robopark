@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { periodicDelay, resumeDelay, retryAfterMs } from './pollingSchedule'
+import { currentDeviceResourceCache } from './deviceResourceCache'
 
 const LS_PREFIX = 'robopark:res:'
 const LS_VERSION = 2
@@ -143,13 +144,22 @@ class ResourceStore {
     this.remember(key, entry)
     if (persist) writeToStorage(key, entry)
     else removeFromStorage(key)
+    const deviceStore = currentDeviceResourceCache()
+    if (deviceStore) void deviceStore.set(key, data).catch(() => undefined)
     this.notify(key)
+  }
+
+  async hydrate<T>(key: string): Promise<T | undefined> {
+    const data = await currentDeviceResourceCache()?.get<T>(key)
+    if (data !== undefined) this.set(key, data, false)
+    return data
   }
 
   /** Drop denied data without retiring sibling consumers of the same request. */
   evict(key: string): void {
     this.mem.delete(key)
     removeFromStorage(key)
+    void currentDeviceResourceCache()?.delete(key)
     this.notify(key)
   }
 
@@ -167,10 +177,12 @@ class ResourceStore {
         if (k.startsWith(keyOrPrefix)) notified.add(k)
       }
       removeFromStorageByPrefix(keyOrPrefix)
+      void currentDeviceResourceCache()?.deletePrefix(keyOrPrefix)
     } else {
       this.mem.delete(keyOrPrefix)
       notified.add(keyOrPrefix)
       removeFromStorage(keyOrPrefix)
+      void currentDeviceResourceCache()?.delete(keyOrPrefix)
     }
     for (const k of notified) this.notify(k)
   }
@@ -394,6 +406,7 @@ export function useCachedResource<T>(
   opts: Options = {},
 ): CachedResource<T> {
   const persist = opts.persist ?? false
+  const devicePersist = currentDeviceResourceCache() !== null
   const refreshOnMount = opts.refreshOnMount
   const staleTimeMs = opts.staleTimeMs ?? RESOURCE_REFRESH_MS
   const refreshIntervalMs = opts.refreshIntervalMs ?? RESOURCE_REFRESH_MS
@@ -405,6 +418,7 @@ export function useCachedResource<T>(
   const [syncTime, setSyncTime] = useState(() => ({ key, time: enabled ? resourceStore.updatedAt(key, persist) : null }))
   const [error, setError] = useState<unknown>(null)
   const [isRevalidating, setIsRevalidating] = useState(false)
+  const [deviceHydrated, setDeviceHydrated] = useState(!devicePersist)
 
   const loaderRef = useRef(loader)
   loaderRef.current = loader
@@ -422,6 +436,18 @@ export function useCachedResource<T>(
       }
     }
   }, [key])
+
+  useEffect(() => {
+    if (!enabled || !devicePersist || resourceStore.get(key, persist) !== undefined) {
+      setDeviceHydrated(true)
+      return
+    }
+    const generation = ownerGenerationRef.current
+    setDeviceHydrated(false)
+    void resourceStore.hydrate<T>(key).finally(() => {
+      if (generation === ownerGenerationRef.current) setDeviceHydrated(true)
+    })
+  }, [devicePersist, enabled, key, persist])
 
   useEffect(() => {
     if (!enabled) return
@@ -491,13 +517,13 @@ export function useCachedResource<T>(
   }, [enabled, key, canLoadAutomatically, runLoad])
 
   useEffect(() => {
-    if (!enabled || !canLoadAutomatically()) return
+    if (!enabled || !deviceHydrated || !canLoadAutomatically()) return
     const cached = resourceStore.get<T>(key, persist)
     if (cached === undefined || refreshOnMount === true ||
         (refreshOnMount !== false && resourceStore.isStale(key, staleTimeMs, persist))) {
       void runLoad(cached !== undefined)
     }
-  }, [enabled, key, refreshOnMount, staleTimeMs, runLoad, canLoadAutomatically, persist])
+  }, [enabled, key, refreshOnMount, staleTimeMs, runLoad, canLoadAutomatically, persist, deviceHydrated])
 
   useEffect(() => {
     if (!enabled) return

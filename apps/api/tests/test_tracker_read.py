@@ -73,6 +73,10 @@ def test_tracker_read_list_issues(client, db_session, seed_park_with_tracker, mo
     response = client.get("/tracker/issues")
     assert response.status_code == 200
     assert response.json()["items"][0]["key"] == "ROBOPARK-1"
+    assert response.headers["cache-control"] == "private, no-cache"
+    unchanged = client.get("/tracker/issues", headers={"If-None-Match": response.headers["etag"]})
+    assert unchanged.status_code == 304
+    assert unchanged.content == b""
 
 
 def test_tracker_list_honors_oldest_and_newest_sort(

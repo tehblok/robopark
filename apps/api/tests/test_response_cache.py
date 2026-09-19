@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from robopark_api.services.cache_policy import CachePolicy
 from robopark_api.services.live_merge import LiveMergeStore
 from robopark_api.services.response_cache import ResponseCache
 
@@ -177,6 +178,37 @@ def test_default_cache_bound_is_finite():
 
     assert len(cache._store) == 1024
     assert cache.peek("0") is None
+
+
+def test_policy_enforces_byte_budget_and_reports_family_metrics():
+    cache: ResponseCache[str] = ResponseCache(
+        policy=CachePolicy(
+            ttl_seconds=60,
+            stale_seconds=120,
+            max_entries=10,
+            max_bytes=7,
+            persistence="memory",
+        ),
+        name="byte-budget",
+        shared=False,
+    )
+
+    assert cache.get_or_load("a", lambda: "1234") == "1234"
+    assert cache.get_or_load("b", lambda: "5678") == "5678"
+    assert cache.peek("a") is None
+    assert cache.metrics().entries == 1
+    assert cache.metrics().bytes <= 7
+    assert cache.metrics().evictions == 1
+    assert cache.metrics().loads == 2
+    assert cache.get_or_load("b", lambda: "ignored") == "5678"
+    assert cache.metrics().hits == 1
+
+
+def test_cache_policy_rejects_unbounded_or_incoherent_limits():
+    with pytest.raises(ValueError, match="max_bytes"):
+        CachePolicy(60, 120, 10, 0, "memory")
+    with pytest.raises(ValueError, match="stale_seconds"):
+        CachePolicy(60, 30, 10, 1024, "memory")
 
 
 def test_max_entries_must_be_positive():

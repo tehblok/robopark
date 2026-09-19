@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections import OrderedDict
@@ -14,11 +15,13 @@ from robopark_api.config import get_settings
 from robopark_api.db import release_request_session
 from robopark_api.services import emergency_client, emergency_vin, reports
 from robopark_api.services import platform_settings as settings_svc
+from robopark_api.services.cache_metrics import family
 from robopark_api.services.live_merge import get_live_merge_store
 from robopark_api.services.ops.maintenance import host_maintenance_active
 
 PAYLOAD_CACHE_TTL_SECONDS = 3.0
 PAYLOAD_CACHE_MAX_ENTRIES = 512
+PAYLOAD_CACHE_MAX_BYTES = 16 * 1024 * 1024
 PAYLOAD_MAX_STALE_SECONDS = 60.0
 _MERGE_NS = "emergency.robot"
 
@@ -48,12 +51,15 @@ class _CacheEntry:
     identity: str | None
     payload: dict[str, Any]
     stale: bool
+    size_bytes: int
 
 
 _lock = threading.Lock()
 _cache: OrderedDict[str, _CacheEntry] = OrderedDict()
 _flights: dict[tuple[str | None, str], _Flight] = {}
 _generation = 0
+_cache_bytes = 0
+_metrics = family(_MERGE_NS)
 _http_slots_lock = threading.Lock()
 _http_slots: threading.BoundedSemaphore | None = None
 _http_slots_limit: int | None = None
@@ -76,13 +82,17 @@ def _http_semaphore() -> threading.BoundedSemaphore:
 
 
 def _prune_cache_locked(now: float) -> None:
+    global _cache_bytes
     expired = [
         vin
         for vin, cached in _cache.items()
         if now - cached.source_loaded_at >= PAYLOAD_MAX_STALE_SECONDS
     ]
     for vin in expired:
-        _cache.pop(vin, None)
+        removed = _cache.pop(vin, None)
+        if removed is not None:
+            _cache_bytes = max(0, _cache_bytes - removed.size_bytes)
+    _metrics.gauge(entries=len(_cache), bytes_=_cache_bytes)
 
 
 def _cache_payload_locked(
@@ -93,16 +103,26 @@ def _cache_payload_locked(
     payload: dict[str, Any],
     stale: bool = False,
 ) -> None:
+    global _cache_bytes
+    previous = _cache.pop(vin, None)
+    if previous is not None:
+        _cache_bytes = max(0, _cache_bytes - previous.size_bytes)
+    size_bytes = len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
     _cache[vin] = _CacheEntry(
         cached_at=time.monotonic(),
         source_loaded_at=loaded_at,
         identity=identity,
         payload=payload,
         stale=stale,
+        size_bytes=size_bytes,
     )
+    _cache_bytes += size_bytes
     _cache.move_to_end(vin)
-    while len(_cache) > PAYLOAD_CACHE_MAX_ENTRIES:
-        _cache.popitem(last=False)
+    while len(_cache) > PAYLOAD_CACHE_MAX_ENTRIES or _cache_bytes > PAYLOAD_CACHE_MAX_BYTES:
+        _, removed = _cache.popitem(last=False)
+        _cache_bytes = max(0, _cache_bytes - removed.size_bytes)
+        _metrics.increment("evictions")
+    _metrics.gauge(entries=len(_cache), bytes_=_cache_bytes)
 
 
 def _shared_loaded_at(mtime: float | None) -> float:
@@ -136,25 +156,34 @@ def peek_robot_payloads(*, vins: list[str], identity: str | None) -> dict[str, d
             ):
                 result[vin] = cached.payload
                 _cache.move_to_end(vin)
+                _metrics.increment("hits")
         return result
 
 
 def invalidate_vin(vin: str, *, identity: str | None = None) -> None:
+    global _cache_bytes
     with _lock:
         cached = _cache.get(vin)
         if cached is not None and (identity is None or cached.identity == identity):
-            _cache.pop(vin, None)
+            removed = _cache.pop(vin, None)
+            if removed is not None:
+                _cache_bytes = max(0, _cache_bytes - removed.size_bytes)
+            _metrics.gauge(entries=len(_cache), bytes_=_cache_bytes)
+    _metrics.increment("invalidations")
     merge = get_live_merge_store()
     if merge is not None:
         merge.invalidate(_MERGE_NS, _shared_key(identity, vin))
 
 
 def clear_cache() -> None:
-    global _generation
+    global _cache_bytes, _generation
     with _lock:
         _generation += 1
         _cache.clear()
+        _cache_bytes = 0
         _flights.clear()
+        _metrics.gauge(entries=0, bytes_=0)
+    _metrics.increment("invalidations")
     merge = get_live_merge_store()
     if merge is not None:
         merge.clear_namespace(_MERGE_NS)
@@ -211,6 +240,7 @@ def get_robot_payload(
     _metadata: dict[str, float | bool] | None = None,
 ) -> dict[str, Any]:
     """Fetch using one cookie/identity capture when a caller already has it."""
+    global _cache_bytes
     cookie, identity = probe or settings_svc.get_emergency_cookie_probe(db)
     now = time.monotonic()
     merge = get_live_merge_store()
@@ -235,7 +265,10 @@ def get_robot_payload(
                     and now - cached.source_loaded_at < PAYLOAD_MAX_STALE_SECONDS
                 ):
                     stale = cached
-                _cache.pop(vin, None)
+                removed = _cache.pop(vin, None)
+                if removed is not None:
+                    _cache_bytes = max(0, _cache_bytes - removed.size_bytes)
+                _metrics.gauge(entries=len(_cache), bytes_=_cache_bytes)
             flight_key = (identity, vin)
             flight = _flights.get(flight_key)
             is_leader = flight is None
@@ -245,6 +278,7 @@ def get_robot_payload(
             payload = None
 
     if payload is not None:
+        _metrics.increment("hits")
         if _metadata is not None:
             _metadata.update(
                 stale=cached.stale,
@@ -275,9 +309,11 @@ def get_robot_payload(
                     flight.done.set()
             if _metadata is not None:
                 _metadata.update(stale=False, age_seconds=_payload_age_seconds(loaded_at))
+            _metrics.increment("hits")
             return blob
 
     assert flight is not None
+    _metrics.increment("misses")
     if not is_leader:
         release_request_session()
         flight.done.wait()
@@ -295,6 +331,7 @@ def get_robot_payload(
     payload_loaded_at: float | None = None
     error: BaseException | None = None
     stale_result = False
+    load_started = time.monotonic()
     try:
         try:
             used_shared_stale = False
@@ -400,6 +437,10 @@ def get_robot_payload(
             error=error,
             loaded_at=payload_loaded_at,
             stale=stale_result or used_shared_stale,
+        )
+        _metrics.observe_load(
+            time.monotonic() - load_started,
+            error=error is not None or stale_result or used_shared_stale,
         )
 
     assert payload is not None

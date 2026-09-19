@@ -17,6 +17,7 @@ import {
   ParkScopeContext,
   validParkId,
 } from './parkScope'
+import { activateDeviceResourceCache } from '../../lib/deviceResourceCache'
 
 function activeParks(parks: Park[]): Park[] {
   return parks.filter((park) => park.is_active !== false)
@@ -82,6 +83,10 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
   const parkId = currentSelectionState?.parkId ?? null
 
   const locked = user?.role === 'mechanic' && parks.length <= 1
+
+  useEffect(() => {
+    if (user) void activateDeviceResourceCache(user, parkId == null ? 'all' : String(parkId))
+  }, [parkId, user])
 
   useLayoutEffect(() => {
     currentScope.current = { user, fleetScope, includeInactive: includeInactiveInventoryParks }

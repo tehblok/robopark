@@ -844,6 +844,12 @@ async function consumeWithTimeout<T>(
 
   try {
     const response = await fetch(input, { ...init, signal: controller.signal })
+    if ((response.status === 401 || response.status === 403) && typeof window !== 'undefined') {
+      revisionValidators.clear()
+      window.dispatchEvent(new CustomEvent('robopark:authorization-failure', {
+        detail: { status: response.status },
+      }))
+    }
     return await consume(response)
   } catch (error) {
     if (timedOut) throw new ApiTimeoutError(timeoutMs)
@@ -1122,8 +1128,34 @@ async function requestForm<T>(path: string, formData: FormData, headers?: Record
   )
 }
 
+const revisionValidators = new Map<string, { etag: string, value: { revision: number } }>()
+
+export function clearApiValidators(): void { revisionValidators.clear() }
+
+async function conditionalChangeRevision(scope: string): Promise<{ revision: number }> {
+  const cached = revisionValidators.get(scope)
+  return fetchWithTimeout(
+    `/api/changes?scope=${encodeURIComponent(scope)}`,
+    {
+      credentials: 'include',
+      headers: cached ? { 'If-None-Match': cached.etag } : {},
+    },
+    JSON_TIMEOUT_MS,
+    async (response) => {
+      if (response.status === 304 && cached) return cached.value
+      if (!response.ok) {
+        throw new ApiError(response.status, await readErrorDetail(response), responseRequestId(response), responseRetryAfter(response))
+      }
+      const value = await response.json() as { revision: number }
+      const etag = response.headers.get('ETag')
+      if (etag) revisionValidators.set(scope, { etag, value })
+      return value
+    },
+  )
+}
+
 export const api = {
-  changeRevision: (scope: string) => request<{ revision: number }>(`/changes?scope=${encodeURIComponent(scope)}`),
+  changeRevision: conditionalChangeRevision,
   emergencyReadings: async (signal?: AbortSignal): Promise<EmergencyReadingCatalog> => {
     const result = await emergencyReadingRequest<EmergencyReading[]>('', { signal })
     return { readings: result.data, etag: result.etag }

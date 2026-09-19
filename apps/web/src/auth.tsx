@@ -5,11 +5,12 @@ import {
   useRef,
   useState,
 } from 'react'
-import { api, ApiError, type User } from './api'
+import { api, ApiError, clearApiValidators, type User } from './api'
 import { AuthContext } from './auth-context'
 import { pruneLegacyResourceSnapshots, resourceStore } from './lib/resource'
 import { clearProtectedBrowserStorage } from './shared/auth/protectedBrowserStorage'
 import { InterfaceModeProvider } from './app/interface/InterfaceModeProvider'
+import { activateDeviceResourceCache, purgeDeviceResourceCache } from './lib/deviceResourceCache'
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const [user, setUser] = useState<User | null>(null)
@@ -20,6 +21,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const clearSessionState = useCallback(() => {
     const generation = advanceSessionGeneration()
     resourceStore.clearAll()
+    clearApiValidators()
+    void purgeDeviceResourceCache()
     clearProtectedBrowserStorage()
     setUser(null)
     setLoading(false)
@@ -31,7 +34,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
     const generation = advanceSessionGeneration()
     api
       .me()
-      .then((nextUser) => {
+      .then(async (nextUser) => {
+        await activateDeviceResourceCache(nextUser)
         if (generation === sessionGeneration.current) setUser(nextUser)
       })
       .catch((error) => {
@@ -59,6 +63,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
     if (generation !== sessionGeneration.current) throw new Error('session_changed')
     const authenticatedUser = await api.me()
     if (generation !== sessionGeneration.current) throw new Error('session_changed')
+    await activateDeviceResourceCache(authenticatedUser)
+    if (generation !== sessionGeneration.current) throw new Error('session_changed')
     setUser(authenticatedUser)
     return authenticatedUser
   }
@@ -67,7 +73,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
     const generation = sessionGeneration.current
     try {
       const authenticatedUser = await api.me()
-      if (generation === sessionGeneration.current) setUser(authenticatedUser)
+      if (generation === sessionGeneration.current) {
+        await activateDeviceResourceCache(authenticatedUser)
+        if (generation === sessionGeneration.current) setUser(authenticatedUser)
+      }
       return authenticatedUser
     } catch (error) {
       if (generation === sessionGeneration.current && error instanceof ApiError && error.status === 401) {
@@ -75,6 +84,17 @@ export function AuthProvider({ children }: PropsWithChildren) {
       }
       throw error
     }
+  }, [clearSessionState])
+
+  useEffect(() => {
+    const authorizationFailure = (event: Event) => {
+      const status = (event as CustomEvent<{ status?: number }>).detail?.status
+      resourceStore.clearAll()
+      void purgeDeviceResourceCache()
+      if (status === 401) clearSessionState()
+    }
+    window.addEventListener('robopark:authorization-failure', authorizationFailure)
+    return () => window.removeEventListener('robopark:authorization-failure', authorizationFailure)
   }, [clearSessionState])
 
   const logout = async () => {

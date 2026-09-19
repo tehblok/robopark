@@ -12,6 +12,8 @@ the OAuth token because Robopark uses a single platform token.
 
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 
@@ -85,6 +87,50 @@ _ALL_CACHES: tuple[ResponseCache[Any], ...] = (
     _metrics_cache,
 )
 
+_projection_lock = threading.Lock()
+_issue_projections: dict[ResponseCache[Any], OrderedDict[str, set[str]]] = {
+    _issues_cache: OrderedDict(),
+    _blockers_cache: OrderedDict(),
+    _robot_tickets_cache: OrderedDict(),
+}
+
+
+def _remember_projection(
+    cache: ResponseCache[Any], cache_key: str, value: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    issue_keys = {
+        str(issue["key"])
+        for issue in value
+        if isinstance(issue, dict) and issue.get("key") is not None
+    }
+    with _projection_lock:
+        projections = _issue_projections[cache]
+        projections.pop(cache_key, None)
+        projections[cache_key] = issue_keys
+        while len(projections) > 1024:
+            projections.popitem(last=False)
+    return value
+
+
+def _invalidate_issue_projections(issue_key: str) -> None:
+    with _projection_lock:
+        affected = [
+            (cache, key)
+            for cache, projections in _issue_projections.items()
+            for key, issue_keys in tuple(projections.items())
+            if issue_key in issue_keys
+        ]
+        for cache, key in affected:
+            _issue_projections[cache].pop(key, None)
+    for cache, key in affected:
+        cache.invalidate(key)
+    # A peer worker may own projections absent from this process-local index.
+    # Scan only the three bounded shared list families and remove matching blobs.
+    merge = _issues_cache._merge()
+    if merge is not None:
+        for cache in (_issues_cache, _blockers_cache, _robot_tickets_cache):
+            merge.invalidate_payload_member(cache.name, issue_key)
+
 
 def search_issues(
     *,
@@ -96,8 +142,12 @@ def search_issues(
     key = f"{filter_open}|{order or []}|{query}"
     return _issues_cache.get_or_load(
         key,
-        lambda: tracker_client.search_issues(
-            token=token, query=query, filter_open=filter_open, order=order
+        lambda: _remember_projection(
+            _issues_cache,
+            key,
+            tracker_client.search_issues(
+                token=token, query=query, filter_open=filter_open, order=order
+            ),
         ),
     )
 
@@ -134,12 +184,16 @@ def fetch_park_blockers(
     ck = f"{queue}|{park_tag}|{priority}|{issue_type or ''}"
     return _blockers_cache.get_or_load(
         ck,
-        lambda: tracker_client.fetch_park_blockers(
-            token=token,
-            queue=queue,
-            park_tag=park_tag,
-            priority=priority,
-            issue_type=issue_type,
+        lambda: _remember_projection(
+            _blockers_cache,
+            ck,
+            tracker_client.fetch_park_blockers(
+                token=token,
+                queue=queue,
+                park_tag=park_tag,
+                priority=priority,
+                issue_type=issue_type,
+            ),
         ),
     )
 
@@ -148,7 +202,11 @@ def search_robot_tickets(*, token: str, queue: str, query: str) -> list[dict[str
     ck = f"{queue}|{query}"
     return _robot_tickets_cache.get_or_load(
         ck,
-        lambda: tracker_client.search_robot_tickets(token=token, queue=queue, query=query),
+        lambda: _remember_projection(
+            _robot_tickets_cache,
+            ck,
+            tracker_client.search_robot_tickets(token=token, queue=queue, query=query),
+        ),
     )
 
 
@@ -190,9 +248,7 @@ def invalidate_issue(key: str) -> None:
     tracker_client.invalidate_issue_status_history(key)
     _comments_cache.invalidate(key)
     _transitions_cache.invalidate(key)
-    _issues_cache.clear()
-    _blockers_cache.clear()
-    _robot_tickets_cache.clear()
+    _invalidate_issue_projections(key)
     _count_cache.clear()
     _metrics_cache.clear()
 
@@ -204,6 +260,9 @@ def invalidate_all_lists() -> None:
     _robot_tickets_cache.clear()
     _count_cache.clear()
     _metrics_cache.clear()
+    with _projection_lock:
+        for projections in _issue_projections.values():
+            projections.clear()
 
 
 def clear_all() -> None:
@@ -211,6 +270,9 @@ def clear_all() -> None:
     for cache in _ALL_CACHES:
         cache.clear()
     tracker_client.clear_issue_status_history_cache()
+    with _projection_lock:
+        for projections in _issue_projections.values():
+            projections.clear()
 
 
 def clear_all_for_tests() -> None:

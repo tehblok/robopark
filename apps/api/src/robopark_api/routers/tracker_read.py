@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import time
 from concurrent.futures import Future, wait
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -62,6 +64,17 @@ WORK_HISTORY_STARTS_PER_REQUEST = 2
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tracker", tags=["tracker-read"])
+
+
+def _conditional_private_json(request: Request, response: Response, value: Any) -> Any:
+    payload = value.model_dump(mode="json") if hasattr(value, "model_dump") else value
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    etag = f'"{hashlib.sha256(encoded.encode()).hexdigest()}"'
+    headers = {"Cache-Control": "private, no-cache", "ETag": etag}
+    response.headers.update(headers)
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return value
 
 
 def _ensure_tracker_user(user: User, db: Session) -> None:
@@ -376,6 +389,8 @@ def _build_query(
 
 @router.get("/issues", response_model=TrackerIssuesOut)
 def list_issues(
+    request: Request,
+    response: Response,
     queue: str | None = Query(default=None),
     park: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
@@ -429,7 +444,11 @@ def list_issues(
         query_text = tracker_client.join_query(query_text, tracker_client.open_issues_clause())
     if robot_exact is not None:
         if exact_robot is None:
-            return TrackerIssuesOut(items=[], total=0, limit=limit, offset=offset, has_more=False)
+            return _conditional_private_json(
+                request,
+                response,
+                TrackerIssuesOut(items=[], total=0, limit=limit, offset=offset, has_more=False),
+            )
         query_text = tracker_client.join_query(
             query_text, tracker_client.robot_summary_clause(exact_robot)
         )
@@ -529,12 +548,16 @@ def list_issues(
         )
         for issue in page_raw
     ]
-    return TrackerIssuesOut(
-        items=page,
-        total=total,
-        limit=limit,
-        offset=offset,
-        has_more=offset + len(page) < total,
+    return _conditional_private_json(
+        request,
+        response,
+        TrackerIssuesOut(
+            items=page,
+            total=total,
+            limit=limit,
+            offset=offset,
+            has_more=offset + len(page) < total,
+        ),
     )
 
 

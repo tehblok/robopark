@@ -39,6 +39,9 @@ _DISABLED = object()
 _MISSING = object()
 
 LIVE_MERGE_DIRNAME = "live-merge"
+LIVE_MERGE_SCHEMA = 1
+DEFAULT_NAMESPACE_MAX_ENTRIES = 2048
+DEFAULT_NAMESPACE_MAX_BYTES = 64 * 1024 * 1024
 
 _store_cache: object = _DISABLED
 
@@ -232,6 +235,8 @@ class LiveMergeStore:
         data = self._read_json(path)
         if data is None or data.get("ok") is not True:
             return _MISSING
+        if data.get("schema") != LIVE_MERGE_SCHEMA:
+            return _MISSING
         written = data.get("written_at")
         if not isinstance(written, (int, float)):
             return _MISSING
@@ -281,15 +286,46 @@ class LiveMergeStore:
             self.result_path(namespace, key),
             {
                 "key": key,
+                "schema": LIVE_MERGE_SCHEMA,
                 "written_at": time.time(),
                 "ok": True,
                 "payload": payload,
             },
         )
+        self._prune_namespace_results(namespace)
+
+    def _prune_namespace_results(
+        self,
+        namespace: str,
+        *,
+        max_entries: int = DEFAULT_NAMESPACE_MAX_ENTRIES,
+        max_bytes: int = DEFAULT_NAMESPACE_MAX_BYTES,
+    ) -> int:
+        folder = self.namespace_dir(namespace)
+        try:
+            rows = sorted(
+                ((path, path.stat()) for path in folder.glob("*.json") if path.is_file()),
+                key=lambda row: row[1].st_mtime,
+            )
+        except OSError:
+            return 0
+        total = sum(stat.st_size for _, stat in rows)
+        removed = 0
+        while rows and (len(rows) > max_entries or total > max_bytes):
+            path, stat = rows.pop(0)
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            total -= stat.st_size
+            removed += 1
+        return removed
 
     def _read_stale_payload(self, namespace: str, key: str, max_age: float) -> object:
         data = self._read_json(self.result_path(namespace, key))
         if data is None or data.get("ok") is not True or data.get("key") != key:
+            return _MISSING
+        if data.get("schema") != LIVE_MERGE_SCHEMA:
             return _MISSING
         written = data.get("written_at")
         if not isinstance(written, (int, float)) or time.time() - written >= max_age:
@@ -551,6 +587,40 @@ class LiveMergeStore:
             stored_key = data.get("key")
             if isinstance(stored_key, str) and stored_key.startswith(prefix):
                 self.invalidate(namespace, stored_key)
+
+    @staticmethod
+    def _payload_contains_issue(payload: object, issue_key: str) -> bool:
+        if isinstance(payload, dict):
+            if payload.get("key") == issue_key:
+                return True
+            return any(
+                LiveMergeStore._payload_contains_issue(value, issue_key)
+                for value in payload.values()
+            )
+        if isinstance(payload, list):
+            return any(
+                LiveMergeStore._payload_contains_issue(value, issue_key) for value in payload
+            )
+        return False
+
+    def invalidate_payload_member(self, namespace: str, issue_key: str) -> int:
+        """Invalidate only shared list projections containing one Tracker issue."""
+        folder = self.namespace_dir(namespace)
+        if not folder.is_dir():
+            return 0
+        keys = []
+        for path in folder.glob("*.json"):
+            data = self._read_json(path)
+            if (
+                data is not None
+                and data.get("schema") == LIVE_MERGE_SCHEMA
+                and isinstance(data.get("key"), str)
+                and self._payload_contains_issue(data.get("payload"), issue_key)
+            ):
+                keys.append(data["key"])
+        for key in keys:
+            self.invalidate(namespace, key)
+        return len(keys)
 
     def clear_namespace(self, namespace: str) -> None:
         from robopark_api.services.ops.maintenance import require_application_writes

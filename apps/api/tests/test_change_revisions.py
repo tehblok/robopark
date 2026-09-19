@@ -42,7 +42,13 @@ def test_change_endpoint_requires_auth_and_returns_only_revision(
     version = client.get("/changes?scope=work:mine")
     assert version.json() == {"revision": 0}
     assert len(version.content) < 64
-    assert version.headers["cache-control"] == "private, no-store"
+    assert version.headers["cache-control"] == "private, no-cache"
+    unchanged = client.get(
+        "/changes?scope=work:mine",
+        headers={"If-None-Match": version.headers["etag"]},
+    )
+    assert unchanged.status_code == 304
+    assert unchanged.content == b""
     store.mark_changed(f"work:park:{seed_park_with_tracker.id}")
     assert client.get("/changes?scope=work:mine").json() == {"revision": 1}
     assert client.get("/changes?scope=work").status_code == 403

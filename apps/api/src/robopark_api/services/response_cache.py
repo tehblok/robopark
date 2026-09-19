@@ -19,6 +19,7 @@ never held during the loader (upstream HTTP).
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections import OrderedDict
@@ -26,6 +27,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
+from robopark_api.services.cache_metrics import CacheMetricsSnapshot, family
+from robopark_api.services.cache_policy import CachePolicy
 from robopark_api.services.live_merge import LiveMergeStore, get_live_merge_store
 
 T = TypeVar("T")
@@ -33,6 +36,7 @@ T = TypeVar("T")
 _MISSING: object = object()
 DEFAULT_MAX_ENTRIES = 1024
 DEFAULT_MAX_STALE_SECONDS = 60.0
+DEFAULT_MAX_BYTES = 16 * 1024 * 1024
 
 
 @dataclass
@@ -47,26 +51,42 @@ class ResponseCache(Generic[T]):  # noqa: UP046
 
     def __init__(
         self,
-        ttl_seconds: float,
+        ttl_seconds: float | None = None,
         *,
         name: str = "cache",
         shared: LiveMergeStore | None | bool = True,
         shared_payload: Callable[[T], Any] | None = None,
         max_entries: int = DEFAULT_MAX_ENTRIES,
         max_stale_seconds: float = DEFAULT_MAX_STALE_SECONDS,
+        max_bytes: int = DEFAULT_MAX_BYTES,
+        policy: CachePolicy | None = None,
     ) -> None:
+        if policy is not None:
+            ttl_seconds = policy.ttl_seconds
+            max_stale_seconds = policy.stale_seconds
+            max_entries = policy.max_entries
+            max_bytes = policy.max_bytes
+            if policy.persistence == "memory":
+                shared = False
+        if ttl_seconds is None:
+            raise ValueError("ttl_seconds must be provided")
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
         if max_entries <= 0:
             raise ValueError("max_entries must be positive")
         if max_stale_seconds <= 0:
             raise ValueError("max_stale_seconds must be positive")
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
         self._ttl = ttl_seconds
         self._name = name
         self._max_entries = max_entries
         self._max_stale = max_stale_seconds
+        self._max_bytes = max_bytes
         self._lock = threading.Lock()
-        self._store: OrderedDict[str, tuple[float, T, float | None]] = OrderedDict()
+        self._store: OrderedDict[str, tuple[float, T, float | None, int]] = OrderedDict()
+        self._bytes = 0
+        self._metrics = family(name)
         self._flights: dict[str, _Flight[T]] = {}
         # True → look up the process-wide store each call (tests may disable it).
         # LiveMergeStore → always that store. False/None → in-process only.
@@ -88,7 +108,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
             return self._shared
         return get_live_merge_store()
 
-    def _l1_valid(self, key: str, hit: tuple[float, T, float | None], now: float) -> bool:
+    def _l1_valid(self, key: str, hit: tuple[float, T, float | None, int], now: float) -> bool:
         if now - hit[0] >= self._ttl:
             return False
         merge = self._merge()
@@ -100,13 +120,34 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         retention = max(self._ttl, self._max_stale)
         expired = [key for key, hit in self._store.items() if now - hit[0] >= retention]
         for key in expired:
-            self._store.pop(key, None)
+            self._remove_locked(key)
+
+    @staticmethod
+    def _entry_bytes(value: object) -> int:
+        try:
+            return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+        except (TypeError, ValueError):
+            return len(repr(value).encode("utf-8"))
+
+    def _remove_locked(self, key: str) -> None:
+        removed = self._store.pop(key, None)
+        if removed is not None:
+            self._bytes = max(0, self._bytes - removed[3])
+
+    def _update_gauges_locked(self) -> None:
+        self._metrics.gauge(entries=len(self._store), bytes_=self._bytes)
 
     def _store_locked(self, key: str, hit: tuple[float, T, float | None]) -> None:
-        self._store[key] = hit
+        self._remove_locked(key)
+        sized = (*hit, self._entry_bytes(hit[1]))
+        self._store[key] = sized
+        self._bytes += sized[3]
         self._store.move_to_end(key)
-        while len(self._store) > self._max_entries:
-            self._store.popitem(last=False)
+        while len(self._store) > self._max_entries or self._bytes > self._max_bytes:
+            oldest = next(iter(self._store))
+            self._remove_locked(oldest)
+            self._metrics.increment("evictions")
+        self._update_gauges_locked()
 
     @staticmethod
     def _shared_loaded_at(mtime: float | None, now: float) -> float:
@@ -116,7 +157,9 @@ class ResponseCache(Generic[T]):  # noqa: UP046
 
     def invalidate(self, key: str) -> None:
         with self._lock:
-            self._store.pop(key, None)
+            self._remove_locked(key)
+            self._update_gauges_locked()
+        self._metrics.increment("invalidations")
         merge = self._merge()
         if merge is not None:
             merge.invalidate(self._name, key)
@@ -125,7 +168,10 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         with self._lock:
             stale = [k for k in self._store if k.startswith(prefix)]
             for key in stale:
-                self._store.pop(key, None)
+                self._remove_locked(key)
+            self._update_gauges_locked()
+        if stale:
+            self._metrics.increment("invalidations", len(stale))
         merge = self._merge()
         if merge is not None:
             merge.invalidate_prefix(self._name, prefix)
@@ -133,7 +179,10 @@ class ResponseCache(Generic[T]):  # noqa: UP046
     def clear(self) -> None:
         with self._lock:
             self._store.clear()
+            self._bytes = 0
             self._flights.clear()
+            self._update_gauges_locked()
+        self._metrics.increment("invalidations")
         merge = self._merge()
         if merge is not None:
             merge.clear_namespace(self._name)
@@ -144,6 +193,9 @@ class ResponseCache(Generic[T]):  # noqa: UP046
             hit = self._store.get(key)
             return hit[1] if hit is not None else None
 
+    def metrics(self) -> CacheMetricsSnapshot:
+        return self._metrics.snapshot()
+
     def get_if_fresh(self, key: str) -> tuple[bool, T | None]:
         """Return a fresh local or shared value without invoking a loader."""
         now = time.monotonic()
@@ -153,19 +205,22 @@ class ResponseCache(Generic[T]):  # noqa: UP046
             hit = self._store.get(key)
             if hit is not None and self._l1_valid(key, hit, now):
                 self._store.move_to_end(key)
+                self._metrics.increment("hits")
                 return True, hit[1]
             if hit is not None:
-                self._store.pop(key, None)
+                self._remove_locked(key)
 
         if merge is None:
             return False, None
         found, blob = merge.try_fresh(self._name, key, self._ttl)
         if not found:
+            self._metrics.increment("misses")
             return False, None
         mtime = merge.result_mtime(self._name, key)
         with self._lock:
             loaded_at = self._shared_loaded_at(mtime, time.monotonic())
             self._store_locked(key, (loaded_at, blob, mtime))
+        self._metrics.increment("hits")
         return True, blob  # type: ignore[return-value]
 
     def get_or_load(self, key: str, loader: Callable[[], T]) -> T:
@@ -173,16 +228,17 @@ class ResponseCache(Generic[T]):  # noqa: UP046
 
         now = time.monotonic()
         merge = self._merge()
-        stale: tuple[float, T, float | None] | None = None
+        stale: tuple[float, T, float | None, int] | None = None
         with self._lock:
             self._prune_expired_locked(now)
             hit = self._store.get(key)
             if hit is not None and self._l1_valid(key, hit, now):
                 self._store.move_to_end(key)
+                self._metrics.increment("hits")
                 return hit[1]
             if hit is not None:
                 stale = hit
-                self._store.pop(key, None)
+                self._remove_locked(key)
 
         if merge is not None:
             found, blob = merge.try_fresh(self._name, key, self._ttl)
@@ -191,9 +247,20 @@ class ResponseCache(Generic[T]):  # noqa: UP046
                 with self._lock:
                     loaded_at = self._shared_loaded_at(mtime, time.monotonic())
                     self._store_locked(key, (loaded_at, blob, mtime))
+                self._metrics.increment("hits")
                 return blob
 
+        self._metrics.increment("misses")
+
         with self._lock:
+            # A fast leader may have completed between the first lookup and
+            # flight registration. Recheck under the same lock that owns the
+            # flight map so a late caller cannot start a duplicate load.
+            raced_hit = self._store.get(key)
+            if raced_hit is not None and self._l1_valid(key, raced_hit, time.monotonic()):
+                self._store.move_to_end(key)
+                self._metrics.increment("hits")
+                return raced_hit[1]
             flight = self._flights.get(key)
             is_leader = flight is None
             if is_leader:
@@ -210,6 +277,8 @@ class ResponseCache(Generic[T]):  # noqa: UP046
 
         value: object = _MISSING
         error: BaseException | None = None
+        load_started = time.monotonic()
+        load_had_error = False
         try:
             if merge is not None:
                 value = merge.merge_load(
@@ -222,6 +291,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
             else:
                 value = loader()
         except BaseException as exc:  # last-good or fan-out one shared error
+            load_had_error = True
             if (
                 isinstance(exc, Exception)
                 and stale is not None
@@ -230,6 +300,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
                 value = stale[1]
             else:
                 error = exc
+                self._metrics.observe_load(time.monotonic() - load_started, error=True)
                 raise
         finally:
             with self._lock:
@@ -248,6 +319,8 @@ class ResponseCache(Generic[T]):  # noqa: UP046
                     )
                 self._flights.pop(key, None)
                 flight.done.set()
+
+        self._metrics.observe_load(time.monotonic() - load_started, error=load_had_error)
 
         assert value is not _MISSING
         return value  # type: ignore[return-value]

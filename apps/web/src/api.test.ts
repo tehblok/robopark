@@ -275,4 +275,18 @@ describe('API transport metadata', () => {
     expect(rejection).toBe(callerAbort)
     expect(rejection).not.toBeInstanceOf(ApiTimeoutError)
   })
+
+  it('revalidates change revisions with ETag and reuses a 304 body', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('{"revision":7}', { status: 200, headers: { ETag: '"7"' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }))
+    vi.stubGlobal('fetch', fetcher)
+
+    await expect(api.changeRevision('work')).resolves.toEqual({ revision: 7 })
+    await expect(api.changeRevision('work')).resolves.toEqual({ revision: 7 })
+
+    expect(fetcher.mock.calls[1][1]).toEqual(expect.objectContaining({
+      headers: expect.objectContaining({ 'If-None-Match': '"7"' }),
+    }))
+  })
 })

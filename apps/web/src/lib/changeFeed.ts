@@ -20,11 +20,12 @@ export function startChangeFeed({
   const versionKey = `${identity}\0${scope}`
   let lastRevision: number | null = lastSeenRevisions.get(versionKey) ?? null
   let failures = 0
+  let retryNotBefore = 0
   const active = () => !document.hidden && navigator.onLine !== false
   const schedule = (delay: number) => {
     if (stopped || !active()) return
     window.clearTimeout(timer)
-    timer = window.setTimeout(() => { void check() }, delay)
+    timer = window.setTimeout(() => { void check() }, Math.max(delay, retryNotBefore - Date.now()))
   }
   const check = async () => {
     if (stopped || pending || !active()) return
@@ -43,12 +44,19 @@ export function startChangeFeed({
         lastSeenRevisions.delete(oldest)
       }
       failures = 0
+      retryNotBefore = 0
     } catch (error) {
       const status = error && typeof error === 'object' && 'status' in error ? error.status : undefined
       if (status === 401 || status === 403) {
         stop()
         onAuthorizationFailure?.()
-      } else failures += 1
+      } else {
+        failures += 1
+        const retryAfter = error && typeof error === 'object' && 'retryAfterMs' in error
+          && typeof error.retryAfterMs === 'number' && Number.isFinite(error.retryAfterMs)
+          ? Math.max(0, error.retryAfterMs) : 0
+        retryNotBefore = Math.max(retryNotBefore, Date.now() + retryAfter)
+      }
     } finally {
       pending = false
       if (!stopped) {
@@ -59,7 +67,7 @@ export function startChangeFeed({
     }
   }
   const resume = () => {
-    if (active() && !pending) schedule(0)
+    if (active() && !pending) schedule(Math.max(0, retryNotBefore - Date.now()))
     else window.clearTimeout(timer)
   }
   document.addEventListener('visibilitychange', resume)

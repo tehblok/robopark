@@ -283,6 +283,23 @@ def test_invalidate_issue_clears_related_list_caches(monkeypatch):
     ]
 
 
+def test_invalidate_issue_keeps_unrelated_list_projections(monkeypatch):
+    calls: dict[str, int] = {"one": 0, "two": 0}
+
+    def search(*, query, **_kwargs):
+        calls[query] += 1
+        return [{"key": "SD-1" if query == "one" else "SD-2", "n": calls[query]}]
+
+    monkeypatch.setattr(tracker_client, "search_issues", search)
+    assert tracker_cache.search_issues(token="t", query="one")[0]["n"] == 1
+    assert tracker_cache.search_issues(token="t", query="two")[0]["n"] == 1
+
+    tracker_cache.invalidate_issue("SD-1")
+
+    assert tracker_cache.search_issues(token="t", query="one")[0]["n"] == 2
+    assert tracker_cache.search_issues(token="t", query="two")[0]["n"] == 1
+
+
 def test_clear_all_resets_every_cache(monkeypatch):
     monkeypatch.setattr(tracker_client, "get_issue", lambda **_kw: {"key": "SD-1"})
     tracker_cache.get_issue(token="t", key="SD-1")
