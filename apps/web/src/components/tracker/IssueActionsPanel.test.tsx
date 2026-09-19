@@ -356,6 +356,7 @@ describe('IssueActionsPanel', () => {
 
     const input = screen.getByLabelText(ru.tracker.actions.assignPlaceholder)
     const form = input.closest('form')
+    const submit = screen.getByRole('button', { name: ru.tracker.actions.assign })
 
     expect(form).not.toBeNull()
     const formStyles = declaredStyles(form!)
@@ -365,11 +366,13 @@ describe('IssueActionsPanel', () => {
     })
     expect(Number.parseFloat(formStyles['min-width'] ?? '')).toBe(0)
     expect(Number.parseFloat(declaredStyles(input)['min-width'] ?? '')).toBe(0)
-    
-    // Mobile styles are applied via .rp-workbench .issue-assign-form selector
-    // which requires the workbench container context. The test verifies that
-    // the form has the necessary base styles to prevent overflow.
-    // The actual mobile grid layout is tested via visual regression tests.
+    expect(declaredStyles(form!, '(max-width: 599px)')).toMatchObject({
+      display: 'grid',
+      'grid-template-columns': 'minmax(0, 1fr)',
+      width: '100%',
+    })
+    expect(declaredStyles(input, '(max-width: 599px)')).toMatchObject({ width: '100%' })
+    expect(declaredStyles(submit, '(max-width: 599px)')).toMatchObject({ width: '100%' })
   })
 
   it('keeps one dialog alert after close failure and closes only after success', async () => {
