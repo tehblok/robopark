@@ -277,6 +277,26 @@ button.rp-shell__more-link {
   padding: 0;
 }
 
+.rp-shell__scope-alert {
+  align-items: center;
+  background: var(--rp-warning-surface);
+  border: 1px solid color-mix(in srgb, var(--rp-warning) 35%, transparent);
+  border-radius: var(--rp-radius-control);
+  color: var(--rp-warning);
+  display: flex;
+  gap: var(--rp-space-3);
+  justify-content: space-between;
+  margin-block-end: var(--rp-space-4);
+  padding: var(--rp-space-3);
+}
+
+@media (max-width: 599px) {
+  .rp-shell__scope-alert {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .rp-shell__content :where(h1, button, a, input, select, textarea) {
   scroll-margin-top: calc(2 * var(--rp-control-min-size) + var(--rp-space-6));
 }

@@ -18,6 +18,7 @@ export type ParkScopeValue = {
   selectedPark: Park | null
   parks: Park[]
   loading: boolean
+  loadError?: string | null
   locked: boolean
   setParkId: (id: number | null, options?: { replace?: boolean }) => void
   refreshParks: () => Promise<void>

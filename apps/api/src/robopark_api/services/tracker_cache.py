@@ -38,11 +38,26 @@ _TTL_BLOCKERS = 20.0
 _TTL_ROBOT_TICKETS = 30.0
 _TTL_COUNTS = 20.0
 
+
+def _shared_issue_payload(
+    value: list[dict[str, Any]] | dict[str, Any] | None,
+) -> list[dict[str, Any]] | dict[str, Any] | None:
+    """Project live SDK resources out of the cross-process JSON cache."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return [
+            {key: item for key, item in issue.items() if key != "_tracker_resource"}
+            for issue in value
+        ]
+    return {key: item for key, item in value.items() if key != "_tracker_resource"}
+
+
 _issues_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
-    _TTL_ISSUES, name="tracker.issues", shared=False
+    _TTL_ISSUES, name="tracker.issues", shared_payload=_shared_issue_payload
 )
 _issue_cache: ResponseCache[dict[str, Any] | None] = _TrackerCache(
-    _TTL_ISSUE, name="tracker.issue", shared=False
+    _TTL_ISSUE, name="tracker.issue", shared_payload=_shared_issue_payload
 )
 _comments_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
     _TTL_COMMENTS, name="tracker.comments"
@@ -51,10 +66,10 @@ _transitions_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
     _TTL_TRANSITIONS, name="tracker.transitions"
 )
 _blockers_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
-    _TTL_BLOCKERS, name="tracker.blockers", shared=False
+    _TTL_BLOCKERS, name="tracker.blockers", shared_payload=_shared_issue_payload
 )
 _robot_tickets_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
-    _TTL_ROBOT_TICKETS, name="tracker.robot_tickets", shared=False
+    _TTL_ROBOT_TICKETS, name="tracker.robot_tickets", shared_payload=_shared_issue_payload
 )
 _count_cache: ResponseCache[int] = _TrackerCache(_TTL_COUNTS, name="tracker.counts")
 _metrics_cache: ResponseCache[dict[str, int]] = _TrackerCache(_TTL_COUNTS, name="tracker.metrics")
@@ -172,6 +187,7 @@ def collect_park_metrics(
 def invalidate_issue(key: str) -> None:
     """Drop cached artefacts around a single issue and any list that might contain it."""
     _issue_cache.invalidate(key)
+    tracker_client.invalidate_issue_status_history(key)
     _comments_cache.invalidate(key)
     _transitions_cache.invalidate(key)
     _issues_cache.clear()

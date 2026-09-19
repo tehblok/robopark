@@ -10,7 +10,7 @@ from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import AccessStatus, Park, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings
-from robopark_api.task_workflow_models import HiddenTask
+from robopark_api.task_workflow_models import HiddenTask, TaskReview
 
 
 def _seed_operator(db_session, park):
@@ -650,6 +650,50 @@ def test_mechanic_issue_capabilities_respect_write_policy_but_keep_attachment(
     }
 
 
+def test_issue_capabilities_only_advertise_available_workflow_actions(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import tracker_client
+
+    operator = _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: _scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"),
+    )
+    login_as(client, operator.username, "secret")
+
+    without_review = client.get("/tracker/issues/ROBOPARK-1")
+
+    assert without_review.status_code == 200
+    assert without_review.json()["capabilities"] == {
+        "comment": True,
+        "assign": False,
+        "unassign": False,
+        "transition": False,
+        "close": False,
+        "attach": True,
+    }
+
+    db_session.add(
+        TaskReview(
+            id="pending-capability-review",
+            issue_key="ROBOPARK-1",
+            state="pending",
+            actor_user_id=operator.id,
+            created_at=1,
+            updated_at=1,
+        )
+    )
+    db_session.commit()
+
+    pending_review = client.get("/tracker/issues/ROBOPARK-1")
+
+    assert pending_review.status_code == 200
+    assert pending_review.json()["capabilities"]["close"] is True
+
+
 @pytest.mark.parametrize("queue", ["ROBOPARK", "SDCFLEETOPS"])
 @pytest.mark.parametrize("closed", [False, True])
 def test_related_repairs_preserve_scope_and_page_only_exact_robot_repairs_of_any_priority(
@@ -811,7 +855,14 @@ def test_non_blocker_repair_detail_and_comment_keep_existing_scope(
     assert response.status_code == expected_status
     if expected_status == 200:
         assert detail.json()["priority"] == "Низкий"
-        assert all(detail.json()["capabilities"].values())
+        assert detail.json()["capabilities"] == {
+            "comment": True,
+            "assign": False,
+            "unassign": False,
+            "transition": False,
+            "close": False,
+            "attach": True,
+        }
         assert response.json()["action"] == "comment"
         assert len(comments) == 1
         assert comments[0]["key"] == "ROBOPARK-1"

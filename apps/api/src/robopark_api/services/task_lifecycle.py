@@ -238,7 +238,13 @@ def tracker_issue_is_closed(issue: dict | None) -> bool:
     status_key = str(issue.get("status_key") or "").strip().lower()
     status_text = str(issue.get("status") or "").strip().lower().replace("ё", "е")
     return status_key in {"closed", "resolved", "cancelled", "canceled"} or status_text in {
-        "закрыт", "закрыта", "закрыто", "решен", "решена", "отменен", "отменена"
+        "закрыт",
+        "закрыта",
+        "закрыто",
+        "решен",
+        "решена",
+        "отменен",
+        "отменена",
     }
 
 
@@ -260,17 +266,32 @@ def reconcile_external_closure(db: Session, issue: dict) -> None:
         review.updated_at = now
     park_id = claim.park_id if claim is not None else None
     release_claim(db, issue_key)
-    db.add(TaskMessage(
-        id=str(uuid4()), issue_key=issue_key, kind="system", author_user_id=None,
-        author_name="Tracker", text="Задача закрыта в Трекере; работа в системе завершена.",
-        external_id="tracker-external-close", sync_state="synced",
-        created_at=now, updated_at=now,
-    ))
-    db.add(AuditLog(
-        action="task.external_close", actor_user_id=None, actor_username="Tracker",
-        actor_role="system", park_id=park_id, target_type="tracker_issue",
-        target_id=issue_key, outcome="success",
-    ))
+    db.add(
+        TaskMessage(
+            id=str(uuid4()),
+            issue_key=issue_key,
+            kind="system",
+            author_user_id=None,
+            author_name="Tracker",
+            text="Задача закрыта в Трекере; работа в системе завершена.",
+            external_id="tracker-external-close",
+            sync_state="synced",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    db.add(
+        AuditLog(
+            action="task.external_close",
+            actor_user_id=None,
+            actor_username="Tracker",
+            actor_role="system",
+            park_id=park_id,
+            target_type="tracker_issue",
+            target_id=issue_key,
+            outcome="success",
+        )
+    )
     db.commit()
 
 
@@ -285,7 +306,12 @@ def workflow(
     claim = get_claim(db, issue_key)
     owner = db.get(User, claim.owner_user_id) if claim is not None else None
     review = _latest_review(db, issue_key)
-    if review is not None and review.state == "closed" and claim is not None and claim.updated_at > review.updated_at:
+    if (
+        review is not None
+        and review.state == "closed"
+        and claim is not None
+        and claim.updated_at > review.updated_at
+    ):
         review = None  # The previous repair cycle must not lock a newly reopened task.
     hidden = _active_hidden(db, issue_key)
     hidden_out = None
@@ -296,7 +322,9 @@ def workflow(
             "actor": hidden_actor.username if hidden_actor is not None else "",
             "created_at": datetime.fromtimestamp(hidden.created_at, UTC).isoformat(),
         }
-    display_status = "closed" if tracker_issue_is_closed(issue) else "hidden" if hidden is not None else "queued"
+    display_status = (
+        "closed" if tracker_issue_is_closed(issue) else "hidden" if hidden is not None else "queued"
+    )
     if display_status != "closed" and hidden is None and review is not None:
         if review.state == "pending":
             display_status = "review"
@@ -309,13 +337,28 @@ def workflow(
     elif display_status != "closed" and hidden is None and claim is not None:
         display_status = "in_progress"
     queued_at = str((issue or {}).get("queued_at") or "") or None
-    sync_error = db.scalar(select(ReliableAction.error_code).where(
-        ReliableAction.resource_type == "tracker_issue",
-        ReliableAction.resource_id == issue_key,
-        ReliableAction.state == "needs_attention",
-    ).order_by(ReliableAction.updated_at.desc()).limit(1))
+    sync_error = db.scalar(
+        select(ReliableAction.error_code)
+        .where(
+            ReliableAction.resource_type == "tracker_issue",
+            ReliableAction.resource_id == issue_key,
+            ReliableAction.state == "needs_attention",
+        )
+        .order_by(ReliableAction.updated_at.desc())
+        .limit(1)
+    )
     # Only stable public reason codes, never upstream exception text or credentials.
-    if sync_error not in {"task_already_closed", "tracker_transition_missing", "authentication", "401", "403", "forbidden", "invalid_payload", "prerequisite_failed", "duplicate_remote_action"}:
+    if sync_error not in {
+        "task_already_closed",
+        "tracker_transition_missing",
+        "authentication",
+        "401",
+        "403",
+        "forbidden",
+        "invalid_payload",
+        "prerequisite_failed",
+        "duplicate_remote_action",
+    }:
         sync_error = None
     return {
         "owner": (
@@ -374,12 +417,16 @@ def claim(
 ) -> dict:
     if _role(actor) != rbac.RoleSlug.MECHANIC:
         raise HTTPException(403, "task_claim_mechanic_required")
-    pending_close = db.scalar(select(ReliableAction.id).where(
-        ReliableAction.resource_type == "tracker_issue",
-        ReliableAction.resource_id == issue_key,
-        ReliableAction.action == "close",
-        ReliableAction.state != "succeeded",
-    ).limit(1))
+    pending_close = db.scalar(
+        select(ReliableAction.id)
+        .where(
+            ReliableAction.resource_type == "tracker_issue",
+            ReliableAction.resource_id == issue_key,
+            ReliableAction.action == "close",
+            ReliableAction.state != "succeeded",
+        )
+        .limit(1)
+    )
     if pending_close is not None:
         raise HTTPException(409, "task_closing_pending")
     payload = {"owner_user_id": actor.id, "park_id": park.id}

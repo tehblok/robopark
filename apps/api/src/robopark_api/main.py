@@ -145,7 +145,9 @@ def create_app() -> FastAPI:
             if owns_job_lease:
                 tasks.append(asyncio.create_task(run_cache_cleanup_loop(stop_event)))
                 outbox_task = asyncio.create_task(run_tracker_outbox_loop(SessionLocal, stop_event))
-                campaign_task = asyncio.create_task(run_campaign_refresh_loop(SessionLocal, stop_event))
+                campaign_task = asyncio.create_task(
+                    run_campaign_refresh_loop(SessionLocal, stop_event)
+                )
 
         startup = asyncio.create_task(start_writers())
         try:

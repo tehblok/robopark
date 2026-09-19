@@ -226,7 +226,10 @@ def test_approved_royal_can_manage_global_readings(client, db_session):
     assert login_as(client, "royal-approved", "secret").status_code == 204
     created = client.post(BASE, json=READING)
     assert created.status_code == 201
-    assert client.patch(f"{BASE}/{created.json()['id']}", json={"is_enabled": False}).status_code == 200
+    assert (
+        client.patch(f"{BASE}/{created.json()['id']}", json={"is_enabled": False}).status_code
+        == 200
+    )
 
 
 def test_discovery_normalizes_vin_uses_cache_and_returns_only_bounded_safe_scalars(

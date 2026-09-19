@@ -140,7 +140,9 @@ def test_approved_royal_can_edit_robot_check_sections(client, db_session):
     assert login_as(client, "owner-emergency-test", "secret").status_code == 204
     created = _create_section(client)
     assert created.status_code == 201
-    assert client.patch("/admin/emergency/sections/status", json={"title": "Робот"}).status_code == 200
+    assert (
+        client.patch("/admin/emergency/sections/status", json={"title": "Робот"}).status_code == 200
+    )
 
 
 def test_emergency_settings_viewer_can_read_sections_but_cannot_mutate(client, db_session):

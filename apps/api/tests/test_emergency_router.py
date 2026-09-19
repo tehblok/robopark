@@ -242,6 +242,48 @@ def test_snapshot_returns_hud_when_allowed(
     assert observed_at == datetime.fromtimestamp(emergency_payload["timestamp"] / 1000, UTC)
 
 
+def test_combined_view_checks_scope_and_fetches_payload_once(
+    client, db_session, seed_operator, monkeypatch, emergency_payload
+):
+    configure_emergency(db_session, monkeypatch, emergency_payload)
+    calls = {"scope": 0, "payload": 0}
+
+    def allow(*_args, **_kwargs):
+        calls["scope"] += 1
+        return True
+
+    def fetch(**_kwargs):
+        calls["payload"] += 1
+        return emergency_payload
+
+    monkeypatch.setattr(emergency_scope, "vin_allowed_for_user", allow)
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", fetch)
+    login_as(client, "operator1", "secret")
+
+    response = client.get("/emergency/447/view?section=status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["snapshot"]["vin"] == "YASADR00000000447"
+    assert body["section"]["id"] == "status"
+    assert body["stale"] is False
+    assert body["stale_age_seconds"] == 0
+    assert calls == {"scope": 1, "payload": 1}
+
+
+def test_combined_view_keeps_snapshot_live_when_section_was_removed(
+    client, db_session, seed_operator, monkeypatch, emergency_payload
+):
+    configure_emergency(db_session, monkeypatch, emergency_payload)
+    login_as(client, "operator1", "secret")
+
+    response = client.get("/emergency/447/view?section=removed-section")
+
+    assert response.status_code == 200
+    assert response.json()["snapshot"]["vin"] == "YASADR00000000447"
+    assert response.json()["section"] is None
+
+
 def test_operator_snapshot_includes_only_readings_from_operator_sections(
     client, db_session, seed_operator, monkeypatch, emergency_payload
 ):

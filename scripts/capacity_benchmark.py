@@ -118,6 +118,8 @@ class StubHandler(BaseHTTPRequestHandler):
             result = []
         elif operation == "count_issues":
             result = len(self.server.issues)
+        elif operation == "issue_history":
+            result = []
         else:
             self.send_error(500, "Unexpected stub operation")
             return
@@ -135,6 +137,19 @@ def difference(after, before):
         for key, value in after.items()
         if value != before.get(key, 0)
     }
+
+
+def status_history_coalesced(*phases):
+    calls = Counter()
+    for phase in phases:
+        calls.update(
+            {
+                key: value
+                for key, value in phase.get("upstream_calls", {}).items()
+                if key.startswith("issue_history:")
+            }
+        )
+    return bool(calls) and all(value == 1 for value in calls.values())
 
 
 def summarize(records, elapsed, upstream):
@@ -252,13 +267,16 @@ async def exercise(base, args, stub):
     try:
         await phase("cold_reconnect_200_requests", lambda: burst("/tracker/issues?limit=50"))
         await phase("cold_details_200_requests", lambda: burst("/tracker/issues/ROBOPARK-1"))
-        await phase("cold_robot_check_200_requests", lambda: burst(f"/emergency/{VIN}/snapshot"))
+        await phase(
+            "cold_robot_check_200_requests",
+            lambda: burst(f"/emergency/{VIN}/view?section=status"),
+        )
 
         async def scoped_denials():
             routes = [
                 "/tracker/issues/ROBOPARK-FOREIGN",
                 "/tracker/issues/ROBOPARK-FOREIGN/comments",
-                "/emergency/YASADR00000000999/snapshot",
+                "/emergency/YASADR00000000999/view?section=status",
             ]
             return await asyncio.gather(
                 *(request(i, routes[i % len(routes)], expected=403) for i in range(args.users))
@@ -273,7 +291,7 @@ async def exercise(base, args, stub):
                 "/tracker/issues/ROBOPARK-1",
                 "/tracker/issues/ROBOPARK-1/comments",
                 "/reports/inbox",
-                f"/emergency/{VIN}/snapshot",
+                f"/emergency/{VIN}/view?section=status",
             ]
 
             async def user_loop(index):
@@ -285,7 +303,7 @@ async def exercise(base, args, stub):
                     f"/tracker/issues/{issue_key}",
                     f"/tracker/issues/{issue_key}/comments",
                     routes[3],
-                    f"/emergency/{user_vin}/snapshot",
+                    f"/emergency/{user_vin}/view?section=status",
                 ]
                 due = started + args.cadence * index / args.users
                 turn = 0
@@ -330,7 +348,7 @@ async def exercise(base, args, stub):
                 "/tracker/issues/ROBOPARK-1",
                 "/tracker/issues/ROBOPARK-1/comments",
                 "/reports/inbox",
-                f"/emergency/{VIN}/snapshot",
+                f"/emergency/{VIN}/view?section=status",
             ]
             records = []
             for _ in range(args.stress_rounds):
@@ -364,7 +382,7 @@ def main():
     parser.add_argument(
         "--presence",
         action="store_true",
-        help="Replace about 10% of sustained reads with task-presence writes",
+        help="Replace about 10%% of sustained reads with task-presence writes",
     )
     args = parser.parse_args()
     if (
@@ -543,6 +561,10 @@ def main():
             if k.startswith("get_issue:ROBOPARK-1")
         )
         == 1,
+        "status_history_coalesced_per_issue": status_history_coalesced(
+            phases.get("cold_reconnect_200_requests", {}),
+            phases.get("cold_details_200_requests", {})
+        ),
         "cold_robot_coalesced_within_ttl": 1
         <= phases.get("cold_robot_check_200_requests", {})
         .get("upstream_calls", {})

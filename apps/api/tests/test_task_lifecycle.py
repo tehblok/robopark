@@ -101,10 +101,17 @@ def test_closed_tracker_status_wins_over_stale_local_ownership(
     from robopark_api.services import task_lifecycle
     from robopark_api.services.tracker_claims import claim_issue
 
-    claim_issue(db_session, actor=seed_mechanic, owner=seed_mechanic,
-                issue_key=ISSUE_KEY, park_id=seed_park_with_tracker.id)
+    claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key=ISSUE_KEY,
+        park_id=seed_park_with_tracker.id,
+    )
     result = task_lifecycle.workflow(
-        db_session, issue_key=ISSUE_KEY, viewer=seed_mechanic,
+        db_session,
+        issue_key=ISSUE_KEY,
+        viewer=seed_mechanic,
         issue={**_issue(), "status_key": "closed", "status": "Закрыта"},
     )
     assert result["display_status"] == "closed"
@@ -115,7 +122,9 @@ def test_workflow_uses_actual_queue_time_not_creation_time(db_session, seed_mech
     from robopark_api.services import task_lifecycle
 
     result = task_lifecycle.workflow(
-        db_session, issue_key=ISSUE_KEY, viewer=seed_mechanic,
+        db_session,
+        issue_key=ISSUE_KEY,
+        viewer=seed_mechanic,
         issue={**_issue(), "queued_at": queued_at},
     )
     assert result["queued_at"] == queued_at
@@ -130,9 +139,15 @@ def test_cannot_claim_task_already_closed_in_tracker(
 
     assert tracker_cache.get_issue(token="token", key=ISSUE_KEY)["status_key"] == "queued"
 
-    monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: {
-        **_issue(), "status_key": "closed", "status": "Закрыта",
-    })
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {
+            **_issue(),
+            "status_key": "closed",
+            "status": "Закрыта",
+        },
+    )
     response = _claim(client, seed_mechanic)
     assert response.status_code == 409
     assert response.json()["detail"] == "task_already_closed"
@@ -148,7 +163,10 @@ def test_failed_close_is_not_presented_as_confirmed_closure(
     assert _claim(client, seed_mechanic).status_code == 200
     assert _submit(client, comment="Исправлено").status_code == 200
     login_as(client, operator.username, "secret")
-    result = client.post(f"/tracker/issues/{ISSUE_KEY}/review/approve", headers={"Idempotency-Key": "close-not-confirmed"})
+    result = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/review/approve",
+        headers={"Idempotency-Key": "close-not-confirmed"},
+    )
     assert result.status_code == 200
     assert result.json()["workflow"]["display_status"] == "closing"
     action = db_session.scalar(select(ReliableAction).where(ReliableAction.action == "close"))
@@ -159,7 +177,10 @@ def test_failed_close_is_not_presented_as_confirmed_closure(
     assert result.json()["workflow"]["display_status"] == "closing"
     assert result.json()["workflow"]["sync_error_code"] == "tracker_transition_missing"
     login_as(client, seed_mechanic.username, "secret")
-    blocked = client.post(f"/tracker/issues/{ISSUE_KEY}/claim", headers={"Idempotency-Key": "claim-before-close-delivered"})
+    blocked = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/claim",
+        headers={"Idempotency-Key": "claim-before-close-delivered"},
+    )
     assert blocked.status_code == 409
     assert blocked.json()["detail"] == "task_closing_pending"
     assert db_session.query(TrackerClaim).count() == 0
@@ -180,7 +201,9 @@ def test_external_tracker_close_finishes_local_review_and_claim_once(
     from robopark_api.services import tracker_cache, tracker_client
 
     monkeypatch.setattr(
-        tracker_client, "get_issue", lambda **_kwargs: {**_issue(), "status": "Закрыта", "status_key": "closed"}
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {**_issue(), "status": "Закрыта", "status_key": "closed"},
     )
     tracker_cache.invalidate_issue(ISSUE_KEY)
     login_as(client, operator.username, "secret")
@@ -192,7 +215,12 @@ def test_external_tracker_close_finishes_local_review_and_claim_once(
     assert second.json()["workflow"]["display_status"] == "closed"
     assert db_session.query(TaskReview).one().state == "closed"
     assert db_session.query(TrackerClaim).count() == 0
-    assert db_session.query(TaskMessage).filter(TaskMessage.external_id == "tracker-external-close").count() == 1
+    assert (
+        db_session.query(TaskMessage)
+        .filter(TaskMessage.external_id == "tracker-external-close")
+        .count()
+        == 1
+    )
 
 
 def test_claim_is_atomic_idempotent_and_never_calls_tracker_mutations(

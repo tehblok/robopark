@@ -83,7 +83,9 @@ def _require_token(db: Session) -> str:
 
 def _get_issue_or_404(token: str, key: str, *, fresh: bool = False) -> dict:
     try:
-        issue = (tracker_client.get_issue if fresh else tracker_cache.get_issue)(token=token, key=key)
+        issue = (tracker_client.get_issue if fresh else tracker_cache.get_issue)(
+            token=token, key=key
+        )
     except tracker_client.TrackerError as exc:
         if not fresh:
             raise
@@ -208,7 +210,13 @@ def _mutation_lease(
 
 
 def _lifecycle_issue(
-    db: Session, user: User, key: str, *, request: Request, actions: tuple[str, ...] = (), fresh: bool = False
+    db: Session,
+    user: User,
+    key: str,
+    *,
+    request: Request,
+    actions: tuple[str, ...] = (),
+    fresh: bool = False,
 ) -> dict:
     _ensure_tracker_user(user, db)
     if task_lifecycle.is_hidden(db, key):

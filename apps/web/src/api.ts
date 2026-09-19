@@ -298,6 +298,13 @@ export type EmergencySnapshot = {
   readings?: EmergencyReadingValue[]
 }
 
+export type EmergencyView = {
+  snapshot: EmergencySnapshot
+  section: EmergencySectionDetail | null
+  stale: boolean
+  stale_age_seconds: number
+}
+
 export type EmergencyViewerRole = 'mechanic' | 'operator' | 'admin' | 'royal' | 'driver'
 
 export type EmergencyAdminField = {
@@ -1366,6 +1373,10 @@ export const api = {
     }),
   emergencySnapshot: (vin: string) =>
     request<EmergencySnapshot>(`/emergency/${encodeURIComponent(vin)}/snapshot`),
+  emergencyView: (vin: string, sectionId?: string) => {
+    const query = sectionId ? `?section=${encodeURIComponent(sectionId)}` : ''
+    return request<EmergencyView>(`/emergency/${encodeURIComponent(vin)}/view${query}`)
+  },
   emergencySection: (vin: string, sectionId: string) =>
     request<EmergencySectionDetail>(
       `/emergency/${encodeURIComponent(vin)}/sections/${encodeURIComponent(sectionId)}`,

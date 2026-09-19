@@ -1,5 +1,8 @@
 def test_admin_sees_only_latest_activity_without_exposing_it_in_profile(client, seed_royal):
-    headers = {"x-real-ip": "203.0.113.11", "user-agent": "Mozilla/5.0 (Linux; Android 15) Chrome/130.0"}
+    headers = {
+        "x-real-ip": "203.0.113.11",
+        "user-agent": "Mozilla/5.0 (Linux; Android 15) Chrome/130.0",
+    }
     response = client.post(
         "/auth/login",
         json={"username": "royal", "password": "secret"},
@@ -9,7 +12,11 @@ def test_admin_sees_only_latest_activity_without_exposing_it_in_profile(client, 
     profile = client.get("/auth/me", headers=headers).json()
     assert "last_ip" not in profile
 
-    user = next(row for row in client.get("/admin/users", headers=headers).json() if row["id"] == seed_royal.id)
+    user = next(
+        row
+        for row in client.get("/admin/users", headers=headers).json()
+        if row["id"] == seed_royal.id
+    )
     assert user["last_ip"] == "203.0.113.11"
     assert user["last_device"] == "Android · Chrome"
     assert user["last_seen_at"] is not None
@@ -28,9 +35,13 @@ def test_private_ip_never_reaches_geo_provider(monkeypatch):
 def test_activity_is_throttled_but_device_changes_are_recorded(db_session, seed_royal):
     from robopark_api.services.user_activity import record_activity
 
-    assert record_activity(db_session, seed_royal, ip="192.168.1.5", user_agent="Chrome/130.0") is None
+    assert (
+        record_activity(db_session, seed_royal, ip="192.168.1.5", user_agent="Chrome/130.0") is None
+    )
     first = seed_royal.last_seen_at
-    assert record_activity(db_session, seed_royal, ip="192.168.1.5", user_agent="Chrome/130.0") is None
+    assert (
+        record_activity(db_session, seed_royal, ip="192.168.1.5", user_agent="Chrome/130.0") is None
+    )
     assert seed_royal.last_seen_at == first
     record_activity(db_session, seed_royal, ip="192.168.1.5", user_agent="Firefox/130.0")
     assert seed_royal.last_device.endswith("Firefox")
@@ -50,7 +61,11 @@ def test_public_lookup_returns_approximate_place_and_timeout_is_nonfatal(monkeyp
 
     monkeypatch.setattr(ip_location.httpx, "get", lambda *args, **kwargs: Response())
     assert ip_location.lookup_public_ip("8.8.8.8") == "Москва, Москва, Россия"
-    monkeypatch.setattr(ip_location.httpx, "get", lambda *args, **kwargs: (_ for _ in ()).throw(httpx.TimeoutException("slow")))
+    monkeypatch.setattr(
+        ip_location.httpx,
+        "get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(httpx.TimeoutException("slow")),
+    )
     assert ip_location.lookup_public_ip("8.8.8.8") is None
 
 

@@ -33,6 +33,8 @@ T = TypeVar("T")
 DEFAULT_WAITER_TIMEOUT_SEC = 25.0
 _POLL_SEC = 0.05
 _LOCK_RETRY_SEC = 0.01
+_MAX_SUPERSEDED_ATTEMPTS = 16
+_NAMESPACE_GUARD_KEY = "__live_merge_namespace_guard__"
 _DISABLED = object()
 _MISSING = object()
 
@@ -47,6 +49,10 @@ class LiveMergeTimeout(TimeoutError):
 
 class LiveMergeUpstreamError(RuntimeError):
     """Shared failure recorded by the merge leader so waiters do not refetch."""
+
+
+class _LiveMergeSuperseded(RuntimeError):
+    """Internal signal that invalidation retired the leader's claim."""
 
 
 def _sqlite_parent() -> Path | None:
@@ -266,6 +272,10 @@ class LiveMergeStore:
                 return
         path.unlink(missing_ok=True)
 
+    def _claim_is_current(self, namespace: str, key: str, claim: str) -> bool:
+        current = self._read_json(self.inflight_path(namespace, key))
+        return current is not None and current.get("claim") == claim
+
     def _write_result(self, namespace: str, key: str, payload: Any) -> None:
         self._atomic_write(
             self.result_path(namespace, key),
@@ -344,6 +354,42 @@ class LiveMergeStore:
         max_stale_seconds: float = 60.0,
         stale_if: Callable[[BaseException], bool] | None = None,
         on_stale: Callable[[], None] | None = None,
+        shared_payload: Callable[[T], Any] | None = None,
+    ) -> T:
+        deadline = time.monotonic() + self.waiter_timeout
+        for _attempt in range(_MAX_SUPERSEDED_ATTEMPTS):
+            try:
+                return self._merge_load_attempt(
+                    namespace,
+                    key,
+                    ttl,
+                    loader,
+                    is_current,
+                    deadline=deadline,
+                    max_stale_seconds=max_stale_seconds,
+                    stale_if=stale_if,
+                    on_stale=on_stale,
+                    shared_payload=shared_payload,
+                )
+            except _LiveMergeSuperseded:
+                if time.monotonic() >= deadline:
+                    break
+        logger.warning("live-merge invalidation retry timed out for %s %s", namespace, key)
+        raise LiveMergeTimeout(key)
+
+    def _merge_load_attempt(
+        self,
+        namespace: str,
+        key: str,
+        ttl: float,
+        loader: Callable[[], T],
+        is_current: Callable[[], bool] | None,
+        *,
+        deadline: float,
+        max_stale_seconds: float,
+        stale_if: Callable[[BaseException], bool] | None,
+        on_stale: Callable[[], None] | None,
+        shared_payload: Callable[[T], Any] | None,
     ) -> T:
         from robopark_api.db import release_request_session
 
@@ -351,7 +397,6 @@ class LiveMergeStore:
         # wait. Return the DB connection before either, including cache hits
         # discovered after waiting; releasing only in the loader misses them.
         release_request_session()
-        deadline = time.monotonic() + self.waiter_timeout
         claim = uuid.uuid4().hex
         while True:
             remaining = deadline - time.monotonic()
@@ -381,36 +426,63 @@ class LiveMergeStore:
 
         try:
             value = loader()
+            persisted_value = shared_payload(value) if shared_payload is not None else value
         except BaseException as exc:
             if not isinstance(exc, Exception):
                 with self._exclusive(namespace, key, timeout=self.waiter_timeout):
                     self._clear_inflight(namespace, key, claim)
                 raise
             stale_allowed = stale_if(exc) if stale_if is not None else True
-            with self._exclusive(namespace, key, timeout=self.waiter_timeout):
-                if is_current is not None and not is_current():
+            superseded = False
+            with (
+                self._exclusive(namespace, key, timeout=self.waiter_timeout),
+                self._exclusive(
+                    namespace,
+                    _NAMESPACE_GUARD_KEY,
+                    timeout=self.waiter_timeout,
+                ),
+            ):
+                if not self._claim_is_current(namespace, key, claim):
+                    superseded = True
+                elif is_current is not None and not is_current():
                     self._clear_inflight(namespace, key, claim)
                     raise
-                self._write_error(
-                    namespace,
-                    key,
-                    exc,
-                    stale_allowed=stale_allowed,
-                )
-                self._clear_inflight(namespace, key, claim)
-                stale = self._read_stale_payload(namespace, key, max_stale_seconds)
+                else:
+                    self._write_error(
+                        namespace,
+                        key,
+                        exc,
+                        stale_allowed=stale_allowed,
+                    )
+                    self._clear_inflight(namespace, key, claim)
+                    stale = self._read_stale_payload(namespace, key, max_stale_seconds)
+            if superseded:
+                raise _LiveMergeSuperseded from None
             if stale_allowed and stale is not _MISSING:
                 if on_stale is not None:
                     on_stale()
                 return stale  # type: ignore[return-value]
             raise
-        with self._exclusive(namespace, key, timeout=self.waiter_timeout):
-            if is_current is not None and not is_current():
+        superseded = False
+        with (
+            self._exclusive(namespace, key, timeout=self.waiter_timeout),
+            self._exclusive(
+                namespace,
+                _NAMESPACE_GUARD_KEY,
+                timeout=self.waiter_timeout,
+            ),
+        ):
+            if not self._claim_is_current(namespace, key, claim):
+                superseded = True
+            elif is_current is not None and not is_current():
                 self._clear_inflight(namespace, key, claim)
                 return value
-            self._write_result(namespace, key, value)
-            self._clear_error(namespace, key)
-            self._clear_inflight(namespace, key, claim)
+            else:
+                self._write_result(namespace, key, persisted_value)
+                self._clear_error(namespace, key)
+                self._clear_inflight(namespace, key, claim)
+        if superseded:
+            raise _LiveMergeSuperseded
         return value
 
     def _prune_lock(
@@ -459,10 +531,11 @@ class LiveMergeStore:
         from robopark_api.services.ops.maintenance import require_application_writes
 
         require_application_writes()
-        _, result, inflight, error = self._paths(namespace, key)
-        result.unlink(missing_ok=True)
-        inflight.unlink(missing_ok=True)
-        error.unlink(missing_ok=True)
+        with self._exclusive(namespace, key, timeout=self.waiter_timeout):
+            _, result, inflight, error = self._paths(namespace, key)
+            result.unlink(missing_ok=True)
+            inflight.unlink(missing_ok=True)
+            error.unlink(missing_ok=True)
 
     def invalidate_prefix(self, namespace: str, prefix: str) -> None:
         from robopark_api.services.ops.maintenance import require_application_writes
@@ -477,20 +550,23 @@ class LiveMergeStore:
                 continue
             stored_key = data.get("key")
             if isinstance(stored_key, str) and stored_key.startswith(prefix):
-                path.unlink(missing_ok=True)
-                path.with_suffix(".inflight").unlink(missing_ok=True)
-                path.with_name(path.stem + ".error").unlink(missing_ok=True)
+                self.invalidate(namespace, stored_key)
 
     def clear_namespace(self, namespace: str) -> None:
         from robopark_api.services.ops.maintenance import require_application_writes
 
         require_application_writes()
-        folder = self.namespace_dir(namespace)
-        if not folder.is_dir():
-            return
-        for path in folder.iterdir():
-            if path.is_file():
-                path.unlink(missing_ok=True)
+        with self._exclusive(
+            namespace,
+            _NAMESPACE_GUARD_KEY,
+            timeout=self.waiter_timeout,
+        ):
+            folder = self.namespace_dir(namespace)
+            if not folder.is_dir():
+                return
+            for path in folder.iterdir():
+                if path.is_file() and path.suffix in {".json", ".inflight", ".error", ".tmp"}:
+                    path.unlink(missing_ok=True)
 
     def prune(
         self,

@@ -73,6 +73,7 @@ function RecordingProbe({ snapshots }: { snapshots: ScopeSnapshot[] }) {
       <output data-testid="park-id">{scope.parkId ?? 'none'}</output>
       <output data-testid="parks">{scope.parks.map((item) => item.id).join(',')}</output>
       <output data-testid="loading">{String(scope.loading)}</output>
+      <output data-testid="load-error">{scope.loadError ?? 'none'}</output>
       <output data-testid="location">{location.search}</output>
       <button type="button" onClick={() => void scope.refreshParks()}>
         Обновить парки
@@ -130,6 +131,7 @@ function Probe() {
       <output data-testid="selected-park">{scope.selectedPark?.name ?? 'none'}</output>
       <output data-testid="parks">{scope.parks.map((item) => item.id).join(',')}</output>
       <output data-testid="loading">{String(scope.loading)}</output>
+      <output data-testid="load-error">{scope.loadError ?? 'none'}</output>
       <output data-testid="locked">{String(scope.locked)}</output>
       <output data-testid="allow-all">{String(scope.allowAllParks)}</output>
       <output data-testid="location">{location.search}</output>
@@ -177,6 +179,28 @@ afterEach(() => {
 })
 
 describe('ParkScopeProvider', () => {
+  it('keeps the last permitted parks visible and recovers after a fleet load failure', async () => {
+    const parksRequest = vi
+      .spyOn(api, 'parks')
+      .mockRejectedValueOnce(new TypeError('offline'))
+      .mockResolvedValueOnce([park(7), park(9)])
+    const { actor } = renderScope(
+      '/work?park=7',
+      customUser(['nav.dashboard', 'parks.manage'], [park(7)]),
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading')).toHaveTextContent('false'))
+    expect(screen.getByTestId('parks')).toHaveTextContent('7')
+    await waitFor(() => expect(screen.getByTestId('park-id')).toHaveTextContent('7'))
+    expect(screen.getByTestId('load-error')).toHaveTextContent('Не удалось загрузить парки')
+
+    await actor.click(screen.getByRole('button', { name: 'Обновить парки' }))
+
+    await waitFor(() => expect(parksRequest).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByTestId('parks')).toHaveTextContent('7,9'))
+    expect(screen.getByTestId('load-error')).toHaveTextContent('none')
+  })
+
   it.each(['admin', 'royal'] as const)('loads active and inactive fleet parks for %s inventory export', async role => {
     vi.spyOn(api, 'parks').mockResolvedValue([park(7), { ...park(9), is_active: false }])
 

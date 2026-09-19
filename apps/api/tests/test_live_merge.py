@@ -132,6 +132,86 @@ def test_invalidate_drops_blob_for_other_cache(tmp_path):
     assert second.get_or_load("k", lambda: 2) == 2
 
 
+def test_invalidate_during_flight_cannot_restore_stale_value(tmp_path):
+    store = LiveMergeStore(tmp_path, waiter_timeout=2.0)
+    old_cache: ResponseCache[str] = ResponseCache(60, name="race", shared=store)
+    new_cache: ResponseCache[str] = ResponseCache(60, name="race", shared=store)
+    observer: ResponseCache[str] = ResponseCache(60, name="race", shared=store)
+    old_started = threading.Event()
+    release_old = threading.Event()
+    old_result: list[str] = []
+
+    def old_loader() -> str:
+        old_started.set()
+        assert release_old.wait(timeout=2.0)
+        return "stale"
+
+    thread = threading.Thread(
+        target=lambda: old_result.append(old_cache.get_or_load("k", old_loader))
+    )
+    thread.start()
+    assert old_started.wait(timeout=2.0)
+
+    new_cache.invalidate("k")
+    assert new_cache.get_or_load("k", lambda: "fresh") == "fresh"
+    release_old.set()
+    thread.join(timeout=2.0)
+
+    assert not thread.is_alive()
+    assert old_result == ["fresh"]
+    assert observer.get_or_load("k", lambda: "unexpected") == "fresh"
+    assert old_cache.get_or_load("k", lambda: "unexpected") == "fresh"
+
+
+def test_clear_namespace_waits_out_a_finishing_leader(tmp_path, monkeypatch):
+    store = LiveMergeStore(tmp_path, waiter_timeout=2.0)
+    old_cache: ResponseCache[str] = ResponseCache(60, name="clear-race", shared=store)
+    clearing_cache: ResponseCache[str] = ResponseCache(60, name="clear-race", shared=store)
+    observer: ResponseCache[str] = ResponseCache(60, name="clear-race", shared=store)
+    write_started = threading.Event()
+    release_write = threading.Event()
+    clear_done = threading.Event()
+    original_write_result = store._write_result
+
+    def paused_write_result(namespace: str, key: str, payload: object) -> None:
+        write_started.set()
+        assert release_write.wait(timeout=2.0)
+        original_write_result(namespace, key, payload)
+
+    monkeypatch.setattr(store, "_write_result", paused_write_result)
+    leader = threading.Thread(target=lambda: old_cache.get_or_load("k", lambda: "stale"))
+    leader.start()
+    assert write_started.wait(timeout=2.0)
+
+    clearer = threading.Thread(target=lambda: (clearing_cache.clear(), clear_done.set()))
+    clearer.start()
+    assert not clear_done.wait(timeout=0.1)
+    release_write.set()
+    leader.join(timeout=2.0)
+    clearer.join(timeout=2.0)
+
+    assert not leader.is_alive()
+    assert not clearer.is_alive()
+    assert observer.get_or_load("k", lambda: "fresh") == "fresh"
+    assert old_cache.get_or_load("k", lambda: "unexpected") == "fresh"
+
+
+def test_repeated_invalidation_is_bounded_without_recursion(tmp_path):
+    store = LiveMergeStore(tmp_path, waiter_timeout=0.05)
+    calls = 0
+
+    def invalidated_loader() -> int:
+        nonlocal calls
+        calls += 1
+        store.invalidate("ns", "hot")
+        return calls
+
+    with pytest.raises(LiveMergeTimeout):
+        store.merge_load("ns", "hot", 60, invalidated_loader)
+
+    assert calls < 100
+
+
 def test_dead_pid_inflight_is_ignored(tmp_path):
     store = LiveMergeStore(tmp_path)
     store._atomic_write(

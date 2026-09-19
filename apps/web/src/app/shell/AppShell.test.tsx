@@ -102,6 +102,8 @@ function renderShellWithParkScope(
   allowAllParks = false,
   path = '/overview?park=7',
   permissions: string[] = [],
+  loadError: string | null = null,
+  refreshParks = vi.fn().mockResolvedValue(undefined),
 ) {
   const south = { id: 9, name: 'Южный', tag: 'south', is_active: true }
   const parks = availableParks ?? [north, south]
@@ -119,9 +121,10 @@ function renderShellWithParkScope(
               selectedPark: allowAllParks ? null : north,
               parks,
               loading: false,
+              loadError,
               locked: false,
               setParkId,
-              refreshParks: vi.fn(),
+              refreshParks,
             }}>
               <Routes><Route element={<AppShell />}>
                 <Route path="*" element={<h1>Рабочий экран</h1>} />
@@ -162,6 +165,25 @@ function declaredCssValue(element: Element, property: string): string {
 }
 
 describe('AppShell', () => {
+  it('shows a retryable stale-park warning without hiding the current screen', async () => {
+    const refreshParks = vi.fn().mockResolvedValue(undefined)
+    renderShellWithParkScope(
+      'operator',
+      vi.fn(),
+      [north],
+      false,
+      '/overview?park=7',
+      ['nav.dashboard'],
+      'Не удалось загрузить парки. Проверьте связь и повторите попытку.',
+      refreshParks,
+    )
+
+    expect(screen.getByRole('heading', { name: 'Рабочий экран' })).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent('Список парков может быть устаревшим')
+    await userEvent.click(screen.getByRole('button', { name: 'Повторить' }))
+    expect(refreshParks).toHaveBeenCalledOnce()
+  })
+
   it('keeps product branding out of the shell and shows developer attribution', async () => {
     const actor = userEvent.setup()
     renderShellPath('/work')

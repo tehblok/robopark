@@ -26,23 +26,37 @@ def observed_ip(raw: str | None) -> str | None:
 def device_label(raw: str | None) -> str:
     agent = (raw or "")[:512].lower()
     platform = (
-        "Android" if "android" in agent else
-        "iPhone" if "iphone" in agent else
-        "iPad" if "ipad" in agent else
-        "Windows" if "windows" in agent else
-        "Mac" if "macintosh" in agent else
-        "Linux" if "linux" in agent else "Устройство не определено"
+        "Android"
+        if "android" in agent
+        else "iPhone"
+        if "iphone" in agent
+        else "iPad"
+        if "ipad" in agent
+        else "Windows"
+        if "windows" in agent
+        else "Mac"
+        if "macintosh" in agent
+        else "Linux"
+        if "linux" in agent
+        else "Устройство не определено"
     )
     browser = (
-        "Edge" if "edg/" in agent else
-        "Chrome" if "chrome/" in agent or "chromium/" in agent else
-        "Firefox" if "firefox/" in agent else
-        "Safari" if "safari/" in agent else ""
+        "Edge"
+        if "edg/" in agent
+        else "Chrome"
+        if "chrome/" in agent or "chromium/" in agent
+        else "Firefox"
+        if "firefox/" in agent
+        else "Safari"
+        if "safari/" in agent
+        else ""
     )
     return f"{platform} · {browser}" if browser else platform
 
 
-def record_activity(db: Session, user: User, *, ip: str | None, user_agent: str | None) -> str | None:
+def record_activity(
+    db: Session, user: User, *, ip: str | None, user_agent: str | None
+) -> str | None:
     """Update only after ten minutes or on an address/device change; return new public IP."""
     now = datetime.now(UTC)
     address = observed_ip(ip)

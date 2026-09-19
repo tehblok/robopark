@@ -22,6 +22,7 @@ import sys
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 faulthandler.register(signal.SIGUSR1, all_threads=True)
 
@@ -159,12 +160,21 @@ def _stub(operation, **kwargs):
 
 
 def _install_stubs():
+    class StubIssues:
+        def __getitem__(self, key):
+            return SimpleNamespace(
+                changelog=SimpleNamespace(
+                    get_all=lambda: _stub("issue_history", key=key)
+                )
+            )
+
     tracker_client.search_issues = lambda *, token, **kw: _stub("search_issues", **kw)
     tracker_client.get_issue = lambda *, token, **kw: _stub("get_issue", **kw)
     tracker_client.list_comments = lambda *, token, **kw: _stub("list_comments", **kw)
     tracker_client.search_robot_tickets = lambda *, token, **kw: _stub("search_robot_tickets", **kw)
     tracker_client.fetch_park_blockers = lambda *, token, **kw: _stub("fetch_park_blockers", **kw)
     tracker_client.count_issues = lambda *, token, **kw: _stub("count_issues", **kw)
+    tracker_client._client = lambda _token: SimpleNamespace(issues=StubIssues())
     emergency_client.fetch_robot_payload = lambda *, cookie, **kw: _stub("emergency", **kw)
 
 

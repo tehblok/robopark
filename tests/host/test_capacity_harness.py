@@ -4,17 +4,56 @@ import asyncio
 import gzip
 import json
 import runpy
+import subprocess
+import sys
 from pathlib import Path
 
 import httpx
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/capacity-gate.py"
+LOCAL_BENCHMARK = Path(__file__).resolve().parents[2] / "scripts/capacity_benchmark.py"
 
 
 def module():
     assert SCRIPT.is_file(), "the repeatable target-host capacity harness is missing"
     return runpy.run_path(str(SCRIPT))
+
+
+def local_benchmark_module():
+    return runpy.run_path(str(LOCAL_BENCHMARK))
+
+
+def test_local_benchmark_help_is_renderable():
+    result = subprocess.run(
+        [sys.executable, str(LOCAL_BENCHMARK), "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--presence" in result.stdout
+
+
+def test_status_history_gate_is_scoped_to_cold_setup_before_ttl_expiry():
+    coalesced = local_benchmark_module()["status_history_coalesced"]
+
+    assert (
+        coalesced(
+            {"upstream_calls": {"issue_history:ROBOPARK-1": 1}},
+            {"upstream_calls": {}},
+        )
+        is True
+    )
+    assert (
+        coalesced(
+            {"upstream_calls": {"issue_history:ROBOPARK-1": 1}},
+            {"upstream_calls": {"issue_history:ROBOPARK-1": 1}},
+        )
+        is False
+    )
+    assert coalesced({"upstream_calls": {"issue_history:ROBOPARK-1": 2}}) is False
+    assert coalesced({"upstream_calls": {}}) is False
 
 
 def config_file(tmp_path, **changes):
@@ -218,9 +257,6 @@ def test_writes_need_explicit_environment_opt_in(tmp_path, monkeypatch):
 
 
 def test_evaluation_rejects_injected_fields_in_saved_report(tmp_path):
-    import subprocess
-    import sys
-
     report = tmp_path / "report.json"
     report.write_text(
         json.dumps(
@@ -255,6 +291,7 @@ def test_evaluation_rejects_injected_fields_in_saved_report(tmp_path):
             "--output",
             str(output),
         ],
+        check=False,
         capture_output=True,
         text=True,
     )

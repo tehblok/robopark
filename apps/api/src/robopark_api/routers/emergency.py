@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
@@ -11,6 +11,7 @@ from robopark_api.schemas import (
     EmergencySectionItem,
     EmergencySectionOut,
     EmergencySnapshotOut,
+    EmergencyViewOut,
 )
 from robopark_api.services import (
     diagnostic_unknowns,
@@ -138,6 +139,27 @@ def emergency_section_for_user(
     )
 
 
+def _snapshot_from_result(
+    db: Session,
+    vin: str,
+    user: User,
+    result: emergency_cache.EmergencyPayloadResult,
+) -> EmergencySnapshotOut:
+    payload = result.payload
+    snap = parse_emergency_snapshot(
+        payload,
+        vin=vin,
+        db=db,
+        role=user.role if user is not None else None,
+    )
+    diagnostic_unknowns.capture_unknowns(db, snap["diagnostic_events"], vin, payload=payload)
+    return EmergencySnapshotOut(
+        **snap,
+        stale=result.stale,
+        stale_age_seconds=result.age_seconds,
+    )
+
+
 def emergency_snapshot_for_user(vin: str, user: User, db: Session) -> EmergencySnapshotOut:
     try:
         vin = emergency_vin.normalize_robot_id(vin)
@@ -149,16 +171,51 @@ def emergency_snapshot_for_user(vin: str, user: User, db: Session) -> EmergencyS
 
     _enforce_vin_scope(db, user, vin)
     result = _get_robot_payload_result(db, vin)
-    payload = result.payload
-    snap = parse_emergency_snapshot(
-        payload,
-        vin=vin,
-        db=db,
-        role=user.role if user is not None else None,
-    )
-    diagnostic_unknowns.capture_unknowns(db, snap["diagnostic_events"], vin, payload=payload)
-    return EmergencySnapshotOut(
-        **snap,
+    return _snapshot_from_result(db, vin, user, result)
+
+
+def emergency_view_for_user(
+    vin: str,
+    section_id: str | None,
+    user: User,
+    db: Session,
+) -> EmergencyViewOut:
+    try:
+        vin = emergency_vin.normalize_robot_id(vin)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid_robot_number",
+        ) from exc
+
+    _enforce_vin_scope(db, user, vin)
+    result = _get_robot_payload_result(db, vin)
+    snapshot = _snapshot_from_result(db, vin, user, result)
+    section = None
+    if section_id:
+        try:
+            rendered = emergency_sections.render_section(
+                db,
+                result.payload,
+                section_id,
+                role=user.role,
+            )
+        except KeyError:
+            # A section may be disabled while an open viewer still polls it.
+            # Keep the live snapshot flowing; the next resolve refreshes tabs.
+            rendered = None
+        if rendered is not None:
+            section = EmergencySectionOut(
+                id=rendered["id"],
+                title=rendered["title"],
+                fields=[
+                    EmergencyFieldOut(label=field["label"], lines=field["lines"])
+                    for field in rendered["fields"]
+                ],
+            )
+    return EmergencyViewOut(
+        snapshot=snapshot,
+        section=section,
         stale=result.stale,
         stale_age_seconds=result.age_seconds,
     )
@@ -180,6 +237,16 @@ def emergency_snapshot(
     db: Session = Depends(get_db),
 ) -> EmergencySnapshotOut:
     return emergency_snapshot_for_user(vin, user, db)
+
+
+@router.get("/{vin}/view", response_model=EmergencyViewOut)
+def emergency_view(
+    vin: str,
+    section: str | None = Query(default=None, min_length=1, max_length=64),
+    user: User = Depends(require_emergency_viewer),
+    db: Session = Depends(get_db),
+) -> EmergencyViewOut:
+    return emergency_view_for_user(vin, section, user, db)
 
 
 @router.get("/{vin}/sections/{section_id}", response_model=EmergencySectionOut)

@@ -9,6 +9,35 @@ from robopark_api.services.ops.jobs import STATE_RUNNING, new_job, save_job
 from robopark_api.services.ops.runner import UPDATE_PHRASE
 
 
+def test_ops_upload_keeps_only_one_archive_copy_in_python_memory():
+    import asyncio
+    import tempfile
+    import tracemalloc
+
+    from fastapi import UploadFile
+
+    from robopark_api.routers.admin_ops import _read_upload
+
+    size = 1 * 1024 * 1024
+    configured_limit = 64 * 1024 * 1024
+    with tempfile.SpooledTemporaryFile(max_size=1) as stream:
+        stream.write(b"x" * size)
+        stream.seek(0)
+        upload = UploadFile(file=stream, filename="release.zip")
+
+        tracemalloc.start()
+        try:
+            content = asyncio.run(_read_upload(upload, configured_limit))
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+    assert len(content) == size
+    assert content[:1] == b"x"
+    assert content[-1:] == b"x"
+    assert peak < size * 2
+
+
 def test_admin_cannot_create_snapshot(client, seed_royal, db_session):
     admin = User(
         username="admin1",

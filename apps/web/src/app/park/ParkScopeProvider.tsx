@@ -30,7 +30,10 @@ type ParkLoadState = {
   includeInactive: boolean
   parks: Park[]
   loading: boolean
+  error: string | null
 }
+
+const PARK_LOAD_ERROR = 'Не удалось загрузить парки. Проверьте связь и повторите попытку.'
 
 type ParkSelectionState = {
   context: string
@@ -97,6 +100,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
       includeInactive: requestIncludeInactive,
       parks: currentParks,
       loading: true,
+      error: null,
     })
     return generation
   }, [])
@@ -107,6 +111,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
     requestFleetScope: boolean,
     requestIncludeInactive: boolean,
     nextParks: Park[],
+    error: string | null = null,
   ) => {
     if (
       generation !== loadGeneration.current
@@ -121,6 +126,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
       includeInactive: requestIncludeInactive,
       parks: nextParks,
       loading: false,
+      error,
     })
   }, [])
 
@@ -131,14 +137,22 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!user || !fleetScope) return
 
-    const generation = beginLoad(user, true, includeInactiveInventoryParks, [])
+    const fallbackParks = includeInactiveInventoryParks ? user.parks : activeParks(user.parks)
+    const generation = beginLoad(user, true, includeInactiveInventoryParks, fallbackParks)
     void api
       .parks()
       .then((nextParks) => {
         commitLoad(generation, user, true, includeInactiveInventoryParks, includeInactiveInventoryParks ? nextParks : activeParks(nextParks))
       })
       .catch(() => {
-        commitLoad(generation, user, true, includeInactiveInventoryParks, [])
+        commitLoad(
+          generation,
+          user,
+          true,
+          includeInactiveInventoryParks,
+          fallbackParks,
+          PARK_LOAD_ERROR,
+        )
       })
   }, [beginLoad, commitLoad, fleetScope, includeInactiveInventoryParks, user])
 
@@ -211,7 +225,14 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
         refreshedUser.parks,
       )
     } catch (error) {
-      commitLoad(generation, requestUser, requestFleetScope, requestIncludeInactive, parks)
+      commitLoad(
+        generation,
+        requestUser,
+        requestFleetScope,
+        requestIncludeInactive,
+        parks,
+        PARK_LOAD_ERROR,
+      )
       throw error
     }
   }, [beginLoad, commitLoad, includeInactiveInventoryParks, inventoryFleetScope, parks, refreshUser, user])
@@ -224,11 +245,12 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
       selectedPark,
       parks,
       loading: loading || Boolean(allowAllParks && user && (!currentSelectionState || (parkId !== null && !selectedPark))),
+      loadError: currentLoadState?.error ?? null,
       locked,
       setParkId,
       refreshParks,
     }),
-    [allowAllParks, parkId, selectedPark, parks, loading, user, currentSelectionState, locked, setParkId, refreshParks],
+    [allowAllParks, parkId, selectedPark, parks, loading, user, currentLoadState?.error, currentSelectionState, locked, setParkId, refreshParks],
   )
 
   return <ParkScopeContext.Provider value={value}>{children}</ParkScopeContext.Provider>

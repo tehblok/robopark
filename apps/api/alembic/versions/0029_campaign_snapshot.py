@@ -49,7 +49,9 @@ def upgrade() -> None:
         sa.Column("resolution", sa.String(128)),
         sa.Column("robot", sa.String(64)),
         sa.Column("tracker_updated_at", sa.DateTime(timezone=True)),
-        sa.Column("observed_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "observed_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.Column("rule_revision", sa.Integer(), nullable=False),
         sa.UniqueConstraint("campaign_id", "issue_key", name="uq_campaign_snapshot_issue"),
     )
@@ -64,7 +66,9 @@ def downgrade() -> None:
     with op.batch_alter_table("campaign_submissions") as batch_op:
         batch_op.drop_column("completion_hash")
         batch_op.drop_column("completion_key")
-    op.drop_index("ix_campaign_snapshot_campaign_revision_park", table_name="campaign_snapshot_tickets")
+    op.drop_index(
+        "ix_campaign_snapshot_campaign_revision_park", table_name="campaign_snapshot_tickets"
+    )
     op.drop_table("campaign_snapshot_tickets")
     with op.batch_alter_table("campaigns") as batch_op:
         batch_op.drop_column("archived_at")

@@ -24,7 +24,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from robopark_api.services.live_merge import LiveMergeStore, get_live_merge_store
 
@@ -51,6 +51,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         *,
         name: str = "cache",
         shared: LiveMergeStore | None | bool = True,
+        shared_payload: Callable[[T], Any] | None = None,
         max_entries: int = DEFAULT_MAX_ENTRIES,
         max_stale_seconds: float = DEFAULT_MAX_STALE_SECONDS,
     ) -> None:
@@ -70,6 +71,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         # True → look up the process-wide store each call (tests may disable it).
         # LiveMergeStore → always that store. False/None → in-process only.
         self._shared: LiveMergeStore | None | bool = shared
+        self._shared_payload = shared_payload
 
     @property
     def name(self) -> str:
@@ -92,7 +94,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         merge = self._merge()
         if merge is None:
             return True
-        return merge.result_mtime(self._name, key) == hit[2]
+        return hit[2] is not None and merge.result_mtime(self._name, key) == hit[2]
 
     def _prune_expired_locked(self, now: float) -> None:
         retention = max(self._ttl, self._max_stale)
@@ -142,6 +144,30 @@ class ResponseCache(Generic[T]):  # noqa: UP046
             hit = self._store.get(key)
             return hit[1] if hit is not None else None
 
+    def get_if_fresh(self, key: str) -> tuple[bool, T | None]:
+        """Return a fresh local or shared value without invoking a loader."""
+        now = time.monotonic()
+        merge = self._merge()
+        with self._lock:
+            self._prune_expired_locked(now)
+            hit = self._store.get(key)
+            if hit is not None and self._l1_valid(key, hit, now):
+                self._store.move_to_end(key)
+                return True, hit[1]
+            if hit is not None:
+                self._store.pop(key, None)
+
+        if merge is None:
+            return False, None
+        found, blob = merge.try_fresh(self._name, key, self._ttl)
+        if not found:
+            return False, None
+        mtime = merge.result_mtime(self._name, key)
+        with self._lock:
+            loaded_at = self._shared_loaded_at(mtime, time.monotonic())
+            self._store_locked(key, (loaded_at, blob, mtime))
+        return True, blob  # type: ignore[return-value]
+
     def get_or_load(self, key: str, loader: Callable[[], T]) -> T:
         from robopark_api.db import release_request_session
 
@@ -186,7 +212,13 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         error: BaseException | None = None
         try:
             if merge is not None:
-                value = merge.merge_load(self._name, key, self._ttl, loader)
+                value = merge.merge_load(
+                    self._name,
+                    key,
+                    self._ttl,
+                    loader,
+                    shared_payload=self._shared_payload,
+                )
             else:
                 value = loader()
         except BaseException as exc:  # last-good or fan-out one shared error

@@ -255,7 +255,17 @@ function NavigationLink({
 
 export function AppShell() {
   const { user, logout, refreshUser } = useAuth()
-  const { parkId, selectedPark, parks, loading, locked, setParkId, allowAllParks } = useParkScope()
+  const {
+    parkId,
+    selectedPark,
+    parks,
+    loading,
+    loadError,
+    locked,
+    setParkId,
+    refreshParks,
+    allowAllParks,
+  } = useParkScope()
   const {
     preference,
     resolvedTheme,
@@ -538,6 +548,18 @@ export function AppShell() {
         </header>
 
         <main className="app-content rp-shell__content" id="main-content" tabIndex={-1}>
+          {loadError ? (
+            <div aria-live="polite" className="rp-shell__scope-alert" role="status">
+              <span><strong>Список парков может быть устаревшим.</strong> {loadError}</span>
+              <Button
+                onClick={() => void refreshParks().catch(() => undefined)}
+                size="compact"
+                variant="secondary"
+              >
+                Повторить
+              </Button>
+            </div>
+          ) : null}
           <Outlet />
         </main>
 
