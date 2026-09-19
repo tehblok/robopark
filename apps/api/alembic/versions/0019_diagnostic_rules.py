@@ -25,7 +25,7 @@ def upgrade() -> None:
         sa.Column("x", sa.Float(), nullable=False),
         sa.Column("y", sa.Float(), nullable=False),
         sa.Column("indicator", sa.String(length=16), nullable=False),
-        sa.Column("is_enabled", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("is_enabled", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.Column("sort_order", sa.Integer(), server_default="0", nullable=False),
         sa.CheckConstraint(
             "match_kind IN ('exact', 'regex')",

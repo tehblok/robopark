@@ -269,7 +269,7 @@ def test_verification_script_rejects_invalid_or_excess_arguments(tmp_path: Path)
         result, commands = _run_verify(tmp_path / str(index), *args)
         assert result.returncode == 2
         assert result.stdout == ""
-        assert result.stderr == f"usage: {VERIFY_SCRIPT} [api|web|docker|host|all]\n"
+        assert result.stderr == (f"usage: {VERIFY_SCRIPT} [api|api-postgres|web|docker|host|all]\n")
         assert commands == []
 
 

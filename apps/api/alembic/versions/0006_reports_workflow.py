@@ -71,6 +71,7 @@ def upgrade() -> None:
         ["tracker_key"],
         unique=False,
         sqlite_where=sa.text("tracker_key IS NOT NULL"),
+        postgresql_where=sa.text("tracker_key IS NOT NULL"),
     )
     op.create_index(
         "uq_reports_open_close_review_park_tracker",
@@ -78,6 +79,7 @@ def upgrade() -> None:
         ["park_id", "tracker_key"],
         unique=True,
         sqlite_where=sa.text("kind = 'ticket_close_review' AND status = 'open'"),
+        postgresql_where=sa.text("kind = 'ticket_close_review' AND status = 'open'"),
     )
 
 

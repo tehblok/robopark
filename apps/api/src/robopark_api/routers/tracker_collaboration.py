@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, update
-from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -21,6 +20,17 @@ from robopark_api.services.tracker_policy import enforce_issue_scope, ensure_act
 
 router = APIRouter(prefix="/tracker/issues", tags=["tracker-collaboration"])
 PRESENCE_TTL = 90
+
+
+def _presence_insert(db: Session):
+    dialect = db.get_bind().dialect.name
+    if dialect == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert
+    elif dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    else:
+        raise RuntimeError(f"tracker_presence_upsert_unsupported:{dialect}")
+    return insert(TrackerPresence)
 
 
 def authorized_issue(db, user, key):
@@ -43,7 +53,7 @@ def presence(key: str, user: User = Depends(require_user), db: Session = Depends
     now = time.time()
     db.execute(delete(TrackerPresence).where(TrackerPresence.expires_at <= now))
     db.execute(
-        insert(TrackerPresence)
+        _presence_insert(db)
         .values(issue_key=key, actor_id=user.id, expires_at=now + PRESENCE_TTL)
         .on_conflict_do_update(
             index_elements=["issue_key", "actor_id"], set_={"expires_at": now + PRESENCE_TTL}

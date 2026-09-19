@@ -16,7 +16,7 @@ def upgrade() -> None:
         "user_permissions",
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column("permission_id", sa.Integer(), nullable=False),
-        sa.Column("granted", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("granted", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.ForeignKeyConstraint(["permission_id"], ["permissions.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("user_id", "permission_id"),

@@ -16,6 +16,19 @@ run_api() {
   )
 }
 
+run_api_postgres() {
+  command -v docker >/dev/null 2>&1 || {
+    echo "docker is required for the PostgreSQL verification target" >&2
+    return 127
+  }
+  (
+    cd apps/api
+    uv sync --frozen --extra dev
+    ROBOPARK_POSTGRES_TESTS=1 PYTHONDONTWRITEBYTECODE=1 \
+      uv run --frozen --extra dev python -m pytest -p no:cacheprovider -q tests/postgres
+  )
+}
+
 run_web() {
   (
     cd apps/web
@@ -56,7 +69,7 @@ run_host() {
 }
 
 usage() {
-  echo "usage: $0 [api|web|docker|host|all]" >&2
+  echo "usage: $0 [api|api-postgres|web|docker|host|all]" >&2
 }
 
 if [ "$#" -gt 1 ]; then
@@ -67,6 +80,9 @@ fi
 case "${1:-all}" in
   api)
     run_api
+    ;;
+  api-postgres)
+    run_api_postgres
     ;;
   web)
     run_web

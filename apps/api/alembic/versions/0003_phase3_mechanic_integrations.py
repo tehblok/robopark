@@ -21,22 +21,22 @@ def upgrade() -> None:
     op.add_column("parks", sa.Column("chat_id", sa.Integer(), nullable=True))
     op.add_column(
         "parks",
-        sa.Column("feature_reports", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("feature_reports", sa.Boolean(), server_default=sa.true(), nullable=False),
     )
     op.add_column(
         "parks",
-        sa.Column("feature_blockers", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("feature_blockers", sa.Boolean(), server_default=sa.true(), nullable=False),
     )
     op.add_column(
         "parks",
-        sa.Column("feature_sla_repair", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("feature_sla_repair", sa.Boolean(), server_default=sa.true(), nullable=False),
     )
     op.add_column(
         "parks",
         sa.Column(
             "feature_backlog_alerts",
             sa.Boolean(),
-            server_default=sa.text("1"),
+            server_default=sa.true(),
             nullable=False,
         ),
     )

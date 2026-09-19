@@ -14,26 +14,6 @@ from robopark_api.services.ops.maintenance import (
     require_application_writes,
 )
 
-_settings = get_settings()
-_is_sqlite = _settings.database_url.startswith("sqlite")
-_sqlite_file = _is_sqlite and make_url(_settings.database_url).database not in {
-    None,
-    "",
-    ":memory:",
-}
-
-engine = create_engine(
-    _settings.database_url,
-    future=True,
-    connect_args={"check_same_thread": False} if _is_sqlite else {},
-    # Request dependencies and endpoints use the same finite worker thread
-    # pool. A smaller QueuePool lets new auth stages occupy every thread
-    # waiting for connections held by requests whose next stage cannot run.
-    # File SQLite connections are cheap; return/close them without a second
-    # capacity queue. Keep SQLite's in-memory pooling and other DBs unchanged.
-    **({"poolclass": NullPool} if _sqlite_file else {}),
-)
-
 
 def apply_sqlite_pragmas(dbapi_connection, *, readonly: bool = False) -> None:
     """Apply the PRAGMAs SQLite needs for concurrent use.
@@ -60,11 +40,38 @@ def apply_sqlite_pragmas(dbapi_connection, *, readonly: bool = False) -> None:
         cursor.close()
 
 
-@event.listens_for(engine, "connect")
 def _configure_sqlite(dbapi_connection, _connection_record) -> None:
-    if not _is_sqlite:
-        return
     apply_sqlite_pragmas(dbapi_connection, readonly=host_maintenance_active())
+
+
+def configure_engine(database_url: str) -> Engine:
+    """Build the bounded application engine for SQLite or PostgreSQL."""
+    url = make_url(database_url)
+    is_sqlite = url.drivername.startswith("sqlite")
+    sqlite_file = is_sqlite and url.database not in {None, "", ":memory:"}
+    options: dict[str, Any] = {"future": True}
+    if is_sqlite:
+        options["connect_args"] = {"check_same_thread": False}
+        if sqlite_file:
+            # File SQLite connections are cheap; do not put a second capacity
+            # queue in front of the finite request worker pool.
+            options["poolclass"] = NullPool
+    elif url.get_backend_name() == "postgresql":
+        options.update(
+            pool_size=5,
+            max_overflow=5,
+            pool_pre_ping=True,
+            pool_recycle=300,
+        )
+    configured = create_engine(database_url, **options)
+    if is_sqlite:
+        event.listen(configured, "connect", _configure_sqlite)
+
+    return configured
+
+
+_settings = get_settings()
+engine = configure_engine(_settings.database_url)
 
 
 SessionLocal = sessionmaker(

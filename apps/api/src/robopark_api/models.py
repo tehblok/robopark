@@ -19,6 +19,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
     text,
+    true,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
@@ -86,7 +87,7 @@ class UserPermission(Base):
     permission_id: Mapped[int] = mapped_column(
         ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True
     )
-    granted: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    granted: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
 
 
 class User(Base):
@@ -199,7 +200,7 @@ class Campaign(Base):
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     starts_on: Mapped[date] = mapped_column()
     due_on: Mapped[date] = mapped_column()
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -312,7 +313,7 @@ class InventoryPart(Base):
     photo_storage_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     photo_filename: Mapped[str | None] = mapped_column(String(240), nullable=True)
     photo_content_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -337,7 +338,7 @@ class InventoryCatalogComponent(Base):
     photo_storage_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     photo_filename: Mapped[str | None] = mapped_column(String(240), nullable=True)
     photo_content_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -373,7 +374,7 @@ class InventoryCatalogPart(Base):
     photo_storage_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     photo_filename: Mapped[str | None] = mapped_column(String(240), nullable=True)
     photo_content_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -400,7 +401,7 @@ class InventoryParkStock(Base):
     quantity: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     minimum_quantity: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     location: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     version: Mapped[int] = mapped_column(BigInteger, default=1, server_default="1")
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
@@ -661,7 +662,7 @@ class DiagnosticRule(Base):
     x: Mapped[float] = mapped_column(Float)
     y: Mapped[float] = mapped_column(Float)
     indicator: Mapped[str] = mapped_column(String(16))
-    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
@@ -789,7 +790,7 @@ class EmergencyReading(Base):
     x: Mapped[float] = mapped_column(Float)
     y: Mapped[float] = mapped_column(Float)
     label_direction: Mapped[str] = mapped_column(String(16), default="auto", server_default="auto")
-    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 

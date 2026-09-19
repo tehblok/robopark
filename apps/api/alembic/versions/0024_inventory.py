@@ -70,7 +70,7 @@ def upgrade():
         sa.Column("photo_storage_key", sa.String(128)),
         sa.Column("photo_filename", sa.String(240)),
         sa.Column("photo_content_type", sa.String(64)),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
         ),

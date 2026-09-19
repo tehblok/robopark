@@ -1,8 +1,8 @@
 {
-  "migration_head": "0030_user_activity",
+  "migration_head": "0031_postgresql_runtime",
   "migration_compatibility": {
-    "from_heads": ["0022_tracker_collaboration", "0024_inventory", "0025_local_task_claims", "0026_global_inventory_workflows", "0027_emergency_readings", "0028_reliable_task_workflow", "0029_campaign_snapshot"],
+    "from_heads": ["0022_tracker_collaboration", "0024_inventory", "0025_local_task_claims", "0026_global_inventory_workflows", "0027_emergency_readings", "0028_reliable_task_workflow", "0029_campaign_snapshot", "0030_user_activity"],
     "reversible": true
   },
-  "update_notes": "0.1.43: новый интерфейс А для всех разделов с переключением на классический; сохранение черновиков и фото при переключении; адаптация телефона и ПК; исправления доступа к складу, редактора кампаний и навигации. Схема БД не изменена."
+  "update_notes": "PostgreSQL production runtime: переносимая схема, bounded pool, row locking и dialect-aware upsert; SQLite сохранён для test/dev."
 }

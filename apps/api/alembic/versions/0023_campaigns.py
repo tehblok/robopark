@@ -18,7 +18,7 @@ def upgrade():
         sa.Column("tracker_tag", sa.String(128), nullable=False),
         sa.Column("starts_on", sa.Date(), nullable=False),
         sa.Column("due_on", sa.Date(), nullable=False),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("created_by", sa.Integer(), sa.ForeignKey("users.id"), nullable=False),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()

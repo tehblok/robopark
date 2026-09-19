@@ -17,6 +17,7 @@ dependencies = [
   "importlib-metadata>=9.0.0",
   "regex>=2026.9.3",
   "openpyxl==3.1.5",
+  "psycopg[binary]>=3.2,<4",
 ]
 
 [project.scripts]
@@ -40,6 +41,9 @@ packages = ["src/robopark_api"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+  "postgres: integration tests that require a disposable PostgreSQL 17 server",
+]
 
 [tool.ruff]
 line-length = 100

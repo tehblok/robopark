@@ -34,7 +34,7 @@ def upgrade() -> None:
         sa.Column("x", sa.Float(), nullable=False),
         sa.Column("y", sa.Float(), nullable=False),
         sa.Column("label_direction", sa.String(length=16), nullable=False, server_default="auto"),
-        sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
         sa.CheckConstraint(
             "display_kind IN ('text', 'number', 'percent', 'distance', 'current', 'state')",

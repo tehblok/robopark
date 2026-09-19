@@ -30,8 +30,8 @@ def upgrade() -> None:
         sa.Column("slug", sa.String(length=32), nullable=False),
         sa.Column("name", sa.String(length=128), nullable=False),
         sa.Column("description", sa.String(length=512), nullable=False, server_default=""),
-        sa.Column("is_system", sa.Boolean(), nullable=False, server_default=sa.text("0")),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("is_system", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),
@@ -64,11 +64,11 @@ def upgrade() -> None:
             """
             INSERT INTO roles (slug, name, description, is_system, is_active)
             VALUES
-              ('royal', 'Владелец', '', 1, 1),
-              ('admin', 'Администратор', '', 1, 1),
-              ('operator', 'Оператор', '', 1, 1),
-              ('mechanic', 'Механик', '', 1, 1),
-              ('driver', 'Водитель', '', 1, 1)
+              ('royal', 'Владелец', '', TRUE, TRUE),
+              ('admin', 'Администратор', '', TRUE, TRUE),
+              ('operator', 'Оператор', '', TRUE, TRUE),
+              ('mechanic', 'Механик', '', TRUE, TRUE),
+              ('driver', 'Водитель', '', TRUE, TRUE)
             """
         )
     )
