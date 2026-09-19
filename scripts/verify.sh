@@ -95,6 +95,7 @@ case "${1:-all}" in
     ;;
   all)
     run_api
+    run_api_postgres
     run_web
     run_docker
     run_host

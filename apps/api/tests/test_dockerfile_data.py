@@ -247,6 +247,8 @@ def test_verification_script_default_runs_all_targets_in_order(tmp_path: Path):
             "uv\trun\t--frozen\t--extra\tdev\truff\tcheck\t.",
             "uv\trun\t--frozen\t--extra\tdev\truff\tformat\t--check\t.",
             "uv\trun\t--frozen\t--extra\tdev\tpython\t-m\tpytest\t-p\tno:cacheprovider\t-q",
+            "uv\tsync\t--frozen\t--extra\tdev",
+            "uv\trun\t--frozen\t--extra\tdev\tpython\t-m\tpytest\t-p\tno:cacheprovider\t-q\ttests/postgres",
             "npm\tci",
             "npm\trun\tlint",
             "npm\trun\tbuild",
