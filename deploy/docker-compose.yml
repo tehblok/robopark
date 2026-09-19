@@ -46,7 +46,7 @@ services:
       # UVICORN_WORKERS comes from host.env; entrypoint defaults to 2.
     volumes:
       - ${ROBOPARK_DATA_SOURCE:-robopark_data}:/data
-      - ${ROBOPARK_PGPASS_FILE:-./pgpass}:/run/secrets/pgpass:ro
+      - ${ROBOPARK_PGPASS_FILE:?run sudo python3 compose_secrets.py first}:/run/secrets/pgpass:ro
       # Royal ZIP updates copy onto the checkout; ops-agent rebuilds images.
       - ..:/host-repo
     restart: unless-stopped
@@ -124,4 +124,4 @@ volumes:
 
 secrets:
   postgres-password:
-    file: ${ROBOPARK_POSTGRES_PASSWORD_FILE:-./postgres-password}
+    file: ${ROBOPARK_POSTGRES_PASSWORD_FILE:?run sudo python3 compose_secrets.py first}

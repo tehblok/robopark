@@ -288,13 +288,15 @@ def test_bridge_activation_between_preflight_and_lock_keeps_local_candidate(host
     assert result.state == "awaiting_reconciliation"
 
 
-def test_manual_restore_verifies_bridge_through_exact_retained_pin(host):
+def test_manual_restore_verifies_bridge_through_exact_retained_pin(host, monkeypatch):
     import hashlib
     from uuid import uuid4
 
     from robopark_api.services.ops.archives import build_archive
     from robopark_host.restore import run_restore
     from test_manual_restore import database
+
+    monkeypatch.setenv("ROBOPARK_OFFLINE_SQLITE_RESTORE", "1")
 
     request, _, public = bridge(host)
     assert finish(host, request).state == "current_healthy"

@@ -27,6 +27,7 @@ class FakeRunner:
         self.health = True
         self.previous_health = True
         self.database_heads = ["new"]
+        self.snapshot_database_head = None
         self.public_health = True
         self.fail_on = None
         self.observations = []
@@ -65,6 +66,11 @@ class FakeRunner:
                 b'{"status":"ready"}\n200' if self.public_health else b'{"status":"degraded"}\n503'
             )
         if any("SELECT version_num FROM alembic_version" in str(arg) for arg in argv):
+            if "psql" in argv:
+                head = self.snapshot_database_head or (
+                    "old" if self.paths.current.resolve().name == "1.0.0" else "new"
+                )
+                return (head + "\n").encode()
             return json.dumps(self.database_heads).encode()
         if "pg_dump" in argv:
             output = next(str(arg) for arg in argv if str(arg).startswith("--file="))
@@ -374,6 +380,18 @@ def test_pre_cutover_backup_is_postgres_custom_format_and_rollback_restores_it(h
         in command
         for command in commands
     )
+
+
+def test_pre_cutover_snapshot_rejects_stale_database_head_before_publication(host):
+    host.runner.snapshot_database_head = "foreign-head"
+    previous = host.paths.current.resolve()
+
+    result = apply_release(host.request(), host.paths, host.runner)
+
+    assert result.error == "update_failed"
+    assert host.paths.current.resolve() == previous
+    journal = json.loads((host.paths.state / "updater-journal.json").read_text())
+    assert not journal["cutover_started"]
 
 
 def test_failed_health_restores_previous_code_units_and_snapshot(host):

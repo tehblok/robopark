@@ -100,6 +100,10 @@ class InstalledHost:
             self.installer.run_installer("--resume")
         else:
             self.installer.run_installer()
+        # The long-standing acceptance harness models the explicit offline
+        # SQLite compatibility reader. Production installer output remains
+        # PostgreSQL-only; dedicated tests remove this process-only switch.
+        self.patch.setenv("ROBOPARK_OFFLINE_SQLITE_RESTORE", "1")
         self.patch.setenv("ROBOPARK_TESTING", "1")
         self.patch.setenv("ROBOPARK_ROOT", str(self.installer.root))
         self.paths = HostPaths.from_root(self.installer.root)
@@ -450,6 +454,8 @@ class InstalledHost:
             if self.fail == "migration":
                 raise self.command_error("command_failed")
         if any("SELECT version_num FROM alembic_version" in arg for arg in argv):
+            if "psql" in argv:
+                return ("next" if self.version() == "0.1.1" else "initial").encode()
             return json.dumps(["next" if self.version() == "0.1.1" else "initial"]).encode()
         return b""
 

@@ -78,6 +78,7 @@ class OpsContext:
     data_dir: Path | None = None
     apply_root: Path | None = None
     app_version: str = "0.1.0"
+    migration_head: str | None = None
     test_runner: Callable[[Path], str] | None = None
     health_check: Callable[[], bool] | None = None
     before_db_replace: Callable[[], None] | None = None
@@ -236,6 +237,7 @@ def create_snapshot_bytes(ctx: OpsContext) -> bytes:
     build_snapshot_tree(
         tree,
         database_url=ctx.database_url,
+        expected_head=ctx.migration_head,
         config_files=ctx.config_files,
         data_dir=ctx.data_dir,
         skip_dirs=[paths["root"]],
@@ -406,6 +408,7 @@ def run_update(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) ->
         build_snapshot_tree(
             rollback_tree,
             database_url=ctx.database_url,
+            expected_head=ctx.migration_head,
             config_files=ctx.config_files,
             data_dir=ctx.data_dir,
             skip_dirs=[paths["root"]],

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
@@ -11,6 +12,7 @@ from robopark_api.models import Base, User
 from robopark_api.security import hash_password
 from robopark_api.services.ops.snapshot import (
     SNAPSHOT_DUMP_REL,
+    SnapshotError,
     build_snapshot_tree,
     restore_snapshot_tree,
     sqlite_path_from_url,
@@ -122,11 +124,14 @@ def test_postgres_snapshot_uses_custom_dump_and_validates_catalog(tmp_path: Path
             return ""
         if argv[:2] == ["pg_restore", "--list"]:
             return "TABLE DATA public alembic_version\n"
+        if argv[0] == "psql":
+            return "0031_postgresql_runtime\n"
         raise AssertionError(argv)
 
     build_snapshot_tree(
         tree,
         database_url="postgresql+psycopg://robopark@db:5432/robopark",
+        expected_head="0031_postgresql_runtime",
         config_files={},
         run=run,
     )
@@ -134,6 +139,32 @@ def test_postgres_snapshot_uses_custom_dump_and_validates_catalog(tmp_path: Path
     assert (tree / SNAPSHOT_DUMP_REL).read_bytes() == b"PGDMP"
     assert calls[0][:2] == ["pg_dump", "--format=custom"]
     assert calls[1] == ["pg_restore", "--list", str(tree / SNAPSHOT_DUMP_REL)]
+    assert calls[2][0] == "psql"
+
+
+def test_postgres_snapshot_rejects_foreign_database_head(tmp_path: Path):
+    tree = tmp_path / "tree"
+
+    def run(argv, **_kwargs):
+        if argv[:2] == ["pg_dump", "--format=custom"]:
+            Path(
+                next(value.removeprefix("--file=") for value in argv if value.startswith("--file="))
+            ).write_bytes(b"PGDMP")
+            return ""
+        if argv[:2] == ["pg_restore", "--list"]:
+            return "TABLE DATA public alembic_version\n"
+        if argv[0] == "psql":
+            return "foreign-head\n"
+        raise AssertionError(argv)
+
+    with pytest.raises(SnapshotError, match="database_dump_invalid"):
+        build_snapshot_tree(
+            tree,
+            database_url="postgresql+psycopg://robopark@db:5432/robopark",
+            expected_head="0031_postgresql_runtime",
+            config_files={},
+            run=run,
+        )
 
 
 def test_postgres_restore_validates_catalog_before_replacing_database(tmp_path: Path):

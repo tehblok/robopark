@@ -26,6 +26,13 @@ UPDATER_DEFAULTS = {'GITHUB_REPOSITORY': 'tehblok/robopark', 'GITHUB_TOKEN': '',
 ALLOWED = set(HOST_DEFAULTS) | set(TUNA_DEFAULTS) | set(UPDATER_DEFAULTS)
 
 
+def probed_cpu_count(root):
+    path = Path(root) / 'proc/cpuinfo'
+    if path.exists():
+        return len(re.findall(r'^processor\s*:', path.read_text(), re.M))
+    return os.cpu_count() or 0 if Path(root) == Path('/') else 0
+
+
 def validate_clean_data_root(target, *, expected):
     """Return the exact named Robopark root; reject aliases and broad targets."""
     target, expected = Path(target), Path(expected)
@@ -202,7 +209,13 @@ def configure(root, mode, filename, resume):
         memory_path = Path(root) / 'proc/meminfo'
         memory = memory_path.read_text() if memory_path.exists() else ''
         total = re.search(r'^MemTotal:\s+(\d+) kB', memory, re.M)
-        values['UVICORN_WORKERS'] = '4' if total and int(total.group(1)) >= 24 * 1024 * 1024 else '2'
+        values['UVICORN_WORKERS'] = (
+            '4'
+            if total
+            and int(total.group(1)) >= 24 * 1024 * 1024
+            and probed_cpu_count(root) >= 8
+            else '2'
+        )
     if not values['ROBOPARK_HOST_PROFILE']:
         values['ROBOPARK_HOST_PROFILE'] = (
             'orin' if values['UVICORN_WORKERS'] == '4' else 'vim4-safe'
@@ -211,8 +224,12 @@ def configure(root, mode, filename, resume):
     if values['UVICORN_WORKERS'] == '4':
         memory = (Path(root) / 'proc/meminfo').read_text()
         total = re.search(r'^MemTotal:\s+(\d+) kB', memory, re.M)
-        if not total or int(total.group(1)) < 24 * 1024 * 1024:
-            raise ValueError('large_profile_requires_24_gib')
+        if (
+            not total
+            or int(total.group(1)) < 24 * 1024 * 1024
+            or probed_cpu_count(root) < 8
+        ):
+            raise ValueError('large_profile_requires_24_gib_and_8_cpu')
     etc.mkdir(parents=True, exist_ok=True, mode=0o700)
     if etc.is_symlink():
         raise ValueError('invalid_config_directory')

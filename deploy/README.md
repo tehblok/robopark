@@ -5,7 +5,7 @@
 Для Armbian 26 с 8 ГБ, 200 пользователей и переноса на Ubuntu с 32 ГБ:
 [пошаговая инструкция общего сервера](SHARED-HOST.md).
 
-Robopark runs **only on the host** (Armbian / home server): API, SQLite, web UI.
+Robopark runs **only on the host** (Armbian / home server): API, PostgreSQL 17, web UI.
 
 Remote access uses **[Tuna](https://tuna.am/docs/)** — an HTTP reverse tunnel (ngrok-class).
 There is **no VPS** and **no WireGuard**. Mechanics open an HTTPS link in the browser.
@@ -40,6 +40,21 @@ Edit `host.env`:
 | `SECRET_KEY` | Required for encrypting Tracker / Emergency secrets at rest |
 | `UVICORN_WORKERS` | API processes inside the one `api` container (default **2**, cap **4**) |
 
+The installer creates database credentials automatically. For the supported direct
+Compose path, create the same external root-private files before the first start:
+
+```sh
+sudo python3 compose_secrets.py
+set -a
+. /etc/robopark/compose-secrets.env
+set +a
+```
+
+The command creates `/etc/robopark/postgres-password` as root `0600` and
+`/etc/robopark/pgpass` as UID/GID 10001 `0600`. It preserves and validates existing
+credentials and never writes a password into the checkout or the generated env file.
+Do not create `deploy/postgres-password` or relax either file to mode `0644`.
+
 Start the stack (web listens on **localhost only**):
 
 ```sh
@@ -56,7 +71,8 @@ curl -sS http://127.0.0.1:8080/api/health
 
 - SPA + `/api` proxy: **`http://127.0.0.1:8080`** on the host.
 - API is **not** published on port 8000 — only via the web container.
-- SQLite lives in Docker volume `robopark_data`.
+- PostgreSQL 17 lives in the `robopark_postgres` Docker volume and is bound to
+  `127.0.0.1:5432` only.
 
 ## 2. Tuna tunnel (public HTTPS link)
 
@@ -149,7 +165,8 @@ Optional Tuna extras (cabinet / docs): basic-auth / key-auth in front of the app
 ## Backup
 
 Royal (owner) can take a full snapshot and restore it from **Администрирование → Снимок и обновление**.
-The archive is a ZIP with a `snapshot` manifest: SQLite, data files, and `host.env`.
+The archive is a ZIP with a `snapshot` manifest: a PostgreSQL custom-format dump,
+data files, and the permitted configuration projection.
 
 To move to another host: install and start Compose once, sign in as royal, restore the ZIP, type `ВОССТАНОВИТЬ`. Keep the same `SECRET_KEY` or re-enter Tracker/Emergency secrets.
 
@@ -217,7 +234,7 @@ Royal uploads that ZIP on the same admin tab, types `ОБНОВИТЬ`. The API 
 
 | Piece | Where | Command |
 |-------|--------|---------|
-| App | `deploy/` | `HOST_ENV_FILE=./host.env docker compose up -d --build` |
+| App | `deploy/` | source `/etc/robopark/compose-secrets.env`, then `HOST_ENV_FILE=./host.env docker compose up -d --build` |
 | Tunnel | host systemd | `systemctl enable --now robopark-tuna` |
 | Users | browser | `https://<your-tuna-host>/` |
 

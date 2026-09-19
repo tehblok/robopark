@@ -6,6 +6,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy.engine.url import make_url
 
 from robopark_api.config import _API_ROOT, Settings, get_settings
@@ -14,6 +16,15 @@ from robopark_api.services.ops.runner import OpsContext
 
 _REPO_ROOT = _API_ROOT.parent.parent
 APP_VERSION = "0.1.44"
+
+
+def _migration_head() -> str:
+    config = Config(str(_API_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(_API_ROOT / "alembic"))
+    head = ScriptDirectory.from_config(config).get_current_head()
+    if not head:
+        raise RuntimeError("migration_head_missing")
+    return head
 
 
 def resolved_ops_dir(settings: Settings | None = None) -> Path:
@@ -93,6 +104,7 @@ def build_ops_context(settings: Settings | None = None) -> OpsContext:
         data_dir=data_dir,
         apply_root=resolved_apply_root(settings),
         app_version=APP_VERSION,
+        migration_head=_migration_head(),
         release_public_key=_release_public_key(settings),
         use_host_updater=host is not None,
         host_ops_dir=host,

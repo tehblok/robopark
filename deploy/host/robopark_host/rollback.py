@@ -106,6 +106,29 @@ def snapshot(paths, journal, runner=None):
     os.replace(temporary, root / "data")
     sync_directory(root)
     if runner is not None:
+        from .trust import directory_key
+
+        current = paths.current.resolve(strict=True)
+        expected_head = verify_directory(current, directory_key(paths, current))["migration_head"]
+        actual_head = runner.run(
+            _database_command(
+                paths,
+                [
+                    "psql",
+                    "--username=robopark",
+                    "--dbname=robopark",
+                    "--tuples-only",
+                    "--no-align",
+                    "--command=SELECT version_num FROM alembic_version",
+                ],
+            ),
+            timeout=30,
+            capture=True,
+        )
+        if isinstance(actual_head, bytes):
+            actual_head = actual_head.decode("utf-8", "strict")
+        if actual_head.strip() != expected_head:
+            raise ReleaseError("update_failed")
         target = f"/host-rollbacks/{journal['job_id']}/database.dump"
         runner.run(
             _database_command(

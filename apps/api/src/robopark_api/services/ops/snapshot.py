@@ -80,6 +80,7 @@ def build_snapshot_tree(
     dest: Path,
     *,
     database_url: str,
+    expected_head: str | None = None,
     config_files: dict[str, Path],
     data_dir: Path | None = None,
     skip_dirs: list[Path] | None = None,
@@ -107,9 +108,24 @@ def build_snapshot_tree(
         try:
             execute(command)
             listing = execute(["pg_restore", "--list", str(target)])
+            actual_head = execute(
+                [
+                    "psql",
+                    "--no-psqlrc",
+                    "--tuples-only",
+                    "--no-align",
+                    f"--dbname={database}",
+                    "--command=SELECT version_num FROM alembic_version",
+                ]
+            )
         except (OSError, subprocess.SubprocessError) as exc:
             raise SnapshotError("database_dump_failed") from exc
-        if not target.is_file() or "alembic_version" not in str(listing):
+        if (
+            not expected_head
+            or not target.is_file()
+            or "alembic_version" not in str(listing)
+            or str(actual_head).strip() != expected_head
+        ):
             raise SnapshotError("database_dump_invalid")
     else:
         db_path = sqlite_path_from_url(database_url)

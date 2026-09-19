@@ -349,6 +349,7 @@ class InstallerScenarios(unittest.TestCase):
         (self.root / 'etc/os-release').write_text('ID=ubuntu\nVERSION_ID=22.04\nVERSION_CODENAME=jammy\n')
         (self.root / 'proc').mkdir()
         (self.root / 'proc/meminfo').write_text('MemTotal:       33554432 kB\n')
+        (self.root / 'proc/cpuinfo').write_text('processor : 0\n' * 8)
         self.run_installer()
         self.assertIn("UVICORN_WORKERS='4'", (self.root / 'etc/robopark/host.env').read_text())
         self.assertIn(' jammy stable', (self.root / 'etc/apt/sources.list.d/docker.list').read_text())
@@ -658,16 +659,60 @@ runpy.run_path(helper, run_name='__main__')
             self.run_installer(success=False)
         self.assertFalse(self.commands('apt-get'))
 
+    def test_clean_reinstall_honors_existing_host_lock_before_side_effects(self):
+        self.run_installer()
+        data = self.root / 'var/lib/robopark/data/operator-state.txt'
+        data.write_text('keep-me')
+        before = self.commands()
+        lock_path = self.root / 'var/lib/robopark/ops/host.lock'
+        with lock_path.open('a') as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            child, master = pty.fork()
+            if child == 0:
+                os.execve(
+                    '/bin/sh',
+                    [
+                        'sh',
+                        str(self.bundle / 'install.sh'),
+                        '--clean-reinstall',
+                        '--non-interactive',
+                        str(self.config),
+                    ],
+                    self.env,
+                )
+            try:
+                output = b''
+                deadline = time.monotonic() + 10
+                while b'DELETE ROBOPARK DATA: ' not in output and time.monotonic() < deadline:
+                    pid, status = os.waitpid(child, os.WNOHANG)
+                    if pid:
+                        child = None
+                        break
+                    if select.select([master], [], [], 0.1)[0]:
+                        output += os.read(master, 65536)
+                if child is not None:
+                    os.write(master, b'DELETE ROBOPARK DATA\n')
+                    _, status = os.waitpid(child, 0)
+            finally:
+                os.close(master)
+        self.assertNotEqual(os.waitstatus_to_exitcode(status), 0)
+        self.assertEqual(data.read_text(), 'keep-me')
+        added = self.commands()[len(before):]
+        self.assertFalse([call for call in added if call['name'] in {'systemctl', 'docker'}])
+
     def test_installer_releases_host_owner_before_synchronous_consumer_start(self):
         self.run_installer(CHECK_HOST_LOCK_HANDOFF='1')
 
     def test_large_profile_requires_sufficient_memory(self):
         (self.root / 'proc').mkdir()
         (self.root / 'proc/meminfo').write_text('MemTotal:        8388608 kB\n')
+        (self.root / 'proc/cpuinfo').write_text('processor : 0\n' * 4)
         with self.config.open('a') as stream:
             stream.write('UVICORN_WORKERS=4\n')
         self.run_installer(success=False)
         (self.root / 'proc/meminfo').write_text('MemTotal:        33554432 kB\n')
+        self.run_installer(success=False)
+        (self.root / 'proc/cpuinfo').write_text('processor : 0\n' * 8)
         self.run_installer()
 
     def test_interactive_wizard_never_echoes_secrets(self):
@@ -722,6 +767,7 @@ runpy.run_path(helper, run_name='__main__')
     def test_large_host_selects_four_workers_automatically(self):
         (self.root / 'proc').mkdir()
         (self.root / 'proc/meminfo').write_text('MemTotal:       33554432 kB\n')
+        (self.root / 'proc/cpuinfo').write_text('processor : 0\n' * 8)
         self.run_installer()
         host = (self.root / 'etc/robopark/host.env').read_text()
         self.assertIn("UVICORN_WORKERS='4'", host)

@@ -218,6 +218,33 @@ def _validate_database(path, head):
         raise ReleaseError("snapshot_invalid") from exc
 
 
+def _database_profile(paths):
+    """Read the installed database contract; absence defaults to PostgreSQL."""
+    if os.environ.get("ROBOPARK_OFFLINE_SQLITE_RESTORE") == "1":
+        return "sqlite-offline-legacy"
+    target = paths.etc / "host.env"
+    try:
+        fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+                raise ValueError()
+            raw = stream.read(65537).decode("utf-8")
+        found = []
+        for line in raw.splitlines():
+            key, separator, value = line.strip().partition("=")
+            if separator and key == "ROBOPARK_DATABASE_PROFILE":
+                value = value.strip()
+                if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]:
+                    value = value[1:-1]
+                found.append(value)
+        if len(found) > 1 or (found and found[0] not in {"postgresql-17", "sqlite-offline-legacy"}):
+            raise ValueError()
+        return found[0] if found else "postgresql-17"
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ReleaseError("snapshot_invalid") from exc
+
+
 def _database_exec(paths, arguments):
     from .updater import compose
 
@@ -358,8 +385,17 @@ def _prepare(paths, journal, runner):
             or not isinstance(files, dict)
         ):
             raise ReleaseError("snapshot_invalid")
+        profile = _database_profile(paths)
+        expected_database = (
+            "data/robopark.db"
+            if profile == "sqlite-offline-legacy"
+            else "data/robopark.dump"
+        )
         database_members = {"data/robopark.db", "data/robopark.dump"} & set(files)
-        if set(names) != {"manifest.json", *files} or len(database_members) != 1:
+        if (
+            set(names) != {"manifest.json", *files}
+            or database_members != {expected_database}
+        ):
             raise ReleaseError("snapshot_invalid")
         expanded = sum(item.file_size for item in infos)
         live_size = sum(p.stat().st_size for p in (paths.var / "data").rglob("*") if p.is_file())
@@ -635,6 +671,25 @@ class _BootRunner:
             except Exception:
                 self.run(["systemctl", "stop", "robopark.service"], timeout=120)
                 raise
+        database_prefix = self.command + ["exec", "-T", "db", "pg_restore"]
+        if argv[: len(database_prefix)] == database_prefix:
+            options = argv[len(database_prefix) :]
+            required = {
+                "--clean",
+                "--if-exists",
+                "--no-owner",
+                "--no-privileges",
+                "--dbname=robopark",
+            }
+            if (
+                set(options[:-1]) == required
+                and len(options) == len(required) + 1
+                and re.fullmatch(
+                    r"/host-restores/[0-9a-f-]{36}/previous/robopark\.dump",
+                    options[-1],
+                )
+            ):
+                return self.runner.run(argv, timeout=timeout)
         # A synchronous Tuna start would wait for this very ExecStartPre to finish.
         raise ReleaseError("publication_pending")
 

@@ -15,6 +15,7 @@ import subprocess
 import threading
 from collections import deque
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +40,27 @@ def select_host_profile(*, memory_kib: int, cpu_count: int) -> HostProfile:
     if memory_kib >= 24 * 1024 * 1024 and cpu_count >= 8:
         return HostProfile("orin", 4, "8g", "6g", "2GB", 100)
     return HostProfile("vim4-safe", 2, "2g", "1536m", "512MB", 40)
+
+
+def probe_host_profile(root: Path = Path("/")) -> HostProfile:
+    """Select from the host's real RAM/CPU probes, defaulting conservatively."""
+    memory_kib = 0
+    cpu_count = 0
+    try:
+        memory = (root / "proc/meminfo").read_text()
+        match = re.search(r"^MemTotal:\s+(\d+) kB", memory, re.MULTILINE)
+        memory_kib = int(match.group(1)) if match else 0
+    except OSError:
+        if root == Path("/"):
+            with suppress(OSError, ValueError):
+                memory_kib = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // 1024
+    try:
+        cpuinfo = (root / "proc/cpuinfo").read_text()
+        cpu_count = len(re.findall(r"^processor\s*:", cpuinfo, re.MULTILINE))
+    except OSError:
+        if root == Path("/"):
+            cpu_count = os.cpu_count() or 0
+    return select_host_profile(memory_kib=memory_kib, cpu_count=cpu_count)
 
 
 @dataclass(frozen=True)
@@ -267,10 +289,9 @@ def production_config(document, paths, release, image_tag):
             workers = line.partition("=")[2].strip().strip("\"'")
     if workers not in {"2", "4"}:
         raise ValueError("invalid_host_profile")
-    profile = select_host_profile(
-        memory_kib=32 * 1024 * 1024 if workers == "4" else 8 * 1024 * 1024,
-        cpu_count=12 if workers == "4" else 4,
-    )
+    profile = probe_host_profile(paths.root)
+    if int(workers) > profile.api_workers:
+        raise ValueError("invalid_host_profile")
     db = document["services"]["db"]
     db["volumes"] = [
         *[

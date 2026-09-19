@@ -105,6 +105,18 @@ def test_manual_restore_rejects_invalid_input_without_stopping_app(e2e_host, opt
     assert not host.maintenance()
 
 
+def test_postgresql_host_rejects_legacy_sqlite_restore_before_stopping_writers(
+    e2e_host, monkeypatch
+):
+    host = e2e_host
+    monkeypatch.delenv("ROBOPARK_OFFLINE_SQLITE_RESTORE")
+
+    before = len(host.calls)
+    assert approve(host) != 0
+    assert value(host) == "live"
+    assert not any(call[:2] == ["systemctl", "stop"] for call in host.calls[before:])
+
+
 @pytest.mark.parametrize(
     "phase",
     [
@@ -458,6 +470,42 @@ def test_boot_compose_recovery_owns_host_lock_and_never_recursively_starts_units
         target = host.paths.state / name
         assert target.stat().st_mode & 0o777 == 0o600
         assert target.stat().st_uid == os.geteuid()
+
+
+def test_boot_recovery_restores_postgres_snapshot_after_power_loss(e2e_host, monkeypatch):
+    from e2e_support import PowerLoss
+
+    host = e2e_host
+    original = os.replace
+
+    def interrupt(source, destination):
+        original(source, destination)
+        if Path(destination).name != "restore-journal.json":
+            return
+        journal = json.loads(Path(destination).read_text())
+        if journal["phase"] != "snapshotted":
+            return
+        previous = host.paths.state / "restores" / journal["request"]["job_id"] / "previous"
+        (previous / "robopark.dump").write_bytes(b"PGDMP previous")
+        raise PowerLoss()
+
+    monkeypatch.setattr(os, "replace", interrupt)
+    with pytest.raises(PowerLoss):
+        approve(host)
+    monkeypatch.setattr(os, "replace", original)
+
+    before = len(host.calls)
+    assert host.command("restore", "--boot-recover") == 0
+    recovery_calls = host.calls[before:]
+    assert any(
+        call[:2] == ["docker", "compose"]
+        and "exec" in call
+        and "db" in call
+        and "pg_restore" in call
+        for call in recovery_calls
+    )
+    assert value(host) == "live"
+    assert not host.maintenance()
 
 
 def test_boot_does_not_reset_a_corrupt_private_retry_counter(e2e_host):

@@ -238,7 +238,7 @@ local API, stripping the `/api` prefix.
 
 ## Host installation
 
-The host runs the API, SQLite database, and web app:
+The host runs the API, PostgreSQL 17 database, and web app:
 
 ```bash
 git clone <repository-url> robopark
@@ -248,8 +248,14 @@ cp host.env.example host.env
 
 Edit `host.env`: strong `SEED_PASSWORD`, optional `OPERATOR_SHARED_PASSWORD`, and
 `CORS_ORIGINS=https://<your-tuna-host>` (exact HTTPS URL from Tuna — see deploy docs).
+Create external root-private PostgreSQL credentials once; no secret file belongs in
+the checkout:
 
 ```bash
+sudo python3 compose_secrets.py
+set -a
+. /etc/robopark/compose-secrets.env
+set +a
 export HOST_ENV_FILE=./host.env
 docker compose up -d --build
 ```
@@ -370,6 +376,6 @@ Not included:
 
 - Telegram bots or feature parity clients.
 - VPS / WireGuard remote access (replaced by Tuna HTTPS tunnel).
-- PostgreSQL migration; SQLite on the host remains the storage engine.
+- Importing an old production SQLite database; clean hosts start with PostgreSQL 17.
 - Per-user Tracker credentials — the platform uses one service token and
   attributes actions through `audit_log` and comment signatures.
