@@ -545,6 +545,13 @@ def main():
             if k.startswith("get_issue:ROBOPARK-1")
         )
         == 1,
+        "status_history_coalesced_per_issue": bool(
+            [value for key, value in stub.snapshot().items() if key.startswith("issue_history:")]
+        )
+        and max(
+            value for key, value in stub.snapshot().items() if key.startswith("issue_history:")
+        )
+        == 1,
         "cold_robot_coalesced_within_ttl": 1
         <= phases.get("cold_robot_check_200_requests", {})
         .get("upstream_calls", {})
