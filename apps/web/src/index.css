@@ -2030,7 +2030,7 @@ textarea {
   min-width: 0;
   padding: 0.55rem 0.7rem;
   border: 1px solid var(--border);
-  border-radius: 0.625rem;
+  border-radius: var(--rp-radius-control);
   background: var(--rp-surface);
   color: var(--text);
   transition: border-color var(--dur-fast) var(--ease-out);

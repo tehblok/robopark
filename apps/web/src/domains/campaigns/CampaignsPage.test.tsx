@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { api, type CampaignDetail, type Park, type User } from '../../api'
+import { api, ApiError, type CampaignDetail, type Park, type User } from '../../api'
 import { ParkScopeContext } from '../../app/park/parkScope'
 import { AuthContext } from '../../auth-context'
 import { CampaignsPage } from './CampaignsPage'
@@ -43,6 +43,25 @@ function useViewport(matches: boolean) {
 
 beforeEach(() => useViewport(false))
 afterEach(() => vi.unstubAllGlobals())
+
+it('removes protected campaign data when a refresh loses access', async () => {
+  const campaign = vi.fn().mockResolvedValueOnce(detail).mockRejectedValue(new ApiError(403, 'forbidden'))
+  renderPage({ ...api, campaign, refreshCampaign: vi.fn(async () => ({ snapshot_state: 'ready', snapshot_at: null })) })
+  await screen.findByText('A101')
+  await userEvent.click(screen.getByRole('button', { name: 'Обновить из Tracker' }))
+  await waitFor(() => expect(screen.queryByText('A101')).not.toBeInTheDocument())
+  expect(screen.queryByRole('heading', { name: 'СК Альфа' })).not.toBeInTheDocument()
+})
+
+it('lets a manager edit campaign matching rules separately from ticket completion', async () => {
+  const updateCampaign = vi.fn(async () => detail)
+  renderPage({ ...api, campaign: vi.fn(async () => detail), updateCampaign }, { ...user, role: 'royal' })
+  const title = await screen.findByRole('textbox', { name: 'Название' })
+  await userEvent.clear(title)
+  await userEvent.type(title, 'СК Бета')
+  await userEvent.click(screen.getByRole('button', { name: 'Сохранить настройки кампании' }))
+  await waitFor(() => expect(updateCampaign).toHaveBeenCalledWith(4, expect.objectContaining({ name: 'СК Бета', tracker_tag: 'service-2026', park_ids: [7] })))
+})
 
 it('keeps mobile campaign search and ticket summary visible while deferring metrics and history', async () => {
   useViewport(true)

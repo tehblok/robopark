@@ -64,20 +64,25 @@ export function CampaignOverviewSection({ parkId, apiClient = api }: { parkId: n
   </Panel>
 }
 
-function CampaignCreateForm({ apiClient, onCreated }: { apiClient: CampaignApi; onCreated: (item: Campaign) => void }) {
+function CampaignCreateForm({ apiClient, onCreated, campaign }: { apiClient: CampaignApi; onCreated: (item: Campaign) => void; campaign?: Campaign }) {
   const { parks } = useParkScope()
   const today = new Date().toISOString().slice(0, 10)
-  const [payload, setPayload] = useState<CampaignCreatePayload>({ kind: 'service_company', name: '', tracker_tag: '', starts_on: today, due_on: today, park_ids: [] })
+  const [payload, setPayload] = useState<CampaignCreatePayload>(() => campaign
+    ? { kind: campaign.kind, name: campaign.name, tracker_tag: campaign.tracker_tag, starts_on: campaign.starts_on, due_on: campaign.due_on, park_ids: campaign.park_ids }
+    : { kind: 'service_company', name: '', tracker_tag: '', starts_on: today, due_on: today, park_ids: [] })
   const [busy, setBusy] = useState(false)
+  const pending = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const submit = async (event: FormEvent) => {
     event.preventDefault()
+    if (pending.current) return
+    pending.current = true
     setBusy(true); setError(null)
-    try { onCreated(await apiClient.createCampaign(payload)) }
+    try { onCreated(await (campaign ? apiClient.updateCampaign(campaign.id, payload) : apiClient.createCampaign(payload))) }
     catch (reason) { setError(classifyApiError(reason, 'Не удалось создать кампанию.').description) }
-    finally { setBusy(false) }
+    finally { pending.current = false; setBusy(false) }
   }
-  return <ResponsiveDisclosureGroup label="Создание кампании"><ResponsiveDisclosure id="create" title="Новая кампания">
+  return <ResponsiveDisclosureGroup label={campaign ? 'Настройки кампании' : 'Создание кампании'}><ResponsiveDisclosure id="create" title={campaign ? 'Настройки кампании' : 'Новая кампания'}>
     <form className="form-grid campaign-create" onSubmit={submit}>
       <label className="field"><span>Тип</span><select value={payload.kind} onChange={event => setPayload(current => ({ ...current, kind: event.target.value as Campaign['kind'] }))}><option value="service_company">Сервисная компания</option><option value="wrapping">Оклейка</option></select></label>
       <label className="field"><span>Название</span><input required maxLength={128} value={payload.name} onChange={event => setPayload(current => ({ ...current, name: event.target.value }))} /></label>
@@ -86,7 +91,7 @@ function CampaignCreateForm({ apiClient, onCreated }: { apiClient: CampaignApi; 
       <label className="field"><span>Срок</span><input required min={payload.starts_on} type="date" value={payload.due_on} onChange={event => setPayload(current => ({ ...current, due_on: event.target.value }))} /></label>
       <ParkMultiSelect label="Парки кампании" onChange={park_ids => setPayload(current => ({ ...current, park_ids }))} parks={parks} value={payload.park_ids} />
       {error ? <p className="form-error" role="alert">{error}</p> : null}
-      <Button busy={busy} disabled={!payload.park_ids.length} type="submit">Создать кампанию</Button>
+      <Button busy={busy} disabled={!payload.park_ids.length} type="submit">{campaign ? 'Сохранить настройки кампании' : 'Создать кампанию'}</Button>
     </form>
   </ResponsiveDisclosure></ResponsiveDisclosureGroup>
 }
@@ -97,11 +102,13 @@ function CampaignList({ apiClient }: { apiClient: CampaignApi }) {
   const navigate = useNavigate()
   const [items, setItems] = useState<Campaign[] | null>(null)
   const [error, setError] = useState<unknown>(null)
+  const generation = useRef(0)
   const load = useCallback(() => {
+    const request = ++generation.current
     setError(null)
-    apiClient.campaigns(selectedPark?.id).then(setItems).catch(setError)
+    apiClient.campaigns(selectedPark?.id).then(value => { if (request === generation.current) setItems(value) }).catch(reason => { if (request === generation.current) { setItems(null); setError(reason) } })
   }, [apiClient, selectedPark?.id])
-  useEffect(load, [load])
+  useEffect(() => { load(); return () => { generation.current++ } }, [load])
   const manager = user?.role === 'admin' || user?.role === 'royal'
   const failure = error ? classifyApiError(error, 'Не удалось загрузить кампании.') : null
   return <PageLayout description="Прогресс сервисных компаний и оклейки по доступным паркам." title="СК и оклейка">
@@ -172,11 +179,21 @@ function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; api
   const [query, setQuery] = useState('')
   const [editingTicketKey, setEditingTicketKey] = useState<string | null>(null)
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null)
-  const load = useCallback(() => { setError(null); apiClient.campaign(campaignId).then(setData).catch(setError) }, [apiClient, campaignId])
-  useEffect(load, [load])
+  const generation = useRef(0)
+  const load = useCallback(() => {
+    const request = ++generation.current
+    setError(null)
+    apiClient.campaign(campaignId).then(value => { if (request === generation.current) setData(value) }).catch(reason => {
+      if (request !== generation.current) return
+      const failure = classifyApiError(reason, 'Не удалось загрузить кампанию.')
+      if (failure.kind === 'forbidden' || failure.kind === 'unauthorized') setData(null)
+      setError(reason)
+    })
+  }, [apiClient, campaignId])
+  useEffect(() => { load(); return () => { generation.current++ } }, [load])
   useEffect(() => {
     if (data?.snapshot_state !== 'pending' && data?.snapshot_state !== 'running') return
-    const timer = window.setInterval(load, 3000)
+    const timer = window.setInterval(() => { if (!document.hidden && navigator.onLine !== false) load() }, 3000)
     return () => window.clearInterval(timer)
   }, [data?.snapshot_state, load])
   const refresh = async () => {
@@ -211,6 +228,7 @@ function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; api
     {refreshMessage ? <p role="status">{refreshMessage}</p> : null}
     {failure ? <p role="status">Показаны последние полученные данные. Обновление не удалось: {failure.description}</p> : null}
     <ResponsiveDisclosureGroup label="Разделы кампании"><ResponsiveDisclosure id="metrics" summary={`${data.percent_complete}% · ${data.completed_count} из ${data.total_count}`} title="Метрики"><CampaignMetrics campaign={data} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>
+    {manager ? <CampaignCreateForm apiClient={apiClient} campaign={data} onCreated={load} /> : null}
     <div className="campaign-columns">
       <Panel density="dense" title={`Открытые · ${data.open_tickets.length}`}><label className="field campaign-search"><span>Поиск по роботу</span><input onChange={event => setQuery(event.target.value)} placeholder="Номер робота или тикет" value={query} /></label>
         <div className="campaign-tickets">{open.map(ticket => <TicketCard apiClient={apiClient} campaign={data} editing={editingTicketKey === ticket.key} key={ticket.key} onEditingChange={editing => setEditingTicketKey(editing ? ticket.key : null)} reload={load} ticket={ticket} />)}{!open.length ? <p>Открытые тикеты не найдены.</p> : null}</div>
@@ -221,6 +239,9 @@ function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; api
 }
 
 export function CampaignsPage({ apiClient = api }: { apiClient?: CampaignApi }) {
+  const { user } = useAuth()
+  const { selectedPark } = useParkScope()
   const raw = useParams().campaignId
-  return raw && /^\d+$/.test(raw) ? <CampaignDetailPage apiClient={apiClient} campaignId={Number(raw)} /> : <CampaignList apiClient={apiClient} />
+  const access = JSON.stringify([user?.id, user?.role, user?.permissions?.slice().sort(), selectedPark?.id, raw])
+  return raw && /^\d+$/.test(raw) ? <CampaignDetailPage key={access} apiClient={apiClient} campaignId={Number(raw)} /> : <CampaignList key={access} apiClient={apiClient} />
 }

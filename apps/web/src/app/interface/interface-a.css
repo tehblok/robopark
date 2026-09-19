@@ -120,6 +120,40 @@ html[data-interface='task-first'] {
   .inventory-manage-heading p { color: var(--rp-text-muted); margin-block: 8px; }
   .inventory-manage-form { border: 1px solid var(--rp-border); border-radius: 12px; background: var(--rp-surface); padding: 20px; }
 
+  /* Reports keep the inbox beside the selected conversation, not nested cards. */
+  .rp-reports { max-width: none; gap: 20px; }
+  .rp-reports > .dashboard-toolbar { padding-bottom: 16px; border-bottom: 1px solid var(--rp-border); }
+  .rp-reports .rp-master-detail { grid-template-columns: minmax(280px, .7fr) minmax(0, 1.3fr); gap: 24px; align-items: start; }
+  .rp-reports .rp-master-detail__list { background: transparent; border: 0; padding: 0; }
+  .rp-reports .rp-master-detail__list .panel { border: 0; background: transparent; padding: 0; }
+  .rp-reports .report-list { gap: 8px; }
+  .rp-report-select { border-radius: 8px; background: var(--rp-surface); }
+  .rp-report-select.is-selected { box-shadow: inset 3px 0 var(--rp-action); }
+  .rp-reports .rp-master-detail__detail { border: 0; padding: 0; background: transparent; }
+  .report-detail { padding: 20px; border: 1px solid var(--rp-border); border-radius: 12px; background: var(--rp-surface); display: grid; gap: 16px; }
+  .report-detail-head { padding-bottom: 16px; border-bottom: 1px solid var(--rp-border); }
+  .report-detail-title { font-size: 22px; line-height: 1.3; }
+  .report-detail-body { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
+  .report-detail-actions { padding-top: 16px; border-top: 1px solid var(--rp-border); gap: 8px; }
+  .rp-reports .form-grid { max-width: 900px; gap: 16px; }
+  .rp-reports form > .form-grid { padding: 20px; border: 1px solid var(--rp-border); border-radius: 12px; background: var(--rp-surface); margin-block: 16px; }
+
+  /* Campaign execution first; selection rules live in their own editor. */
+  .campaign-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+  .campaign-card__heading { align-items: center; }
+  .campaign-card .campaign-progress { inline-size: 88px; block-size: 88px; }
+  .campaign-columns { grid-template-columns: minmax(0, 1.35fr) minmax(0, .8fr); gap: 24px; }
+  .campaign-columns > .rp-panel { border: 0; padding: 0; background: transparent; }
+  .campaign-ticket { padding: 16px; border-radius: 12px; background: var(--rp-surface); }
+  .campaign-ticket__head { padding-bottom: 12px; border-bottom: 1px solid var(--rp-border); }
+  .campaign-ticket__head a { min-inline-size: 44px; min-block-size: 44px; }
+  .campaign-ticket h3 { font-size: 22px; }
+  .campaign-metrics { padding: 16px; background: var(--rp-surface); border: 1px solid var(--rp-border); border-radius: 12px; }
+  .rp-page-layout__content > [aria-label='Настройки кампании'] { order: 5; padding: 16px; border: 1px solid var(--rp-border); border-radius: 12px; background: var(--rp-surface-muted); }
+  .campaign-create { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .campaign-create > .park-multi-select, .campaign-create > .form-error { grid-column: 1/-1; }
+  .campaign-complete { border-top: 1px solid var(--rp-border); padding-top: 16px; }
+
   /* Public/access screens: clear form first, quieter product context. */
   .rp-auth { background: var(--rp-canvas); }
   .rp-auth::before, .rp-auth__orbit { display: none; }
@@ -187,6 +221,15 @@ html[data-interface='task-first'] {
     .inventory-label-choice { grid-column: 1; grid-row: auto; }
     .inventory-search-filters { grid-template-columns: minmax(0, 1fr); }
     .inventory-document-actions .rp-button { flex: 1 1 auto; }
+    .rp-reports .rp-master-detail, .campaign-columns, .campaign-list, .campaign-create { grid-template-columns: minmax(0, 1fr); }
+    .rp-reports .rp-master-detail[data-detail-open='true'] .rp-master-detail__list { display: none; }
+    .report-detail, .rp-reports form > .form-grid { padding: 14px; }
+    .report-detail-title { font-size: 20px; }
+    .report-detail-actions .btn { flex: 1 1 auto; }
+    .campaign-card__heading { flex-direction: row; }
+    .campaign-card__heading > div:first-child { min-width: 0; }
+    .campaign-card__heading > .campaign-progress { align-self: start; }
+    .campaign-metrics { grid-template-columns: minmax(0, 1fr); padding: 14px; }
   }
   @media (prefers-reduced-motion: no-preference) {
     .rp-shell__desktop-link, .rp-shell__mobile-link { transition: background-color 120ms ease, color 120ms ease; }
