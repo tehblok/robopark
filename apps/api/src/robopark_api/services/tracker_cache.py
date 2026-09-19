@@ -187,6 +187,7 @@ def collect_park_metrics(
 def invalidate_issue(key: str) -> None:
     """Drop cached artefacts around a single issue and any list that might contain it."""
     _issue_cache.invalidate(key)
+    tracker_client.invalidate_issue_status_history(key)
     _comments_cache.invalidate(key)
     _transitions_cache.invalidate(key)
     _issues_cache.clear()

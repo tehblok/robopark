@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from robopark_api.services.response_cache import ResponseCache
 from robopark_api.services.tracker_api import call_with_retry
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,10 @@ _work_history_slots = threading.BoundedSemaphore(_WORK_HISTORY_WORKERS)
 _work_history_lock = threading.Lock()
 _work_history_cache: OrderedDict[str, tuple[float, list[Any]]] = OrderedDict()
 _work_history_flights: dict[str, Future[list[Any]]] = {}
+_issue_status_history_cache: ResponseCache[list[dict[str, Any]]] = ResponseCache(
+    _WORK_HISTORY_TTL_SECONDS,
+    name="tracker.issue_history",
+)
 
 
 class TrackerError(Exception):
@@ -864,7 +869,47 @@ def get_issue(*, token: str, key: str) -> dict[str, Any] | None:
         raise
 
 
-def get_issue_status_history(*, token: str, key: str, issue: dict[str, Any]) -> list[Any]:
+def _project_issue_status_history(history: list[Any]) -> list[dict[str, Any]]:
+    """Keep only JSON-safe fields used by the repair-SLA calculation."""
+    projected: list[dict[str, Any]] = []
+    for event in history:
+        changed_at = _tracker_datetime(_field(event, "updatedAt") or _field(event, "createdAt"))
+        if changed_at is None:
+            continue
+        fields: list[dict[str, Any]] = []
+        for change in _field(event, "fields") or []:
+            field = _field(change, "field")
+            field_id = (
+                _field(field, "id")
+                or _field(field, "key")
+                or _field(change, "fieldId")
+                or field
+                or ""
+            )
+            if str(field_id).strip().lower() != "status":
+                continue
+            target = _field(change, "to") or _field(change, "newValue")
+            target_key = _field(target, "key") or ""
+            target_display = _field(target, "display") or ""
+            if not target_key and not target_display and target is not None:
+                target_display = str(target)
+            fields.append(
+                {
+                    "field": {"id": str(field_id)},
+                    "to": {
+                        "key": str(target_key),
+                        "display": str(target_display),
+                    },
+                }
+            )
+        if fields:
+            projected.append({"updatedAt": _utc_text(changed_at), "fields": fields})
+    return projected
+
+
+def _fetch_issue_status_history(
+    *, token: str, key: str, issue: dict[str, Any], tracked: bool
+) -> list[dict[str, Any]]:
     resource = issue.get("_tracker_resource")
 
     def _run() -> list[Any]:
@@ -873,7 +918,28 @@ def get_issue_status_history(*, token: str, key: str, issue: dict[str, Any]) -> 
             resource = _client(token).issues[key]
         return list(resource.changelog.get_all())
 
-    return _run_tracked(_run, max_attempts=1, call_timeout=10.0)
+    history = _run_tracked(_run, max_attempts=1, call_timeout=10.0) if tracked else _run()
+    return _project_issue_status_history(history)
+
+
+def get_issue_status_history(*, token: str, key: str, issue: dict[str, Any]) -> list[Any]:
+    try:
+        return _issue_status_history_cache.get_or_load(
+            key,
+            lambda: _fetch_issue_status_history(
+                token=token,
+                key=key,
+                issue=issue,
+                tracked=True,
+            ),
+        )
+    except TrackerError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        mapped = _map_exc(exc)
+        if mapped is exc:
+            raise
+        raise mapped from exc
 
 
 def _load_work_status_history(*, token: str, key: str, issue: dict[str, Any]) -> list[Any]:
@@ -883,12 +949,16 @@ def _load_work_status_history(*, token: str, key: str, issue: dict[str, Any]) ->
     stuck read therefore occupies one of the two Work-history workers only;
     it cannot poison the general Tracker semaphore or grow its retry queue.
     """
-    resource = issue.get("_tracker_resource")
-
     try:
-        if resource is None:
-            resource = _client(token).issues[key]
-        return list(resource.changelog.get_all())
+        return _issue_status_history_cache.get_or_load(
+            key,
+            lambda: _fetch_issue_status_history(
+                token=token,
+                key=key,
+                issue=issue,
+                tracked=False,
+            ),
+        )
     except TrackerError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -956,8 +1026,18 @@ def schedule_issue_status_history(
 
 
 def clear_issue_status_history_cache() -> None:
+    _issue_status_history_cache.clear()
     with _work_history_lock:
         _work_history_cache.clear()
+
+
+def invalidate_issue_status_history(key: str) -> None:
+    _issue_status_history_cache.invalidate(key)
+    suffix = f":{key}"
+    with _work_history_lock:
+        stale = [cache_key for cache_key in _work_history_cache if cache_key.endswith(suffix)]
+        for cache_key in stale:
+            _work_history_cache.pop(cache_key, None)
 
 
 def list_comments(*, token: str, key: str) -> list[dict[str, Any]]:

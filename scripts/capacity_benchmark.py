@@ -118,6 +118,8 @@ class StubHandler(BaseHTTPRequestHandler):
             result = []
         elif operation == "count_issues":
             result = len(self.server.issues)
+        elif operation == "issue_history":
+            result = []
         else:
             self.send_error(500, "Unexpected stub operation")
             return

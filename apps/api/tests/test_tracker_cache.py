@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from robopark_api.services import response_cache, tracker_cache, tracker_client
 from robopark_api.services.live_merge import LiveMergeStore
+from robopark_api.services.response_cache import ResponseCache
 
 
 def test_issue_cache_keeps_sdk_resource_without_json_serialization(monkeypatch, tmp_path):
@@ -119,6 +120,61 @@ def test_shared_issue_keeps_public_sla_equal_without_sdk_resource(monkeypatch, t
         tracker_client._load_work_status_history(token="t", key="SD-RESOURCE", issue=follower_issue)
         == history
     )
+
+
+def test_status_history_projection_is_shared_across_workers(monkeypatch, tmp_path):
+    history = [
+        SimpleNamespace(
+            updatedAt="2026-09-19T07:00:00Z",
+            fields=[
+                SimpleNamespace(
+                    field=SimpleNamespace(id="status"),
+                    to=SimpleNamespace(key="queued", display="В очереди"),
+                )
+            ],
+        )
+    ]
+    resource = SimpleNamespace(changelog=SimpleNamespace(get_all=lambda: history))
+    store = LiveMergeStore(tmp_path)
+    monkeypatch.setattr(
+        tracker_client,
+        "_issue_status_history_cache",
+        ResponseCache(60, name="tracker.issue_history.test", shared=store),
+        raising=False,
+    )
+    leader = tracker_client.get_issue_status_history(
+        token="t",
+        key="SD-RESOURCE",
+        issue={"key": "SD-RESOURCE", "_tracker_resource": resource},
+    )
+    monkeypatch.setattr(
+        tracker_client,
+        "_issue_status_history_cache",
+        ResponseCache(60, name="tracker.issue_history.test", shared=store),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tracker_client,
+        "_client",
+        lambda _token: (_ for _ in ()).throw(AssertionError("shared history missed")),
+    )
+
+    follower = tracker_client.get_issue_status_history(
+        token="t", key="SD-RESOURCE", issue={"key": "SD-RESOURCE"}
+    )
+
+    assert follower == leader
+    assert follower == [
+        {
+            "updatedAt": "2026-09-19T07:00:00Z",
+            "fields": [
+                {
+                    "field": {"id": "status"},
+                    "to": {"key": "queued", "display": "В очереди"},
+                }
+            ],
+        }
+    ]
 
 
 def test_search_issues_shares_upstream_call(monkeypatch):
