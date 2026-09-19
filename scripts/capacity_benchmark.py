@@ -254,13 +254,16 @@ async def exercise(base, args, stub):
     try:
         await phase("cold_reconnect_200_requests", lambda: burst("/tracker/issues?limit=50"))
         await phase("cold_details_200_requests", lambda: burst("/tracker/issues/ROBOPARK-1"))
-        await phase("cold_robot_check_200_requests", lambda: burst(f"/emergency/{VIN}/snapshot"))
+        await phase(
+            "cold_robot_check_200_requests",
+            lambda: burst(f"/emergency/{VIN}/view?section=status"),
+        )
 
         async def scoped_denials():
             routes = [
                 "/tracker/issues/ROBOPARK-FOREIGN",
                 "/tracker/issues/ROBOPARK-FOREIGN/comments",
-                "/emergency/YASADR00000000999/snapshot",
+                "/emergency/YASADR00000000999/view?section=status",
             ]
             return await asyncio.gather(
                 *(request(i, routes[i % len(routes)], expected=403) for i in range(args.users))
@@ -275,7 +278,7 @@ async def exercise(base, args, stub):
                 "/tracker/issues/ROBOPARK-1",
                 "/tracker/issues/ROBOPARK-1/comments",
                 "/reports/inbox",
-                f"/emergency/{VIN}/snapshot",
+                f"/emergency/{VIN}/view?section=status",
             ]
 
             async def user_loop(index):
@@ -287,7 +290,7 @@ async def exercise(base, args, stub):
                     f"/tracker/issues/{issue_key}",
                     f"/tracker/issues/{issue_key}/comments",
                     routes[3],
-                    f"/emergency/{user_vin}/snapshot",
+                    f"/emergency/{user_vin}/view?section=status",
                 ]
                 due = started + args.cadence * index / args.users
                 turn = 0
@@ -332,7 +335,7 @@ async def exercise(base, args, stub):
                 "/tracker/issues/ROBOPARK-1",
                 "/tracker/issues/ROBOPARK-1/comments",
                 "/reports/inbox",
-                f"/emergency/{VIN}/snapshot",
+                f"/emergency/{VIN}/view?section=status",
             ]
             records = []
             for _ in range(args.stress_rounds):
@@ -548,9 +551,7 @@ def main():
         "status_history_coalesced_per_issue": bool(
             [value for key, value in stub.snapshot().items() if key.startswith("issue_history:")]
         )
-        and max(
-            value for key, value in stub.snapshot().items() if key.startswith("issue_history:")
-        )
+        and max(value for key, value in stub.snapshot().items() if key.startswith("issue_history:"))
         == 1,
         "cold_robot_coalesced_within_ttl": 1
         <= phases.get("cold_robot_check_200_requests", {})

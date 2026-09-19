@@ -374,6 +374,13 @@ class EmergencySnapshotOut(BaseModel):
     wheels_fault: list[str] = []
 
 
+class EmergencyViewOut(BaseModel):
+    snapshot: EmergencySnapshotOut
+    section: EmergencySectionOut | None = None
+    stale: bool = False
+    stale_age_seconds: float = Field(default=0, ge=0, allow_inf_nan=False)
+
+
 EmergencyViewerRole = Literal["mechanic", "operator", "admin", "royal", "driver"]
 
 
