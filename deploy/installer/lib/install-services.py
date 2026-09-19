@@ -18,6 +18,28 @@ UNITS = (
     "robopark-watchdog.service",
     "robopark-watchdog.timer",
 )
+TMPFILES_SOURCE = "deploy/tmpfiles.d/robopark.conf"
+TMPFILES_TARGET = "etc/tmpfiles.d/robopark.conf"
+
+
+def _atomic_install(target_dir, name, content):
+    target_dir.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix="." + name + ".", dir=target_dir)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o644)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target_dir / name)
+        directory = os.open(target_dir, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def install_units(root):
@@ -35,24 +57,19 @@ def install_units(root):
         if source.is_symlink() or not source.is_file():
             raise ValueError("missing_unit")
         contents[name] = source.read_bytes()
-    target_dir.mkdir(parents=True, exist_ok=True)
+    tmpfiles_source = release / TMPFILES_SOURCE
+    tmpfiles_target = root / TMPFILES_TARGET
+    if tmpfiles_source.is_symlink() or not tmpfiles_source.is_file():
+        raise ValueError("missing_tmpfiles")
+    if (
+        tmpfiles_target.parent.is_symlink()
+        or tmpfiles_target.parent.parent.is_symlink()
+    ):
+        raise ValueError("invalid_tmpfiles_directory")
+    tmpfiles_content = tmpfiles_source.read_bytes()
     for name, content in contents.items():
-        descriptor, temporary = tempfile.mkstemp(prefix="." + name + ".", dir=target_dir)
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                os.fchmod(stream.fileno(), 0o644)
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, target_dir / name)
-            directory = os.open(target_dir, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        _atomic_install(target_dir, name, content)
+    _atomic_install(tmpfiles_target.parent, tmpfiles_target.name, tmpfiles_content)
 
 
 if __name__ == "__main__":

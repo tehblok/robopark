@@ -38,6 +38,7 @@ def _read_private(path: Path, *, uid: int) -> str:
             not stat.S_ISREG(info.st_mode)
             or stat.S_IMODE(info.st_mode) != 0o600
             or info.st_uid != uid
+            or info.st_nlink != 1
             or info.st_size > 4096
         ):
             raise ValueError("unsafe_compose_secret")
@@ -45,6 +46,25 @@ def _read_private(path: Path, *, uid: int) -> str:
     if not value or len(value) > 4096:
         raise ValueError("unsafe_compose_secret")
     return value.rstrip("\n")
+
+
+def validate_host_env(path: Path, *, owner_uid: int = 0) -> None:
+    """Reject a secret-bearing Compose config unless it is a private file."""
+    path = Path(path)
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_uid != owner_uid
+                or info.st_nlink != 1
+                or not 0 < info.st_size <= 65536
+            ):
+                raise ValueError("unsafe_host_env")
+    except OSError as error:
+        raise ValueError("unsafe_host_env") from error
 
 
 def bootstrap_compose_secrets(directory: Path, *, api_uid: int = 10001) -> Path:
@@ -85,7 +105,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--directory", type=Path, default=Path("/etc/robopark"))
     parser.add_argument("--api-uid", type=int, default=10001)
+    parser.add_argument("--host-env", type=Path)
     arguments = parser.parse_args()
+    if arguments.host_env is not None:
+        validate_host_env(arguments.host_env)
     print(bootstrap_compose_secrets(arguments.directory, api_uid=arguments.api_uid))
     return 0
 

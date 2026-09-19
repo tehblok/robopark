@@ -266,10 +266,16 @@ def test_installer_installs_command_trigger_as_part_of_atomic_unit_set(host_path
     source = Path(__file__).resolve().parents[2] / "deploy/systemd"
     for name in module["UNITS"]:
         (units / name).write_bytes((source / name).read_bytes())
+    tmpfiles = release / "deploy/tmpfiles.d"
+    tmpfiles.mkdir(parents=True)
+    (tmpfiles / "robopark.conf").write_bytes(
+        (Path(__file__).resolve().parents[2] / "deploy/tmpfiles.d/robopark.conf").read_bytes()
+    )
     host_paths.current.symlink_to(release)
     module["install_units"](host_paths.root)
     assert (host_paths.root / "etc/systemd/system/robopark-commands.path").is_file()
     assert (host_paths.root / "etc/systemd/system/robopark-commands.service").is_file()
+    assert (host_paths.root / "etc/tmpfiles.d/robopark.conf").is_file()
 
 
 def test_completed_large_diagnostics_receipt_prevents_reexecution(host_paths, monkeypatch):

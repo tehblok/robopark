@@ -15,7 +15,7 @@ DEPLOY_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
     exit 1
 }
 
-python3 -I "$DEPLOY_DIR/compose_secrets.py" >/dev/null
+python3 -I "$DEPLOY_DIR/compose_secrets.py" --host-env "$DEPLOY_DIR/host.env" >/dev/null
 exec env HOST_ENV_FILE="$DEPLOY_DIR/host.env" \
     docker compose \
     --env-file /etc/robopark/compose-secrets.env \

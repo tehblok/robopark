@@ -48,6 +48,17 @@ def test_command_consumer_can_open_the_shared_stable_host_lock():
     assert "-/run/lock/robopark" in service["ReadWritePaths"].split()
 
 
+def test_boot_recreates_stable_lock_directory_before_sandboxed_units_start():
+    tmpfiles = REPO / "deploy/tmpfiles.d/robopark.conf"
+    assert tmpfiles.read_text() == "d /run/lock/robopark 0700 root root -\n"
+    installer = (REPO / "deploy/installer/lib/install-services.py").read_text()
+    assert '"deploy/tmpfiles.d/robopark.conf"' in installer
+    assert '"etc/tmpfiles.d/robopark.conf"' in installer
+    updater = (REPO / "deploy/host/robopark_host/updater.py").read_text()
+    assert 'deploy/tmpfiles.d/robopark.conf' in updater
+    assert 'etc/tmpfiles.d/robopark.conf' in updater
+
+
 @pytest.mark.parametrize(
     "name,command",
     [

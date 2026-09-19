@@ -115,6 +115,7 @@ def host(host_paths):
                 "deploy/host/robopark_host/__init__.py": "",
                 "deploy/systemd/robopark.service": "[Service]\nExecStart=/bin/true\n",
                 "deploy/systemd/robopark-tuna.service": "[Service]\nExecStart=/bin/true\n",
+                "deploy/tmpfiles.d/robopark.conf": "d /run/lock/robopark 0700 root root -\n",
             }
             for name, body in contents.items():
                 if name in omit:
@@ -326,6 +327,9 @@ def test_success_stages_isolated_compose_then_reconciles_after_worker_exit(host)
     request = host.request()
     result = apply_release(request, host.paths, host.runner)
     assert result.state == "awaiting_reconciliation"
+    assert (host.paths.root / "etc/tmpfiles.d/robopark.conf").read_text() == (
+        "d /run/lock/robopark 0700 root root -\n"
+    )
     assert (host.paths.state / "maintenance.json").exists()
     assert host.runner.observations and set(host.runner.observations) == {"1.0.0"}
     assert all(

@@ -26,10 +26,12 @@ Docs: [Tuna overview](https://tuna.am/docs/), [HTTP tunnels](https://tuna.am/doc
 ```sh
 git clone <repository-url> robopark
 cd robopark/deploy
-cp host.env.example host.env
+sudo install -o root -g root -m 0600 host.env.example host.env
+sudoedit host.env
 ```
 
-Edit `host.env`:
+The wrapper rejects `host.env` unless it is a root-owned regular file with mode
+exactly `0600`; do not edit it as an unprivileged user or relax its permissions.
 
 | Variable | Notes |
 |----------|--------|
@@ -57,14 +59,15 @@ Do not create `deploy/postgres-password` or relax either file to mode `0644`.
 Start the stack (web listens on **localhost only**):
 
 ```sh
-export HOST_ENV_FILE=./host.env
-docker compose up -d --build
+sudo ./compose-production.sh up -d --build --wait
 ```
 
 Validate locally:
 
 ```sh
-docker compose ps
+sudo ./compose-production.sh config --quiet
+sudo ./compose-production.sh ps
+sudo ./compose-production.sh logs --tail=100 api web
 curl -sS http://127.0.0.1:8080/api/health
 ```
 
@@ -105,7 +108,7 @@ Copy the printed **HTTPS** URL into `CORS_ORIGINS`, restart API if needed:
 ```sh
 # in host.env
 CORS_ORIGINS=https://robopark.<region>.tuna.am
-docker compose up -d api
+sudo ./compose-production.sh up -d api
 ```
 
 Mechanics open that HTTPS link — no VPN app.
@@ -129,8 +132,8 @@ sudo systemctl status robopark-tuna
 journalctl -u robopark-tuna -f
 ```
 
-Ensure Compose starts on boot (`restart: unless-stopped` plus a host unit or
-cron `@reboot` that runs `docker compose up -d` from this directory).
+Ensure Compose starts on boot (`restart: unless-stopped` plus the provided host
+systemd unit). Do not create a second cron-based launcher.
 
 Files: `tuna.service`, `tuna.env.example`, `tuna-http.sh`.
 
@@ -138,7 +141,8 @@ Files: `tuna.service`, `tuna.env.example`, `tuna-http.sh`.
 - bind `127.0.0.1:8080` — do not expose 8080 on WAN  
 - optional `TUNA_RATE_LIMIT` in the env file  
 - do **not** enable Tuna `--cors` if Robopark already sends CORS (`CORS_ORIGINS`)  
-- copy the **HTTPS** URL into `CORS_ORIGINS`, then `docker compose up -d api`
+- copy the **HTTPS** URL into `CORS_ORIGINS`, then run
+  `sudo ./compose-production.sh up -d api`
 
 ## 3. Firewall
 
@@ -186,12 +190,11 @@ Run these commands from the Robopark checkout root on the host:
 
 ```sh
 test -s deploy/host.env
-HOST_ENV_FILE=./host.env docker compose -f deploy/docker-compose.yml \
-  stop ops-agent
+sudo deploy/compose-production.sh stop ops-agent
 git pull --ff-only origin main
 test -s deploy/host.env
-HOST_ENV_FILE=./host.env docker compose -f deploy/docker-compose.yml \
-  up -d --build --force-recreate --wait --wait-timeout 180 api web ops-agent
+sudo deploy/compose-production.sh up -d --build --force-recreate --wait \
+  --wait-timeout 180 api web ops-agent
 ```
 
 After this manual bootstrap succeeds, later Royal ZIP updates can use the fixed

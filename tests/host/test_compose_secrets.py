@@ -1,6 +1,7 @@
 """Direct Compose bootstrap never relies on repository-local credential files."""
 
 import importlib.util
+import os
 import stat
 from pathlib import Path
 
@@ -61,9 +62,36 @@ def test_direct_compose_uses_root_wrapper_without_sourcing_private_env():
 
     assert wrapper.stat().st_mode & 0o111
     assert '"$(id -u)" = 0' in text
+    assert '--host-env "$DEPLOY_DIR/host.env"' in text
     assert "--env-file /etc/robopark/compose-secrets.env" in text
     assert "source " not in text and ". /etc/robopark/compose-secrets.env" not in text
     for documentation in (Path("README.md"), Path("deploy/README.md")):
         body = documentation.read_text()
         assert "sudo ./compose-production.sh up" in body
         assert ". /etc/robopark/compose-secrets.env" not in body
+
+
+def test_direct_compose_rejects_group_readable_host_env(tmp_path):
+    module = _module()
+    host_env = tmp_path / "host.env"
+    host_env.write_text("SECRET_KEY=private\n")
+    host_env.chmod(0o644)
+
+    try:
+        module.validate_host_env(host_env, owner_uid=os.geteuid())
+    except ValueError as error:
+        assert str(error) == "unsafe_host_env"
+    else:
+        raise AssertionError("secret-bearing host.env with mode 0644 was accepted")
+
+    host_env.chmod(0o600)
+    module.validate_host_env(host_env, owner_uid=os.geteuid())
+
+
+def test_direct_compose_documentation_uses_only_private_wrapper_commands():
+    readme = Path("deploy/README.md").read_text()
+    assert "install -o root -g root -m 0600 host.env.example host.env" in readme
+    assert "sudoedit host.env" in readme
+    assert "docker compose" not in readme
+    for command in ("config", "ps", "logs"):
+        assert f"compose-production.sh {command}" in readme

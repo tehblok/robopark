@@ -54,6 +54,22 @@ from .state import atomic_write_json, exclusive_lock
 from .trust import activate as activate_trust
 from .trust import admission_key, directory_key
 
+TMPFILES_SOURCE = Path("deploy/tmpfiles.d/robopark.conf")
+TMPFILES_TARGET = Path("etc/tmpfiles.d/robopark.conf")
+
+
+def _activate_system_files(paths, candidate):
+    for unit in UNITS:
+        source = candidate / "deploy/systemd" / unit
+        if source.is_file():
+            atomic_copy(source, paths.root / "etc/systemd/system" / unit, 0o644)
+    tmpfiles = candidate / TMPFILES_SOURCE
+    if tmpfiles.is_symlink():
+        raise ReleaseError("unsafe_tmpfiles")
+    if tmpfiles.is_file():
+        atomic_copy(tmpfiles, paths.root / TMPFILES_TARGET, 0o644)
+
+
 PRE_MAINTENANCE_PHASES = {
     "verified",
     "unpacking",
@@ -879,10 +895,7 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
             runner.run(["systemctl", "restart", "robopark.service"], timeout=900)
             phase("started")
             phase("activating")
-            for unit in UNITS:
-                source = candidate / "deploy/systemd" / unit
-                if source.is_file():
-                    atomic_copy(source, paths.root / "etc/systemd/system" / unit, 0o644)
+            _activate_system_files(paths, candidate)
             atomic_symlink(candidate / "deploy/host", paths.opt / "host-tools")
             phase("activated")
             phase("health_check")
@@ -1293,10 +1306,7 @@ def recover_interrupted_update(paths: HostPaths, runner: Runner) -> RecoveryResu
                     if paths.current.resolve() != candidate:
                         raise ReleaseError("manual_recovery_required")
                     # Replay activation after a partial unit copy, before accepting health.
-                    for unit in UNITS:
-                        source = candidate / "deploy/systemd" / unit
-                        if source.is_file():
-                            atomic_copy(source, paths.root / "etc/systemd/system" / unit, 0o644)
+                    _activate_system_files(paths, candidate)
                     atomic_symlink(candidate / "deploy/host", paths.opt / "host-tools")
                     return _complete(paths, journal, runner)
                 except Exception as exc:

@@ -52,6 +52,7 @@ class InstallerScenarios(unittest.TestCase):
         (self.source / 'run.sh').write_text('#!/bin/sh\necho release\n')
         shutil.copytree(REPO / 'deploy/host', self.source / 'deploy/host', ignore=shutil.ignore_patterns('__pycache__'))
         shutil.copytree(REPO / 'deploy/systemd', self.source / 'deploy/systemd')
+        shutil.copytree(REPO / 'deploy/tmpfiles.d', self.source / 'deploy/tmpfiles.d')
         shutil.copyfile(REPO / 'deploy/docker-compose.yml', self.source / 'deploy/docker-compose.yml')
         shutil.copyfile(REPO / 'deploy/tuna-http.sh', self.source / 'deploy/tuna-http.sh')
         self.write_release()
@@ -97,6 +98,9 @@ class InstallerScenarios(unittest.TestCase):
             self.assertTrue(target.is_file())
             self.assertEqual(target.read_bytes(), source.read_bytes())
             self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o644)
+        tmpfiles = self.root / 'etc/tmpfiles.d/robopark.conf'
+        self.assertEqual(tmpfiles.read_text(), 'd /run/lock/robopark 0700 root root -\n')
+        self.assertEqual(stat.S_IMODE(tmpfiles.stat().st_mode), 0o644)
         calls = self.commands()
         def index(name, args):
             return next(i for i, item in enumerate(calls) if item['name'] == name and item['args'] == args)
@@ -709,6 +713,24 @@ runpy.run_path(helper, run_name='__main__')
         self.assertFalse(target.exists())
         self.assertFalse(self.commands('docker'))
         self.assertFalse(self.commands('systemctl'))
+
+    def test_clean_reinstall_rejects_pending_worker_claim_before_side_effects(self):
+        self.run_installer()
+        data = self.root / 'var/lib/robopark/data/operator-state.txt'
+        data.write_text('keep-me')
+        pending = self.root / 'var/lib/robopark/ops/state/update-worker-request.json'
+        pending.write_text('{"job_id":"paused-consumer"}\n')
+        before = self.commands()
+
+        result = self.run_installer(
+            '--clean-reinstall', '--non-interactive', str(self.config), success=False
+        )
+
+        self.assertIn('host_busy', result.stderr)
+        self.assertEqual(data.read_text(), 'keep-me')
+        self.assertTrue(pending.is_file())
+        added = self.commands()[len(before):]
+        self.assertFalse([call for call in added if call['name'] in {'systemctl', 'docker'}])
 
     def test_stable_host_lock_blocks_clean_reinstall_after_data_root_replacement(self):
         self.run_installer()

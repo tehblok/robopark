@@ -32,6 +32,19 @@ while [ "$#" -gt 0 ]; do
     esac
     shift
 done
+reject_pending_host_state() {
+    for pending in \
+        "$ROBOPARK_VAR/ops/state/maintenance.json" \
+        "$ROBOPARK_VAR/ops/public/maintenance.json" \
+        "$ROBOPARK_VAR/ops/state/command-request.json" \
+        "$ROBOPARK_VAR/ops/inbox/approved.json" \
+        "$ROBOPARK_VAR/ops/state/update-worker-request.json" \
+        "$ROBOPARK_VAR/ops/state/updater-journal.json" \
+        "$ROBOPARK_VAR/ops/state/restore-journal.json"
+    do
+        [ ! -e "$pending" ] && [ ! -L "$pending" ] || die host_busy
+    done
+}
 preflight
 if [ "$CLEAN_REINSTALL" = 1 ]; then
     # Refuse an absent, unresolved or aliased target before creating locks or
@@ -58,23 +71,33 @@ exec 6>"$ROBOPARK_VAR/ops/host.lock"
 flock -n 6 || die host_busy
 if [ "$CLEAN_REINSTALL" = 1 ]; then
     python3 -I "$INSTALLER_DIR/lib/configure.py" --validate-clean-data-root "$ROBOPARK_VAR" "$ROBOPARK_ROOT" || die unsafe_data_root
+    reject_pending_host_state
     [ -t 0 ] && [ -r /dev/tty ] || die local_confirmation_required
     printf '\nБудет безвозвратно удалён точный data root Robopark:\n  %s\n' "$ROBOPARK_VAR" >/dev/tty
     printf 'Введите DELETE ROBOPARK DATA: ' >/dev/tty
     IFS= read -r CLEAN_CONFIRMATION </dev/tty || die local_confirmation_required
     [ "$CLEAN_CONFIRMATION" = 'DELETE ROBOPARK DATA' ] || die local_confirmation_required
+    # The stable and legacy locks close normal writers; repeat the durable-state
+    # check immediately before the first destructive side effect.
+    reject_pending_host_state
     systemctl stop robopark-commands.path robopark-updater.service robopark-tuna.service robopark.service >/dev/null 2>&1 || :
     docker rm --force robopark-web-1 robopark-api-1 robopark-db-1 >/dev/null 2>&1 || :
     if docker volume inspect robopark_robopark_postgres >/dev/null 2>&1; then
         docker volume rm robopark_robopark_postgres >/dev/null 2>&1 || die clean_database_removal_failed
     fi
+    python3 -I "$INSTALLER_DIR/lib/configure.py" --validate-clean-data-root "$ROBOPARK_VAR" "$ROBOPARK_ROOT" || die unsafe_data_root
+    reject_pending_host_state
     python3 -I "$INSTALLER_DIR/lib/configure.py" --clean-data-root "$ROBOPARK_VAR" "$ROBOPARK_ROOT" "$CLEAN_CONFIRMATION" || die unsafe_data_root
 fi
 # Clean reinstall removed the old tree while the stable lock remained held.
 mkdir -p "$ROBOPARK_VAR/ops/state"
-for pending in "$ROBOPARK_VAR/ops/state/maintenance.json" "$ROBOPARK_VAR/ops/public/maintenance.json" "$ROBOPARK_VAR/ops/state/command-request.json" "$ROBOPARK_VAR/ops/inbox/approved.json"; do
-    [ ! -e "$pending" ] && [ ! -L "$pending" ] || die host_busy
-done
+if [ "$CLEAN_REINSTALL" = 1 ]; then
+    reject_pending_host_state
+else
+    for pending in "$ROBOPARK_VAR/ops/state/maintenance.json" "$ROBOPARK_VAR/ops/public/maintenance.json" "$ROBOPARK_VAR/ops/state/command-request.json" "$ROBOPARK_VAR/ops/inbox/approved.json"; do
+        [ ! -e "$pending" ] && [ ! -L "$pending" ] || die host_busy
+    done
+fi
 CURRENT_PHASE=packages
 trap 'cleanup' EXIT
 trap 'exit 130' INT
