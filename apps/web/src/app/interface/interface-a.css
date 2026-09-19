@@ -154,6 +154,33 @@ html[data-interface='task-first'] {
   .campaign-create > .park-multi-select, .campaign-create > .form-error { grid-column: 1/-1; }
   .campaign-complete { border-top: 1px solid var(--rp-border); padding-top: 16px; }
 
+  /* The shift starts with actions, followed by exceptions and queue context. */
+  .a-overview-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .a-overview-actions a { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; padding: 12px 16px; border: 1px solid var(--rp-border); border-radius: 8px; background: var(--rp-surface); color: var(--rp-text); text-decoration: none; font-weight: 600; }
+  .a-overview-actions a:first-child { border-color: var(--rp-action); box-shadow: inset 3px 0 var(--rp-action); }
+  .rp-overview { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(260px, .7fr); gap: 24px; align-items: start; }
+  .a-overview-attention-panel { grid-column: 1; grid-row: 1 / span 2; }
+  .a-overview-status-panel { grid-column: 2; }
+  .rp-overview > .rp-responsive-disclosure-group { grid-column: 1/-1; }
+  .rp-overview-alerts { grid-column: 2; }
+  .rp-overview-statuses { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .rp-overview-status .rp-metric-card { padding: 12px; border: 0; background: transparent; }
+  .rp-overview-secondary { gap: 20px; }
+  .rp-insights-controls, .rp-analytics-controls { padding: 16px; border: 1px solid var(--rp-border); border-radius: 12px; background: var(--rp-surface); gap: 16px; }
+  .rp-insights-grid { grid-template-columns: minmax(0, 1.3fr) minmax(0, .8fr); gap: 24px; }
+  .rp-analytics-park { padding: 20px; border-radius: 12px; background: var(--rp-surface); gap: 24px; }
+  .rp-analytics-park > header { border-bottom: 1px solid var(--rp-border); padding-bottom: 16px; }
+  .rp-analytics-trends { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .rp-analytics-card { background: var(--rp-canvas); border-radius: 8px; padding: 16px; }
+  .rp-analytics-rows > li { padding-block: 12px; border-bottom: 1px solid var(--rp-border); }
+  .a-analytics-details { display: block; border-top: 1px solid var(--rp-border); padding-top: 8px; }
+  .a-analytics-details > summary { display: flex; align-items: center; min-height: 44px; cursor: pointer; font-weight: 600; }
+  .a-analytics-details:not([open]) > :not(summary) { display: none; }
+  .rp-operator-parks .page-body { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, .8fr); gap: 24px; align-items: start; }
+  .rp-operator-parks .page-body > .panel:first-of-type { grid-row: span 2; }
+  .rp-operator-parks .panel { padding: 20px; border-radius: 12px; }
+  .rp-operator-parks .park-card { padding: 16px; border: 1px solid var(--rp-border); border-radius: 8px; background: var(--rp-surface); }
+
   /* Public/access screens: clear form first, quieter product context. */
   .rp-auth { background: var(--rp-canvas); }
   .rp-auth::before, .rp-auth__orbit { display: none; }
@@ -230,6 +257,13 @@ html[data-interface='task-first'] {
     .campaign-card__heading > div:first-child { min-width: 0; }
     .campaign-card__heading > .campaign-progress { align-self: start; }
     .campaign-metrics { grid-template-columns: minmax(0, 1fr); padding: 14px; }
+    .a-overview-actions, .rp-overview, .rp-insights-grid, .rp-analytics-trends, .rp-operator-parks .page-body { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+    .a-overview-actions a { min-height: 48px; }
+    .a-overview-attention-panel, .a-overview-status-panel, .rp-overview-alerts, .rp-operator-parks .page-body > .panel:first-of-type { grid-column: 1; grid-row: auto; }
+    .a-overview-attention-panel { order: -1; }
+    .rp-overview-alerts { order: -2; }
+    .rp-analytics-park, .rp-operator-parks .panel { padding: 14px; }
+    .rp-analytics-controls, .rp-insights-controls { padding: 12px; }
   }
   @media (prefers-reduced-motion: no-preference) {
     .rp-shell__desktop-link, .rp-shell__mobile-link { transition: background-color 120ms ease, color 120ms ease; }

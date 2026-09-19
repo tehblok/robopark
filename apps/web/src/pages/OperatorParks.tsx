@@ -52,7 +52,7 @@ export function OperatorParks() {
     Promise.all([parksRes.refresh(), availableRes.refresh(), requestsRes.refresh()])
 
   return (
-    <>
+    <div className="rp-operator-parks">
       <PageShell
         actions={
           <button className="btn btn-secondary" onClick={() => setParkModalOpen(true)} type="button">
@@ -145,6 +145,6 @@ export function OperatorParks() {
         }}
         open={parkModalOpen}
       />
-    </>
+    </div>
   )
 }

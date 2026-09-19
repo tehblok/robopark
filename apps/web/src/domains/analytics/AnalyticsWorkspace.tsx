@@ -11,6 +11,7 @@ import { classifyApiError, type DomainError } from '../../shared/api/classifyApi
 import { ANALYTICS_LABELS, analyticsDate, analyticsParks, analyticsRequestIdentity, analyticsSearch, analyticsValue, buildOperationalInsights, parseAnalyticsQuery, trendSegments, type AnalyticsApiClient, type AnalyticsCoverage, type AnalyticsMetric, type AnalyticsQuery, type AnalyticsSeries, type HistoricalAnalytics } from './analyticsModel'
 import { limitOperationsRequest } from '../shift/operationsRequestLimit'
 import './analytics.css'
+import { useInterfaceMode } from '../../app/interface/InterfaceModeProvider'
 
 function Coverage({ data }: { data: AnalyticsCoverage }) {
   return <span className="rp-analytics-note">Покрытие: {data.observed_buckets} / {data.expected_buckets} интервалов по 2 ч{data.complete ? ' · полное' : ' · неполное'}</span>
@@ -50,6 +51,7 @@ function MetricRows({ metrics, parkId, durations = false }: { metrics: Analytics
 }
 
 function ParkHistory({ data, park }: { data: HistoricalAnalytics; park: Park }) {
+  const { mode } = useInterfaceMode()
   const incomplete = Object.values(data.coverage).some(coverage => !coverage.complete)
   return <section className="rp-analytics-park" aria-label={`История парка ${park.name}`}>
     <header><h2>{park.name}</h2><p className="rp-analytics-note">{analyticsDate(data.period.start)} — {analyticsDate(data.period.end)} · МСК · завершённые интервалы</p></header>
@@ -60,11 +62,13 @@ function ParkHistory({ data, park }: { data: HistoricalAnalytics; park: Park }) 
     <section><h3>Динамика SLA</h3><p className="rp-analytics-note">Доля просрочек среди наблюдений с известным возрастом и нормативом на момент снимка. Календарные часы, 24/7; одна задача может участвовать в нескольких снимках.</p>
       {data.warnings.includes('sla_policy_or_age_unavailable') ? <p className="rp-analytics-warning">Для части периода нет норматива SLA или возраста задач. Доля без данных недоступна.</p> : null}<SeriesCard data={data.sla_trend} />
     </section>
+    <details className="a-analytics-details" open={mode === 'classic' ? true : undefined}><summary>Этапы работы и связанные задачи</summary>
     <div className="rp-analytics-columns"><section><h3>Наблюдаемая длительность этапов</h3><p className="rp-analytics-note">Среднее время от первого наблюдения статуса до замеченной смены статуса в этом периоде. Требуются минимум два наблюдения и смена статуса. Это оценка по снимкам, точное время перехода неизвестно.</p><MetricRows metrics={data.stage_durations} parkId={park.id} durations /></section>
       <section><h3>Нагрузка по этапам</h3><p className="rp-analytics-note">Среднее число незавершённых задач на этапе по снимкам периода.</p><MetricRows metrics={data.workload} parkId={park.id} /></section></div>
     {data.warnings.includes('flow_unavailable_for_status_scope') ? <p className="rp-analytics-warning">История потока недоступна для вашей области статусов.</p> : null}
     <p className="rp-analytics-note">Исторические счётчики потока не содержат ключей задач. Переходы ниже относятся к задачам, попавшим в снимки; их статус мог измениться.</p>
     <TaskKeys keys={data.drilldown_task_keys} parkId={park.id} />
+    </details>
   </section>
 }
 

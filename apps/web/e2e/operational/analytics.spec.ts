@@ -2,9 +2,10 @@ import { expect, test } from '@playwright/test'
 import { analyticsFixture } from '../../src/domains/analytics/analytics.test-support'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 import { installOperational, settlePage } from './fixtures'
+import { selectInterface } from '../support/interfaceMode'
 
-for (const theme of ['light', 'dark'] as const) for (const width of [320, 1440]) {
-  test(`historical analytics ${theme} ${width}: filters, coverage, comparison and drilldown`, async ({ page }, testInfo) => {
+for (const mode of ['Классический', 'Новый А'] as const) for (const theme of ['light', 'dark'] as const) for (const width of [320, 1440]) {
+  test(`historical analytics ${mode} ${theme} ${width}: filters, coverage, comparison and drilldown`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 })
     await page.addInitScript(theme => localStorage.setItem('robopark-theme', theme), theme)
     const requests: string[] = []
@@ -16,6 +17,7 @@ for (const theme of ['light', 'dark'] as const) for (const width of [320, 1440])
       return { json: analyticsFixture(Number(params.get('park_id')), Number(params.get('days')), params.get('bucket') === '2h' ? '2h' : '1d') }
     } }] })
     await page.goto('/analytics?park=7')
+    await selectInterface(page, mode)
     await expect(page.getByRole('heading', { name: 'Динамика процесса' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Текущие задачи' })).toHaveCount(0)
     await expect(page.getByText('Неполная история', { exact: true })).toBeVisible()
@@ -36,6 +38,7 @@ for (const theme of ['light', 'dark'] as const) for (const width of [320, 1440])
     await page.evaluate(() => window.scrollTo(0, 0))
     await page.screenshot({ path: testInfo.outputPath(`analytics-${theme}-${width}.png`) })
     const history = page.getByRole('region', { name: 'История парка Южный парк' })
+    if (mode === 'Новый А') await history.getByText('Этапы работы и связанные задачи', { exact: true }).click()
     await history.getByText('Задачи в наблюдениях (1)', { exact: true }).click()
     const task = history.getByRole('link', { name: 'Открыть задачу ROBOPARK-42' }).filter({ visible: true })
     await expect(task).toHaveAttribute('href', '/work/ROBOPARK-42?park=8')
