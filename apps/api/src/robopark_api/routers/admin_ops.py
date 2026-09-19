@@ -125,21 +125,14 @@ def _job_out(job, *, progress: tuple[str | None, int | None] = (None, None)) -> 
 
 
 async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        piece = await file.read(1024 * 1024)
-        if not piece:
-            break
-        total += len(piece)
-        if total > max_bytes:
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="archive_too_large"
-            )
-        chunks.append(piece)
-    if not chunks:
+    content = await file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="archive_too_large"
+        )
+    if not content:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="archive_required")
-    return b"".join(chunks)
+    return content
 
 
 @router.get("/ops/maintenance", response_model=MaintenanceOut)
