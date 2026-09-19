@@ -507,6 +507,7 @@ export function AppShell() {
 
       <div className="app-main rp-shell__main-column">
         <header className="rp-shell__topbar">
+          <div className="rp-shell__context"><strong>{desktopCurrent?.label ?? 'Рабочее пространство'}</strong><span>{selectedPark?.name ?? 'Доступные парки'}</span></div>
           {phoneViewport ? (
             <ParkIdentity
               allowAllParks={allowAllParks}

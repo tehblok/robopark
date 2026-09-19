@@ -1,5 +1,6 @@
 import { useId } from 'react'
 import { useInterfaceMode } from './InterfaceModeProvider'
+import './interface-choice.css'
 
 export function InterfaceChoice() {
   const { mode, pendingMode, requestMode } = useInterfaceMode()

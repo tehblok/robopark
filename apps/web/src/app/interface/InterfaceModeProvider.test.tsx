@@ -1,11 +1,22 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { useState } from 'react'
 import { InterfaceModeProvider } from './InterfaceModeProvider'
 import { InterfaceChoice } from './InterfaceChoice'
 import { createInterfaceModeStore } from './interfaceModeStore'
+import * as styles from './loadInterfaceStyles'
 
 describe('interface preference UI', () => {
+  it('returns to classic when the new stylesheet fails without removing the draft', async () => {
+    const load = vi.spyOn(styles, 'loadInterfaceStyles').mockRejectedValueOnce(new Error('offline'))
+    const store = createInterfaceModeStore(() => localStorage)
+    render(<InterfaceModeProvider accountId={809} store={store}><InterfaceChoice /><input aria-label="Черновик" defaultValue="Сохранить текст" /></InterfaceModeProvider>)
+    fireEvent.click(screen.getByRole('radio', { name: 'Новый А' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Классический'))
+    expect(document.documentElement.dataset.interface).toBe('classic')
+    expect(screen.getByRole('textbox', { name: 'Черновик' })).toHaveValue('Сохранить текст')
+    load.mockRestore()
+  })
   it('switches without remounting forms or losing selected files and defers during a write', async () => {
     const store = createInterfaceModeStore(() => localStorage)
     function Draft() {
