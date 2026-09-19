@@ -50,6 +50,12 @@
   }
 }
 
+@media (max-width: 399px) {
+  .rp-work-summary__metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .rp-workbench .rp-master-detail {
   align-items: start;
 }
@@ -63,6 +69,12 @@
   gap: var(--rp-space-3);
   grid-template-columns: minmax(0, 22rem) minmax(0, 1fr);
   padding: var(--rp-density-panel-padding);
+}
+
+@media (max-width: 599px) {
+  .rp-work-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .rp-work-filters__status {

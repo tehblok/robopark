@@ -52,6 +52,16 @@ input[type='radio'] {
   textarea {
     font-size: var(--rp-font-size-control);
   }
+
+  input[type='text'],
+  input[type='email'],
+  input[type='password'],
+  input[type='search'],
+  input[type='tel'],
+  input[type='url'],
+  input[type='number'] {
+    font-size: 16px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
