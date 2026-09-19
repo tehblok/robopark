@@ -243,16 +243,21 @@ The host runs the API, PostgreSQL 17 database, and web app:
 ```bash
 git clone <repository-url> robopark
 cd robopark/deploy
-cp host.env.example host.env
+sudo install -o root -g root -m 0600 host.env.example host.env
+sudoedit host.env
 ```
 
-Edit `host.env`: strong `SEED_PASSWORD`, optional `OPERATOR_SHARED_PASSWORD`, and
+Set a strong `SEED_PASSWORD`, optional `OPERATOR_SHARED_PASSWORD`, and
 `CORS_ORIGINS=https://<your-tuna-host>` (exact HTTPS URL from Tuna — see deploy docs).
-Create external root-private PostgreSQL credentials once; no secret file belongs in
-the checkout:
+Keep `host.env` root-owned with mode `0600`; the wrapper validates it, creates
+external root-private PostgreSQL credentials and generates the non-secret snapshot
+projection used by the API. Use the wrapper for every production Compose command:
 
 ```bash
 sudo ./compose-production.sh up -d --build --wait
+sudo ./compose-production.sh config --quiet
+sudo ./compose-production.sh ps
+sudo ./compose-production.sh logs --tail=100 api web
 ```
 
 `host.env` is gitignored. For **Tuna HTTPS**, set `COOKIE_SECURE=true`. The API is

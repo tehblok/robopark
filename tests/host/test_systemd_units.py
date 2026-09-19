@@ -23,7 +23,9 @@ def unit(name):
 def test_tuna_requires_ready_application_and_bounded_restart():
     tuna = unit("robopark-tuna.service")
     assert "robopark.service" in tuna["Unit"]["Requires"].split()
-    assert {"network-online.target", "robopark.service"} <= set(tuna["Unit"]["After"].split())
+    assert {"network-online.target", "robopark.service"} <= set(
+        tuna["Unit"]["After"].split()
+    )
     assert tuna["Service"]["Restart"] == "on-failure"
     assert int(tuna["Service"]["TimeoutStartSec"]) <= 180
     assert int(tuna["Unit"]["StartLimitBurst"]) <= 5
@@ -55,8 +57,24 @@ def test_boot_recreates_stable_lock_directory_before_sandboxed_units_start():
     assert '"deploy/tmpfiles.d/robopark.conf"' in installer
     assert '"etc/tmpfiles.d/robopark.conf"' in installer
     updater = (REPO / "deploy/host/robopark_host/updater.py").read_text()
-    assert 'deploy/tmpfiles.d/robopark.conf' in updater
-    assert 'etc/tmpfiles.d/robopark.conf' in updater
+    assert "deploy/tmpfiles.d/robopark.conf" in updater
+    assert "etc/tmpfiles.d/robopark.conf" in updater
+
+
+@pytest.mark.parametrize(
+    "name", ["robopark-updater.service", "robopark-commands.service"]
+)
+def test_units_that_replay_update_activation_can_publish_tmpfiles_policy(name):
+    service = unit(name)["Service"]
+
+    assert service["ProtectSystem"] == "strict"
+    writable = service["ReadWritePaths"].split()
+    assert "/etc/tmpfiles.d" in writable
+    target = "/etc/tmpfiles.d/robopark.conf"
+    assert any(
+        target == allowed.rstrip("/") or target.startswith(allowed.rstrip("/") + "/")
+        for allowed in writable
+    )
 
 
 @pytest.mark.parametrize(
@@ -71,7 +89,8 @@ def test_boot_recreates_stable_lock_directory_before_sandboxed_units_start():
 def test_privileged_units_use_trusted_launcher_and_sandbox(name, command):
     service = unit(f"robopark-{name}.service")["Service"]
     assert (
-        service["ExecStart"] == f"/usr/bin/python3 -I /opt/robopark/host-tools/robopark {command}"
+        service["ExecStart"]
+        == f"/usr/bin/python3 -I /opt/robopark/host-tools/robopark {command}"
     )
     assert service["NoNewPrivileges"] == "true"
     assert service["PrivateTmp"] == "true"
@@ -192,7 +211,9 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
             assert command[command.index("--project-name") + 1] == "robopark"
             assert "--file" in command
     before = target.read_bytes()
-    bootstrap_compose(host_paths, lambda _: pytest.fail("existing runtime must not be rebuilt"))
+    bootstrap_compose(
+        host_paths, lambda _: pytest.fail("existing runtime must not be rebuilt")
+    )
     assert target.read_bytes() == before
 
     next_release = host_paths.releases / "1.0.1"
@@ -211,10 +232,14 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
         ["build", "api"],
         ["build", "web"],
     ]
-    assert json.loads(target.read_text())["x-robopark-release"] == str(next_release.resolve())
+    assert json.loads(target.read_text())["x-robopark-release"] == str(
+        next_release.resolve()
+    )
 
 
-def test_runtime_runner_streams_and_retains_failed_docker_build_output(tmp_path, capsys):
+def test_runtime_runner_streams_and_retains_failed_docker_build_output(
+    tmp_path, capsys
+):
     from robopark_host import runtime
 
     log = tmp_path / "runtime-bootstrap.log"

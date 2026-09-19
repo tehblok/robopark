@@ -101,6 +101,9 @@ def build_ops_context(settings: Settings | None = None) -> OpsContext:
         ops_dir=resolved_ops_dir(settings),
         database_url=settings.database_url,
         config_files=_config_files(settings),
+        # Production exposes a read-only, non-secret snapshot projection. It is
+        # evidence for migration, never an authority to overwrite host config.
+        config_targets={} if settings.ops_host_env_path else None,
         data_dir=data_dir,
         apply_root=resolved_apply_root(settings),
         app_version=APP_VERSION,

@@ -5,6 +5,8 @@ import os
 import stat
 from pathlib import Path
 
+import yaml
+
 
 def _module():
     path = Path("deploy/compose_secrets.py")
@@ -32,8 +34,21 @@ def test_direct_compose_secret_bootstrap_creates_private_external_files(
         module.os, "fchown", lambda _fd, uid, gid: file_ownership.append((uid, gid))
     )
 
+    host_env = tmp_path / "host.env"
+    host_env.write_text(
+        "CORS_ORIGINS=https://robopark.example\n"
+        "UVICORN_WORKERS=2\n"
+        "SEED_PASSWORD=seed-secret\n"
+        "OPERATOR_SHARED_PASSWORD=operator-secret\n"
+        "SECRET_KEY=fernet-secret\n"
+        "DATABASE_URL=postgresql://db-secret\n"
+    )
+    host_env.chmod(0o600)
     env_file = module.bootstrap_compose_secrets(
-        tmp_path / "etc-robopark", api_uid=10001
+        tmp_path / "etc-robopark",
+        host_env=host_env,
+        host_env_owner_uid=host_env.stat().st_uid,
+        api_uid=10001,
     )
 
     password = tmp_path / "etc-robopark/postgres-password"
@@ -45,15 +60,44 @@ def test_direct_compose_secret_bootstrap_creates_private_external_files(
     env_text = env_file.read_text()
     assert str(password) in env_text and str(pgpass) in env_text
     assert password.read_text().strip() not in env_text
+    snapshot_config = tmp_path / "etc-robopark/snapshot.env"
+    assert stat.S_IMODE(snapshot_config.stat().st_mode) == 0o600
+    assert (10001, 10001) in file_ownership
+    snapshot_text = snapshot_config.read_text()
+    assert snapshot_text == (
+        "CORS_ORIGINS=https://robopark.example\nUVICORN_WORKERS=2\n"
+    )
+    for secret in (
+        "seed-secret",
+        "operator-secret",
+        "fernet-secret",
+        "db-secret",
+        "SEED_PASSWORD",
+        "OPERATOR_SHARED_PASSWORD",
+        "SECRET_KEY",
+        "DATABASE_URL",
+    ):
+        assert secret not in snapshot_text
+    assert str(snapshot_config) in env_text
 
 
 def test_compose_requires_explicit_external_secret_paths():
     text = Path("deploy/docker-compose.yml").read_text()
+    compose = yaml.safe_load(text)
 
     assert "ROBOPARK_POSTGRES_PASSWORD_FILE:?" in text
     assert "ROBOPARK_PGPASS_FILE:?" in text
+    assert "ROBOPARK_SNAPSHOT_CONFIG_FILE:?" in text
     assert "./postgres-password" not in text
     assert "./pgpass" not in text
+    assert "/run/robopark/snapshot.env" in text
+    api_volumes = compose["services"]["api"]["volumes"]
+    host_env_mount = next(
+        volume
+        for volume in api_volumes
+        if volume.endswith(":/host-repo/deploy/host.env:ro")
+    )
+    assert host_env_mount.startswith("${ROBOPARK_SNAPSHOT_CONFIG_FILE:")
 
 
 def test_direct_compose_uses_root_wrapper_without_sourcing_private_env():
@@ -88,10 +132,34 @@ def test_direct_compose_rejects_group_readable_host_env(tmp_path):
     module.validate_host_env(host_env, owner_uid=os.geteuid())
 
 
+def test_direct_compose_validates_host_env_before_creating_credentials(
+    tmp_path, monkeypatch
+):
+    module = _module()
+    monkeypatch.setattr(module.os, "geteuid", lambda: 0)
+    host_env = tmp_path / "host.env"
+    host_env.write_text("SECRET_KEY=private\n")
+    host_env.chmod(0o644)
+    directory = tmp_path / "etc-robopark"
+
+    try:
+        module.bootstrap_compose_secrets(
+            directory,
+            host_env=host_env,
+            host_env_owner_uid=host_env.stat().st_uid,
+        )
+    except ValueError as error:
+        assert str(error) == "unsafe_host_env"
+    else:
+        raise AssertionError("unsafe host.env was accepted")
+
+    assert not directory.exists()
+
+
 def test_direct_compose_documentation_uses_only_private_wrapper_commands():
-    readme = Path("deploy/README.md").read_text()
-    assert "install -o root -g root -m 0600 host.env.example host.env" in readme
-    assert "sudoedit host.env" in readme
-    assert "docker compose" not in readme
-    for command in ("config", "ps", "logs"):
-        assert f"compose-production.sh {command}" in readme
+    for path, prefix in ((Path("README.md"), "./"), (Path("deploy/README.md"), "./")):
+        readme = path.read_text()
+        assert "install -o root -g root -m 0600 host.env.example host.env" in readme
+        assert "sudoedit host.env" in readme
+        assert "docker compose" not in readme
+        assert f"sudo {prefix}compose-production.sh up" in readme

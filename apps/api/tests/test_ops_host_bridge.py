@@ -79,6 +79,8 @@ def test_installed_context_has_separate_host_root(installed, test_settings):
     assert ctx.use_host_updater is True
     assert ctx.host_ops_dir == installed
     assert ctx.ops_dir == Path(test_settings.ops_dir)
+    assert ctx.config_files == {"host.env": Path(test_settings.ops_host_env_path)}
+    assert ctx.config_targets == {}
 
 
 @pytest.mark.parametrize(

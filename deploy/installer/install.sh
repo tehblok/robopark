@@ -38,12 +38,11 @@ reject_pending_host_state() {
         "$ROBOPARK_VAR/ops/public/maintenance.json" \
         "$ROBOPARK_VAR/ops/state/command-request.json" \
         "$ROBOPARK_VAR/ops/inbox/approved.json" \
-        "$ROBOPARK_VAR/ops/state/update-worker-request.json" \
-        "$ROBOPARK_VAR/ops/state/updater-journal.json" \
-        "$ROBOPARK_VAR/ops/state/restore-journal.json"
+        "$ROBOPARK_VAR/ops/state/update-worker-request.json"
     do
         [ ! -e "$pending" ] && [ ! -L "$pending" ] || die host_busy
     done
+    python3 -I "$INSTALLER_DIR/lib/configure.py" --check-clean-host-state "$ROBOPARK_VAR" || die host_busy
 }
 preflight
 if [ "$CLEAN_REINSTALL" = 1 ]; then

@@ -337,11 +337,11 @@ def test_first_upgrade_stops_old_agent_before_pull_and_force_recreates_it():
     section = section.split("Pack a *release* ZIP", 1)[0]
     normalized = " ".join(section.replace("\\\n", " ").split())
     backup = "access-restricted host backup of `deploy/host.env` outside the checkout"
-    stop = "HOST_ENV_FILE=./host.env docker compose -f deploy/docker-compose.yml stop ops-agent"
+    stop = "sudo deploy/compose-production.sh stop ops-agent"
     pull = "git pull --ff-only origin main"
     recreate = (
-        "HOST_ENV_FILE=./host.env docker compose -f deploy/docker-compose.yml "
-        "up -d --build --force-recreate --wait --wait-timeout 180 api web ops-agent"
+        "sudo deploy/compose-production.sh up -d --build --force-recreate --wait "
+        "--wait-timeout 180 api web ops-agent"
     )
 
     for required in (backup, stop, pull, recreate):

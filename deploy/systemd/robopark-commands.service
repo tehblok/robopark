@@ -18,4 +18,4 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 UMask=0077
-ReadWritePaths=/var/lib/robopark /opt/robopark /etc/robopark /etc/systemd/system /var/log/robopark -/run/lock/robopark
+ReadWritePaths=/var/lib/robopark /opt/robopark /etc/robopark /etc/systemd/system /etc/tmpfiles.d /var/log/robopark -/run/lock/robopark

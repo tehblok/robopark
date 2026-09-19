@@ -30,13 +30,16 @@ sudoedit deploy/host.env /etc/robopark/tuna.env
 `SEED_PASSWORD` для первого royal. При переносе используйте прежний `SECRET_KEY`.
 Не включайте `DEV_SEED`. В Tuna задайте токен и один постоянный домен или
 зарезервированный поддомен. Значение CORS должно совпадать с публичным адресом.
-API работает с UID 10001; ему нужен доступ к `host.env` для снимков, поэтому:
+`host.env` остаётся доступен только root. Wrapper создаёт отдельную allowlist-копию
+без `SEED_PASSWORD`, `OPERATOR_SHARED_PASSWORD`, `SECRET_KEY` и реквизитов БД для
+снимков API:
 
 ```sh
-sudo chown 10001:10001 deploy/host.env
+sudo chown root:root deploy/host.env
 sudo chmod 600 deploy/host.env
-sudo python3 deploy/host.py check
-sudo python3 deploy/host.py start
+cd deploy
+sudo ./compose-production.sh config --quiet
+sudo ./compose-production.sh up -d --build --wait
 curl --fail http://127.0.0.1:8080/api/health/ready
 ```
 
@@ -44,7 +47,8 @@ curl --fail http://127.0.0.1:8080/api/health/ready
 HTTPS/cookie/ключ, отключённые demo-аккаунты, постоянный адрес Tuna,
 Linux-архитектуру, свободное место, Docker и Compose. `start` собирает образы
 и ждёт healthcheck. Сам туннель эта команда не публикует.
-После первого входа удалите `SEED_PASSWORD` из env и выполните `host.py start --no-build`.
+После первого входа удалите `SEED_PASSWORD` через `sudoedit host.env` и выполните
+`sudo ./compose-production.sh up -d --no-build --wait api web`.
 
 ## Перезагрузка и ежедневный бэкап
 

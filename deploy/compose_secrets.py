@@ -10,6 +10,30 @@ import stat
 import tempfile
 from pathlib import Path
 
+SNAPSHOT_CONFIG_KEYS = frozenset(
+    {
+        "ROBOPARK_ROLE",
+        "ROBOPARK_DATABASE_PROFILE",
+        "ROBOPARK_HOST_PROFILE",
+        "CORS_ORIGINS",
+        "SESSION_COOKIE_NAME",
+        "SESSION_IDLE_SECONDS",
+        "SESSION_ABSOLUTE_TTL_SECONDS",
+        "COOKIE_SECURE",
+        "COOKIE_SAMESITE",
+        "PASSWORD_MIN_LENGTH",
+        "PASSWORD_REQUIRE_COMPLEXITY",
+        "LOGIN_MAX_ATTEMPTS",
+        "LOGIN_ATTEMPT_WINDOW_SECONDS",
+        "LOGIN_LOCKOUT_SECONDS",
+        "REGISTER_MAX_ATTEMPTS",
+        "SEED_USERNAME",
+        "SEED_ROLE",
+        "DEV_SEED",
+        "UVICORN_WORKERS",
+    }
+)
+
 
 def _atomic_private(path: Path, value: str, *, uid: int, gid: int) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -48,8 +72,8 @@ def _read_private(path: Path, *, uid: int) -> str:
     return value.rstrip("\n")
 
 
-def validate_host_env(path: Path, *, owner_uid: int = 0) -> None:
-    """Reject a secret-bearing Compose config unless it is a private file."""
+def _read_host_env(path: Path, *, owner_uid: int = 0) -> str:
+    """Read a bounded root-private Compose config without following links."""
     path = Path(path)
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -63,15 +87,60 @@ def validate_host_env(path: Path, *, owner_uid: int = 0) -> None:
                 or not 0 < info.st_size <= 65536
             ):
                 raise ValueError("unsafe_host_env")
-    except OSError as error:
+            raw = stream.read(65537)
+        if len(raw) > 65536:
+            raise ValueError("unsafe_host_env")
+        return raw.decode("utf-8")
+    except (OSError, UnicodeError) as error:
         raise ValueError("unsafe_host_env") from error
 
 
-def bootstrap_compose_secrets(directory: Path, *, api_uid: int = 10001) -> Path:
+def validate_host_env(path: Path, *, owner_uid: int = 0) -> None:
+    """Reject a secret-bearing Compose config unless it is a private file."""
+    _read_host_env(path, owner_uid=owner_uid)
+
+
+def _snapshot_projection(path: Path, *, owner_uid: int = 0) -> str:
+    values: dict[str, str] = {}
+    for raw_line in _read_host_env(path, owner_uid=owner_uid).splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        if (
+            not separator
+            or not key
+            or not key.replace("_", "A").isalnum()
+            or key in values
+        ):
+            raise ValueError("unsafe_host_env")
+        if key not in SNAPSHOT_CONFIG_KEYS:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]:
+            value = value[1:-1]
+        if "\n" in value or "\r" in value:
+            raise ValueError("unsafe_host_env")
+        values[key] = value
+    return "".join(f"{key}={value}\n" for key, value in values.items())
+
+
+def bootstrap_compose_secrets(
+    directory: Path,
+    *,
+    host_env: Path | None = None,
+    host_env_owner_uid: int = 0,
+    api_uid: int = 10001,
+) -> Path:
     """Create or validate external secrets and return a non-secret env file."""
     directory = Path(directory)
     if os.geteuid() != 0 or not directory.is_absolute() or directory.is_symlink():
         raise PermissionError("root_private_directory_required")
+    projection = (
+        _snapshot_projection(host_env, owner_uid=host_env_owner_uid)
+        if host_env is not None
+        else None
+    )
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(directory, 0o700)
     os.chown(directory, 0, 0)
@@ -90,11 +159,21 @@ def bootstrap_compose_secrets(directory: Path, *, api_uid: int = 10001) -> Path:
     else:
         _atomic_private(pgpass_path, expected_pgpass + "\n", uid=api_uid, gid=api_uid)
 
+    snapshot_path = directory / "snapshot.env"
+    if projection is not None:
+        _atomic_private(snapshot_path, projection, uid=api_uid, gid=api_uid)
+
     env_path = directory / "compose-secrets.env"
+    snapshot_line = (
+        "ROBOPARK_SNAPSHOT_CONFIG_FILE=" + str(snapshot_path) + "\n"
+        if host_env is not None
+        else ""
+    )
     _atomic_private(
         env_path,
         "ROBOPARK_POSTGRES_PASSWORD_FILE=" + str(password_path) + "\n"
-        "ROBOPARK_PGPASS_FILE=" + str(pgpass_path) + "\n",
+        "ROBOPARK_PGPASS_FILE=" + str(pgpass_path) + "\n"
+        + snapshot_line,
         uid=0,
         gid=0,
     )
@@ -107,9 +186,13 @@ def main() -> int:
     parser.add_argument("--api-uid", type=int, default=10001)
     parser.add_argument("--host-env", type=Path)
     arguments = parser.parse_args()
-    if arguments.host_env is not None:
-        validate_host_env(arguments.host_env)
-    print(bootstrap_compose_secrets(arguments.directory, api_uid=arguments.api_uid))
+    print(
+        bootstrap_compose_secrets(
+            arguments.directory,
+            host_env=arguments.host_env,
+            api_uid=arguments.api_uid,
+        )
+    )
     return 0
 
 

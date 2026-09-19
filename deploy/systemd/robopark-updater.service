@@ -22,7 +22,7 @@ RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 UMask=0077
-ReadWritePaths=/var/lib/robopark /opt/robopark /etc/robopark /etc/systemd/system /var/log/robopark -/run/lock/robopark
+ReadWritePaths=/var/lib/robopark /opt/robopark /etc/robopark /etc/systemd/system /etc/tmpfiles.d /var/log/robopark -/run/lock/robopark
 
 [Install]
 WantedBy=multi-user.target

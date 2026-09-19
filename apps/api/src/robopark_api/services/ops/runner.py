@@ -75,6 +75,7 @@ class OpsContext:
     ops_dir: Path
     database_url: str
     config_files: dict[str, Path] = field(default_factory=dict)
+    config_targets: dict[str, Path] | None = None
     data_dir: Path | None = None
     apply_root: Path | None = None
     app_version: str = "0.1.0"
@@ -299,7 +300,7 @@ def run_restore(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) -
         restore_snapshot_tree(
             tree,
             database_url=ctx.database_url,
-            config_targets=ctx.config_files,
+            config_targets=ctx.config_files if ctx.config_targets is None else ctx.config_targets,
             data_dir=ctx.data_dir,
             preserve_dirs=[paths["root"]],
         )
@@ -453,7 +454,9 @@ def run_update(ctx: OpsContext, job: OpsJob, archive: bytes, *, confirm: str) ->
             restore_snapshot_tree(
                 rollback_tree,
                 database_url=ctx.database_url,
-                config_targets=ctx.config_files,
+                config_targets=(
+                    ctx.config_files if ctx.config_targets is None else ctx.config_targets
+                ),
                 data_dir=ctx.data_dir,
                 preserve_dirs=[paths["root"]],
             )

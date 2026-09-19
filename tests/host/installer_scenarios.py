@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+from uuid import uuid4
 import zipfile
 
 REPO = Path(__file__).resolve().parents[2]
@@ -731,6 +732,39 @@ runpy.run_path(helper, run_name='__main__')
         self.assertTrue(pending.is_file())
         added = self.commands()[len(before):]
         self.assertFalse([call for call in added if call['name'] in {'systemctl', 'docker'}])
+
+    def test_clean_reinstall_allows_consistent_terminal_update_journal(self):
+        self.run_installer()
+        data = self.root / 'var/lib/robopark/data/operator-state.txt'
+        data.write_text('keep-me')
+        identity = str(uuid4())
+        journal = {
+            'schema': 1,
+            'job_id': identity,
+            'actor_user_id': 1,
+            'candidate': '1.0.1-' + identity,
+            'previous': '1.0.0',
+            'previous_config': 'compose/previous.json',
+            'original_previous': None,
+            'phase': 'succeeded',
+            'migration_started': True,
+            'writes_resumed': True,
+            'snapshot_done': True,
+            'cutover_started': True,
+            'publication_degraded': False,
+            'error': None,
+        }
+        (self.root / 'var/lib/robopark/ops/state/updater-journal.json').write_text(
+            json.dumps(journal)
+        )
+
+        result = self.run_installer(
+            '--clean-reinstall', '--non-interactive', str(self.config), success=False
+        )
+
+        self.assertIn('local_confirmation_required', result.stderr)
+        self.assertNotIn('host_busy', result.stderr)
+        self.assertEqual(data.read_text(), 'keep-me')
 
     def test_stable_host_lock_blocks_clean_reinstall_after_data_root_replacement(self):
         self.run_installer()
