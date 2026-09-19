@@ -63,8 +63,8 @@ describe('Management routes', () => {
     }))
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Управление' })).toBeVisible()
-    expect(screen.getAllByRole('link', { name: 'Открыть' })
-      .map((link) => link.getAttribute('href'))).toContain('/admin/users')
+    await waitFor(() => expect(screen.getAllByRole('link', { name: 'Открыть' })
+      .map((link) => link.getAttribute('href'))).toContain('/admin/users?park=7'))
     expect(screen.queryByText('Роли и доступы')).not.toBeInTheDocument()
   })
 
