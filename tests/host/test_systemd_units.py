@@ -197,6 +197,13 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
         "target": "/run/secrets/pgpass",
         "read_only": True,
     }
+    for mount_target in ("/run/robopark/snapshot.env", "/host-repo/deploy/host.env"):
+        assert mounts[mount_target] == {
+            "type": "bind",
+            "source": str(host_paths.etc / "snapshot.env"),
+            "target": mount_target,
+            "read_only": True,
+        }
     assert set(mounts) == {
         "/ops",
         "/data",
@@ -205,6 +212,8 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
         "/host-ops/public",
         "/etc/robopark/release-public-key.pem",
         "/run/secrets/pgpass",
+        "/run/robopark/snapshot.env",
+        "/host-repo/deploy/host.env",
     }
     for command in calls:
         if command[:2] == ["docker", "compose"]:
@@ -235,6 +244,49 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
     assert json.loads(target.read_text())["x-robopark-release"] == str(
         next_release.resolve()
     )
+
+
+def test_runtime_bootstrap_source_compose_receives_complete_external_file_contract(
+    host_paths, monkeypatch
+):
+    from robopark_host.runtime import bootstrap_compose
+
+    host_paths.etc.mkdir(parents=True)
+    for name, contents in (
+        ("host.env", "UVICORN_WORKERS=2\n"),
+        ("postgres-password", "password\n"),
+        ("pgpass", "db:5432:robopark:robopark:password\n"),
+        ("snapshot.env", "UVICORN_WORKERS=2\n"),
+    ):
+        (host_paths.etc / name).write_text(contents)
+    release = host_paths.releases / "1.0.0"
+    (release / "deploy").mkdir(parents=True)
+    (release / "apps/api").mkdir(parents=True)
+    (release / "apps/web").mkdir(parents=True)
+    (release / "deploy/docker-compose.yml").write_bytes(
+        (REPO / "deploy/docker-compose.yml").read_bytes()
+    )
+    (release / "manifest.json").write_text('{"git_sha":"' + "a" * 40 + '"}')
+    host_paths.current.symlink_to(release)
+
+    def run(command):
+        if "config" in command:
+            for key, name in (
+                ("ROBOPARK_POSTGRES_PASSWORD_FILE", "postgres-password"),
+                ("ROBOPARK_PGPASS_FILE", "pgpass"),
+                ("ROBOPARK_SNAPSHOT_CONFIG_FILE", "snapshot.env"),
+            ):
+                assert os.environ[key] == str(host_paths.etc / name)
+            return subprocess.run(
+                command, check=True, capture_output=True, text=True
+            ).stdout
+        if "build" in command:
+            return ""
+        if command[:3] == ["docker", "image", "inspect"]:
+            return "sha256:" + ("1" if "api" in command[-1] else "2") * 64
+        raise AssertionError(command)
+
+    bootstrap_compose(host_paths, run)
 
 
 def test_runtime_runner_streams_and_retains_failed_docker_build_output(

@@ -107,10 +107,16 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    environment:
+      HOST_ENV_FILE: /host-repo/deploy/host.env
+      ROBOPARK_POSTGRES_PASSWORD_FILE: /etc/robopark/postgres-password
+      ROBOPARK_PGPASS_FILE: /etc/robopark/pgpass
+      ROBOPARK_SNAPSHOT_CONFIG_FILE: /etc/robopark/snapshot.env
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ..:/host-repo
       - ${ROBOPARK_DATA_SOURCE:-robopark_data}:/data
+      - /etc/robopark:/etc/robopark:ro
     working_dir: /host-repo/deploy
     command: ["sh", "/host-repo/deploy/ops-agent.sh"]
     restart: unless-stopped

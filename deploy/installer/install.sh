@@ -44,6 +44,21 @@ reject_pending_host_state() {
     done
     python3 -I "$INSTALLER_DIR/lib/configure.py" --check-clean-host-state "$ROBOPARK_VAR" || die host_busy
 }
+clean_host_state_is_idle() {
+    for pending in \
+        "$ROBOPARK_VAR/ops/state/maintenance.json" \
+        "$ROBOPARK_VAR/ops/public/maintenance.json" \
+        "$ROBOPARK_VAR/ops/state/command-request.json" \
+        "$ROBOPARK_VAR/ops/inbox/approved.json" \
+        "$ROBOPARK_VAR/ops/state/update-worker-request.json"
+    do
+        [ ! -e "$pending" ] && [ ! -L "$pending" ] || return 1
+    done
+    python3 -I "$INSTALLER_DIR/lib/configure.py" --check-clean-host-state "$ROBOPARK_VAR"
+}
+restore_after_aborted_clean_reinstall() {
+    systemctl start --no-block robopark.service robopark-tuna.service robopark-updater.service robopark-commands.path >/dev/null 2>&1 || :
+}
 preflight
 if [ "$CLEAN_REINSTALL" = 1 ]; then
     # Refuse an absent, unresolved or aliased target before creating locks or
@@ -72,14 +87,27 @@ if [ "$CLEAN_REINSTALL" = 1 ]; then
     python3 -I "$INSTALLER_DIR/lib/configure.py" --validate-clean-data-root "$ROBOPARK_VAR" "$ROBOPARK_ROOT" || die unsafe_data_root
     reject_pending_host_state
     [ -t 0 ] && [ -r /dev/tty ] || die local_confirmation_required
-    printf '\nБудет безвозвратно удалён точный data root Robopark:\n  %s\n' "$ROBOPARK_VAR" >/dev/tty
-    printf 'Введите DELETE ROBOPARK DATA: ' >/dev/tty
-    IFS= read -r CLEAN_CONFIRMATION </dev/tty || die local_confirmation_required
+    if [ "${ROBOPARK_TESTING:-0}" = 1 ]; then
+        printf '\nБудет безвозвратно удалён точный data root Robopark:\n  %s\n' "$ROBOPARK_VAR"
+        printf 'Введите DELETE ROBOPARK DATA: '
+        IFS= read -r CLEAN_CONFIRMATION || die local_confirmation_required
+    else
+        printf '\nБудет безвозвратно удалён точный data root Robopark:\n  %s\n' "$ROBOPARK_VAR" >/dev/tty
+        printf 'Введите DELETE ROBOPARK DATA: ' >/dev/tty
+        IFS= read -r CLEAN_CONFIRMATION </dev/tty || die local_confirmation_required
+    fi
     [ "$CLEAN_CONFIRMATION" = 'DELETE ROBOPARK DATA' ] || die local_confirmation_required
     # The stable and legacy locks close normal writers; repeat the durable-state
     # check immediately before the first destructive side effect.
     reject_pending_host_state
     systemctl stop robopark-commands.path robopark-updater.service robopark-tuna.service robopark.service >/dev/null 2>&1 || :
+    # A durable claim may be published while systemd drains an already-running
+    # worker. Recheck after quiescing and before the first database/container
+    # deletion; on refusal, restore the safe service state and leave all data.
+    if ! clean_host_state_is_idle; then
+        restore_after_aborted_clean_reinstall
+        die host_busy
+    fi
     docker rm --force robopark-web-1 robopark-api-1 robopark-db-1 >/dev/null 2>&1 || :
     if docker volume inspect robopark_robopark_postgres >/dev/null 2>&1; then
         docker volume rm robopark_robopark_postgres >/dev/null 2>&1 || die clean_database_removal_failed

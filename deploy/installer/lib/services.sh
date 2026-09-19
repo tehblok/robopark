@@ -1,5 +1,8 @@
 install_services() {
     python3 -I "$INSTALLER_DIR/lib/ensure-docker.py" || die docker_not_ready
+    python3 -I "$ROBOPARK_OPT/current/deploy/compose_secrets.py" \
+        --directory "$ROBOPARK_ETC" --host-env "$ROBOPARK_ETC/host.env" \
+        || die compose_secret_bootstrap_failed
     python3 -I "$ROBOPARK_OPT/host-tools/robopark" bootstrap-compose || die runtime_bootstrap_failed
     python3 -I "$INSTALLER_DIR/lib/install-services.py" "$ROBOPARK_ROOT" || die unit_install_failed
     systemctl daemon-reload

@@ -24,6 +24,16 @@ from .rollback import atomic_symlink
 from .state import atomic_write_json
 
 
+def source_compose_environment(paths: HostPaths) -> dict[str, str]:
+    """Return only paths needed to render the signed source Compose file."""
+    return {
+        "HOST_ENV_FILE": str(paths.etc / "host.env"),
+        "ROBOPARK_POSTGRES_PASSWORD_FILE": str(paths.etc / "postgres-password"),
+        "ROBOPARK_PGPASS_FILE": str(paths.etc / "pgpass"),
+        "ROBOPARK_SNAPSHOT_CONFIG_FILE": str(paths.etc / "snapshot.env"),
+    }
+
+
 @dataclass(frozen=True)
 class HostProfile:
     """Resource ceilings selected from probes, never from a board name."""
@@ -271,6 +281,18 @@ def production_config(document, paths, release, image_tag):
             "target": "/run/secrets/pgpass",
             "read_only": True,
         },
+        {
+            "type": "bind",
+            "source": str(paths.etc / "snapshot.env"),
+            "target": "/run/robopark/snapshot.env",
+            "read_only": True,
+        },
+        {
+            "type": "bind",
+            "source": str(paths.etc / "snapshot.env"),
+            "target": "/host-repo/deploy/host.env",
+            "read_only": True,
+        },
         {"type": "bind", "source": str(paths.var / "data"), "target": "/data"},
         {"type": "bind", "source": str(paths.var / "api-ops"), "target": "/ops"},
         *[
@@ -376,16 +398,18 @@ def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
             raise ValueError("invalid_runtime_config")
     source = release / "deploy/docker-compose.yml"
     command = ["docker", "compose", "--project-name", "robopark", "--file", str(source)]
-    previous_env = os.environ.get("HOST_ENV_FILE")
-    os.environ["HOST_ENV_FILE"] = str(paths.etc / "host.env")
+    compose_environment = source_compose_environment(paths)
+    previous_environment = {key: os.environ.get(key) for key in compose_environment}
+    os.environ.update(compose_environment)
     try:
         _progress(1, "Проверяю конфигурацию Docker Compose")
         raw = json.loads(run([*command, "config", "--format", "json", "--no-env-resolution"]))
     finally:
-        if previous_env is None:
-            os.environ.pop("HOST_ENV_FILE", None)
-        else:
-            os.environ["HOST_ENV_FILE"] = previous_env
+        for key, previous in previous_environment.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
     release_id = hashlib.sha256((release / "manifest.json").read_bytes()).hexdigest()
     document = production_config(raw, paths, release, "release-" + release_id)
     _progress(2, "Готовлю защищённую конфигурацию контейнеров")

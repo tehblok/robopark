@@ -87,7 +87,7 @@ def _read_journal(path):
         raise ValueError('invalid_journal') from exc
 
 
-def _terminal_updater_journal(value):
+def _terminal_updater_journal(value, *, state):
     if set(value) != UPDATER_JOURNAL_FIELDS or value.get('schema') != 1:
         return False
     try:
@@ -110,9 +110,21 @@ def _terminal_updater_journal(value):
                 or not re.fullmatch(JOURNAL_NAME, value['original_previous'])
             )
         )
-        or not isinstance(value.get('previous_config'), str)
-        or not re.fullmatch(r'[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*', value['previous_config'])
         or value.get('error') not in UPDATER_ERRORS | {None}
+    ):
+        return False
+    previous_config = value.get('previous_config')
+    if not isinstance(previous_config, str):
+        return False
+    member = Path(previous_config)
+    if (
+        member.is_absolute()
+        or not member.parts
+        or any(part in {'', '.', '..'} for part in member.parts)
+        or not re.fullmatch(
+            r'[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*', previous_config
+        )
+        or not (state / member).resolve().is_relative_to(state.resolve())
     ):
         return False
     flags = ('migration_started', 'writes_resumed', 'snapshot_done',
@@ -137,7 +149,7 @@ def _terminal_updater_journal(value):
     )
 
 
-def _terminal_restore_journal(value):
+def _terminal_restore_journal(value, *, state):
     if set(value) != RESTORE_JOURNAL_FIELDS or value.get('schema') != 2:
         return False
     request = value.get('request')
@@ -148,6 +160,7 @@ def _terminal_restore_journal(value):
         return False
     if (
         not isinstance(request, dict) or set(request) != expected_request
+        or request.get('job_id') != identity
         or request.get('kind') != 'restore'
         or request.get('artifact') != f'restore-{identity}.zip'
         or not isinstance(request.get('sha256'), str)
@@ -193,7 +206,7 @@ def clean_host_state_is_idle(var_root):
         if not target.exists() and not target.is_symlink():
             continue
         try:
-            if not validator(_read_journal(target)):
+            if not validator(_read_journal(target), state=state):
                 return False
         except ValueError:
             return False

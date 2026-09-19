@@ -134,8 +134,24 @@ def bootstrap_compose_secrets(
 ) -> Path:
     """Create or validate external secrets and return a non-secret env file."""
     directory = Path(directory)
-    if os.geteuid() != 0 or not directory.is_absolute() or directory.is_symlink():
+    effective_uid = os.geteuid()
+    testing_root = Path(os.environ.get("ROBOPARK_ROOT", "/"))
+    testing = (
+        os.environ.get("ROBOPARK_TESTING") == "1"
+        and effective_uid != 0
+        and directory == testing_root / "etc/robopark"
+    )
+    if (
+        (effective_uid != 0 and not testing)
+        or not directory.is_absolute()
+        or directory.is_symlink()
+    ):
         raise PermissionError("root_private_directory_required")
+    root_uid = effective_uid if testing else 0
+    root_gid = os.getegid() if testing else 0
+    if testing:
+        host_env_owner_uid = effective_uid
+        api_uid = effective_uid
     projection = (
         _snapshot_projection(host_env, owner_uid=host_env_owner_uid)
         if host_env is not None
@@ -143,25 +159,35 @@ def bootstrap_compose_secrets(
     )
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(directory, 0o700)
-    os.chown(directory, 0, 0)
+    os.chown(directory, root_uid, root_gid)
 
     password_path = directory / "postgres-password"
     pgpass_path = directory / "pgpass"
     if password_path.exists() or password_path.is_symlink():
-        password = _read_private(password_path, uid=0)
+        password = _read_private(password_path, uid=root_uid)
     else:
         password = secrets.token_urlsafe(48)
-        _atomic_private(password_path, password + "\n", uid=0, gid=0)
+        _atomic_private(password_path, password + "\n", uid=root_uid, gid=root_gid)
     expected_pgpass = f"db:5432:robopark:robopark:{password}"
     if pgpass_path.exists() or pgpass_path.is_symlink():
         if _read_private(pgpass_path, uid=api_uid) != expected_pgpass:
             raise ValueError("compose_secret_mismatch")
     else:
-        _atomic_private(pgpass_path, expected_pgpass + "\n", uid=api_uid, gid=api_uid)
+        _atomic_private(
+            pgpass_path,
+            expected_pgpass + "\n",
+            uid=api_uid,
+            gid=os.getegid() if testing else api_uid,
+        )
 
     snapshot_path = directory / "snapshot.env"
     if projection is not None:
-        _atomic_private(snapshot_path, projection, uid=api_uid, gid=api_uid)
+        _atomic_private(
+            snapshot_path,
+            projection,
+            uid=api_uid,
+            gid=os.getegid() if testing else api_uid,
+        )
 
     env_path = directory / "compose-secrets.env"
     snapshot_line = (
@@ -174,8 +200,8 @@ def bootstrap_compose_secrets(
         "ROBOPARK_POSTGRES_PASSWORD_FILE=" + str(password_path) + "\n"
         "ROBOPARK_PGPASS_FILE=" + str(pgpass_path) + "\n"
         + snapshot_line,
-        uid=0,
-        gid=0,
+        uid=root_uid,
+        gid=root_gid,
     )
     return env_path
 

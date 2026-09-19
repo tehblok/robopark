@@ -55,6 +55,7 @@ class InstallerScenarios(unittest.TestCase):
         shutil.copytree(REPO / 'deploy/systemd', self.source / 'deploy/systemd')
         shutil.copytree(REPO / 'deploy/tmpfiles.d', self.source / 'deploy/tmpfiles.d')
         shutil.copyfile(REPO / 'deploy/docker-compose.yml', self.source / 'deploy/docker-compose.yml')
+        shutil.copyfile(REPO / 'deploy/compose_secrets.py', self.source / 'deploy/compose_secrets.py')
         shutil.copyfile(REPO / 'deploy/tuna-http.sh', self.source / 'deploy/tuna-http.sh')
         self.write_release()
         self.config = self.base / 'answers.env'
@@ -732,6 +733,58 @@ runpy.run_path(helper, run_name='__main__')
         self.assertTrue(pending.is_file())
         added = self.commands()[len(before):]
         self.assertFalse([call for call in added if call['name'] in {'systemctl', 'docker'}])
+
+    def test_clean_reinstall_rechecks_claim_after_quiescing_before_deletion(self):
+        self.run_installer()
+        data = self.root / 'var/lib/robopark/data/operator-state.txt'
+        data.write_text('keep-me')
+        before = len(self.commands())
+        child, master = pty.fork()
+        if child == 0:
+            os.execve(
+                '/bin/sh',
+                [
+                    'sh',
+                    str(self.bundle / 'install.sh'),
+                    '--clean-reinstall',
+                    '--non-interactive',
+                    str(self.config),
+                ],
+                {**self.env, 'PUBLISH_CLAIM_ON_SYSTEMCTL_STOP': '1'},
+            )
+        try:
+            output = b''
+            deadline = time.monotonic() + 10
+            while b'DELETE ROBOPARK DATA: ' not in output and time.monotonic() < deadline:
+                pid, status = os.waitpid(child, os.WNOHANG)
+                if pid:
+                    child = None
+                    break
+                if select.select([master], [], [], 0.1)[0]:
+                    output += os.read(master, 65536)
+            if child is not None:
+                os.write(master, b'DELETE ROBOPARK DATA\n')
+                _, status = os.waitpid(child, 0)
+        finally:
+            os.close(master)
+
+        self.assertNotEqual(os.waitstatus_to_exitcode(status), 0)
+        self.assertEqual(data.read_text(), 'keep-me')
+        claim = self.root / 'var/lib/robopark/ops/state/update-worker-request.json'
+        added = self.commands()[before:]
+        self.assertTrue(claim.is_file(), output.decode(errors='replace') + repr(added))
+        destructive_docker = [
+            call for call in added
+            if call['name'] == 'docker'
+            and (call['args'][:2] == ['rm', '--force'] or call['args'][:2] == ['volume', 'rm'])
+        ]
+        self.assertFalse(destructive_docker)
+        starts = [
+            call['args']
+            for call in added
+            if call['name'] == 'systemctl' and call['args'][:2] == ['start', '--no-block']
+        ]
+        self.assertTrue(starts, 'quiesced services were not restored after the late claim')
 
     def test_clean_reinstall_allows_consistent_terminal_update_journal(self):
         self.run_installer()

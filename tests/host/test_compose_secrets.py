@@ -2,7 +2,9 @@
 
 import importlib.util
 import os
+import shutil
 import stat
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -98,6 +100,14 @@ def test_compose_requires_explicit_external_secret_paths():
         if volume.endswith(":/host-repo/deploy/host.env:ro")
     )
     assert host_env_mount.startswith("${ROBOPARK_SNAPSHOT_CONFIG_FILE:")
+    agent = compose["services"]["ops-agent"]
+    assert agent["environment"] == {
+        "HOST_ENV_FILE": "/host-repo/deploy/host.env",
+        "ROBOPARK_POSTGRES_PASSWORD_FILE": "/etc/robopark/postgres-password",
+        "ROBOPARK_PGPASS_FILE": "/etc/robopark/pgpass",
+        "ROBOPARK_SNAPSHOT_CONFIG_FILE": "/etc/robopark/snapshot.env",
+    }
+    assert "/etc/robopark:/etc/robopark:ro" in agent["volumes"]
 
 
 def test_direct_compose_uses_root_wrapper_without_sourcing_private_env():
@@ -163,3 +173,66 @@ def test_direct_compose_documentation_uses_only_private_wrapper_commands():
         assert "sudoedit host.env" in readme
         assert "docker compose" not in readme
         assert f"sudo {prefix}compose-production.sh up" in readme
+
+
+def test_real_compose_config_accepts_the_generated_sanitized_contract(tmp_path, monkeypatch):
+    module = _module()
+    monkeypatch.setattr(module.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(module.os, "chown", lambda *_: None)
+    monkeypatch.setattr(module.os, "fchown", lambda *_: None)
+    host_env = tmp_path / "host.env"
+    host_env.write_text("UVICORN_WORKERS=2\nSECRET_KEY=do-not-project\n")
+    host_env.chmod(0o600)
+    env_file = module.bootstrap_compose_secrets(
+        tmp_path / "etc", host_env=host_env, host_env_owner_uid=host_env.stat().st_uid
+    )
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            str(env_file),
+            "--project-directory",
+            "deploy",
+            "--file",
+            "deploy/docker-compose.yml",
+            "config",
+            "--no-env-resolution",
+            "--format",
+            "json",
+        ],
+        env={**os.environ, "HOST_ENV_FILE": str(host_env)},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "/run/robopark/snapshot.env" in result.stdout
+    assert "do-not-project" not in (tmp_path / "etc/snapshot.env").read_text()
+
+
+def test_legacy_host_and_backup_compose_path_renders_with_sanitized_config(
+    tmp_path, monkeypatch
+):
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    shutil.copyfile("deploy/docker-compose.yml", deploy / "docker-compose.yml")
+    shutil.copyfile("deploy/compose_secrets.py", deploy / "compose_secrets.py")
+    (deploy / "host.env").write_text("UVICORN_WORKERS=2\nSECRET_KEY=do-not-project\n")
+    (deploy / "host.env").chmod(0o600)
+    root = tmp_path / "root"
+    secret_dir = root / "etc/robopark"
+    monkeypatch.setenv("ROBOPARK_TESTING", "1")
+    monkeypatch.setenv("ROBOPARK_ROOT", str(root))
+
+    path = Path("deploy/host.py")
+    spec = importlib.util.spec_from_file_location("legacy_host", path)
+    assert spec and spec.loader
+    host = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(host)
+    monkeypatch.setattr(host, "DEPLOY", deploy)
+    monkeypatch.setattr(host, "COMPOSE_SECRET_DIR", secret_dir)
+
+    result = host.compose("config", "--no-env-resolution", "--format", "json", capture_output=True)
+
+    assert "/run/robopark/snapshot.env" in result.stdout
+    assert (secret_dir / "snapshot.env").read_text() == "UVICORN_WORKERS=2\n"

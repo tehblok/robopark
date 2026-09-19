@@ -519,6 +519,8 @@ def _disk_preflight(paths, release):
 
 
 def _render_configs(paths, journal, runner, stage):
+    from .runtime import source_compose_environment
+
     work = paths.ops / "staging" / journal["job_id"]
     work.mkdir(parents=True, mode=0o700)
     environment_file = work / "test.env"
@@ -547,7 +549,7 @@ def _render_configs(paths, journal, runner, stage):
         timeout=60,
         capture=True,
         env={
-            "HOST_ENV_FILE": str(paths.etc / "host.env"),
+            **source_compose_environment(paths),
             "ROBOPARK_DATA_DIR": str(paths.var / "data"),
         },
     )

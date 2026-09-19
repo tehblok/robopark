@@ -3,7 +3,7 @@
 import importlib.util
 import json
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from robopark_host.release import ReleaseError
@@ -184,6 +184,55 @@ def test_clean_reinstall_rejects_inconsistent_terminal_journal(tmp_path):
     journal["writes_resumed"] = False
     (state / "updater-journal.json").write_text(json.dumps(journal))
 
+    assert not configure.clean_host_state_is_idle(tmp_path)
+
+
+def test_clean_reinstall_rejects_terminal_updater_journal_with_escaping_previous_config(
+    tmp_path,
+):
+    configure = _configure_module()
+    state = tmp_path / "ops/state"
+    state.mkdir(parents=True)
+    journal = _updater_journal("succeeded")
+    journal["previous_config"] = "../../outside"
+    (state / "updater-journal.json").write_text(json.dumps(journal))
+
+    assert not configure.clean_host_state_is_idle(tmp_path)
+
+
+@pytest.mark.parametrize("job_id", [str(uuid4()).upper(), "{" + str(uuid4()) + "}"])
+def test_clean_reinstall_rejects_noncanonical_terminal_restore_job_id(tmp_path, job_id):
+    configure = _configure_module()
+    state = tmp_path / "ops/state"
+    state.mkdir(parents=True)
+    journal = _restore_journal("succeeded")
+    journal["request"]["job_id"] = job_id
+    journal["request"]["artifact"] = f"restore-{UUID(job_id)!s}.zip"
+    (state / "restore-journal.json").write_text(json.dumps(journal))
+
+    assert not configure.clean_host_state_is_idle(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("filename", "journal"),
+    [
+        ("updater-journal.json", _updater_journal("succeeded")),
+        ("restore-journal.json", _restore_journal("succeeded")),
+    ],
+)
+def test_clean_reinstall_rejects_terminal_journal_unknown_or_missing_fields(
+    tmp_path, filename, journal
+):
+    configure = _configure_module()
+    state = tmp_path / "ops/state"
+    state.mkdir(parents=True)
+    missing = dict(journal)
+    missing.pop(next(iter(missing)))
+    (state / filename).write_text(json.dumps(missing))
+    assert not configure.clean_host_state_is_idle(tmp_path)
+
+    unknown = {**journal, "unknown": True}
+    (state / filename).write_text(json.dumps(unknown))
     assert not configure.clean_host_state_is_idle(tmp_path)
 
 

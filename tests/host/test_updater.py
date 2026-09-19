@@ -31,9 +31,11 @@ class FakeRunner:
         self.public_health = True
         self.fail_on = None
         self.observations = []
+        self.environments = []
 
     def run(self, argv, *, timeout, cwd=None, env=None, capture=False):
         self.commands.append(list(map(str, argv)))
+        self.environments.append(dict(env or {}))
         if self.fail_on and self.fail_on in argv:
             raise RuntimeError("SECRET_KEY=never-log-this")
         if argv[:3] == ["docker", "image", "inspect"]:
@@ -698,6 +700,82 @@ def test_candidate_smoke_uses_its_own_postgres_volume_and_credentials(host):
         }
     ]
     assert set(config["volumes"]) == {"candidate_data", "candidate_postgres"}
+
+
+def test_candidate_source_render_and_production_config_use_sanitized_snapshot(host):
+    request = host.request()
+    apply_release(request, host.paths, host.runner)
+    render_index = next(
+        index
+        for index, command in enumerate(host.runner.commands)
+        if "config" in command and "--no-env-resolution" in command
+    )
+    environment = host.runner.environments[render_index]
+    assert environment["ROBOPARK_SNAPSHOT_CONFIG_FILE"] == str(
+        host.paths.etc / "snapshot.env"
+    )
+    production = json.loads(
+        (host.paths.state / "compose" / (request.job_id + "-production.json")).read_text()
+    )
+    mounts = {
+        volume["target"]: volume
+        for volume in production["services"]["api"]["volumes"]
+    }
+    assert mounts["/run/robopark/snapshot.env"]["source"] == str(
+        host.paths.etc / "snapshot.env"
+    )
+    assert mounts["/host-repo/deploy/host.env"]["source"] == str(
+        host.paths.etc / "snapshot.env"
+    )
+
+
+def test_candidate_and_rendered_configs_pass_real_compose_validation(host, tmp_path):
+    from robopark_host.updater import _render_configs
+
+    identity = str(uuid.uuid4())
+    candidate = "2.0.0-" + identity
+    stage = tmp_path / "stage"
+    (stage / "deploy").mkdir(parents=True)
+    (stage / "apps/api").mkdir(parents=True)
+    (stage / "apps/web").mkdir(parents=True)
+    (stage / "deploy/docker-compose.yml").write_bytes(
+        Path("deploy/docker-compose.yml").read_bytes()
+    )
+    release = host.paths.releases / candidate
+    (release / "apps/api").mkdir(parents=True)
+    (release / "apps/web").mkdir(parents=True)
+    (host.paths.etc / "snapshot.env").write_text("UVICORN_WORKERS=2\n")
+
+    class RealComposeRunner:
+        def run(self, argv, *, timeout, cwd=None, env=None, capture=False):
+            return subprocess.run(
+                argv,
+                cwd=cwd,
+                env={**os.environ, **(env or {})},
+                check=True,
+                capture_output=True,
+                timeout=timeout,
+            ).stdout
+
+    journal = {"job_id": identity, "candidate": candidate}
+    _, smoke_path = _render_configs(host.paths, journal, RealComposeRunner(), stage)
+    production_path = host.paths.state / "compose" / (identity + "-production.json")
+    for project, config in (("candidate-real", smoke_path), ("production-real", production_path)):
+        subprocess.run(
+            [
+                "docker",
+                "compose",
+                "-p",
+                project,
+                "-f",
+                str(config),
+                "config",
+                "--no-env-resolution",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
 
 def test_success_restarts_application_under_new_unit_before_opening_writes(host):

@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 DEPLOY = Path(__file__).resolve().parent
+COMPOSE_SECRET_DIR = Path("/etc/robopark")
 
 
 class HostError(Exception):
@@ -93,9 +94,37 @@ def validate_tuna(path: Path) -> list[str]:
 
 def compose(*args: str, capture_output: bool = False):
     # Canonical location is also used by royal snapshots and the ops-agent.
-    env = {**os.environ, "HOST_ENV_FILE": str(DEPLOY / "host.env")}
+    generated = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(DEPLOY / "compose_secrets.py"),
+            "--directory",
+            str(COMPOSE_SECRET_DIR),
+            "--host-env",
+            str(DEPLOY / "host.env"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    env = {
+        **os.environ,
+        "HOST_ENV_FILE": str(DEPLOY / "host.env"),
+        "ROBOPARK_POSTGRES_PASSWORD_FILE": str(COMPOSE_SECRET_DIR / "postgres-password"),
+        "ROBOPARK_PGPASS_FILE": str(COMPOSE_SECRET_DIR / "pgpass"),
+        "ROBOPARK_SNAPSHOT_CONFIG_FILE": str(COMPOSE_SECRET_DIR / "snapshot.env"),
+    }
     return subprocess.run(
-        ["docker", "compose", "-f", str(DEPLOY / "docker-compose.yml"), *args],
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            generated,
+            "-f",
+            str(DEPLOY / "docker-compose.yml"),
+            *args,
+        ],
         cwd=DEPLOY,
         env=env,
         check=True,

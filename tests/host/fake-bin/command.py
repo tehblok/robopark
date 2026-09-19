@@ -109,6 +109,10 @@ elif name == 'docker':
     elif 'build' in args and os.environ.get('BUILD_FAIL') == '1':
         sys.exit(1)
 elif name == 'systemctl':
+    if args[:2] == ['stop', 'robopark-commands.path'] and os.environ.get('PUBLISH_CLAIM_ON_SYSTEMCTL_STOP') == '1':
+        claim = root / 'var/lib/robopark/ops/state/update-worker-request.json'
+        claim.parent.mkdir(parents=True, exist_ok=True)
+        claim.write_text('{"job_id":"published-during-stop"}\n')
     if args == ['start', 'docker.service']:
         if os.environ.get('DOCKER_START_FAIL') == '1':
             sys.exit(1)
