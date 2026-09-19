@@ -169,7 +169,7 @@ def invalidate_vin(vin: str, *, identity: str | None = None) -> None:
             if removed is not None:
                 _cache_bytes = max(0, _cache_bytes - removed.size_bytes)
             _metrics.gauge(entries=len(_cache), bytes_=_cache_bytes)
-    _metrics.increment("invalidations")
+    _metrics.invalidate("vin")
     merge = get_live_merge_store()
     if merge is not None:
         merge.invalidate(_MERGE_NS, _shared_key(identity, vin))
@@ -183,7 +183,7 @@ def clear_cache() -> None:
         _cache_bytes = 0
         _flights.clear()
         _metrics.gauge(entries=0, bytes_=0)
-    _metrics.increment("invalidations")
+    _metrics.invalidate("namespace")
     merge = get_live_merge_store()
     if merge is not None:
         merge.clear_namespace(_MERGE_NS)

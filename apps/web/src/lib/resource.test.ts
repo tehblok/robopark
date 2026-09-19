@@ -337,6 +337,8 @@ describe('automatic cached refresh', () => {
     const view = renderHook(() => useCachedResource('paused', loader))
     await act(async () => {})
     visible = false
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')))
+    expect(vi.getTimerCount()).toBe(0)
     await act(() => vi.advanceTimersByTimeAsync(60_000))
     expect(loader).toHaveBeenCalledTimes(1)
     visible = true
@@ -369,6 +371,7 @@ describe('automatic cached refresh', () => {
 
   it('backs off transient failures while preserving cached data', async () => {
     vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
     resourceStore.set('retry', { value: 'last known' }, false)
     const loader = vi.fn().mockRejectedValue(new Error('unavailable'))
     const view = renderHook(() => useCachedResource<TestPayload>('retry', loader))
@@ -379,7 +382,7 @@ describe('automatic cached refresh', () => {
     await act(() => vi.advanceTimersByTimeAsync(30_000))
     expect(loader).toHaveBeenCalledTimes(2)
     expect(view.result.current.data?.value).toBe('last known')
-    await act(() => vi.advanceTimersByTimeAsync(30_000))
+    await act(() => vi.advanceTimersByTimeAsync(30_001))
     expect(loader).toHaveBeenCalledTimes(3)
   })
 

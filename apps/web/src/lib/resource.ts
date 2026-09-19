@@ -139,20 +139,30 @@ class ResourceStore {
     return this.mem.get(key)?.updatedAt ?? null
   }
 
-  set(key: string, data: unknown, persist: boolean): void {
-    const entry: StoredEntry = { v: LS_VERSION, updatedAt: Date.now(), data }
+  set(key: string, data: unknown, persist: boolean, updatedAt = Date.now()): void {
+    const entry: StoredEntry = { v: LS_VERSION, updatedAt, data }
     this.remember(key, entry)
     if (persist) writeToStorage(key, entry)
     else removeFromStorage(key)
     const deviceStore = currentDeviceResourceCache()
-    if (deviceStore) void deviceStore.set(key, data).catch(() => undefined)
+    if (deviceStore) void deviceStore.set(key, data, deviceStore.captureGeneration(), updatedAt).catch(() => undefined)
     this.notify(key)
   }
 
   async hydrate<T>(key: string): Promise<T | undefined> {
-    const data = await currentDeviceResourceCache()?.get<T>(key)
-    if (data !== undefined) this.set(key, data, false)
-    return data
+    const deviceStore = currentDeviceResourceCache()
+    if (!deviceStore) return undefined
+    const generation = deviceStore.captureGeneration()
+    const entry = await deviceStore.getEntry<T>(key)
+    if (
+      entry !== undefined &&
+      deviceStore === currentDeviceResourceCache() &&
+      deviceStore.isGenerationCurrent(generation)
+    ) {
+      this.set(key, entry.data, false, entry.updatedAt)
+      return entry.data
+    }
+    return undefined
   }
 
   /** Drop denied data without retiring sibling consumers of the same request. */
@@ -504,10 +514,13 @@ export function useCachedResource<T>(
     }
   }, [enabled, key, persist, trackProgress, refreshIntervalMs])
 
-  const canLoadAutomatically = useCallback(() => (
+  const canScheduleAutomatically = useCallback(() => (
     !document.hidden && document.visibilityState !== 'hidden' && navigator.onLine !== false &&
-    !retryRef.current.blocked && Date.now() >= retryRef.current.after
+    !retryRef.current.blocked
   ), [])
+  const canLoadAutomatically = useCallback(() => (
+    canScheduleAutomatically() && Date.now() >= retryRef.current.after
+  ), [canScheduleAutomatically])
 
   useEffect(() => {
     if (!enabled) return
@@ -537,27 +550,48 @@ export function useCachedResource<T>(
     let timer: number | undefined
     let resumeTimer: number | undefined
     const schedule = (initial = false) => {
-      if (refreshIntervalMs <= 0) return
-      timer = window.setTimeout(() => { refreshIfStale(); schedule() }, periodicDelay(refreshIntervalMs, initial))
+      if (refreshIntervalMs <= 0 || timer !== undefined || !canScheduleAutomatically()) return
+      timer = window.setTimeout(() => {
+        timer = undefined
+        if (!canScheduleAutomatically()) return
+        refreshIfStale()
+        schedule()
+      }, periodicDelay(refreshIntervalMs, initial))
     }
     const resume = () => {
-      if (resumeTimer !== undefined || !canLoadAutomatically()) return
+      if (resumeTimer !== undefined || !canScheduleAutomatically()) return
       const delay = resumeDelay()
-      if (delay === 0) { refreshIfStale(); return }
-      resumeTimer = window.setTimeout(() => { resumeTimer = undefined; refreshIfStale() }, delay)
+      if (delay === 0) { refreshIfStale(); schedule(true); return }
+      resumeTimer = window.setTimeout(() => {
+        resumeTimer = undefined
+        refreshIfStale()
+        schedule(true)
+      }, delay)
+    }
+    const availabilityChanged = () => {
+      if (!canScheduleAutomatically()) {
+        window.clearTimeout(timer)
+        window.clearTimeout(resumeTimer)
+        timer = undefined
+        resumeTimer = undefined
+        return
+      }
+      resume()
     }
     schedule(true)
-    document.addEventListener('visibilitychange', resume)
+    document.addEventListener('visibilitychange', availabilityChanged)
     window.addEventListener('focus', resume)
-    window.addEventListener('online', resume)
+    window.addEventListener('online', availabilityChanged)
+    window.addEventListener('offline', availabilityChanged)
     return () => {
       window.clearTimeout(timer)
       window.clearTimeout(resumeTimer)
-      document.removeEventListener('visibilitychange', resume)
+      document.removeEventListener('visibilitychange', availabilityChanged)
       window.removeEventListener('focus', resume)
-      window.removeEventListener('online', resume)
+      window.removeEventListener('online', availabilityChanged)
+      window.removeEventListener('offline', availabilityChanged)
     }
-  }, [enabled, key, refreshIntervalMs, staleTimeMs, runLoad, canLoadAutomatically, persist])
+  }, [enabled, key, refreshIntervalMs, staleTimeMs, runLoad, canLoadAutomatically, canScheduleAutomatically, persist])
 
   const refresh = useCallback(() => runLoad(), [runLoad])
 

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from robopark_api.config import get_settings
+from robopark_api.services.cache_metrics import family
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,8 @@ LIVE_MERGE_DIRNAME = "live-merge"
 LIVE_MERGE_SCHEMA = 1
 DEFAULT_NAMESPACE_MAX_ENTRIES = 2048
 DEFAULT_NAMESPACE_MAX_BYTES = 64 * 1024 * 1024
+DEFAULT_METADATA_MAX_ENTRIES = 4096
+DEFAULT_METADATA_MAX_BYTES = 8 * 1024 * 1024
 
 _store_cache: object = _DISABLED
 
@@ -292,7 +295,14 @@ class LiveMergeStore:
                 "payload": payload,
             },
         )
-        self._prune_namespace_results(namespace)
+        removed = self._prune_namespace_results(namespace)
+        removed += self._prune_namespace_metadata(
+            namespace, protected=self.lock_path(namespace, key)
+        )
+        metrics = family(f"shared.{namespace}")
+        if removed:
+            metrics.increment("evictions", removed)
+        self._update_namespace_metrics(namespace)
 
     def _prune_namespace_results(
         self,
@@ -361,6 +371,63 @@ class LiveMergeStore:
                 "stale_allowed": stale_allowed,
             },
         )
+        removed = self._prune_namespace_metadata(
+            namespace, protected=self.lock_path(namespace, key)
+        )
+        metrics = family(f"shared.{namespace}")
+        if removed:
+            metrics.increment("evictions", removed)
+        self._update_namespace_metrics(namespace)
+
+    def _update_namespace_metrics(self, namespace: str) -> None:
+        folder = self.namespace_dir(namespace)
+        try:
+            stats = [path.stat() for path in folder.iterdir() if path.is_file()]
+        except OSError:
+            return
+        family(f"shared.{namespace}").gauge(
+            entries=len(stats), bytes_=sum(stat.st_size for stat in stats)
+        )
+
+    def _prune_namespace_metadata(
+        self,
+        namespace: str,
+        *,
+        max_entries: int = DEFAULT_METADATA_MAX_ENTRIES,
+        max_bytes: int = DEFAULT_METADATA_MAX_BYTES,
+        protected: Path | None = None,
+    ) -> int:
+        folder = self.namespace_dir(namespace)
+        try:
+            rows = sorted(
+                (
+                    (path, path.stat())
+                    for path in folder.iterdir()
+                    if path.is_file() and path != protected and path.suffix in {".lock", ".error"}
+                ),
+                key=lambda row: row[1].st_mtime,
+            )
+        except OSError:
+            return 0
+        total = sum(stat.st_size for _, stat in rows)
+        removed = 0
+        while rows and (len(rows) > max_entries or total > max_bytes):
+            path, stat = rows.pop(0)
+            deleted = False
+            if path.suffix == ".lock":
+                deleted = self._prune_lock(
+                    path, initial_stat=stat, now=time.time(), max_age_seconds=0
+                )
+            else:
+                try:
+                    path.unlink()
+                    deleted = True
+                except OSError:
+                    pass
+            if deleted:
+                total -= stat.st_size
+                removed += 1
+        return removed
 
     def _clear_error(self, namespace: str, key: str) -> None:
         self.error_path(namespace, key).unlink(missing_ok=True)
@@ -572,6 +639,8 @@ class LiveMergeStore:
             result.unlink(missing_ok=True)
             inflight.unlink(missing_ok=True)
             error.unlink(missing_ok=True)
+        family(f"shared.{namespace}").invalidate("key")
+        self._update_namespace_metrics(namespace)
 
     def invalidate_prefix(self, namespace: str, prefix: str) -> None:
         from robopark_api.services.ops.maintenance import require_application_writes
@@ -622,7 +691,7 @@ class LiveMergeStore:
             self.invalidate(namespace, key)
         return len(keys)
 
-    def clear_namespace(self, namespace: str) -> None:
+    def clear_namespace(self, namespace: str, *, reason: str = "namespace") -> None:
         from robopark_api.services.ops.maintenance import require_application_writes
 
         require_application_writes()
@@ -637,6 +706,8 @@ class LiveMergeStore:
             for path in folder.iterdir():
                 if path.is_file() and path.suffix in {".json", ".inflight", ".error", ".tmp"}:
                     path.unlink(missing_ok=True)
+        family(f"shared.{namespace}").invalidate(reason)
+        self._update_namespace_metrics(namespace)
 
     def prune(
         self,

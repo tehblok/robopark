@@ -61,6 +61,19 @@ def test_expired_entry_triggers_refetch():
     assert cache.get_or_load("k", lambda: 2) == 2
 
 
+def test_shared_stale_bound_is_not_extended_by_merge_default(tmp_path):
+    cache: ResponseCache[int] = ResponseCache(
+        0.01,
+        name="short-stale",
+        shared=LiveMergeStore(tmp_path),
+        max_stale_seconds=0.02,
+    )
+    assert cache.get_or_load("k", lambda: 1) == 1
+    time.sleep(0.03)
+    with pytest.raises(RuntimeError, match="down"):
+        cache.get_or_load("k", lambda: (_ for _ in ()).throw(RuntimeError("down")))
+
+
 def test_invalidate_forces_refetch():
     cache: ResponseCache[int] = ResponseCache(60, name="unit")
     cache.get_or_load("a", lambda: 1)
@@ -69,6 +82,7 @@ def test_invalidate_forces_refetch():
     cache.invalidate("a")
     assert cache.get_or_load("a", lambda: 2) == 2
     assert cache.get_or_load("b", lambda: 20) == 10
+    assert cache.metrics().invalidation_reasons["key"] == 1
 
 
 def test_invalidate_prefix_drops_matching_keys():

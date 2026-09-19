@@ -57,23 +57,23 @@ it.each(['120', 'Wed, 21 Oct 2026 07:28:00 GMT'])('carries Retry-After %s from a
   await expect(api.me()).rejects.toMatchObject({ status: 429, retryAfterMs: 120_000 })
 })
 
-it('distributes the first background refresh of 200 robot viewers across ten seconds', async () => {
-  let sample = 0
-  vi.spyOn(Math, 'random').mockImplementation(() => ((sample++ % 200) + 0.5) / 200)
-  const start = Date.now()
-  const requests: number[] = []
-  for (let viewer = 0; viewer < 200; viewer += 1) {
-    const task = async () => { requests.push(Date.now() - start) }
-    renderHook(() => useVisibilityPolling({ enabled: true, online: true, task }))
-  }
+it('coalesces 200 viewers and route or UI-mode remounts into zero duplicate fresh GETs', async () => {
+  const loader = vi.fn(async () => 'shared')
+  const viewers = Array.from({ length: 200 }, () => (
+    renderHook(({ mode }) => {
+      void mode
+      return useCachedResource('robots:park-1', loader)
+    }, {
+      initialProps: { mode: 'table' },
+    })
+  ))
   await act(async () => {})
-  expect(requests).toHaveLength(200) // cold loads remain immediate
-  await act(() => vi.advanceTimersByTimeAsync(20_000))
-  const background = requests.filter(time => time > 0)
-  expect(background).toHaveLength(200)
-  const busiestSecond = Math.max(...Array.from({ length: 10 }, (_, second) =>
-    background.filter(time => time >= 10_000 + second * 1_000 && time < 11_000 + second * 1_000).length))
-  expect(busiestSecond).toBeLessThanOrEqual(21) // at most 42 snapshot+section reads
+  expect(loader).toHaveBeenCalledTimes(1)
+  viewers[0].rerender({ mode: 'map' })
+  viewers[1].unmount()
+  renderHook(() => useCachedResource('robots:park-1', loader))
+  await act(async () => {})
+  expect(loader).toHaveBeenCalledTimes(1)
 })
 
 it('does not let robot reconnect bypass a proxy Retry-After deadline', async () => {

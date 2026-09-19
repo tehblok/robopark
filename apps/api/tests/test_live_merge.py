@@ -374,3 +374,24 @@ def test_targeted_payload_invalidation_keeps_unrelated_shared_projection(tmp_pat
 
     assert store.try_fresh("tracker.issues", "one", 60)[0] is False
     assert store.try_fresh("tracker.issues", "two", 60) == (True, [{"key": "SD-2"}])
+
+
+def test_error_and_lock_metadata_are_bounded_and_reported(tmp_path):
+    store = LiveMergeStore(tmp_path)
+    folder = store.namespace_dir("bounded")
+    folder.mkdir(parents=True)
+    for index in range(6):
+        (folder / f"{index}.error").write_text("{}", encoding="utf-8")
+        (folder / f"{index}.lock").touch()
+
+    removed = store._prune_namespace_metadata("bounded", max_entries=3, max_bytes=100)
+    store._update_namespace_metrics("bounded")
+
+    remaining = [path for path in folder.iterdir() if path.suffix in {".error", ".lock"}]
+    assert removed >= 9
+    assert len(remaining) <= 3
+    from robopark_api.services.cache_metrics import family
+
+    snapshot = family("shared.bounded").snapshot()
+    assert snapshot.entries <= 3
+    assert snapshot.bytes <= 100

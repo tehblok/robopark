@@ -17,6 +17,7 @@ class CacheMetricsSnapshot:
     entries: int
     refresh_latency_seconds: float
     invalidations: int
+    invalidation_reasons: dict[str, int]
 
 
 class CacheMetrics:
@@ -28,6 +29,7 @@ class CacheMetrics:
         self._bytes = 0
         self._entries = 0
         self._latency = 0.0
+        self._invalidation_reasons: dict[str, int] = {}
 
     def increment(self, field: str, amount: int = 1) -> None:
         with self._lock:
@@ -39,6 +41,11 @@ class CacheMetrics:
             if error:
                 self._counters["errors"] += 1
             self._latency = max(0.0, latency)
+
+    def invalidate(self, reason: str, amount: int = 1) -> None:
+        with self._lock:
+            self._counters["invalidations"] += amount
+            self._invalidation_reasons[reason] = self._invalidation_reasons.get(reason, 0) + amount
 
     def gauge(self, *, entries: int, bytes_: int) -> None:
         with self._lock:
@@ -52,6 +59,7 @@ class CacheMetrics:
                 bytes=self._bytes,
                 entries=self._entries,
                 refresh_latency_seconds=self._latency,
+                invalidation_reasons=dict(self._invalidation_reasons),
             )
 
 
@@ -64,7 +72,7 @@ def family(name: str) -> CacheMetrics:
         return _registry.setdefault(name, CacheMetrics())
 
 
-def snapshot_all() -> dict[str, dict[str, int | float]]:
+def snapshot_all() -> dict[str, dict[str, int | float | dict[str, int]]]:
     with _registry_lock:
         items = tuple(_registry.items())
     return {name: asdict(metrics.snapshot()) for name, metrics in items}

@@ -845,7 +845,7 @@ async function consumeWithTimeout<T>(
   try {
     const response = await fetch(input, { ...init, signal: controller.signal })
     if ((response.status === 401 || response.status === 403) && typeof window !== 'undefined') {
-      revisionValidators.clear()
+      clearApiValidators()
       window.dispatchEvent(new CustomEvent('robopark:authorization-failure', {
         detail: { status: response.status },
       }))
@@ -1129,8 +1129,63 @@ async function requestForm<T>(path: string, formData: FormData, headers?: Record
 }
 
 const revisionValidators = new Map<string, { etag: string, value: { revision: number } }>()
+type TrackerIssueValidator = {
+  etag: string
+  value: Paged<TrackerIssue>
+  bytes: number
+  storedAt: number
+}
+const trackerIssueValidators = new Map<string, TrackerIssueValidator>()
+const TRACKER_VALIDATOR_MAX_ENTRIES = 128
+const TRACKER_VALIDATOR_MAX_BYTES = 4 * 1024 * 1024
+const TRACKER_VALIDATOR_MAX_AGE_MS = 12 * 60 * 60 * 1000
 
-export function clearApiValidators(): void { revisionValidators.clear() }
+function rememberTrackerValidator(path: string, entry: TrackerIssueValidator): void {
+  trackerIssueValidators.delete(path)
+  trackerIssueValidators.set(path, entry)
+  let bytes = Array.from(trackerIssueValidators.values()).reduce((sum, item) => sum + item.bytes, 0)
+  while (trackerIssueValidators.size > TRACKER_VALIDATOR_MAX_ENTRIES || bytes > TRACKER_VALIDATOR_MAX_BYTES) {
+    const oldest = trackerIssueValidators.entries().next().value as [string, TrackerIssueValidator] | undefined
+    if (!oldest) break
+    trackerIssueValidators.delete(oldest[0])
+    bytes -= oldest[1].bytes
+  }
+}
+
+export function clearApiValidators(): void {
+  revisionValidators.clear()
+  trackerIssueValidators.clear()
+}
+
+async function conditionalTrackerIssues(path: string): Promise<Paged<TrackerIssue>> {
+  let cached = trackerIssueValidators.get(path)
+  if (cached && Date.now() - cached.storedAt >= TRACKER_VALIDATOR_MAX_AGE_MS) {
+    trackerIssueValidators.delete(path)
+    cached = undefined
+  } else if (cached) {
+    rememberTrackerValidator(path, cached)
+  }
+  return fetchWithTimeout(
+    `/api${path}`,
+    { credentials: 'include', headers: cached ? { 'If-None-Match': cached.etag } : {} },
+    JSON_TIMEOUT_MS,
+    async response => {
+      if (response.status === 304 && cached) return cached.value
+      if (!response.ok) {
+        throw new ApiError(response.status, await readErrorDetail(response), responseRequestId(response), responseRetryAfter(response))
+      }
+      const value = await response.json() as Paged<TrackerIssue>
+      const etag = response.headers.get('ETag')
+      if (etag) {
+        const bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength
+        if (bytes <= TRACKER_VALIDATOR_MAX_BYTES) {
+          rememberTrackerValidator(path, { etag, value, bytes, storedAt: Date.now() })
+        }
+      }
+      return value
+    },
+  )
+}
 
 async function conditionalChangeRevision(scope: string): Promise<{ revision: number }> {
   const cached = revisionValidators.get(scope)
@@ -1481,7 +1536,7 @@ export const api = {
         q.set(key, String(value))
       }
     })
-    return request<Paged<TrackerIssue>>(`/tracker/issues?${q.toString()}`)
+    return conditionalTrackerIssues(`/tracker/issues?${q.toString()}`)
   },
   trackerUsers: (q: string) =>
     request<TrackerUserSuggestion[]>(`/tracker/users?q=${encodeURIComponent(q)}`),

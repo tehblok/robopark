@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiTimeoutError, api } from './api'
+import { ApiTimeoutError, api, clearApiValidators } from './api'
 
 type ApiCall = () => Promise<unknown>
 
@@ -64,8 +64,24 @@ function stalledBodyResponse(
 
 describe('API transport metadata', () => {
   afterEach(() => {
+    clearApiValidators()
     vi.useRealTimers()
     vi.unstubAllGlobals()
+  })
+
+  it('reuses the typed tracker payload on ETag 304', async () => {
+    const payload = { items: [{ key: 'ROBOPARK-42' }], total: 1, limit: 50, offset: 0, has_more: false }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(payload), {
+        status: 200, headers: { 'Content-Type': 'application/json', ETag: '"issues-v1"' },
+      }))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await api.trackerIssues({ limit: 50 })).toEqual(payload)
+    expect(await api.trackerIssues({ limit: 50 })).toEqual(payload)
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/tracker/issues?sort=oldest&limit=50',
+      expect.objectContaining({ headers: { 'If-None-Match': '"issues-v1"' } }))
   })
 
   it.each(requestIdCases)('copies X-Request-ID into an ApiError for a %s request', async (_label, call) => {

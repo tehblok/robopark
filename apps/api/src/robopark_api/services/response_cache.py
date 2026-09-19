@@ -44,6 +44,7 @@ class _Flight(Generic[T]):  # noqa: UP046
     done: threading.Event = field(default_factory=threading.Event)
     value: object = _MISSING
     error: BaseException | None = None
+    generation: tuple[int, int] = (0, 0)
 
 
 class ResponseCache(Generic[T]):  # noqa: UP046
@@ -88,6 +89,8 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         self._bytes = 0
         self._metrics = family(name)
         self._flights: dict[str, _Flight[T]] = {}
+        self._generation = 0
+        self._key_generations: dict[str, int] = {}
         # True → look up the process-wide store each call (tests may disable it).
         # LiveMergeStore → always that store. False/None → in-process only.
         self._shared: LiveMergeStore | None | bool = shared
@@ -155,37 +158,45 @@ class ResponseCache(Generic[T]):  # noqa: UP046
             return now
         return now - max(0.0, time.time() - mtime)
 
-    def invalidate(self, key: str) -> None:
+    def invalidate(self, key: str, *, reason: str = "key") -> None:
         with self._lock:
+            if key in self._flights:
+                self._key_generations[key] = self._key_generations.get(key, 0) + 1
+            else:
+                self._key_generations.pop(key, None)
             self._remove_locked(key)
             self._update_gauges_locked()
-        self._metrics.increment("invalidations")
+        self._metrics.invalidate(reason)
         merge = self._merge()
         if merge is not None:
             merge.invalidate(self._name, key)
 
     def invalidate_prefix(self, prefix: str) -> None:
         with self._lock:
+            for key in set(self._store) | set(self._flights):
+                if key.startswith(prefix):
+                    self._key_generations[key] = self._key_generations.get(key, 0) + 1
             stale = [k for k in self._store if k.startswith(prefix)]
             for key in stale:
                 self._remove_locked(key)
             self._update_gauges_locked()
         if stale:
-            self._metrics.increment("invalidations", len(stale))
+            self._metrics.invalidate("prefix", len(stale))
         merge = self._merge()
         if merge is not None:
             merge.invalidate_prefix(self._name, prefix)
 
-    def clear(self) -> None:
+    def clear(self, *, reason: str = "namespace") -> None:
         with self._lock:
+            self._generation += 1
+            self._key_generations.clear()
             self._store.clear()
             self._bytes = 0
-            self._flights.clear()
             self._update_gauges_locked()
-        self._metrics.increment("invalidations")
+        self._metrics.invalidate(reason)
         merge = self._merge()
         if merge is not None:
-            merge.clear_namespace(self._name)
+            merge.clear_namespace(self._name, reason=reason)
 
     def peek(self, key: str) -> T | None:
         """Return the current cached value regardless of TTL (for tests)."""
@@ -264,7 +275,9 @@ class ResponseCache(Generic[T]):  # noqa: UP046
             flight = self._flights.get(key)
             is_leader = flight is None
             if is_leader:
-                flight = _Flight[T]()
+                flight = _Flight[T](
+                    generation=(self._generation, self._key_generations.get(key, 0))
+                )
                 self._flights[key] = flight
 
         release_request_session()
@@ -287,6 +300,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
                     self._ttl,
                     loader,
                     shared_payload=self._shared_payload,
+                    max_stale_seconds=self._max_stale,
                 )
             else:
                 value = loader()
@@ -306,7 +320,15 @@ class ResponseCache(Generic[T]):  # noqa: UP046
             with self._lock:
                 flight.value = value
                 flight.error = error
-                if error is None and value is not _MISSING:
+                current_generation = (
+                    self._generation,
+                    self._key_generations.get(key, 0),
+                )
+                if (
+                    error is None
+                    and value is not _MISSING
+                    and flight.generation == current_generation
+                ):
                     mtime = merge.result_mtime(self._name, key) if merge is not None else None
                     stored_at = (
                         stale[0]
@@ -318,6 +340,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
                         (stored_at, value, mtime),
                     )
                 self._flights.pop(key, None)
+                self._key_generations.pop(key, None)
                 flight.done.set()
 
         self._metrics.observe_load(time.monotonic() - load_started, error=load_had_error)

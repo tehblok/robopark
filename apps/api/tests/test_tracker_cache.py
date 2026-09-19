@@ -1,5 +1,6 @@
 """Integration tests for the tracker_cache facade: wraps tracker_client with TTL + single-flight."""
 
+import threading
 import time
 from types import SimpleNamespace
 
@@ -241,7 +242,7 @@ def test_get_issue_and_invalidate(monkeypatch):
 
     first = tracker_cache.get_issue(token="t", key="SD-1")
     _cached = tracker_cache.get_issue(token="t", key="SD-1")
-    tracker_cache.invalidate_issue("SD-1")
+    tracker_cache.invalidate_issue("SD-1", membership_changed=False)
     refreshed = tracker_cache.get_issue(token="t", key="SD-1")
 
     assert first == {"key": "SD-1", "n": 1}
@@ -294,10 +295,40 @@ def test_invalidate_issue_keeps_unrelated_list_projections(monkeypatch):
     assert tracker_cache.search_issues(token="t", query="one")[0]["n"] == 1
     assert tracker_cache.search_issues(token="t", query="two")[0]["n"] == 1
 
-    tracker_cache.invalidate_issue("SD-1")
+    tracker_cache.invalidate_issue("SD-1", membership_changed=False)
 
     assert tracker_cache.search_issues(token="t", query="one")[0]["n"] == 2
     assert tracker_cache.search_issues(token="t", query="two")[0]["n"] == 1
+
+
+def test_membership_change_retires_blocked_projection_and_refetches(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def search(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            started.set()
+            assert release.wait(timeout=1)
+            return []
+        return [{"key": "SD-1", "status_key": "open"}]
+
+    monkeypatch.setattr(tracker_client, "search_issues", search)
+    thread = threading.Thread(
+        target=lambda: tracker_cache.search_issues(token="t", query="Status: open")
+    )
+    thread.start()
+    assert started.wait(timeout=1)
+    tracker_cache.invalidate_issue("SD-1", membership_changed=True)
+    release.set()
+    thread.join(timeout=1)
+
+    assert tracker_cache.search_issues(token="t", query="Status: open") == [
+        {"key": "SD-1", "status_key": "open"}
+    ]
+    assert calls == 2
 
 
 def test_clear_all_resets_every_cache(monkeypatch):

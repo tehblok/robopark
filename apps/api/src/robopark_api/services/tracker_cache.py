@@ -112,7 +112,7 @@ def _remember_projection(
     return value
 
 
-def _invalidate_issue_projections(issue_key: str) -> None:
+def _invalidate_issue_projections(issue_key: str, *, membership_changed: bool) -> None:
     with _projection_lock:
         affected = [
             (cache, key)
@@ -130,6 +130,18 @@ def _invalidate_issue_projections(issue_key: str) -> None:
     if merge is not None:
         for cache in (_issues_cache, _blockers_cache, _robot_tickets_cache):
             merge.invalidate_payload_member(cache.name, issue_key)
+
+    if not membership_changed:
+        return
+    # A mutation can also make an issue enter a projection it did not
+    # previously belong to (for example closed -> open). Retire list families,
+    # but leave unrelated detail/comment/transition resources intact. Cache
+    # generations prevent a blocked pre-mutation loader from publishing later.
+    for cache in (_issues_cache, _blockers_cache, _robot_tickets_cache):
+        cache.clear(reason="membership_change")
+    with _projection_lock:
+        for projections in _issue_projections.values():
+            projections.clear()
 
 
 def search_issues(
@@ -242,13 +254,13 @@ def collect_park_metrics(
     )
 
 
-def invalidate_issue(key: str) -> None:
+def invalidate_issue(key: str, *, membership_changed: bool = True) -> None:
     """Drop cached artefacts around a single issue and any list that might contain it."""
     _issue_cache.invalidate(key)
     tracker_client.invalidate_issue_status_history(key)
     _comments_cache.invalidate(key)
     _transitions_cache.invalidate(key)
-    _invalidate_issue_projections(key)
+    _invalidate_issue_projections(key, membership_changed=membership_changed)
     _count_cache.clear()
     _metrics_cache.clear()
 

@@ -9,8 +9,9 @@ optimistic mutation, idempotency, outbox, stale-if-error and offline behavior.
   hit/miss/load/error/eviction/bytes/entries/latency/invalidation metrics.
 - Cross-worker live-merge blobs are schema-tagged and namespace-bounded; the existing
   file-lock single-flight remains the shared-worker coordinator.
-- Tracker issue invalidation now removes only matching issue/comments/transitions,
-  known list projections and shared projection blobs; unrelated lists survive.
+- Tracker read-only invalidation removes only matching issue/comments/transitions and
+  known projections; mutations retire the three list families so membership changes
+  (including closed-to-open) cannot leave a missing issue cached.
 - Emergency payload L1 is byte- and entry-bounded and reports the same metrics.
 - `/changes` and the large authenticated `/tracker/issues` response support private
   ETag/304 revalidation; the web change-feed retains validators.
@@ -57,8 +58,9 @@ coverage for the large Tracker list.
 
 ## SHA and risks
 
-- SHA: `HEAD` (`feat(cache): add bounded server and device caching`); the immutable hash
-  is reported after commit because a commit cannot contain its own hash.
+- Base implementation SHA: `486a0751741663b860dc269b55d14d3be6ca5d04`
+  (`feat(cache): add bounded server and device caching`). The review SHA is reported in
+  the completion handoff because a commit cannot contain its own hash.
 - The change feed remains a small authenticated revision poll (with scope-level
   revalidation) rather than a push transport; object-level Tracker server invalidation
   is targeted, and mounted clients refetch only their affected scope.
@@ -66,3 +68,33 @@ coverage for the large Tracker list.
   LRU fallback, while real-device quota telemetry belongs to Task 8 load/soak evidence.
 - The lint command still reports the repository's 21 existing warnings; no new lint
   error was introduced.
+
+## Review round 1
+
+All nine findings were reproduced and closed with regression coverage:
+
+- IndexedDB hydration captures the exact store and generation, preserves `updatedAt`,
+  rejects late authorization-scope reads, purges crash-left scopes, and enforces its
+  entry/byte ceiling globally across the database.
+- Tracker mutations retire membership-sensitive list families while ordinary targeted
+  invalidation preserves unrelated projections. Cache generations prevent blocked
+  pre-mutation loaders from republishing stale projections across local/shared tiers.
+- The configured stale bound is passed through live merge; a short-stale regression
+  proves a three-second-old result cannot be served under a two-second policy.
+- Tracker list transport now sends `If-None-Match` and returns the typed cached payload
+  on 304 from a bounded validator cache.
+- Live-merge result and lock/error metadata are bounded. Shared gauges include bytes,
+  entries and evictions, and invalidation metrics retain their reason.
+- Resource polling removes timers while hidden/offline, resumes once, respects backoff
+  and `Retry-After`, and 200 mounted consumers plus route/UI-mode remounts issue one
+  fresh GET total.
+
+Review RED evidence included the late IDB read, blocked Tracker list loader, missing
+shared stale parameter, absent Tracker request validator, retained hidden timer and the
+former synthetic 200-viewer test. Review GREEN evidence: focused API `78 passed`,
+focused web `62 passed`, full web `147 files / 2075 passed`, production build and SW
+`2 passed`; final full API `1776 passed, 7 skipped, 21 warnings`.
+
+Residual risk: IndexedDB quota thresholds vary by browser, and cross-process live merge
+uses bounded filesystem metadata rather than Redis by design. Both paths now expose
+deterministic eviction behavior and metrics for Task 8 soak validation.

@@ -21,6 +21,8 @@ type Entry = {
   accessedAt: number
 }
 
+export type PersistedResource<T> = { data: T, updatedAt: number }
+
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result)
@@ -74,13 +76,20 @@ export class IndexedResourceStore {
     }
     const db = await requestResult(request)
     const result = new IndexedResourceStore(db, scopeKey(scope), cachePolicy(overrides))
+    await result.purgeOtherScopes()
     await result.prune()
     return result
   }
 
   captureGeneration(): number { return this.generation }
 
+  isGenerationCurrent(generation: number): boolean { return generation === this.generation }
+
   async get<T>(key: string): Promise<T | undefined> {
+    return (await this.getEntry<T>(key))?.data
+  }
+
+  async getEntry<T>(key: string): Promise<PersistedResource<T> | undefined> {
     const transaction = this.db.transaction(STORE, 'readwrite')
     const store = transaction.objectStore(STORE)
     const entry = await requestResult(store.get(`${this.scope}\0${key}`)) as Entry | undefined
@@ -92,27 +101,36 @@ export class IndexedResourceStore {
     entry.accessedAt = Date.now()
     store.put(entry)
     await transactionDone(transaction)
-    return entry.data as T
+    return { data: entry.data as T, updatedAt: entry.updatedAt }
   }
 
-  async set(key: string, data: unknown, generation = this.generation): Promise<boolean> {
+  async set(
+    key: string,
+    data: unknown,
+    generation = this.generation,
+    updatedAt = Date.now(),
+  ): Promise<boolean> {
     if (generation !== this.generation) return false
     if (/^(?:photo|image):original(?::|$)/i.test(key)) throw new Error('Original photos are not persisted')
     const now = Date.now()
     const entry: Entry = {
       id: `${this.scope}\0${key}`, scope: this.scope, key, data,
-      bytes: entryBytes(data), updatedAt: now, accessedAt: now,
+      bytes: entryBytes(data), updatedAt, accessedAt: now,
     }
     if (entry.bytes > this.policy.maxBytes) return false
     try {
       await this.put(entry)
     } catch (error) {
       if (!isQuotaError(error)) throw error
-      await this.evictOldest(Math.max(1, Math.ceil((await this.stats()).entries / 2)))
+      await this.evictOldest(Math.max(1, Math.ceil((await this.globalStats()).entries / 2)))
       await this.put(entry)
     }
     await this.prune()
-    return generation === this.generation
+    if (generation !== this.generation) {
+      await this.delete(key)
+      return false
+    }
+    return true
   }
 
   async purge(): Promise<void> {
@@ -155,8 +173,26 @@ export class IndexedResourceStore {
     return entries
   }
 
+
+  private async allEntries(): Promise<Entry[]> {
+    const transaction = this.db.transaction(STORE, 'readonly')
+    const entries = await requestResult(transaction.objectStore(STORE).getAll()) as Entry[]
+    await transactionDone(transaction)
+    return entries
+  }
+
+  private async globalStats(): Promise<{ entries: number, bytes: number }> {
+    const entries = await this.allEntries()
+    return { entries: entries.length, bytes: entries.reduce((sum, entry) => sum + entry.bytes, 0) }
+  }
+
+  private async purgeOtherScopes(): Promise<void> {
+    const staleScopes = (await this.allEntries()).filter(entry => entry.scope !== this.scope)
+    if (staleScopes.length) await this.deleteEntries(staleScopes)
+  }
+
   private async evictOldest(count: number): Promise<void> {
-    const entries = (await this.entries()).sort((a, b) => a.accessedAt - b.accessedAt)
+    const entries = (await this.allEntries()).sort((a, b) => a.accessedAt - b.accessedAt)
     const transaction = this.db.transaction(STORE, 'readwrite')
     const store = transaction.objectStore(STORE)
     for (const entry of entries.slice(0, count)) store.delete(entry.id)
@@ -165,7 +201,7 @@ export class IndexedResourceStore {
 
   private async prune(): Promise<void> {
     const now = Date.now()
-    let entries = (await this.entries()).sort((a, b) => a.accessedAt - b.accessedAt)
+    let entries = (await this.allEntries()).sort((a, b) => a.accessedAt - b.accessedAt)
     const expired = entries.filter(entry => now - entry.updatedAt >= this.policy.staleMs)
     if (expired.length) await this.deleteEntries(expired)
     entries = entries.filter(entry => !expired.includes(entry))
