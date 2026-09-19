@@ -10,7 +10,7 @@ import pytest
 
 
 @pytest.fixture(scope="session")
-def postgres_database_url() -> Iterator[str]:
+def postgres_container_name() -> Iterator[str]:
     if os.environ.get("ROBOPARK_POSTGRES_TESTS") != "1":
         pytest.skip("run through ./scripts/verify.sh api-postgres")
 
@@ -54,16 +54,21 @@ def postgres_database_url() -> Iterator[str]:
             )
             pytest.fail(f"PostgreSQL did not become ready:\n{logs.stdout}\n{logs.stderr}")
 
-        port = (
-            subprocess.run(
-                ["docker", "port", name, "5432/tcp"],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            .stdout.strip()
-            .rsplit(":", 1)[-1]
-        )
-        yield f"postgresql+psycopg://robopark:robopark-test@127.0.0.1:{port}/robopark"
+        yield name
     finally:
         subprocess.run(["docker", "rm", "--force", name], check=False, capture_output=True)
+
+
+@pytest.fixture(scope="session")
+def postgres_database_url(postgres_container_name: str) -> Iterator[str]:
+    port = (
+        subprocess.run(
+            ["docker", "port", postgres_container_name, "5432/tcp"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        .stdout.strip()
+        .rsplit(":", 1)[-1]
+    )
+    yield f"postgresql+psycopg://robopark:robopark-test@127.0.0.1:{port}/robopark"

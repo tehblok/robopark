@@ -233,7 +233,7 @@ def consume_commands(paths, runner, http, *, update_runner=None, github_http=Non
     with exclusive_lock(paths.ops / "command-consumer.lock"):
         pending = paths.state / "command-request.json"
         inbox = paths.ops / "inbox/approved.json"
-        with exclusive_lock(paths.ops / "host.lock"):
+        with exclusive_lock(paths.host_lock):
             resumed = pending.exists()
             if not resumed:
                 if not inbox.exists() and not inbox.is_symlink():
@@ -463,7 +463,7 @@ def consume_commands(paths, runner, http, *, update_runner=None, github_http=Non
             atomic_write_json(worker_request, request)
             code = launch_update(paths, worker_request, update_runner)
         worker_request.unlink(missing_ok=True)
-        with exclusive_lock(paths.ops / "host.lock"):
+        with exclusive_lock(paths.host_lock):
             try:
                 result = _read(paths.ops / "public/rebuild.result")
             except ReleaseError:

@@ -61,6 +61,7 @@ class InstalledHost:
         self.launches = []
         self.calls = []
         self.app_active = True
+        self.db_active = True
         self.tuna_active = True
         self.command_error = ReleaseError
         self.secrets = SECRETS
@@ -100,10 +101,6 @@ class InstalledHost:
             self.installer.run_installer("--resume")
         else:
             self.installer.run_installer()
-        # The long-standing acceptance harness models the explicit offline
-        # SQLite compatibility reader. Production installer output remains
-        # PostgreSQL-only; dedicated tests remove this process-only switch.
-        self.patch.setenv("ROBOPARK_OFFLINE_SQLITE_RESTORE", "1")
         self.patch.setenv("ROBOPARK_TESTING", "1")
         self.patch.setenv("ROBOPARK_ROOT", str(self.installer.root))
         self.paths = HostPaths.from_root(self.installer.root)
@@ -292,7 +289,7 @@ class InstalledHost:
 
     def reboot(self):
         # Execute installed unit entrypoints, without inventing a boot consumer.
-        self.app_active = self.tuna_active = False
+        self.app_active = self.tuna_active = self.db_active = False
         with suppress(self.command_error):
             self.run(["systemctl", "start", "robopark.service"], timeout=3600)
         # After orders startup but does not require app success. The updater is
@@ -393,6 +390,7 @@ class InstalledHost:
                     command = shlex.split(app_unit["Service"]["ExecStartPre"])[3:]
                     if self.command(*command):
                         raise self.command_error("command_failed")
+                    self.db_active = True
                     self.app_active = True
             elif unit == "robopark-tuna.service" and action in ("start", "restart", "try-restart"):
                 if action != "try-restart" or self.tuna_active:
@@ -406,6 +404,7 @@ class InstalledHost:
             if "stop" in argv:
                 self.app_active = False
             elif "up" in argv:
+                self.db_active = True
                 self.app_active = True
         if argv[0] == "curl":
             return (
@@ -446,6 +445,8 @@ class InstalledHost:
             target = self.paths.ops / "rollbacks" / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"PGDMP fixture")
+        if "pg_restore" in argv and "--list" not in argv:
+            assert self.db_active, "pg_restore ran before PostgreSQL was healthy"
         if self.fail == "build" and "build" in argv:
             raise self.command_error("command_failed")
         if "upgrade" in argv:

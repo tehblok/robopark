@@ -186,4 +186,5 @@ def test_postgres_restore_validates_catalog_before_replacing_database(tmp_path: 
     )
 
     assert calls[0] == ["pg_restore", "--list", str(dump)]
+    assert "--username=robopark" in calls[1]
     assert calls[1][-2:] == ["--dbname=postgresql://robopark@db:5432/robopark", str(dump)]

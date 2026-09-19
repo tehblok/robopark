@@ -741,7 +741,7 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
         return UpdateResult("rejected", str(exc))
     except OSError:
         return UpdateResult("rejected", "preflight_failed")
-    with exclusive_lock(paths.ops / "host.lock"):
+    with exclusive_lock(paths.host_lock):
         from .restore import active_restore
 
         if active_restore(paths):
@@ -1243,7 +1243,7 @@ def reconcile_after_exit(paths: HostPaths, runner: Runner) -> RecoveryResult:
 
 
 def recover_interrupted_update(paths: HostPaths, runner: Runner) -> RecoveryResult:
-    with exclusive_lock(paths.ops / "host.lock"):
+    with exclusive_lock(paths.host_lock):
         from .restore import active_restore
 
         if active_restore(paths):

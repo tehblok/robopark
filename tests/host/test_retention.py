@@ -82,7 +82,8 @@ def test_host_lock_makes_scheduled_retention_skip_without_waiting(host_paths):
     from robopark_host.retention import retain_artifacts
 
     victim = old(host_paths.ops / "artifacts" / f"update-{uuid4()}.zip")
-    with (host_paths.ops / "host.lock").open("w") as lock:
+    host_paths.lock_dir.mkdir(parents=True, exist_ok=True)
+    with host_paths.host_lock.open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         assert retain_artifacts(host_paths)["blocked"]
     assert victim.exists()
@@ -293,7 +294,8 @@ def test_busy_host_is_not_diagnosed_as_storage_failure(host_paths):
     from robopark_host.retention import retain_artifacts
 
     host_paths.ops.mkdir(parents=True)
-    with (host_paths.ops / "host.lock").open("w") as lock:
+    host_paths.lock_dir.mkdir(parents=True, exist_ok=True)
+    with host_paths.host_lock.open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         retain_artifacts(host_paths)
     assert _artifact_check(host_paths, None).status == "warning"

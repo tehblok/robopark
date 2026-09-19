@@ -16,6 +16,13 @@ def e2e_host(monkeypatch):
     from e2e_support import InstalledHost
 
     with InstalledHost(monkeypatch) as host:
+        host_env = host.paths.etc / "host.env"
+        host_env.write_text(
+            host_env.read_text().replace(
+                "ROBOPARK_DATABASE_PROFILE='postgresql-17'",
+                "ROBOPARK_DATABASE_PROFILE='sqlite-offline-legacy'",
+            )
+        )
         yield host
 
 
@@ -109,7 +116,11 @@ def test_postgresql_host_rejects_legacy_sqlite_restore_before_stopping_writers(
     e2e_host, monkeypatch
 ):
     host = e2e_host
-    monkeypatch.delenv("ROBOPARK_OFFLINE_SQLITE_RESTORE")
+    host_env = host.paths.etc / "host.env"
+    host_env.write_text(
+        host_env.read_text().replace("sqlite-offline-legacy", "postgresql-17")
+    )
+    monkeypatch.setenv("ROBOPARK_OFFLINE_SQLITE_RESTORE", "1")
 
     before = len(host.calls)
     assert approve(host) != 0
@@ -190,7 +201,7 @@ def test_boot_refuses_app_start_in_each_directory_rename_window(e2e_host, monkey
             assert host.maintenance() and (host.paths.state / "maintenance.json").exists()
             assert not host.app_active
             with (
-                (host.paths.ops / "host.lock").open("a") as lock,
+                host.paths.host_lock.open("a") as lock,
                 pytest.raises(BlockingIOError),
             ):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -237,6 +248,36 @@ def test_corrupt_restore_journal_blocks_writes_and_app_boot(e2e_host):
     (host.paths.state / "restore-journal.json").write_text("corrupt")
     assert host.command("restore-check") == 1
     assert host.command("update", "--recover") == 1
+    assert host.maintenance()
+
+
+def test_resume_rejects_database_profile_changed_after_journal_creation(
+    e2e_host, monkeypatch
+):
+    from e2e_support import PowerLoss
+
+    host = e2e_host
+    original = os.replace
+
+    def interrupt(source, destination):
+        original(source, destination)
+        if (
+            Path(destination).name == "restore-journal.json"
+            and json.loads(Path(destination).read_text())["phase"] == "prepared"
+        ):
+            raise PowerLoss()
+
+    monkeypatch.setattr(os, "replace", interrupt)
+    with pytest.raises(PowerLoss):
+        approve(host)
+    monkeypatch.setattr(os, "replace", original)
+    host_env = host.paths.etc / "host.env"
+    host_env.write_text(
+        host_env.read_text().replace("sqlite-offline-legacy", "postgresql-17")
+    )
+    before = len(host.calls)
+    assert host.command("restore", "--boot-recover") == 1
+    assert not any("pg_restore" in call for call in host.calls[before:])
     assert host.maintenance()
 
 
@@ -386,7 +427,7 @@ def test_boot_recovers_private_claim_before_first_restore_journal(e2e_host, monk
     assert not (host.paths.state / "restore-journal.json").exists()
     import fcntl
 
-    with (host.paths.ops / "host.lock").open("a") as lock:
+    with host.paths.host_lock.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         before = list(host.calls)
         assert host.command("restore", "--boot-recover") == 75
@@ -453,7 +494,7 @@ def test_boot_compose_recovery_owns_host_lock_and_never_recursively_starts_units
         assert argv[0] != "systemctl", "boot recovery recursively activated a waiting unit"
         assert host.maintenance()
         with (
-            (host.paths.ops / "host.lock").open("a") as lock,
+            host.paths.host_lock.open("a") as lock,
             pytest.raises(BlockingIOError),
         ):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -494,9 +535,13 @@ def test_boot_recovery_restores_postgres_snapshot_after_power_loss(e2e_host, mon
         approve(host)
     monkeypatch.setattr(os, "replace", original)
 
+    host.db_active = False
     before = len(host.calls)
     assert host.command("restore", "--boot-recover") == 0
     recovery_calls = host.calls[before:]
+    start_db = next(i for i, call in enumerate(recovery_calls) if "up" in call and call[-1] == "db")
+    restore_db = next(i for i, call in enumerate(recovery_calls) if "pg_restore" in call)
+    assert start_db < restore_db
     assert any(
         call[:2] == ["docker", "compose"]
         and "exec" in call
@@ -561,8 +606,9 @@ def test_exhausted_new_claim_never_relabels_an_older_terminal_journal(host_paths
     atomic_write_json(
         host_paths.state / "restore-journal.json",
         {
-            "schema": 1,
+            "schema": 2,
             "request": old,
+            "database_profile": "postgresql-17",
             "phase": "succeeded",
             "snapshot_done": True,
             "writes_resumed": True,

@@ -21,8 +21,9 @@ def material(paths, phase="succeeded"):
         "created_at": "2026-09-07T00:00:00+00:00",
     }
     journal = {
-        "schema": 1,
+        "schema": 2,
         "request": request,
+        "database_profile": "postgresql-17",
         "phase": phase,
         "snapshot_done": True,
         "writes_resumed": phase == "succeeded",

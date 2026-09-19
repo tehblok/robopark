@@ -83,7 +83,7 @@ def host_operation(paths):
     its worker. Maintenance keeps interrupted transactions exclusive after reboot.
     """
     try:
-        with exclusive_lock(paths.ops / "host.lock", blocking=False):
+        with exclusive_lock(paths.host_lock, blocking=False):
             if operation_pending(paths):
                 raise HostBusy("host_busy")
             yield

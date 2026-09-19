@@ -479,7 +479,7 @@ def _publish(paths, state, release=None):
 
 def check_latest_release(config, http):
     """Record availability only. Every network/configuration failure is sanitized."""
-    with exclusive_lock(config.paths.ops / "host.lock"):
+    with exclusive_lock(config.paths.host_lock):
         try:
             if not config.enabled:
                 _publish(config.paths, "disabled")
@@ -677,7 +677,7 @@ def run_check(paths, http=None):
     try:
         config = GithubConfig.from_paths(paths)
     except ReleaseError:
-        with exclusive_lock(paths.ops / "host.lock"):
+        with exclusive_lock(paths.host_lock):
             _publish(paths, "discovery_stale")
         return 1
     check_latest_release(config, http or GithubHttp())

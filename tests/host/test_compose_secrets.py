@@ -53,3 +53,17 @@ def test_compose_requires_explicit_external_secret_paths():
     assert "ROBOPARK_PGPASS_FILE:?" in text
     assert "./postgres-password" not in text
     assert "./pgpass" not in text
+
+
+def test_direct_compose_uses_root_wrapper_without_sourcing_private_env():
+    wrapper = Path("deploy/compose-production.sh")
+    text = wrapper.read_text()
+
+    assert wrapper.stat().st_mode & 0o111
+    assert '"$(id -u)" = 0' in text
+    assert "--env-file /etc/robopark/compose-secrets.env" in text
+    assert "source " not in text and ". /etc/robopark/compose-secrets.env" not in text
+    for documentation in (Path("README.md"), Path("deploy/README.md")):
+        body = documentation.read_text()
+        assert "sudo ./compose-production.sh up" in body
+        assert ". /etc/robopark/compose-secrets.env" not in body

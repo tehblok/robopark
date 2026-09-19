@@ -23,7 +23,7 @@ def test_clean_reinstall_refuses_broad_or_unresolved_targets(tmp_path, target):
     configure = _configure_module()
 
     with pytest.raises(ValueError, match="unsafe_data_root"):
-        configure.validate_clean_data_root(target, expected=tmp_path / "var/lib/robopark")
+        configure.validate_clean_data_root(target, trusted_base=tmp_path)
 
 
 def test_clean_reinstall_refuses_symlink_even_when_it_resolves_to_named_root(tmp_path):
@@ -34,7 +34,20 @@ def test_clean_reinstall_refuses_symlink_even_when_it_resolves_to_named_root(tmp
     alias.symlink_to(expected)
 
     with pytest.raises(ValueError, match="unsafe_data_root"):
-        configure.validate_clean_data_root(alias, expected=expected)
+        configure.validate_clean_data_root(alias, trusted_base=tmp_path)
+
+
+def test_clean_reinstall_refuses_symlink_in_any_target_ancestor(tmp_path):
+    configure = _configure_module()
+    outside = tmp_path / "outside"
+    (outside / "robopark").mkdir(parents=True)
+    (tmp_path / "var").mkdir()
+    (tmp_path / "var/lib").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="unsafe_data_root"):
+        configure.validate_clean_data_root(
+            tmp_path / "var/lib/robopark", trusted_base=tmp_path
+        )
 
 
 def test_clean_reinstall_accepts_only_exact_existing_named_root(tmp_path):
@@ -42,7 +55,7 @@ def test_clean_reinstall_accepts_only_exact_existing_named_root(tmp_path):
     expected = tmp_path / "var/lib/robopark"
     expected.mkdir(parents=True)
 
-    assert configure.validate_clean_data_root(expected, expected=expected) == expected.resolve()
+    assert configure.validate_clean_data_root(expected, trusted_base=tmp_path) == expected.resolve()
 
 
 def test_clean_reinstall_requires_exact_local_confirmation_before_deletion(tmp_path):
@@ -54,14 +67,14 @@ def test_clean_reinstall_requires_exact_local_confirmation_before_deletion(tmp_p
     with pytest.raises(ValueError, match="confirmation_required"):
         configure.clean_reinstall_data_root(
             expected,
-            expected=expected,
+            trusted_base=tmp_path,
             confirmation="DELETE /var/lib",
         )
     assert (expected / "robopark.db").exists()
 
     configure.clean_reinstall_data_root(
         expected,
-        expected=expected,
+        trusted_base=tmp_path,
         confirmation="DELETE ROBOPARK DATA",
     )
     assert not expected.exists()
@@ -87,6 +100,7 @@ def test_postgres_dump_validation_lists_custom_dump_and_checks_alembic_head(tmp_
 
     assert calls[0] == ["pg_restore", "--list", str(dump)]
     assert "robopark_restore_candidate" in " ".join(calls[1])
+    assert "--username=robopark" in calls[1]
     assert all("/robopark " not in " ".join(call) for call in calls[1:])
 
 

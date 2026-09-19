@@ -252,12 +252,7 @@ Create external root-private PostgreSQL credentials once; no secret file belongs
 the checkout:
 
 ```bash
-sudo python3 compose_secrets.py
-set -a
-. /etc/robopark/compose-secrets.env
-set +a
-export HOST_ENV_FILE=./host.env
-docker compose up -d --build
+sudo ./compose-production.sh up -d --build --wait
 ```
 
 `host.env` is gitignored. For **Tuna HTTPS**, set `COOKIE_SECURE=true`. The API is

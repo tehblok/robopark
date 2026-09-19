@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 from alembic import command
@@ -25,6 +27,7 @@ from robopark_api.models import (
 )
 from robopark_api.routers.tracker_collaboration import _presence_insert
 from robopark_api.services import inventory_exports, inventory_stock, task_timeline
+from robopark_api.services.ops.snapshot import restore_snapshot_tree
 from robopark_api.task_workflow_models import ReliableAction, TaskMessage
 
 pytestmark = pytest.mark.postgres
@@ -68,6 +71,69 @@ def test_alembic_head_matches_model_tables_and_indexes(migrated_engine: Engine) 
         expected = {index.name for index in table.indexes}
         actual = {index["name"] for index in database.get_indexes(table.name)}
         assert expected <= actual, table.name
+
+
+def test_stock_postgres_17_accepts_configured_user_restore_command(
+    migrated_engine: Engine, postgres_container_name: str, tmp_path: Path
+) -> None:
+    tree = tmp_path / "snapshot"
+    dump = tree / "data/robopark.dump"
+    dump.parent.mkdir(parents=True)
+    subprocess.run(
+        [
+            "docker",
+            "exec",
+            postgres_container_name,
+            "pg_dump",
+            "--format=custom",
+            "--username=robopark",
+            "--dbname=robopark",
+            "--file=/tmp/robopark.dump",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["docker", "cp", f"{postgres_container_name}:/tmp/robopark.dump", str(dump)],
+        check=True,
+    )
+    subprocess.run(
+        ["docker", "exec", postgres_container_name, "createdb", "-U", "robopark", "candidate"],
+        check=True,
+    )
+
+    def execute(argv, **_kwargs):
+        translated = ["/tmp/robopark.dump" if value == str(dump) else value for value in argv]
+        return subprocess.run(
+            ["docker", "exec", postgres_container_name, *translated],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    restore_snapshot_tree(
+        tree,
+        database_url="postgresql://robopark:robopark-test@127.0.0.1/candidate",
+        config_targets={},
+        run=execute,
+    )
+    head = subprocess.run(
+        [
+            "docker",
+            "exec",
+            postgres_container_name,
+            "psql",
+            "-U",
+            "robopark",
+            "-d",
+            "candidate",
+            "-tAc",
+            "SELECT version_num FROM alembic_version",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert head == "0031_postgresql_runtime"
 
 
 def _seed_inventory(engine: Engine) -> tuple[int, int, int]:

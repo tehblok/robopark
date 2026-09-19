@@ -117,7 +117,7 @@ OTA проверяет структуру, контрольные суммы, с
 
 ## Владение операцией на хосте
 
-Установщик, root updater/restore, repair и watchdog используют один `ops/host.lock`. Standalone repair возвращает `host_busy` и код 75, если lock занят, есть root maintenance или незавершённый claim; watchdog пропускает такой цикл без увеличения счётчика ошибок. Не удаляйте lock/claim/maintenance-файлы для обхода busy. Установщик отказывает до изменения пакетов/конфигурации и освобождает host.lock перед синхронным запуском root consumer.
+Установщик, root updater/restore, repair и watchdog используют один `/run/lock/robopark/host.lock`, который не исчезает при замене data root. Standalone repair возвращает `host_busy` и код 75, если lock занят, есть root maintenance или незавершённый claim; watchdog пропускает такой цикл без увеличения счётчика ошибок. Не удаляйте lock/claim/maintenance-файлы для обхода busy. Установщик отказывает до изменения пакетов/конфигурации и освобождает host.lock перед синхронным запуском root consumer.
 
 Root consumer сначала берёт `command-consumer.lock`, затем `host.lock`. Для OTA он сохраняет private claim, отпускает host.lock и последовательно передаёт работу worker и successor; незавершённый claim закрывает этот промежуток для standalone repair/watchdog/installer. Restore выполняется под host.lock consumer целиком. Внутренние helpers повторно lock не берут. `restore --boot-recover` в ExecStartPre берёт lock без ожидания; при штатном restart внутри root restore он разрешает передачу управления только в сохранённой фазе запуска app. Незавершённый claim до первого journal при занятом lock возвращает 75, поэтому ожидания собственного lock и повторного запуска restore нет.
 

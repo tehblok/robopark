@@ -33,6 +33,11 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 preflight
+if [ "$CLEAN_REINSTALL" = 1 ]; then
+    # Refuse an absent, unresolved or aliased target before creating locks or
+    # touching containers/volumes. The expected path derives from trusted root.
+    python3 -I "$INSTALLER_DIR/lib/configure.py" --validate-clean-data-root "$ROBOPARK_VAR" "$ROBOPARK_ROOT" || die unsafe_data_root
+fi
 # These installer-owned inodes survive deletion of /var/lib/robopark. The
 # legacy in-tree locks are also held so an older running host cannot overlap a
 # clean reinstall during the transition to the stable lock namespace.
@@ -52,7 +57,7 @@ flock -n 7 || die installer_locked
 exec 6>"$ROBOPARK_VAR/ops/host.lock"
 flock -n 6 || die host_busy
 if [ "$CLEAN_REINSTALL" = 1 ]; then
-    python3 -I "$INSTALLER_DIR/lib/configure.py" --validate-clean-data-root "$ROBOPARK_VAR" "$ROBOPARK_VAR" || die unsafe_data_root
+    python3 -I "$INSTALLER_DIR/lib/configure.py" --validate-clean-data-root "$ROBOPARK_VAR" "$ROBOPARK_ROOT" || die unsafe_data_root
     [ -t 0 ] && [ -r /dev/tty ] || die local_confirmation_required
     printf '\nБудет безвозвратно удалён точный data root Robopark:\n  %s\n' "$ROBOPARK_VAR" >/dev/tty
     printf 'Введите DELETE ROBOPARK DATA: ' >/dev/tty
@@ -63,7 +68,7 @@ if [ "$CLEAN_REINSTALL" = 1 ]; then
     if docker volume inspect robopark_robopark_postgres >/dev/null 2>&1; then
         docker volume rm robopark_robopark_postgres >/dev/null 2>&1 || die clean_database_removal_failed
     fi
-    python3 -I "$INSTALLER_DIR/lib/configure.py" --clean-data-root "$ROBOPARK_VAR" "$ROBOPARK_VAR" "$CLEAN_CONFIRMATION" || die unsafe_data_root
+    python3 -I "$INSTALLER_DIR/lib/configure.py" --clean-data-root "$ROBOPARK_VAR" "$ROBOPARK_ROOT" "$CLEAN_CONFIRMATION" || die unsafe_data_root
 fi
 # Clean reinstall removed the old tree while the stable lock remained held.
 mkdir -p "$ROBOPARK_VAR/ops/state"

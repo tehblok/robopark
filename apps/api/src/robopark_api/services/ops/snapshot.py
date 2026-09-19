@@ -174,6 +174,8 @@ def restore_snapshot_tree(
     tree = tree.resolve()
     url = make_url(database_url) if database_url else None
     if url is not None and url.drivername.startswith("postgresql"):
+        if url.username != "robopark":
+            raise SnapshotError("database_target_invalid")
         dump = tree / SNAPSHOT_DUMP_REL
         if dump.is_symlink() or not dump.is_file():
             raise SnapshotError("snapshot_incomplete")
@@ -196,6 +198,7 @@ def restore_snapshot_tree(
                     "--if-exists",
                     "--no-owner",
                     "--no-privileges",
+                    "--username=robopark",
                     f"--dbname={database}",
                     str(dump),
                 ]

@@ -58,7 +58,7 @@ def test_atomic_state_rejects_nonstandard_numbers_without_replacing_state(host_p
 
 
 def test_exclusive_lock_creates_private_lock_file(host_paths):
-    target = host_paths.ops / "host.lock"
+    target = host_paths.host_lock
 
     with exclusive_lock(target):
         assert target.exists()

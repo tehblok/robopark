@@ -373,9 +373,10 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
     now = time.time() if now is None else now
     try:
         paths.ops.mkdir(parents=True, exist_ok=True)
+        paths.lock_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
         with ExitStack() as stack:
-            ops = stack.enter_context(_directory(paths, paths.ops))
-            stack.enter_context(_lock(ops, "host.lock"))
+            lock_dir = stack.enter_context(_directory(paths, paths.lock_dir))
+            stack.enter_context(_lock(lock_dir, "host.lock"))
             try:
                 api = stack.enter_context(_directory(paths, paths.var / "api-ops"))
             except FileNotFoundError:

@@ -700,6 +700,34 @@ runpy.run_path(helper, run_name='__main__')
         added = self.commands()[len(before):]
         self.assertFalse([call for call in added if call['name'] in {'systemctl', 'docker'}])
 
+    def test_clean_reinstall_requires_existing_target_before_creating_any_layout(self):
+        target = self.root / 'var/lib/robopark'
+        self.assertFalse(target.exists())
+        self.run_installer(
+            '--clean-reinstall', '--non-interactive', str(self.config), success=False
+        )
+        self.assertFalse(target.exists())
+        self.assertFalse(self.commands('docker'))
+        self.assertFalse(self.commands('systemctl'))
+
+    def test_stable_host_lock_blocks_clean_reinstall_after_data_root_replacement(self):
+        self.run_installer()
+        data = self.root / 'var/lib/robopark/data/operator-state.txt'
+        data.write_text('keep-me')
+        before = self.commands()
+        lock_path = self.root / 'run/lock/robopark/host.lock'
+        with lock_path.open('a') as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            shutil.rmtree(self.root / 'var/lib/robopark')
+            (self.root / 'var/lib/robopark/data').mkdir(parents=True)
+            data.write_text('replacement-still-protected')
+            self.run_installer(
+                '--clean-reinstall', '--non-interactive', str(self.config), success=False
+            )
+        self.assertEqual(data.read_text(), 'replacement-still-protected')
+        added = self.commands()[len(before):]
+        self.assertFalse([call for call in added if call['name'] in {'systemctl', 'docker'}])
+
     def test_installer_releases_host_owner_before_synchronous_consumer_start(self):
         self.run_installer(CHECK_HOST_LOCK_HANDOFF='1')
 

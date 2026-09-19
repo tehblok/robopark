@@ -41,13 +41,12 @@ Edit `host.env`:
 | `UVICORN_WORKERS` | API processes inside the one `api` container (default **2**, cap **4**) |
 
 The installer creates database credentials automatically. For the supported direct
-Compose path, create the same external root-private files before the first start:
+Compose path, use the root-run wrapper. It creates and validates the same external
+root-private files, then passes only their paths to Compose without sourcing a
+root-only file into an unprivileged shell:
 
 ```sh
-sudo python3 compose_secrets.py
-set -a
-. /etc/robopark/compose-secrets.env
-set +a
+sudo ./compose-production.sh up -d --build --wait
 ```
 
 The command creates `/etc/robopark/postgres-password` as root `0600` and
@@ -234,7 +233,7 @@ Royal uploads that ZIP on the same admin tab, types `ОБНОВИТЬ`. The API 
 
 | Piece | Where | Command |
 |-------|--------|---------|
-| App | `deploy/` | source `/etc/robopark/compose-secrets.env`, then `HOST_ENV_FILE=./host.env docker compose up -d --build` |
+| App | `deploy/` | `sudo ./compose-production.sh up -d --build --wait` |
 | Tunnel | host systemd | `systemctl enable --now robopark-tuna` |
 | Users | browser | `https://<your-tuna-host>/` |
 

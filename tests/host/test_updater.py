@@ -376,7 +376,7 @@ def test_pre_cutover_backup_is_postgres_custom_format_and_rollback_restores_it(h
     assert any(f"pg_dump --format=custom --file={dump}" in command for command in commands)
     assert any(f"pg_restore --list {dump}" in command for command in commands)
     assert any(
-        f"pg_restore --clean --if-exists --no-owner --no-privileges --dbname=robopark {dump}"
+        f"pg_restore --clean --if-exists --no-owner --no-privileges --username=robopark --dbname=robopark {dump}"
         in command
         for command in commands
     )

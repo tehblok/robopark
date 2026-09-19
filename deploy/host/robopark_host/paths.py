@@ -21,6 +21,8 @@ class HostPaths:
     previous: Path
     ops: Path
     state: Path
+    lock_dir: Path
+    host_lock: Path
 
     @classmethod
     def from_root(cls, root: Path = _SYSTEM_ROOT) -> "HostPaths":
@@ -41,6 +43,8 @@ class HostPaths:
             previous=opt / "previous",
             ops=ops,
             state=ops / "state",
+            lock_dir=root / "run/lock/robopark",
+            host_lock=root / "run/lock/robopark/host.lock",
         )
 
 

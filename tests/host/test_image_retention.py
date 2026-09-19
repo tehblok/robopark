@@ -238,7 +238,7 @@ def test_scheduled_image_cleanup_respects_host_operation_owner(host):
 
     _, inventory = obsolete_image(host)
     runner = Images(inventory)
-    with exclusive_lock(host.paths.ops / "host.lock"):
+    with exclusive_lock(host.paths.host_lock):
         assert scheduled(host.paths, runner)["busy"]
     assert not runner.removed
 

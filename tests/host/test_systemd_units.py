@@ -31,6 +31,7 @@ def test_tuna_requires_ready_application_and_bounded_restart():
 
 def test_boot_never_builds_or_uses_a_mutable_compose_config():
     app = unit("robopark.service")["Service"]
+    assert "-/run/lock/robopark" in app["ReadWritePaths"].split()
     for directive in ("ExecStart", "ExecStop"):
         command = app[directive].split()
         assert command[command.index("--project-name") + 1] == "robopark"
@@ -40,6 +41,11 @@ def test_boot_never_builds_or_uses_a_mutable_compose_config():
         )
     assert "--no-build" in app["ExecStart"].split()
     assert "--wait" in app["ExecStart"].split()
+
+
+def test_command_consumer_can_open_the_shared_stable_host_lock():
+    service = unit("robopark-commands.service")["Service"]
+    assert "-/run/lock/robopark" in service["ReadWritePaths"].split()
 
 
 @pytest.mark.parametrize(
@@ -60,6 +66,7 @@ def test_privileged_units_use_trusted_launcher_and_sandbox(name, command):
     assert service["PrivateTmp"] == "true"
     assert service["ProtectSystem"] == "strict"
     assert service["ProtectHome"] == "true"
+    assert "-/run/lock/robopark" in service["ReadWritePaths"].split()
     timeout = int(service["TimeoutStartSec"])
     if name == "updater":
         assert 14400 <= timeout <= 18000

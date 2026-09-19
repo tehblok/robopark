@@ -33,24 +33,36 @@ def probed_cpu_count(root):
     return os.cpu_count() or 0 if Path(root) == Path('/') else 0
 
 
-def validate_clean_data_root(target, *, expected):
+def validate_clean_data_root(target, *, trusted_base):
     """Return the exact named Robopark root; reject aliases and broad targets."""
-    target, expected = Path(target), Path(expected)
+    target = Path(target)
+    trusted_base = Path(trusted_base).absolute()
+    expected = trusted_base / "var/lib/robopark"
     broad = {Path("/"), Path("/var"), Path("/var/lib"), Path.cwd()}
-    if target in broad or target.is_symlink() or expected.is_symlink():
+    if target in broad or target.absolute() != expected or target.name != "robopark":
         raise ValueError("unsafe_data_root")
     try:
+        relative = expected.relative_to(trusted_base)
+        current = trusted_base
+        candidates = [current]
+        for part in relative.parts:
+            current /= part
+            candidates.append(current)
+        for candidate in candidates:
+            info = candidate.lstat()
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                raise ValueError("unsafe_data_root")
         resolved = target.resolve(strict=True)
         named = expected.resolve(strict=True)
     except OSError as exc:
         raise ValueError("unsafe_data_root") from exc
-    if resolved != named or target.absolute() != expected.absolute() or target.name != "robopark":
+    if resolved != named:
         raise ValueError("unsafe_data_root")
     return resolved
 
 
-def clean_reinstall_data_root(target, *, expected, confirmation):
-    resolved = validate_clean_data_root(target, expected=expected)
+def clean_reinstall_data_root(target, *, trusted_base, confirmation):
+    resolved = validate_clean_data_root(target, trusted_base=trusted_base)
     if confirmation != 'DELETE ROBOPARK DATA':
         raise ValueError('confirmation_required')
     shutil.rmtree(resolved)
@@ -246,10 +258,10 @@ def configure(root, mode, filename, resume):
 if __name__ == '__main__':
     try:
         if sys.argv[1:2] == ['--validate-clean-data-root'] and len(sys.argv) == 4:
-            validate_clean_data_root(Path(sys.argv[2]), expected=Path(sys.argv[3]))
+            validate_clean_data_root(Path(sys.argv[2]), trusted_base=Path(sys.argv[3]))
         elif sys.argv[1:2] == ['--clean-data-root'] and len(sys.argv) == 5:
             clean_reinstall_data_root(
-                Path(sys.argv[2]), expected=Path(sys.argv[3]), confirmation=sys.argv[4]
+                Path(sys.argv[2]), trusted_base=Path(sys.argv[3]), confirmation=sys.argv[4]
             )
         else:
             configure(*sys.argv[1:])

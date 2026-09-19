@@ -232,7 +232,7 @@ def test_transport_deadline_interrupts_blocking_calls_and_releases_lock(
         == "discovery_stale"
     )
     assert {child.pid for child in multiprocessing.active_children()} == before
-    with (host_paths.ops / "host.lock").open("rb") as stream:
+    with host_paths.host_lock.open("rb") as stream:
         fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 

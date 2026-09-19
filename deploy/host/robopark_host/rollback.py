@@ -196,6 +196,7 @@ def restore_data(paths, journal, runner=None):
                     "--if-exists",
                     "--no-owner",
                     "--no-privileges",
+                    "--username=robopark",
                     "--dbname=robopark",
                     f"/host-rollbacks/{journal['job_id']}/database.dump",
                 ],

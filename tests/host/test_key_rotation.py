@@ -296,10 +296,11 @@ def test_manual_restore_verifies_bridge_through_exact_retained_pin(host, monkeyp
     from robopark_host.restore import run_restore
     from test_manual_restore import database
 
-    monkeypatch.setenv("ROBOPARK_OFFLINE_SQLITE_RESTORE", "1")
-
     request, _, public = bridge(host)
     assert finish(host, request).state == "current_healthy"
+    host_env = host.paths.etc / "host.env"
+    with host_env.open("a") as stream:
+        stream.write("ROBOPARK_DATABASE_PROFILE=sqlite-offline-legacy\n")
     source = host.paths.root / "manual-snapshot"
     database(source / "data/robopark.db", "restored", "new")
     blob = build_archive(kind="snapshot", source_root=source, app_version="2.0.0")

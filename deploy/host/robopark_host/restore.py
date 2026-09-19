@@ -19,6 +19,7 @@ import time
 import zipfile
 from contextlib import closing, suppress
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from .release import ReleaseError, safe_member, unique_object, verify_directory
@@ -65,6 +66,9 @@ def validate_postgres_dump(path, *, expected_head, candidate_dsn, run=None):
         "/robopark"
     ):
         raise ReleaseError("snapshot_invalid")
+    username = urlsplit(candidate_dsn).username
+    if username != "robopark":
+        raise ReleaseError("snapshot_invalid")
     try:
         listing = str(execute(["pg_restore", "--list", str(path)]))
         if "alembic_version" not in listing:
@@ -76,6 +80,7 @@ def validate_postgres_dump(path, *, expected_head, candidate_dsn, run=None):
                 "--if-exists",
                 "--no-owner",
                 "--no-privileges",
+                f"--username={username}",
                 f"--dbname={candidate_dsn}",
                 str(path),
             ]
@@ -121,9 +126,14 @@ def _load(paths):
             "writes_resumed",
             "error",
             "publication_degraded",
+            "database_profile",
         }:
             raise ValueError()
-        if journal["schema"] != 1 or journal["phase"] not in PHASES:
+        if journal["schema"] != 2 or journal["phase"] not in PHASES:
+            raise ValueError()
+        if journal["database_profile"] not in {"postgresql-17", "sqlite-offline-legacy"}:
+            raise ValueError()
+        if journal["database_profile"] != _database_profile(paths):
             raise ValueError()
         from .commands import _validate
 
@@ -220,8 +230,6 @@ def _validate_database(path, head):
 
 def _database_profile(paths):
     """Read the installed database contract; absence defaults to PostgreSQL."""
-    if os.environ.get("ROBOPARK_OFFLINE_SQLITE_RESTORE") == "1":
-        return "sqlite-offline-legacy"
     target = paths.etc / "host.env"
     try:
         fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -241,6 +249,8 @@ def _database_profile(paths):
         if len(found) > 1 or (found and found[0] not in {"postgresql-17", "sqlite-offline-legacy"}):
             raise ValueError()
         return found[0] if found else "postgresql-17"
+    except FileNotFoundError:
+        return "postgresql-17"
     except (OSError, UnicodeError, ValueError) as exc:
         raise ReleaseError("snapshot_invalid") from exc
 
@@ -276,6 +286,7 @@ def _validate_postgres_candidate(paths, journal, dump, head, runner):
                     "pg_restore",
                     "--no-owner",
                     "--no-privileges",
+                    "--username=robopark",
                     "--dbname=" + database,
                     container_dump,
                 ],
@@ -476,6 +487,7 @@ def _replace(paths, source, journal, runner=None):
                     "--if-exists",
                     "--no-owner",
                     "--no-privileges",
+                    "--username=robopark",
                     "--dbname=robopark",
                     f"/host-restores/{journal['request']['job_id']}/{relative}/robopark.dump",
                 ],
@@ -571,8 +583,9 @@ def run_restore(paths, request, runner):
     resumed = bool(journal and journal["request"] == request)
     if not resumed:
         journal = {
-            "schema": 1,
+            "schema": 2,
             "request": request,
+            "database_profile": _database_profile(paths),
             "phase": "validating",
             "snapshot_done": False,
             "writes_resumed": False,
@@ -654,6 +667,7 @@ class _BootRunner:
 
         self.runner = runner
         self.command = compose("robopark", paths.state / "current-compose.json")
+        self.database_ready = False
 
     def run(self, argv, *, timeout):
         if argv == ["systemctl", "stop", "robopark.service"]:
@@ -679,6 +693,7 @@ class _BootRunner:
                 "--if-exists",
                 "--no-owner",
                 "--no-privileges",
+                "--username=robopark",
                 "--dbname=robopark",
             }
             if (
@@ -689,6 +704,21 @@ class _BootRunner:
                     options[-1],
                 )
             ):
+                if not self.database_ready:
+                    self.runner.run(
+                        self.command
+                        + [
+                            "up",
+                            "-d",
+                            "--no-build",
+                            "--wait",
+                            "--wait-timeout",
+                            "180",
+                            "db",
+                        ],
+                        timeout=180,
+                    )
+                    self.database_ready = True
                 return self.runner.run(argv, timeout=timeout)
         # A synchronous Tuna start would wait for this very ExecStartPre to finish.
         raise ReleaseError("publication_pending")
@@ -735,8 +765,9 @@ def _recover_owned(paths, runner, *, automatic):
         journal = _load(paths)
         if journal is None or journal["request"] != request:
             journal = {
-                "schema": 1,
+                "schema": 2,
                 "request": request,
+                "database_profile": _database_profile(paths),
                 "snapshot_done": False,
                 "writes_resumed": False,
                 "publication_degraded": True,
@@ -757,7 +788,7 @@ def recover_restore(paths, runner, *, automatic=False):
     if automatic and not active_restore(paths):
         return 0
     try:
-        with exclusive_lock(paths.ops / "host.lock", blocking=False):
+        with exclusive_lock(paths.host_lock, blocking=False):
             return _recover_owned(paths, runner, automatic=automatic)
     except BlockingIOError:
         # A normal root restore owns host.lock while synchronously restarting the
