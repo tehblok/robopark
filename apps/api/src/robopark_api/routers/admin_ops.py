@@ -125,7 +125,18 @@ def _job_out(job, *, progress: tuple[str | None, int | None] = (None, None)) -> 
 
 
 async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
-    content = await file.read(max_bytes + 1)
+    # Starlette upload bodies are seekable spooled files.  Measure the actual
+    # body before reading it: BufferedReader.read(very_large_limit) may reserve
+    # the whole configured limit even when the uploaded file is tiny.
+    stream = file.file
+    stream.seek(0, 2)
+    upload_bytes = stream.tell()
+    stream.seek(0)
+    if upload_bytes > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="archive_too_large"
+        )
+    content = await file.read()
     if len(content) > max_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="archive_too_large"

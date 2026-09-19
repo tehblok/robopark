@@ -18,7 +18,8 @@ def test_ops_upload_keeps_only_one_archive_copy_in_python_memory():
 
     from robopark_api.routers.admin_ops import _read_upload
 
-    size = 8 * 1024 * 1024
+    size = 1 * 1024 * 1024
+    configured_limit = 64 * 1024 * 1024
     with tempfile.SpooledTemporaryFile(max_size=1) as stream:
         stream.write(b"x" * size)
         stream.seek(0)
@@ -26,7 +27,7 @@ def test_ops_upload_keeps_only_one_archive_copy_in_python_memory():
 
         tracemalloc.start()
         try:
-            content = asyncio.run(_read_upload(upload, size))
+            content = asyncio.run(_read_upload(upload, configured_limit))
             _, peak = tracemalloc.get_traced_memory()
         finally:
             tracemalloc.stop()
@@ -34,7 +35,7 @@ def test_ops_upload_keeps_only_one_archive_copy_in_python_memory():
     assert len(content) == size
     assert content[:1] == b"x"
     assert content[-1:] == b"x"
-    assert peak < size * 5 // 4
+    assert peak < size * 2
 
 
 def test_admin_cannot_create_snapshot(client, seed_royal, db_session):
