@@ -17,10 +17,11 @@ function isInventoryView(value: string | null): value is InventoryView {
   return inventoryViews.some(view => view === value)
 }
 
-export function InventoryTabs({ renderPanel }: { renderPanel: (view: InventoryView) => ReactNode }) {
+export function InventoryTabs({ renderPanel, readOnly = false }: { renderPanel: (view: InventoryView) => ReactNode; readOnly?: boolean }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const rawView = searchParams.get('view')
-  const activeView: InventoryView = isInventoryView(rawView) ? rawView : 'parts'
+  const visibleItems = readOnly ? tabItems.filter(item => item.id === 'parts') : tabItems
+  const activeView: InventoryView = !readOnly && isInventoryView(rawView) ? rawView : 'parts'
 
   const setView = (view: string, replace = false) => {
     if (!isInventoryView(view)) return
@@ -40,12 +41,12 @@ export function InventoryTabs({ renderPanel }: { renderPanel: (view: InventoryVi
     <section className="inventory-workflows">
       <Tabs
         ariaLabel="Разделы склада"
-        items={tabItems}
+        items={visibleItems}
         onChange={setView}
         panelIdFor={view => `inventory-panel-${view}`}
         value={activeView}
       />
-      {tabItems.map(item => {
+      {visibleItems.map(item => {
         const active = item.id === activeView
         return <TabPanel active={active} id={`inventory-panel-${item.id}`} key={item.id} labelledBy={`tab-${item.id}`}>
           {active ? <div data-inventory-workflow={item.id}>{renderPanel(item.id)}</div> : null}

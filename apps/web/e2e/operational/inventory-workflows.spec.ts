@@ -90,9 +90,9 @@ test('mechanic cannot broaden inventory to a foreign park at 320px', async ({ pa
   await postCount(page, 'ABC-1', '0', 320)
 })
 
-test('operator switches inventory workflows with the keyboard at 768px', async ({ page }) => {
+test('mechanic switches inventory workflows with the keyboard at 768px', async ({ page }) => {
   await page.setViewportSize({ width: 768, height: 900 })
-  await openAs(page, 'operator', '/inventory?park=7')
+  await openAs(page, 'mechanic', '/inventory?park=7')
   const parts = page.getByRole('tab', { name: 'Запчасти' })
   await parts.focus()
   await parts.press('ArrowRight')

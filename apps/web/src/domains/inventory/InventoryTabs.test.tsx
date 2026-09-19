@@ -6,6 +6,7 @@ import { api, ApiError, inventoryErrorDetail, isInventoryCountStaleErrorDetail, 
 import { AuthContext } from '../../auth-context'
 import { ParkScopeContext } from '../../app/park/parkScope'
 import { InventoryPage } from './InventoryPage'
+import { resourceStore } from '../../lib/resource'
 
 const park: Park = { id: 7, name: 'Север', tag: 'North', is_active: true }
 const overview: InventoryOverview = {
@@ -18,6 +19,7 @@ const overview: InventoryOverview = {
 }
 
 afterEach(() => {
+  resourceStore.clearAll()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -97,14 +99,14 @@ describe('inventory URL tabs', () => {
     await waitFor(() => expect(screen.getByLabelText('Адрес')).toHaveTextContent('/inventory?park=7&view=parts&source=qr'))
   })
 
-  it.each(['mechanic', 'operator', 'admin', 'royal'] as const)('exposes all park workflows to %s with scoped management copy', async (role) => {
+  it.each(['mechanic', 'admin', 'royal'] as const)('exposes all park workflows to %s with scoped management copy', async (role) => {
     renderInventory('/inventory?park=7&view=manage', role)
 
     expect(await screen.findAllByRole('tab')).toHaveLength(5)
     await waitFor(() => expect(screen.getByRole('tabpanel')).toHaveTextContent(
       role === 'admin' || role === 'royal' ? 'Глобальный каталог' : 'Настройки склада парка',
     ))
-    if (role === 'mechanic' || role === 'operator') {
+    if (role === 'mechanic') {
       expect(screen.queryByText('Все парки')).not.toBeInTheDocument()
     }
   })

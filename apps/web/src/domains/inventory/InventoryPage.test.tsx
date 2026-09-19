@@ -8,6 +8,7 @@ import { ParkScopeContext } from '../../app/park/parkScope'
 import { InventoryPage } from './InventoryPage'
 import { TaskPartsPanel } from './TaskPartsPanel'
 import { INVENTORY_REVISION_CHANGED } from './inventoryRevision'
+import { resourceStore } from '../../lib/resource'
 
 const park: Park = { id: 7, name: 'Север', tag: 'North', is_active: true }
 const stock: InventoryOverview = { park_id: 7, component_count: 1, part_count: 1, low_stock_count: 0, out_of_stock_count: 0, components: [{ id: 2, park_id: 7, name: 'Подвязка', has_photo: true, parts: [{ id: 3, park_id: 7, component_id: 2, name: 'Тяга', article: 'TY-001', quantity: '5', minimum_quantity: '2', location: 'Стеллаж A / полка 2', is_active: true, has_photo: true }] }] }
@@ -39,9 +40,53 @@ function useViewport(matches: boolean) {
   }))
 }
 
-beforeEach(() => useViewport(false))
+beforeEach(() => { resourceStore.clearAll(); useViewport(false) })
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+afterEach(() => { resourceStore.clearAll(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+it('reuses completed KPI data on navigation without persisting protected inventory', async () => {
+  const client = inventoryClient({
+    searchInventory: vi.fn(async () => ({ items: [], limit: 25, offset: 0, total: 0 })),
+    inventoryCatalogComponents: vi.fn(async () => ({ items: [], limit: 200, offset: 0, total: 0 })),
+  })
+  const view = render(renderInventoryPage(park, client))
+  await screen.findByText('Компоненты')
+  view.unmount()
+  render(renderInventoryPage(park, client))
+  await screen.findByText('Компоненты')
+  expect(client.inventory).toHaveBeenCalledTimes(1)
+  expect(Object.values(localStorage).join(' ')).not.toContain('TY-001')
+})
+
+it('does not publish an old park KPI response after switching parks', async () => {
+  let finishOld!: (value: InventoryOverview) => void
+  const client = inventoryClient({
+    inventory: vi.fn((id: number) => id === 7 ? new Promise<InventoryOverview>(resolve => { finishOld = resolve }) : Promise.resolve({ ...stock, park_id: 8, part_count: 88 })),
+    searchInventory: vi.fn(async () => ({ items: [], limit: 25, offset: 0, total: 0 })),
+    inventoryCatalogComponents: vi.fn(async () => ({ items: [], limit: 200, offset: 0, total: 0 })),
+  })
+  const view = render(renderInventoryPage(park, client))
+  await waitFor(() => expect(client.inventory).toHaveBeenCalledWith(7))
+  view.rerender(renderInventoryPage({ ...park, id: 8, name: 'Юг' }, client))
+  await screen.findByText('88')
+  finishOld({ ...stock, part_count: 777 })
+  await waitFor(() => expect(screen.queryByText('777')).not.toBeInTheDocument())
+  expect(screen.getByText('88')).toBeVisible()
+})
+
+it('keeps operator inventory read-only even with a stale permissive client permission list', async () => {
+  const user = { id: 2, username: 'operator', role: 'operator', access_status: 'approved', parks: [park], permissions: ['inventory.stock.manage', 'inventory.export'] }
+  const client = inventoryClient({
+    searchInventory: vi.fn(async () => ({ items: [{ id: 3, name: 'Тяга', article: 'TY-001', component_id: 2, component_name: 'Подвязка', quantity: '5', minimum_quantity: '2', location: 'Полка 2', has_photo: false, is_active: true, stock_is_active: true }], limit: 25, offset: 0, total: 1 })),
+    inventoryCatalogComponents: vi.fn(async () => ({ items: [], limit: 200, offset: 0, total: 0 })),
+  })
+  render(<AuthContext.Provider value={{ user, loading: false, login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn() }}>{renderInventoryPage(park, client, '/inventory?view=manage')}</AuthContext.Provider>)
+  expect(await screen.findByText('Полка 2')).toBeVisible()
+  expect(screen.queryByRole('tab', { name: 'Управление' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('tab', { name: 'Выгрузка' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Настроить остаток' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('group', { name: 'Печать этикеток' })).not.toBeInTheDocument()
+})
 
 it('refreshes only the active park inventory without clearing the search', async () => {
   const client = inventoryClient({

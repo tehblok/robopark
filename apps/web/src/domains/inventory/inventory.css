@@ -19,3 +19,4 @@
 @media(min-width:900px){.inventory-document-view{grid-template-columns:minmax(18rem,2fr) minmax(22rem,3fr)}}
 @media(max-width:599px){.inventory-document-view{grid-template-columns:1fr}.inventory-document-pane--hidden{display:none}.inventory-document-back{display:inline-flex}.inventory-document-fields,.inventory-document-line{grid-template-columns:1fr}.inventory-document-list,.inventory-document-editor{padding:var(--rp-space-3)}.inventory-document-actions .rp-button{flex:1 1 100%}}
 .inventory-document-title{grid-column:1/-1;margin:0}
+.inventory-secondary-actions{display:contents}.inventory-secondary-actions>summary{display:none}

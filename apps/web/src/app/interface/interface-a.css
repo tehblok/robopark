@@ -9,11 +9,11 @@ html[data-interface='task-first'] {
   .rp-shell__park-brand { border-radius: 8px; padding: 10px; }
   .rp-shell__desktop-nav { gap: 20px; }
   .rp-shell__nav-group { gap: 4px; }
-  .rp-shell__nav-group h2 { padding-inline: 12px; font-size: 11px; letter-spacing: .06em; }
+  .rp-shell__nav-group h2 { padding-inline: 12px; font-size: 14px; letter-spacing: .03em; }
   .rp-shell__desktop-link { padding: 10px 12px; min-height: 44px; border-radius: 8px; font-size: 14px; }
   .rp-shell__desktop-link.is-active { box-shadow: inset 3px 0 currentColor; font-weight: 700; }
   .rp-shell__context { display: flex; gap: 12px; align-items: baseline; margin-inline-end: auto; min-width: 0; }
-  .rp-shell__context span { color: var(--rp-text-muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rp-shell__context span { color: var(--rp-text-muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rp-shell__topbar { min-height: 60px; padding: 8px 24px; gap: 16px; }
   .rp-shell__content { padding: 24px; }
   .rp-page-layout { gap: 20px; }
@@ -85,6 +85,41 @@ html[data-interface='task-first'] {
   .rp-robots-recent-list { display: grid; grid-template-columns: 1fr; gap: 8px; }
   .rp-robots-recent-card { padding: 12px; }
 
+  /* Inventory: the catalog is a lookup, documents are focused workspaces. */
+  .inventory-workflows { overflow: visible; }
+  .inventory-workflows > .rp-tabs { border-bottom: 1px solid var(--rp-border); margin-bottom: 16px; }
+  .inventory-kpis { padding: 4px; background: transparent; border: 0; }
+  .inventory-kpis .rp-metric-card { padding: 8px 12px; }
+  .inventory-catalog-view { gap: 12px; }
+  .inventory-catalog-view > .rp-form-field { max-inline-size: none; }
+  .inventory-search-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .inventory-search-results { gap: 0; border: 1px solid var(--rp-border); border-radius: 12px; overflow: hidden; }
+  .inventory-search-card { grid-template-columns: 48px minmax(0, 1fr); padding: 16px; border: 0; border-bottom: 1px solid var(--rp-border); border-radius: 0; }
+  .inventory-search-card:last-child { border-bottom: 0; }
+  .inventory-search-card__photo { inline-size: 48px; block-size: 48px; font-size: 14px; text-align: center; }
+  .inventory-search-card__body { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; }
+  .inventory-search-card__heading, .inventory-search-card__location { grid-column: 1; }
+  .inventory-search-card__heading { align-items: start; }
+  .inventory-search-card__heading p, .inventory-search-card h3 { overflow-wrap: anywhere; }
+  .inventory-label-choice { grid-column: 2; grid-row: 1; align-self: start; }
+  .inventory-card-actions { grid-column: 1/-1; margin: 0; gap: 8px; }
+  .inventory-card-form { grid-column: 1/-1; }
+  .inventory-label-actions { padding: 8px 0; border-block: 1px solid var(--rp-border); }
+  .inventory-document-view { grid-template-columns: minmax(230px, .55fr) minmax(0, 1fr); gap: 20px; }
+  .inventory-document-list, .inventory-document-editor, .inventory-document-empty { padding: 20px; gap: 16px; border-radius: 12px; }
+  .inventory-document-list { background: var(--rp-surface-muted); }
+  .inventory-document-card { background: var(--rp-surface); gap: 8px; }
+  .inventory-document-actions { padding-top: 16px; border-top: 1px solid var(--rp-border); justify-content: flex-start; }
+  .inventory-secondary-actions { display: block; flex-basis: 100%; }
+  .inventory-secondary-actions > summary { display: flex; align-items: center; min-height: 44px; cursor: pointer; color: var(--rp-text-muted); }
+  .inventory-secondary-actions:not([open]) > :not(summary) { display: none; }
+  .inventory-workflow-placeholder { max-width: 760px; padding: 20px; border-radius: 12px; }
+  .inventory-document-actions > .rp-button:not(.rp-button--secondary):not(.rp-button--danger) { order: -1; }
+  .inventory-document-fields { padding-bottom: 16px; border-bottom: 1px solid var(--rp-border); }
+  .inventory-manage-view { gap: 20px; }
+  .inventory-manage-heading p { color: var(--rp-text-muted); margin-block: 8px; }
+  .inventory-manage-form { border: 1px solid var(--rp-border); border-radius: 12px; background: var(--rp-surface); padding: 20px; }
+
   /* Public/access screens: clear form first, quieter product context. */
   .rp-auth { background: var(--rp-canvas); }
   .rp-auth::before, .rp-auth__orbit { display: none; }
@@ -126,10 +161,10 @@ html[data-interface='task-first'] {
     .rp-shell__topbar { min-height: 60px; padding: 8px 12px; gap: 8px; }
     .rp-shell__park-brand { flex: 1; max-width: none; padding: 8px; min-height: 44px; }
     .rp-shell__content { padding: 16px 12px calc(88px + env(safe-area-inset-bottom)); }
-    .rp-shell__user { font-size: 12px; }
-    .rp-shell__user > span { font-size: 11px; }
+    .rp-shell__user { font-size: 14px; }
+    .rp-shell__user > span { font-size: 14px; }
     .rp-shell__bottom-nav { padding-inline: 4px; }
-    .rp-shell__mobile-link { min-height: 56px; border-radius: 8px; font-size: 11px; }
+    .rp-shell__mobile-link { min-height: 56px; border-radius: 8px; font-size: 14px; }
     .rp-shell__mobile-link.is-active { box-shadow: inset 0 3px currentColor; font-weight: 700; }
     .rp-page-layout { gap: 16px; }
     .rp-page-layout__header { align-items: flex-start; flex-wrap: wrap; padding-bottom: 12px; gap: 12px; }
@@ -144,6 +179,14 @@ html[data-interface='task-first'] {
     .rp-auth__robot-wrap, .rp-auth__capabilities { display: none; }
     .rp-auth__footer { width: calc(100% - 24px); flex-wrap: wrap; gap: 8px; }
     .page > .page-content.shell { padding: 16px 12px; }
+    .inventory-document-view { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+    .inventory-document-list, .inventory-document-editor, .inventory-document-empty, .inventory-manage-form { padding: 14px; }
+    .inventory-document-fields, .inventory-document-line { grid-template-columns: minmax(0, 1fr); }
+    .inventory-search-card { padding: 12px; gap: 10px; }
+    .inventory-search-card__body { grid-template-columns: minmax(0, 1fr); }
+    .inventory-label-choice { grid-column: 1; grid-row: auto; }
+    .inventory-search-filters { grid-template-columns: minmax(0, 1fr); }
+    .inventory-document-actions .rp-button { flex: 1 1 auto; }
   }
   @media (prefers-reduced-motion: no-preference) {
     .rp-shell__desktop-link, .rp-shell__mobile-link { transition: background-color 120ms ease, color 120ms ease; }

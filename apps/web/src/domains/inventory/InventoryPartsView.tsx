@@ -15,6 +15,8 @@ type PartWorkflow = { catalogPartId: number; kind: PartWorkflowKind } | null
 
 export type InventoryPartsViewProps = {
   apiClient?: InventoryPartsApi
+  canManage?: boolean
+  canPrint?: boolean
   debounceMs?: number
   parkId: number
   refreshVersion?: number
@@ -55,7 +57,7 @@ function StockForm({ apiClient, onSaved, parkId, part }: { apiClient: InventoryP
   </form>
 }
 
-export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, refreshVersion = 0, selectedCatalogPartId, onSelectedCatalogPartIdChange }: InventoryPartsViewProps) {
+export function InventoryPartsView({ apiClient = api, canManage = true, canPrint = true, debounceMs = 300, parkId, refreshVersion = 0, selectedCatalogPartId, onSelectedCatalogPartIdChange }: InventoryPartsViewProps) {
   const [query, setQuery] = useState('')
   const [componentId, setComponentId] = useState<number | undefined>()
   const [stockFilter, setStockFilter] = useState<InventoryStockFilter | undefined>()
@@ -157,7 +159,7 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
       <FormField id="inventory-component-filter" label="Компонента"><select value={componentId ?? ''} onChange={event => { setComponentId(event.target.value ? Number(event.target.value) : undefined); setOffset(0) }}><option value="">Все компоненты</option>{knownComponents.map(component => <option key={component.id} value={component.id}>{component.name}</option>)}</select></FormField>
       <FormField id="inventory-stock-filter" label="Остаток"><select value={stockFilter ?? ''} onChange={event => { setStockFilter(event.target.value as InventoryStockFilter || undefined); setOffset(0) }}><option value="">Все остатки</option><option value="in_stock">Есть на складе</option><option value="below_minimum">Ниже минимума</option><option value="without_location">Без места</option></select></FormField>
     </div>
-    <div aria-label="Печать этикеток" className="inventory-label-actions" role="group"><Button disabled={!result?.items.length} onClick={chooseCurrentPage} size="compact" variant="secondary">Выбрать текущую страницу</Button><Button disabled={!selectedLabelIds.size} onClick={() => print([...selectedLabelIds])} size="compact">Печатать выбранные ({selectedLabelIds.size})</Button>{selectedLabelIds.size ? <Button onClick={() => { setSelectedLabelIds(new Set()); setLabelsToPrint([]) }} size="compact" variant="ghost">Очистить выбор</Button> : null}</div>
+    {canPrint ? <div aria-label="Печать этикеток" className="inventory-label-actions" role="group"><Button disabled={!result?.items.length} onClick={chooseCurrentPage} size="compact" variant="secondary">Выбрать текущую страницу</Button><Button disabled={!selectedLabelIds.size} onClick={() => print([...selectedLabelIds])} size="compact">Печатать выбранные ({selectedLabelIds.size})</Button>{selectedLabelIds.size ? <Button onClick={() => { setSelectedLabelIds(new Set()); setLabelsToPrint([]) }} size="compact" variant="ghost">Очистить выбор</Button> : null}</div> : null}
     {componentError ? <p className="form-error" role="alert">{componentError}</p> : null}
     {failure ? <ErrorState description={failure.description} title={failure.title} /> : null}
     {loading && !result ? <LoadingState label="Ищем запчасти" /> : null}
@@ -169,13 +171,13 @@ export function InventoryPartsView({ apiClient = api, debounceMs = 300, parkId, 
         {item.has_photo ? <img alt={item.name} className="inventory-search-card__photo" height={72} src={apiClient.inventoryPartPhotoUrl(-item.id)} width={72} /> : <div className="inventory-photo-placeholder inventory-search-card__photo">Нет фото</div>}
         <div className="inventory-search-card__body"><div className="inventory-search-card__heading"><div><h3>{item.name}</h3><p>{item.component_name} · <strong>{item.article}</strong></p></div><StatusBadge tone={item.quantity === '0' ? 'critical' : low ? 'warning' : 'success'}>{item.quantity} шт.</StatusBadge></div>
           <p className="inventory-search-card__location">{item.location || 'Место не указано'}</p>
-          <label className="inventory-label-choice"><input aria-label={`Выбрать для печати ${item.name}`} checked={selectedLabelIds.has(item.id)} onChange={() => togglePrintPart(item.id)} type="checkbox" /> В печать</label>
-          <div className="inventory-card-actions"><Button onClick={() => openWorkflow(item.id, 'stock')} size="compact" variant={selected && workflow?.kind === 'stock' ? 'primary' : 'secondary'}>Настроить остаток</Button><Button onClick={() => { select(item.id); print([item.id]) }} size="compact" variant="ghost">Печатать этикетку</Button></div>
-          {selected && workflow?.kind === 'stock' ? <StockForm apiClient={apiClient} onSaved={updateLocalStock} parkId={parkId} part={item} /> : null}
+          {canPrint ? <label className="inventory-label-choice"><input aria-label={`Выбрать для печати ${item.name}`} checked={selectedLabelIds.has(item.id)} onChange={() => togglePrintPart(item.id)} type="checkbox" /> В печать</label> : null}
+          <div className="inventory-card-actions">{canManage ? <Button onClick={() => openWorkflow(item.id, 'stock')} size="compact" variant={selected && workflow?.kind === 'stock' ? 'primary' : 'secondary'}>Настроить остаток</Button> : null}{canPrint ? <Button onClick={() => { select(item.id); print([item.id]) }} size="compact" variant="ghost">Печатать этикетку</Button> : null}</div>
+          {canManage && selected && workflow?.kind === 'stock' ? <StockForm apiClient={apiClient} onSaved={updateLocalStock} parkId={parkId} part={item} /> : null}
         </div>
       </article>
     })}</div>
     {result && result.total > result.limit ? <nav aria-label="Страницы запчастей" className="inventory-pagination"><Button disabled={offset === 0} onClick={() => setOffset(current => Math.max(0, current - 25))} size="compact" variant="secondary">Предыдущая страница</Button><span>{offset + 1}–{Math.min(offset + result.limit, result.total)} из {result.total}</span><Button disabled={offset + result.limit >= result.total} onClick={() => setOffset(current => current + 25)} size="compact" variant="secondary">Следующая страница</Button></nav> : null}
-    <InventoryLabels parts={labelsToPrint} />
+    {canPrint ? <InventoryLabels parts={labelsToPrint} /> : null}
   </section>
 }
