@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from alembic import command
@@ -202,6 +205,36 @@ def test_audit_remediation_state_upgrade_and_downgrade(sqlite_database_url, monk
         "system_incident_occurrences",
         "auth_throttle_states",
     } & set(inspect(engine).get_table_names())
+
+
+def test_clean_alembic_process_registers_audit_remediation_metadata(tmp_path):
+    api_dir = Path(__file__).parents[1]
+    database_url = f"sqlite:///{tmp_path / 'clean-alembic.db'}"
+    env = {
+        **os.environ,
+        "DATABASE_URL": database_url,
+        "PYTHONPATH": str(api_dir / "src"),
+    }
+    upgrade = subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"],
+        cwd=api_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    checked = subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", "alembic.ini", "check"],
+        cwd=api_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert checked.returncode == 0, checked.stdout + checked.stderr
 
 
 def test_alembic_revision_ids_fit_version_table_column():

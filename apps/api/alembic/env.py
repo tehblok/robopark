@@ -3,7 +3,10 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from robopark_api import collaboration_models  # noqa: F401 — register migration metadata
+from robopark_api import (  # noqa: F401 — register migration metadata
+    collaboration_models,
+    schedule_models,
+)
 from robopark_api.config import Settings
 from robopark_api.models import Base
 
