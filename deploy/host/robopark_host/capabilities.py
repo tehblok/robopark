@@ -1,0 +1,118 @@
+"""Fail-soft hardware discovery; acceleration is optional and health-gated."""
+
+from __future__ import annotations
+
+import ctypes
+import ctypes.util
+import shutil
+import subprocess
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+from .state import atomic_write_json
+
+
+@dataclass(frozen=True, slots=True)
+class HostCapabilities:
+    profile: str
+    model: str
+    jpeg_backend: str
+    hardware_jpeg: bool
+    npu_available: bool
+    cuda_available: bool
+    nvme_available: bool
+
+    def as_dict(self) -> dict[str, str | bool]:
+        return asdict(self)
+
+
+def _text(path: Path) -> str:
+    try:
+        return path.read_bytes().replace(b"\0", b",").decode("utf-8", "replace").strip()
+    except OSError:
+        return ""
+
+
+def _exists(root: Path, *names: str) -> bool:
+    return any((root / name.lstrip("/")).exists() for name in names)
+
+
+def probe_jpeg_backend(backend: str) -> bool:
+    """Run a local bounded plugin/library probe; failures keep software active."""
+    try:
+        if backend == "gstreamer":
+            executable = shutil.which("gst-inspect-1.0")
+            if executable is None:
+                return False
+            return (
+                subprocess.run(
+                    [executable, "amlvdec"], capture_output=True, timeout=3, check=False
+                ).returncode
+                == 0
+            )
+        if backend == "nvjpeg":
+            library = ctypes.util.find_library("nvjpeg")
+            return library is not None and ctypes.CDLL(library) is not None
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return False
+
+
+def probe_host_capabilities(
+    root: Path = Path("/"),
+    *,
+    jpeg_health_probe: Callable[[str], bool] | None = None,
+) -> HostCapabilities:
+    model = _text(root / "proc/device-tree/model")
+    compatible = _text(root / "proc/device-tree/compatible")
+    identity = f"{model} {compatible}".casefold()
+    is_orin = "orin" in identity or "tegra234" in identity
+    is_new_vim4 = any(
+        name in identity for name in ("new vim4", "new-vim4", "vim4n", "vim4-new")
+    )
+    if "vim4" in identity and _exists(root, "/dev/aml-npu"):
+        is_new_vim4 = True
+    is_vim4 = is_new_vim4 or "vim4" in identity
+    profile = (
+        "orin"
+        if is_orin
+        else "new-vim4"
+        if is_new_vim4
+        else "vim4"
+        if is_vim4
+        else "generic-arm"
+    )
+    npu = is_new_vim4 and _exists(root, "/dev/aml-npu", "/dev/galcore")
+    cuda = is_orin and _exists(
+        root,
+        "/dev/nvhost-nvdec",
+        "/dev/nvhost-ctrl-gpu",
+        "/usr/lib/libcuda.so",
+        "/usr/lib/libnvjpeg.so",
+    )
+    nvme = any(
+        (root / "sys/class/block" / name).exists() for name in ("nvme0n1", "nvme1n1")
+    )
+    candidate = "software"
+    if is_orin and _exists(
+        root, "/usr/lib/libnvjpeg.so", "/usr/lib/aarch64-linux-gnu/libnvjpeg.so"
+    ):
+        candidate = "nvjpeg"
+    elif is_vim4 and _exists(root, "/usr/lib/libgstaml.so", "/dev/video0"):
+        candidate = "gstreamer"
+    healthy = False
+    health_probe = jpeg_health_probe or probe_jpeg_backend
+    if candidate != "software":
+        try:
+            healthy = health_probe(candidate) is True
+        except Exception:  # noqa: BLE001 - an optional vendor probe must always fail soft.
+            healthy = False
+    backend = candidate if healthy else "software"
+    return HostCapabilities(
+        profile, model or "unknown", backend, backend != "software", npu, cuda, nvme
+    )
+
+
+def write_capabilities(path: Path, capabilities: HostCapabilities) -> None:
+    atomic_write_json(path, capabilities.as_dict())

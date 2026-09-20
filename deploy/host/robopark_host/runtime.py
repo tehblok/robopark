@@ -19,6 +19,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+from .capabilities import HostCapabilities, probe_host_capabilities
 from .paths import HostPaths
 from .rollback import atomic_symlink
 from .state import atomic_write_json
@@ -71,6 +72,11 @@ def probe_host_profile(root: Path = Path("/")) -> HostProfile:
         if root == Path("/"):
             cpu_count = os.cpu_count() or 0
     return select_host_profile(memory_kib=memory_kib, cpu_count=cpu_count)
+
+
+def probe_runtime_capabilities(root: Path = Path("/")) -> HostCapabilities:
+    """Expose fail-soft acceleration separately from mandatory runtime sizing."""
+    return probe_host_capabilities(root)
 
 
 @dataclass(frozen=True)

@@ -523,6 +523,43 @@ def _artifact_check(paths: HostPaths, runner: Runner) -> CheckResult:
     return CheckResult("diagnostic_artifacts", status, message, None)
 
 
+def _storage_retention_check(paths: HostPaths) -> CheckResult:
+    from .operational_state import read_object
+
+    value = read_object(paths.state / "storage-retention.json")
+    if not value:
+        return CheckResult(
+            "storage_retention", "warning", "Автоочистка хранения ещё не запускалась", None
+        )
+    category = value.get("pressure_category")
+    category = category if isinstance(category, str) else "none"
+    completed = value.get("completed_at")
+    completed = completed if isinstance(completed, int | float) else "unknown"
+    blocked = value.get("blocked") is True
+    pressure = value.get("pressure") is True
+    status = "failed" if blocked or pressure else "ok"
+    return CheckResult(
+        "storage_retention",
+        status,
+        f"Автоочистка: категория {category}; последняя уборка {completed}",
+        None,
+    )
+
+
+def _capability_check(paths: HostPaths) -> CheckResult:
+    from .capabilities import probe_host_capabilities, write_capabilities
+
+    capabilities = probe_host_capabilities(paths.root)
+    with suppress(OSError):
+        write_capabilities(paths.state / "capabilities.json", capabilities)
+    return CheckResult(
+        "host_capabilities",
+        "ok",
+        f"Профиль {capabilities.profile}; JPEG {capabilities.jpeg_backend}",
+        None,
+    )
+
+
 def _log_growth_check(paths: HostPaths, runner: Runner) -> CheckResult:
     result = execute(runner, ["du", "-sk", paths.root / "var/log/robopark"])
     amount = next((int(token) for token in result.stdout.split() if token.isdigit()), None)
@@ -617,6 +654,8 @@ def run_doctor(paths: HostPaths, runner: Runner, http: Any) -> DiagnosticReport:
         _integration_check(http),
         _state_check(paths, "backup", "Последняя резервная копия проверена"),
         _artifact_check(paths, runner),
+        _storage_retention_check(paths),
+        _capability_check(paths),
         _log_growth_check(paths, runner),
     ]
     report = DiagnosticReport(checks)

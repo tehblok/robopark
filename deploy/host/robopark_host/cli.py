@@ -121,9 +121,10 @@ def _print(payload: Any) -> None:
 
 
 def _doctor_handler(paths: HostPaths) -> int:
-    from .retention import retain_artifacts
+    from .retention import retain_artifacts, retain_storage
 
     retain_artifacts(paths)
+    retain_storage(paths)
     from .image_retention import scheduled
     from .updater import SystemRunner
 

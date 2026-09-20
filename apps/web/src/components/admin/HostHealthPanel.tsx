@@ -33,13 +33,29 @@ export function HostHealthPanel() {
     {requests.some(([, metric]) => metric?.average_ms != null && metric.average_ms > 2000) && <Alert tone="error">Ответы замедлились: среднее время превышает две секунды.</Alert>}
     <Panel title="Сервер" hint="Память хоста и лимит контейнера показаны отдельно. На неподдерживаемой платформе значение остаётся неизвестным.">
       <div className="stat-grid">
-        <div className="stat"><span className="stat-label">SQLite</span><span className="stat-value">Отвечает</span></div>
+        <div className="stat"><span className="stat-label">PostgreSQL</span><span className="stat-value">Отвечает</span></div>
         <div className="stat"><span className="stat-label">Свободно на диске данных</span><span className="stat-value">{bytes(data.disk.free_bytes)}</span></div>
         <div className="stat"><span className="stat-label">Доступно памяти хоста</span><span className="stat-value">{bytes(data.memory.available_bytes)}</span></div>
         <div className="stat"><span className="stat-label">Всего памяти хоста</span><span className="stat-value">{bytes(data.memory.total_bytes)}</span></div>
         <div className="stat"><span className="stat-label">Память контейнера API</span><span className="stat-value">{bytes(data.memory.container_used_bytes)} / {bytes(data.memory.container_limit_bytes)}</span></div>
       </div>
     </Panel>
+    {data.storage && data.process && <Panel title="Хранение и процесс" hint="Порог свободного места — большее из 15% раздела и 6 ГБ. Первичные данные в автоочистку не входят.">
+      <div className="stat-grid">
+        <div className="stat"><span className="stat-label">Порог свободного места</span><span className="stat-value">{bytes(data.storage.floor_bytes)}</span></div>
+        <div className="stat"><span className="stat-label">Нужно освободить</span><span className="stat-value">{bytes(data.storage.bytes_to_reclaim)}</span></div>
+        <div className="stat"><span className="stat-label">Последняя уборка</span><span className="stat-value">{data.storage.last_cleanup_at == null ? 'Нет данных' : stamp(data.storage.last_cleanup_at)}</span></div>
+        <div className="stat"><span className="stat-label">RSS процесса</span><span className="stat-value">{bytes(data.process.rss_bytes)}</span></div>
+        <div className="stat"><span className="stat-label">Дескрипторы / tasks / threads</span><span className="stat-value">{data.process.open_fds ?? '—'} / {data.process.tasks} / {data.process.threads}</span></div>
+        <div className="stat"><span className="stat-label">Кэш / соединения БД</span><span className="stat-value">{bytes(data.process.cache_bytes)} / {data.process.db_pool_checked_out ?? '—'}</span></div>
+      </div>
+      {data.storage.cleanup_failed && <Alert tone="error">Автоочистка не восстановила бюджет хранения.</Alert>}
+      {data.process.memory_pressure?.failed && <Alert tone="error">Давление памяти сохраняется после очистки кэша. Перезапуск не выполнялся.</Alert>}
+    </Panel>}
+    {data.capabilities && <Panel title="Аппаратные возможности" hint="Ускорение выбирается только после проверки; при отказе остаётся software JPEG.">
+      <p>Профиль: {data.capabilities.profile} · JPEG: {data.capabilities.jpeg_backend}</p>
+      <p>NPU: {data.capabilities.npu_available ? 'доступен' : 'нет'} · CUDA: {data.capabilities.cuda_available ? 'доступна' : 'нет'}</p>
+    </Panel>}
     <Panel title="Резервная копия" hint="Подтверждение появляется после проверки снимка и сохранения копии на хосте командой backup. Ручные снимки показаны в разделе обслуживания.">
       <p>{data.backup.verified_at == null ? 'Проверенная копия ещё не отмечена.' : `Последняя проверенная копия: ${stamp(data.backup.verified_at)}`}</p>
       {data.backup.overdue && <Alert tone="error">Более 36 часов без подтверждённой резервной копии.</Alert>}

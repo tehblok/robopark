@@ -34,3 +34,18 @@ it('hides metrics on access denial', async () => {
   expect(await screen.findByText(/Доступ к состоянию сервера закрыт/)).toBeVisible()
   expect(screen.queryByText('SQLite')).not.toBeInTheDocument()
 })
+
+it('shows bounded storage, leak observations and selected acceleration', async () => {
+  vi.spyOn(hostHealthApi, 'get').mockResolvedValue({
+    ...snapshot,
+    storage: { floor_bytes: 6 * 1024 ** 3, bytes_to_reclaim: 0, category_bytes: { cache: 1024 }, last_cleanup_at: 900, cleanup_failed: false },
+    process: { rss_bytes: 2 * 1024 ** 3, rss_trend_bytes: 1024, open_fds: 21, tasks: 5, threads: 6, cache_bytes: 1024, db_pool_checked_out: 2, memory_pressure: { sustained: true, evicted: false, failed: true } },
+    capabilities: { profile: 'orin', jpeg_backend: 'nvjpeg', hardware_jpeg: true, npu_available: false, cuda_available: true },
+  })
+  render(tree())
+  expect(await screen.findByText(/Профиль: orin/)).toBeVisible()
+  expect(screen.getByText(/JPEG: nvjpeg/)).toBeVisible()
+  expect(screen.getByText(/Последняя уборка/)).toBeVisible()
+  expect(screen.getByText(/RSS процесса/)).toBeVisible()
+  expect(screen.getByText(/Давление памяти сохраняется/)).toBeVisible()
+})

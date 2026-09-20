@@ -14,6 +14,8 @@ import shutil
 import stat
 import time
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
+from pathlib import Path
 
 from .operational_state import read_object
 from .release import unique_object
@@ -28,6 +30,191 @@ BLOOM_BYTES = 1024**2
 MAX_FILL = 0.4
 MAX_ENTRIES = 20000
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+GIB = 1024**3
+MIN_FREE_BYTES = 6 * GIB
+MIN_FREE_RATIO = 0.15
+MAX_STORAGE_DELETIONS = 128
+STORAGE_CATEGORIES = ("cache", "tmp", "thumbnails", "diagnostics", "logs", "confirmed_tracker")
+STORAGE_PRIORITY = {name: index for index, name in enumerate(STORAGE_CATEGORIES)}
+STORAGE_TTL = {
+    "cache": 30 * 86400,
+    "tmp": 7 * 86400,
+    "thumbnails": 30 * 86400,
+    "diagnostics": 7 * 86400,
+    "logs": 14 * 86400,
+    "confirmed_tracker": 7 * 86400,
+}
+STORAGE_MAX_BYTES = {"logs": 256 * 1024**2}
+
+
+@dataclass(frozen=True, slots=True)
+class StorageBudget:
+    """One pressure calculation shared by every allowlisted cleanup category."""
+
+    partition_bytes: int
+    free_bytes: int
+    minimum_free_bytes: int = MIN_FREE_BYTES
+    minimum_free_ratio: float = MIN_FREE_RATIO
+
+    @property
+    def floor_bytes(self) -> int:
+        return max(self.minimum_free_bytes, int(self.partition_bytes * self.minimum_free_ratio))
+
+    @property
+    def bytes_to_reclaim(self) -> int:
+        return max(0, self.floor_bytes - self.free_bytes)
+
+    @classmethod
+    def for_path(cls, path: Path) -> "StorageBudget":
+        usage = shutil.disk_usage(path)
+        return cls(partition_bytes=getattr(usage, "total", 0), free_bytes=usage.free)
+
+
+def cleanup_storage_roots(
+    roots: dict[str, Path],
+    budget: StorageBudget,
+    *,
+    dry_run: bool,
+    max_deletions: int = MAX_STORAGE_DELETIONS,
+    now: float | None = None,
+) -> dict:
+    """Delete direct regular files from explicit roots in the pressure order.
+
+    Directory recursion is deliberately absent. A caller must name every owned root;
+    symlinks, hard links, directories and unknown categories are reported but untouched.
+    """
+
+    now = time.time() if now is None else now
+    unknown = sorted(set(roots) - set(STORAGE_CATEGORIES))
+    blocked = bool(unknown)
+    candidates: list[tuple[int, int, str, Path, os.stat_result]] = []
+    skipped: list[dict[str, str]] = []
+    for category in STORAGE_CATEGORIES:
+        root = roots.get(category)
+        if root is None:
+            continue
+        try:
+            root_info = root.lstat()
+            if (
+                not stat.S_ISDIR(root_info.st_mode)
+                or root.is_symlink()
+                or root.resolve(strict=True) != root.absolute()
+            ):
+                blocked = True
+                skipped.append({"category": category, "reason": "unsafe_root"})
+                continue
+            with os.scandir(root) as listing:
+                for entry in listing:
+                    info = entry.stat(follow_symlinks=False)
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        skipped.append({"category": category, "path": entry.name, "reason": "not_owned_file"})
+                        continue
+                    candidates.append(
+                        (STORAGE_PRIORITY[category], info.st_mtime_ns, category, root / entry.name, info)
+                    )
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError:
+            blocked = True
+            skipped.append({"category": category, "reason": "scan_failed"})
+    candidates.sort(key=lambda item: (item[0], item[1], item[3].name))
+    target = budget.bytes_to_reclaim
+    reclaimed = 0
+    planned: list[dict[str, object]] = []
+    deleted: list[dict[str, object]] = []
+    category_totals: dict[str, int] = {}
+    for _, _, category, _, info in candidates:
+        category_totals[category] = category_totals.get(category, 0) + info.st_size
+    for _, _, category, path, before in candidates:
+        expired = now - before.st_mtime >= STORAGE_TTL[category]
+        over_category_budget = category_totals.get(category, 0) > STORAGE_MAX_BYTES.get(
+            category, 2**63 - 1
+        )
+        under_pressure = reclaimed < target
+        if len(planned) >= max(0, max_deletions):
+            break
+        if not (expired or over_category_budget or under_pressure):
+            continue
+        item = {"category": category, "path": path.name, "bytes": before.st_size}
+        planned.append(item)
+        if dry_run:
+            reclaimed += before.st_size
+            category_totals[category] -= before.st_size
+            continue
+        try:
+            current = path.stat(follow_symlinks=False)
+            if not stat.S_ISREG(current.st_mode) or (
+                current.st_dev,
+                current.st_ino,
+                current.st_size,
+                current.st_mtime_ns,
+            ) != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns):
+                raise RetentionBlocked("artifact_changed")
+            path.unlink()
+            deleted.append(item)
+            reclaimed += before.st_size
+            category_totals[category] -= before.st_size
+        except (OSError, ValueError):
+            blocked = True
+            skipped.append({"category": category, "path": path.name, "reason": "delete_failed"})
+            break
+    category_bytes = category_totals
+    pressure_category = planned[-1]["category"] if planned and budget.free_bytes + reclaimed < budget.floor_bytes else None
+    return {
+        "dry_run": dry_run,
+        "bounded": len(planned) <= max(0, max_deletions),
+        "floor_bytes": budget.floor_bytes,
+        "bytes_to_reclaim": target,
+        "reclaimed_bytes": reclaimed,
+        "planned": planned,
+        "deleted": deleted,
+        "deleted_count": len(deleted),
+        "pressure": budget.free_bytes + reclaimed < budget.floor_bytes,
+        "blocked": blocked,
+        "unknown_categories": unknown,
+        "skipped": skipped,
+        "category_bytes": category_bytes,
+        "pressure_category": pressure_category,
+        "completed_at": time.time(),
+    }
+
+
+def retain_storage(paths, *, dry_run: bool = False, max_deletions: int = MAX_STORAGE_DELETIONS):
+    """Scheduled cleanup of explicit ephemeral roots under the stable host lock."""
+    from .state import HostBusy, host_operation
+
+    roots = {
+        "cache": paths.var / "cache",
+        "thumbnails": paths.var / "thumbnails",
+        "diagnostics": paths.var / "diagnostics",
+        "logs": paths.root / "var/log/robopark",
+        "confirmed_tracker": paths.var / "tracker-confirmed",
+    }
+    try:
+        paths.state.mkdir(parents=True, exist_ok=True)
+        paths.lock_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        with host_operation(paths):
+            report = cleanup_storage_roots(
+                roots,
+                StorageBudget.for_path(paths.var),
+                dry_run=dry_run,
+                max_deletions=max_deletions,
+            )
+    except HostBusy:
+        report = {
+            "dry_run": dry_run,
+            "bounded": True,
+            "blocked": True,
+            "busy": True,
+            "pressure": False,
+            "deleted": [],
+            "deleted_count": 0,
+            "planned": [],
+            "completed_at": time.time(),
+        }
+    if not dry_run and not paths.state.is_symlink():
+        atomic_write_json(paths.state / "storage-retention.json", report)
+    return report
 
 
 class RetentionBlocked(ValueError):

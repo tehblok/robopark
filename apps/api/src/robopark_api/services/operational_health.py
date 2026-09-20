@@ -8,7 +8,11 @@ import shutil
 import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
+
+from robopark_api.db import engine
+from robopark_api.services.cache_metrics import snapshot_all
 
 FAMILIES = ("tracker", "diagnostics", "reports")
 WINDOW_SECONDS = 300
@@ -159,6 +163,110 @@ def backup_status(ops_dir: Path, *, now: float | None = None) -> dict:
 
 _snapshot_lock = threading.Lock()
 _snapshot_cache: dict[str, tuple[float, dict]] = {}
+_rss_samples: deque[int] = deque(maxlen=12)
+
+
+def _directory_size(root: Path, *, max_entries: int = 10_000) -> int | None:
+    """Measure one explicit category without following directory symlinks."""
+    try:
+        if root.is_symlink() or not root.is_dir():
+            return None
+        total = 0
+        seen = 0
+        pending = [root]
+        while pending:
+            current = pending.pop()
+            for entry in os.scandir(current):
+                seen += 1
+                if seen > max_entries:
+                    return None
+                info = entry.stat(follow_symlinks=False)
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+                elif entry.is_file(follow_symlinks=False):
+                    total += info.st_size
+        return total
+    except OSError:
+        return None
+
+
+def _rss_bytes() -> int | None:
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        if path.is_symlink() or path.stat().st_size > 65_536:
+            return {}
+        value = json.loads(path.read_text())
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def process_observations(
+    *, category_roots: dict[str, Path], cleanup_state: Path | None = None
+) -> dict:
+    rss = _rss_bytes()
+    if rss is not None:
+        _rss_samples.append(rss)
+    metrics = snapshot_all()
+    cache_bytes = sum(
+        int(value.get("bytes", 0))
+        for value in metrics.values()
+        if isinstance(value, dict) and isinstance(value.get("bytes", 0), int | float)
+    )
+    try:
+        checked_out = engine.pool.checkedout()
+    except (AttributeError, TypeError):
+        checked_out = None
+    try:
+        open_fds = len(list(Path("/proc/self/fd").iterdir()))
+    except OSError:
+        open_fds = None
+    try:
+        tasks = len(list(Path("/proc/self/task").iterdir()))
+    except OSError:
+        tasks = threading.active_count()
+    directory_bytes = {
+        name: amount
+        for name, root in category_roots.items()
+        if (amount := _directory_size(root)) is not None
+    }
+    from robopark_api.services.cache_cleanup import memory_pressure_status
+
+    return {
+        "rss_bytes": rss,
+        "rss_trend_bytes": (_rss_samples[-1] - _rss_samples[0]) if len(_rss_samples) > 1 else 0,
+        "open_fds": open_fds,
+        "tasks": tasks,
+        "threads": threading.active_count(),
+        "cache_bytes": cache_bytes,
+        "db_pool_checked_out": checked_out,
+        "directory_bytes": directory_bytes,
+        "last_cleanup": _read_json(cleanup_state) if cleanup_state is not None else {},
+        "memory_pressure": memory_pressure_status(),
+    }
+
+
+def _capabilities(ops_dir: Path) -> dict:
+    value = _read_json(ops_dir / "state/capabilities.json")
+    return {
+        "profile": value.get("profile", "generic-arm"),
+        "jpeg_backend": value.get("jpeg_backend", "software"),
+        "hardware_jpeg": value.get("hardware_jpeg") is True,
+        "npu_available": value.get("npu_available") is True,
+        "cuda_available": value.get("cuda_available") is True,
+        "nvme_available": value.get("nvme_available") is True,
+    }
 
 
 def cached_host_snapshot(data_dir: Path, ops_dir: Path) -> dict:
@@ -181,6 +289,26 @@ def cached_host_snapshot(data_dir: Path, ops_dir: Path) -> dict:
             "memory": read_memory(),
             "backup": backup_status(ops_dir, now=now),
             "requests": read_observations(ops_dir / "observations", now=now),
+            "process": process_observations(
+                category_roots={
+                    "cache": data_dir / "cache",
+                    "thumbnails": data_dir / "thumbnails",
+                    "diagnostics": data_dir / "diagnostics",
+                    "confirmed_tracker": data_dir / "tracker-confirmed",
+                },
+                cleanup_state=ops_dir / "state/storage-retention.json",
+            ),
+            "capabilities": _capabilities(ops_dir),
+        }
+        cleanup = result["process"]["last_cleanup"]
+        floor = max(6 * 1024**3, int((disk["total_bytes"] or 0) * 0.15))
+        free = disk["free_bytes"] or 0
+        result["storage"] = {
+            "floor_bytes": floor,
+            "bytes_to_reclaim": max(0, floor - free),
+            "category_bytes": result["process"]["directory_bytes"],
+            "last_cleanup_at": cleanup.get("completed_at"),
+            "cleanup_failed": cleanup.get("blocked") is True or cleanup.get("pressure") is True,
         }
         _snapshot_cache.clear()
         _snapshot_cache[key] = (now, result)

@@ -119,7 +119,9 @@ def test_builder_cache_cleanup_is_disk_pressure_bounded(host, monkeypatch):
 
     runner = Builder()
     monkeypatch.setattr(
-        image_retention.shutil, "disk_usage", lambda _: SimpleNamespace(free=2 * 1024**3)
+        image_retention.shutil,
+        "disk_usage",
+        lambda _: SimpleNamespace(total=20 * 1024**3, free=6 * 1024**3),
     )
     assert image_retention.cleanup_builder_cache(host.paths, runner) == {
         "attempted": False,
@@ -128,7 +130,9 @@ def test_builder_cache_cleanup_is_disk_pressure_bounded(host, monkeypatch):
     assert runner.commands == []
 
     monkeypatch.setattr(
-        image_retention.shutil, "disk_usage", lambda _: SimpleNamespace(free=2 * 1024**3 - 1)
+        image_retention.shutil,
+        "disk_usage",
+        lambda _: SimpleNamespace(total=20 * 1024**3, free=6 * 1024**3 - 1),
     )
     assert image_retention.cleanup_builder_cache(host.paths, runner) == {
         "attempted": True,

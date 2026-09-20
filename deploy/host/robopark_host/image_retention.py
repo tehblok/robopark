@@ -9,14 +9,13 @@ import time
 from contextlib import ExitStack, suppress
 
 from .operational_state import read_object
-from .retention import UUID, _directory
+from .retention import UUID, StorageBudget, _directory
 from .state import atomic_write_json, host_operation
 
 TAG = rf"(?:{UUID}|release-[a-f0-9]{{64}})"
 DIGEST = r"sha256:[a-f0-9]{64}"
 MAX_RECORDS = 256
 MAX_COMMANDS = 32
-BUILDER_CACHE_MIN_FREE = 2 * 1024**3
 BUILDER_CACHE_TIMEOUT = 30
 MAINTENANCE_TIMEOUT = 30
 
@@ -245,7 +244,11 @@ def cleanup_builder_cache(paths, runner, *, budget=None):
     """Reclaim only stale unused build cache when the host is under disk pressure."""
     result = {"attempted": False, "blocked": False}
     try:
-        if shutil.disk_usage(paths.var).free >= BUILDER_CACHE_MIN_FREE:
+        usage = shutil.disk_usage(paths.var)
+        storage = StorageBudget(
+            partition_bytes=getattr(usage, "total", 0), free_bytes=usage.free
+        )
+        if storage.bytes_to_reclaim == 0:
             return result
         result["attempted"] = True
         timeout = budget.timeout(BUILDER_CACHE_TIMEOUT) if budget else BUILDER_CACHE_TIMEOUT
