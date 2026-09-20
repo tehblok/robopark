@@ -56,7 +56,10 @@ const EXECUTABLE: Partial<Record<AppRouteId, Record<string, ExecutableState>>> =
     report: visible('label:has-text("Заголовок *") input', 'The create-report route renders the report form title field.', { actorRole: 'mechanic' }),
     attachment: visible('input[type="file"]', 'The create-report route exposes the actual attachment file control.', { actorRole: 'mechanic', fixture: 'loaded' }),
   },
-  'report-detail': { attachment: visible('a[href="/api/reports/1/attachments/11"]', 'The report detail fixture renders the actual persisted attachment download.', { actorRole: 'mechanic' }) },
+  'report-detail': {
+    attachment: visible('a[href="/api/reports/1/attachments/11"]', 'The report detail fixture renders the actual persisted attachment download.', { actorRole: 'mechanic' }),
+    'hard-delete': visible('[role="alertdialog"]', 'A built-in manager opens the irreversible report confirmation dialog.', { actorRole: 'royal', trigger: { role: 'button', name: 'Удалить репорт' } }),
+  },
   campaigns: { 'campaign-list': visible('h2:has-text("Осенняя сервисная кампания")', 'The campaign list fixture renders its campaign card.', { actorRole: 'mechanic' }) },
   'campaign-detail': { open: visible('text=ROBOPARK-42', 'The campaign detail fixture renders the open Tracker ticket.', { actorRole: 'mechanic' }) },
   analytics: {
@@ -82,23 +85,21 @@ const OWNER_CONTRACT_TRIGGER: Record<NestedStateKind, string> = {
   denied: 'HTTP 403 refresh that removes protected data',
 }
 
-const EXACT_COMPONENT_OWNER: Partial<Record<string, { path: string; title: string }>> = {
-  'route-coverage:campaigns:loading': { path: 'apps/web/src/domains/campaigns/CampaignsPage.test.tsx', title: 'renders the campaign loading contract in %s mode' },
-  'route-coverage:campaigns:empty': { path: 'apps/web/src/domains/campaigns/CampaignsPage.test.tsx', title: 'renders the campaign empty contract in %s mode' },
-  'route-coverage:campaigns:error': { path: 'apps/web/src/domains/campaigns/CampaignsPage.test.tsx', title: 'renders a retryable campaign list error in %s mode' },
-  'route-coverage:campaigns:denied': { path: 'apps/web/src/domains/campaigns/CampaignsPage.test.tsx', title: 'fails closed for a denied campaign list in %s mode' },
-  'route-coverage:campaigns:create': { path: 'apps/web/src/domains/campaigns/CampaignsPage.test.tsx', title: 'renders the manager campaign create form in %s mode' },
-  'route-coverage:campaign-detail:stale': { path: 'apps/web/src/domains/campaigns/CampaignsPage.test.tsx', title: 'keeps the previous campaign visible when a refresh fails in %s mode' },
-  'route-coverage:campaign-detail:denied': { path: 'apps/web/src/domains/campaigns/CampaignsPage.test.tsx', title: 'removes protected campaign data when a refresh loses access in %s mode' },
+const OWNER_ACTOR: Partial<Record<AppRouteId, CoverageAudience>> = {
+  overview: 'operator', 'operator-parks': 'operator', work: 'mechanic', 'work-issue': 'mechanic',
+  robots: 'mechanic', 'robot-detail': 'mechanic', 'robot-check': 'mechanic', 'legacy-robot-check': 'mechanic',
+  inventory: 'mechanic', reports: 'mechanic', 'reports-new': 'mechanic', 'report-detail': 'operator',
+  campaigns: 'royal', 'campaign-detail': 'royal', analytics: 'operator',
+  admin: 'royal', 'admin-settings': 'royal', 'admin-users': 'royal', 'admin-roles': 'royal',
+  'admin-tracker': 'royal', 'admin-robot-check': 'royal',
 }
 
 function exactOwner(routeId: AppRouteId, stateId: string, kind: NestedStateKind) {
   const stateKey = `route-coverage:${routeId}:${stateId}`
-  const componentOwner = EXACT_COMPONENT_OWNER[stateKey]
   return {
     ownerTest: {
-      path: componentOwner?.path ?? 'apps/web/src/app/routing/routeCoverageManifest.test.ts',
-      title: componentOwner?.title ?? `asserts exact owner contract for ${stateKey}`,
+      path: 'apps/web/e2e/operational/route-owner-contracts.spec.ts',
+      title: `${stateKey} [Классический]`,
       stateKey,
     },
     ownerContract: `${stateKey} asserts ${OWNER_CONTRACT_TRIGGER[kind]} for the ${routeId} ${kind} state; the test rejects a mismatched route, state key, kind, trigger, or title.`,
@@ -113,19 +114,11 @@ export const ROUTE_STATE_EVIDENCE: readonly RouteStateEvidence[] = ROUTE_COVERAG
       auth: executable.auth ?? 'authenticated', actorRole: executable.actorRole ?? route.roles[0],
       fixture: executable.fixture, selector: executable.selector, trigger: executable.trigger, assertion: executable.assertion,
     } satisfies RouteStateEvidence
-    if (route.routeId === 'report-detail' && state.id === 'hard-delete') return {
-      caseId: state.testId, routeId: route.routeId, stateId: state.id, kind: state.kind,
-      auth: 'authenticated', actorRole: 'royal', fixture: 'not-applicable', selector: '',
-      assertion: { kind: 'visible', description: 'The API-only irreversible report purge deliberately has no browser dialog.' },
-      notApplicableReason: 'The report purge is intentionally API-only: the browser exposes review resolution, not an irreversible hard-delete dialog; its HTTP authorization is owned by the exact hard-delete role matrix.',
-      ownerTest: { path: 'apps/api/tests/test_route_action_permissions.py', title: 'test_route_action_http_permission_matrix', stateKey: state.testId },
-      ownerContract: `${state.testId} is semantically impossible in the browser and is enforced by hard-delete role/outcome HTTP parameters.`,
-    } satisfies RouteStateEvidence
     const delegated = exactOwner(route.routeId, state.id, state.kind)
     return {
       caseId: state.testId, routeId: route.routeId, stateId: state.id, kind: state.kind,
       auth: route.roles.includes('guest') ? 'unauthenticated' : 'authenticated',
-      actorRole: route.roles.includes('guest') ? 'guest' : route.roles[0], fixture: 'owner-test', selector: '',
+      actorRole: route.roles.includes('guest') ? 'guest' : (OWNER_ACTOR[route.routeId] ?? route.roles[0]), fixture: 'owner-test', selector: '',
       assertion: { kind: 'visible', description: `${route.routeId} delegates ${state.kind} state ${state.id} to the exact owning test.` },
       ...delegated,
     } satisfies RouteStateEvidence

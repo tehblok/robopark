@@ -107,6 +107,20 @@ describe('API transport metadata', () => {
       expect.objectContaining({ headers: {} }))
   })
 
+  it('keeps a local mutation owner mounted when a write is forbidden', async () => {
+    const authorizationFailure = vi.fn()
+    window.addEventListener('robopark:authorization-failure', authorizationFailure)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ detail: 'forbidden' }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    )))
+
+    await expect(api.reportDelete(9)).rejects.toMatchObject({ status: 403 })
+    expect(authorizationFailure).not.toHaveBeenCalled()
+
+    window.removeEventListener('robopark:authorization-failure', authorizationFailure)
+  })
+
   it.each(requestIdCases)('copies X-Request-ID into an ApiError for a %s request', async (_label, call) => {
     vi.stubGlobal(
       'fetch',

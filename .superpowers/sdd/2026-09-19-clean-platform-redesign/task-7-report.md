@@ -118,3 +118,21 @@ The pre-existing uncommitted `progress.md` edit was preserved and is not part of
 - Evidence collector: **63 passed** in Classic and A.
 - Complete route/role/viewport/mode suite from zero: **846 passed, 294 policy-skipped, 0 failed** across **1140 collected cases**.
 - Production and service-worker build: `npm run build` — exit 0.
+
+## Review round 4
+
+- Replaced the delegated owner-contract string comparison with a collected 347-node Classic/A Playwright suite. Every delegated state mounts its real route owner; tabs, forms, file boundaries and dialogs operate real DOM controls, while loading, empty, error, stale and denied cases control and inspect real fixture API requests. The manifest audit resolves the exact dynamic node ids and requires the mounted-owner, domain-request and transitioned-DOM assertions to remain in the implementation.
+- Made report hard-delete executable evidence instead of N/A. Admin and royal fixtures cover Classic and A at mobile and desktop widths, verify the destructive button and alert dialog, require the exact `УДАЛИТЬ` phrase, prove exactly one `DELETE /api/reports/9`, and check both success removal/navigation and 403/503 preservation with an alert. A mutation 403 now remains local to its owning form/dialog; 401 and read-side 403 still invalidate authorization-owned resources.
+- Corrected the HTTP action matrix to use real mutation targets for report return, report purge, user management and approval; added exact request-method/path/body contracts and explicit allow status sets. Denials accept only 401/403 and no allow assertion can pass on an arbitrary 5xx response. No production records are used: restore, reports, users and parks are isolated database/file fixtures.
+
+### Round-4 verification
+
+- Exact route/inventory HTTP action matrices: **141 passed**.
+- Delegated domain-owner contract collector: **347 passed**.
+- Executable route-state evidence: **65 passed**.
+- Hard-delete browser matrix: **13 passed**.
+- Route coverage manifest/API transport units: **32 passed**.
+- Complete route/role/viewport/mode matrix: **846 passed, 294 policy-skipped, 0 failed** across **1140 collected cases**.
+- Full web unit suite: **153 files, 2129 tests passed**.
+- Full API gate including Ruff/format: **1968 passed, 8 skipped**, 21 warnings.
+- Production and service-worker build: `npm run build` — exit 0.

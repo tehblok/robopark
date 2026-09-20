@@ -64,32 +64,14 @@ describe('executable route coverage manifest', () => {
       expect(item.ownerContract, item.caseId).toContain(item.caseId)
       expect(item.ownerContract, item.caseId).toContain(`${item.routeId} ${item.kind} state`)
       const source = readFileSync(resolve(repoRoot, item.ownerTest!.path), 'utf8')
-      if (item.ownerTest?.path.endsWith('routeCoverageManifest.test.ts')) {
-        expect(item.ownerTest.title, item.caseId).toBe(`asserts exact owner contract for ${item.caseId}`)
-        expect(source, `${item.caseId}: parameterized owner contract`).toContain("it.each(delegatedOwnerEvidence)('$ownerTest.title'")
-      } else {
-        expect(source, `${item.caseId}: exact component owner title`).toContain(`'${item.ownerTest!.title}'`)
-      }
+      expect(item.ownerTest?.path, item.caseId).toBe('apps/web/e2e/operational/route-owner-contracts.spec.ts')
+      expect(item.ownerTest?.title, item.caseId).toBe(`${item.caseId} [Классический]`)
+      expect(source, `${item.caseId}: dynamically collected exact node ids`).toContain('test(`${owner.caseId} [${mode}]`')
+      expect(source, `${item.caseId}: real owner behavior assertion`).toContain('exerciseOwnerBehavior(page, owner, mode')
+      expect(source, `${item.caseId}: mounted owner assertion cannot be removed`).toContain('real route owner is mounted`).toBeVisible()')
+      expect(source, `${item.caseId}: domain request assertion cannot be removed`).toContain('loaded owner issued a domain API request`).toBeTruthy()')
+      expect(source, `${item.caseId}: async transition assertion cannot be removed`).toContain('transitioned owner exposes inspectable DOM`).toBeVisible()')
     }
-  })
-
-  const delegatedOwnerEvidence = ROUTE_STATE_EVIDENCE.filter(item => item.fixture === 'owner-test')
-  it.each(delegatedOwnerEvidence)('$ownerTest.title', item => {
-    const triggerByKind = {
-      view: 'loaded route content', tab: 'named tab selection', dialog: 'named action opening its dialog',
-      form: 'form fields and submission boundary', file: 'real file input or persisted attachment',
-      loading: 'deferred initial API response', empty: 'successful empty API response',
-      error: 'initial API rejection and retry boundary', stale: 'background refresh rejection after loaded data',
-      denied: 'HTTP 403 refresh that removes protected data',
-    } as const
-    expect(item.ownerTest?.stateKey).toBe(item.caseId)
-    if (item.ownerTest?.path.endsWith('routeCoverageManifest.test.ts')) {
-      expect(item.ownerTest.title).toBe(`asserts exact owner contract for ${item.caseId}`)
-    } else {
-      expect(item.ownerTest?.title).toMatch(/ in %s mode$/)
-    }
-    expect(item.ownerContract).toContain(triggerByKind[item.kind])
-    expect(item.ownerContract).toContain(`${item.routeId} ${item.kind} state`)
   })
 
   it('has an exact one-to-one evidence case for every declared nested state', () => {

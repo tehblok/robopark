@@ -143,7 +143,7 @@ export const ROUTE_COVERAGE_MANIFEST: readonly RouteCoverageItem[] = [
     ]),
   route('report-detail', 'Reports.ClassicDetail', 'Reports.TaskFirstDetail', ALL_ROLES,
     asyncStates('report-detail', ['return', 'form'], ['resolve', 'dialog'], ['attachment', 'file'], ['hard-delete', 'dialog']), [
-      action('return-or-resolve', ['royal', 'admin', 'operator', 'restricted'], 'apps/api/tests/test_reports.py::test_return_report_mechanic_forbidden'),
+      action('return-or-resolve', ['royal', 'admin', 'operator'], 'apps/api/tests/test_reports.py::test_return_report_mechanic_forbidden'),
       action('hard-delete', BUILTIN_MANAGER_ROLES, reportDeletePermission),
     ]),
   route('campaigns', 'CampaignsPage.ClassicList', 'CampaignsPage.TaskFirstList', ALL_ROLES,

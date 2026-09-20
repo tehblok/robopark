@@ -844,7 +844,10 @@ async function consumeWithTimeout<T>(
 
   try {
     const response = await fetch(input, { ...init, signal: controller.signal })
-    if ((response.status === 401 || response.status === 403) && typeof window !== 'undefined') {
+    const method = (init.method ?? 'GET').toUpperCase()
+    const authorizationChanged = response.status === 401
+      || (response.status === 403 && (method === 'GET' || method === 'HEAD'))
+    if (authorizationChanged && typeof window !== 'undefined') {
       clearApiValidators()
       window.dispatchEvent(new CustomEvent('robopark:authorization-failure', {
         detail: { status: response.status },
