@@ -66,7 +66,9 @@ def _can_manage_users(db: Session, actor: User) -> bool:
     return rbac.is_royal(actor) or rbac.has_permission(db, actor, rbac.PERMISSION_USERS_MANAGE)
 
 
-def _user_out(db: Session, user: User, parks: list[Park]) -> UserAdminOut:
+def _user_out(
+    db: Session, user: User, parks: list[Park], settings: Settings
+) -> UserAdminOut:
     return UserAdminOut(
         id=user.id,
         username=user.username,
@@ -82,7 +84,7 @@ def _user_out(db: Session, user: User, parks: list[Park]) -> UserAdminOut:
         last_seen_at=user.last_seen_at,
         last_ip=user.last_ip,
         last_device=user.last_device,
-        last_location=user.last_location,
+        last_location=user.last_location if settings.ip_geo_provider == "ipwhois" else None,
     )
 
 
@@ -145,6 +147,7 @@ def list_users(
     role: str | None = Query(default=None),
     access_status: str | None = Query(default=None),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
     actor: User = Depends(require_user),
 ) -> list[UserAdminOut]:
     if not _can_manage_users(db, actor):
@@ -157,7 +160,7 @@ def list_users(
     users = db.scalars(query).all()
     out: list[UserAdminOut] = []
     for user in users:
-        out.append(_user_out(db, user, _user_parks(db, user.id)))
+        out.append(_user_out(db, user, _user_parks(db, user.id), settings))
     return out
 
 
@@ -197,7 +200,7 @@ def create_user(
     db.commit()
     user = _load_user(db, user.id)
     assert user is not None
-    return _user_out(db, user, _user_parks(db, user.id))
+    return _user_out(db, user, _user_parks(db, user.id), settings)
 
 
 @router.patch("/{user_id}", response_model=UserAdminOut)
@@ -286,7 +289,7 @@ def update_user(
         target_id=str(user.id),
         detail="admin user updated",
     )
-    return _user_out(db, user, _user_parks(db, user.id))
+    return _user_out(db, user, _user_parks(db, user.id), settings)
 
 
 @router.post("/{user_id}/approve", status_code=status.HTTP_204_NO_CONTENT)

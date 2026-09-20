@@ -23,6 +23,46 @@ def test_admin_sees_only_latest_activity_without_exposing_it_in_profile(client, 
     assert user["last_location"] is None
 
 
+def test_disabled_provider_hides_stored_location_but_keeps_activity(
+    client, db_session, seed_royal, test_settings
+):
+    headers = {
+        "x-real-ip": "203.0.113.11",
+        "user-agent": "Mozilla/5.0 (Linux; Android 15) Chrome/130.0",
+    }
+    assert (
+        client.post(
+            "/auth/login",
+            json={"username": "royal", "password": "secret"},
+            headers=headers,
+        ).status_code
+        == 204
+    )
+    seed_royal.last_ip = "203.0.113.11"
+    seed_royal.last_device = "Android · Chrome"
+    seed_royal.last_location = "Москва, Москва, Россия"
+    db_session.commit()
+
+    hidden = next(
+        row
+        for row in client.get("/admin/users", headers=headers).json()
+        if row["id"] == seed_royal.id
+    )
+    assert hidden["last_location"] is None
+    assert hidden["last_ip"] == "203.0.113.11"
+    assert hidden["last_device"] == "Android · Chrome"
+    db_session.refresh(seed_royal)
+    assert seed_royal.last_location == "Москва, Москва, Россия"
+
+    test_settings.ip_geo_provider = "ipwhois"
+    visible = next(
+        row
+        for row in client.get("/admin/users", headers=headers).json()
+        if row["id"] == seed_royal.id
+    )
+    assert visible["last_location"] == "Москва, Москва, Россия"
+
+
 def test_disabled_geo_provider_never_performs_http_lookup(monkeypatch):
     from robopark_api.config import Settings
     from robopark_api.services import ip_location
