@@ -38,6 +38,21 @@ it('loads handoff only when opened and preserves edited text while showing a con
   expect(screen.getByRole('button', { name: 'Сохранить передачу смены' })).toBeEnabled()
 })
 
+it('shows one retryable error instead of an endless loading state when handoff loading fails', async () => {
+  const get = vi.spyOn(collaborationClient, 'handoff')
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce(saved)
+  render(<TaskCollaboration issueKey="RP-1" owner="alice" active={false} canWrite />)
+
+  fireEvent.click(screen.getByText('Передача смены'))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось загрузить передачу смены.')
+  expect(screen.queryByText('Загружаем передачу смены…')).not.toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Повторить загрузку' }))
+  expect(await screen.findByDisplayValue('Мотор')).toBeVisible()
+  expect(get).toHaveBeenCalledTimes(2)
+})
+
 it('stops presence when the task or browser tab is hidden', async () => {
   vi.useFakeTimers()
   vi.spyOn(Math, 'random').mockReturnValue(0)

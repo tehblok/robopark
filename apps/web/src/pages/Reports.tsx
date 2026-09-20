@@ -330,7 +330,7 @@ function ReportsOwner({
         <EmptyBlock hint="Для этой роли нет действий с репортами." icon="✉" title="Раздел недоступен" />
       )}
       </div>} detail={
-        <div data-a-zone={taskFirst ? 'report-workflow' : undefined}><Panel collapsible storageKey="reports-detail" title="Детали репорта">
+        <div><Panel collapsible storageKey="reports-detail" title="Детали репорта">
           {detailError && <Alert tone="error">{detailError}</Alert>}
           {detailLoading && <SkeletonList rows={2} />}
           {!detailRoute && <EmptyBlock title="Выберите репорт" hint="Откройте репорт из списка, чтобы прочитать детали и выполнить доступные действия." />}

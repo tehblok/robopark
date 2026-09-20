@@ -46,6 +46,14 @@ describe('PresentationShell', () => {
     expect(view.container.querySelector('.app-shell, .app-main, .app-content')).not.toBeInTheDocument()
   })
 
+  it('does not mount empty task-first context and action zones', () => {
+    const shared = slots()
+    const view = render(<PresentationShell mode="task-first" slots={{ ...shared, context: undefined, action: undefined }} />)
+
+    expect(view.container.querySelector('[data-shell-zone="context"]')).not.toBeInTheDocument()
+    expect(view.container.querySelector('[data-shell-zone="action"]')).not.toBeInTheDocument()
+  })
+
   it('keeps the one live File owner when presentation changes', () => {
     const sharedSlots = slots()
     const view = render(<PresentationShell mode="classic" slots={sharedSlots} />)

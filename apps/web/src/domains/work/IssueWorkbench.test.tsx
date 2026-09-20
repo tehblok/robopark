@@ -383,6 +383,9 @@ it('keeps the task route identity visible in A when workflow metadata is absent'
   })
   expect(within(taskHeader).getByRole('heading', { name: `Задача ${issue.key}` })).toBeVisible()
   expect(within(taskHeader).getByRole('heading', { name: issue.summary })).toBeVisible()
+  const detail = document.querySelector<HTMLElement>('.rp-work-detail-pane')!
+  expect(within(detail).getAllByText(issue.key, { exact: true })).toHaveLength(1)
+  expect(within(detail).getAllByRole('heading', { name: issue.summary })).toHaveLength(1)
 })
 
 function Harness({ children }: { children: ReactNode }) {
@@ -490,7 +493,9 @@ describe('IssueWorkbench', () => {
     expect(screen.queryByRole('button', { name: 'Статус задачи' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Исполнитель' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: ru.tracker.actions.close })).not.toBeInTheDocument()
-    expect(screen.getByText(/Обновите страницу.*действия/)).toBeVisible()
+    const degraded = screen.getByText(/Актуальное состояние задачи пока недоступно/).closest('.panel-hint') as HTMLElement
+    expect(degraded).toBeVisible()
+    expect(within(degraded).getByRole('button', { name: 'Повторить загрузку' })).toBeVisible()
   })
 
   it('uses workflow owner and server comment eligibility as authoritative state', async () => {

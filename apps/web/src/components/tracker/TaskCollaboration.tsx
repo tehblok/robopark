@@ -58,6 +58,8 @@ function Content({ issueKey, owner, active, canWrite, onAuthorizationFailure, on
   const [value, setValue] = useState<Handoff>(empty)
   const [fresh, setFresh] = useState<Handoff | null>(null)
   const [loaded, setLoaded] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const [loadRequest, setLoadRequest] = useState(0)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [denied, setDenied] = useState(false)
@@ -137,6 +139,7 @@ function Content({ issueKey, owner, active, canWrite, onAuthorizationFailure, on
   useEffect(() => {
     if (!open || loaded || denied) return
     let cancelled = false
+    setLoadError('')
     void collaborationClient.handoff(issueKey).then(next => {
       if (cancelled || deniedRef.current) return
       let draft: Handoff | null = null
@@ -151,10 +154,10 @@ function Content({ issueKey, owner, active, canWrite, onAuthorizationFailure, on
     }).catch(caught => {
       if (cancelled || deniedRef.current) return
       if (observeDenial(caught)) return
-      setError('Не удалось загрузить передачу смены.')
+      setLoadError('Не удалось загрузить передачу смены.')
     })
     return () => { cancelled = true }
-  }, [open, loaded, issueKey, storageKey, denied, observeDenial])
+  }, [open, loaded, issueKey, storageKey, denied, observeDenial, loadRequest])
 
   const edit = (next: Handoff) => {
     if (deniedRef.current) return
@@ -205,7 +208,8 @@ function Content({ issueKey, owner, active, canWrite, onAuthorizationFailure, on
     <details open={open} onToggle={event => setOpen(event.currentTarget.open)}>
       <summary>Передача смены</summary>
       {error && <p role="alert">{error}</p>}
-      {!loaded ? <p>Загружаем передачу смены…</p> : <>
+      {!loaded && loadError ? <div><p role="alert">{loadError}</p><Button onClick={() => setLoadRequest(current => current + 1)} type="button" variant="secondary">Повторить загрузку</Button></div>
+        : !loaded ? <p>Загружаем передачу смены…</p> : <>
         {value.updated_at && <p className="issue-muted">{value.author ?? 'Удалённый пользователь'} · {new Date(value.updated_at).toLocaleString('ru-RU')}</p>}
         {(['done', 'remaining', 'obstacles'] as const).map((field, index) => <label key={field} className="issue-handoff-field">
           {['Сделано', 'Осталось', 'Препятствия'][index]}

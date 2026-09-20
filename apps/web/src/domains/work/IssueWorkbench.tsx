@@ -945,7 +945,7 @@ export function TaskController({
                         {taskControlError ? <p role="alert">{taskControlError}</p> : null}
                       </section> : null}
                       {!hiddenDetail ? <div className="a-work-chat"><TaskTimeline items={taskComments} /></div> : null}
-                    </> : <IssueDetailPanel
+                    </> : taskFirst ? <div className="a-work-chat"><TaskTimeline items={taskComments} /></div> : <IssueDetailPanel
                       currentUser={user.tracker_login ?? user.username} accountKey={user.username}
                       commentsLoading={comments.isLoading && !comments.data}
                       comments={taskComments.map(item => ({
@@ -962,7 +962,7 @@ export function TaskController({
                       </p>
                     ) : null}
                     {detail.data && !detail.data.workflow ? (
-                      <p className="panel-hint" role="status">Обновите страницу, чтобы получить актуальное состояние задачи: действия временно недоступны.</p>
+                      <div className="panel-hint" role="status"><span>Актуальное состояние задачи пока недоступно; изменения временно заблокированы.</span>{' '}<Button onClick={() => void detail.refresh()} size="compact" variant="secondary">Повторить загрузку</Button></div>
                     ) : null}
                     {canRenderDetailActions && detail.data?.workflow ? (
                       <IssueActionsPanel

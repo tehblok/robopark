@@ -167,6 +167,7 @@ it.each([
   expect(Array.from(composition?.children ?? []).map(node => node.getAttribute('data-a-zone'))).toEqual([
     'report-context', 'report-workflow', 'report-actions',
   ])
+  expect(composition?.querySelectorAll('[data-a-zone="report-workflow"]')).toHaveLength(1)
 })
 
 it('clears a draft synchronously when effective access changes at the same principal and park', async () => {
