@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import threading
 import time
@@ -13,9 +14,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import QueuePool
 
 try:  # Robopark is deployed on Linux; keep unit tests portable.
     import fcntl
@@ -24,6 +25,7 @@ except ImportError:  # pragma: no cover - non-Unix development fallback
 
 
 LOCK_WAIT_SECONDS = 5.0
+POSTGRES_LOCK_POOL_SIZE = 2
 _SLEEP_SECONDS = 0.02
 SQLITE_LOCK_BUCKETS = 64
 
@@ -34,10 +36,25 @@ class _ProcessLock:
     users: int = 0
 
 
+@dataclass(frozen=True)
+class _PostgresLockEngine:
+    engine: Engine
+    slots: threading.BoundedSemaphore
+
+
 _process_locks: dict[str, _ProcessLock] = {}
 _process_locks_guard = threading.Lock()
-_postgres_lock_engines: dict[str, Engine] = {}
+_postgres_lock_engines: dict[str, _PostgresLockEngine] = {}
 _postgres_lock_engines_guard = threading.Lock()
+_postgres_connect_deadline = threading.local()
+
+
+class _LockDeadlineExceeded(TimeoutError):
+    pass
+
+
+def _remaining_seconds(deadline: float) -> float:
+    return max(0.0, deadline - time.monotonic())
 
 
 def _acquire_process_lock(key: str) -> _ProcessLock:
@@ -101,24 +118,41 @@ def _sqlite_file_lock(bind: Any, key: str) -> Iterator[None]:
         _release_process_lock(key, entry)
 
 
-def _postgres_lock_engine(bind: Any) -> Engine:
-    """Return a lock-only engine which never waits for the request pool."""
+def _postgres_lock_engine(bind: Any) -> _PostgresLockEngine:
+    """Return a small lock-only pool which never waits for the request pool."""
     url = bind.url.render_as_string(hide_password=False)
     cache_key = hashlib.sha256(url.encode()).hexdigest()
     with _postgres_lock_engines_guard:
-        engine = _postgres_lock_engines.get(cache_key)
-        if engine is None:
-            # NullPool gives each lock attempt an independent connection. The
-            # driver timeout bounds connection establishment; no URL is logged.
+        state = _postgres_lock_engines.get(cache_key)
+        if state is None:
             engine = create_engine(
                 url,
                 future=True,
-                poolclass=NullPool,
+                poolclass=QueuePool,
+                pool_size=POSTGRES_LOCK_POOL_SIZE,
+                max_overflow=0,
+                pool_timeout=LOCK_WAIT_SECONDS,
                 pool_pre_ping=True,
-                connect_args={"connect_timeout": max(1, int(LOCK_WAIT_SECONDS))},
+                pool_use_lifo=True,
             )
-            _postgres_lock_engines[cache_key] = engine
-        return engine
+
+            @event.listens_for(engine, "do_connect")
+            def _bound_physical_connect(_dialect, _record, _cargs, cparams) -> None:
+                deadline = getattr(_postgres_connect_deadline, "value", None)
+                if deadline is None:
+                    cparams["connect_timeout"] = max(1, math.ceil(LOCK_WAIT_SECONDS))
+                    return
+                remaining = _remaining_seconds(deadline)
+                if remaining <= 0:
+                    raise _LockDeadlineExceeded
+                cparams["connect_timeout"] = max(1, math.ceil(remaining))
+
+            state = _PostgresLockEngine(
+                engine=engine,
+                slots=threading.BoundedSemaphore(POSTGRES_LOCK_POOL_SIZE),
+            )
+            _postgres_lock_engines[cache_key] = state
+        return state
 
 
 def dispose_database_lock_engines() -> None:
@@ -126,33 +160,47 @@ def dispose_database_lock_engines() -> None:
     with _postgres_lock_engines_guard:
         engines = list(_postgres_lock_engines.values())
         _postgres_lock_engines.clear()
-    for engine in engines:
-        engine.dispose()
+    for state in engines:
+        state.engine.dispose()
 
 
 @contextmanager
 def database_idempotency_lock(db: Any, key: str) -> Iterator[None]:
     """Hold a bounded idempotency lock across commits and request re-binding.
 
-    PostgreSQL uses an independent NullPool connection and a transaction-
-    scoped advisory lock. It never consumes a request-pool connection, which
-    may be released and later replaced around upstream waits. SQLite keeps a
-    keyed in-process lock and a bounded set of non-blocking `flock` sidecars
-    for coordination across its separate host worker processes.
+    PostgreSQL uses a small independent pool and a transaction-scoped advisory
+    lock. It never consumes a request-pool connection, which may be released
+    and later replaced around upstream waits. SQLite keeps a keyed in-process
+    lock and a bounded set of non-blocking `flock` sidecars for coordination
+    across its separate host worker processes.
     """
     bind = db.get_bind()
     dialect = bind.dialect.name
     if dialect == "postgresql":
         deadline = time.monotonic() + LOCK_WAIT_SECONDS
-        lock_engine = _postgres_lock_engine(bind)
-        with lock_engine.connect() as connection, connection.begin():
-            while not connection.scalar(
-                text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"), {"key": key}
-            ):
-                if time.monotonic() >= deadline:
-                    raise HTTPException(503, "idempotency_lock_busy")
-                time.sleep(_SLEEP_SECONDS)
-            yield
+        state = _postgres_lock_engine(bind)
+        if not state.slots.acquire(timeout=_remaining_seconds(deadline)):
+            raise HTTPException(503, "idempotency_lock_busy")
+        try:
+            if _remaining_seconds(deadline) <= 0:
+                raise HTTPException(503, "idempotency_lock_busy")
+            _postgres_connect_deadline.value = deadline
+            try:
+                with state.engine.connect() as connection, connection.begin():
+                    while not connection.scalar(
+                        text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"), {"key": key}
+                    ):
+                        remaining = _remaining_seconds(deadline)
+                        if remaining <= 0:
+                            raise HTTPException(503, "idempotency_lock_busy")
+                        time.sleep(min(_SLEEP_SECONDS, remaining))
+                    yield
+            except _LockDeadlineExceeded:
+                raise HTTPException(503, "idempotency_lock_busy") from None
+            finally:
+                _postgres_connect_deadline.value = None
+        finally:
+            state.slots.release()
         return
     if dialect == "sqlite":
         with _sqlite_file_lock(bind, key):

@@ -109,6 +109,39 @@ Round-3 short verification:
 - No PostgreSQL container, Docker, full suite, load, soak, installer or OTA
   operation was run.
 
+## Review remediation round 4
+
+- Replaced the unbounded lock-only `NullPool` with a fully separate two-slot
+  `QueuePool` (`max_overflow=0`) plus a matching per-worker bounded semaphore.
+  With two API workers this caps lock-only PostgreSQL connections at four,
+  independently of the request pool and well below the supported 40-connection
+  deployment budget.
+- Semaphore admission, lock-pool checkout, physical connection setup and
+  advisory polling now consume one five-second wall-clock deadline. The pool
+  timeout is explicitly five seconds (not SQLAlchemy's 30-second default), and
+  physical psycopg connections receive only the remaining deadline.
+- Cache shutdown now disposes the wrapped bounded engines after the existing
+  lifecycle barrier has stopped writers.
+- Added a deterministic three-contender unit contract: two physical lock
+  connections may be active, the third times out without opening another, and
+  an independent request-pool query remains usable.
+- Hardened the SQLite child-process contract. The contender announces its
+  attempt before entering the lock and separately signals an observed
+  `BlockingIOError`, proving it actually reached the held `flock`; release and
+  join coordination use ARM-safe explicit event waits rather than a 150 ms
+  timing assertion.
+
+Round-4 TDD / short verification:
+
+- RED: `tests/test_database_locks.py` failed three PostgreSQL tests because the
+  bounded `_PostgresLockEngine` contract did not exist; the pre-existing
+  `NullPool` implementation could not satisfy the cap.
+- GREEN: `tests/test_database_locks.py tests/test_lifespan_jobs.py` — `6 passed`
+  (only the existing Starlette/httpx deprecation warning).
+- Scoped Ruff, format check and `git diff --check` passed.
+- No PostgreSQL container, Docker, full suite, load, soak, installer, OTA or
+  signature operation was run.
+
 ## Review remediation round 2
 
 - Replaced the request-session PostgreSQL advisory lock with a bounded

@@ -1,8 +1,12 @@
 import multiprocessing
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
+from fastapi import HTTPException
+from sqlalchemy import create_engine, text
 from sqlalchemy.pool import QueuePool
 
 from robopark_api.services import database_locks
@@ -27,10 +31,23 @@ class _SqliteDb:
 def _hold_sqlite_lock(database, key, entered, release):
     with database_idempotency_lock(_SqliteDb(database), key):
         entered.set()
-        release.wait(timeout=2)
+        release.wait(timeout=10)
 
 
-def _acquire_sqlite_lock(database, key, acquired):
+def _acquire_sqlite_lock(database, key, attempting, acquired, blocked=None):
+    original_flock = database_locks.fcntl.flock if database_locks.fcntl is not None else None
+
+    if blocked is not None and original_flock is not None:
+
+        def observed_flock(descriptor, operation):
+            try:
+                return original_flock(descriptor, operation)
+            except BlockingIOError:
+                blocked.set()
+                raise
+
+        database_locks.fcntl.flock = observed_flock
+    attempting.set()
     with database_idempotency_lock(_SqliteDb(database), key):
         acquired.set()
 
@@ -81,7 +98,7 @@ def test_postgresql_idempotency_lock_keeps_dedicated_transaction_through_request
             self.releases += 1
             events.append("request-rebound")
 
-    lock_engine = Engine()
+    lock_engine = database_locks._PostgresLockEngine(Engine(), threading.BoundedSemaphore(2))
     request = RequestSession()
     # The request bind intentionally has no connect method: the lock must use
     # the independent lock-only engine.
@@ -139,7 +156,13 @@ def test_postgresql_lock_does_not_wait_for_prechecked_request_queue_pool(monkeyp
         def get_bind(self):
             return RequestBind()
 
-    monkeypatch.setattr(database_locks, "_postgres_lock_engine", lambda _bind: LockEngine())
+    monkeypatch.setattr(
+        database_locks,
+        "_postgres_lock_engine",
+        lambda _bind: database_locks._PostgresLockEngine(
+            LockEngine(), threading.BoundedSemaphore(2)
+        ),
+    )
     try:
         with database_idempotency_lock(RequestSession(), "pool-isolation"):
             assert request_engine.pool.checkedout() == 1
@@ -153,6 +176,91 @@ def test_postgresql_lock_does_not_wait_for_prechecked_request_queue_pool(monkeyp
         "transaction-closed",
         "lock-connection-closed",
     ]
+
+
+def test_postgresql_lock_caps_independent_connections_and_times_out_waiter(monkeypatch):
+    """A third lock waiter times out without opening beyond the two-connection cap."""
+    request_engine = create_engine(
+        "sqlite://", poolclass=QueuePool, pool_size=1, max_overflow=0, future=True
+    )
+    active = 0
+    maximum_active = 0
+    active_lock = threading.Lock()
+    two_opened = threading.Event()
+    release_holders = threading.Event()
+
+    class Transaction:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class Connection:
+        def __enter__(self):
+            nonlocal active, maximum_active
+            with active_lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+                if active == 2:
+                    two_opened.set()
+            return self
+
+        def __exit__(self, *_args):
+            nonlocal active
+            with active_lock:
+                active -= 1
+
+        def begin(self):
+            return Transaction()
+
+        def scalar(self, _statement, _parameters):
+            return True
+
+    class LockEngine:
+        def connect(self):
+            return Connection()
+
+    class RequestBind:
+        dialect = SimpleNamespace(name="postgresql")
+
+        def connect(self):
+            return request_engine.connect()
+
+    class RequestSession:
+        def get_bind(self):
+            return RequestBind()
+
+    monkeypatch.setattr(database_locks, "LOCK_WAIT_SECONDS", 0.1)
+    state = database_locks._PostgresLockEngine(LockEngine(), threading.BoundedSemaphore(2))
+    monkeypatch.setattr(database_locks, "_postgres_lock_engine", lambda _bind: state)
+
+    def hold(key):
+        with database_idempotency_lock(RequestSession(), key):
+            assert release_holders.wait(timeout=2)
+
+    try:
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            first = executor.submit(hold, "first")
+            second = executor.submit(hold, "second")
+            assert two_opened.wait(timeout=1)
+            started = time.monotonic()
+            third = executor.submit(
+                lambda: database_idempotency_lock(RequestSession(), "third").__enter__()
+            )
+            with pytest.raises(HTTPException, match="idempotency_lock_busy"):
+                third.result(timeout=1)
+            assert time.monotonic() - started < 0.5
+            with RequestBind().connect() as request_connection:
+                assert request_connection.scalar(text("SELECT 1")) == 1
+            release_holders.set()
+            first.result(timeout=1)
+            second.result(timeout=1)
+    finally:
+        release_holders.set()
+        request_engine.dispose()
+
+    assert maximum_active == 2
 
 
 @pytest.mark.skipif(database_locks.fcntl is None, reason="fcntl flock requires Unix")
@@ -172,27 +280,37 @@ def test_sqlite_bucket_locks_exclude_same_bucket_and_allow_different_bucket(tmp_
     release_holder = context.Event()
     same_acquired = context.Event()
     different_acquired = context.Event()
+    same_attempting = context.Event()
+    different_attempting = context.Event()
+    same_blocked = context.Event()
     holder = context.Process(
         target=_hold_sqlite_lock,
         args=(database, first_key, holder_entered, release_holder),
     )
-    same = context.Process(target=_acquire_sqlite_lock, args=(database, first_key, same_acquired))
+    same = context.Process(
+        target=_acquire_sqlite_lock,
+        args=(database, first_key, same_attempting, same_acquired, same_blocked),
+    )
     different = context.Process(
-        target=_acquire_sqlite_lock, args=(database, other_key, different_acquired)
+        target=_acquire_sqlite_lock,
+        args=(database, other_key, different_attempting, different_acquired),
     )
     holder.start()
     try:
-        assert holder_entered.wait(timeout=2)
+        assert holder_entered.wait(timeout=5)
         same.start()
         different.start()
-        assert different_acquired.wait(timeout=2)
-        assert not same_acquired.wait(timeout=0.15)
+        assert same_attempting.wait(timeout=5)
+        assert different_attempting.wait(timeout=5)
+        assert same_blocked.wait(timeout=5)
+        assert different_acquired.wait(timeout=5)
+        assert not same_acquired.is_set()
         release_holder.set()
-        assert same_acquired.wait(timeout=2)
+        assert same_acquired.wait(timeout=5)
     finally:
         release_holder.set()
         for process in (holder, same, different):
-            process.join(timeout=2)
+            process.join(timeout=5)
             if process.is_alive():
                 process.terminate()
                 process.join(timeout=1)
