@@ -20,7 +20,10 @@ import { REPORTS_BADGE_REFRESH } from '../../reports-badge'
 import { resourceStore } from '../../lib/resource'
 import { INVENTORY_REVISION_CHANGED } from '../../domains/inventory/inventoryRevision'
 
-const shellCss = readFileSync('src/app/shell/AppShell.css', 'utf8')
+const shellCss = [
+  readFileSync('src/app/shell/AppShell.css', 'utf8'),
+  readFileSync('src/app/interface/ClassicShell.css', 'utf8'),
+].join('\n')
 const overviewCss = readFileSync('src/domains/shift/overview.css', 'utf8')
 const workCss = readFileSync('src/domains/work/work.css', 'utf8')
 

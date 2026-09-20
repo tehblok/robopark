@@ -82,6 +82,57 @@ for (const width of [320, 390, 412, 899, 1440]) for (const theme of ['light', 'd
   })
 }
 
+for (const mode of ['Классический', 'Новый А'] as const)
+for (const width of [390, 1440]) {
+  test(`${mode} More menu stays a bounded one-column portal at ${width}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await openRouteFixture(page, 'overview', userForRole('mechanic'))
+    if (mode === 'Новый А') await selectInterface(page, mode)
+
+    await page.getByRole('button', { name: 'Ещё', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Ещё' })
+    const controls = dialog.locator('.rp-shell-controls')
+    await expect(dialog).toBeVisible()
+    await expect(controls).toHaveCount(1)
+    await expect(dialog.locator('.rp-classic-shell, .rp-task-first-shell')).toHaveCount(0)
+
+    const geometry = await dialog.evaluate(element => {
+      const rect = element.getBoundingClientRect()
+      const style = getComputedStyle(element)
+      return {
+        bottom: rect.bottom,
+        height: rect.height,
+        overflowX: style.overflowX,
+        right: rect.right,
+        top: rect.top,
+        width: rect.width,
+      }
+    })
+    expect(geometry.top).toBeGreaterThanOrEqual(0)
+    expect(geometry.right).toBeLessThanOrEqual(width)
+    expect(geometry.bottom).toBeLessThanOrEqual(900)
+    expect(geometry.width).toBeLessThanOrEqual(width)
+    expect(geometry.height).toBeLessThan(900)
+    expect(geometry.overflowX).not.toBe('visible')
+
+    const actions = await controls.locator('.rp-shell__more-link').evaluateAll(elements =>
+      elements.map(element => {
+        const rect = element.getBoundingClientRect()
+        return { bottom: rect.bottom, left: rect.left, top: rect.top, width: rect.width }
+      }),
+    )
+    expect(actions.length).toBeGreaterThan(1)
+    for (let index = 1; index < actions.length; index += 1) {
+      expect(Math.abs(actions[index].left - actions[0].left)).toBeLessThanOrEqual(1)
+      expect(Math.abs(actions[index].width - actions[0].width)).toBeLessThanOrEqual(1)
+      expect(actions[index].top).toBeGreaterThanOrEqual(actions[index - 1].bottom)
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await dialog.screenshot({ path: testInfo.outputPath(`${mode === 'Новый А' ? 'a' : 'classic'}-more-${width}.png`) })
+  })
+}
+
 for (const route of ROUTE_MANIFEST.filter(item => item.surface === 'public')) {
   test(`anonymous ${route.id} stays presentation-neutral`, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 800 })

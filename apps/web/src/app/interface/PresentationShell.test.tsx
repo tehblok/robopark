@@ -30,6 +30,22 @@ describe('PresentationShell', () => {
     expect(view.container.querySelectorAll('[data-shell-zone="content"]')).toHaveLength(1)
   })
 
+  it('uses mode-owned slot wrappers instead of a shared page-layout structure', () => {
+    const view = render(<PresentationShell mode="classic" slots={slots()} />)
+
+    expect(view.container.querySelector('.rp-classic-shell__workspace')).toBeInTheDocument()
+    expect(view.container.querySelector('.rp-classic-shell__content')).toHaveAttribute('data-shell-zone', 'content')
+    expect(view.container.querySelector('.rp-task-first-shell__workspace')).not.toBeInTheDocument()
+    expect(view.container.querySelector('.app-shell, .app-main, .app-content')).not.toBeInTheDocument()
+
+    view.rerender(<PresentationShell mode="task-first" slots={slots()} />)
+
+    expect(view.container.querySelector('.rp-task-first-shell__workspace')).toBeInTheDocument()
+    expect(view.container.querySelector('.rp-task-first-shell__content')).toHaveAttribute('data-shell-zone', 'content')
+    expect(view.container.querySelector('.rp-classic-shell__workspace')).not.toBeInTheDocument()
+    expect(view.container.querySelector('.app-shell, .app-main, .app-content')).not.toBeInTheDocument()
+  })
+
   it('keeps the one live File owner when presentation changes', () => {
     const sharedSlots = slots()
     const view = render(<PresentationShell mode="classic" slots={sharedSlots} />)
@@ -53,11 +69,16 @@ it('scopes structural interface A CSS to the task-first shell', () => {
   expect(source).not.toMatch(/^\.(?:panel|page)(?:\s|[>{.:#])/m)
 })
 
-it('scopes shared shell controls beneath an explicit presentation shell', () => {
-  const source = readFileSync(resolve('src/app/shell/AppShell.css'), 'utf8')
-  const unscoped = source.split('\n').filter(line => /^\s*(?:\.|button\.)/.test(line))
-  const scoped = source.match(/:is\(\.rp-classic-shell, \.rp-task-first-shell\)/g) ?? []
+it('keeps page structure mode-owned and portal controls layout-neutral', () => {
+  const shared = readFileSync(resolve('src/app/shell/AppShell.css'), 'utf8')
+  const classic = readFileSync(resolve('src/app/interface/ClassicShell.css'), 'utf8')
+  const taskFirst = readFileSync(resolve('src/app/interface/TaskFirstShell.css'), 'utf8')
 
-  expect(scoped.length).toBeGreaterThan(20)
-  expect(unscoped).toEqual([])
+  expect(shared).not.toMatch(/:is\(\.rp-classic-shell, \.rp-task-first-shell\)/)
+  expect(shared).not.toMatch(/min-height:\s*100dvh|grid-template-columns:/)
+  expect(shared).toMatch(/\.rp-shell-controls/)
+  expect(classic).toMatch(/\.rp-classic-shell\s*\{[^}]*grid-template-columns:\s*17rem/s)
+  expect(taskFirst).toMatch(/\.rp-task-first-shell\s*\{[^}]*grid-template-columns:\s*224px/s)
+  expect(classic).not.toMatch(/\.rp-task-first-shell/)
+  expect(taskFirst).not.toMatch(/\.rp-classic-shell/)
 })

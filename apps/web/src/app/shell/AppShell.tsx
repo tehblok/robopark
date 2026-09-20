@@ -600,7 +600,7 @@ export function AppShell() {
         open={moreOpen}
         title={ru.nav.more}
       >
-        <div className={presentationMode === 'task-first' ? 'rp-task-first-shell' : 'rp-classic-shell'}>
+        <div className="rp-shell-controls" data-interface={presentationMode} data-theme={resolvedTheme}>
         {secondaryMobileItems.length > 0 ? (
           <nav aria-label={ru.appShell.secondaryNavigation} className="rp-shell__more-nav">
             {secondaryMobileItems.map((item) => (
