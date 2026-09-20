@@ -1,8 +1,13 @@
 """Brute-force protection for authentication endpoints."""
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
+from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 
 from conftest import VALID_PASSWORD, login_as
+from robopark_api.models import AuthThrottleState
 from robopark_api.security import PasswordPolicyError, validate_password
 from robopark_api.services.login_throttle import LoginThrottle, reset_throttles
 
@@ -17,51 +22,88 @@ def clean_throttles():
 # --- unit level ---------------------------------------------------------
 
 
-def test_locks_after_max_attempts():
-    throttle = LoginThrottle(max_attempts=3, window_seconds=60, lockout_seconds=300)
+def _throttle(db_engine, *, max_attempts=3):
+    return LoginThrottle(
+        session_factory=sessionmaker(bind=db_engine, future=True),
+        max_attempts=max_attempts,
+        window_seconds=60,
+        lockout_seconds=300,
+    )
+
+
+def test_locks_after_max_attempts(db_engine):
+    throttle = _throttle(db_engine)
+    now = datetime(2026, 9, 20, tzinfo=UTC)
 
     for _ in range(2):
-        throttle.register_failure("user", now=100.0)
-        assert throttle.retry_after("user", now=100.0) == 0
+        throttle.register_failure("user|127.0.0.1", now=now)
+        assert throttle.retry_after("user|127.0.0.1", now=now) == 0
 
-    throttle.register_failure("user", now=100.0)
-    assert throttle.retry_after("user", now=100.0) > 0
-
-
-def test_lockout_expires():
-    throttle = LoginThrottle(max_attempts=2, window_seconds=60, lockout_seconds=300)
-    throttle.register_failure("user", now=100.0)
-    throttle.register_failure("user", now=100.0)
-
-    assert throttle.retry_after("user", now=200.0) > 0
-    assert throttle.retry_after("user", now=500.0) == 0
+    throttle.register_failure("user|127.0.0.1", now=now)
+    assert throttle.retry_after("user|127.0.0.1", now=now) > 0
 
 
-def test_failures_outside_window_are_forgotten():
-    throttle = LoginThrottle(max_attempts=3, window_seconds=60, lockout_seconds=300)
-    throttle.register_failure("user", now=0.0)
-    throttle.register_failure("user", now=10.0)
+def test_lockout_expires(db_engine):
+    throttle = _throttle(db_engine, max_attempts=2)
+    now = datetime(2026, 9, 20, tzinfo=UTC)
+    throttle.register_failure("user|127.0.0.1", now=now)
+    throttle.register_failure("user|127.0.0.1", now=now)
+
+    assert throttle.retry_after("user|127.0.0.1", now=now + timedelta(seconds=100)) > 0
+    assert throttle.retry_after("user|127.0.0.1", now=now + timedelta(seconds=400)) == 0
+
+
+def test_failures_outside_window_are_forgotten(db_engine):
+    throttle = _throttle(db_engine)
+    now = datetime(2026, 9, 20, tzinfo=UTC)
+    throttle.register_failure("user|127.0.0.1", now=now)
+    throttle.register_failure("user|127.0.0.1", now=now + timedelta(seconds=10))
     # The first two failures fall out of the window before the third arrives.
-    throttle.register_failure("user", now=200.0)
+    throttle.register_failure("user|127.0.0.1", now=now + timedelta(seconds=200))
 
-    assert throttle.retry_after("user", now=200.0) == 0
-
-
-def test_success_resets_counter():
-    throttle = LoginThrottle(max_attempts=2, window_seconds=60, lockout_seconds=300)
-    throttle.register_failure("user", now=100.0)
-    throttle.reset("user")
-    throttle.register_failure("user", now=100.0)
-
-    assert throttle.retry_after("user", now=100.0) == 0
+    assert throttle.retry_after("user|127.0.0.1", now=now + timedelta(seconds=200)) == 0
 
 
-def test_keys_are_isolated():
-    throttle = LoginThrottle(max_attempts=1, window_seconds=60, lockout_seconds=300)
-    throttle.register_failure("alice", now=100.0)
+def test_success_resets_counter(db_engine):
+    throttle = _throttle(db_engine, max_attempts=2)
+    now = datetime(2026, 9, 20, tzinfo=UTC)
+    throttle.register_failure("user|127.0.0.1", now=now)
+    throttle.reset("user|127.0.0.1")
+    throttle.register_failure("user|127.0.0.1", now=now)
 
-    assert throttle.retry_after("alice", now=100.0) > 0
-    assert throttle.retry_after("bob", now=100.0) == 0
+    assert throttle.retry_after("user|127.0.0.1", now=now) == 0
+
+
+def test_keys_are_isolated(db_engine):
+    throttle = _throttle(db_engine, max_attempts=1)
+    now = datetime(2026, 9, 20, tzinfo=UTC)
+    throttle.register_failure("alice|127.0.0.1", now=now)
+
+    assert throttle.retry_after("alice|127.0.0.1", now=now) > 0
+    assert throttle.retry_after("bob|127.0.0.1", now=now) == 0
+
+
+def test_failures_are_shared_between_service_instances(db_engine):
+    first = _throttle(db_engine, max_attempts=2)
+    second = _throttle(db_engine, max_attempts=2)
+    now = datetime(2026, 9, 20, tzinfo=UTC)
+
+    first.register_failure("alice|192.0.2.1", now=now)
+    second.register_failure("alice|192.0.2.1", now=now)
+
+    assert first.retry_after("alice|192.0.2.1", now=now) == 300
+
+
+def test_database_stores_only_sha256_key(db_engine):
+    throttle = _throttle(db_engine)
+    raw_key = "Alice|192.0.2.7"
+
+    throttle.register_failure(raw_key, now=datetime(2026, 9, 20, tzinfo=UTC))
+
+    with db_engine.connect() as connection:
+        stored = connection.execute(select(AuthThrottleState.key_hash)).scalar_one()
+    assert stored == "7a405606489c11a516f7996332ac71cdb21dd6f8ed1dc14480013d1e51c1ef82"
+    assert "Alice" not in stored
 
 
 # --- endpoint level -----------------------------------------------------
@@ -113,6 +155,34 @@ def test_register_shared_password_is_rate_limited(client, test_settings, monkeyp
         json={
             "shared_password": "gate",
             "username": "attacker",
+            "password": VALID_PASSWORD,
+        },
+    )
+    assert blocked.status_code == 429
+
+
+def test_register_cannot_bypass_shared_password_limit_by_rotating_username(
+    client, test_settings, monkeypatch
+):
+    monkeypatch.setattr(test_settings, "operator_shared_password", "gate")
+    monkeypatch.setattr(test_settings, "register_max_attempts", 2)
+
+    for username in ("attacker-one", "attacker-two"):
+        response = client.post(
+            "/auth/register",
+            json={
+                "shared_password": "wrong",
+                "username": username,
+                "password": VALID_PASSWORD,
+            },
+        )
+        assert response.status_code == 403
+
+    blocked = client.post(
+        "/auth/register",
+        json={
+            "shared_password": "gate",
+            "username": "attacker-three",
             "password": VALID_PASSWORD,
         },
     )

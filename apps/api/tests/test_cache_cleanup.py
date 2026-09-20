@@ -1,13 +1,15 @@
 import asyncio
 import os
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from robopark_api import main
+from robopark_api.models import AuthThrottleState
 from robopark_api.services import cache_cleanup
 from robopark_api.task_workflow_models import (
     OfflineSyncReceipt,
@@ -52,6 +54,11 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         lambda session, **kwargs: calls.append(("receipts", session, kwargs)) or 1,
     )
     monkeypatch.setattr(
+        cache_cleanup,
+        "prune_auth_throttle_states",
+        lambda session, **kwargs: calls.append(("throttles", session, kwargs)) or 2,
+    )
+    monkeypatch.setattr(
         cache_cleanup.push,
         "prune_notification_data",
         lambda session, **kwargs: (
@@ -91,6 +98,7 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         ("unknowns", db, {"now": now}),
         ("media", db, {"now": now.timestamp()}),
         ("receipts", db, {"now": now.timestamp()}),
+        ("throttles", db, {"now": now}),
         ("notifications", db, {"now": now}),
         ("schedules", db, {"now": now}),
         ("outbox", db, {"now": now.timestamp()}),
@@ -124,6 +132,23 @@ def test_cleanup_bounds_confirmed_offline_sync_receipts(db_session, seed_mechani
     assert cache_cleanup.prune_offline_sync_receipts(db_session, now=now) == 1
     assert db_session.get(OfflineSyncReceipt, old.id) is None
     assert db_session.get(OfflineSyncReceipt, recent.id) is not None
+
+
+def test_cleanup_bounds_expired_auth_throttle_rows(db_session):
+    now = datetime(2026, 9, 20, tzinfo=UTC)
+    for index in range(3):
+        db_session.add(
+            AuthThrottleState(
+                key_hash=f"{index:064x}",
+                failure_count=1,
+                window_started_at=now - timedelta(minutes=2),
+                expires_at=now - timedelta(minutes=1),
+            )
+        )
+    db_session.commit()
+
+    assert cache_cleanup.prune_auth_throttle_states(db_session, now=now, limit=2) == 2
+    assert db_session.scalar(select(func.count()).select_from(AuthThrottleState)) == 1
 
 
 def test_deleted_report_file_cleanup_only_removes_old_quarantine_files(tmp_path, monkeypatch):

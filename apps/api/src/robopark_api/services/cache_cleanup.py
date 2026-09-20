@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
+from robopark_api.models import AuthThrottleState
 from robopark_api.routers import push
 from robopark_api.services import emergency_cache, media_uploads, schedules, tracker_cache
 from robopark_api.services.diagnostic_unknowns import prune_diagnostic_unknowns
@@ -160,6 +161,28 @@ def prune_offline_sync_receipts(db: Session, *, now: float) -> int:
             .where(OfflineSyncReceipt.created_at < now - _SYNC_RECEIPT_RETENTION_SECONDS)
             .order_by(OfflineSyncReceipt.created_at, OfflineSyncReceipt.id)
             .limit(_RETENTION_BATCH_SIZE)
+        ).all()
+    )
+    for row in rows:
+        db.delete(row)
+    if rows:
+        db.commit()
+    return len(rows)
+
+
+def prune_auth_throttle_states(
+    db: Session,
+    *,
+    now: datetime,
+    limit: int = _RETENTION_BATCH_SIZE,
+) -> int:
+    """Delete at most one bounded batch of expired shared throttle rows."""
+    rows = list(
+        db.scalars(
+            select(AuthThrottleState)
+            .where(AuthThrottleState.expires_at <= now)
+            .order_by(AuthThrottleState.expires_at, AuthThrottleState.key_hash)
+            .limit(max(0, limit))
         ).all()
     )
     for row in rows:
@@ -354,6 +377,7 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
         unknowns_removed = prune_diagnostic_unknowns(db, now=current)
         media_uploads_removed = media_uploads.cleanup_expired(db, now=current.timestamp())
         sync_receipts_removed = prune_offline_sync_receipts(db, now=current.timestamp())
+        throttle_states_removed = prune_auth_throttle_states(db, now=current)
         notification_cleanup = push.prune_notification_data(db, now=current)
         schedules_removed = schedules.prune_old_entries(db, now=current)
         actions_removed, attachments_removed = prune_tracker_outbox(db, now=current.timestamp())
@@ -376,6 +400,8 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
         logger.info("Pruned %s expired media upload(s)", media_uploads_removed)
     if sync_receipts_removed:
         logger.info("Pruned %s expired offline sync receipt(s)", sync_receipts_removed)
+    if throttle_states_removed:
+        logger.info("Pruned %s expired authentication throttle row(s)", throttle_states_removed)
     if notification_cleanup["subscriptions"] or notification_cleanup["notifications"]:
         logger.info("Pruned notification data: %s", notification_cleanup)
     if schedules_removed:

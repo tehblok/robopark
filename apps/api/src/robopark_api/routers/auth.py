@@ -90,8 +90,13 @@ def register(
     settings: Settings = Depends(get_settings),
 ) -> RegisterOut:
     throttle = get_register_throttle(settings)
-    throttle_key = client_ip(request)
-    retry_after = throttle.retry_after(throttle_key)
+    request_ip = client_ip(request)
+    throttle_key = f"register|{registration.username.lower()}|{request_ip}"
+    gate_key = f"register|*|{request_ip}"
+    retry_after = max(
+        throttle.retry_after(throttle_key, db=db),
+        throttle.retry_after(gate_key, db=db),
+    )
     if retry_after:
         raise _too_many_requests(retry_after)
 
@@ -102,15 +107,16 @@ def register(
         ),
     ):
         # Rate-limited: the shared password is otherwise brute-forceable.
-        throttle.register_failure(throttle_key)
-        logger.warning("Rejected registration attempt from %s", throttle_key)
+        throttle.register_failure(throttle_key, db=db)
+        throttle.register_failure(gate_key, db=db)
+        logger.warning("Rejected registration attempt from %s", request_ip)
         audit.record(
             db,
             action=audit.ACTION_REGISTER,
             actor_username=registration.username,
             outcome=audit.OUTCOME_DENIED,
             detail="wrong shared password",
-            client_ip=throttle_key,
+            client_ip=request_ip,
         )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="register_denied")
 
@@ -125,7 +131,7 @@ def register(
             actor_username=registration.username,
             outcome=audit.OUTCOME_DENIED,
             detail="username_taken",
-            client_ip=throttle_key,
+            client_ip=request_ip,
         )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="register_denied")
 
@@ -142,7 +148,8 @@ def register(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="roles_not_seeded"
         )
 
-    throttle.reset(throttle_key)
+    throttle.reset(throttle_key, db=db)
+    throttle.reset(gate_key, db=db)
     user = User(
         username=registration.username,
         password_hash=hash_password(registration.password),
@@ -159,7 +166,7 @@ def register(
         actor=user,
         target_type="user",
         target_id=str(user.id),
-        client_ip=throttle_key,
+        client_ip=request_ip,
     )
     return RegisterOut(
         id=user.id,
@@ -182,8 +189,8 @@ def login(
     throttle = get_login_throttle(settings)
     # Keyed by username *and* address: neither a single account nor a single
     # host can be hammered, and one attacker cannot lock out every user.
-    throttle_key = f"{credentials.username.lower()}|{client_ip(request)}"
-    retry_after = throttle.retry_after(throttle_key)
+    throttle_key = f"login|{credentials.username.lower()}|{client_ip(request)}"
+    retry_after = throttle.retry_after(throttle_key, db=db)
     if retry_after:
         audit.record(
             db,
@@ -201,7 +208,7 @@ def login(
         or not user.is_active
         or not verify_password(credentials.password, user.password_hash)
     ):
-        throttle.register_failure(throttle_key)
+        throttle.register_failure(throttle_key, db=db)
         logger.info("Failed login for %r from %s", credentials.username, client_ip(request))
         audit.record(
             db,
@@ -212,7 +219,7 @@ def login(
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
-    throttle.reset(throttle_key)
+    throttle.reset(throttle_key, db=db)
     audit.record(
         db,
         action=audit.ACTION_LOGIN_SUCCESS,
