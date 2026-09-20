@@ -21,6 +21,7 @@ import { ru } from '../i18n/ru'
 import { useCachedResource, resourceStore, RESOURCE_REFRESH_MS } from '../lib/resource'
 import { useParkContext } from '../park-context'
 import { refreshReportsBadge } from '../reports-badge'
+import { usePresentationMode } from '../app/interface/presentationModeContext'
 
 type ReportsPane = 'mine' | 'inbox'
 type ReportsStatus = 'all' | 'open' | 'returned' | 'done'
@@ -59,6 +60,7 @@ function ReportsOwner({
   restoreDraft: boolean
   user: User
 }) {
+  const taskFirst = usePresentationMode() === 'task-first'
   const location = useLocation()
   const active = useRef(true)
   const navigation = useRef({ identity, key: location.key })
@@ -195,7 +197,7 @@ function ReportsOwner({
 
   if (createRoute) {
     return (
-      <div className="dashboard-page rp-reports animate-in">
+      <div className="dashboard-page rp-reports animate-in" data-a-route={taskFirst ? 'reports-new' : undefined}>
         <div className="dashboard-toolbar">
           <h1 className="dashboard-title">Создать репорт</h1>
           <Link className="btn btn-secondary" to={{ pathname: '/reports', search: currentSearch }}>
@@ -211,7 +213,7 @@ function ReportsOwner({
             title="Парк не назначен"
           />
         ) : (
-          <Panel
+          <div data-a-zone={taskFirst ? 'report-compose' : undefined}><Panel
             collapsible
             hint={`Парк: ${selectedPark?.name ?? parkId}. Репорт уходит оператору парка.`}
             storageKey="reports-create"
@@ -225,14 +227,14 @@ function ReportsOwner({
               principalId={user.id}
               restoreDraft={restoreDraft}
             />
-          </Panel>
+          </Panel></div>
         )}
       </div>
     )
   }
 
   return (
-    <div className="dashboard-page rp-reports animate-in">
+    <div className="dashboard-page rp-reports animate-in" data-a-route={taskFirst ? (detailRoute ? 'report-detail' : 'reports') : undefined}>
       <div className="dashboard-toolbar">
         <h1 className="dashboard-title" id="reports-title">{ru.nav.reports}</h1>
         <div className="actions">
@@ -244,7 +246,7 @@ function ReportsOwner({
         </div>
       </div>
 
-      <MasterDetail detailOpen={detailRoute} onBack={closeDetail} list={<>
+      <MasterDetail detailOpen={detailRoute} onBack={closeDetail} list={<div data-a-zone={taskFirst ? 'report-list' : undefined}>
       {createEnabled && inboxEnabled && (
         <Tabs
           ariaLabel="Режим репортов"
@@ -332,8 +334,8 @@ function ReportsOwner({
       {!createEnabled && !inboxEnabled && (
         <EmptyBlock hint="Для этой роли нет действий с репортами." icon="✉" title="Раздел недоступен" />
       )}
-      </>} detail={
-        <Panel collapsible storageKey="reports-detail" title="Детали репорта">
+      </div>} detail={
+        <div data-a-zone={taskFirst ? 'report-workflow' : undefined}><Panel collapsible storageKey="reports-detail" title="Детали репорта">
           {detailError && <Alert tone="error">{detailError}</Alert>}
           {detailLoading && <SkeletonList rows={2} />}
           {!detailRoute && <EmptyBlock title="Выберите репорт" hint="Откройте репорт из списка, чтобы прочитать детали и выполнить доступные действия." />}
@@ -353,7 +355,7 @@ function ReportsOwner({
               showEscalate={role === 'operator'}
             />
           )}
-        </Panel>
+        </Panel></div>
       } />
     </div>
   )
