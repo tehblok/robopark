@@ -16,7 +16,7 @@ export default defineConfig({
     trace: 'on-first-retry',
   },
   webServer: {
-    command: `"${process.execPath}" node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port ${port} --strictPort`,
+    command: `"${process.execPath}" scripts/serve-pwa-fixture.mjs ${port}`,
     cwd: webRoot,
     url: baseURL,
     reuseExistingServer: false,

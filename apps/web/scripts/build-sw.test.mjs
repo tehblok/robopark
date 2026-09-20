@@ -20,7 +20,7 @@ test('regular browser discovery excludes the opt-in soak suite', () => {
 })
 
 test('soak command refuses to start without explicit duration and output', () => {
-  const result = spawnSync('bash', ['scripts/playwright-linux.sh', 'soak'], {
+  const result = spawnSync('/bin/bash', ['scripts/playwright-linux.sh', 'soak'], {
     cwd: webRoot,
     encoding: 'utf8',
     env: { ...process.env, ROBOPARK_SOAK_DURATION_SECONDS: '', ROBOPARK_SOAK_OUTPUT: '' },
@@ -28,6 +28,24 @@ test('soak command refuses to start without explicit duration and output', () =>
   assert.equal(result.status, 2)
   assert.match(result.stderr, /ROBOPARK_SOAK_DURATION_SECONDS/)
   assert.match(result.stderr, /ROBOPARK_SOAK_OUTPUT/)
+})
+
+test('soak command rejects every zero or non-finite duration before Docker setup', () => {
+  for (const duration of ['0', '0.0', '00', '000.000', 'NaN', 'Infinity', '-1']) {
+    const result = spawnSync('/bin/bash', ['scripts/playwright-linux.sh', 'soak'], {
+      cwd: webRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: dirname(process.execPath),
+        ROBOPARK_SOAK_DURATION_SECONDS: duration,
+        ROBOPARK_SOAK_OUTPUT: 'tmp/soak-boundary.json',
+      },
+    })
+    assert.equal(result.status, 2, `duration ${duration}: ${result.stderr}`)
+    assert.match(result.stderr, /positive finite number/, `duration ${duration}`)
+    assert.doesNotMatch(result.stderr, /docker is required/, `duration ${duration}`)
+  }
 })
 
 test('production PWA discovery is isolated from mocked browser journeys', () => {

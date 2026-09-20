@@ -14,8 +14,9 @@ if [[ "$mode" == "soak" ]]; then
     echo "ROBOPARK_SOAK_DURATION_SECONDS and ROBOPARK_SOAK_OUTPUT are required for soak" >&2
     exit 2
   fi
-  if [[ ! "${ROBOPARK_SOAK_DURATION_SECONDS}" =~ ^[0-9]+([.][0-9]+)?$ ]] || [[ "${ROBOPARK_SOAK_DURATION_SECONDS}" == "0" ]]; then
-    echo "ROBOPARK_SOAK_DURATION_SECONDS must be a positive number" >&2
+  if ! node -e 'const value = Number(process.argv[1]); process.exit(Number.isFinite(value) && value > 0 ? 0 : 1)' \
+    "${ROBOPARK_SOAK_DURATION_SECONDS}"; then
+    echo "ROBOPARK_SOAK_DURATION_SECONDS must be a positive finite number" >&2
     exit 2
   fi
   soak_output="${ROBOPARK_SOAK_OUTPUT}"

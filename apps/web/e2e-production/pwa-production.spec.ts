@@ -14,21 +14,43 @@ test('production worker owns the shell offline without caching private traffic',
     `/api/private-pwa-probe?nonce=${Date.now()}`,
     `/attachments/private-pwa-probe?nonce=${Date.now()}`,
   ]
-  await page.evaluate(async (urls) => {
-    await Promise.all(urls.map((url) => fetch(url).then((response) => response.text())))
+  const onlineResponses = await page.evaluate(async (urls) => {
+    return Promise.all(urls.map(async (url) => {
+      const response = await fetch(url)
+      return { status: response.status, body: await response.text() }
+    }))
   }, privateUrls)
+  expect(onlineResponses).toEqual([
+    { status: 200, body: 'controlled-private-api-response' },
+    { status: 200, body: 'controlled-private-attachment-response' },
+  ])
 
-  const cachedUrls = await page.evaluate(async () => {
+  const cachedEntries = await page.evaluate(async () => {
     const names = await caches.keys()
-    const requests = await Promise.all(names.map(async (name) => (await caches.open(name)).keys()))
-    return requests.flat().map((request) => request.url)
+    const entries = await Promise.all(names.map(async (name) => {
+      const cache = await caches.open(name)
+      const requests = await cache.keys()
+      return Promise.all(requests.map(async (request) => ({
+        cache: name,
+        url: request.url,
+        body: await cache.match(request).then((response) => response?.text() ?? ''),
+      })))
+    }))
+    return entries.flat()
   })
-  for (const url of privateUrls) expect(cachedUrls.some((cached) => cached.includes(url))).toBe(false)
+  for (const entry of cachedEntries) {
+    expect(entry.url).not.toContain('private-pwa-probe')
+    expect(entry.body).not.toContain('controlled-private-')
+  }
 
   await context.setOffline(true)
-  await page.goto('/work/offline-pwa-proof')
-  await expect(page.locator('#root')).toBeAttached()
-  await expect(page).toHaveTitle(/\S+/)
+  await page.goto('/login')
+  const login = page.getByRole('textbox', { name: 'Логин' })
+  await expect(login).toBeVisible()
+  await expect(login).toBeEditable()
+  await login.fill('offline-shell-proof')
+  await expect(login).toHaveValue('offline-shell-proof')
+  await expect(page.getByRole('button', { name: 'Войти', exact: true })).toBeEnabled()
   const privateResponses = await page.evaluate(async (urls) => Promise.all(urls.map(async (url) => {
     try {
       await fetch(url)
