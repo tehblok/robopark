@@ -2,7 +2,9 @@ import base64
 import hashlib
 import json
 import logging
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, datetime, timedelta
 
 from cryptography.hazmat.primitives import serialization
@@ -10,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import APIRouter, Depends, HTTPException, status
 from pywebpush import WebPushException, webpush
 from sqlalchemy import delete, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
@@ -22,6 +25,7 @@ from robopark_api.schedule_models import (
     NotificationPreference,
     PushSubscription,
     ScheduleEntry,
+    SystemIncidentOccurrence,
 )
 from robopark_api.schedule_schemas import PushPreferenceIn, PushSubscriptionIn
 
@@ -137,8 +141,37 @@ class PushService:
             }
             recipients: list[int] = []
             internal_recipients: list[int] = []
+            stable_event_key = event_key
+            if event_key is not None and event_key.startswith("system:"):
+                occurrence = db.scalar(
+                    select(SystemIncidentOccurrence).where(
+                        SystemIncidentOccurrence.incident_key == event_key,
+                        SystemIncidentOccurrence.resolved_at.is_(None),
+                    )
+                )
+                if occurrence is None:
+                    occurrence = SystemIncidentOccurrence(
+                        incident_key=event_key,
+                        event_type=event_type,
+                        started_at=now,
+                        last_seen_at=now,
+                    )
+                    try:
+                        with db.begin_nested():
+                            db.add(occurrence)
+                            db.flush()
+                    except IntegrityError:
+                        occurrence = db.scalar(
+                            select(SystemIncidentOccurrence).where(
+                                SystemIncidentOccurrence.incident_key == event_key,
+                                SystemIncidentOccurrence.resolved_at.is_(None),
+                            )
+                        )
+                if occurrence is not None:
+                    occurrence.last_seen_at = now
+                    stable_event_key = f"{event_key}:{occurrence.id}"
             event_id = hashlib.sha256(
-                (event_key or f"{event_type}:{now.timestamp()}:{protected_text}").encode()
+                (stable_event_key or f"{event_type}:{now.timestamp()}:{protected_text}").encode()
             ).hexdigest()[:24]
             for user in users:
                 if park_id is not None and user.role != "royal" and user.id not in park_user_ids:
@@ -167,7 +200,10 @@ class PushService:
                     recipients.append(user.id)
             db.commit()
             if deliver and recipients:
-                self._deliver(db, event_id=event_id, recipient_ids=recipients)
+                try:
+                    self._deliver(db, event_id=event_id, recipient_ids=recipients)
+                except Exception:
+                    logger.exception("Web Push delivery failed after internal notification commit")
             return {
                 "event_id": event_id,
                 "recipient_ids": recipients,
@@ -178,39 +214,96 @@ class PushService:
     def emit_for_tests(self, **kwargs) -> dict:
         return self.emit(**kwargs, deliver=False)
 
+    def sync_system_incidents(self, active_keys: set[str]) -> None:
+        """Refresh active health occurrences and resolve checks that recovered."""
+        now = datetime.now(UTC)
+        with self._session_factory() as db:
+            occurrences = list(
+                db.scalars(
+                    select(SystemIncidentOccurrence).where(
+                        SystemIncidentOccurrence.resolved_at.is_(None)
+                    )
+                )
+            )
+            for occurrence in occurrences:
+                if occurrence.incident_key in active_keys:
+                    occurrence.last_seen_at = now
+                else:
+                    occurrence.resolved_at = now
+            db.commit()
+
     def _deliver(self, db: Session, *, event_id: str, recipient_ids: list[int]) -> None:
         settings = get_settings()
+        deadline = time.monotonic() + settings.push_delivery_deadline_seconds
         if not settings.secret_key:
             logger.warning("Web Push skipped: SECRET_KEY is not configured")
             return
         private_key, _ = _vapid_key_pair(settings.secret_key)
         rows = list(
-            db.scalars(select(PushSubscription).where(PushSubscription.user_id.in_(recipient_ids)))
+            db.scalars(
+                select(PushSubscription)
+                .where(PushSubscription.user_id.in_(recipient_ids))
+                .order_by(PushSubscription.created_at, PushSubscription.id)
+                .limit(settings.push_delivery_batch_size)
+            )
         )
-        for row in rows:
+        deliveries = [
+            (
+                row.endpoint_hash,
+                decrypt_secret(row.endpoint_encrypted, settings.secret_key),
+                decrypt_secret(row.p256dh_encrypted, settings.secret_key),
+                decrypt_secret(row.auth_encrypted, settings.secret_key),
+            )
+            for row in rows
+        ]
+        def send(delivery: tuple[str, str, str, str]) -> str | None:
+            endpoint_hash, endpoint, p256dh, auth = delivery
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
             try:
                 webpush(
                     subscription_info={
-                        "endpoint": decrypt_secret(row.endpoint_encrypted, settings.secret_key),
-                        "keys": {
-                            "p256dh": decrypt_secret(row.p256dh_encrypted, settings.secret_key),
-                            "auth": decrypt_secret(row.auth_encrypted, settings.secret_key),
-                        },
+                        "endpoint": endpoint,
+                        "keys": {"p256dh": p256dh, "auth": auth},
                     },
                     data=json.dumps({"event_id": event_id}),
                     vapid_private_key=private_key,
                     vapid_claims={"sub": "mailto:robopark@localhost"},
-                    timeout=5,
+                    timeout=max(0.1, min(5.0, remaining)),
                 )
             except WebPushException as exc:
                 response = getattr(exc, "response", None)
                 if response is not None and response.status_code in {404, 410}:
-                    db.delete(row)
-                    db.commit()
+                    return endpoint_hash
                 else:
                     logger.warning("Web Push delivery failed", exc_info=exc)
             except Exception:
                 logger.exception("Web Push delivery failed")
+            return None
+
+        if not deliveries or time.monotonic() >= deadline:
+            return
+        executor = ThreadPoolExecutor(
+            max_workers=settings.push_max_concurrency,
+            thread_name_prefix="robopark-webpush",
+        )
+        futures = [executor.submit(send, delivery) for delivery in deliveries]
+        done, pending = wait(
+            futures,
+            timeout=max(0.0, deadline - time.monotonic()),
+        )
+        for future in pending:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        rejected_hashes = {endpoint_hash for future in done if (endpoint_hash := future.result())}
+        if rejected_hashes:
+            db.execute(
+                delete(PushSubscription).where(
+                    PushSubscription.endpoint_hash.in_(rejected_hashes)
+                )
+            )
+            db.commit()
 
 
 def _vapid_key_pair(secret_key: str) -> tuple[str, str]:

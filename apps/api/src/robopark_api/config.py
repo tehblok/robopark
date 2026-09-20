@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _API_ROOT = Path(__file__).resolve().parents[2]
@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     # --- Emergency cache --------------------------------------------------
     #: Maximum simultaneous Emergency HTTP requests in one API worker.
     emergency_max_concurrency: int = 8
+
+    # --- Web Push delivery ------------------------------------------------
+    #: Maximum simultaneous Web Push requests in one API worker.
+    push_max_concurrency: int = Field(default=4, ge=1, le=64)
+    #: Maximum subscriptions attempted for one emitted event.
+    push_delivery_batch_size: int = Field(default=100, ge=1, le=10_000)
+    #: Total wall-clock budget for delivering one emitted event.
+    push_delivery_deadline_seconds: float = Field(default=10.0, gt=0, le=120.0)
 
     # --- Royal ops (snapshot / restore / ZIP update) -----------------------
     #: Directory for job state, staging, and snapshot artifacts.

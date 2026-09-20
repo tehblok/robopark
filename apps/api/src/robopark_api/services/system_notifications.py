@@ -57,9 +57,17 @@ async def run_system_notification_loop(
     active: set[str] = set()
     while not stop_event.is_set():
         alerts = await asyncio.to_thread(read_health_alerts, settings)
-        current = {signature for _, signature, _ in alerts}
+        current = {f"system:{signature}" for _, signature, _ in alerts}
+        emit_owner = getattr(emit, "__self__", None)
+        sync_incidents = getattr(emit_owner, "sync_system_incidents", None)
+        if callable(sync_incidents):
+            try:
+                await asyncio.to_thread(sync_incidents, current)
+            except Exception:
+                logger.exception("System incident lifecycle update failed")
         for event_type, signature, text in alerts:
-            if signature in active:
+            incident_key = f"system:{signature}"
+            if incident_key in active:
                 continue
             try:
                 await asyncio.to_thread(
@@ -67,7 +75,7 @@ async def run_system_notification_loop(
                     event_type=event_type,
                     park_id=None,
                     protected_text=text,
-                    event_key=f"system:{signature}",
+                    event_key=incident_key,
                 )
             except Exception:
                 logger.exception("System notification delivery failed")

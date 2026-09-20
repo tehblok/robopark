@@ -1,3 +1,6 @@
+import threading
+import time
+
 from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, User, UserPark
 from robopark_api.routers import push
@@ -111,6 +114,105 @@ def test_push_config_and_delivery_send_only_event_identifier(
     assert event["recipient_ids"] == [operator.id]
     assert delivered[0]["data"] == f'{{"event_id": "{event["event_id"]}"}}'
     assert "Закрытый" not in delivered[0]["data"]
+
+
+def test_push_delivery_limits_batch_and_concurrency(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    operator = _operator(db_session, seed_park_with_tracker.id)
+    login_as(client, operator.username, "secret")
+    for index in range(7):
+        response = client.post(
+            "/push/subscriptions",
+            json={
+                "endpoint": f"https://push.example/bounded/{index}",
+                "p256dh": "key",
+                "auth": "auth",
+            },
+        )
+        assert response.status_code == 201
+
+    settings = push.get_settings()
+    settings.push_max_concurrency = 2
+    settings.push_delivery_batch_size = 5
+    settings.push_delivery_deadline_seconds = 1.0
+    active = 0
+    maximum_active = 0
+    delivered = 0
+    lock = threading.Lock()
+
+    def bounded_webpush(**_kwargs):
+        nonlocal active, delivered, maximum_active
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+            delivered += 1
+
+    monkeypatch.setattr(push, "webpush", bounded_webpush)
+    client.app.state.push_service.emit(
+        event_type="report",
+        park_id=seed_park_with_tracker.id,
+        protected_text="bounded",
+    )
+
+    assert delivered == 5
+    assert maximum_active == 2
+
+
+def test_push_delivery_returns_at_total_deadline(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    operator = _operator(db_session, seed_park_with_tracker.id)
+    login_as(client, operator.username, "secret")
+    for index in range(3):
+        response = client.post(
+            "/push/subscriptions",
+            json={
+                "endpoint": f"https://push.example/slow/{index}",
+                "p256dh": "key",
+                "auth": "auth",
+            },
+        )
+        assert response.status_code == 201
+
+    settings = push.get_settings()
+    settings.push_max_concurrency = 1
+    settings.push_delivery_batch_size = 3
+    settings.push_delivery_deadline_seconds = 0.03
+    monkeypatch.setattr(push, "webpush", lambda **_kwargs: time.sleep(0.2))
+
+    started = time.monotonic()
+    client.app.state.push_service.emit(
+        event_type="report",
+        park_id=seed_park_with_tracker.id,
+        protected_text="deadline",
+    )
+
+    assert time.monotonic() - started < 0.15
+
+
+def test_push_delivery_failure_does_not_lose_internal_notification(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    operator = _operator(db_session, seed_park_with_tracker.id)
+    login_as(client, operator.username, "secret")
+
+    def fail_delivery(*_args, **_kwargs):
+        raise RuntimeError("delivery failed")
+
+    monkeypatch.setattr(client.app.state.push_service, "_deliver", fail_delivery)
+    emitted = client.app.state.push_service.emit(
+        event_type="report",
+        park_id=seed_park_with_tracker.id,
+        protected_text="still stored",
+    )
+
+    inbox = client.get("/push/inbox").json()
+    assert emitted["internal_recipient_ids"] == [operator.id]
+    assert inbox[0]["protected_text"] == "still stored"
 
 
 def test_report_creation_emits_operator_notification(
