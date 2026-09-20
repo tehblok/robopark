@@ -114,14 +114,17 @@ function CampaignList({ apiClient }: { apiClient: CampaignApi }) {
   const manager = user?.role === 'admin' || user?.role === 'royal'
   const failure = error ? classifyApiError(error, 'Не удалось загрузить кампании.') : null
   return <PageLayout description="Прогресс сервисных компаний и оклейки по доступным паркам." title="СК и оклейка">
-    {manager ? <CampaignCreateForm apiClient={apiClient} onCreated={item => navigate(`/campaigns/${item.id}`)} /> : null}
-    {failure ? <ErrorState description={failure.description} onRetry={failure.retryable ? load : undefined} title={failure.title} />
+    <div className={taskFirst ? 'campaign-list-composition campaign-list-composition--task-first' : 'campaign-list-composition'} data-a-route={taskFirst ? 'campaigns' : undefined}>
+    <aside data-a-zone={taskFirst ? 'campaign-context' : undefined} hidden={!taskFirst}><h2>Контекст кампаний</h2><p>{selectedPark ? `Парк: ${selectedPark.name}` : 'Все доступные парки'}</p><p>{items ? `Кампаний: ${items.length}` : 'Получаем кампании'}</p></aside>
+    <section data-a-zone={taskFirst ? 'campaign-workflow' : undefined}>{failure ? <ErrorState description={failure.description} onRetry={failure.retryable ? load : undefined} title={failure.title} />
       : !items ? <LoadingState label="Загружаем кампании" variant="page" />
         : !items.length ? <EmptyState description="Администратор ещё не добавил кампании для доступных парков." icon="work" title="Кампаний нет" />
-          : <div className={taskFirst ? 'campaign-list campaign-list--task-first' : 'campaign-list'} data-a-zone={taskFirst ? 'campaign-workflow' : undefined}>{items.map(item => <Panel className="campaign-card" density="dense" key={item.id}>
+          : <div className={taskFirst ? 'campaign-list campaign-list--task-first' : 'campaign-list'}>{items.map(item => <Panel className="campaign-card" density="dense" key={item.id}>
             <div className="campaign-card__heading"><div><div className="campaign-card__badges"><StatusBadge tone="neutral">{kindLabel(item.kind)}</StatusBadge><StatusBadge tone={!item.is_active ? 'neutral' : item.overdue ? 'critical' : 'info'}>{campaignStatusLabel(item)}</StatusBadge></div><h2><Link to={`/campaigns/${item.id}`}>{item.name}</Link></h2><p>{item.park_names.join(', ')} · {dateLabel(item.starts_on)} — {dateLabel(item.due_on)}</p></div><Progress label={item.name} value={item.percent_complete} /></div>
             <ResponsiveDisclosureGroup label={`Метрики ${item.name}`}><ResponsiveDisclosure id="metrics" summary={`${item.percent_complete}% выполнено`} title="Метрики"><CampaignMetrics campaign={item} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>
-          </Panel>)}</div>}
+          </Panel>)}</div>}</section>
+    {manager ? <div data-a-zone={taskFirst ? 'campaign-actions' : undefined}><CampaignCreateForm apiClient={apiClient} onCreated={item => navigate(`/campaigns/${item.id}`)} /></div> : null}
+    </div>
   </PageLayout>
 }
 
@@ -184,6 +187,9 @@ function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; api
   const [query, setQuery] = useState('')
   const [editingTicketKey, setEditingTicketKey] = useState<string | null>(null)
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null)
+  const [toggleBusy, setToggleBusy] = useState(false)
+  const [toggleError, setToggleError] = useState<string | null>(null)
+  const togglePending = useRef(false)
   const generation = useRef(0)
   const load = useCallback(() => {
     const request = ++generation.current
@@ -220,6 +226,20 @@ function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; api
       setRefreshMessage(classifyApiError(reason, 'Не удалось удалить кампанию.').description)
     }
   }
+  const toggleActive = async () => {
+    if (togglePending.current || !data) return
+    togglePending.current = true
+    setToggleBusy(true); setToggleError(null)
+    try {
+      await apiClient.updateCampaign(data.id, { is_active: !data.is_active })
+      load()
+    } catch (reason) {
+      setToggleError(classifyApiError(reason, 'Не удалось изменить состояние кампании.').description)
+    } finally {
+      togglePending.current = false
+      setToggleBusy(false)
+    }
+  }
   const open = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase('ru')
     return data?.open_tickets.filter(ticket => !needle || `${ticket.robot || ''} ${ticket.key} ${ticket.summary}`.toLocaleLowerCase('ru').includes(needle)) ?? []
@@ -228,9 +248,10 @@ function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; api
   const failure = error ? classifyApiError(error, 'Не удалось загрузить кампанию.') : null
   if (failure && !data) return <PageLayout title="СК и оклейка"><ErrorState description={failure.description} onRetry={failure.retryable ? load : undefined} title={failure.title} /></PageLayout>
   if (!data) return <PageLayout title="СК и оклейка"><LoadingState label="Загружаем кампанию" variant="page" /></PageLayout>
-  return <PageLayout actions={<><Button onClick={() => void refresh()} variant="secondary">Обновить из Tracker</Button>{manager ? <><Button onClick={() => void apiClient.updateCampaign(data.id, { is_active: !data.is_active }).then(load)} variant="secondary">{data.is_active ? 'Завершить кампанию' : 'Возобновить кампанию'}</Button><Button onClick={() => void remove()} variant="ghost">Удалить кампанию</Button></> : null}</>} description={`${data.park_names.join(', ')} · ${data.tracker_tag} · ${dateLabel(data.starts_on)} — ${dateLabel(data.due_on)}`} eyebrow={<Link to="/campaigns">СК и оклейка</Link>} title={data.name}>
+  return <PageLayout actions={<><Button onClick={() => void refresh()} variant="secondary">Обновить из Tracker</Button>{manager ? <><Button busy={toggleBusy} onClick={() => void toggleActive()} variant="secondary">{data.is_active ? 'Завершить кампанию' : 'Возобновить кампанию'}</Button><Button onClick={() => void remove()} variant="ghost">Удалить кампанию</Button></> : null}</>} description={`${data.park_names.join(', ')} · ${data.tracker_tag} · ${dateLabel(data.starts_on)} — ${dateLabel(data.due_on)}`} eyebrow={<Link to="/campaigns">СК и оклейка</Link>} title={data.name}>
     <p role="status">{data.snapshot_at ? `Последнее обновление: ${new Date(data.snapshot_at).toLocaleString('ru-RU')}. ` : 'Данные Tracker ещё не получены. '}{data.snapshot_state === 'error' ? 'Tracker временно недоступен; показаны сохранённые данные.' : data.snapshot_state === 'pending' || data.snapshot_state === 'running' ? 'Обновляем в фоне.' : null}</p>
     {refreshMessage ? <p role="status">{refreshMessage}</p> : null}
+    {toggleError ? <p role="alert">{toggleError}</p> : null}
     {failure ? <p role="status">Показаны последние полученные данные. Обновление не удалось: {failure.description}</p> : null}
     <div className={taskFirst ? 'campaign-detail-composition campaign-detail-composition--task-first' : 'campaign-detail-composition'} data-a-route={taskFirst ? 'campaign-detail' : undefined}>
     <aside data-a-zone={taskFirst ? 'campaign-context' : undefined}><ResponsiveDisclosureGroup label="Разделы кампании"><ResponsiveDisclosure id="metrics" summary={`${data.percent_complete}% · ${data.completed_count} из ${data.total_count}`} title="Метрики"><CampaignMetrics campaign={data} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>

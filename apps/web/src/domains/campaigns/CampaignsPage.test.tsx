@@ -25,8 +25,8 @@ function renderPage(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'refr
   return render(<PresentationModeContext.Provider value={mode}><MemoryRouter initialEntries={['/campaigns/4']}><AuthContext.Provider value={{ user: currentUser, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={apiClient} />} path="/campaigns/:campaignId" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter></PresentationModeContext.Provider>)
 }
 
-function renderList(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>) {
-  return render(<MemoryRouter initialEntries={['/campaigns']}><AuthContext.Provider value={{ user, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={apiClient} />} path="/campaigns" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>)
+function renderList(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>, currentUser: User = user, mode: 'classic' | 'task-first' = 'classic') {
+  return render(<PresentationModeContext.Provider value={mode}><MemoryRouter initialEntries={['/campaigns']}><AuthContext.Provider value={{ user: currentUser, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={apiClient} />} path="/campaigns" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter></PresentationModeContext.Provider>)
 }
 
 function useViewport(matches: boolean) {
@@ -142,6 +142,24 @@ it('lets a manager confirm campaign deletion and removes the detail view', async
   expect(screen.queryByRole('heading', { name: 'СК Альфа' })).not.toBeInTheDocument()
 })
 
+it('serializes campaign completion, reports a failed patch and allows retry', async () => {
+  let reject!: (reason: unknown) => void
+  const first = new Promise<CampaignDetail>((_, rejectPromise) => { reject = rejectPromise })
+  const updateCampaign = vi.fn().mockReturnValueOnce(first).mockResolvedValueOnce({ ...detail, is_active: false })
+  renderPage({ ...api, campaign: vi.fn(async () => detail), updateCampaign }, { ...user, role: 'royal' })
+  const toggle = await screen.findByRole('button', { name: 'Завершить кампанию' })
+
+  fireEvent.click(toggle); fireEvent.click(toggle)
+  expect(updateCampaign).toHaveBeenCalledTimes(1)
+  reject(new ApiError(503, 'offline', 'campaign-toggle'))
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Tracker не настроен')
+  expect(toggle).toBeEnabled()
+  await userEvent.click(toggle)
+  await waitFor(() => expect(updateCampaign).toHaveBeenCalledTimes(2))
+  expect(updateCampaign).toHaveBeenLastCalledWith(4, { is_active: false })
+})
+
 it('sends a comment and photo to operator review', async () => {
   const complete = vi.fn(async () => ({ id: 1, issue_key: 'RP-1', report_id: 10, review_status: 'open', tracker_transition: 'review', completed_at: '2026-09-10T10:00:00Z' }))
   const campaign = vi.fn(async () => detail)
@@ -180,6 +198,18 @@ it('uses distinct task-first context and workflow zones without changing the con
   expect(document.querySelector('[data-a-route="campaign-detail"]')).not.toBeNull()
   expect(document.querySelector('[data-a-zone="campaign-context"]')).not.toBeNull()
   expect(document.querySelector('[data-a-zone="campaign-workflow"]')).not.toBeNull()
+})
+
+it('composes the task-first campaign list as context, workflow and manager action zones', async () => {
+  renderList({ ...api, campaigns: vi.fn(async () => [detail]) }, { ...user, role: 'royal' }, 'task-first')
+  await screen.findByRole('heading', { name: 'СК Альфа' })
+  const composition = document.querySelector<HTMLElement>('[data-a-route="campaigns"]')!
+  expect(within(composition).getByRole('complementary')).toHaveTextContent('Север')
+  expect(composition.querySelector('[data-a-zone="campaign-workflow"]')).toHaveTextContent('СК Альфа')
+  expect(composition.querySelector('[data-a-zone="campaign-actions"]')).toHaveTextContent('Новая кампания')
+  expect(Array.from(composition.children).map(node => node.getAttribute('data-a-zone'))).toEqual([
+    'campaign-context', 'campaign-workflow', 'campaign-actions',
+  ])
 })
 
 it('keeps only one ticket completion form open on a phone', async () => {

@@ -10,6 +10,7 @@ const routeReport: Report = {
   target_role: 'operator', tracker_key: 'ROBOPARK-42', tracker_url: null,
   title: 'Проверить колесо', body: 'Робот требует осмотра.', parent_report_id: null,
   return_comment: null, created_at: '2026-09-02T09:00:00Z', updated_at: '2026-09-02T09:00:00Z', resolved_at: null,
+  attachments: [{ id: 11, kind: 'device_photo', filename: 'inspection.jpg', content_type: 'image/jpeg', size_bytes: 128 }],
 }
 
 const routeCampaign: Campaign = {

@@ -83,3 +83,21 @@ The pre-existing uncommitted `progress.md` edit was preserved and is not part of
 - Navigation/history/camera/file/QR/photo/interface parity Playwright suites: **48 passed**.
 - Complete role/route/viewport/mode Playwright suite: **846 passed, 294 policy-skipped, 0 failed** across all **1140 collected cases**; unlike the earlier interrupted broad run, this run completed.
 - Production build and service worker build: exit 0; navigation audit: **30 route ids**, OK; lint: exit 0 with the repository's existing 21 warnings; `git diff --check`: clean.
+
+## Review round 2
+
+- `DomainPresentation` now keeps one stable wrapper/context/workflow subtree across presentation changes. The unit regression verifies the exact input node, unsaved value and open dialog survive Classic↔A; the browser regression repeats this with unsaved role, user and settings drafts.
+- Route-state evidence contains no `not-applicable` rows. All **205** manifest states have a unique evidence id; executable fixtures are collected in both presentations, while delegated states resolve to an exact existing owner-test path and title. Attachments assert the real file input/download link, and the work check case activates and asserts the real tab panel.
+- Inventory action evidence is a complete four-action×six-role matrix. Operator is read-only even if the client receives stale permissive grants; mechanic retains stock/document/export writes. Alembic `0032_operator_inventory_read_only` revokes the three legacy operator grants on existing installations and reviewed release metadata names the new head.
+- Campaign completion uses a synchronous submission lock. A double submit during a 503 sends one PATCH, exposes the classified alert and unlocks the same form for retry.
+- Reports list/create/detail and campaign list now use real A context/workflow/action compositions over the shared owners. Their mobile grids collapse at 899px and below; the focused 52-case overflow regression and the full viewport matrix pass.
+
+### Round-2 verification
+
+- Full web unit suite: `npm test -- --run` — **153 files, 2116 tests passed**.
+- Evidence collector: `npx playwright test e2e/operational/route-state-evidence.spec.ts` — **63 passed** (every executable case in Classic and A, plus collector audit).
+- Complete route/role/viewport/mode suite from zero: **846 passed, 294 policy-skipped, 0 failed** across **1140 collected cases**.
+- Camera/file/history/navigation/diagnostic/overflow browser suite: **84 passed**.
+- Focused migration and full-suite failure regressions: **6 passed**.
+- Full API suite from zero after the role/migration corrections: **1838 passed, 7 skipped**.
+- Production build and service worker build: exit 0; navigation audit: **30 route ids**, OK; lint: exit 0 with the repository's existing 21 warnings.

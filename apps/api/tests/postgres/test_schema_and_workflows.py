@@ -133,7 +133,7 @@ def test_stock_postgres_17_accepts_configured_user_restore_command(
         capture_output=True,
         text=True,
     ).stdout.strip()
-    assert head == "0031_postgresql_runtime"
+    assert head == "0032_operator_inventory_read_only"
 
 
 def _seed_inventory(engine: Engine) -> tuple[int, int, int]:

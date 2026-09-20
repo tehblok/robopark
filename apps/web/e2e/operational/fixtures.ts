@@ -26,7 +26,7 @@ const allPermissions = [
 const rolePermissions: Record<OperationalRole, string[]> = {
   driver: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.reports', 'tracker.read', 'reports.create'],
   mechanic: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.reports', 'nav.inventory', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create', 'inventory.stock.manage', 'inventory.documents.post', 'inventory.export'],
-  operator: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.analytics', 'nav.reports', 'nav.inventory', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create', 'reports.resolve', 'inventory.stock.manage', 'inventory.documents.post', 'inventory.export'],
+  operator: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.analytics', 'nav.reports', 'nav.inventory', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create', 'reports.resolve'],
   admin: allPermissions.filter((permission) => permission !== 'users.approve'),
   royal: allPermissions,
 }

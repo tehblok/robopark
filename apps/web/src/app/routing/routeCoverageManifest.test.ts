@@ -54,6 +54,16 @@ describe('executable route coverage manifest', () => {
     }
   })
 
+  it('resolves every delegated state to one exact existing owner test', () => {
+    const repoRoot = resolve(process.cwd(), '../..')
+    for (const item of ROUTE_STATE_EVIDENCE.filter(item => item.fixture === 'owner-test')) {
+      expect(item.ownerContract?.length, item.caseId).toBeGreaterThan(40)
+      expect(item.ownerTest?.path, item.caseId).toMatch(/^apps\/web\/(?:src|e2e)\/.+\.test\.|^apps\/web\/e2e\/.+\.spec\./)
+      const source = readFileSync(resolve(repoRoot, item.ownerTest!.path), 'utf8')
+      expect(source, `${item.caseId}: ${item.ownerTest!.title}`).toContain(`'${item.ownerTest!.title}'`)
+    }
+  })
+
   it('has an exact one-to-one evidence case for every declared nested state', () => {
     const declared = ROUTE_COVERAGE_MANIFEST.flatMap(route => route.states.map(state => state.testId)).sort()
     const evidenced = ROUTE_STATE_EVIDENCE.map(item => item.caseId).sort()
@@ -65,7 +75,7 @@ describe('executable route coverage manifest', () => {
         ?.states.find(item => item.id === evidence.stateId)
       expect(state?.kind, evidence.caseId).toBe(evidence.kind)
       expect(evidence.assertion?.description?.trim().length, `${evidence.caseId}: concrete assertion`).toBeGreaterThan(10)
-      if (evidence.fixture !== 'not-applicable') {
+      if (!['not-applicable', 'owner-test'].includes(evidence.fixture)) {
         expect(evidence.selector.trim().length, `${evidence.caseId}: selector`).toBeGreaterThan(0)
       }
     }
@@ -96,12 +106,12 @@ describe('executable route coverage manifest', () => {
     const documents = inventory.actions.find(action => action.id === 'receive-and-inventory')!
     const exports = inventory.actions.find(action => action.id === 'labels-and-export')!
     const catalog = inventory.actions.find(action => action.id === 'catalog-delete-or-merge')!
-    expect(stock.roles).toEqual(['royal', 'admin', 'operator', 'mechanic', 'restricted'])
-    expect(documents.roles).toEqual(['royal', 'admin', 'operator', 'mechanic', 'restricted'])
-    expect(exports.roles).toEqual(['royal', 'admin', 'operator', 'mechanic', 'restricted'])
+    expect(stock.roles).toEqual(['royal', 'admin', 'mechanic', 'restricted'])
+    expect(documents.roles).toEqual(['royal', 'admin', 'mechanic', 'restricted'])
+    expect(exports.roles).toEqual(['royal', 'admin', 'mechanic', 'restricted'])
     expect(catalog.roles).toEqual(['royal', 'admin', 'restricted'])
-    for (const decision of [...stock.permissionEvidence, ...catalog.permissionEvidence]) {
-      expect(decision.apiPermissionAssertion).toContain('test_inventory_action_role_matrix[')
+    for (const decision of [...stock.permissionEvidence, ...documents.permissionEvidence, ...exports.permissionEvidence, ...catalog.permissionEvidence]) {
+      expect(decision.apiPermissionAssertion).toContain('test_inventory_permission_role_matrix[')
     }
   })
 

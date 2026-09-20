@@ -106,10 +106,10 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_is_postgresql_runtime():
+def test_alembic_head_is_operator_inventory_read_only():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0031_postgresql_runtime"]
+    assert script.get_heads() == ["0032_operator_inventory_read_only"]
 
 
 def test_campaign_snapshot_upgrade_preserves_legacy_selection_and_indexes(

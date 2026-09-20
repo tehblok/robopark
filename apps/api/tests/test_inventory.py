@@ -566,15 +566,17 @@ def test_legacy_movement_requires_park_when_global_part_has_multiple_accessible_
     other = Park(name="Other", tag="Other", is_active=True)
     db_session.add(other)
     db_session.commit()
-    operator = _user(db_session, "operator", "ambiguous-operator")
-    login_as(client, operator.username, "secret")
+    mechanic = _user(
+        db_session, "mechanic", "ambiguous-mechanic", [seed_park_with_tracker, other]
+    )
+    login_as(client, mechanic.username, "secret")
     _, part = _seed_part(client, seed_park_with_tracker.id)
     db_session.add(
         InventoryParkStock(
             park_id=other.id,
             catalog_part_id=part["catalog_part_id"],
             quantity=9,
-            updated_by=operator.id,
+            updated_by=mechanic.id,
         )
     )
     db_session.commit()
@@ -730,7 +732,7 @@ def test_legacy_overview_keeps_component_without_parts(client, db_session, seed_
 def test_legacy_adapter_disambiguates_catalog_id_from_colliding_legacy_id(
     client, db_session, seed_park_with_tracker, monkeypatch, tmp_path
 ):
-    operator = _user(db_session, "operator", "collision-operator")
+    mechanic = _user(db_session, "mechanic", "collision-mechanic", [seed_park_with_tracker])
     legacy_component = InventoryComponent(
         id=50,
         park_id=seed_park_with_tracker.id,
@@ -740,8 +742,8 @@ def test_legacy_adapter_disambiguates_catalog_id_from_colliding_legacy_id(
         id=60,
         name="Catalog component",
         normalized_name="catalog component",
-        created_by=operator.id,
-        updated_by=operator.id,
+        created_by=mechanic.id,
+        updated_by=mechanic.id,
     )
     db_session.add_all([legacy_component, catalog_component])
     db_session.flush()
@@ -754,8 +756,8 @@ def test_legacy_adapter_disambiguates_catalog_id_from_colliding_legacy_id(
         normalized_article="global-1",
         photo_storage_key="global-photo",
         photo_content_type="image/png",
-        created_by=operator.id,
-        updated_by=operator.id,
+        created_by=mechanic.id,
+        updated_by=mechanic.id,
     )
     migrated_catalog = InventoryCatalogPart(
         id=2,
@@ -766,8 +768,8 @@ def test_legacy_adapter_disambiguates_catalog_id_from_colliding_legacy_id(
         normalized_article="legacy-1",
         photo_storage_key="legacy-photo",
         photo_content_type="image/jpeg",
-        created_by=operator.id,
-        updated_by=operator.id,
+        created_by=mechanic.id,
+        updated_by=mechanic.id,
     )
     legacy_part = InventoryPart(
         id=1,
@@ -787,18 +789,18 @@ def test_legacy_adapter_disambiguates_catalog_id_from_colliding_legacy_id(
                 park_id=seed_park_with_tracker.id,
                 catalog_part_id=direct_catalog.id,
                 quantity=5,
-                updated_by=operator.id,
+                updated_by=mechanic.id,
             ),
             InventoryParkStock(
                 park_id=seed_park_with_tracker.id,
                 catalog_part_id=migrated_catalog.id,
                 quantity=7,
-                updated_by=operator.id,
+                updated_by=mechanic.id,
             ),
         ]
     )
     db_session.commit()
-    login_as(client, operator.username, "secret")
+    login_as(client, mechanic.username, "secret")
     global_photo = tmp_path / "global.png"
     global_photo.write_bytes(b"global")
     legacy_photo = tmp_path / "legacy.jpg"

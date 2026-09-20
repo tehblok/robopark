@@ -161,7 +161,7 @@ def test_export_role_scope_is_checked_before_inventory_queries(
             client.get(
                 "/inventory/export", params={"park_id": foreign.id, "format": "csv"}
             ).status_code
-            == 200
+            == 403
         )
         assert (
             client.get("/inventory/export", params={"scope": "all", "format": "csv"}).status_code
