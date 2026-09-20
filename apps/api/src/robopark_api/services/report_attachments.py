@@ -56,6 +56,7 @@ def prune_deleted_report_files(
     now: float | None = None,
     max_age_seconds: float = 3600,
     max_deletions: int | None = None,
+    deadline_monotonic: float | None = None,
 ) -> int:
     """Retry final unlink of files moved out of a deleted report transaction."""
     staging = attachments_root().resolve() / ".delete-staging"
@@ -64,6 +65,8 @@ def prune_deleted_report_files(
     cutoff = (time.time() if now is None else now) - max_age_seconds
     removed = 0
     for path in staging.iterdir():
+        if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+            return removed
         if not path.is_file() or path.is_symlink():
             continue
         try:

@@ -524,3 +524,70 @@ def test_pressure_coordinator_uses_real_owner_paths_in_order(
     with Session(db_engine) as db:
         assert db.get(ReliableAction, action.id) is not None
         assert db.get(TaskAttachment, action.id) is None
+
+
+def test_pressure_coordinator_yields_at_total_deletion_budget(tmp_path, monkeypatch):
+    from robopark_api.services import storage_retention
+
+    class Store:
+        def __init__(self):
+            self.limits = []
+
+        def prune(self, **kwargs):
+            self.limits.append(kwargs["max_deletions"])
+            return kwargs["max_deletions"]
+
+    store = Store()
+    settings = type(
+        "Settings",
+        (),
+        {"host_data_path": str(tmp_path), "ops_dir": str(tmp_path / "ops")},
+    )()
+    monkeypatch.setattr(cache_cleanup, "get_settings", lambda: settings)
+    monkeypatch.setattr(cache_cleanup, "get_live_merge_store", lambda: store)
+    monkeypatch.setattr(
+        storage_retention.StorageBudget,
+        "for_path",
+        classmethod(lambda cls, path: cls(100, 0, minimum_free_bytes=1)),
+    )
+    monkeypatch.setattr(cache_cleanup, "_write_pressure_report", lambda report: None)
+
+    report = cache_cleanup.cleanup_storage_pressure(now=100)
+
+    assert store.limits == [128, 128, 128, 128]
+    assert report["deleted_count"] == 512
+    assert report["iterations"] == 4
+    assert report["partial"] is True
+    assert report["stop_reason"] == "deletion_budget"
+
+
+def test_pressure_coordinator_yields_at_time_budget_before_owner(tmp_path, monkeypatch):
+    from robopark_api.services import storage_retention
+
+    settings = type(
+        "Settings",
+        (),
+        {"host_data_path": str(tmp_path), "ops_dir": str(tmp_path / "ops")},
+    )()
+
+    class Store:
+        def prune(self, **kwargs):
+            pytest.fail("owner ran")
+
+    monkeypatch.setattr(cache_cleanup, "get_settings", lambda: settings)
+    monkeypatch.setattr(cache_cleanup, "get_live_merge_store", Store)
+    monkeypatch.setattr(
+        storage_retention.StorageBudget,
+        "for_path",
+        classmethod(lambda cls, path: cls(100, 0, minimum_free_bytes=1)),
+    )
+    ticks = iter((0.0, 1.0))
+    monkeypatch.setattr(cache_cleanup.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(cache_cleanup, "_write_pressure_report", lambda report: None)
+
+    report = cache_cleanup.cleanup_storage_pressure(now=100)
+
+    assert report["deleted_count"] == 0
+    assert report["iterations"] == 0
+    assert report["partial"] is True
+    assert report["stop_reason"] == "time_budget"

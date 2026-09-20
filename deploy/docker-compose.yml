@@ -41,6 +41,8 @@ services:
       DATABASE_URL: postgresql+psycopg://robopark@db:5432/robopark
       PGPASSFILE: /run/secrets/pgpass
       REPORT_ATTACHMENTS_DIR: /data/report-attachments
+      LIVE_MERGE_DIR: /data/live-merge
+      STAGED_ATTACHMENTS_DIR: /data/task-attachments
       OPS_DIR: /data/ops
       HOST_DATA_PATH: /data
       HOST_HEALTH_PATH: /data/ops/host-health.json

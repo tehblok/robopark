@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     ops_host_root: str | None = None
     #: Cross-process live-merge blobs (default: ``<sqlite-dir>/live-merge``).
     live_merge_dir: str | None = None
+    #: Staged Tracker upload copies (production: under the measured /data mount).
+    staged_attachments_dir: str | None = None
     #: Tree that a successful release is copied onto (repo root in local/dev).
     ops_apply_root: str | None = None
     #: Optional path to deploy/host.env (or a test stand-in) packed into snapshots.

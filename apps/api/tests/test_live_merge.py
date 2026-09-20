@@ -8,6 +8,7 @@ import json
 import os
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -317,19 +318,120 @@ def test_prune_tolerates_one_file_disappearing_or_failing(tmp_path, monkeypatch)
     removable.touch()
     os.utime(failing, (now - 100, now - 100))
     os.utime(removable, (now - 100, now - 100))
-    path_type = type(failing)
-    original_unlink = path_type.unlink
+    original_unlink = os.unlink
 
     def unlink(path, *args, **kwargs):
-        if path == failing:
+        if path == failing.name:
             raise OSError("raced")
         return original_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(path_type, "unlink", unlink)
+    monkeypatch.setattr("robopark_api.services.live_merge.os.unlink", unlink)
 
     assert store.prune(now=now, blob_max_age_seconds=60) == 1
     assert failing.exists()
     assert not removable.exists()
+
+
+def test_pressure_prune_pins_parent_and_never_follows_namespace_symlinks(tmp_path, monkeypatch):
+    root = tmp_path / "live"
+    namespace = root / "ns"
+    outside = tmp_path / "outside"
+    namespace.mkdir(parents=True)
+    outside.mkdir()
+    victim = namespace / "victim.json"
+    victim.write_text("{}")
+    protected = outside / "victim.json"
+    protected.write_text("outside")
+    moved = root / "moved"
+    original_unlink = os.unlink
+    replaced = False
+
+    def replace_parent_then_unlink(name, *, dir_fd=None):
+        nonlocal replaced
+        if name == victim.name and not replaced:
+            namespace.rename(moved)
+            namespace.symlink_to(outside, target_is_directory=True)
+            replaced = True
+        return original_unlink(name, dir_fd=dir_fd)
+
+    monkeypatch.setattr("robopark_api.services.live_merge.os.unlink", replace_parent_then_unlink)
+    store = LiveMergeStore(root)
+
+    assert store.prune(now=time.time(), blob_max_age_seconds=0, max_deletions=1) == 1
+    assert protected.read_text() == "outside"
+
+    linked = root / "linked"
+    linked.symlink_to(outside, target_is_directory=True)
+    safe = root / "safe"
+    safe.mkdir()
+    (safe / "escape.error").symlink_to(protected)
+    assert store.prune(now=time.time(), blob_max_age_seconds=0) == 0
+    assert protected.read_text() == "outside"
+
+    alias = tmp_path / "alias"
+    alias.symlink_to(root, target_is_directory=True)
+    assert LiveMergeStore(alias).prune(now=time.time(), blob_max_age_seconds=0) == 0
+    assert protected.read_text() == "outside"
+
+
+def test_pressure_prune_does_not_remove_active_atomic_write_tmp(tmp_path, monkeypatch):
+    store = LiveMergeStore(tmp_path)
+    target = store.result_path("ns", "active")
+    started = threading.Event()
+    release = threading.Event()
+    original_replace = Path.replace
+
+    def paused_replace(source, destination):
+        if source.suffix == ".tmp":
+            started.set()
+            assert release.wait(timeout=2)
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(Path, "replace", paused_replace)
+    writer = threading.Thread(target=store._atomic_write, args=(target, {"ok": True}))
+    writer.start()
+    assert started.wait(timeout=1)
+    try:
+        assert (
+            store.prune(
+                now=time.time() + 7200,
+                blob_max_age_seconds=0,
+                tmp_max_age_seconds=0,
+                max_deletions=1,
+            )
+            == 0
+        )
+    finally:
+        release.set()
+        writer.join(timeout=2)
+    assert not writer.is_alive()
+    assert json.loads(target.read_text()) == {"ok": True}
+
+
+def test_prune_batch_bound_includes_locks_and_errors(tmp_path):
+    store = LiveMergeStore(tmp_path)
+    folder = store.namespace_dir("ns")
+    folder.mkdir(parents=True)
+    entries = [
+        folder / "a.lock",
+        folder / "b.lock",
+        folder / "c.error",
+        folder / "d.error",
+    ]
+    for path in entries:
+        path.touch()
+        os.utime(path, (1, 1))
+
+    assert (
+        store.prune(
+            now=10_000,
+            blob_max_age_seconds=0,
+            lock_max_age_seconds=0,
+            max_deletions=2,
+        )
+        == 2
+    )
+    assert sum(path.exists() for path in entries) == 2
 
 
 def test_failure_without_prior_does_not_refetch(tmp_path):

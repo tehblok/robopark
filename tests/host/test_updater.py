@@ -675,6 +675,9 @@ def test_smoke_data_volume_inherits_image_nonroot_permissions(host):
     )
     volume = config["services"]["api"]["volumes"][0]
     assert volume == {"type": "volume", "source": "candidate_data", "target": "/data"}
+    environment = config["services"]["api"]["environment"]
+    assert environment["LIVE_MERGE_DIR"] == "/data/live-merge"
+    assert environment["STAGED_ATTACHMENTS_DIR"] == "/data/task-attachments"
     assert config["volumes"] == {"candidate_data": {}, "candidate_postgres": {}}
 
 

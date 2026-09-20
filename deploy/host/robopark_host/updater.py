@@ -641,6 +641,8 @@ def _render_configs(paths, journal, runner, stage):
         "DATABASE_URL": "postgresql+psycopg://robopark@db:5432/robopark",
         "PGPASSFILE": "/run/secrets/pgpass",
         "REPORT_ATTACHMENTS_DIR": "/data/attachments",
+        "LIVE_MERGE_DIR": "/data/live-merge",
+        "STAGED_ATTACHMENTS_DIR": "/data/task-attachments",
         "OPS_DIR": "/data/ops",
         "DEV_SEED": "false",
     }

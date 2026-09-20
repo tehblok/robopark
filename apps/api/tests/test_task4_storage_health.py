@@ -203,3 +203,20 @@ def test_host_snapshot_reads_actual_data_mount_and_only_public_projection(tmp_pa
         "report_attachments",
         "tracker_uploads",
     }
+
+
+def test_production_storage_owner_env_resolves_under_measured_data_mount(monkeypatch):
+    from pathlib import Path
+
+    from robopark_api.config import reset_settings_cache
+    from robopark_api.services.live_merge import default_live_merge_root
+    from robopark_api.services.task_timeline import staged_attachments_root
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://robopark@db/robopark")
+    monkeypatch.setenv("HOST_DATA_PATH", "/data")
+    monkeypatch.setenv("LIVE_MERGE_DIR", "/data/live-merge")
+    monkeypatch.setenv("STAGED_ATTACHMENTS_DIR", "/data/task-attachments")
+    reset_settings_cache()
+
+    assert default_live_merge_root() == Path("/data/live-merge")
+    assert staged_attachments_root() == Path("/data/task-attachments")

@@ -14,12 +14,19 @@ def test_production_compose_uses_local_postgresql_17_and_health_gates_api():
 
     assert database["image"].startswith("postgres:17")
     assert database["ports"] == ["127.0.0.1:5432:5432"]
-    assert database["healthcheck"]["test"][:2] == ["CMD-SHELL", "pg_isready -U robopark -d robopark"]
-    assert database["volumes"] == ["${ROBOPARK_POSTGRES_SOURCE:-robopark_postgres}:/var/lib/postgresql/data"]
+    assert database["healthcheck"]["test"][:2] == [
+        "CMD-SHELL",
+        "pg_isready -U robopark -d robopark",
+    ]
+    assert database["volumes"] == [
+        "${ROBOPARK_POSTGRES_SOURCE:-robopark_postgres}:/var/lib/postgresql/data"
+    ]
     assert api["depends_on"]["db"]["condition"] == "service_healthy"
     assert api["environment"]["DATABASE_URL"].startswith("postgresql+")
     assert api["environment"]["HOST_DATA_PATH"] == "/data"
     assert api["environment"]["HOST_HEALTH_PATH"] == "/data/ops/host-health.json"
+    assert api["environment"]["LIVE_MERGE_DIR"] == "/data/live-merge"
+    assert api["environment"]["STAGED_ATTACHMENTS_DIR"] == "/data/task-attachments"
     assert "sqlite" not in Path("deploy/docker-compose.yml").read_text().lower()
 
 

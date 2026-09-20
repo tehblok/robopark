@@ -72,7 +72,10 @@ def _action_external_id(action: ReliableAction) -> str | None:
 
 
 def staged_attachments_root() -> Path:
-    url = make_url(get_settings().database_url)
+    settings = get_settings()
+    if settings.staged_attachments_dir:
+        return Path(settings.staged_attachments_dir).resolve()
+    url = make_url(settings.database_url)
     if url.drivername.startswith("sqlite") and url.database and url.database != ":memory:":
         return Path(url.database).resolve().parent / "task-attachments"
     return _API_ROOT / "data" / "task-attachments"

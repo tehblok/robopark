@@ -269,6 +269,8 @@ def production_config(document, paths, release, image_tag):
         DATABASE_URL="postgresql+psycopg://robopark@db:5432/robopark",
         PGPASSFILE="/run/secrets/pgpass",
         REPORT_ATTACHMENTS_DIR="/data/report-attachments",
+        LIVE_MERGE_DIR="/data/live-merge",
+        STAGED_ATTACHMENTS_DIR="/data/task-attachments",
         OPS_DIR="/ops",
         OPS_HOST_ENV_PATH="",
         OPS_HOST_ROOT="/host-ops",

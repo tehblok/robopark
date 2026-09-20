@@ -113,3 +113,27 @@
   `72 passed`; full host `753 passed in 480.63s`; full API `1790 passed, 7 skipped`;
   full web `147 files / 2080 tests`; scoped Ruff and diff checks passed; web lint exited
   0 with existing warnings and production build succeeded.
+
+## Review round 3
+
+- Live-merge pressure pruning now streams namespace and file entries through pinned
+  no-follow descriptors and descriptor-relative revalidation/unlink. Symlinked roots,
+  namespaces and entries are rejected; a parent-swap regression proves outside files
+  cannot be selected.
+- Atomic writers hold an advisory lock on their temporary inode through replacement.
+  Pressure cleanup never lowers the conservative one-hour abandoned-temp threshold and
+  must also acquire that inode lock before unlinking. A concurrent real `_atomic_write`
+  remains intact even when the cleanup clock is advanced beyond the age threshold.
+- Results, errors, inflight markers, temporary files and lock files all share the same
+  deletion ceiling. Scans do not materialize directory contents and receive the global
+  deadline. The coordinator yields after 512 deletions, 16 owner iterations or 0.5 s,
+  and reports deterministic `partial` and `stop_reason` fields.
+- Manual Compose, installed runtime and candidate smoke Compose explicitly set
+  `LIVE_MERGE_DIR=/data/live-merge` and
+  `STAGED_ATTACHMENTS_DIR=/data/task-attachments`. Existing SQLite-derived defaults
+  remain compatible, while production owners are guaranteed to share the `/data`
+  filesystem measured by `StorageBudget`.
+- Verification: focused host `34 passed`; focused API `46 passed`; full host
+  `753 passed in 479.79s`; full API `1796 passed, 7 skipped`; full web
+  `147 files / 2080 tests`; scoped Ruff and diff checks passed; web lint exited 0 with
+  existing warnings and production build succeeded.

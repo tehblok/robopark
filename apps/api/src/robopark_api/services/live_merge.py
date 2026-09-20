@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import tempfile
 import time
 import uuid
@@ -45,6 +46,7 @@ DEFAULT_NAMESPACE_MAX_ENTRIES = 2048
 DEFAULT_NAMESPACE_MAX_BYTES = 64 * 1024 * 1024
 DEFAULT_METADATA_MAX_ENTRIES = 4096
 DEFAULT_METADATA_MAX_BYTES = 8 * 1024 * 1024
+MIN_ABANDONED_TMP_AGE_SECONDS = 3600.0
 
 _store_cache: object = _DISABLED
 
@@ -213,9 +215,11 @@ class LiveMergeStore:
         fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
                 fh.write(encoded)
-            require_application_writes()
-            Path(tmp).replace(path)
+                fh.flush()
+                require_application_writes()
+                Path(tmp).replace(path)
         except Exception:
             Path(tmp).unlink(missing_ok=True)
             raise
@@ -717,63 +721,141 @@ class LiveMergeStore:
         lock_max_age_seconds: float = 60.0,
         tmp_max_age_seconds: float = 3600.0,
         max_deletions: int | None = None,
+        deadline_monotonic: float | None = None,
     ) -> int:
-        """Best-effort removal of stale live-merge artifacts."""
+        """Best-effort bounded removal through pinned no-follow descriptors."""
         from robopark_api.services.ops.maintenance import require_application_writes
+        from robopark_api.services.storage_retention import pinned_directory, unlink_unchanged
 
         require_application_writes()
         if max_deletions is not None and max_deletions <= 0:
             return 0
+        limit = max_deletions if max_deletions is not None else 2**63 - 1
+        tmp_age = max(MIN_ABANDONED_TMP_AGE_SECONDS, tmp_max_age_seconds)
         removed = 0
+
+        def read_json_at(directory_fd: int, name: str) -> dict[str, Any] | None:
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+            try:
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+                    return None
+                raw = os.read(descriptor, info.st_size + 1)
+                value = json.loads(raw)
+                return value if isinstance(value, dict) else None
+            except (OSError, ValueError, UnicodeError):
+                return None
+            finally:
+                os.close(descriptor)
+
+        def prune_unlocked_at(
+            directory_fd: int,
+            name: str,
+            before: os.stat_result,
+            age: float,
+            minimum_age: float,
+        ) -> bool:
+            if age < minimum_age:
+                return False
+            try:
+                descriptor = os.open(
+                    name, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd
+                )
+            except OSError:
+                return False
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                opened = os.fstat(descriptor)
+                identity = (before.st_dev, before.st_ino)
+                if (current.st_dev, current.st_ino) != identity or (
+                    opened.st_dev,
+                    opened.st_ino,
+                ) != identity:
+                    return False
+                os.unlink(name, dir_fd=directory_fd)
+                return True
+            except (BlockingIOError, OSError):
+                return False
+            finally:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                os.close(descriptor)
+
         try:
-            folders = list(self.root.iterdir())
-        except OSError:
-            return 0
-        for folder in folders:
-            try:
-                is_dir = folder.is_dir()
-            except OSError:
-                continue
-            if not is_dir or folder.name == "jobs":
-                continue
-            try:
-                paths = list(folder.iterdir())
-            except OSError:
-                continue
-            for path in paths:
-                try:
-                    stat = path.stat()
-                except OSError:
-                    continue
-                suffix = path.suffix
-                age = max(0.0, now - stat.st_mtime)
-                should_remove = False
-                if suffix in {".json", ".error"}:
-                    should_remove = age >= blob_max_age_seconds
-                elif suffix == ".tmp":
-                    should_remove = age >= tmp_max_age_seconds
-                elif suffix == ".inflight":
-                    data = self._read_json(path)
-                    pid = data.get("pid") if data is not None else None
-                    should_remove = not isinstance(pid, int) or not _pid_alive(pid)
-                elif suffix == ".lock":
-                    if age >= lock_max_age_seconds and self._prune_lock(
-                        path,
-                        initial_stat=stat,
-                        now=now,
-                        max_age_seconds=lock_max_age_seconds,
+            with pinned_directory(self.root) as root_fd, os.scandir(root_fd) as namespaces:
+                for namespace in namespaces:
+                    if removed >= limit or (
+                        deadline_monotonic is not None and time.monotonic() >= deadline_monotonic
                     ):
-                        removed += 1
-                    continue
-                if not should_remove:
-                    continue
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    continue
-                removed += 1
-                if max_deletions is not None and removed >= max(0, max_deletions):
-                    return removed
+                        return removed
+                    try:
+                        namespace_info = namespace.stat(follow_symlinks=False)
+                        if namespace.name == "jobs" or not stat.S_ISDIR(namespace_info.st_mode):
+                            continue
+                        namespace_fd = os.open(
+                            namespace.name,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=root_fd,
+                        )
+                    except OSError:
+                        continue
+                    try:
+                        with os.scandir(namespace_fd) as entries:
+                            for entry in entries:
+                                if removed >= limit or (
+                                    deadline_monotonic is not None
+                                    and time.monotonic() >= deadline_monotonic
+                                ):
+                                    return removed
+                                try:
+                                    before = entry.stat(follow_symlinks=False)
+                                except OSError:
+                                    continue
+                                if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                                    continue
+                                suffix = Path(entry.name).suffix
+                                age = max(0.0, now - before.st_mtime)
+                                if suffix == ".lock":
+                                    if prune_unlocked_at(
+                                        namespace_fd,
+                                        entry.name,
+                                        before,
+                                        age,
+                                        lock_max_age_seconds,
+                                    ):
+                                        removed += 1
+                                    continue
+                                should_remove = (
+                                    suffix in {".json", ".error"} and age >= blob_max_age_seconds
+                                )
+                                if suffix == ".tmp":
+                                    if prune_unlocked_at(
+                                        namespace_fd,
+                                        entry.name,
+                                        before,
+                                        age,
+                                        tmp_age,
+                                    ):
+                                        removed += 1
+                                    continue
+                                elif suffix == ".inflight":
+                                    data = read_json_at(namespace_fd, entry.name)
+                                    pid = data.get("pid") if data is not None else None
+                                    should_remove = not isinstance(pid, int) or not _pid_alive(pid)
+                                if not should_remove:
+                                    continue
+                                try:
+                                    unlink_unchanged(namespace_fd, entry.name, before)
+                                except OSError:
+                                    continue
+                                removed += 1
+                    finally:
+                        os.close(namespace_fd)
+        except OSError:
+            return removed
         return removed
 
 

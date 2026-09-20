@@ -44,6 +44,9 @@ _RETENTION_BATCH_SIZE = 500
 _SUCCESS_RETENTION_SECONDS = 30 * 86400
 _UPLOADED_BLOB_RETENTION_SECONDS = 7 * 86400
 _STORAGE_BATCH_SIZE = 128
+_STORAGE_MAX_DELETIONS = 512
+_STORAGE_MAX_ITERATIONS = 16
+_STORAGE_TIME_BUDGET_SECONDS = 0.5
 
 
 def _evict_application_caches() -> None:
@@ -208,27 +211,35 @@ def cleanup_storage_pressure(*, now: float | None = None) -> dict:
     }
     stamp = time.time() if now is None else now
     store = get_live_merge_store()
+    started = time.monotonic()
+    deadline = started + _STORAGE_TIME_BUDGET_SECONDS
+    iterations = 0
+    deleted_count = 0
+    stop_reason: str | None = None
 
-    def cache_batch(budget: StorageBudget) -> int:
+    def cache_batch(budget: StorageBudget, limit: int) -> int:
         if store is None:
             return 0
         return store.prune(
             now=stamp,
             blob_max_age_seconds=0,
-            tmp_max_age_seconds=0,
-            max_deletions=_STORAGE_BATCH_SIZE,
+            max_deletions=limit,
+            deadline_monotonic=deadline,
         )
 
-    def diagnostic_batch(budget: StorageBudget) -> int:
+    def diagnostic_batch(budget: StorageBudget, limit: int) -> int:
         return prune_deleted_report_files(
-            now=stamp, max_age_seconds=0, max_deletions=_STORAGE_BATCH_SIZE
+            now=stamp,
+            max_age_seconds=0,
+            max_deletions=limit,
+            deadline_monotonic=deadline,
         )
 
-    def tracker_batch(budget: StorageBudget) -> int:
+    def tracker_batch(budget: StorageBudget, limit: int) -> int:
         with SessionLocal() as db:
-            return cleanup_confirmed_tracker_copies(
-                db, budget=budget, max_deletions=_STORAGE_BATCH_SIZE
-            )["deleted_count"]
+            return cleanup_confirmed_tracker_copies(db, budget=budget, max_deletions=limit)[
+                "deleted_count"
+            ]
 
     for name, owner in (
         ("cache_tmp", cache_batch),
@@ -236,12 +247,29 @@ def cleanup_storage_pressure(*, now: float | None = None) -> dict:
         ("confirmed_tracker", tracker_batch),
     ):
         while current.bytes_to_reclaim:
-            removed = owner(current)
+            if iterations >= _STORAGE_MAX_ITERATIONS:
+                stop_reason = "iteration_budget"
+                break
+            if deleted_count >= _STORAGE_MAX_DELETIONS:
+                stop_reason = "deletion_budget"
+                break
+            if time.monotonic() >= deadline:
+                stop_reason = "time_budget"
+                break
+            limit = min(_STORAGE_BATCH_SIZE, _STORAGE_MAX_DELETIONS - deleted_count)
+            removed = owner(current, limit)
+            iterations += 1
+            deleted_count += removed
             owners[name]["batches"] += 1
             owners[name]["deleted_count"] += removed
             if removed == 0:
                 break
             current = StorageBudget.for_path(data_path)
+        if stop_reason is not None:
+            break
+
+    if stop_reason is None:
+        stop_reason = "floor_reached" if not current.bytes_to_reclaim else "no_eligible_data"
 
     report = {
         "floor_bytes": initial.floor_bytes,
@@ -249,6 +277,11 @@ def cleanup_storage_pressure(*, now: float | None = None) -> dict:
         "free_bytes": current.free_bytes,
         "pressure": current.bytes_to_reclaim > 0,
         "owners": owners,
+        "iterations": iterations,
+        "deleted_count": deleted_count,
+        "partial": current.bytes_to_reclaim > 0
+        and stop_reason in {"iteration_budget", "deletion_budget", "time_budget"},
+        "stop_reason": stop_reason,
         "completed_at": stamp,
     }
     _write_pressure_report(report)
