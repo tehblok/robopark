@@ -158,3 +158,23 @@
   `113 passed`; full host `753 passed in 491.59s`; full API `1800 passed, 7 skipped`;
   full web `147 files / 2080 tests`; production build, scoped Ruff `E,F,I` and diff
   checks passed.
+
+## Review round 5
+
+- Confirmed Tracker cleanup no longer searches directory order for the DB-selected
+  allowlist. It checks only those bounded basenames through the already pinned root
+  descriptor with no-follow `stat`, then retains the existing inode/size/mtime
+  revalidation immediately before descriptor-relative unlink.
+- A real regression directory with 4097 protected files followed by one confirmed
+  eligible upload now deletes the eligible copy in one bounded call with
+  `scanned_count=1`. Every arbitrary neighbour survives and the succeeded reliable
+  action remains as audit evidence.
+- Missing-file metadata retirement still requires a complete addressable pass. Invalid
+  names, symlinks, hard links, root/ancestor symlinks, deadline expiry and stat/unlink
+  races fail closed without retiring the attachment row.
+- RED evidence: with a one-entry scan allowance the old directory-order scanner stopped
+  on the protected prefix and returned `deleted=[]`, so identical later calls could
+  never reach the eligible blob.
+- Verification: focused API retention/live-merge/health/report/outbox matrix
+  `114 passed`; full API `1801 passed, 7 skipped`; scoped Ruff `E,F,I` and diff checks
+  passed.

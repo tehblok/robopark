@@ -597,6 +597,82 @@ def test_staged_root_factory_keeps_symlink_visible_to_no_follow_guard(
         assert db.get(TaskAttachment, action.id) is not None
 
 
+def test_confirmed_tracker_cleanup_addresses_eligible_name_beyond_protected_prefix(
+    db_engine, db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    upload_root = tmp_path / "uploads"
+    upload_root.mkdir()
+    protected = []
+    for index in range(4097):
+        path = upload_root / f"protected-{index:04d}"
+        path.write_bytes(b"keep")
+        protected.append(path)
+    upload = upload_root / "zz-confirmed-upload"
+    upload.write_bytes(b"delete")
+
+    action = ReliableAction(
+        id="addressed-confirmed",
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id="ROBOPARK-1",
+        action="attach",
+        idempotency_key="addressed-confirmed-0001",
+        payload_hash="0" * 64,
+        payload_json="{}",
+        state="succeeded",
+        next_attempt_at=0,
+        created_at=1,
+        updated_at=1,
+    )
+    message = TaskMessage(
+        id="addressed-message",
+        issue_key="ROBOPARK-1",
+        kind="system",
+        author_name="system",
+        text="audit",
+        sync_state="synced",
+        action_id=action.id,
+        created_at=1,
+        updated_at=1,
+    )
+    db_session.add_all([action, message])
+    db_session.flush()
+    db_session.add(
+        TaskAttachment(
+            id=action.id,
+            message_id=message.id,
+            blob_name=upload.name,
+            original_name="upload.bin",
+            mime_type="application/octet-stream",
+            size_bytes=6,
+            sha256="1" * 64,
+            created_at=1,
+            uploaded_at=2,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(cache_cleanup, "staged_attachments_root", lambda: upload_root)
+
+    with Session(db_engine) as db:
+        report = cache_cleanup.cleanup_confirmed_tracker_copies(
+            db,
+            budget=cache_cleanup.StorageBudget(100, 0, minimum_free_bytes=1),
+            max_deletions=1,
+            max_scanned_entries=1,
+        )
+
+    assert report["deleted"] == [
+        {"category": "confirmed_tracker", "path": upload.name, "bytes": 6}
+    ]
+    assert report["scanned_count"] == 1
+    assert report["partial"] is False
+    assert not upload.exists()
+    assert all(path.read_bytes() == b"keep" for path in protected)
+    with Session(db_engine) as db:
+        assert db.get(ReliableAction, action.id) is not None
+        assert db.get(TaskAttachment, action.id) is None
+
+
 def test_pressure_coordinator_bounds_protected_tracker_scan_by_absolute_deadline(
     db_engine, db_session, seed_mechanic, test_settings, tmp_path, monkeypatch
 ):
@@ -604,6 +680,8 @@ def test_pressure_coordinator_bounds_protected_tracker_scan_by_absolute_deadline
 
     upload_root = tmp_path / "uploads"
     upload_root.mkdir()
+    upload = upload_root / "confirmed-upload"
+    upload.write_bytes(b"keep")
     action = ReliableAction(
         id="bounded-scan-confirmed",
         actor_user_id=seed_mechanic.id,
@@ -646,25 +724,6 @@ def test_pressure_coordinator_bounds_protected_tracker_scan_by_absolute_deadline
     )
     db_session.commit()
 
-    class ProtectedEntries:
-        def __init__(self):
-            self.index = 0
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc_value, traceback):
-            return None
-
-        def __iter__(self):
-            return self
-
-        def __next__(self):
-            self.index += 1
-            if self.index > 100:
-                raise AssertionError("protected upload scan ignored its absolute deadline")
-            return type("Entry", (), {"name": f"protected-{self.index}"})()
-
     settings = test_settings.model_copy(
         update={"host_data_path": str(tmp_path), "ops_dir": str(tmp_path / "ops")}
     )
@@ -680,15 +739,15 @@ def test_pressure_coordinator_bounds_protected_tracker_scan_by_absolute_deadline
         "for_path",
         classmethod(lambda cls, path: cls(100, 0, minimum_free_bytes=1)),
     )
-    monkeypatch.setattr(storage_retention.os, "scandir", lambda descriptor: ProtectedEntries())
     monkeypatch.setattr(cache_cleanup.time, "monotonic", lambda: next(ticks))
 
     report = cache_cleanup.cleanup_storage_pressure(now=100)
 
     assert report["partial"] is True
     assert report["stop_reason"] == "time_budget"
-    assert report["scanned_count"] < 100
+    assert report["scanned_count"] == 1
     assert report["deleted_count"] == 0
+    assert upload.read_bytes() == b"keep"
     with Session(db_engine) as db:
         assert db.get(TaskAttachment, action.id) is not None
 

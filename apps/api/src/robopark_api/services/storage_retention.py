@@ -83,7 +83,7 @@ def cleanup_storage(
     candidates = []
     skipped_counts: dict[str, int] = {}
     opened = []
-    seen_eligible: dict[str, set[str]] = {}
+    missing_eligible: dict[str, set[str]] = {}
     completed_categories: set[str] = set()
     scanned_count = 0
     partial = False
@@ -100,7 +100,9 @@ def cleanup_storage(
             manager = pinned_directory(root)
             descriptor = manager.__enter__()
             opened.append((manager, descriptor))
-            for entry in os.scandir(descriptor):
+            requested = eligible_names.get(category, set()) if eligible_names is not None else None
+            entries = sorted(requested) if requested is not None else os.scandir(descriptor)
+            for entry in entries:
                 if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                     partial = True
                     stop_reason = "time_budget"
@@ -110,15 +112,27 @@ def cleanup_storage(
                     stop_reason = "scan_budget"
                     break
                 scanned_count += 1
-                if eligible_names is not None and entry.name not in eligible_names.get(
-                    category, set()
-                ):
-                    skip("protected")
-                    continue
-                seen_eligible.setdefault(category, set()).add(entry.name)
-                info = entry.stat(follow_symlinks=False)
+                name = entry if isinstance(entry, str) else entry.name
+                if requested is not None:
+                    if (
+                        not name
+                        or name in {".", ".."}
+                        or name != Path(name).name
+                        or "/" in name
+                        or "\\" in name
+                        or "\x00" in name
+                    ):
+                        skip("invalid_name")
+                        continue
+                    try:
+                        info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                    except FileNotFoundError:
+                        missing_eligible.setdefault(category, set()).add(name)
+                        continue
+                else:
+                    info = entry.stat(follow_symlinks=False)
                 if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
-                    item = (-info.st_mtime_ns, entry.name, category, info, descriptor)
+                    item = (-info.st_mtime_ns, name, category, info, descriptor)
                     if len(candidates) < max(0, max_deletions):
                         heapq.heappush(candidates, item)
                     elif candidates and item > candidates[0]:
@@ -164,11 +178,11 @@ def cleanup_storage(
         manager.__exit__(None, None, None)
     eligible_missing = {
         category: (
-            sorted(names - seen_eligible.get(category, set()))
+            sorted(missing_eligible.get(category, set()))
             if category in completed_categories
             else []
         )
-        for category, names in (eligible_names or {}).items()
+        for category in (eligible_names or {})
     }
     return {
         "dry_run": dry_run,

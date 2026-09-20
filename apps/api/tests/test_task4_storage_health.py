@@ -159,7 +159,16 @@ def test_api_retention_reports_partial_when_protected_scan_reaches_budget(
 
         def __iter__(self):
             for index in range(1_000_000):
-                yield type("Entry", (), {"name": f"protected-{index}"})()
+                yield type(
+                    "Entry",
+                    (),
+                    {
+                        "name": f"protected-{index}",
+                        "stat": lambda self, *, follow_symlinks: type(
+                            "Info", (), {"st_mode": 0, "st_nlink": 1}
+                        )(),
+                    },
+                )()
 
     root = tmp_path / "confirmed"
     root.mkdir()
@@ -170,14 +179,13 @@ def test_api_retention_reports_partial_when_protected_scan_reaches_budget(
         budget=storage_retention.StorageBudget(100, 0, minimum_free_bytes=1),
         dry_run=False,
         max_deletions=1,
-        eligible_names={"confirmed_tracker": {"confirmed-upload"}},
         max_scanned_entries=4,
     )
 
     assert report["scanned_count"] == 4
     assert report["partial"] is True
     assert report["stop_reason"] == "scan_budget"
-    assert report["eligible_missing"] == {"confirmed_tracker": []}
+    assert report["eligible_missing"] == {}
 
 
 def test_cleanup_retry_is_bounded_and_rate_limited():
