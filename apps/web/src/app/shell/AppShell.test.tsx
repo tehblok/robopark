@@ -1,5 +1,5 @@
 import { useLayoutEffect } from 'react'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
@@ -22,8 +22,16 @@ import { INVENTORY_REVISION_CHANGED } from '../../domains/inventory/inventoryRev
 
 const shellCss = [
   readFileSync('src/app/shell/AppShell.css', 'utf8'),
+  existsSync('src/app/interface/ShellPrimitives.css')
+    ? readFileSync('src/app/interface/ShellPrimitives.css', 'utf8') : '',
   readFileSync('src/app/interface/ClassicShell.css', 'utf8'),
 ].join('\n')
+const sharedShellCss = existsSync('src/app/interface/ShellPrimitives.css')
+  ? readFileSync('src/app/interface/ShellPrimitives.css', 'utf8') : ''
+const modeShellCss = [
+  readFileSync('src/app/interface/ClassicShell.css', 'utf8'),
+  readFileSync('src/app/interface/TaskFirstShell.css', 'utf8'),
+]
 const overviewCss = readFileSync('src/domains/shift/overview.css', 'utf8')
 const workCss = readFileSync('src/domains/work/work.css', 'utf8')
 
@@ -39,6 +47,19 @@ const operator = testUser({
     'tracker.read',
   ],
   parks: [north],
+})
+
+it('keeps shared shell geometry in one primitive stylesheet', () => {
+  for (const selector of [
+    '.rp-shell__bottom-nav',
+    '.rp-shell__mobile-link',
+    '.rp-shell__park-brand',
+    '.rp-shell__content',
+  ]) {
+    expect(sharedShellCss).toContain(selector)
+    for (const css of modeShellCss) expect(css).not.toContain(selector)
+  }
+  for (const css of modeShellCss) expect(css).toContain("@import './ShellPrimitives.css'")
 })
 
 function HistoryControls() {
