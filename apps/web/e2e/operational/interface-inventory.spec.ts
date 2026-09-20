@@ -3,6 +3,12 @@ import { installOperational } from './fixtures'
 import { selectInterface } from '../support/interfaceMode'
 import { assertResponsiveContracts } from './routeFixtures'
 
+async function openInventoryParts(page: import('@playwright/test').Page) {
+  const mobile = page.getByRole('combobox', { name: 'Раздел склада' })
+  if (await mobile.isVisible()) await mobile.selectOption('parts')
+  else await page.getByRole('tab', { name: 'Запчасти' }).click()
+}
+
 for (const role of ['mechanic', 'operator', 'admin', 'royal'] as const) {
   test(`${role} inventory capabilities survive interface changes`, async ({ page }) => {
     await installOperational(page, { role })
@@ -52,7 +58,7 @@ for (const width of [390, 1440]) test(`inventory A receipt draft, posting and ge
   await page.getByRole('button', { name: 'Провести поставку' }).click()
   await page.getByRole('button', { name: 'Подтвердить проведение' }).click()
   await expect(page.getByRole('status')).toContainText('Поставка проведена')
-  await page.getByRole('tab', { name: 'Запчасти' }).click()
+  await openInventoryParts(page)
   await expect(page.getByText('7 шт.', { exact: true })).toBeVisible()
 })
 
@@ -71,7 +77,7 @@ test('inventory A count draft survives switching and updates stock once', async 
   await page.getByRole('button', { name: 'Провести акт' }).click()
   await page.getByRole('button', { name: 'Подтвердить проведение' }).click()
   await expect(page.getByRole('status')).toContainText('Акт проведён')
-  await page.getByRole('tab', { name: 'Запчасти' }).click()
+  await openInventoryParts(page)
   await expect(page.getByText('4 шт.', { exact: true })).toBeVisible()
 })
 

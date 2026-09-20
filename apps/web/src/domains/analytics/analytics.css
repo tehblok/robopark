@@ -1,37 +1,37 @@
 .rp-analytics-parks, .rp-analytics-park, .rp-analytics-park section,
 .rp-analytics-card, .rp-analytics-rows, .rp-analytics-rows li {
   display: grid;
-  gap: var(--rp-space-3);
+  gap: var(--rp-form-gap);
   min-width: 0;
 }
-.rp-analytics-parks { gap: var(--rp-space-8); }
-.rp-analytics-comparison { display: grid; gap: var(--rp-space-3); min-width: 0; }
-.rp-analytics-analysis { display: grid; gap: var(--rp-space-3); padding: var(--rp-density-panel-padding); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-panel); background: var(--rp-surface); }
+.rp-analytics-parks { gap: var(--rp-section-gap); }
+.rp-analytics-comparison { display: grid; gap: var(--rp-form-gap); min-width: 0; }
+.rp-analytics-analysis { display: grid; gap: var(--rp-form-gap); padding: var(--rp-card-padding); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-card); background: var(--rp-surface); }
 .rp-analytics-analysis h2, .rp-analytics-analysis p { margin: 0; }
 .rp-analytics-analysis ul { display: grid; gap: var(--rp-space-2); list-style: none; margin: 0; padding: 0; }
-.rp-analytics-insight { padding: var(--rp-space-3); border-left: 4px solid var(--rp-info); background: var(--rp-surface-muted); border-radius: var(--rp-radius-control); }
+.rp-analytics-insight { padding: var(--rp-form-gap); border-left: 4px solid var(--rp-info); background: var(--rp-surface-muted); border-radius: var(--rp-radius-card); }
 .rp-analytics-insight--critical { border-left-color: var(--rp-danger); }
 .rp-analytics-insight--warning { border-left-color: var(--rp-warning); }
 .rp-analytics-comparison h2, .rp-analytics-comparison p { margin: 0; }
 .rp-analytics-comparison td > span { display: block; }
 .rp-analytics-comparison table { min-width: 32rem; }
-.rp-analytics-park { gap: var(--rp-space-6); }
+.rp-analytics-park { gap: var(--rp-section-gap); }
 .rp-analytics-park h2, .rp-analytics-park h3, .rp-analytics-park h4, .rp-analytics-park p { margin: 0; }
 .rp-analytics-park h3 { font-size: var(--rp-font-size-title); }
 .rp-analytics-park h4 { font-size: var(--rp-font-size-body); }
 .rp-analytics-park header { border-bottom: 1px solid var(--rp-border); padding-bottom: var(--rp-space-3); }
-.rp-analytics-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--rp-space-3); }
+.rp-analytics-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--rp-form-gap); }
 .rp-analytics-controls label { display: grid; gap: var(--rp-space-2); min-width: 0; }
 .rp-analytics-controls select { width: 100%; min-width: 0; min-height: 44px; }
-.rp-analytics-trends, .rp-analytics-age, .rp-analytics-columns { display: grid; gap: var(--rp-space-4); min-width: 0; }
+.rp-analytics-trends, .rp-analytics-age, .rp-analytics-columns { display: grid; gap: var(--rp-form-gap); min-width: 0; }
 .rp-analytics-trends { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .rp-analytics-age { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .rp-analytics-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
-.rp-analytics-card { background: var(--rp-surface); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-panel); padding: var(--rp-density-panel-padding); align-content: start; }
+.rp-analytics-card { background: var(--rp-surface); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-card); padding: var(--rp-card-padding); align-content: start; }
 .rp-analytics-value { font-size: var(--rp-font-size-title); font-variant-numeric: tabular-nums; }
 .rp-analytics-note { color: var(--rp-text-muted); font-size: var(--rp-font-size-body); }
-.rp-analytics-warning { background: var(--rp-warning-surface); color: var(--rp-warning); padding: var(--rp-space-3); border-radius: var(--rp-radius-control); }
-.rp-analytics-coverage { display: flex; flex-wrap: wrap; gap: var(--rp-space-4); }
+.rp-analytics-warning { background: var(--rp-warning-surface); color: var(--rp-warning); padding: var(--rp-form-gap); border-radius: var(--rp-radius-card); }
+.rp-analytics-coverage { display: flex; flex-wrap: wrap; gap: var(--rp-form-gap); }
 .rp-analytics-trend { width: 100%; height: auto; max-height: 160px; color: var(--rp-chart-1); }
 .rp-analytics-trend polyline { stroke: currentColor; stroke-width: 2; fill: none; }
 .rp-analytics-trend circle { fill: currentColor; }
@@ -42,7 +42,7 @@
 .rp-analytics-table-scroll th, .rp-analytics-table-scroll td { padding: var(--rp-space-2); border-bottom: 1px solid var(--rp-divider); text-align: left; }
 .rp-analytics-table-scroll th { font-weight: var(--rp-font-weight-medium); }
 .rp-analytics-rows { list-style: none; margin: 0; padding: 0; }
-.rp-analytics-rows li { padding: var(--rp-space-3); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-control); background: var(--rp-surface); }
+.rp-analytics-rows li { padding: var(--rp-card-padding); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-card); background: var(--rp-surface); }
 .rp-analytics-rows li > div { display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--rp-space-2); }
 .rp-analytics-drilldown ul { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: var(--rp-space-2); }
 .rp-analytics-drilldown a { display: flex; align-items: center; min-height: 44px; padding-inline: var(--rp-space-2); color: var(--rp-info); overflow-wrap: anywhere; }
@@ -55,8 +55,14 @@
 html[data-interface='classic'] .a-analytics-section,
 html[data-interface='classic'] .a-analytics-details { display: contents; }
 html[data-interface='classic'] .a-analytics-section > summary,
-html[data-interface='classic'] .a-analytics-details > summary { display: none; }
+html[data-interface='classic'] .a-analytics-details > summary {
+  display: block;
+  cursor: default;
+  list-style: none;
+  pointer-events: none;
+}
+html[data-interface='classic'] .a-analytics-section > summary::-webkit-details-marker,
+html[data-interface='classic'] .a-analytics-details > summary::-webkit-details-marker { display: none; }
 @media (max-width: 599px) {
-  .rp-analytics-controls { gap: var(--rp-space-2); }
   .rp-analytics-controls label { font-size: var(--rp-font-size-body); }
 }

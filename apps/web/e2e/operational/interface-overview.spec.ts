@@ -24,3 +24,25 @@ for (const role of roles) test(`${role} overview A offers scoped next actions an
   await selectInterface(page, 'Классический')
   await expect(actions).toHaveCount(0)
 })
+
+test('overview panels consume the shared card geometry in both interfaces', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 })
+  await installOperational(page, { role: 'operator' })
+  await page.goto('/overview?park=7')
+
+  for (const mode of ['Классический', 'Новый А'] as const) {
+    await selectInterface(page, mode)
+    const geometry = await page.locator('.rp-overview-alert').first().evaluate(element => {
+      const style = getComputedStyle(element)
+      const root = getComputedStyle(document.documentElement)
+      return {
+        paddingInline: style.paddingInlineStart,
+        expectedPadding: root.getPropertyValue('--rp-card-padding').trim(),
+        radius: style.borderRadius,
+        expectedRadius: root.getPropertyValue('--rp-radius-card').trim(),
+      }
+    })
+    expect(geometry.paddingInline).toBe(geometry.expectedPadding)
+    expect(geometry.radius).toBe(geometry.expectedRadius)
+  }
+})

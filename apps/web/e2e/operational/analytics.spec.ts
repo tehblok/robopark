@@ -25,6 +25,7 @@ for (const mode of ['Классический', 'Новый А'] as const) for (
     await page.getByLabel('Период аналитики').selectOption('1')
     await page.getByLabel('Шаг графиков').selectOption('2h')
     await expect(page).toHaveURL(/period=1&bucket=2h/)
+    if (mode === 'Новый А') await page.getByRole('heading', { name: 'Динамика процесса' }).click()
     const intervals = page.getByText('Значения по интервалам', { exact: true }).first()
     await intervals.click()
     await expect(page.getByRole('table', { name: 'Поступило за период · МСК' }).getByText('Нет наблюдений').first()).toBeVisible()

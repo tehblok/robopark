@@ -1,12 +1,12 @@
 .management-grid {
   display: grid;
-  gap: var(--rp-density-gap);
+  gap: var(--rp-section-gap);
 }
 
 .rp-management :is(.page-body, .admin-users, .admin-roles),
 .rp-management .tab-panel {
   display: grid;
-  gap: var(--rp-density-gap);
+  gap: var(--rp-section-gap);
   min-inline-size: 0;
 }
 
@@ -31,7 +31,7 @@
 
 .rp-management-metrics {
   display: grid;
-  gap: var(--rp-density-gap);
+  gap: var(--rp-form-gap);
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
@@ -40,8 +40,8 @@
 .rp-management-nav {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--rp-space-2);
-  padding-block-end: var(--rp-space-3);
+  gap: var(--rp-form-gap);
+  padding-block-end: var(--rp-form-gap);
   border-block-end: 1px solid var(--rp-border);
 }
 
@@ -100,7 +100,7 @@
 
 .rp-management .admin-user-list,
 .rp-management .admin-role-list {
-  gap: var(--rp-space-2);
+  gap: var(--rp-form-gap);
   max-block-size: none;
 }
 
@@ -110,11 +110,11 @@
 
 .rp-user-activity {
   display: grid;
-  gap: var(--rp-space-1);
+  gap: var(--rp-form-gap);
   min-inline-size: 0;
-  padding: var(--rp-space-3);
+  padding: var(--rp-card-padding);
   border: 1px solid var(--rp-border);
-  border-radius: var(--rp-radius-control);
+  border-radius: var(--rp-radius-card);
   overflow-wrap: anywhere;
 }
 
@@ -151,7 +151,7 @@
 
 .rp-management .admin-perm-grid {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
-  gap: var(--rp-space-2);
+  gap: var(--rp-form-gap);
 }
 
 .rp-management :is(.rp-permissions-editor, .rp-permissions-preview, .rp-danger-zone) {
@@ -160,10 +160,10 @@
 
 .rp-permissions-preview,
 .rp-danger-zone {
-  padding: var(--rp-density-panel-padding);
+  padding: var(--rp-card-padding);
   border: 1px solid var(--rp-border);
-  border-radius: var(--rp-radius-panel);
-  margin-block: var(--rp-space-3);
+  border-radius: var(--rp-radius-card);
+  margin-block: var(--rp-form-gap);
 }
 
 .rp-permissions-preview {

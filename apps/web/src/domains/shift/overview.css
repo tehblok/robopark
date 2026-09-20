@@ -4,13 +4,13 @@
 .rp-overview-flow,
 .rp-overview-entities {
   display: grid;
-  gap: var(--rp-density-gap);
+  gap: var(--rp-section-gap);
   min-width: 0;
 }
 
 .rp-overview-secondary {
   display: grid;
-  gap: var(--rp-density-gap);
+  gap: var(--rp-section-gap);
   min-width: 0;
 }
 
@@ -19,11 +19,11 @@
   background: var(--rp-surface);
   border: 1px solid var(--rp-border);
   border-inline-start-width: var(--rp-space-1);
-  border-radius: var(--rp-radius-panel);
+  border-radius: var(--rp-radius-card);
   display: flex;
   flex-wrap: wrap;
   gap: var(--rp-space-3);
-  padding: var(--rp-density-panel-padding);
+  padding: var(--rp-card-padding);
 }
 
 .rp-overview-alert[data-tone='critical'] { border-inline-start-color: var(--rp-critical); }
@@ -43,7 +43,7 @@
 }
 
 .rp-overview-status {
-  border-radius: var(--rp-radius-panel);
+  border-radius: var(--rp-radius-card);
   color: inherit;
   min-width: 0;
   text-decoration: none;
@@ -79,12 +79,12 @@ a.rp-overview-status:hover .rp-metric-card {
   align-items: center;
   background: var(--rp-surface-subtle);
   border: 1px solid var(--rp-warning);
-  border-radius: var(--rp-radius-panel);
+  border-radius: var(--rp-radius-card);
   display: flex;
   flex-wrap: wrap;
   gap: var(--rp-space-3);
   justify-content: space-between;
-  padding: var(--rp-density-panel-padding);
+  padding: var(--rp-card-padding);
 }
 
 .rp-overview-warning p {
