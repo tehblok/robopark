@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 import { installOperational, settlePage, snapshot } from './fixtures'
+import { selectInterface } from '../support/interfaceMode'
+import { assertResponsiveContracts } from './routeFixtures'
 
 for (const width of [390, 1440] as const) {
   test(`shared geometry tokens drive visible controls at ${width}px`, async ({ page }) => {
@@ -39,6 +41,26 @@ for (const width of [390, 1440] as const) {
       cardRadius: '12px',
       buttonHeight: 44,
     })
+  })
+}
+
+for (const width of [599, 600] as const) for (const mode of ['Классический', 'Новый А'] as const) {
+  test(`shared phone boundary remains stable at ${width}px in ${mode}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await installOperational(page, { role: 'royal' })
+    await page.goto('/overview?park=7')
+    await selectInterface(page, mode)
+    await assertResponsiveContracts(page, width)
+    const root = await page.locator('html').evaluate(element => {
+      const style = getComputedStyle(element)
+      return {
+        gutter: style.getPropertyValue('--rp-page-gutter').trim(),
+        cardPadding: style.getPropertyValue('--rp-card-padding').trim(),
+      }
+    })
+    expect(root).toEqual(width === 599
+      ? { gutter: '12px', cardPadding: '16px' }
+      : { gutter: '24px', cardPadding: '20px' })
   })
 }
 

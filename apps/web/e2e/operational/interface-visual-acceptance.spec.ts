@@ -5,15 +5,19 @@ import { selectInterface } from '../support/interfaceMode'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 
 const screens = ['overview', 'work', 'work-issue', 'robots', 'robot-check', 'inventory', 'reports', 'reports-new', 'campaigns', 'campaign-detail', 'analytics', 'admin-users', 'admin-roles', 'admin-settings', 'admin-robot-check'] as const
-for (const theme of ['light', 'dark'] as const) for (const width of [390, 1440]) for (const route of screens) {
-  test(`A visual ${route} ${theme} ${width}`, async ({ page }, info) => {
+test.describe.configure({ mode: 'parallel' })
+for (const mode of ['Классический', 'Новый А'] as const)
+  for (const theme of ['light', 'dark'] as const)
+    for (const width of [320, 390, 412, 768, 1024, 1440] as const)
+      for (const route of screens) {
+  test(`${mode} visual ${route} ${theme} ${width}`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 900 })
     await page.addInitScript(value => localStorage.setItem('robopark-theme', value), theme)
     await openRouteFixture(page, route, userForRole('royal'))
-    await selectInterface(page, 'Новый А')
+    await selectInterface(page, mode)
     await settlePage(page)
     await assertResponsiveContracts(page, width)
     await assertNoSeriousA11yViolations(page)
-    await page.screenshot({ path: info.outputPath(`${route}-${theme}-${width}.png`), fullPage: true, animations: 'disabled' })
+    await page.screenshot({ path: info.outputPath(`${mode === 'Новый А' ? 'a' : 'classic'}-${route}-${theme}-${width}.png`), fullPage: true, animations: 'disabled' })
   })
 }

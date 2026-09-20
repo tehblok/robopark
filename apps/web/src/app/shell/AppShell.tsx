@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react'
 import { Link, Outlet, useLocation, useNavigationType } from 'react-router-dom'
 import { api, type Park, type User } from '../../api'
 import { useAuth } from '../../auth-context'
