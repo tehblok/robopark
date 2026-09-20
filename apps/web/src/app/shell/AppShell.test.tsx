@@ -225,7 +225,7 @@ describe('AppShell', () => {
     }))
     const navigation = screen.getAllByRole('navigation', { name: 'Основная навигация' })[1]
     expect(within(navigation).getAllByRole('link').map(link => link.textContent)).toEqual([
-      'Обзор', 'Работа', 'Роботы', 'СК и оклейка',
+      'Обзор', 'Работа', 'Роботы', 'СК',
     ])
   })
 
@@ -250,8 +250,9 @@ describe('AppShell', () => {
     }))
     const phone = screen.getAllByRole('navigation', { name: 'Основная навигация' })[1]
     expect(within(phone).getAllByRole('link').map(link => link.textContent)).toEqual([
-      'Обзор', 'Работа', 'Репорты', 'Управление',
+      'Обзор', 'Работа', 'Репорты', 'Админ',
     ])
+    expect(within(phone).getByRole('link', { name: 'Управление' })).toBeVisible()
     expect(within(phone).getByRole('button', { name: 'Меню' })).toBeVisible()
   })
 

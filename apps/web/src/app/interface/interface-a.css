@@ -173,7 +173,7 @@
   .rp-reports form > .form-grid { padding: 20px; border: 1px solid var(--rp-border); border-radius: 12px; background: var(--rp-surface); margin-block: 16px; }
 
   /* Campaign execution first; selection rules live in their own editor. */
-  .campaign-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+  .campaign-list { grid-template-columns: repeat(auto-fit, minmax(min(100%, 28rem), 1fr)); gap: 20px; }
   .campaign-card__heading { align-items: center; }
   .campaign-card .campaign-progress { inline-size: 88px; block-size: 88px; }
   .campaign-columns { grid-template-columns: minmax(0, 1.35fr) minmax(0, .8fr); gap: 24px; }
@@ -193,10 +193,10 @@
   .a-overview-actions a { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; padding: 12px 16px; border: 1px solid var(--rp-border); border-radius: 8px; background: var(--rp-surface); color: var(--rp-text); text-decoration: none; font-weight: 600; }
   .a-overview-actions a:first-child { border-color: var(--rp-action); box-shadow: inset 3px 0 var(--rp-action); }
   .rp-overview { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(260px, .7fr); gap: 24px; align-items: start; }
-  .a-overview-attention-panel { grid-column: 1; grid-row: 1 / span 2; }
-  .a-overview-status-panel { grid-column: 2; }
+  .a-overview-attention-panel { grid-column: 1; grid-row: 1; }
+  .a-overview-status-panel { grid-column: 2; grid-row: 1 / span 2; }
   .rp-overview > .rp-responsive-disclosure-group { grid-column: 1/-1; }
-  .rp-overview-alerts { grid-column: 2; }
+  .rp-overview-alerts { grid-column: 1; grid-row: 2; }
   .rp-overview-statuses { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .rp-overview-status .rp-metric-card { padding: 12px; border: 0; background: transparent; }
   .rp-overview-secondary { gap: 20px; }
@@ -277,8 +277,33 @@
 
   @media (max-width: 1199px) and (min-width: 900px) {
     &.is-rail-collapsed { grid-template-columns: 80px minmax(0, 1fr); }
+    .a-domain-composition,
+    .report-composition--task-first,
+    .campaign-list-composition--task-first,
+    .campaign-detail-composition--task-first { grid-template-columns: minmax(0, 1fr); }
+    .a-domain-composition > [data-a-zone='context'],
+    .report-composition--task-first > [data-a-zone='report-context'],
+    .campaign-list-composition--task-first > [data-a-zone='campaign-context'],
+    .campaign-detail-composition--task-first > [data-a-zone='campaign-context'] {
+      border-inline: 0;
+      grid-column: 1;
+      grid-row: auto;
+      padding-inline: 0;
+    }
+    .a-domain-composition > [data-a-zone='workflow'],
+    .report-composition--task-first > [data-a-zone='report-workflow'],
+    .report-composition--task-first > [data-a-zone='report-actions'],
+    .campaign-list-composition--task-first > [data-a-zone='campaign-workflow'],
+    .campaign-list-composition--task-first > [data-a-zone='campaign-actions'],
+    .campaign-detail-composition--task-first > [data-a-zone='campaign-workflow'] {
+      grid-column: 1;
+      grid-row: auto;
+    }
+    .management-grid { grid-template-columns: minmax(0, 1fr); }
+    .campaign-list { grid-template-columns: minmax(0, 1fr); }
   }
   @media (max-width: 899px) {
+    .rp-management-nav { display: none; }
     .a-domain-composition { grid-template-columns:minmax(0,1fr); }
     .a-domain-composition > [data-a-zone='context'] { border-right:0; padding-right:0; }
     .report-composition--task-first { grid-template-columns:minmax(0,1fr); gap:16px; min-width:0; }
@@ -306,7 +331,7 @@
     .a-task-context__disclosure:not([open]) > .a-task-context__body { display: none; }
     .a-task-context__body { padding: 12px 0; }
     .a-task-sequence li { min-height: 0; grid-template-columns: minmax(0, 1fr); }
-    .a-task-action { grid-column: 1; bottom: calc(var(--rp-shell-mobile-nav-height) + env(safe-area-inset-bottom)); margin-top: 0; padding: 10px 0; flex-direction: column; align-items: stretch; }
+    .a-task-action { position: static; grid-column: 1; margin-top: 0; padding: 16px 0 0; flex-direction: column; align-items: stretch; backdrop-filter: none; }
     .a-task-action > span { font-size: 14px; }
     .a-task-action .rp-button { width: 100%; }
     .a-robot-layout, .rp-robots-page .rp-page-layout__content { grid-template-columns: minmax(0, 1fr); gap: var(--rp-section-gap); }

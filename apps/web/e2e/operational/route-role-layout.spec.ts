@@ -4,7 +4,7 @@ import { ROUTE_MANIFEST } from '../../src/app/routing/routeManifest'
 import type { User } from '../../src/api'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 import { parkNorth, roles, userForRole } from './fixtures'
-import { assertResponsiveContracts, openRouteFixture } from './routeFixtures'
+import { assertResponsiveContracts, assertRouteSemanticContracts, openRouteFixture } from './routeFixtures'
 import { selectInterface } from '../support/interfaceMode'
 
 const widths = [320, 390, 412, 899, 1440] as const
@@ -29,6 +29,7 @@ for (const mode of ['Классический', 'Новый А'] as const) for (
     await openRouteFixture(page, route.id, user)
     await selectInterface(page, mode)
     await assertResponsiveContracts(page, width)
+    await assertRouteSemanticContracts(page, route.id)
     await assertNoSeriousA11yViolations(page)
   })
 }
@@ -40,6 +41,7 @@ for (const mode of ['Классический', 'Новый А'] as const) for (
     await openRouteFixture(page, route.id, restrictedUser)
     await selectInterface(page, mode)
     await assertResponsiveContracts(page, width)
+    await assertRouteSemanticContracts(page, route.id)
     await assertNoSeriousA11yViolations(page)
   })
 }

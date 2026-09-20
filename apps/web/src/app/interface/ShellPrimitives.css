@@ -405,11 +405,11 @@ button.rp-shell__more-link {
     flex: none;
     line-height: 1.15;
     max-width: 100%;
-    min-height: 2.3em;
+    min-height: 1.15em;
     overflow: hidden;
-    overflow-wrap: anywhere;
+    text-overflow: ellipsis;
     text-align: center;
-    white-space: normal;
+    white-space: nowrap;
   }
 
   .rp-shell__mobile-link .rp-shell__badge {

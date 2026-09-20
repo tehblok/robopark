@@ -397,3 +397,113 @@ Expected: all commands exit 0.
 git add apps/web/e2e/operational
 git commit -m "test(web): cover geometry in both interface modes"
 ```
+
+### Task 7: Один shell и одна мобильная навигация
+
+**Files:**
+- Create: `apps/web/src/app/interface/ShellPrimitives.css`
+- Modify: `apps/web/src/app/interface/ClassicShell.css`
+- Modify: `apps/web/src/app/interface/TaskFirstShell.css`
+- Modify: `apps/web/src/app/interface/interface-a.css`
+- Modify: `apps/web/src/app/shell/AppShell.tsx`
+- Test: `apps/web/src/app/shell/AppShell.test.tsx`
+- Test: `apps/web/e2e/operational/interface-shell.spec.ts`
+
+**Interfaces:**
+- Consumes: `routeManifest` navigation items and shared geometry tokens.
+- Produces: one DOM/navigation contract and one shared shell geometry owner; mode files contain deltas only.
+
+- [ ] **Step 1: Add failing source and browser contracts**
+
+Assert that shared selectors such as `.rp-shell__bottom-nav`, `.rp-shell__mobile-link`, `.rp-shell__park-brand`, and `.rp-shell__content` are owned by `ShellPrimitives.css`, not duplicated in both mode files. In Playwright assert equal mobile cells, untruncated visible captions, no current-section duplicate, and that the final page action scrolls fully above the nav.
+
+- [ ] **Step 2: Run the focused tests and confirm RED**
+
+Run: `npm --prefix apps/web test -- --run src/app/shell/AppShell.test.tsx`
+
+Run: `npm --prefix apps/web exec playwright test e2e/operational/interface-shell.spec.ts --project=chromium`
+
+Expected: FAIL because shell primitives and mobile navigation geometry are duplicated.
+
+- [ ] **Step 3: Extract shared primitives and retain mode deltas**
+
+Move identical sidebar, park selector, navigation, header, content-gutter, scope-alert and mobile-nav rules into `ShellPrimitives.css`. Keep only Classic column width and A composition differences in their files. Remove legacy mobile-nav layout ownership from `index.css` when no live routed tree consumes it. Do not change route availability or permissions.
+
+- [ ] **Step 4: Run focused tests GREEN and commit**
+
+Expected: component and browser tests pass for both modes at 320/390/899/900/1440.
+
+### Task 8: Semantic composition and mutually exclusive async states
+
+**Files:**
+- Modify: `apps/web/src/app/interface/TaskFirstShell.tsx`
+- Modify: `apps/web/src/app/interface/TaskFirstLayout.tsx`
+- Modify: `apps/web/src/domains/work/TaskFirstTaskLayout.tsx`
+- Modify: `apps/web/src/domains/work/IssueWorkbench.tsx`
+- Modify: `apps/web/src/components/tracker/TaskCollaboration.tsx`
+- Modify: `apps/web/src/pages/Reports.tsx`
+- Test: corresponding `*.test.tsx` files
+
+**Interfaces:**
+- Consumes: shared shell geometry from Task 7.
+- Produces: absent slots are not mounted; each page has one context/workflow/action owner; loading, error and content states are mutually exclusive.
+
+- [ ] **Step 1: Add failing tests**
+
+Cover one task key/title/description in A, no empty context/action grid column, no nested duplicate `data-a-zone`, and handoff network failure showing one error with retry and no loading copy.
+
+- [ ] **Step 2: Run focused tests and confirm RED**
+
+Run: `npm --prefix apps/web test -- --run src/domains/work/IssueWorkbench.test.tsx src/components/tracker/TaskCollaboration.test.tsx src/pages/Reports.test.tsx src/app/interface/PresentationShell.test.tsx`
+
+Expected: FAIL on duplicate task/report zones and simultaneous error/loading.
+
+- [ ] **Step 3: Implement one composition owner per page**
+
+Do not mount empty shell slots. Make `TaskIssueSummary` the sole A task summary for workflow and degraded read-only states. Replace the reload instruction with an inline retry. Remove nested Reports workflow zones. Model handoff as `loading | error | ready` and keep entered form data on retry.
+
+- [ ] **Step 4: Run focused tests GREEN and commit**
+
+Expected: no duplicate semantic content or presentation zones; Classic behavior remains intact.
+
+### Task 9: Route-, role- and state-aware acceptance
+
+**Files:**
+- Modify: `apps/web/e2e/operational/interface-visual-acceptance.spec.ts`
+- Modify: `apps/web/e2e/operational/routeFixtures.ts`
+- Modify: `apps/web/src/app/routing/routeStateEvidence.ts`
+- Update: intentional snapshots under `apps/web/e2e/operational/interface-visual-acceptance.spec.ts-snapshots/`
+
+**Interfaces:**
+- Consumes: the complete route manifest, roles and semantic composition contracts.
+- Produces: acceptance that rejects duplicated content, blank columns, hidden primary actions and unstable async states instead of merely recording screenshots.
+
+- [ ] **Step 1: Add failing coverage audit**
+
+Assert the acceptance route set covers every non-redirect visible shell surface. Add representative mechanic/operator/driver/admin role fixtures. For every required width, either track a baseline or run route-specific geometry assertions; temporary unreviewed screenshots do not count as visual acceptance.
+
+- [ ] **Step 2: Add adverse fixtures**
+
+Exercise 0/1/many rows, long Russian text, incomplete capabilities, stale/offline telemetry, 403/409/5xx and retry-success. Add route-specific assertions for one title, non-empty detail, reachable primary action and no fixed-nav overlap.
+
+- [ ] **Step 3: Run without snapshot updates, fix production sources, then update intentional baselines**
+
+Run: `npm --prefix apps/web exec playwright test e2e/operational/interface-visual-acceptance.spec.ts --project=chromium`
+
+Expected: semantic and accessibility assertions pass before any PNG update.
+
+### Task 10: Whole-system verification and independent review
+
+**Files:**
+- Modify: `docs/product-completion/UI_AUDIT_2026-09-20.md`
+- Update: `docs/product-completion/evidence/visual-ledger.json`
+
+- [ ] **Step 1: Run full web unit, lint, contrast and production build**
+
+- [ ] **Step 2: Run the complete Classic/A route-role-state browser matrix**
+
+- [ ] **Step 3: Manually inspect representative phone/desktop light/dark outputs for every domain**
+
+- [ ] **Step 4: Request an independent whole-branch review and fix every Critical/Important finding with RED→GREEN evidence**
+
+- [ ] **Step 5: Record exact passed counts and explicit physical-device/host limitations; do not package OTA in this task**

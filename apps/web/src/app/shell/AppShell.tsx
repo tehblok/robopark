@@ -256,6 +256,9 @@ function NavigationLink({
   onClick?: () => void
 }) {
   const label = item.id === 'work' ? ru.appShell.work : item.label
+  const visualLabel = className.includes('rp-shell__mobile-link')
+    ? item.id === 'admin' ? 'Админ' : item.id === 'campaigns' ? 'СК' : label
+    : label
   const { pathname } = useLocation()
   const parentActive = item.id === 'admin' && pathname.startsWith('/admin/') && !active
   return (
@@ -268,7 +271,7 @@ function NavigationLink({
       to={item.path}
     >
       <Icon name={item.icon} size={20} />
-      <span className="rp-shell__nav-label">{label}</span>
+      <span className="rp-shell__nav-label">{visualLabel}</span>
       {item.id === 'reports' ? <ReportsBadge count={reportsBadge} /> : null}
     </Link>
   )

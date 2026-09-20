@@ -3,7 +3,7 @@ import type { AdminRole, AdminUser, Campaign, CampaignDetail, ParkRequest, Permi
 import { ROUTE_MANIFEST, type AppRouteId, type RouteManifestItem } from '../../src/app/routing/routeManifest'
 import { analyticsFixture } from '../../src/domains/analytics/analytics.test-support'
 import type { MockRoute } from '../support/mockApi'
-import { installOperational, parkNorth, parkSouth } from './fixtures'
+import { installOperational, issue, parkNorth, parkSouth } from './fixtures'
 
 const routeReport: Report = {
   id: 1, kind: 'mechanic_problem', status: 'open', park_id: 7, author_user_id: 101,
@@ -80,7 +80,20 @@ export function fixturePath(route: RouteManifestItem): string {
 export async function openRouteFixture(page: Page, routeId: AppRouteId, user: User, options: { routes?: MockRoute[] } = {}): Promise<void> {
   const route = ROUTE_MANIFEST.find(item => item.id === routeId)
   if (!route) throw new Error(`Unknown route fixture: ${routeId}`)
-  await installOperational(page, { user, routes: [...(options.routes ?? []), ...routeMockRoutes()] })
+  const loadedIssue = routeId === 'work-issue' ? {
+    ...issue,
+    claim: { park_id: parkNorth.id },
+    workflow: {
+      owner: { display: 'Механик смены', login: 'mechanic-e2e' },
+      review_state: null,
+      display_status: 'in_progress' as const,
+      sync_state: 'synced' as const,
+      queued_at: '2026-09-02T08:00:00Z',
+      queued_at_source: 'tracker_history' as const,
+      has_current_cycle_comment: true,
+    },
+  } : undefined
+  await installOperational(page, { user, issue: loadedIssue, routes: [...(options.routes ?? []), ...routeMockRoutes()] })
   await page.goto(fixturePath(route))
   await expect(page.locator('main')).toBeVisible()
   await expect(routeReadyMarker(page, routeId)).toBeVisible()
@@ -95,6 +108,94 @@ export async function openRouteFixture(page: Page, routeId: AppRouteId, user: Us
     await expect(requestDialog.getByLabel('Парк', { exact: true })).toHaveValue('8')
     await requestDialog.getByRole('button', { name: 'Закрыть', exact: true }).filter({ hasText: 'Закрыть' }).click()
     await expect(requestDialog).toBeHidden()
+  }
+  if (routeId === 'admin-users') {
+    await page.getByRole('button', { name: 'Открыть аккаунт route-admin', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'route-admin', exact: true })).toBeVisible()
+  }
+  if (routeId === 'admin-roles') {
+    await page.getByRole('button', { name: 'Открыть роль Механик', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Редактор: Механик', exact: true })).toBeVisible()
+  }
+}
+
+export async function assertRouteSemanticContracts(page: Page, routeId: AppRouteId): Promise<void> {
+  const duplicateZones = await page.locator('[data-a-zone] [data-a-zone]').evaluateAll(nodes => nodes
+    .filter(node => node.getAttribute('data-a-zone') === node.parentElement?.closest('[data-a-zone]')?.getAttribute('data-a-zone'))
+    .map(node => node.getAttribute('data-a-zone')))
+  expect(duplicateZones, `nested duplicate Interface A zones on ${routeId}`).toEqual([])
+
+  const viewportWidth = page.viewportSize()?.width ?? 0
+  if (viewportWidth >= 900 && viewportWidth < 1200 && await page.locator('.rp-task-first-shell').count()) {
+    const crampedCompositions = await page.locator([
+      '.a-domain-composition',
+      '.report-composition--task-first',
+      '.campaign-list-composition--task-first',
+      '.campaign-detail-composition--task-first',
+    ].join(',')).evaluateAll(compositions => compositions.flatMap(composition => {
+      const context = composition.querySelector<HTMLElement>(':scope > [data-a-zone$="context"], :scope > [data-a-zone="context"]')
+      const workflow = composition.querySelector<HTMLElement>(':scope > [data-a-zone$="workflow"], :scope > [data-a-zone="workflow"]')
+      if (!context || !workflow || context.hidden) return []
+      const contextBox = context.getBoundingClientRect()
+      const workflowBox = workflow.getBoundingClientRect()
+      return Math.abs(contextBox.x - workflowBox.x) <= 1 && workflowBox.top >= contextBox.bottom
+        ? [] : [composition.className]
+    }))
+    expect(crampedCompositions, 'tablet context must stack above its workflow').toEqual([])
+  }
+
+  if (routeId === 'work-issue') {
+    const detail = page.locator('.rp-work-detail-pane')
+    await expect(detail.getByText('ROBOPARK-42', { exact: true })).toHaveCount(1)
+    await expect(detail.getByRole('heading', { name: 'Проверить переднее левое колесо робота 447', exact: true })).toHaveCount(1)
+    if (viewportWidth <= 899 && await page.locator('.rp-task-first-shell').count()) {
+      await expect(page.locator('.a-task-action')).toHaveCSS('position', 'static')
+    }
+  }
+
+  if (routeId === 'overview' && viewportWidth >= 900 && await page.locator('.rp-task-first-shell').count()) {
+    const overviewGeometry = await page.locator('.rp-overview').evaluate(element => {
+      const attention = element.querySelector<HTMLElement>('.a-overview-attention-panel')!.getBoundingClientRect()
+      const statuses = element.querySelector<HTMLElement>('.a-overview-status-panel')!.getBoundingClientRect()
+      const alerts = element.querySelector<HTMLElement>('.rp-overview-alerts')!.getBoundingClientRect()
+      return { attention, statuses, alerts }
+    })
+    expect(overviewGeometry.statuses.x).toBeGreaterThan(overviewGeometry.attention.x)
+    expect(Math.abs(overviewGeometry.alerts.x - overviewGeometry.attention.x)).toBeLessThanOrEqual(1)
+    expect(overviewGeometry.alerts.top).toBeGreaterThanOrEqual(overviewGeometry.attention.bottom)
+  }
+
+  if (routeId === 'campaigns') {
+    const escapedMetrics = await page.locator('.campaign-card').evaluateAll(cards => cards.flatMap(card => {
+      const outer = card.getBoundingClientRect()
+      return Array.from(card.querySelectorAll<HTMLElement>('.campaign-card__heading, .campaign-metrics'))
+        .filter(element => {
+          const box = element.getBoundingClientRect()
+          return box.left < outer.left - 1 || box.right > outer.right + 1
+        })
+        .map(element => element.className)
+    }))
+    expect(escapedMetrics, 'campaign content escapes its card').toEqual([])
+    const campaignCards = page.locator('.campaign-list--task-first .campaign-card')
+    if (viewportWidth >= 1200 && await campaignCards.count() === 1) {
+      const [card, workflow] = await Promise.all([
+        campaignCards.first().boundingBox(),
+        page.locator('[data-a-zone="campaign-workflow"]').boundingBox(),
+      ])
+      expect(card && workflow && card.width / workflow.width, 'single campaign should use the available workflow width').toBeGreaterThanOrEqual(0.7)
+    }
+  }
+
+  const masterDetail = page.locator('.rp-master-detail[data-detail-open="true"] .rp-master-detail__detail')
+  if (await masterDetail.count()) {
+    const meaningful = await masterDetail.evaluate(element => (element.textContent ?? '').trim().length)
+    expect(meaningful, `empty detail pane on ${routeId}`).toBeGreaterThan(0)
+  }
+
+  const nav = page.locator('.rp-shell__bottom-nav')
+  if (await nav.isVisible().catch(() => false)) {
+    const duplicateCurrent = await nav.locator('[aria-current="page"]').count()
+    expect(duplicateCurrent, `multiple current mobile destinations on ${routeId}`).toBeLessThanOrEqual(1)
   }
 }
 
@@ -115,7 +216,7 @@ function routeReadyMarker(page: Page, routeId: AppRouteId) {
     case 'reports-new': return page.getByRole('textbox', { name: 'Заголовок *', exact: true })
     case 'report-detail': return page.getByText(routeReport.body, { exact: true })
     case 'analytics': return page.locator('.rp-analytics-park .rp-analytics-value').filter({ hasText: '2 задач' }).first()
-    case 'admin': return page.getByRole('link', { name: 'Настройки', exact: true })
+    case 'admin': return page.getByRole('heading', { name: 'Управление', exact: true, level: 1 })
     case 'admin-settings': return page.getByText('Tracker OAuth', { exact: true })
     case 'admin-users': return page.getByRole('button', { name: 'Открыть аккаунт route-admin', exact: true })
     case 'admin-roles': return page.getByText('Механик', { exact: true })
@@ -164,11 +265,16 @@ export async function assertResponsiveContracts(page: Page, width: number): Prom
       if (!navigation) failures.push('mobile bottom navigation is missing')
       else for (const label of navigation.querySelectorAll('.rp-shell__nav-label')) {
         const box = label.getBoundingClientRect()
+        const lineHeight = parseFloat(getComputedStyle(label).lineHeight)
         const control = label.closest('a,button')?.getBoundingClientRect()
         const icon = label.parentElement?.querySelector('svg')?.getBoundingClientRect()
         if (!visible(label) || box.height <= 0 || box.width <= 0) failures.push(`hidden navigation caption: ${name(label)}`)
+        if (Number.isFinite(lineHeight) && box.height > lineHeight * 1.25) failures.push(`wrapped navigation caption: ${name(label)}`)
         if (!control || !icon || box.top < icon.bottom - 1 || box.left < control.left - 1 || box.right > control.right + 1 || box.bottom > control.bottom + 1) failures.push(`navigation caption outside its control or above icon: ${name(label)}`)
       }
+      const managementSelect = document.querySelector('.rp-management-nav-select')
+      const managementLinks = document.querySelector('.rp-management-nav')
+      if (managementSelect && managementLinks && visible(managementSelect) && visible(managementLinks)) failures.push('management navigation is duplicated')
     }
     if (width === 320 || width === 390) {
       for (const element of document.querySelectorAll('button,a,input,select,textarea')) {

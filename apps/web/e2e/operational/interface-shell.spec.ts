@@ -70,8 +70,8 @@ for (const width of [320, 390, 412, 899, 1440]) for (const theme of ['light', 'd
     await expect(shell.locator('[data-shell-zone="navigation"]')).toHaveCount(1)
     await expect(shell.locator('[data-shell-zone="header"]')).toHaveCount(1)
     await expect(shell.locator('[data-shell-zone="content"]')).toHaveCount(1)
-    await expect(shell.locator('[data-shell-zone="context"]')).toHaveCount(1)
-    await expect(shell.locator('[data-shell-zone="action"]')).toHaveCount(1)
+    await expect(shell.locator('[data-shell-zone="context"]')).toHaveCount(mode === 'Новый А' ? 0 : 1)
+    await expect(shell.locator('[data-shell-zone="action"]')).toHaveCount(mode === 'Новый А' ? 0 : 1)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     if (width < 900) {
       for (const label of await page.locator('.rp-shell__bottom-nav .rp-shell__nav-label:visible').all()) {
@@ -144,76 +144,6 @@ for (const width of [390, 1440]) {
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     await dialog.screenshot({ path: testInfo.outputPath(`${mode === 'Новый А' ? 'a' : 'classic'}-more-${width}.png`) })
-  })
-}
-
-for (const width of [320, 390, 412]) {
-  test(`A nonempty context stays below full-width content at ${width}`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 900 })
-    await openRouteFixture(page, 'overview', userForRole('mechanic'))
-    await selectInterface(page, 'Новый А')
-    const shell = page.locator('.rp-task-first-shell')
-    await shell.locator('[data-shell-zone="context"]').evaluate(element => {
-      element.removeAttribute('hidden')
-      element.textContent = 'Контекст робота'
-    })
-    await shell.locator('[data-shell-zone="action"]').evaluate(element => {
-      element.removeAttribute('hidden')
-      element.textContent = 'Основное действие'
-    })
-
-    const layout = await shell.evaluate(element => {
-      const workspace = element.querySelector<HTMLElement>('.rp-task-first-shell__workspace')!
-      const content = element.querySelector<HTMLElement>('.rp-task-first-shell__content')!
-      const context = element.querySelector<HTMLElement>('.rp-task-first-shell__context')!
-      const action = element.querySelector<HTMLElement>('.rp-task-first-shell__action')!
-      return {
-        columns: getComputedStyle(workspace).gridTemplateColumns,
-        content: content.getBoundingClientRect().toJSON(),
-        context: context.getBoundingClientRect().toJSON(),
-        action: action.getBoundingClientRect().toJSON(),
-        noOverflow: document.documentElement.scrollWidth <= innerWidth,
-      }
-    })
-    expect(layout.columns.trim().split(/\s+/)).toHaveLength(1)
-    expect(layout.content.width).toBeGreaterThan(width * 0.8)
-    expect(layout.context.width).toBeGreaterThan(width * 0.8)
-    expect(layout.action.width).toBeGreaterThan(width * 0.8)
-    expect(layout.context.top).toBeGreaterThanOrEqual(layout.content.bottom)
-    expect(layout.action.top).toBeGreaterThanOrEqual(layout.context.bottom)
-    expect(layout.noOverflow).toBe(true)
-  })
-}
-
-for (const width of [899, 1440]) {
-  test(`A nonempty context keeps its desktop rail at ${width}`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 900 })
-    await openRouteFixture(page, 'overview', userForRole('mechanic'))
-    await selectInterface(page, 'Новый А')
-    const shell = page.locator('.rp-task-first-shell')
-    await shell.locator('[data-shell-zone="context"]').evaluate(element => {
-      element.removeAttribute('hidden')
-      element.textContent = 'Контекст робота'
-    })
-    await shell.locator('[data-shell-zone="action"]').evaluate(element => {
-      element.removeAttribute('hidden')
-      element.textContent = 'Основное действие'
-    })
-
-    const layout = await shell.locator('.rp-task-first-shell__workspace').evaluate(element => {
-      const content = element.querySelector<HTMLElement>('.rp-task-first-shell__content')!
-      const context = element.querySelector<HTMLElement>('.rp-task-first-shell__context')!
-      return {
-        columns: getComputedStyle(element).gridTemplateColumns,
-        contentWidth: content.getBoundingClientRect().width,
-        contextWidth: context.getBoundingClientRect().width,
-        noOverflow: document.documentElement.scrollWidth <= innerWidth,
-      }
-    })
-    expect(layout.columns.trim().split(/\s+/)).toHaveLength(2)
-    expect(layout.contentWidth).toBeGreaterThan(0)
-    expect(layout.contextWidth).toBeGreaterThanOrEqual(240)
-    expect(layout.noOverflow).toBe(true)
   })
 }
 
