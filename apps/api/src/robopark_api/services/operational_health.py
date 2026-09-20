@@ -315,9 +315,7 @@ def cached_host_snapshot(
         result["storage"] = {
             "floor_bytes": floor,
             "bytes_to_reclaim": max(0, floor - free),
-            "category_bytes": cleanup.get(
-                "category_bytes", result["process"]["directory_bytes"]
-            ),
+            "category_bytes": cleanup.get("category_bytes", result["process"]["directory_bytes"]),
             "last_cleanup_at": cleanup.get("completed_at"),
             "cleanup_failed": cleanup.get("blocked") is True or cleanup.get("pressure") is True,
             "api_last_cleanup_at": api_cleanup.get("completed_at"),

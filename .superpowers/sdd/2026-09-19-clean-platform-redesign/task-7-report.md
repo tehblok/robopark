@@ -101,3 +101,20 @@ The pre-existing uncommitted `progress.md` edit was preserved and is not part of
 - Focused migration and full-suite failure regressions: **6 passed**.
 - Full API suite from zero after the role/migration corrections: **1838 passed, 7 skipped**.
 - Production build and service worker build: exit 0; navigation audit: **30 route ids**, OK; lint: exit 0 with the repository's existing 21 warnings.
+
+## Review round 3
+
+- Shortened the Alembic head to `0032_operator_inv_readonly` (22 characters), updated release/acceptance metadata, and added a migration-id length regression. The canonical PostgreSQL 17 gate now performs a real `0031_campaign_snapshot_state` → head upgrade and proves the operator's legacy stock/document/export grants are removed in PostgreSQL, not only SQLite.
+- Removed the route-wide evidence-owner fallback. Each delegated state now has its own exact state key, collected title, state kind and trigger contract; the parameterized owner suite executes one assertion per delegated state and rejects route/state/kind/title mismatches. The only N/A is the intentionally API-only report hard purge, with a route-specific impossibility reason and exact HTTP owner.
+- Added concrete Classic+A campaign loading, empty, retryable-error and create-form regressions. The browser collector still executes every browser fixture in both presentations and real attachment/check-tab triggers remain executable.
+- Replaced generic action evidence with a unique action×role×outcome pytest node. The HTTP matrix covers public auth, park request, task claim/attachment, reports, campaigns, platform settings/ops, users, roles and diagnostics; the inventory HTTP matrix now additionally exercises receipt posting and real CSV export. A RED matrix case exposed the real claim policy (mechanic-only), and the route manifest was corrected to match it.
+
+### Round-3 verification
+
+- Canonical PostgreSQL 17 gate: `./scripts/verify.sh api-postgres` — **7 passed**.
+- Exact HTTP action matrices: **140 passed**; pytest collection resolved all **140** parameter ids.
+- Full API gate including Ruff/format: `./scripts/verify.sh api` — **1967 passed, 8 skipped**, 21 warnings.
+- Full web unit suite: `npm test -- --run` — **153 files, 2301 tests passed**.
+- Evidence collector: **63 passed** in Classic and A.
+- Complete route/role/viewport/mode suite from zero: **846 passed, 294 policy-skipped, 0 failed** across **1140 collected cases**.
+- Production and service-worker build: `npm run build` — exit 0.

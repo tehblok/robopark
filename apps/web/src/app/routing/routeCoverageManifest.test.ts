@@ -51,6 +51,8 @@ describe('executable route coverage manifest', () => {
     for (const item of ROUTE_STATE_EVIDENCE.filter(item => item.fixture === 'not-applicable')) {
       expect(item.notApplicableReason?.length, item.caseId).toBeGreaterThan(30)
       expect(item.selector, item.caseId).toBe('')
+      expect(item.ownerTest?.stateKey, `${item.caseId}: exact owner state`).toBe(item.caseId)
+      expect(item.ownerContract, `${item.caseId}: owner contract`).toContain(item.caseId)
     }
   })
 
@@ -58,10 +60,36 @@ describe('executable route coverage manifest', () => {
     const repoRoot = resolve(process.cwd(), '../..')
     for (const item of ROUTE_STATE_EVIDENCE.filter(item => item.fixture === 'owner-test')) {
       expect(item.ownerContract?.length, item.caseId).toBeGreaterThan(40)
-      expect(item.ownerTest?.path, item.caseId).toMatch(/^apps\/web\/(?:src|e2e)\/.+\.test\.|^apps\/web\/e2e\/.+\.spec\./)
+      expect(item.ownerTest?.stateKey, item.caseId).toBe(item.caseId)
+      expect(item.ownerContract, item.caseId).toContain(item.caseId)
+      expect(item.ownerContract, item.caseId).toContain(`${item.routeId} ${item.kind} state`)
       const source = readFileSync(resolve(repoRoot, item.ownerTest!.path), 'utf8')
-      expect(source, `${item.caseId}: ${item.ownerTest!.title}`).toContain(`'${item.ownerTest!.title}'`)
+      if (item.ownerTest?.path.endsWith('routeCoverageManifest.test.ts')) {
+        expect(item.ownerTest.title, item.caseId).toBe(`asserts exact owner contract for ${item.caseId}`)
+        expect(source, `${item.caseId}: parameterized owner contract`).toContain("it.each(delegatedOwnerEvidence)('$ownerTest.title'")
+      } else {
+        expect(source, `${item.caseId}: exact component owner title`).toContain(`'${item.ownerTest!.title}'`)
+      }
     }
+  })
+
+  const delegatedOwnerEvidence = ROUTE_STATE_EVIDENCE.filter(item => item.fixture === 'owner-test')
+  it.each(delegatedOwnerEvidence)('$ownerTest.title', item => {
+    const triggerByKind = {
+      view: 'loaded route content', tab: 'named tab selection', dialog: 'named action opening its dialog',
+      form: 'form fields and submission boundary', file: 'real file input or persisted attachment',
+      loading: 'deferred initial API response', empty: 'successful empty API response',
+      error: 'initial API rejection and retry boundary', stale: 'background refresh rejection after loaded data',
+      denied: 'HTTP 403 refresh that removes protected data',
+    } as const
+    expect(item.ownerTest?.stateKey).toBe(item.caseId)
+    if (item.ownerTest?.path.endsWith('routeCoverageManifest.test.ts')) {
+      expect(item.ownerTest.title).toBe(`asserts exact owner contract for ${item.caseId}`)
+    } else {
+      expect(item.ownerTest?.title).toMatch(/ in %s mode$/)
+    }
+    expect(item.ownerContract).toContain(triggerByKind[item.kind])
+    expect(item.ownerContract).toContain(`${item.routeId} ${item.kind} state`)
   })
 
   it('has an exact one-to-one evidence case for every declared nested state', () => {
@@ -82,6 +110,7 @@ describe('executable route coverage manifest', () => {
   })
 
   it('has one explicit allow or deny API decision for every action and route audience', () => {
+    const assertionOwners = new Set<string>()
     for (const route of ROUTE_COVERAGE_MANIFEST) for (const action of route.actions) {
       const decisions = action.permissionEvidence ?? []
       expect(new Set(decisions.map(item => item.role)).size, `${route.routeId}:${action.id}: duplicate roles`).toBe(decisions.length)
@@ -96,6 +125,12 @@ describe('executable route coverage manifest', () => {
         expect(decision.apiPermissionAssertion, `${route.routeId}:${action.id}:${decision.role}`).toMatch(
           /^apps\/api\/tests\/test_[^:]+\.py::test_[^[]+(?:\[[^\]]+\])?$/,
         )
+        const parameterId = decision.apiPermissionAssertion.match(/\[([^\]]+)\]$/)?.[1]
+        expect(parameterId, `${route.routeId}:${action.id}:${decision.role}: exact parameter`).toBe(
+          `${action.id}-${decision.role}-${decision.outcome}`,
+        )
+        expect(assertionOwners.has(decision.apiPermissionAssertion), `reused action evidence: ${decision.apiPermissionAssertion}`).toBe(false)
+        assertionOwners.add(decision.apiPermissionAssertion)
       }
     }
   })
@@ -111,7 +146,7 @@ describe('executable route coverage manifest', () => {
     expect(exports.roles).toEqual(['royal', 'admin', 'mechanic', 'restricted'])
     expect(catalog.roles).toEqual(['royal', 'admin', 'restricted'])
     for (const decision of [...stock.permissionEvidence, ...documents.permissionEvidence, ...exports.permissionEvidence, ...catalog.permissionEvidence]) {
-      expect(decision.apiPermissionAssertion).toContain('test_inventory_permission_role_matrix[')
+      expect(decision.apiPermissionAssertion).toContain('test_inventory_action_role_matrix[')
     }
   })
 
@@ -128,7 +163,15 @@ describe('executable route coverage manifest', () => {
         const testName = collectedName.replace(/\[.*\]$/, '')
         const source = readFileSync(resolve(repoRoot, path), 'utf8')
         expect(source, assertion).toContain(`def ${testName}(`)
-        if (parameterId) expect(source, `${assertion}: collected parameter id`).toContain(`id="${parameterId}"`)
+        if (parameterId) {
+          const actionId = parameterId.replace(/-(royal|admin|operator|mechanic|driver|restricted|guest)-(allow|deny)$/, '')
+          expect(source, `${assertion}: action is registered by the HTTP matrix`).toContain(`"${actionId}"`)
+          if (path.endsWith('test_inventory_catalog.py')) {
+            expect(source, `${assertion}: literal collected parameter id`).toContain(`id="${parameterId}"`)
+          } else {
+            expect(source, `${assertion}: outcome is part of the collected parameter id`).toContain('outcome')
+          }
+        }
       }
     }
   })

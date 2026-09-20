@@ -145,9 +145,7 @@ def test_api_retention_parent_replacement_and_report_are_bounded(tmp_path, monke
     assert protected.read_bytes() == b"outside"
 
 
-def test_api_retention_reports_partial_when_protected_scan_reaches_budget(
-    tmp_path, monkeypatch
-):
+def test_api_retention_reports_partial_when_protected_scan_reaches_budget(tmp_path, monkeypatch):
     from robopark_api.services import storage_retention
 
     class ProtectedEntries:

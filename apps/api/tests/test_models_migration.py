@@ -109,7 +109,17 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
 def test_alembic_head_is_operator_inventory_read_only():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0032_operator_inventory_read_only"]
+    assert script.get_heads() == ["0032_operator_inv_readonly"]
+
+
+def test_alembic_revision_ids_fit_version_table_column():
+    api_dir = Path(__file__).parents[1]
+    script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
+    assert {
+        revision.revision: len(revision.revision)
+        for revision in script.walk_revisions()
+        if len(revision.revision) > 32
+    } == {}
 
 
 def test_campaign_snapshot_upgrade_preserves_legacy_selection_and_indexes(

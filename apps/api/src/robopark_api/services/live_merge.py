@@ -20,7 +20,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -778,10 +778,8 @@ class LiveMergeStore:
             except (BlockingIOError, OSError):
                 return False
             finally:
-                try:
+                with suppress(OSError):
                     fcntl.flock(descriptor, fcntl.LOCK_UN)
-                except OSError:
-                    pass
                 os.close(descriptor)
 
         try:

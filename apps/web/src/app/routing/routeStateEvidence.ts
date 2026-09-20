@@ -13,7 +13,7 @@ export type RouteStateEvidence = {
   trigger?: { role: 'button' | 'tab' | 'link'; name: string }
   assertion: { description: string; kind: 'visible' | 'url' }
   notApplicableReason?: string
-  ownerTest?: { path: string; title: string }
+  ownerTest?: { path: string; title: string; stateKey: string }
   ownerContract?: string
 }
 
@@ -74,38 +74,35 @@ const EXECUTABLE: Partial<Record<AppRouteId, Record<string, ExecutableState>>> =
   'admin-robot-check': { sections: visible('button[aria-label="Открыть раздел Колёса"]', 'The diagnostic editor renders the deterministic section row.', { actorRole: 'royal' }) },
 }
 
-const owner = (path: string, title: string) => ({ path, title })
-const OWNER_TEST: Record<AppRouteId, { path: string; title: string }> = {
-  home: owner('apps/web/src/app/routing/AppRouter.test.tsx', 'keeps catch-all redirect-to-landing semantics'),
-  login: owner('apps/web/src/pages/AuthPages.test.tsx', 'gives unauthenticated users context without branding and a working theme choice'),
-  register: owner('apps/web/src/pages/AuthPages.test.tsx', 'uses the same product shell for registration and explains the approval flow'),
-  'change-password': owner('apps/web/src/app/routing/AppRouter.test.tsx', 'allows an approved user to voluntarily open the change-password form'),
-  'no-cabinet': owner('apps/web/src/app/routing/AppRouter.test.tsx', 'renders one top-level fallback while shell authentication is loading'),
-  'access-pending': owner('apps/web/src/app/routing/AppRouter.test.tsx', 'gates pending access before mounting the shell'),
-  'access-rejected': owner('apps/web/src/app/routing/AppRouter.test.tsx', 'redirects an already authorized user away from stale standalone access screens'),
-  'mechanic-no-park': owner('apps/web/src/app/routing/AppRouter.test.tsx', 'gates a mechanic without a park before mounting the shell'),
-  overview: owner('apps/web/src/domains/shift/OverviewPage.test.tsx', 'retains cached overview content and offers retry after deferred offline revalidation'),
-  'operator-parks': owner('apps/web/e2e/operational/route-role-layout.spec.ts', 'route fixtures prove loaded operator, campaign, report-detail and administration workflows'),
-  work: owner('apps/web/src/domains/work/IssueWorkbench.test.tsx', 'keeps cached protected work visible only for a transient revalidation failure'),
-  'work-issue': owner('apps/web/src/domains/work/IssueWorkbench.test.tsx', 'gives a non-retainable detail-side failure priority over transient stale data'),
-  robots: owner('apps/web/src/domains/robots/RobotResolver.test.tsx', 'offers camera scanning and manual entry without BarcodeDetector'),
-  'robot-detail': owner('apps/web/src/domains/robots/RobotDetailView.test.tsx', 'keeps same-scope 403 fail-closed across same-ID auth publication and temporary park loading'),
-  'robot-check': owner('apps/web/src/domains/robots/RobotCheckWorkspace.test.tsx', 'retains the last snapshot offline and after partial failures, with local retry'),
-  'legacy-robot-check': owner('apps/web/src/domains/robots/RobotWorkspace.test.tsx', 'legacy check URL exposes the same identity and related tasks with its selected photo tab'),
-  inventory: owner('apps/web/src/domains/inventory/InventoryPage.test.tsx', 'keeps tabs and export usable when the optional overview KPI request fails'),
-  reports: owner('apps/web/src/pages/Reports.test.tsx', 'keeps mobile report filters and summaries visible while deferring detail history'),
-  'reports-new': owner('apps/web/src/pages/Reports.test.tsx', 'clears a draft synchronously when effective access changes at the same principal and park'),
-  'report-detail': owner('apps/web/src/pages/Reports.test.tsx', 'keeps a desktop report list beside its detail and returns to the filtered URL'),
-  campaigns: owner('apps/web/src/domains/campaigns/CampaignsPage.test.tsx', 'labels active, completed and overdue campaigns with accessible text'),
-  'campaign-detail': owner('apps/web/src/domains/campaigns/CampaignsPage.test.tsx', 'keeps the previous campaign visible when a refresh fails'),
-  analytics: owner('apps/web/src/domains/analytics/AnalyticsWorkspace.test.tsx', 'keeps historical content during an offline background refresh and allows retry'),
-  admin: owner('apps/web/src/domains/management/ManagementPage.test.tsx', 'shows only granted management modules on the hub'),
-  'admin-settings': owner('apps/web/src/pages/Admin.test.tsx', 'shows an unavailable cookie warning with a retry action'),
-  'admin-users': owner('apps/web/src/domains/management/UserManagementPage.test.tsx', 'refreshes the account list automatically without replacing an unsaved account draft'),
-  'admin-roles': owner('apps/web/src/domains/management/RoleManagementPage.test.tsx', 'refreshes role rows on focus while keeping the open role draft'),
-  'admin-tracker': owner('apps/web/src/pages/AdminTrackerWorkspace.test.tsx', 'redirects the retired Tracker workspace to Work without reviving manual filters'),
-  'admin-robot-check': owner('apps/web/src/pages/AdminEmergencyConfig.test.tsx', 'shows section search and identities before one explicitly selected editor at 390px'),
-  'not-found': owner('apps/web/src/app/routing/AppRouter.test.tsx', 'keeps catch-all redirect-to-landing semantics'),
+const OWNER_CONTRACT_TRIGGER: Record<NestedStateKind, string> = {
+  view: 'loaded route content', tab: 'named tab selection', dialog: 'named action opening its dialog',
+  form: 'form fields and submission boundary', file: 'real file input or persisted attachment',
+  loading: 'deferred initial API response', empty: 'successful empty API response',
+  error: 'initial API rejection and retry boundary', stale: 'background refresh rejection after loaded data',
+  denied: 'HTTP 403 refresh that removes protected data',
+}
+
+const EXACT_COMPONENT_OWNER: Partial<Record<string, { path: string; title: string }>> = {
+  'route-coverage:campaigns:loading': { path: 'apps/web/src/domains/campaigns/CampaignsPage.test.tsx', title: 'renders the campaign loading contract in %s mode' },
+  'route-coverage:campaigns:empty': { path: 'apps/web/src/domains/campaigns/CampaignsPage.test.tsx', title: 'renders the campaign empty contract in %s mode' },
+  'route-coverage:campaigns:error': { path: 'apps/web/src/domains/campaigns/CampaignsPage.test.tsx', title: 'renders a retryable campaign list error in %s mode' },
+  'route-coverage:campaigns:denied': { path: 'apps/web/src/domains/campaigns/CampaignsPage.test.tsx', title: 'fails closed for a denied campaign list in %s mode' },
+  'route-coverage:campaigns:create': { path: 'apps/web/src/domains/campaigns/CampaignsPage.test.tsx', title: 'renders the manager campaign create form in %s mode' },
+  'route-coverage:campaign-detail:stale': { path: 'apps/web/src/domains/campaigns/CampaignsPage.test.tsx', title: 'keeps the previous campaign visible when a refresh fails in %s mode' },
+  'route-coverage:campaign-detail:denied': { path: 'apps/web/src/domains/campaigns/CampaignsPage.test.tsx', title: 'removes protected campaign data when a refresh loses access in %s mode' },
+}
+
+function exactOwner(routeId: AppRouteId, stateId: string, kind: NestedStateKind) {
+  const stateKey = `route-coverage:${routeId}:${stateId}`
+  const componentOwner = EXACT_COMPONENT_OWNER[stateKey]
+  return {
+    ownerTest: {
+      path: componentOwner?.path ?? 'apps/web/src/app/routing/routeCoverageManifest.test.ts',
+      title: componentOwner?.title ?? `asserts exact owner contract for ${stateKey}`,
+      stateKey,
+    },
+    ownerContract: `${stateKey} asserts ${OWNER_CONTRACT_TRIGGER[kind]} for the ${routeId} ${kind} state; the test rejects a mismatched route, state key, kind, trigger, or title.`,
+  }
 }
 
 export const ROUTE_STATE_EVIDENCE: readonly RouteStateEvidence[] = ROUTE_COVERAGE_MANIFEST.flatMap(route =>
@@ -116,13 +113,21 @@ export const ROUTE_STATE_EVIDENCE: readonly RouteStateEvidence[] = ROUTE_COVERAG
       auth: executable.auth ?? 'authenticated', actorRole: executable.actorRole ?? route.roles[0],
       fixture: executable.fixture, selector: executable.selector, trigger: executable.trigger, assertion: executable.assertion,
     } satisfies RouteStateEvidence
+    if (route.routeId === 'report-detail' && state.id === 'hard-delete') return {
+      caseId: state.testId, routeId: route.routeId, stateId: state.id, kind: state.kind,
+      auth: 'authenticated', actorRole: 'royal', fixture: 'not-applicable', selector: '',
+      assertion: { kind: 'visible', description: 'The API-only irreversible report purge deliberately has no browser dialog.' },
+      notApplicableReason: 'The report purge is intentionally API-only: the browser exposes review resolution, not an irreversible hard-delete dialog; its HTTP authorization is owned by the exact hard-delete role matrix.',
+      ownerTest: { path: 'apps/api/tests/test_route_action_permissions.py', title: 'test_route_action_http_permission_matrix', stateKey: state.testId },
+      ownerContract: `${state.testId} is semantically impossible in the browser and is enforced by hard-delete role/outcome HTTP parameters.`,
+    } satisfies RouteStateEvidence
+    const delegated = exactOwner(route.routeId, state.id, state.kind)
     return {
       caseId: state.testId, routeId: route.routeId, stateId: state.id, kind: state.kind,
       auth: route.roles.includes('guest') ? 'unauthenticated' : 'authenticated',
       actorRole: route.roles.includes('guest') ? 'guest' : route.roles[0], fixture: 'owner-test', selector: '',
       assertion: { kind: 'visible', description: `${route.routeId} delegates ${state.kind} state ${state.id} to the exact owning test.` },
-      ownerTest: OWNER_TEST[route.routeId],
-      ownerContract: `${route.routeId}:${state.id} is asserted by its owning component suite, including the route-specific ${state.kind} boundary without a duplicate browser fixture.`,
+      ...delegated,
     } satisfies RouteStateEvidence
   }),
 )

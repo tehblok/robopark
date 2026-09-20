@@ -28,6 +28,7 @@ const ALL_ROLES = ['royal', 'admin', 'operator', 'mechanic', 'driver', 'restrict
 const INVENTORY_ROLES = ['royal', 'admin', 'operator', 'mechanic', 'restricted'] as const
 const ANALYTICS_ROLES = ['royal', 'admin', 'operator', 'restricted'] as const
 const MANAGER_ROLES = ['royal', 'admin', 'restricted'] as const
+const BUILTIN_MANAGER_ROLES = ['royal', 'admin'] as const
 const OWNERS = ['royal'] as const
 
 function nested(routeId: AppRouteId, ...items: ReadonlyArray<readonly [string, NestedStateKind]>): RouteCoverageState[] {
@@ -58,16 +59,22 @@ function route(
   const matrixRoles = roles.includes('guest') ? roles : ALL_ROLES
   return {
     routeId, classicComponent, interfaceAComponent, interfaceAReviewed: true, roles, states,
-    actions: actions.map(item => ({
-      ...item,
-      permissionEvidence: matrixRoles.map(role => ({
+    actions: actions.map(item => {
+      const permissionEvidence = matrixRoles.map(role => {
+        const outcome = item.roles.includes(role) ? 'allow' as const : 'deny' as const
+        const matrixTest = ['stock-settings', 'receive-and-inventory', 'labels-and-export', 'catalog-delete-or-merge'].includes(item.id)
+          ? 'apps/api/tests/test_inventory_catalog.py::test_inventory_action_role_matrix'
+          : ['login', 'register'].includes(item.id)
+            ? 'apps/api/tests/test_route_action_permissions.py::test_public_auth_action_http_matrix'
+            : 'apps/api/tests/test_route_action_permissions.py::test_route_action_http_permission_matrix'
+        return {
         role,
-        outcome: item.roles.includes(role) ? 'allow' as const : 'deny' as const,
-        apiPermissionAssertion: ['stock-settings', 'receive-and-inventory', 'labels-and-export', 'catalog-delete-or-merge'].includes(item.id)
-          ? `apps/api/tests/test_inventory_catalog.py::test_inventory_permission_role_matrix[${item.id}-${role}-${item.roles.includes(role) ? 'allow' : 'deny'}]`
-          : item.apiPermissionAssertions[0],
-      })),
-    })),
+          outcome,
+          apiPermissionAssertion: `${matrixTest}[${item.id}-${role}-${outcome}]`,
+        }
+      })
+      return { ...item, apiPermissionAssertions: permissionEvidence.map(item => item.apiPermissionAssertion), permissionEvidence }
+    }),
   }
 }
 
@@ -107,7 +114,7 @@ export const ROUTE_COVERAGE_MANIFEST: readonly RouteCoverageItem[] = [
     asyncStates('work', ['queue', 'tab'], ['mine', 'tab'], ['filters', 'form'])),
   route('work-issue', 'IssueWorkbench.ClassicTask', 'IssueWorkbench.TaskFirstTask', ALL_ROLES,
     asyncStates('work-issue', ['repair', 'tab'], ['check', 'tab'], ['chat', 'tab'], ['open-related', 'tab'], ['closed-related', 'tab'], ['comment', 'form'], ['photo', 'file'], ['review', 'dialog']), [
-      action('claim-and-transition', ['royal', 'admin', 'operator', 'mechanic', 'restricted'], 'apps/api/tests/test_task_lifecycle.py::test_claim_requires_tracker_write_permission'),
+      action('claim-and-transition', ['mechanic'], 'apps/api/tests/test_task_lifecycle.py::test_claim_requires_tracker_write_permission'),
       action('attach-photo', ['royal', 'admin', 'operator', 'mechanic', 'restricted'], 'apps/api/tests/test_task_lifecycle.py::test_submit_review_requires_attachment_permission_before_queuing_any_actions'),
     ]),
   route('robots', 'RobotsPage.Classic', 'RobotsPage.TaskFirst', ALL_ROLES,
@@ -116,7 +123,7 @@ export const ROUTE_COVERAGE_MANIFEST: readonly RouteCoverageItem[] = [
     asyncStates('robot-detail', ['summary', 'tab'], ['tasks', 'tab'], ['map', 'tab'])),
   route('robot-check', 'RobotCheckWorkspace.Classic', 'RobotCheckWorkspace.TaskFirst', ALL_ROLES,
     asyncStates('robot-check', ['state', 'tab'], ['errors', 'tab'], ['readings', 'tab'], ['camera', 'file'], ['ignore-error', 'dialog']), [
-      action('map-or-ignore-error', MANAGER_ROLES, 'apps/api/tests/test_admin_diagnostic_rules.py::test_built_in_admin_roles_can_manage_rules'),
+      action('map-or-ignore-error', BUILTIN_MANAGER_ROLES, 'apps/api/tests/test_admin_diagnostic_rules.py::test_built_in_admin_roles_can_manage_rules'),
     ]),
   route('legacy-robot-check', 'LegacyEmergencyRedirect.Classic', 'LegacyEmergencyRedirect.TaskFirst', ALL_ROLES,
     asyncStates('legacy-robot-check', ['resolve-robot', 'form'], ['scanner', 'dialog'], ['camera', 'file'])),
@@ -137,16 +144,16 @@ export const ROUTE_COVERAGE_MANIFEST: readonly RouteCoverageItem[] = [
   route('report-detail', 'Reports.ClassicDetail', 'Reports.TaskFirstDetail', ALL_ROLES,
     asyncStates('report-detail', ['return', 'form'], ['resolve', 'dialog'], ['attachment', 'file'], ['hard-delete', 'dialog']), [
       action('return-or-resolve', ['royal', 'admin', 'operator', 'restricted'], 'apps/api/tests/test_reports.py::test_return_report_mechanic_forbidden'),
-      action('hard-delete', MANAGER_ROLES, reportDeletePermission),
+      action('hard-delete', BUILTIN_MANAGER_ROLES, reportDeletePermission),
     ]),
   route('campaigns', 'CampaignsPage.ClassicList', 'CampaignsPage.TaskFirstList', ALL_ROLES,
     asyncStates('campaigns', ['campaign-list', 'tab'], ['create', 'form'], ['parks', 'dialog']), [
-      action('create-campaign', MANAGER_ROLES, campaignManagerPermission),
+      action('create-campaign', BUILTIN_MANAGER_ROLES, campaignManagerPermission),
     ]),
   route('campaign-detail', 'CampaignsPage.ClassicDetail', 'CampaignsPage.TaskFirstDetail', ALL_ROLES,
     asyncStates('campaign-detail', ['open', 'tab'], ['closed', 'tab'], ['settings', 'form'], ['ticket-result', 'form'], ['photo', 'file'], ['delete', 'dialog']), [
-      action('update-or-delete-campaign', MANAGER_ROLES, campaignManagerPermission, 'apps/api/tests/test_campaigns.py::test_manager_deletes_empty_campaign_but_archives_one_with_result'),
-      action('submit-ticket-result', ['royal', 'admin', 'operator', 'mechanic'], 'apps/api/tests/test_campaigns.py::test_completion_requires_comment_and_photo_then_creates_operator_review'),
+      action('update-or-delete-campaign', BUILTIN_MANAGER_ROLES, campaignManagerPermission, 'apps/api/tests/test_campaigns.py::test_manager_deletes_empty_campaign_but_archives_one_with_result'),
+      action('submit-ticket-result', ALL_ROLES, 'apps/api/tests/test_campaigns.py::test_completion_requires_comment_and_photo_then_creates_operator_review'),
     ]),
   route('analytics', 'AnalyticsWorkspace.Classic', 'AnalyticsWorkspace.TaskFirst', ANALYTICS_ROLES,
     asyncStates('analytics', ['summary', 'tab'], ['flow', 'tab'], ['sla', 'tab'], ['park-comparison', 'form'])),
@@ -171,8 +178,8 @@ export const ROUTE_COVERAGE_MANIFEST: readonly RouteCoverageItem[] = [
     asyncStates('admin-tracker', ['redirect', 'loading'])),
   route('admin-robot-check', 'AdminEmergencyConfig.Classic', 'AdminEmergencyConfig.TaskFirst', MANAGER_ROLES,
     asyncStates('admin-robot-check', ['sections', 'tab'], ['readings', 'tab'], ['rules', 'tab'], ['unknowns', 'tab'], ['rule', 'form'], ['preview', 'dialog'], ['ignore', 'dialog']), [
-      action('map-diagnostic', MANAGER_ROLES, 'apps/api/tests/test_admin_diagnostic_rules.py::test_built_in_admin_roles_can_manage_rules'),
-      action('ignore-diagnostic', MANAGER_ROLES, 'apps/api/tests/test_diagnostic_unknowns.py::test_ignore_hides_the_raw_signal_until_reopen'),
+      action('map-diagnostic', BUILTIN_MANAGER_ROLES, 'apps/api/tests/test_admin_diagnostic_rules.py::test_built_in_admin_roles_can_manage_rules'),
+      action('ignore-diagnostic', BUILTIN_MANAGER_ROLES, 'apps/api/tests/test_diagnostic_unknowns.py::test_ignore_hides_the_raw_signal_until_reopen'),
     ]),
   route('not-found', 'RouteFallback', 'RouteFallback', publicRoles, nested('not-found', ['not-found', 'empty'])),
 ] as const

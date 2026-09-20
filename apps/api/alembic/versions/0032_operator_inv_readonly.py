@@ -3,7 +3,7 @@
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0032_operator_inventory_read_only"
+revision = "0032_operator_inv_readonly"
 down_revision = "0031_postgresql_runtime"
 branch_labels = None
 depends_on = None

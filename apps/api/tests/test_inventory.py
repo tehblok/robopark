@@ -566,9 +566,7 @@ def test_legacy_movement_requires_park_when_global_part_has_multiple_accessible_
     other = Park(name="Other", tag="Other", is_active=True)
     db_session.add(other)
     db_session.commit()
-    mechanic = _user(
-        db_session, "mechanic", "ambiguous-mechanic", [seed_park_with_tracker, other]
-    )
+    mechanic = _user(db_session, "mechanic", "ambiguous-mechanic", [seed_park_with_tracker, other])
     login_as(client, mechanic.username, "secret")
     _, part = _seed_part(client, seed_park_with_tracker.id)
     db_session.add(

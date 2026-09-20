@@ -45,9 +45,36 @@ function useViewport(matches: boolean) {
 beforeEach(() => useViewport(false))
 afterEach(() => vi.unstubAllGlobals())
 
-it('removes protected campaign data when a refresh loses access', async () => {
+it.each(['classic', 'task-first'] as const)('renders the campaign loading contract in %s mode', mode => {
+  renderList({ ...api, campaigns: vi.fn(() => new Promise<never>(() => {})) }, user, mode)
+  expect(screen.getByText('Загружаем кампании')).toBeVisible()
+})
+
+it.each(['classic', 'task-first'] as const)('renders the campaign empty contract in %s mode', async mode => {
+  renderList({ ...api, campaigns: vi.fn(async () => []) }, user, mode)
+  expect(await screen.findByRole('heading', { name: 'Кампаний нет' })).toBeVisible()
+})
+
+it.each(['classic', 'task-first'] as const)('renders a retryable campaign list error in %s mode', async mode => {
+  renderList({ ...api, campaigns: vi.fn(async () => { throw new ApiError(503, 'offline') }) }, user, mode)
+  expect(await screen.findByRole('alert')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Повторить' })).toBeVisible()
+})
+
+it.each(['classic', 'task-first'] as const)('fails closed for a denied campaign list in %s mode', async mode => {
+  renderList({ ...api, campaigns: vi.fn(async () => { throw new ApiError(403, 'forbidden') }) }, user, mode)
+  expect(await screen.findByRole('alert')).toBeVisible()
+  expect(screen.queryByText('СК Альфа')).not.toBeInTheDocument()
+})
+
+it.each(['classic', 'task-first'] as const)('renders the manager campaign create form in %s mode', async mode => {
+  renderList({ ...api, campaigns: vi.fn(async () => []) }, { ...user, role: 'royal' }, mode)
+  expect(await screen.findByRole('button', { name: 'Новая кампания' })).toBeVisible()
+})
+
+it.each(['classic', 'task-first'] as const)('removes protected campaign data when a refresh loses access in %s mode', async mode => {
   const campaign = vi.fn().mockResolvedValueOnce(detail).mockRejectedValue(new ApiError(403, 'forbidden'))
-  renderPage({ ...api, campaign, refreshCampaign: vi.fn(async () => ({ snapshot_state: 'ready', snapshot_at: null })) })
+  renderPage({ ...api, campaign, refreshCampaign: vi.fn(async () => ({ snapshot_state: 'ready', snapshot_at: null })) }, user, mode)
   await screen.findByText('A101')
   await userEvent.click(screen.getByRole('button', { name: 'Обновить из Tracker' }))
   await waitFor(() => expect(screen.queryByText('A101')).not.toBeInTheDocument())
@@ -112,9 +139,9 @@ it('explains that a locally completed ticket is still waiting for Tracker', asyn
   expect(screen.getByRole('button', { name: 'Обновить из Tracker' })).toBeVisible()
 })
 
-it('keeps the previous campaign visible when a refresh fails', async () => {
+it.each(['classic', 'task-first'] as const)('keeps the previous campaign visible when a refresh fails in %s mode', async mode => {
   const campaign = vi.fn().mockResolvedValueOnce(detail).mockRejectedValueOnce(new Error('Tracker offline'))
-  renderPage({ ...api, campaign, refreshCampaign: vi.fn(async () => ({ snapshot_state: 'pending', snapshot_at: null })) })
+  renderPage({ ...api, campaign, refreshCampaign: vi.fn(async () => ({ snapshot_state: 'pending', snapshot_at: null })) }, user, mode)
   expect(await screen.findByRole('heading', { name: 'СК Альфа' })).toBeVisible()
   await userEvent.click(screen.getByRole('button', { name: 'Обновить из Tracker' }))
   expect(await screen.findByText(/Показаны последние полученные данные/)).toBeVisible()

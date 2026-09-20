@@ -80,24 +80,53 @@ _INVENTORY_ACTION_PERMISSION = {
         pytest.param("stock-settings", "mechanic", True, id="stock-settings-mechanic-allow"),
         pytest.param("stock-settings", "driver", False, id="stock-settings-driver-deny"),
         pytest.param("stock-settings", "restricted", True, id="stock-settings-restricted-allow"),
-        pytest.param("receive-and-inventory", "royal", True, id="receive-and-inventory-royal-allow"),
-        pytest.param("receive-and-inventory", "admin", True, id="receive-and-inventory-admin-allow"),
-        pytest.param("receive-and-inventory", "operator", False, id="receive-and-inventory-operator-deny"),
-        pytest.param("receive-and-inventory", "mechanic", True, id="receive-and-inventory-mechanic-allow"),
-        pytest.param("receive-and-inventory", "driver", False, id="receive-and-inventory-driver-deny"),
-        pytest.param("receive-and-inventory", "restricted", True, id="receive-and-inventory-restricted-allow"),
+        pytest.param(
+            "receive-and-inventory", "royal", True, id="receive-and-inventory-royal-allow"
+        ),
+        pytest.param(
+            "receive-and-inventory", "admin", True, id="receive-and-inventory-admin-allow"
+        ),
+        pytest.param(
+            "receive-and-inventory", "operator", False, id="receive-and-inventory-operator-deny"
+        ),
+        pytest.param(
+            "receive-and-inventory", "mechanic", True, id="receive-and-inventory-mechanic-allow"
+        ),
+        pytest.param(
+            "receive-and-inventory", "driver", False, id="receive-and-inventory-driver-deny"
+        ),
+        pytest.param(
+            "receive-and-inventory", "restricted", True, id="receive-and-inventory-restricted-allow"
+        ),
         pytest.param("labels-and-export", "royal", True, id="labels-and-export-royal-allow"),
         pytest.param("labels-and-export", "admin", True, id="labels-and-export-admin-allow"),
         pytest.param("labels-and-export", "operator", False, id="labels-and-export-operator-deny"),
         pytest.param("labels-and-export", "mechanic", True, id="labels-and-export-mechanic-allow"),
         pytest.param("labels-and-export", "driver", False, id="labels-and-export-driver-deny"),
-        pytest.param("labels-and-export", "restricted", True, id="labels-and-export-restricted-allow"),
-        pytest.param("catalog-delete-or-merge", "royal", True, id="catalog-delete-or-merge-royal-allow"),
-        pytest.param("catalog-delete-or-merge", "admin", True, id="catalog-delete-or-merge-admin-allow"),
-        pytest.param("catalog-delete-or-merge", "operator", False, id="catalog-delete-or-merge-operator-deny"),
-        pytest.param("catalog-delete-or-merge", "mechanic", False, id="catalog-delete-or-merge-mechanic-deny"),
-        pytest.param("catalog-delete-or-merge", "driver", False, id="catalog-delete-or-merge-driver-deny"),
-        pytest.param("catalog-delete-or-merge", "restricted", True, id="catalog-delete-or-merge-restricted-allow"),
+        pytest.param(
+            "labels-and-export", "restricted", True, id="labels-and-export-restricted-allow"
+        ),
+        pytest.param(
+            "catalog-delete-or-merge", "royal", True, id="catalog-delete-or-merge-royal-allow"
+        ),
+        pytest.param(
+            "catalog-delete-or-merge", "admin", True, id="catalog-delete-or-merge-admin-allow"
+        ),
+        pytest.param(
+            "catalog-delete-or-merge", "operator", False, id="catalog-delete-or-merge-operator-deny"
+        ),
+        pytest.param(
+            "catalog-delete-or-merge", "mechanic", False, id="catalog-delete-or-merge-mechanic-deny"
+        ),
+        pytest.param(
+            "catalog-delete-or-merge", "driver", False, id="catalog-delete-or-merge-driver-deny"
+        ),
+        pytest.param(
+            "catalog-delete-or-merge",
+            "restricted",
+            True,
+            id="catalog-delete-or-merge-restricted-allow",
+        ),
     ],
 )
 def test_inventory_permission_role_matrix(db_session, action, slug, allowed):
@@ -108,8 +137,11 @@ def test_inventory_permission_role_matrix(db_session, action, slug, allowed):
         db_session.add(role)
         db_session.flush()
         actor = User(
-            username=f"matrix-{action}", password_hash=hash_password("secret"), role_id=role.id,
-            access_status="approved", is_active=True,
+            username=f"matrix-{action}",
+            password_hash=hash_password("secret"),
+            role_id=role.id,
+            access_status="approved",
+            is_active=True,
         )
         db_session.add(actor)
         db_session.commit()
@@ -127,22 +159,57 @@ def test_inventory_permission_role_matrix(db_session, action, slug, allowed):
         pytest.param("stock-settings", "mechanic", 200, id="stock-settings-mechanic-allow"),
         pytest.param("stock-settings", "driver", 403, id="stock-settings-driver-deny"),
         pytest.param("stock-settings", "restricted", 200, id="stock-settings-restricted-allow"),
-        pytest.param("catalog-delete-or-merge", "royal", 200, id="catalog-delete-or-merge-royal-allow"),
-        pytest.param("catalog-delete-or-merge", "admin", 200, id="catalog-delete-or-merge-admin-allow"),
-        pytest.param("catalog-delete-or-merge", "operator", 403, id="catalog-delete-or-merge-operator-deny"),
-        pytest.param("catalog-delete-or-merge", "mechanic", 403, id="catalog-delete-or-merge-mechanic-deny"),
-        pytest.param("catalog-delete-or-merge", "driver", 403, id="catalog-delete-or-merge-driver-deny"),
-        pytest.param("catalog-delete-or-merge", "restricted", 200, id="catalog-delete-or-merge-restricted-allow"),
+        pytest.param("receive-and-inventory", "royal", 404, id="receive-and-inventory-royal-allow"),
+        pytest.param("receive-and-inventory", "admin", 404, id="receive-and-inventory-admin-allow"),
+        pytest.param(
+            "receive-and-inventory", "operator", 403, id="receive-and-inventory-operator-deny"
+        ),
+        pytest.param(
+            "receive-and-inventory", "mechanic", 404, id="receive-and-inventory-mechanic-allow"
+        ),
+        pytest.param(
+            "receive-and-inventory", "driver", 403, id="receive-and-inventory-driver-deny"
+        ),
+        pytest.param(
+            "receive-and-inventory", "restricted", 404, id="receive-and-inventory-restricted-allow"
+        ),
+        pytest.param("labels-and-export", "royal", 200, id="labels-and-export-royal-allow"),
+        pytest.param("labels-and-export", "admin", 200, id="labels-and-export-admin-allow"),
+        pytest.param("labels-and-export", "operator", 403, id="labels-and-export-operator-deny"),
+        pytest.param("labels-and-export", "mechanic", 200, id="labels-and-export-mechanic-allow"),
+        pytest.param("labels-and-export", "driver", 403, id="labels-and-export-driver-deny"),
+        pytest.param(
+            "labels-and-export", "restricted", 200, id="labels-and-export-restricted-allow"
+        ),
+        pytest.param(
+            "catalog-delete-or-merge", "royal", 200, id="catalog-delete-or-merge-royal-allow"
+        ),
+        pytest.param(
+            "catalog-delete-or-merge", "admin", 200, id="catalog-delete-or-merge-admin-allow"
+        ),
+        pytest.param(
+            "catalog-delete-or-merge", "operator", 403, id="catalog-delete-or-merge-operator-deny"
+        ),
+        pytest.param(
+            "catalog-delete-or-merge", "mechanic", 403, id="catalog-delete-or-merge-mechanic-deny"
+        ),
+        pytest.param(
+            "catalog-delete-or-merge", "driver", 403, id="catalog-delete-or-merge-driver-deny"
+        ),
+        pytest.param(
+            "catalog-delete-or-merge",
+            "restricted",
+            200,
+            id="catalog-delete-or-merge-restricted-allow",
+        ),
     ],
 )
 def test_inventory_action_role_matrix(
     client, db_session, seed_park_with_tracker, action, slug, expected
 ):
     if slug == "restricted":
-        permission_keys = {
-            "nav.inventory",
-            "inventory.stock.manage" if action == "stock-settings" else "inventory.catalog.manage",
-        }
+        action_permission = _INVENTORY_ACTION_PERMISSION[action]
+        permission_keys = {"nav.inventory", action_permission}
         role = Role(
             slug=f"restricted_{action}",
             name=f"Restricted {action}",
@@ -178,10 +245,15 @@ def test_inventory_action_role_matrix(
             f"/inventory/parks/{seed_park_with_tracker.id}/stocks/{part.id}",
             json={"minimum_quantity": 2, "location": "A-1", "is_active": True},
         )
-    else:
-        response = client.patch(
-            f"/inventory/catalog/parts/{part.id}", json={"is_active": False}
+    elif action == "catalog-delete-or-merge":
+        response = client.patch(f"/inventory/catalog/parts/{part.id}", json={"is_active": False})
+    elif action == "receive-and-inventory":
+        response = client.post(
+            f"/inventory/parks/{seed_park_with_tracker.id}/receipts/999/post",
+            json={"revision": "missing"},
         )
+    else:
+        response = client.get(f"/inventory/export?park_id={seed_park_with_tracker.id}&format=csv")
 
     assert response.status_code == expected, response.text
 

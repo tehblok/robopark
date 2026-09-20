@@ -661,9 +661,7 @@ def test_confirmed_tracker_cleanup_addresses_eligible_name_beyond_protected_pref
             max_scanned_entries=1,
         )
 
-    assert report["deleted"] == [
-        {"category": "confirmed_tracker", "path": upload.name, "bytes": 6}
-    ]
+    assert report["deleted"] == [{"category": "confirmed_tracker", "path": upload.name, "bytes": 6}]
     assert report["scanned_count"] == 1
     assert report["partial"] is False
     assert not upload.exists()
