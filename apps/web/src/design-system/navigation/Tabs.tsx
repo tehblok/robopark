@@ -1,4 +1,4 @@
-import { useRef, type KeyboardEvent, type ReactNode } from 'react'
+import { useRef, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
 import './Tabs.css'
 
 export type TabItem = { id: string; label: string; count?: number }
@@ -41,7 +41,12 @@ export function Tabs({
   }
 
   return (
-    <div aria-label={ariaLabel} className="rp-tabs" role="tablist">
+    <div
+      aria-label={ariaLabel}
+      className="rp-tabs"
+      role="tablist"
+      style={{ '--rp-tab-count': items.length } as CSSProperties}
+    >
       {items.map((item, index) => {
         const active = item.id === value
         return (

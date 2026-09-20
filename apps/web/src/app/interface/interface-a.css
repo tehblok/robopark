@@ -15,7 +15,7 @@
   .rp-shell__context { display: flex; gap: 12px; align-items: baseline; margin-inline-end: auto; min-width: 0; }
   .rp-shell__context span { color: var(--rp-text-muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rp-shell__topbar { min-height: 60px; padding: 8px 24px; gap: 16px; }
-  .rp-shell__content { padding: 24px; }
+  .rp-shell__content { padding: var(--rp-page-gutter); }
   .rp-page-layout { gap: 20px; }
   .rp-page-layout__header { gap: 16px; align-items: center; padding-block: 4px 16px; border-bottom: 1px solid var(--rp-border); }
   .rp-page-layout__title { font-size: clamp(24px, 2.2vw, 32px); letter-spacing: -.025em; line-height: 1.2; }
@@ -322,7 +322,7 @@
     .rp-shell__context { display: none; }
     .rp-shell__topbar { min-height: 60px; padding: 8px 12px; gap: 8px; }
     .rp-shell__park-brand { flex: 1; max-width: none; padding: 8px; min-height: 44px; }
-    .rp-shell__content { padding: 16px 12px calc(104px + env(safe-area-inset-bottom)); scroll-padding-bottom: calc(104px + env(safe-area-inset-bottom)); }
+    .rp-shell__content { padding: var(--rp-card-padding) var(--rp-page-gutter) calc(var(--rp-shell-mobile-nav-height) + var(--rp-space-4) + env(safe-area-inset-bottom)); scroll-padding-bottom: calc(var(--rp-shell-mobile-nav-height) + var(--rp-space-4) + env(safe-area-inset-bottom)); }
     .rp-shell__user { font-size: 14px; }
     .rp-shell__user > span { font-size: 14px; }
     .rp-shell__bottom-nav { padding-inline: 4px; }

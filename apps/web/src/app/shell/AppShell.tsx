@@ -548,6 +548,7 @@ export function AppShell() {
               aria-label={ru.appShell.mainNavigation}
               className="rp-shell__bottom-nav"
               data-item-count={primaryMobileItems.length + 1}
+              style={{ '--rp-mobile-item-count': primaryMobileItems.length + 1 } as CSSProperties}
             >
               {primaryMobileItems.map((item) => (
                 <NavigationLink

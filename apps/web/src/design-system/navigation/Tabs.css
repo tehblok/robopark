@@ -64,12 +64,15 @@
 
 @media (max-width: 899px) {
   .rp-tabs {
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(var(--rp-tab-count), minmax(0, 1fr));
     overflow-x: visible;
   }
 
   .rp-tabs__tab {
-    flex: 1 1 9rem;
+    flex: none;
     min-width: 0;
+    padding-inline: var(--rp-space-2);
+    white-space: normal;
   }
 }

@@ -465,8 +465,8 @@
   }
 
   .rp-task-first-shell__content {
-    padding-bottom: calc(var(--rp-shell-mobile-nav-height) + var(--rp-space-6) + env(safe-area-inset-bottom));
-    scroll-padding-bottom: calc(var(--rp-shell-mobile-nav-height) + var(--rp-space-6) + env(safe-area-inset-bottom));
+    padding-bottom: calc(var(--rp-shell-mobile-nav-height) + var(--rp-space-4) + env(safe-area-inset-bottom));
+    scroll-padding-bottom: calc(var(--rp-shell-mobile-nav-height) + var(--rp-space-4) + env(safe-area-inset-bottom));
   }
 
   .rp-task-first-shell .rp-shell__bottom-nav {
@@ -474,17 +474,13 @@
     border-top: 1px solid var(--rp-border);
     bottom: 0;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(var(--rp-mobile-item-count), minmax(0, 1fr));
     left: 0;
     padding: var(--rp-space-1) var(--rp-space-1)
       calc(var(--rp-space-1) + env(safe-area-inset-bottom));
     position: fixed;
     right: 0;
     z-index: 40;
-  }
-
-  .rp-task-first-shell .rp-shell__bottom-nav[data-item-count='4'] {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .rp-task-first-shell .rp-shell__mobile-link {

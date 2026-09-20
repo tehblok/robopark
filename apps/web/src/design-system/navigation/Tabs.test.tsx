@@ -35,6 +35,7 @@ describe('Tabs', () => {
     const tab = screen.getByRole('tab', { name: 'Обзор' })
     const panel = screen.getByRole('tabpanel')
     expect(tablist).toContainElement(tab)
+    expect(tablist).toHaveStyle({ '--rp-tab-count': '3' })
     expect(tab).toHaveAttribute('id', 'tab-overview')
     expect(tab).toHaveAttribute('aria-controls', 'panel-overview')
     expect(tab).toHaveAttribute('aria-selected', 'true')

@@ -77,6 +77,19 @@ for (const width of [320, 390, 412, 899, 1440]) for (const theme of ['light', 'd
       for (const label of await page.locator('.rp-shell__bottom-nav .rp-shell__nav-label:visible').all()) {
         expect(await label.evaluate(element => element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight)).toBe(true)
       }
+      const navigation = page.locator('.rp-shell__bottom-nav')
+      const navBox = await navigation.boundingBox()
+      const itemBoxes = await navigation.locator(':scope > a, :scope > button').evaluateAll(elements => elements.map(element => {
+        const rect = element.getBoundingClientRect()
+        return { left: rect.left, right: rect.right, width: rect.width }
+      }))
+      expect(navBox).toBeTruthy()
+      expect(itemBoxes.length).toBeGreaterThanOrEqual(4)
+      for (const item of itemBoxes.slice(1)) expect(Math.abs(item.width - itemBoxes[0].width)).toBeLessThanOrEqual(1)
+      expect(itemBoxes[0].left - navBox!.x).toBeLessThanOrEqual(8)
+      expect(navBox!.x + navBox!.width - itemBoxes.at(-1)!.right).toBeLessThanOrEqual(8)
+      const contentPaddingBottom = await shell.locator('[data-shell-zone="content"]').evaluate(element => Number.parseFloat(getComputedStyle(element).paddingBottom))
+      expect(contentPaddingBottom).toBeGreaterThanOrEqual(88)
     }
     await page.screenshot({ path: testInfo.outputPath(`${mode === 'Новый А' ? 'a' : 'classic'}-shell.png`), fullPage: true })
   })
