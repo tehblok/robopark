@@ -1,7 +1,7 @@
 import type { AppRouteId, UserRole } from './routeManifest'
 
 export type CoverageAudience = UserRole | 'restricted' | 'guest'
-export type NestedStateKind = 'tab' | 'dialog' | 'form' | 'file' | 'loading' | 'empty' | 'error' | 'stale' | 'denied'
+export type NestedStateKind = 'view' | 'tab' | 'dialog' | 'form' | 'file' | 'loading' | 'empty' | 'error' | 'stale' | 'denied'
 
 export type RouteCoverageState = { id: string; kind: NestedStateKind; testId: string }
 export type RouteCoverageAction = {
@@ -78,9 +78,9 @@ export const ROUTE_COVERAGE_MANIFEST: readonly RouteCoverageItem[] = [
   route('mechanic-no-park', 'MechanicNoPark', 'MechanicNoPark', ['mechanic'], nested('mechanic-no-park', ['empty', 'empty'], ['denied', 'denied'])),
 
   route('overview', 'OverviewPage.Classic', 'OverviewPage.TaskFirst', ALL_ROLES,
-    asyncStates('overview', ['attention-queue', 'tab'], ['quick-actions', 'dialog'])),
+    asyncStates('overview', ['attention-queue', 'view'], ['quick-actions', 'view'])),
   route('operator-parks', 'OperatorParks.Classic', 'OperatorParks.TaskFirst', ['operator'],
-    asyncStates('operator-parks', ['current-parks', 'tab'], ['request-park', 'dialog'], ['request', 'form']), [
+    asyncStates('operator-parks', ['current-parks', 'view'], ['request-park', 'dialog'], ['request', 'form']), [
       action('request-park', ['operator'], 'apps/api/tests/test_park_requests.py::test_operator_creates_and_lists_own_request'),
     ]),
   route('work', 'IssueWorkbench.ClassicQueue', 'IssueWorkbench.TaskFirstQueue', ALL_ROLES,
