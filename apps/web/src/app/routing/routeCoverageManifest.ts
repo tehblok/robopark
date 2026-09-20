@@ -8,6 +8,11 @@ export type RouteCoverageAction = {
   id: string
   roles: readonly CoverageAudience[]
   apiPermissionAssertions: readonly string[]
+  permissionEvidence: readonly {
+    role: CoverageAudience
+    outcome: 'allow' | 'deny'
+    apiPermissionAssertion: string
+  }[]
 }
 export type RouteCoverageItem = {
   routeId: AppRouteId
@@ -36,7 +41,9 @@ function asyncStates(routeId: AppRouteId, ...items: ReadonlyArray<readonly [stri
   )
 }
 
-function action(id: string, roles: readonly CoverageAudience[], ...apiPermissionAssertions: string[]): RouteCoverageAction {
+type PendingAction = Omit<RouteCoverageAction, 'permissionEvidence'>
+
+function action(id: string, roles: readonly CoverageAudience[], ...apiPermissionAssertions: string[]): PendingAction {
   return { id, roles, apiPermissionAssertions }
 }
 
@@ -46,9 +53,22 @@ function route(
   interfaceAComponent: string,
   roles: readonly CoverageAudience[],
   states: readonly RouteCoverageState[] = [],
-  actions: readonly RouteCoverageAction[] = [],
+  actions: readonly PendingAction[] = [],
 ): RouteCoverageItem {
-  return { routeId, classicComponent, interfaceAComponent, interfaceAReviewed: true, roles, states, actions }
+  const matrixRoles = roles.includes('guest') ? roles : ALL_ROLES
+  return {
+    routeId, classicComponent, interfaceAComponent, interfaceAReviewed: true, roles, states,
+    actions: actions.map(item => ({
+      ...item,
+      permissionEvidence: matrixRoles.map(role => ({
+        role,
+        outcome: item.roles.includes(role) ? 'allow' as const : 'deny' as const,
+        apiPermissionAssertion: item.id === 'stock-settings' || item.id === 'catalog-delete-or-merge'
+          ? `apps/api/tests/test_inventory_catalog.py::test_inventory_action_role_matrix[${item.id}-${role}-${item.roles.includes(role) ? 'allow' : 'deny'}]`
+          : item.apiPermissionAssertions[0],
+      })),
+    })),
+  }
 }
 
 const publicRoles = ['guest', ...ALL_ROLES] as const
@@ -103,9 +123,9 @@ export const ROUTE_COVERAGE_MANIFEST: readonly RouteCoverageItem[] = [
 
   route('inventory', 'InventoryPage.Classic', 'InventoryPage.TaskFirst', INVENTORY_ROLES,
     asyncStates('inventory', ['parts', 'tab'], ['receipts', 'tab'], ['counts', 'tab'], ['manage', 'tab'], ['export', 'tab'], ['stock', 'form'], ['receipt', 'form'], ['count', 'form'], ['labels', 'file'], ['post-confirmation', 'dialog']), [
-      action('stock-settings', ['royal', 'admin', 'mechanic', 'restricted'], inventoryStockPermission),
-      action('receive-and-inventory', ['royal', 'admin', 'mechanic', 'restricted'], inventoryDocumentPermission),
-      action('labels-and-export', ['royal', 'admin', 'mechanic', 'restricted'], inventoryExportPermission),
+      action('stock-settings', ['royal', 'admin', 'operator', 'mechanic', 'restricted'], inventoryStockPermission),
+      action('receive-and-inventory', ['royal', 'admin', 'operator', 'mechanic', 'restricted'], inventoryDocumentPermission),
+      action('labels-and-export', ['royal', 'admin', 'operator', 'mechanic', 'restricted'], inventoryExportPermission),
       action('catalog-delete-or-merge', MANAGER_ROLES, 'apps/api/tests/test_inventory_catalog.py::test_merge_transfers_stock_and_movement_history_and_archives_source'),
     ]),
   route('reports', 'Reports.ClassicList', 'Reports.TaskFirstList', ALL_ROLES,

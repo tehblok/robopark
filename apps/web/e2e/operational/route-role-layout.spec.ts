@@ -8,6 +8,7 @@ import { assertResponsiveContracts, openRouteFixture } from './routeFixtures'
 import { selectInterface } from '../support/interfaceMode'
 
 const widths = [320, 390, 412, 899, 1440] as const
+test.describe.configure({ mode: 'parallel' })
 const restrictedUser: User = {
   id: 160,
   username: 'field-lead-e2e',

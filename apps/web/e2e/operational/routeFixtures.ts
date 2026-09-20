@@ -93,7 +93,7 @@ function routeReadyMarker(page: Page, routeId: AppRouteId) {
     case 'work': return page.locator('.rp-work-entities').first()
     case 'work-issue': return page.getByRole('heading', { name: 'Задача ROBOPARK-42', exact: true })
     case 'robots': return page.locator('.rp-robots-search-panel')
-    case 'robot-detail': return page.getByRole('heading', { name: 'Робот 447', exact: true })
+    case 'robot-detail': return page.getByRole('heading', { name: /^\u0420\u043e\u0431\u043e\u0442 (?:447|YASADR00000000447)$/ })
     case 'robot-check': return page.getByRole('tabpanel', { name: 'Состояние' })
     case 'legacy-robot-check': return page.locator('.rp-robots-search-panel')
     case 'inventory': return page.getByText('ABC-1', { exact: true })

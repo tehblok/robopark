@@ -14,6 +14,8 @@ from robopark_api.models import (
     InventoryMovement,
     InventoryParkStock,
     Park,
+    Permission,
+    Role,
     User,
     UserPark,
 )
@@ -58,6 +60,74 @@ def _catalog(db, actor, *, name="Тяга", article="ABC-01"):
     db.add(part)
     db.commit()
     return component, part
+
+
+@pytest.mark.parametrize(
+    ("action", "slug", "expected"),
+    [
+        pytest.param("stock-settings", "royal", 200, id="stock-settings-royal-allow"),
+        pytest.param("stock-settings", "admin", 200, id="stock-settings-admin-allow"),
+        pytest.param("stock-settings", "operator", 200, id="stock-settings-operator-allow"),
+        pytest.param("stock-settings", "mechanic", 200, id="stock-settings-mechanic-allow"),
+        pytest.param("stock-settings", "driver", 403, id="stock-settings-driver-deny"),
+        pytest.param("stock-settings", "restricted", 200, id="stock-settings-restricted-allow"),
+        pytest.param("catalog-delete-or-merge", "royal", 200, id="catalog-delete-or-merge-royal-allow"),
+        pytest.param("catalog-delete-or-merge", "admin", 200, id="catalog-delete-or-merge-admin-allow"),
+        pytest.param("catalog-delete-or-merge", "operator", 403, id="catalog-delete-or-merge-operator-deny"),
+        pytest.param("catalog-delete-or-merge", "mechanic", 403, id="catalog-delete-or-merge-mechanic-deny"),
+        pytest.param("catalog-delete-or-merge", "driver", 403, id="catalog-delete-or-merge-driver-deny"),
+        pytest.param("catalog-delete-or-merge", "restricted", 200, id="catalog-delete-or-merge-restricted-allow"),
+    ],
+)
+def test_inventory_action_role_matrix(
+    client, db_session, seed_park_with_tracker, action, slug, expected
+):
+    if slug == "restricted":
+        permission_keys = {
+            "nav.inventory",
+            "inventory.stock.manage" if action == "stock-settings" else "inventory.catalog.manage",
+        }
+        role = Role(
+            slug=f"restricted_{action}",
+            name=f"Restricted {action}",
+            permissions=list(
+                db_session.scalars(select(Permission).where(Permission.key.in_(permission_keys)))
+            ),
+        )
+        db_session.add(role)
+        db_session.flush()
+        actor = User(
+            username=f"matrix-{action}-restricted",
+            password_hash=hash_password("secret"),
+            role_id=role.id,
+            access_status="approved",
+            is_active=True,
+        )
+        db_session.add(actor)
+        db_session.flush()
+        db_session.add(UserPark(user_id=actor.id, park_id=seed_park_with_tracker.id))
+        db_session.commit()
+    else:
+        actor = _user(
+            db_session,
+            slug,
+            f"matrix-{action}-{slug}",
+            [seed_park_with_tracker],
+        )
+    _, part = _catalog(db_session, actor, article=f"MATRIX-{action}-{slug}")
+    login_as(client, actor.username, "secret")
+
+    if action == "stock-settings":
+        response = client.put(
+            f"/inventory/parks/{seed_park_with_tracker.id}/stocks/{part.id}",
+            json={"minimum_quantity": 2, "location": "A-1", "is_active": True},
+        )
+    else:
+        response = client.patch(
+            f"/inventory/catalog/parts/{part.id}", json={"is_active": False}
+        )
+
+    assert response.status_code == expected, response.text
 
 
 def test_catalog_search_exposes_exact_contract_zero_stock_and_mechanic_scope(
