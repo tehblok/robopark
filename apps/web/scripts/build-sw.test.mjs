@@ -1,10 +1,44 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 import { buildServiceWorker } from './build-sw.mjs'
+
+const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+test('regular browser discovery excludes the opt-in soak suite', () => {
+  const result = spawnSync('npx', ['playwright', 'test', '--list', '--project=chromium'], {
+    cwd: webRoot,
+    encoding: 'utf8',
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.doesNotMatch(result.stdout, /soak\.spec\.ts/)
+})
+
+test('soak command refuses to start without explicit duration and output', () => {
+  const result = spawnSync('bash', ['scripts/playwright-linux.sh', 'soak'], {
+    cwd: webRoot,
+    encoding: 'utf8',
+    env: { ...process.env, ROBOPARK_SOAK_DURATION_SECONDS: '', ROBOPARK_SOAK_OUTPUT: '' },
+  })
+  assert.equal(result.status, 2)
+  assert.match(result.stderr, /ROBOPARK_SOAK_DURATION_SECONDS/)
+  assert.match(result.stderr, /ROBOPARK_SOAK_OUTPUT/)
+})
+
+test('production PWA discovery is isolated from mocked browser journeys', () => {
+  const result = spawnSync('npx', ['playwright', 'test', '--list', '--config=playwright.pwa.config.ts'], {
+    cwd: webRoot,
+    encoding: 'utf8',
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /pwa-production\.spec\.ts/)
+  assert.doesNotMatch(result.stdout, /operational\/|pwa-offline\.spec\.ts/)
+})
 
 test('worker version follows built bytes and requires all precache files', async () => {
   const dist = await mkdtemp(join(tmpdir(), 'robopark-sw-'))

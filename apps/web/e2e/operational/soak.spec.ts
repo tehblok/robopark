@@ -11,8 +11,10 @@ type SoakCounters = {
 }
 
 test('repeatable UI soak sample covers navigation, modes, task, robot, photo, camera, cache and background work', async ({ page }) => {
-  const durationSeconds = Number(process.env.ROBOPARK_SOAK_DURATION_SECONDS ?? '2')
+  const durationInput = process.env.ROBOPARK_SOAK_DURATION_SECONDS
+  const durationSeconds = Number(durationInput)
   const output = process.env.ROBOPARK_SOAK_OUTPUT
+  expect(durationInput).toBeTruthy()
   expect(Number.isFinite(durationSeconds) && durationSeconds > 0).toBe(true)
   expect(output).toBeTruthy()
   test.setTimeout((durationSeconds + 60) * 1000)

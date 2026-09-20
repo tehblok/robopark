@@ -3,9 +3,30 @@ set -euo pipefail
 
 mode="${1:-test}"
 shift || true
-if [[ "$mode" != "test" && "$mode" != "update" ]]; then
-  echo "usage: $0 <test|update> [playwright arguments...]" >&2
+if [[ "$mode" != "test" && "$mode" != "update" && "$mode" != "pwa" && "$mode" != "soak" ]]; then
+  echo "usage: $0 <test|update|pwa|soak> [playwright arguments...]" >&2
   exit 2
+fi
+
+soak_output=""
+if [[ "$mode" == "soak" ]]; then
+  if [[ -z "${ROBOPARK_SOAK_DURATION_SECONDS:-}" || -z "${ROBOPARK_SOAK_OUTPUT:-}" ]]; then
+    echo "ROBOPARK_SOAK_DURATION_SECONDS and ROBOPARK_SOAK_OUTPUT are required for soak" >&2
+    exit 2
+  fi
+  if [[ ! "${ROBOPARK_SOAK_DURATION_SECONDS}" =~ ^[0-9]+([.][0-9]+)?$ ]] || [[ "${ROBOPARK_SOAK_DURATION_SECONDS}" == "0" ]]; then
+    echo "ROBOPARK_SOAK_DURATION_SECONDS must be a positive number" >&2
+    exit 2
+  fi
+  soak_output="${ROBOPARK_SOAK_OUTPUT}"
+  if [[ "$soak_output" == /* || "$soak_output" == ".." || "$soak_output" == ../* || "$soak_output" == */../* ]]; then
+    echo "ROBOPARK_SOAK_OUTPUT must be a relative path inside apps/web" >&2
+    exit 2
+  fi
+  if [[ -e "$soak_output" ]]; then
+    echo "ROBOPARK_SOAK_OUTPUT already exists: $soak_output" >&2
+    exit 2
+  fi
 fi
 
 command -v docker >/dev/null 2>&1 || {
@@ -47,10 +68,36 @@ docker run --rm --ipc=host \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp/robopark-playwright-home \
   -e UV_CACHE_DIR=/tmp/robopark-uv-cache \
+  -e ROBOPARK_PLAYWRIGHT_MODE="$mode" \
+  -e ROBOPARK_SOAK_DURATION_SECONDS="${ROBOPARK_SOAK_DURATION_SECONDS:-}" \
+  -e ROBOPARK_SOAK_OUTPUT="${soak_output:+/work/apps/web/$soak_output}" \
   -v "$visual_workspace:/work" \
   -w /work/apps/api \
   "$image" \
-  bash -lc 'uv sync --frozen --extra dev && cd ../web && npm ci && exec npx playwright test "$@"' robopark-playwright "${playwright_args[@]}"
+  bash -lc '
+    uv sync --frozen --extra dev
+    cd ../web
+    npm ci
+    case "$ROBOPARK_PLAYWRIGHT_MODE" in
+      pwa)
+        npm run build
+        exec npx playwright test --config=playwright.pwa.config.ts "$@"
+        ;;
+      soak)
+        export ROBOPARK_E2E_SUITE=soak
+        mkdir -p "$(dirname "$ROBOPARK_SOAK_OUTPUT")"
+        exec npx playwright test "$@"
+        ;;
+      *)
+        exec npx playwright test "$@"
+        ;;
+    esac
+  ' robopark-playwright "${playwright_args[@]}"
+
+if [[ "$mode" == "soak" ]]; then
+  mkdir -p "$(dirname "$soak_output")"
+  cp "$visual_workspace/apps/web/$soak_output" "$soak_output"
+fi
 
 if [[ "$mode" == "update" ]]; then
   rsync -a --prune-empty-dirs \

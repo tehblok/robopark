@@ -15,7 +15,10 @@
     "test:e2e": "playwright test",
     "test:e2e:update": "playwright test --update-snapshots",
     "test:e2e:linux": "bash scripts/playwright-linux.sh test",
-    "test:e2e:update:linux": "bash scripts/playwright-linux.sh update"
+    "test:e2e:update:linux": "bash scripts/playwright-linux.sh update",
+    "test:e2e:pwa": "npm run build && playwright test --config=playwright.pwa.config.ts",
+    "test:e2e:pwa:linux": "bash scripts/playwright-linux.sh pwa",
+    "test:e2e:soak": "bash scripts/playwright-linux.sh soak"
   },
   "dependencies": {
     "@fontsource-variable/manrope": "^5.3.0",

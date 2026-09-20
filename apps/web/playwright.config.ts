@@ -4,10 +4,12 @@ import { fileURLToPath } from 'node:url'
 const port = Number(process.env.PLAYWRIGHT_PORT ?? 4173)
 const baseURL = `http://127.0.0.1:${port}`
 const webRoot = fileURLToPath(new URL('.', import.meta.url))
+const soakOnly = process.env.ROBOPARK_E2E_SUITE === 'soak'
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: '**/*.spec.ts',
+  testMatch: soakOnly ? '**/soak.spec.ts' : '**/*.spec.ts',
+  testIgnore: soakOnly ? [] : ['**/soak.spec.ts'],
   retries: process.env.CI ? 2 : 0,
   expect: {
     toHaveScreenshot: {
