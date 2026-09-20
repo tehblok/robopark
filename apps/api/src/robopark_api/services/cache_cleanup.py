@@ -13,7 +13,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
@@ -177,19 +177,35 @@ def prune_auth_throttle_states(
     limit: int = _RETENTION_BATCH_SIZE,
 ) -> int:
     """Delete at most one bounded batch of expired shared throttle rows."""
-    rows = list(
+    key_hashes = list(
         db.scalars(
-            select(AuthThrottleState)
+            select(AuthThrottleState.key_hash)
             .where(AuthThrottleState.expires_at <= now)
             .order_by(AuthThrottleState.expires_at, AuthThrottleState.key_hash)
             .limit(max(0, limit))
         ).all()
     )
-    for row in rows:
-        db.delete(row)
-    if rows:
+    removed = _delete_expired_auth_throttle_keys(db, key_hashes=key_hashes, cutoff=now)
+    if key_hashes:
         db.commit()
-    return len(rows)
+    return removed
+
+
+def _delete_expired_auth_throttle_keys(
+    db: Session, *, key_hashes: list[str], cutoff: datetime
+) -> int:
+    """Delete selected rows only when they are still expired at write time."""
+    if not key_hashes:
+        return 0
+    result = db.execute(
+        delete(AuthThrottleState)
+        .where(
+            AuthThrottleState.key_hash.in_(key_hashes),
+            AuthThrottleState.expires_at <= cutoff,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return int(result.rowcount or 0)
 
 
 def cleanup_confirmed_tracker_copies(

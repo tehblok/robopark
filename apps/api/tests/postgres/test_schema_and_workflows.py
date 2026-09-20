@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from sqlalchemy.pool import QueuePool
 from robopark_api.collaboration_models import TrackerPresence
 from robopark_api.db import configure_engine
 from robopark_api.models import (
+    AuthThrottleState,
     Base,
     InventoryCatalogComponent,
     InventoryCatalogPart,
@@ -29,6 +32,7 @@ from robopark_api.models import (
 )
 from robopark_api.routers.tracker_collaboration import _presence_insert
 from robopark_api.services import inventory_exports, inventory_stock, task_timeline
+from robopark_api.services.login_throttle import LoginThrottle
 from robopark_api.services.ops.snapshot import restore_snapshot_tree
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
 from robopark_api.task_workflow_models import ReliableAction, TaskMessage
@@ -354,6 +358,37 @@ def test_tracker_presence_uses_postgresql_conflict_update(migrated_engine: Engin
         rows = list(db.scalars(select(TrackerPresence).where(TrackerPresence.issue_key == "PG-1")))
         assert len(rows) == 1
         assert rows[0].expires_at == 20.0
+
+
+def test_auth_throttle_concurrent_failures_lock_once_across_postgresql_workers(
+    migrated_engine: Engine,
+) -> None:
+    factory = sessionmaker(bind=migrated_engine, future=True)
+    throttle = LoginThrottle(
+        session_factory=factory,
+        max_attempts=8,
+        window_seconds=60,
+        lockout_seconds=300,
+    )
+    key = "login|concurrent-user|192.0.2.44"
+    key_hash = sha256(key.encode("utf-8")).hexdigest()
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    with factory() as db:
+        db.query(AuthThrottleState).filter_by(key_hash=key_hash).delete()
+        db.commit()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda _index: throttle.register_failure(key, now=now), range(8)))
+
+    assert throttle.retry_after(key, now=now) == 300
+    with factory() as db:
+        row = db.get(AuthThrottleState, key_hash)
+        assert row is not None
+        assert row.failure_count == 0
+        assert row.locked_until == now + timedelta(seconds=300)
+        assert row.expires_at == now + timedelta(seconds=300)
+        db.delete(row)
+        db.commit()
 
 
 def test_export_session_keeps_a_repeatable_read_snapshot(migrated_engine: Engine) -> None:

@@ -151,6 +151,38 @@ def test_cleanup_bounds_expired_auth_throttle_rows(db_session):
     assert db_session.scalar(select(func.count()).select_from(AuthThrottleState)) == 1
 
 
+def test_cleanup_does_not_delete_auth_throttle_row_renewed_after_selection(
+    db_session, db_engine
+):
+    cutoff = datetime(2026, 9, 20, tzinfo=UTC)
+    key_hash = "a" * 64
+    db_session.add(
+        AuthThrottleState(
+            key_hash=key_hash,
+            failure_count=1,
+            window_started_at=cutoff - timedelta(minutes=2),
+            expires_at=cutoff - timedelta(minutes=1),
+        )
+    )
+    db_session.commit()
+
+    # Cleanup selected this key while it was stale. An auth worker renews it
+    # before the DELETE reaches the database.
+    with Session(db_engine) as writer:
+        row = writer.get(AuthThrottleState, key_hash)
+        row.expires_at = cutoff + timedelta(minutes=5)
+        writer.commit()
+
+    assert (
+        cache_cleanup._delete_expired_auth_throttle_keys(
+            db_session, key_hashes=[key_hash], cutoff=cutoff
+        )
+        == 0
+    )
+    db_session.expire_all()
+    assert db_session.get(AuthThrottleState, key_hash) is not None
+
+
 def test_deleted_report_file_cleanup_only_removes_old_quarantine_files(tmp_path, monkeypatch):
     from robopark_api.services import report_attachments
 
