@@ -1,5 +1,6 @@
+import type { ComponentProps } from 'react'
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { RepairSla } from './RepairSla'
 
 describe('RepairSla', () => {
@@ -26,16 +27,10 @@ describe('RepairSla', () => {
     interval.mockRestore()
   })
 
-  it('keeps one render timestamp until its owner provides a new one', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime('2026-09-15T10:30:00Z')
-    const view = render(<RepairSla deadline="2026-09-15T12:00:00Z" source="status_history" />)
-    expect(screen.getByRole('status')).toHaveTextContent('Осталось 1.5 ч')
-
-    vi.setSystemTime('2026-09-15T11:30:00Z')
-    view.rerender(<RepairSla deadline="2026-09-15T12:00:00Z" source="status_history" />)
-
-    expect(screen.getByRole('status')).toHaveTextContent('Осталось 1.5 ч')
-    vi.useRealTimers()
+  it('requires one controlled clock for every mounted SLA', () => {
+    expectTypeOf<ComponentProps<typeof RepairSla>['now']>().toEqualTypeOf<number>()
+    const now = Date.parse('2026-09-15T10:30:00Z')
+    render(<><RepairSla deadline="2026-09-15T12:00:00Z" now={now} /><RepairSla deadline="2026-09-15T12:00:00Z" now={now} /></>)
+    expect(screen.getAllByRole('status').map(item => item.textContent)).toEqual(['Осталось 1.5 ч', 'Осталось 1.5 ч'])
   })
 })
