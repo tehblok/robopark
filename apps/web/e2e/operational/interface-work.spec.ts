@@ -87,7 +87,8 @@ test('A footer approval locks synchronously, reports 503 and recovers without an
   await expect(page).toHaveURL(/\/work\?park=7/)
 })
 
-test('A parts step opens the existing disclosure and focuses its mounted content', async ({ page }) => {
+test('A parts step focuses and reveals existing content when the disclosure is closed or already open', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
   await installOperational(page, { issue: repair })
   await page.goto('/work/ROBOPARK-42?park=7')
   await selectInterface(page, 'Новый А')
@@ -97,6 +98,15 @@ test('A parts step opens the existing disclosure and focuses its mounted content
   await expect(disclosure).toHaveAttribute('aria-expanded', 'true')
   await expect(page.locator('#parts')).toBeVisible()
   await expect(page.locator('#parts')).toBeFocused()
+
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+  const partsStep = page.getByRole('button', { name: 'Списать или заказать' })
+  await partsStep.click()
+  await expect(page.locator('#parts')).toBeFocused()
+  await expect.poll(() => page.locator('#parts').evaluate(element => {
+    const rect = element.getBoundingClientRect()
+    return rect.top < innerHeight && rect.bottom > 0
+  })).toBe(true)
 })
 
 test('denied robot check does not reveal readings after changing interface', async ({ page }) => {

@@ -91,3 +91,18 @@ Relevant API: 165 passed
 Relevant Chromium E2E + visual matrix: 66 passed
 Build/nav/contrast/lint: exit 0 (existing lint warnings only)
 ```
+
+## Review round 3
+
+- Replaced the one-shot boolean focus flag with a monotonic parts-focus request token. Every `Запчасти` step activation now schedules the layout effect even when the controlled disclosure was already open; after ensuring the existing panel is mounted, the effect focuses `#parts` and scrolls it into view.
+- The 390 px browser regression covers both states in one flow: closed → open/mount/focus, then scroll away while still open → activate the sequence again → focus returns to `#parts` and its bounds intersect the viewport.
+
+Round-3 RED/GREEN and final evidence:
+
+```text
+Focused 390 px RED: repeated activation left #parts inactive
+Focused 390 px GREEN: 1 passed, repeated focus and viewport intersection verified
+Full web: 151 files, 2095 tests passed
+Relevant Chromium E2E + visual matrix: 66 passed
+Build/nav/contrast/lint: exit 0 (existing lint warnings only)
+```

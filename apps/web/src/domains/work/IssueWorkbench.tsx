@@ -522,21 +522,20 @@ export function TaskController({
   const [returnReviewOpen, setReturnReviewOpen] = useState(false)
   const [hideOpen, setHideOpen] = useState(false)
   const [partsOpen, setPartsOpen] = useState(false)
+  const [partsFocusRequest, setPartsFocusRequest] = useState(0)
   const partsRef = useRef<HTMLDivElement>(null)
-  const focusParts = useRef(false)
   const [taskActionHost, setTaskActionHost] = useState<HTMLElement | null>(null)
   const [robotSnapshot, setRobotSnapshot] = useState<EmergencySnapshot | null>(null)
   const [hideReason, setHideReason] = useState('')
   const [taskControlBusy, setTaskControlBusy] = useState(false)
   const [taskControlMessage, setTaskControlMessage] = useState('')
   const [taskControlError, setTaskControlError] = useState('')
-  useEffect(() => { setPartsOpen(false); focusParts.current = false }, [issueKey])
+  useEffect(() => { setPartsOpen(false); setPartsFocusRequest(0) }, [issueKey])
   useLayoutEffect(() => {
-    if (!partsOpen || !focusParts.current || !partsRef.current) return
-    focusParts.current = false
+    if (!partsOpen || partsFocusRequest === 0 || !partsRef.current) return
     partsRef.current.focus({ preventScroll: true })
     partsRef.current.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
-  }, [partsOpen])
+  }, [partsFocusRequest, partsOpen])
   const location = useLocation()
   const [taskView, setTaskView] = useState<'queue' | 'mine'>(() =>
     user.role === 'mechanic' && new URLSearchParams(location.search).get('view') === 'mine' ? 'mine' : 'queue')
@@ -917,8 +916,8 @@ export function TaskController({
                       onChat={() => { setTaskFocus('chat'); changeTab('task') }} /> : null}>
                     {detail.data?.workflow ? <>
                       {taskFirst ? <TaskRepairSequence canCheck={mechanicCanWork} onCheck={() => changeTab('check')} onParts={() => {
-                        focusParts.current = true
                         setPartsOpen(true)
+                        setPartsFocusRequest(value => value + 1)
                       }} /> : null}
                       {manager ? <section aria-label="Управление задачей" className="issue-section">
                         {detail.data.workflow.hidden ? <>
