@@ -91,6 +91,15 @@ export type User = {
   parks: Park[]
 }
 
+export type ScheduleEntry = {
+  id: string; owner_user_id: number; park_id: number; kind: 'shift' | 'vacation' | 'sick'
+  start_at: string; end_at: string; source: string; series_id: string | null
+  created_by_user_id: number; updated_by_user_id: number; created_at: string; updated_at: string
+  warnings: string[]
+}
+export type ScheduleCreate = { park_id: number; kind: ScheduleEntry['kind']; start_at: string; end_at: string; owner_user_id?: number }
+export type NotificationEvent = { id: string; event_type: string; park_id: number | null; protected_text: string; read_at: string | null; created_at: string }
+
 export type RobotRegistryRow = {
   vin: string; short_number: string; park_ids: number[]; task_count: number; task_keys: string[]; issue_keys: string[]
   state: 'online' | 'offline' | 'unknown'; error_count: number | null
@@ -1252,6 +1261,15 @@ async function conditionalChangeRevision(scope: string): Promise<{ revision: num
 }
 
 export const api = {
+  schedules: (parkId?: number) => request<ScheduleEntry[]>(parkId == null ? '/schedules' : `/schedules?park_id=${parkId}`),
+  scheduleCreate: (body: ScheduleCreate) => request<ScheduleEntry>('/schedules', { method: 'POST', body: JSON.stringify(body) }),
+  scheduleUpdate: (id: string, body: Pick<ScheduleCreate, 'kind' | 'start_at' | 'end_at'>) => request<ScheduleEntry>(`/schedules/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  scheduleDelete: (id: string) => request<void>(`/schedules/${id}`, { method: 'DELETE' }),
+  scheduleBulk: (body: ScheduleCreate & { owner_user_ids: number[]; repeat_count: number; repeat_every_days: number }) => request<ScheduleEntry[]>('/schedules/bulk', { method: 'POST', body: JSON.stringify(body) }),
+  notificationInbox: () => request<NotificationEvent[]>('/push/inbox'),
+  notificationRead: (id: string) => request<{ ok: boolean }>(`/push/inbox/${id}/read`, { method: 'POST' }),
+  pushSubscribe: (body: { endpoint: string; p256dh: string; auth: string }) => request<{ id: string; endpoint_hash: string }>('/push/subscriptions', { method: 'POST', body: JSON.stringify(body) }),
+  pushPreferences: (categories: string[], system_enabled = true) => request<{ categories: string[]; system_enabled: boolean }>('/push/preferences', { method: 'PUT', body: JSON.stringify({ categories, system_enabled }) }),
   syncBatch: (body: SyncBatchRequest, signal?: AbortSignal) => request<SyncBatchResponse>('/sync/batch', { method: 'POST', body: JSON.stringify(body), signal }),
   changeRevision: conditionalChangeRevision,
   emergencyReadings: async (signal?: AbortSignal): Promise<EmergencyReadingCatalog> => {

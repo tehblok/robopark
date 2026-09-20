@@ -93,6 +93,7 @@ const EXECUTABLE: Partial<Record<AppRouteId, Record<string, ExecutableState>>> =
   },
   campaigns: { 'campaign-list': visible('h2:has-text("Осенняя сервисная кампания")', 'The campaign list fixture renders its campaign card.', { actorRole: 'mechanic' }) },
   'campaign-detail': { open: visible('text=ROBOPARK-42', 'The campaign detail fixture renders the open Tracker ticket.', { actorRole: 'mechanic' }) },
+  schedule: { week: visible('button:has-text("Неделя")', 'The schedule renders the week selector.', { actorRole: 'mechanic' }) },
   analytics: {
     summary: visible('.rp-analytics-park', 'The operator analytics fixture renders the park summary.', { actorRole: 'operator' }),
     'park-comparison': visible('[aria-label="Параметры аналитики"]', 'The analytics route renders deterministic comparison controls.', { actorRole: 'operator' }),
@@ -120,7 +121,7 @@ const OWNER_ACTOR: Partial<Record<AppRouteId, CoverageAudience>> = {
   overview: 'operator', 'operator-parks': 'operator', work: 'mechanic', 'work-issue': 'mechanic',
   robots: 'mechanic', 'robot-detail': 'mechanic', 'robot-check': 'mechanic', 'legacy-robot-check': 'mechanic',
   inventory: 'mechanic', reports: 'mechanic', 'reports-new': 'mechanic', 'report-detail': 'operator',
-  campaigns: 'royal', 'campaign-detail': 'royal', analytics: 'operator',
+  campaigns: 'royal', 'campaign-detail': 'royal', schedule: 'mechanic', analytics: 'operator',
   admin: 'royal', 'admin-settings': 'royal', 'admin-users': 'royal', 'admin-roles': 'royal',
   'admin-tracker': 'royal', 'admin-robot-check': 'royal',
 }
@@ -151,6 +152,7 @@ const ROUTE_ASYNC_CONTRACTS: Partial<Record<AppRouteId, RouteAsyncContract>> = {
   'report-detail': { method: 'GET', path: '/api/reports/1', emptyBody: null, protectedSelector: 'text=\u0420\u043e\u0431\u043e\u0442 \u0442\u0440\u0435\u0431\u0443\u0435\u0442 \u043e\u0441\u043c\u043e\u0442\u0440\u0430.' },
   campaigns: { method: 'GET', path: '/api/campaigns', emptyBody: [], protectedSelector: 'h2:has-text("\u041e\u0441\u0435\u043d\u043d\u044f\u044f \u0441\u0435\u0440\u0432\u0438\u0441\u043d\u0430\u044f \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u044f")' },
   'campaign-detail': { method: 'GET', path: '/api/campaigns/4', emptyBody: null, protectedSelector: 'text=ROBOPARK-42' },
+  schedule: { method: 'GET', path: '/api/schedules', emptyBody: [], protectedSelector: 'h1:has-text("График")' },
   analytics: { method: 'GET', path: '/api/analytics', emptyBody: [], protectedSelector: '.rp-analytics-park' },
   admin: { method: 'GET', path: '/api/admin/users', emptyBody: [], protectedSelector: 'a[href^="/admin/users"]' },
   'admin-settings': { method: 'GET', path: '/api/admin/settings/integrations', emptyBody: { tracker_token_masked: null, tracker_token_updated_at: null, emergency_cookie_masked: null, emergency_cookie_updated_at: null, emergency_cookie_valid: null, emergency_cookie_status: null, emergency_cookie_checked_at: null, emergency_cookie_checked_robot: null }, protectedSelector: 'dt:text-is("Tracker OAuth")' },
@@ -161,6 +163,12 @@ const ROUTE_ASYNC_CONTRACTS: Partial<Record<AppRouteId, RouteAsyncContract>> = {
 }
 
 const TARGETS: Partial<Record<AppRouteId, Record<string, Omit<OwnerStateDriver, 'stateKey' | 'stateKind'>>>> = {
+  schedule: {
+    week: { action: 'button', targetSelector: 'button:has-text("Неделя")', expectedSelector: '.rp-schedule__list[data-view="week"]' },
+    month: { action: 'button', targetSelector: 'button:has-text("Месяц")', expectedSelector: '.rp-schedule__list[data-view="month"]' },
+    period: { action: 'form', targetSelector: 'button:has-text("Добавить период")', expectedSelector: '.rp-schedule__editor', triggerSelector: 'button:has-text("Добавить период")', fieldSelector: 'input[aria-label="Начало"]', fieldValue: '2026-09-21T09:00' },
+    notifications: { action: 'assert', targetSelector: 'h2:has-text("Уведомления")', expectedSelector: 'h2:has-text("Уведомления")' },
+  },
   login: { unauthorized: { action: 'assert', targetSelector: 'form.rp-auth__card', expectedSelector: 'form.rp-auth__card' } },
   register: { pending: { action: 'assert', targetSelector: 'form.rp-auth__card', expectedSelector: 'form.rp-auth__card' } },
   'change-password': {

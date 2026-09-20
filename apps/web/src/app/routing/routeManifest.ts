@@ -14,7 +14,7 @@ export type AppRouteId =
   | 'overview' | 'operator-parks' | 'work' | 'robots' | 'robot-check'
   | 'work-issue' | 'robot-detail' | 'legacy-robot-check'
   | 'campaigns' | 'campaign-detail'
-  | 'inventory'
+  | 'inventory' | 'schedule'
   | 'analytics' | 'reports' | 'reports-new' | 'report-detail' | 'admin' | 'admin-settings' | 'admin-users' | 'admin-roles' | 'admin-tracker'
   | 'admin-robot-check' | 'not-found'
 export type NavGroup = 'operations' | 'collaboration' | 'insights' | 'administration'
@@ -219,6 +219,15 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
     permission: 'nav.reports',
     prerequisites: SHELL_PREREQUISITES,
     surface: 'shell',
+  },
+  {
+    id: 'schedule',
+    path: '/schedule',
+    label: 'График',
+    icon: 'clock',
+    prerequisites: SHELL_PREREQUISITES,
+    surface: 'shell',
+    nav: { group: 'collaboration', desktopOrder: 68 },
   },
   {
     id: 'analytics',

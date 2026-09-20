@@ -75,7 +75,11 @@ def test_metadata_has_required_tables():
         "inventory_count_lines",
         "inventory_migration_conflicts",
         "offline_sync_receipts",
-        "media_upload_sessions",
+            "media_upload_sessions",
+            "schedule_entries",
+            "push_subscriptions",
+            "notification_preferences",
+            "notification_events",
         "ip_geo_cache",
         "ip_geo_quota",
     }
@@ -108,10 +112,10 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_is_resumable_media_uploads():
+def test_alembic_head_is_schedules_and_push():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0034_resumable_media_uploads"]
+    assert script.get_heads() == ["0035_schedules_and_push"]
 
 
 def test_alembic_revision_ids_fit_version_table_column():

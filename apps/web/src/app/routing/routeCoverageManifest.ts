@@ -155,6 +155,8 @@ export const ROUTE_COVERAGE_MANIFEST: readonly RouteCoverageItem[] = [
       action('update-or-delete-campaign', BUILTIN_MANAGER_ROLES, campaignManagerPermission, 'apps/api/tests/test_campaigns.py::test_manager_deletes_empty_campaign_but_archives_one_with_result'),
       action('submit-ticket-result', ALL_ROLES, 'apps/api/tests/test_campaigns.py::test_completion_requires_comment_and_photo_then_creates_operator_review'),
     ]),
+  route('schedule', 'ScheduleWorkspace.Classic', 'ScheduleWorkspace.TaskFirst', ALL_ROLES,
+    asyncStates('schedule', ['week', 'view'], ['month', 'view'], ['period', 'form'], ['notifications', 'view'])),
   route('analytics', 'AnalyticsWorkspace.Classic', 'AnalyticsWorkspace.TaskFirst', ANALYTICS_ROLES,
     asyncStates('analytics', ['summary', 'tab'], ['flow', 'tab'], ['sla', 'tab'], ['park-comparison', 'form'])),
 
