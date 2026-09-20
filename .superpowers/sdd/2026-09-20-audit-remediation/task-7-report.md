@@ -204,6 +204,39 @@ Final phase-budget TDD / short verification:
 - No PostgreSQL container, Docker, full suite, load, soak, installer, OTA or
   signature operation was run.
 
+## Absolute phase-deadline remediation
+
+- The lock now derives three absolute monotonic deadlines from one start time:
+  connect ends after the 40% connect budget, advisory work ends after the next
+  40%, and the final 20% remains exclusively for rollback, connection close,
+  and semaphore release.
+- Semaphore admission and physical connection establishment use only the
+  absolute connect deadline. The `do_connect` hook floors the remaining
+  connect phase to libpq's whole-second granularity, so a late checkout cannot
+  restart a full connect budget.
+- Advisory calls use a bounded per-attempt driver timeout (at most 500 ms and
+  one quarter of the query phase), installed in libpq startup options before
+  any SQL. Before every `scalar`, the code verifies that the full attempt
+  timeout still fits before the absolute query deadline; otherwise it stops
+  without starting another database round trip.
+- Retry sleeps also reserve a complete next attempt. Monotonic checks after
+  every scalar remain in place, and no acquisition work begins in the cleanup
+  reserve.
+- Added a short late-retry regression with repeated quick `false` results and
+  a deliberately slow next call. The slow call is never started, elapsed time
+  stays inside the total deadline tolerance, and deadline assertions prove the
+  configured one-second cleanup reserve exists at the default five seconds.
+
+Absolute-deadline TDD / short verification:
+
+- RED: the deadline constructor did not exist and the late slow retry started,
+  exceeding the total test budget.
+- GREEN: `tests/test_database_locks.py tests/test_lifespan_jobs.py` — `12 passed`
+  (only the existing Starlette/httpx deprecation warning).
+- Scoped Ruff, format check and `git diff --check` passed.
+- No PostgreSQL container, Docker, full suite, load, soak, installer, OTA or
+  signature operation was run.
+
 ## Review remediation round 2
 
 - Replaced the request-session PostgreSQL advisory lock with a bounded

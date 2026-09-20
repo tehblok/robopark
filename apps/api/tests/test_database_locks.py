@@ -320,14 +320,20 @@ def test_postgresql_lock_rejects_success_returned_after_deadline(monkeypatch, sl
 
 def test_postgresql_phase_timeouts_fit_inside_total_deadline():
     budget = database_locks._postgres_phase_timeouts(5.0)
+    deadlines = database_locks._postgres_phase_deadlines(10.0, 5.0, budget)
 
     assert budget.connect_seconds == 2
     assert budget.query_milliseconds == 2000
     assert budget.safety_milliseconds == 1000
+    assert budget.attempt_milliseconds == 500
     assert (
         budget.connect_seconds * 1000 + budget.query_milliseconds + budget.safety_milliseconds
         <= 5000
     )
+    assert deadlines.connect == 12.0
+    assert deadlines.query == 14.0
+    assert deadlines.total == 15.0
+    assert deadlines.total - deadlines.query == 1.0
 
 
 def test_postgresql_driver_timeout_is_retryable_and_releases_resources(monkeypatch):
@@ -408,7 +414,7 @@ def test_postgresql_phase_timeout_bounds_elapsed_and_preserves_body_errors(monke
 
         def scalar(self, _statement, _parameters):
             if fail_acquisition:
-                time.sleep(budget.query_milliseconds / 1000)
+                time.sleep(budget.attempt_milliseconds / 1000)
                 raise OperationalError("SELECT", {}, TimeoutError("statement timeout"))
             return True
 
@@ -440,6 +446,62 @@ def test_postgresql_phase_timeout_bounds_elapsed_and_preserves_body_errors(monke
     ):
         raise body_error
     assert captured.value is body_error
+
+
+def test_postgresql_late_retry_never_starts_past_query_attempt_budget(monkeypatch):
+    slow_retry_started = False
+    attempts = 0
+
+    class Transaction:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def begin(self):
+            return Transaction()
+
+        def scalar(self, _statement, _parameters):
+            nonlocal attempts, slow_retry_started
+            attempts += 1
+            if attempts <= 6:
+                time.sleep(0.02)
+                return False
+            slow_retry_started = True
+            time.sleep(0.2)
+            return True
+
+    class LockEngine:
+        def connect(self):
+            return Connection()
+
+    class RequestSession:
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    total_seconds = 0.3
+    monkeypatch.setattr(database_locks, "LOCK_WAIT_SECONDS", total_seconds)
+    state = database_locks._PostgresLockEngine(LockEngine(), threading.BoundedSemaphore(1))
+    monkeypatch.setattr(database_locks, "_postgres_lock_engine", lambda _bind: state)
+
+    started = time.monotonic()
+    with (
+        pytest.raises(HTTPException, match="idempotency_lock_busy"),
+        database_idempotency_lock(RequestSession(), "late-retry"),
+    ):
+        pytest.fail("late retry must not enter the protected workflow")
+
+    assert time.monotonic() - started <= total_seconds + 0.05
+    assert 1 <= attempts <= 6
+    assert slow_retry_started is False
 
 
 @pytest.mark.skipif(database_locks.fcntl is None, reason="fcntl flock requires Unix")

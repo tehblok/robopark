@@ -45,9 +45,21 @@ class _PostgresLockEngine:
 
 @dataclass(frozen=True)
 class _PostgresPhaseTimeouts:
-    connect_seconds: int
+    connect_milliseconds: int
     query_milliseconds: int
     safety_milliseconds: int
+    attempt_milliseconds: int
+
+    @property
+    def connect_seconds(self) -> int:
+        return self.connect_milliseconds // 1000
+
+
+@dataclass(frozen=True)
+class _PostgresPhaseDeadlines:
+    connect: float
+    query: float
+    total: float
 
 
 _process_locks: dict[str, _ProcessLock] = {}
@@ -71,14 +83,33 @@ def _postgres_phase_timeouts(total_seconds: float) -> _PostgresPhaseTimeouts:
     connect_milliseconds = int(total_milliseconds * 0.4)
     query_milliseconds = int(total_milliseconds * 0.4)
     safety_milliseconds = total_milliseconds - connect_milliseconds - query_milliseconds
-    connect_seconds = connect_milliseconds // 1000
-    if connect_seconds < 1 or query_milliseconds < 1 or safety_milliseconds < 1:
+    attempt_milliseconds = min(500, query_milliseconds // 4)
+    if (
+        connect_milliseconds < 1
+        or query_milliseconds < 1
+        or safety_milliseconds < 1
+        or attempt_milliseconds < 1
+    ):
         raise _LockDeadlineExceeded
     return _PostgresPhaseTimeouts(
-        connect_seconds=connect_seconds,
+        connect_milliseconds=connect_milliseconds,
         query_milliseconds=query_milliseconds,
         safety_milliseconds=safety_milliseconds,
+        attempt_milliseconds=attempt_milliseconds,
     )
+
+
+def _postgres_phase_deadlines(
+    started: float,
+    total_seconds: float,
+    budget: _PostgresPhaseTimeouts,
+) -> _PostgresPhaseDeadlines:
+    connect = started + budget.connect_milliseconds / 1000
+    query = connect + budget.query_milliseconds / 1000
+    total = started + total_seconds
+    if query + budget.safety_milliseconds / 1000 > total + 0.000_001:
+        raise _LockDeadlineExceeded
+    return _PostgresPhaseDeadlines(connect=connect, query=query, total=total)
 
 
 def _lock_busy() -> HTTPException:
@@ -153,13 +184,14 @@ def _postgres_lock_engine(bind: Any) -> _PostgresLockEngine:
     with _postgres_lock_engines_guard:
         state = _postgres_lock_engines.get(cache_key)
         if state is None:
+            default_budget = _postgres_phase_timeouts(LOCK_WAIT_SECONDS)
             engine = create_engine(
                 url,
                 future=True,
                 poolclass=QueuePool,
                 pool_size=POSTGRES_LOCK_POOL_SIZE,
                 max_overflow=0,
-                pool_timeout=LOCK_WAIT_SECONDS,
+                pool_timeout=default_budget.connect_milliseconds / 1000,
                 pool_pre_ping=False,
                 pool_recycle=0,
                 pool_use_lifo=True,
@@ -169,14 +201,20 @@ def _postgres_lock_engine(bind: Any) -> _PostgresLockEngine:
             def _bound_physical_connect(_dialect, _record, _cargs, cparams) -> None:
                 deadline = getattr(_postgres_connect_deadline, "value", None)
                 if deadline is None:
-                    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+                    deadline = time.monotonic() + default_budget.connect_milliseconds / 1000
                 remaining = _remaining_seconds(deadline)
-                budget = _postgres_phase_timeouts(remaining)
-                cparams["connect_timeout"] = budget.connect_seconds
-                cparams["tcp_user_timeout"] = budget.query_milliseconds
+                connect_seconds = int(remaining)
+                if connect_seconds < 1:
+                    raise _LockDeadlineExceeded
+                attempt_milliseconds = int(
+                    getattr(_postgres_connect_deadline, "attempt_milliseconds", None)
+                    or default_budget.attempt_milliseconds
+                )
+                cparams["connect_timeout"] = connect_seconds
+                cparams["tcp_user_timeout"] = attempt_milliseconds
                 deadline_options = (
-                    f"-c statement_timeout={budget.query_milliseconds} "
-                    f"-c lock_timeout={budget.query_milliseconds}"
+                    f"-c statement_timeout={attempt_milliseconds} "
+                    f"-c lock_timeout={attempt_milliseconds}"
                 )
                 existing_options = str(cparams.get("options", "")).strip()
                 cparams["options"] = " ".join(
@@ -213,21 +251,24 @@ def database_idempotency_lock(db: Any, key: str) -> Iterator[None]:
     bind = db.get_bind()
     dialect = bind.dialect.name
     if dialect == "postgresql":
-        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        started = time.monotonic()
+        budget = _postgres_phase_timeouts(LOCK_WAIT_SECONDS)
+        deadlines = _postgres_phase_deadlines(started, LOCK_WAIT_SECONDS, budget)
         state = _postgres_lock_engine(bind)
-        if not state.slots.acquire(timeout=_remaining_seconds(deadline)):
+        if not state.slots.acquire(timeout=_remaining_seconds(deadlines.connect)):
             raise _lock_busy()
         try:
-            if _remaining_seconds(deadline) <= 0:
+            if _remaining_seconds(deadlines.connect) <= 0:
                 raise _lock_busy()
-            _postgres_connect_deadline.value = deadline
+            _postgres_connect_deadline.value = deadlines.connect
+            _postgres_connect_deadline.attempt_milliseconds = budget.attempt_milliseconds
             try:
                 try:
                     connection_context = state.engine.connect()
                 except (DBAPIError, SQLAlchemyTimeoutError, _LockDeadlineExceeded):
                     raise _lock_busy() from None
                 with connection_context as connection:
-                    if _remaining_seconds(deadline) <= 0:
+                    if _remaining_seconds(deadlines.connect) <= 0:
                         raise _lock_busy()
                     try:
                         transaction_context = connection.begin()
@@ -235,7 +276,8 @@ def database_idempotency_lock(db: Any, key: str) -> Iterator[None]:
                         raise _lock_busy() from None
                     with transaction_context:
                         while True:
-                            if _remaining_seconds(deadline) <= 0:
+                            phase_remaining = _remaining_seconds(deadlines.query)
+                            if phase_remaining * 1000 < budget.attempt_milliseconds:
                                 raise _lock_busy()
                             try:
                                 acquired = connection.scalar(
@@ -244,19 +286,23 @@ def database_idempotency_lock(db: Any, key: str) -> Iterator[None]:
                                 )
                             except (DBAPIError, SQLAlchemyTimeoutError, _LockDeadlineExceeded):
                                 raise _lock_busy() from None
-                            remaining = _remaining_seconds(deadline)
+                            remaining = _remaining_seconds(deadlines.query)
                             if remaining <= 0:
                                 raise _lock_busy()
                             if acquired:
                                 break
-                            time.sleep(min(_SLEEP_SECONDS, remaining))
-                        if _remaining_seconds(deadline) <= 0:
+                            next_attempt_wait = remaining - budget.attempt_milliseconds / 1000
+                            if next_attempt_wait <= 0:
+                                raise _lock_busy()
+                            time.sleep(min(_SLEEP_SECONDS, next_attempt_wait))
+                        if _remaining_seconds(deadlines.query) <= 0:
                             raise _lock_busy()
                         yield
             except _LockDeadlineExceeded:
                 raise _lock_busy() from None
             finally:
                 _postgres_connect_deadline.value = None
+                _postgres_connect_deadline.attempt_milliseconds = None
         finally:
             state.slots.release()
         return
