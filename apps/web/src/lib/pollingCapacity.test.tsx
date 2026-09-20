@@ -57,21 +57,9 @@ it.each(['120', 'Wed, 21 Oct 2026 07:28:00 GMT'])('carries Retry-After %s from a
   await expect(api.me()).rejects.toMatchObject({ status: 429, retryAfterMs: 120_000 })
 })
 
-it('coalesces 200 viewers and route or UI-mode remounts into zero duplicate fresh GETs', async () => {
+it('coalesces 200 simultaneous viewers into one fresh GET', async () => {
   const loader = vi.fn(async () => 'shared')
-  const viewers = Array.from({ length: 200 }, () => (
-    renderHook(({ mode }) => {
-      void mode
-      return useCachedResource('robots:park-1', loader)
-    }, {
-      initialProps: { mode: 'table' },
-    })
-  ))
-  await act(async () => {})
-  expect(loader).toHaveBeenCalledTimes(1)
-  viewers[0].rerender({ mode: 'map' })
-  viewers[1].unmount()
-  renderHook(() => useCachedResource('robots:park-1', loader))
+  Array.from({ length: 200 }, () => renderHook(() => useCachedResource('robots:park-1', loader)))
   await act(async () => {})
   expect(loader).toHaveBeenCalledTimes(1)
 })

@@ -1139,6 +1139,7 @@ const trackerIssueValidators = new Map<string, TrackerIssueValidator>()
 const TRACKER_VALIDATOR_MAX_ENTRIES = 128
 const TRACKER_VALIDATOR_MAX_BYTES = 4 * 1024 * 1024
 const TRACKER_VALIDATOR_MAX_AGE_MS = 12 * 60 * 60 * 1000
+let apiValidatorGeneration = 0
 
 function rememberTrackerValidator(path: string, entry: TrackerIssueValidator): void {
   trackerIssueValidators.delete(path)
@@ -1153,11 +1154,13 @@ function rememberTrackerValidator(path: string, entry: TrackerIssueValidator): v
 }
 
 export function clearApiValidators(): void {
+  apiValidatorGeneration += 1
   revisionValidators.clear()
   trackerIssueValidators.clear()
 }
 
 async function conditionalTrackerIssues(path: string): Promise<Paged<TrackerIssue>> {
+  const generation = apiValidatorGeneration
   let cached = trackerIssueValidators.get(path)
   if (cached && Date.now() - cached.storedAt >= TRACKER_VALIDATOR_MAX_AGE_MS) {
     trackerIssueValidators.delete(path)
@@ -1178,7 +1181,7 @@ async function conditionalTrackerIssues(path: string): Promise<Paged<TrackerIssu
       const etag = response.headers.get('ETag')
       if (etag) {
         const bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength
-        if (bytes <= TRACKER_VALIDATOR_MAX_BYTES) {
+        if (generation === apiValidatorGeneration && bytes <= TRACKER_VALIDATOR_MAX_BYTES) {
           rememberTrackerValidator(path, { etag, value, bytes, storedAt: Date.now() })
         }
       }

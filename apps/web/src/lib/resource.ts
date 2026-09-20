@@ -41,6 +41,35 @@ type LoadGeneration = {
 const inflightLoaders = new Map<string, Promise<unknown>>()
 const loadGenerations = new Map<string, symbol>()
 let allLoadsGeneration = Symbol('all-resource-loads')
+const resourceVersions = new Map<string, symbol>()
+let allResourcesVersion = Symbol('all-resources')
+
+function pruneResourceVersions(): void {
+  while (resourceVersions.size > MEMORY_MAX_ENTRIES * 2) {
+    const oldest = resourceVersions.keys().next().value
+    if (oldest === undefined) break
+    resourceVersions.delete(oldest)
+  }
+}
+
+function captureResourceVersion(key: string): LoadGeneration {
+  let version = resourceVersions.get(key)
+  if (!version) version = Symbol(key)
+  resourceVersions.delete(key)
+  resourceVersions.set(key, version)
+  pruneResourceVersions()
+  return { all: allResourcesVersion, key: version }
+}
+
+function bumpResourceVersion(key: string): void {
+  resourceVersions.delete(key)
+  resourceVersions.set(key, Symbol(key))
+  pruneResourceVersions()
+}
+
+function isResourceVersionCurrent(key: string, version: LoadGeneration): boolean {
+  return version.all === allResourcesVersion && resourceVersions.get(key) === version.key
+}
 
 function currentKeyGeneration(key: string): symbol {
   const current = loadGenerations.get(key)
@@ -140,6 +169,7 @@ class ResourceStore {
   }
 
   set(key: string, data: unknown, persist: boolean, updatedAt = Date.now()): void {
+    bumpResourceVersion(key)
     const entry: StoredEntry = { v: LS_VERSION, updatedAt, data }
     this.remember(key, entry)
     if (persist) writeToStorage(key, entry)
@@ -153,11 +183,13 @@ class ResourceStore {
     const deviceStore = currentDeviceResourceCache()
     if (!deviceStore) return undefined
     const generation = deviceStore.captureGeneration()
+    const resourceVersion = captureResourceVersion(key)
     const entry = await deviceStore.getEntry<T>(key)
     if (
       entry !== undefined &&
       deviceStore === currentDeviceResourceCache() &&
-      deviceStore.isGenerationCurrent(generation)
+      deviceStore.isGenerationCurrent(generation) &&
+      isResourceVersionCurrent(key, resourceVersion)
     ) {
       this.set(key, entry.data, false, entry.updatedAt)
       return entry.data
@@ -167,6 +199,7 @@ class ResourceStore {
 
   /** Drop denied data without retiring sibling consumers of the same request. */
   evict(key: string): void {
+    bumpResourceVersion(key)
     this.mem.delete(key)
     removeFromStorage(key)
     void currentDeviceResourceCache()?.delete(key)
@@ -177,6 +210,9 @@ class ResourceStore {
     invalidatePendingLoads(keyOrPrefix, prefix)
     const notified = new Set<string>()
     if (prefix) {
+      for (const k of Array.from(resourceVersions.keys())) {
+        if (k.startsWith(keyOrPrefix)) bumpResourceVersion(k)
+      }
       for (const k of Array.from(this.mem.keys())) {
         if (k.startsWith(keyOrPrefix)) {
           this.mem.delete(k)
@@ -189,6 +225,7 @@ class ResourceStore {
       removeFromStorageByPrefix(keyOrPrefix)
       void currentDeviceResourceCache()?.deletePrefix(keyOrPrefix)
     } else {
+      bumpResourceVersion(keyOrPrefix)
       this.mem.delete(keyOrPrefix)
       notified.add(keyOrPrefix)
       removeFromStorage(keyOrPrefix)
@@ -219,6 +256,8 @@ class ResourceStore {
   }
 
   clearAll(): void {
+    allResourcesVersion = Symbol('all-resources')
+    resourceVersions.clear()
     invalidateAllPendingLoads()
     this.activeScopes.clear()
     const keys = Array.from(this.subs.keys())

@@ -74,6 +74,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     try {
       const authenticatedUser = await api.me()
       if (generation === sessionGeneration.current) {
+        clearApiValidators()
         await activateDeviceResourceCache(authenticatedUser)
         if (generation === sessionGeneration.current) setUser(authenticatedUser)
       }

@@ -333,12 +333,15 @@ export function AppShell() {
   const badgeParkId = user?.role === 'royal' ? undefined : parkId ?? undefined
   const badgeIdentity = user ? reportsAccessIdentity(user, user.role === 'royal' ? null : selectedPark) : ''
   const badgeKey = user ? `reports:badge:${user.id}:${badgeIdentity}` : ''
+  const badgeEnabled = Boolean(user && (
+    user.role === 'royal' || (!loading && (parkId !== null || allowAllParks))
+  ))
   const committedBadgeKey = useRef(badgeKey)
   const [visibleBadgeKey, setVisibleBadgeKey] = useState(badgeKey)
   const badgeResource = useCachedResource(
     badgeKey,
     () => api.reportsBadge(badgeParkId),
-    { enabled: Boolean(user), persist: false },
+    { enabled: badgeEnabled, persist: false },
   )
   const reportsBadge = user && visibleBadgeKey === badgeKey
     ? badgeResource.data?.count ?? 0
@@ -379,7 +382,7 @@ export function AppShell() {
   }, [badgeKey])
 
   useLayoutEffect(() => () => {
-    if (committedBadgeKey.current) resourceStore.invalidate(committedBadgeKey.current)
+    if (committedBadgeKey.current) resourceStore.cancelPending(committedBadgeKey.current)
   }, [])
 
   useLayoutEffect(() => {

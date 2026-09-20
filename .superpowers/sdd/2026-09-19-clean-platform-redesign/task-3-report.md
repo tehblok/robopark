@@ -98,3 +98,34 @@ focused web `62 passed`, full web `147 files / 2075 passed`, production build an
 Residual risk: IndexedDB quota thresholds vary by browser, and cross-process live merge
 uses bounded filesystem metadata rather than Redis by design. Both paths now expose
 deterministic eviction behavior and metrics for Task 8 soak validation.
+
+## Review round 2
+
+All four reproduced findings are closed with direct regression coverage:
+
+- Resource hydration now captures both the device-store generation/scope and a bounded
+  per-key resource version. A concurrent `set`, exact/prefix invalidation, eviction or
+  global clear retires the disk read before it can overwrite memory or notify consumers.
+- Response-cache invalidation and clear detach and retire the old per-key flight. Existing
+  waiters still complete from their captured flight object, while callers arriving after
+  invalidation start or join only the new generation; the retired result is never stored,
+  and an unreplaced retired flight releases its per-key generation metadata.
+- Tracker list ETag/payload validators capture an authorization generation. Login, logout,
+  401/403 and successful permission/role refresh increment that generation and clear the
+  bounded map, so a late old-account response cannot repopulate it.
+- The former synthetic mode prop was removed. A real AppRouter test now mounts the actual
+  AppShell/resource owner, navigates `/work?park=7` to `/robots?park=7`, switches to
+  interface mode A, and observes exactly one fresh badge GET throughout. Badge loading is
+  also deferred until park scope is settled, and route cleanup retires only pending work
+  rather than deleting a still-fresh value.
+
+Round-2 RED evidence: a blocked hydration overwrote a newer value and restored an
+invalidated key; post-invalidation callers joined the blocked old server flight; an
+old-account Tracker response repopulated its validator; and the real route transition
+duplicated the badge GET before the park-scope/owner fix.
+
+Round-2 GREEN evidence: focused API `57 passed`; focused web `166 passed`; full API
+`1779 passed, 7 skipped, 21 warnings`; full web `147 files / 2079 passed`; production
+build and SW `2 passed`; lint and Ruff/format exited 0. The lint warnings are the existing
+repository warnings. Residual risks remain browser-specific quota behavior and the
+filesystem shared tier already called out above; neither round-2 race remains open.

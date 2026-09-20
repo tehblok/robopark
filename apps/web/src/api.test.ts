@@ -84,6 +84,29 @@ describe('API transport metadata', () => {
       expect.objectContaining({ headers: { 'If-None-Match': '"issues-v1"' } }))
   })
 
+  it('does not retain a tracker validator completed after authorization changed', async () => {
+    let complete!: (response: Response) => void
+    const firstResponse = new Promise<Response>(resolve => { complete = resolve })
+    const payload = { items: [], total: 0, limit: 50, offset: 0, has_more: false }
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(firstResponse)
+      .mockResolvedValueOnce(new Response(JSON.stringify(payload), {
+        status: 200, headers: { 'Content-Type': 'application/json', ETag: '"new-account"' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const oldAccountRequest = api.trackerIssues({ limit: 50 })
+    clearApiValidators()
+    complete(new Response(JSON.stringify(payload), {
+      status: 200, headers: { 'Content-Type': 'application/json', ETag: '"old-account"' },
+    }))
+    await oldAccountRequest
+    await api.trackerIssues({ limit: 50 })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/tracker/issues?sort=oldest&limit=50',
+      expect.objectContaining({ headers: {} }))
+  })
+
   it.each(requestIdCases)('copies X-Request-ID into an ApiError for a %s request', async (_label, call) => {
     vi.stubGlobal(
       'fetch',

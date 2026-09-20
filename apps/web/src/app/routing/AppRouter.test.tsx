@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, ApiError } from '../../api'
 import { installMatchMedia, renderApp, testUser } from '../../test/renderApp'
 import { ROUTE_ELEMENTS } from './AppRouter'
+import { interfaceModeStore } from '../interface/interfaceModeStore'
+import { resourceStore } from '../../lib/resource'
 
 const north = { id: 7, name: 'Северный', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
 
@@ -21,7 +23,11 @@ describe('AppRouter', () => {
     vi.spyOn(api, 'emergencyResolve').mockImplementation(() => new Promise(() => undefined))
   })
 
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => {
+    interfaceModeStore.requestMode('classic')
+    resourceStore.invalidate('reports:badge:', { prefix: true })
+    vi.restoreAllMocks()
+  })
 
   it('shows the route fallback while loading work screen code', async () => {
     renderApp('/work?park=7', testUser({
@@ -31,6 +37,29 @@ describe('AppRouter', () => {
 
     expect(screen.getByText('Загрузка…')).toBeVisible()
     expect(await screen.findByRole('heading', { name: 'Работа' })).toBeVisible()
+  })
+
+  it('keeps the fresh shell resource across a real route and interface-mode transition', async () => {
+    const user = userEvent.setup()
+    const badge = vi.spyOn(api, 'reportsBadge').mockResolvedValue({ count: 3 })
+    vi.spyOn(api, 'robotRegistry').mockResolvedValue({
+      items: [], total: 0, offset: 0, limit: 50, has_more: false,
+      partial: false, source_complete: true, source: 'scoped_tracker_issues', park_id: 7,
+    })
+    renderApp('/work?park=7', testUser({
+      permissions: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'tracker.read'], parks: [north],
+    }))
+    await screen.findByRole('heading', { name: 'Работа' })
+    await waitFor(() => expect(badge).toHaveBeenCalledTimes(1))
+
+    await user.click(screen.getAllByRole('link', { name: 'Роботы' })[0])
+    await screen.findByRole('heading', { name: 'Роботы' })
+    expect(badge).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByRole('button', { name: 'Ещё' }))
+    await user.click(screen.getByRole('radio', { name: 'Новый А' }))
+    expect(interfaceModeStore.getSnapshot().mode).toBe('task-first')
+
+    expect(badge).toHaveBeenCalledTimes(1)
   })
 
   it('offers a page reload when an outdated route module fails to load', async () => {

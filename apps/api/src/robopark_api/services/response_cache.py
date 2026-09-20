@@ -45,6 +45,7 @@ class _Flight(Generic[T]):  # noqa: UP046
     value: object = _MISSING
     error: BaseException | None = None
     generation: tuple[int, int] = (0, 0)
+    retired: bool = False
 
 
 class ResponseCache(Generic[T]):  # noqa: UP046
@@ -160,7 +161,9 @@ class ResponseCache(Generic[T]):  # noqa: UP046
 
     def invalidate(self, key: str, *, reason: str = "key") -> None:
         with self._lock:
-            if key in self._flights:
+            flight = self._flights.pop(key, None)
+            if flight is not None:
+                flight.retired = True
                 self._key_generations[key] = self._key_generations.get(key, 0) + 1
             else:
                 self._key_generations.pop(key, None)
@@ -175,6 +178,9 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         with self._lock:
             for key in set(self._store) | set(self._flights):
                 if key.startswith(prefix):
+                    flight = self._flights.pop(key, None)
+                    if flight is not None:
+                        flight.retired = True
                     self._key_generations[key] = self._key_generations.get(key, 0) + 1
             stale = [k for k in self._store if k.startswith(prefix)]
             for key in stale:
@@ -188,6 +194,9 @@ class ResponseCache(Generic[T]):  # noqa: UP046
 
     def clear(self, *, reason: str = "namespace") -> None:
         with self._lock:
+            for flight in self._flights.values():
+                flight.retired = True
+            self._flights.clear()
             self._generation += 1
             self._key_generations.clear()
             self._store.clear()
@@ -327,6 +336,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
                 if (
                     error is None
                     and value is not _MISSING
+                    and not flight.retired
                     and flight.generation == current_generation
                 ):
                     mtime = merge.result_mtime(self._name, key) if merge is not None else None
@@ -339,8 +349,11 @@ class ResponseCache(Generic[T]):  # noqa: UP046
                         key,
                         (stored_at, value, mtime),
                     )
-                self._flights.pop(key, None)
-                self._key_generations.pop(key, None)
+                if self._flights.get(key) is flight:
+                    self._flights.pop(key, None)
+                    self._key_generations.pop(key, None)
+                elif key not in self._flights:
+                    self._key_generations.pop(key, None)
                 flight.done.set()
 
         self._metrics.observe_load(time.monotonic() - load_started, error=load_had_error)

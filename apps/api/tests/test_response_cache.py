@@ -128,6 +128,60 @@ def test_single_flight_dedupes_concurrent_misses():
     assert calls == 1
 
 
+@pytest.mark.parametrize("retire", ["invalidate", "clear"])
+def test_post_invalidation_caller_never_joins_old_flight(retire):
+    cache: ResponseCache[str] = ResponseCache(60, name=f"retire-{retire}", shared=False)
+    started = threading.Event()
+    release = threading.Event()
+    old_results: list[str] = []
+
+    def old_loader() -> str:
+        started.set()
+        assert release.wait(timeout=1)
+        return "old"
+
+    leader = threading.Thread(target=lambda: old_results.append(cache.get_or_load("k", old_loader)))
+    waiter = threading.Thread(target=lambda: old_results.append(cache.get_or_load("k", old_loader)))
+    leader.start()
+    assert started.wait(timeout=1)
+    waiter.start()
+
+    if retire == "invalidate":
+        cache.invalidate("k")
+    else:
+        cache.clear()
+
+    assert cache.get_or_load("k", lambda: "new") == "new"
+    release.set()
+    leader.join(timeout=1)
+    waiter.join(timeout=1)
+
+    assert old_results == ["old", "old"]
+    assert cache.get_or_load("k", lambda: "unexpected") == "new"
+    assert cache._key_generations == {}
+
+
+def test_retired_flight_releases_generation_metadata_without_replacement():
+    cache: ResponseCache[str] = ResponseCache(60, name="retire-metadata", shared=False)
+    started = threading.Event()
+    release = threading.Event()
+
+    def loader() -> str:
+        started.set()
+        assert release.wait(timeout=1)
+        return "old"
+
+    leader = threading.Thread(target=lambda: cache.get_or_load("k", loader))
+    leader.start()
+    assert started.wait(timeout=1)
+    cache.invalidate("k")
+    release.set()
+    leader.join(timeout=1)
+
+    assert cache._flights == {}
+    assert cache._key_generations == {}
+
+
 def test_loader_exception_propagates_to_all_waiters():
     cache: ResponseCache[int] = ResponseCache(60, name="unit")
 

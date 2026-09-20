@@ -1,4 +1,5 @@
 import { IDBFactory } from 'fake-indexeddb'
+import { waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { User } from '../api'
 import {
@@ -46,4 +47,50 @@ it('preserves disk age so a stale hydration remains stale', async () => {
 
   expect(resourceStore.updatedAt('tracker:list')).toBe(updatedAt)
   expect(resourceStore.isStale('tracker:list', 30_000)).toBe(true)
+})
+
+it('does not let a pending hydrate overwrite a newer value for the same key', async () => {
+  await activateDeviceResourceCache(user(1))
+  const store = currentDeviceResourceCache()!
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const staleRead = vi.spyOn(store, 'getEntry').mockImplementation(async () => {
+    await gate
+    return { data: { value: 'old' }, updatedAt: Date.now() - 1_000 }
+  })
+  const listener = vi.fn()
+  const unsubscribe = resourceStore.subscribe('tracker:item', listener)
+
+  const hydration = resourceStore.hydrate('tracker:item')
+  resourceStore.set('tracker:item', { value: 'new' }, false)
+  release()
+  await hydration
+
+  expect(resourceStore.get('tracker:item')).toEqual({ value: 'new' })
+  expect(listener).toHaveBeenCalledTimes(1)
+  staleRead.mockRestore()
+  await waitFor(async () => expect(await store.get('tracker:item')).toEqual({ value: 'new' }))
+  unsubscribe()
+})
+
+it('does not notify or restore a key when it is invalidated during hydration', async () => {
+  await activateDeviceResourceCache(user(1))
+  const store = currentDeviceResourceCache()!
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  vi.spyOn(store, 'getEntry').mockImplementation(async () => {
+    await gate
+    return { data: { value: 'old' }, updatedAt: Date.now() }
+  })
+  const listener = vi.fn()
+  const unsubscribe = resourceStore.subscribe('tracker:item', listener)
+
+  const hydration = resourceStore.hydrate('tracker:item')
+  resourceStore.invalidate('tracker:item')
+  release()
+  await hydration
+
+  expect(resourceStore.get('tracker:item')).toBeUndefined()
+  expect(listener).toHaveBeenCalledTimes(1)
+  unsubscribe()
 })
