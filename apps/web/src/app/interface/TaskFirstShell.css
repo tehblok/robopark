@@ -535,6 +535,15 @@
 }
 
 @media (max-width: 599px) {
+  .rp-task-first-shell__workspace:has(> .rp-task-first-shell__context:not([hidden])) {
+    grid-template-areas:
+      'header'
+      'content'
+      'context'
+      'action';
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .rp-task-first-shell__content {
     padding-inline: calc(var(--rp-space-3) + env(safe-area-inset-left))
       calc(var(--rp-space-3) + env(safe-area-inset-right));
