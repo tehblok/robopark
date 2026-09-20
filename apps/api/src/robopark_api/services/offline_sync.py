@@ -11,17 +11,19 @@ from robopark_api.models import Park, User, UserPark
 from robopark_api.services import (
     inventory,
     inventory_stock,
+    media_uploads,
     platform_settings,
     rbac,
     task_lifecycle,
     tracker_cache,
     tracker_client,
+    tracker_signatures,
 )
 from robopark_api.services.reliable_actions import canonical_payload
 from robopark_api.services.task_timeline import append_user_message
 from robopark_api.services.tracker_policy import enforce_issue_scope
 from robopark_api.sync_schemas import SyncActionIn, SyncActionResultOut, SyncBatchIn, SyncBatchOut
-from robopark_api.task_workflow_models import OfflineSyncReceipt
+from robopark_api.task_workflow_models import MediaUploadSession, OfflineSyncReceipt
 
 
 def _ordered(actions: list[SyncActionIn]) -> list[SyncActionIn]:
@@ -124,8 +126,32 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
         )
         return {"movement_id": row.id, "balance_after": row.balance_after}
     if item.action == "submit_review":
-        # Task 5 resolves the uploaded media id and delegates to submit_review.
-        raise HTTPException(503, "media_dependency_pending")
+        issue = _issue(db, user, item)
+        media_id = str(item.payload.get("media_id") or "")
+        upload = db.scalar(
+            select(MediaUploadSession).where(
+                MediaUploadSession.actor_user_id == user.id,
+                MediaUploadSession.media_id == media_id,
+                MediaUploadSession.issue_key == item.resource_id,
+                MediaUploadSession.completed.is_(True),
+            )
+        )
+        if upload is None:
+            raise HTTPException(409, "media_dependency_pending")
+        context = tracker_signatures.build_signature_context(db, user, issue)
+        path = media_uploads.content_path(upload)
+        return task_lifecycle.submit_review(
+            db,
+            actor=user,
+            issue_key=item.resource_id,
+            defect_code=str(item.payload.get("defect_code") or ""),
+            filename=upload.original_name,
+            content=path.read_bytes(),
+            content_type=upload.mime_type,
+            comment=str(item.payload.get("comment") or "") or None,
+            operator_login=context.operator_login,
+            idempotency_key=item.idempotency_key,
+        )
     raise HTTPException(400, "sync_action_unsupported")
 
 

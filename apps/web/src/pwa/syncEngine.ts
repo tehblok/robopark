@@ -1,11 +1,12 @@
 import type { SyncBatchRequest, SyncBatchResponse } from '../api'
 import type { OfflineDb } from './offlineDb'
-import type { OfflineAction } from './offlineTypes'
+import type { OfflineAction, OfflineMedia } from './offlineTypes'
 import type { SyncCoordinator } from './syncCoordinator'
 
 export type SyncStatus = 'idle' | 'syncing' | 'offline' | 'attention'
 export type SyncState = { status: SyncStatus, pending: number, conflicts: number }
 export type OfflineActionInput = Omit<OfflineAction, 'state' | 'attempts' | 'createdAt' | 'updatedAt'>
+export type OfflineMediaInput = Omit<OfflineMedia, 'state' | 'createdAt' | 'updatedAt'>
 
 type EventEnvironment = {
   addEventListener(name: string, listener: EventListener): void
@@ -17,6 +18,7 @@ type EngineOptions = {
   coordinator: SyncCoordinator
   deviceId: string
   sendBatch(batch: SyncBatchRequest, signal?: AbortSignal): Promise<SyncBatchResponse>
+  uploadMedia?: (media: OfflineMedia, signal?: AbortSignal) => Promise<void>
   weakLink?: () => boolean
   onRevokedScopes?: (scopes: string[]) => void
   environment?: EventEnvironment
@@ -46,6 +48,7 @@ export class SyncEngine {
   private readonly coordinator: SyncCoordinator
   private readonly deviceId: string
   private readonly sendBatch: EngineOptions['sendBatch']
+  private readonly uploadMedia?: EngineOptions['uploadMedia']
   private readonly weakLink: () => boolean
   private readonly onRevokedScopes?: (scopes: string[]) => void
   private readonly environment?: EventEnvironment
@@ -67,6 +70,7 @@ export class SyncEngine {
     this.coordinator = options.coordinator
     this.deviceId = options.deviceId
     this.sendBatch = options.sendBatch
+    this.uploadMedia = options.uploadMedia
     this.weakLink = options.weakLink ?? (() => false)
     this.onRevokedScopes = options.onRevokedScopes
     this.environment = options.environment ?? (typeof window === 'undefined' ? undefined : window)
@@ -98,6 +102,14 @@ export class SyncEngine {
     await this.refreshState()
     if (this.started) void this.syncNow('enqueue')
     return action
+  }
+
+  async enqueueMedia(input: OfflineMediaInput): Promise<OfflineMedia> {
+    const now = this.now()
+    const media: OfflineMedia = { ...input, state: 'ready', createdAt: now, updatedAt: now }
+    if (!await this.db.putMedia(media)) throw new Error('offline_scope_inactive')
+    if (this.started) void this.syncNow('media')
+    return media
   }
 
   async cancelAction(id: string): Promise<void> {
@@ -144,6 +156,29 @@ export class SyncEngine {
   }
 
   private async pump(): Promise<boolean> {
+    const pendingMedia = (await this.db.listMedia()).filter(item => item.state === 'local' || item.state === 'ready' || item.state === 'attention')
+    if (pendingMedia.length && this.uploadMedia) {
+      this.setState({ ...this.state, status: 'syncing' })
+      this.abortController = new AbortController()
+      try {
+        for (const media of pendingMedia.slice(0, this.weakLink() ? 1 : 2)) {
+          await this.db.putMedia({ ...media, state: 'uploading', updatedAt: this.now() })
+          await this.uploadMedia(media, this.abortController.signal)
+          await this.db.putMedia({ ...media, state: 'confirmed', updatedAt: this.now() })
+        }
+      } catch {
+        for (const media of pendingMedia) {
+          if ((await this.db.getMedia(media.id))?.state === 'uploading') {
+            await this.db.putMedia({ ...media, state: 'ready', updatedAt: this.now() })
+          }
+        }
+        this.setState({ ...this.state, status: 'offline' })
+        if (!this.disposed) this.retryTimer = this.scheduleRetry(() => { this.retryTimer = null; void this.syncNow('media-retry') }, 1_000)
+        return false
+      } finally {
+        this.abortController = null
+      }
+    }
     const all = await this.db.listActions()
     const ready = causalOrder(all.filter(item => item.state === 'ready' || item.state === 'local'))
     if (!ready.length) { await this.refreshState(); return false }

@@ -24,7 +24,7 @@ import { collaborationClient } from '../../components/tracker/collaborationClien
 import { resetCoalescingForTests, resourceStore } from '../../lib/resource'
 import { IssueWorkbench, type IssueWorkbenchApiClient } from './IssueWorkbench'
 import { WorkPage } from './WorkPage'
-import { SyncProvider, type SyncEngineLike } from '../../pwa/SyncProvider'
+import { SyncContextProvider, type SyncContextValue } from '../../pwa/SyncProvider'
 import {
   buildWorkSearch,
   readWorkScroll,
@@ -403,7 +403,7 @@ function renderWorkbench({
   strictMode = false,
   initialPath = '/',
   presentationMode = 'classic',
-  syncEngine,
+  sync,
 }: {
   client?: IssueWorkbenchApiClient
   selectedIssue?: string
@@ -414,7 +414,7 @@ function renderWorkbench({
   strictMode?: boolean
   initialPath?: string
   presentationMode?: 'classic' | 'task-first'
-  syncEngine?: SyncEngineLike
+  sync?: SyncContextValue
 } = {}) {
   const modeStore = createInterfaceModeStore(() => ({
     getItem: () => presentationMode,
@@ -430,12 +430,8 @@ function renderWorkbench({
       onStateChange={(next, options) => { onStateChange(next, options); setValue(next) }}
       selectedPark={selectedPark} state={value} user={currentUser} />
   }
-  const content = syncEngine
-    ? <AuthContext.Provider value={{ user: currentUser, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}>
-      <ParkScopeContext.Provider value={{ parkId: selectedPark.id, selectedPark, parks: currentUser.parks, loading: false, locked: false, setParkId: vi.fn(), refreshParks: vi.fn() }}>
-        <SyncProvider engineFactory={async () => syncEngine}><ControlledWorkbench /></SyncProvider>
-      </ParkScopeContext.Provider>
-    </AuthContext.Provider>
+  const content = sync
+    ? <SyncContextProvider value={sync}><ControlledWorkbench /></SyncContextProvider>
     : <ControlledWorkbench />
   const view = render(content, {
     wrapper: ({ children }) => <InterfaceModeProvider accountId={currentUser.id} store={modeStore}><MemoryRouter initialEntries={[initialPath]}>{children}</MemoryRouter></InterfaceModeProvider>,
@@ -516,8 +512,48 @@ describe('IssueWorkbench', () => {
     }
     renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue) }) })
     expect(await screen.findByRole('button', { name: 'Передать на проверку' })).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Передать на проверку' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Передать на проверку' }).at(-1)!)
     expect(await screen.findByRole('textbox', { name: 'Добавить уточнение' })).not.toBeRequired()
+  })
+
+  it('stores exactly one review photo locally before queueing the review', async () => {
+    const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
+    const workflowIssue: TrackerIssueDetail = {
+      ...issue, claim: { park_id: park.id },
+      workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'saved', has_current_cycle_comment: true },
+    }
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:review')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const enqueueMedia = vi.fn(async () => undefined)
+    const enqueueAction = vi.fn(async () => undefined)
+    const sync = {
+      state: { status: 'idle' as const, pending: 0, conflicts: 0 },
+      enqueueMedia,
+      enqueueAction,
+      syncNow: vi.fn(async () => false),
+      cancelAction: vi.fn(async () => undefined),
+      resolveConflict: vi.fn(async () => undefined),
+    } satisfies SyncContextValue
+    const taskSubmitReview = vi.fn()
+    renderWorkbench({
+      currentUser: mechanic,
+      client: apiClient({
+        trackerIssue: vi.fn(async () => workflowIssue), taskSubmitReview,
+        taskDefectCodes: vi.fn(async () => [{ code: 'BD-01', label: 'Вмятина', description: null }]),
+      }),
+      sync,
+    })
+    await screen.findByRole('button', { name: 'Передать на проверку' })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Передать на проверку' }).at(-1)!)
+    fireEvent.change(screen.getByLabelText('Код дефекта'), { target: { value: 'BD-01' } })
+    const photo = new File(['photo'], 'robot.jpg', { type: 'image/jpeg' })
+    fireEvent.change(screen.getByLabelText('Выбрать файл'), { target: { files: [photo] } })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Передать на проверку' }).at(-1)!)
+
+    await waitFor(() => expect(enqueueMedia).toHaveBeenCalledOnce())
+    expect(enqueueMedia).toHaveBeenCalledWith(expect.objectContaining({ issueKey: issue.key, name: 'robot.jpg', blob: expect.any(Blob) }))
+    expect(enqueueAction).toHaveBeenCalledWith(expect.objectContaining({ action: 'submit_review', dependencies: [expect.stringMatching(/^media-/)] }))
+    expect(taskSubmitReview).not.toHaveBeenCalled()
   })
 
   it('uploads an ordinary photo as one workflow chat message without closing the task', async () => {
@@ -576,11 +612,15 @@ describe('IssueWorkbench', () => {
     const workflowIssue: TrackerIssueDetail = { ...issue, claim: { park_id: park.id }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'saved', has_current_cycle_comment: false } }
     const taskMessage = vi.fn()
     const enqueueAction = vi.fn(async () => undefined)
-    const syncEngine = {
-      start: vi.fn(), dispose: vi.fn(), subscribe: vi.fn(() => () => undefined),
-      getState: () => ({ status: 'idle' as const, pending: 0, conflicts: 0 }), enqueueAction,
-    } satisfies SyncEngineLike
-    renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskMessage }), syncEngine })
+    const sync = {
+      state: { status: 'idle' as const, pending: 0, conflicts: 0 },
+      enqueueMedia: vi.fn(async () => undefined),
+      enqueueAction,
+      syncNow: vi.fn(async () => false),
+      cancelAction: vi.fn(async () => undefined),
+      resolveConflict: vi.fn(async () => undefined),
+    } satisfies SyncContextValue
+    renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskMessage }), sync })
     const composer = await screen.findByRole('textbox', { name: ru.tracker.comments })
     fireEvent.change(composer, { target: { value: 'Заменил датчик офлайн' } })
     fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))

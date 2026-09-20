@@ -63,7 +63,7 @@ describe('offline database', () => {
       writer.putEntity('task:1', { key: 'SDCFLEETOPS-1' })
       writer.putAction(pending)
       writer.putMedia({
-        id: 'm-1', actionId: pending.id, blob: photo, mimeType: photo.type,
+        id: 'm-1', actionId: pending.id, issueKey: 'SDCFLEETOPS-1', name: 'robot.jpg', blob: photo, mimeType: photo.type,
         sha256: 'abc', sizeBytes: photo.size, state: 'local', createdAt: 1, updatedAt: 1,
       })
     })
@@ -106,7 +106,7 @@ describe('offline database', () => {
       writer.putAction(action('confirmed', 'confirmed', 1))
       writer.putAction(action('pending', 'ready', 1))
       writer.putMedia({
-        id: 'waiting-photo', actionId: 'pending', blob: new Blob(['x']), mimeType: 'image/jpeg',
+        id: 'waiting-photo', actionId: 'pending', issueKey: 'SDCFLEETOPS-1', name: 'robot.jpg', blob: new Blob(['x']), mimeType: 'image/jpeg',
         sha256: 'hash', sizeBytes: 1, state: 'local', createdAt: 1, updatedAt: 1,
       })
     })

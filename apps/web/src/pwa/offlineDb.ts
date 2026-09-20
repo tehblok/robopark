@@ -207,6 +207,10 @@ export class OfflineDb {
     const { dbId: _dbId, scope: _scope, bytes: _bytes, ...media } = record
     return media
   }
+  async listMedia(): Promise<OfflineMedia[]> {
+    const records = await this.scopedRecords<MediaRecord>('media')
+    return records.map(({ dbId: _dbId, scope: _scope, bytes: _bytes, ...media }) => media)
+  }
 
   async setRevision(section: string, revision: string): Promise<void> {
     if (!this.isGenerationCurrent()) throw new Error('Offline scope is no longer active')

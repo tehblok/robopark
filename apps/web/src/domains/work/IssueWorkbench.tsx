@@ -59,8 +59,9 @@ import { TaskSyncStatus } from './TaskSyncStatus'
 import { TaskTimeline } from './TaskTimeline'
 import { StableMutationKey } from './stableMutationKey'
 import { loadWorkPage, oldestFirst } from './workData'
-import { buildCommentAction, buildHandoffAction } from './offlineTaskActions'
+import { buildCommentAction, buildHandoffAction, buildSubmitReviewAction } from './offlineTaskActions'
 import { useOptionalSync } from '../../pwa/SyncProvider'
+import { prepareImage } from '../../pwa/mediaPipeline'
 import {
   buildWorkSearch,
   readWorkScroll,
@@ -804,6 +805,7 @@ export function TaskController({
     if (!current.some(item => item.id === pending.timelineItem.id)) {
       resourceStore.set(commentsKey, [...current, pending.timelineItem], false)
     }
+    return id
   }, [comments.data, commentsKey, issueKey, sync, taskParkId, user.username])
 
   const enqueueHandoff = useCallback(async (value: { assignee: string; reason: string; done?: string; remaining?: string; obstacles?: string }) => {
@@ -1016,7 +1018,7 @@ export function TaskController({
                           )}
                         onClose={detail.data.workflow ? async () => undefined : () => mutate((assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'close', {}, headers => apiClient.trackerClose(detail.data!.key, headers), assertCurrent), onCloseIssue)}
                         onComment={(text) => sync && detail.data!.workflow && taskParkId != null
-                          ? enqueueComment(text)
+                          ? enqueueComment(text).then(() => undefined)
                           : mutate(
                             (assertCurrent) => detail.data!.workflow && apiClient.taskMessage
                               ? lifecycleMutation('message', text, key => apiClient.taskMessage!(detail.data!.key, text, key))
@@ -1051,7 +1053,38 @@ export function TaskController({
                         const payload = { defectCode: value.defectCode, comment: value.comment ?? '', photo: {
                           name: value.photo.name, type: value.photo.type, size: value.photo.size, lastModified: value.photo.lastModified,
                         } }
-                        await mutate(() => lifecycleMutation('submit-review', payload, key => apiClient.taskSubmitReview!(detail.data!.key, value, key)))
+                        if (sync?.enqueueMedia && taskParkId != null) {
+                          const serialized = JSON.stringify(payload)
+                          const reviewId = mutationKeys.current.get('submit-review', serialized)
+                          const mediaId = `media-${reviewId}`
+                          const prepared = await prepareImage(value.photo)
+                          try {
+                            await sync.enqueueMedia({
+                              id: mediaId,
+                              actionId: reviewId,
+                              issueKey: detail.data!.key,
+                              name: value.photo.name,
+                              blob: prepared.blob,
+                              mimeType: prepared.mimeType,
+                              sha256: prepared.sha256,
+                              sizeBytes: prepared.sizeBytes,
+                            })
+                            const commentId = value.comment?.trim() ? await enqueueComment(value.comment) : null
+                            await sync.enqueueAction(buildSubmitReviewAction({
+                              issueKey: detail.data!.key,
+                              parkId: taskParkId,
+                              id: reviewId,
+                              defectCode: value.defectCode,
+                              mediaActionId: mediaId,
+                              commentActionId: commentId,
+                            }))
+                            mutationKeys.current.succeeded('submit-review', serialized)
+                          } finally {
+                            prepared.releasePreview()
+                          }
+                        } else {
+                          await mutate(() => lifecycleMutation('submit-review', payload, key => apiClient.taskSubmitReview!(detail.data!.key, value, key)))
+                        }
                         setReviewOpen(false)
                       }} /> : null}
                     {detail.data?.workflow ? <div aria-label="Дополнительные разделы задачи" className="rp-responsive-disclosure-group" role="group">

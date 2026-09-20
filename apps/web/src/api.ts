@@ -413,6 +413,8 @@ export type SyncBatchResponse = {
   revisions: Record<string, number>
   revoked_scopes: string[]
 }
+export type MediaUploadSession = { upload_id: string, received_offset: number, completed: boolean, media_id?: string }
+export type MediaUploadComplete = { upload_id: string, media_id: string, completed: true }
 export type TaskWorkflow = {
   owner: TrackerPerson | null
   review_state: 'pending' | 'returned' | 'closed' | null
@@ -1608,6 +1610,12 @@ export const api = {
   taskTimeline: (key: string) =>
     request<TaskTimelineItem[]>(`/tracker/issues/${encodeURIComponent(key)}/timeline`),
   taskDefectCodes: () => request<DefectCode[]>('/tracker/defect-codes'),
+  createMediaUpload: (value: { media_id: string, issue_key: string, name: string, mime_type: string, size_bytes: number, sha256: string }) =>
+    request<MediaUploadSession>('/media/uploads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) }),
+  putMediaChunk: (uploadId: string, offset: number, chunk: Blob, sha256: string) =>
+    request<{ received_offset: number }>(`/media/uploads/${encodeURIComponent(uploadId)}/chunks/${offset}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'X-Chunk-SHA256': sha256 }, body: chunk }),
+  completeMediaUpload: (uploadId: string) =>
+    request<MediaUploadComplete>(`/media/uploads/${encodeURIComponent(uploadId)}/complete`, { method: 'POST' }),
   taskMessage: (key: string, text: string, idempotencyKey: string) =>
     request<TaskTimelineItem>(`/tracker/issues/${encodeURIComponent(key)}/messages`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ text }),

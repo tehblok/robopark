@@ -5,7 +5,8 @@ import { useParkScope } from '../app/park/parkScope'
 import { offlineScopeForUser } from '../lib/deviceResourceCache'
 import { openOfflineDb, purgeOfflineScope } from './offlineDb'
 import { SyncCoordinator } from './syncCoordinator'
-import { SyncEngine, type OfflineActionInput, type SyncState } from './syncEngine'
+import { SyncEngine, type OfflineActionInput, type OfflineMediaInput, type SyncState } from './syncEngine'
+import { uploadMedia } from './resumableUpload'
 
 export type SyncEngineLike = {
   start(): void
@@ -13,6 +14,7 @@ export type SyncEngineLike = {
   subscribe(listener: () => void): () => void
   getState(): SyncState
   enqueueAction?(input: OfflineActionInput): Promise<unknown>
+  enqueueMedia?(input: OfflineMediaInput): Promise<unknown>
   syncNow?(reason: string): Promise<boolean>
   cancelAction?(id: string): Promise<void>
   resolveConflict?(id: string, baseRevision: string | null): Promise<void>
@@ -22,6 +24,7 @@ export type SyncEngineFactory = (options: { accountId: number, park: string, use
 export type SyncContextValue = {
   state: SyncState
   enqueueAction(input: OfflineActionInput): Promise<unknown>
+  enqueueMedia(input: OfflineMediaInput): Promise<unknown>
   syncNow(reason?: string): Promise<boolean>
   cancelAction(id: string): Promise<void>
   resolveConflict(id: string, baseRevision: string | null): Promise<void>
@@ -29,6 +32,10 @@ export type SyncContextValue = {
 
 const DEFAULT_STATE: SyncState = { status: 'idle', pending: 0, conflicts: 0 }
 const SyncContext = createContext<SyncContextValue | null>(null)
+
+export function SyncContextProvider({ children, value }: PropsWithChildren<{ value: SyncContextValue }>) {
+  return <SyncContext.Provider value={value}>{children}</SyncContext.Provider>
+}
 
 async function defaultEngineFactory(options: Parameters<SyncEngineFactory>[0]): Promise<SyncEngineLike> {
   if (!options.user) throw new Error('sync_user_required')
@@ -46,6 +53,14 @@ async function defaultEngineFactory(options: Parameters<SyncEngineFactory>[0]): 
     coordinator,
     deviceId: `account-${options.accountId}`,
     sendBatch: (batch, signal) => api.syncBatch(batch, signal),
+    uploadMedia: media => uploadMedia(
+      { id: media.id, blob: media.blob, mimeType: media.mimeType, sha256: media.sha256, name: media.name },
+      {
+        create: input => api.createMediaUpload({ ...input, issue_key: media.issueKey }),
+        putChunk: (uploadId, offset, chunk, sha256) => api.putMediaChunk(uploadId, offset, chunk, sha256),
+        complete: uploadId => api.completeMediaUpload(uploadId),
+      },
+    ).then(() => undefined),
     weakLink: () => {
       const connection = (navigator as Navigator & { connection?: { effectiveType?: string, saveData?: boolean } }).connection
       return Boolean(connection?.saveData || ['slow-2g', '2g', '3g'].includes(connection?.effectiveType ?? ''))
@@ -90,6 +105,7 @@ export function SyncProvider({ children, engineFactory = defaultEngineFactory }:
   const value = useMemo<SyncContextValue>(() => ({
     state,
     enqueueAction: input => engine?.enqueueAction?.(input) ?? Promise.reject(new Error('sync_not_ready')),
+    enqueueMedia: input => engine?.enqueueMedia?.(input) ?? Promise.reject(new Error('sync_not_ready')),
     syncNow: reason => engine?.syncNow?.(reason ?? 'manual') ?? Promise.resolve(false),
     cancelAction: id => engine?.cancelAction?.(id) ?? Promise.resolve(),
     resolveConflict: (id, revision) => engine?.resolveConflict?.(id, revision) ?? Promise.resolve(),

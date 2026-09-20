@@ -84,6 +84,6 @@ export function buildSubmitReviewAction(base: ActionBase & {
   const dependencies = [base.mediaActionId, base.commentActionId].filter((value): value is string => Boolean(value))
   return action(base, 'submit_review', {
     defect_code: base.defectCode,
-    media_action_id: base.mediaActionId,
+    media_id: base.mediaActionId,
   }, dependencies)
 }

@@ -37,6 +37,7 @@ from robopark_api.routers import (
     mechanic_emergency,
     mechanic_robots,
     mechanic_tasks,
+    media_uploads,
     operations,
     operator_blockers,
     operator_parks,
@@ -283,6 +284,7 @@ def create_app() -> FastAPI:
     app.include_router(analytics.router)
     app.include_router(reports.router)
     app.include_router(sync.router)
+    app.include_router(media_uploads.router)
     return app
 
 

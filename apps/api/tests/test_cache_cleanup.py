@@ -42,6 +42,11 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         lambda session, **kwargs: calls.append(("outbox", session, kwargs)) or (0, 0),
     )
     monkeypatch.setattr(
+        cache_cleanup.media_uploads,
+        "cleanup_expired",
+        lambda session, **kwargs: calls.append(("media", session, kwargs)) or 2,
+    )
+    monkeypatch.setattr(
         cache_cleanup,
         "prune_deleted_report_files",
         lambda **kwargs: calls.append(("report-files", kwargs)) or 0,
@@ -61,6 +66,7 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
     assert calls == [
         ("files", {"now": now.timestamp()}),
         ("unknowns", db, {"now": now}),
+        ("media", db, {"now": now.timestamp()}),
         ("outbox", db, {"now": now.timestamp()}),
         ("pending-reports", db),
         ("report-files", {"now": now.timestamp()}),

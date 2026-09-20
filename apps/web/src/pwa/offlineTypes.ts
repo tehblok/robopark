@@ -36,6 +36,8 @@ export type OfflineMediaState = 'local' | 'ready' | 'uploading' | 'confirmed' | 
 export type OfflineMedia = {
   id: string
   actionId: string
+  issueKey: string
+  name: string
   blob: Blob
   mimeType: string
   sha256: string

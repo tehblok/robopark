@@ -37,7 +37,7 @@ describe('offline task actions', () => {
     const result = buildSubmitReviewAction({ ...common, defectCode: 'BD-01', mediaActionId: 'media-12345678', commentActionId: 'comment-12345678' })
     expect(result).toMatchObject({
       action: 'submit_review', dependencies: ['media-12345678', 'comment-12345678'],
-      payload: { defect_code: 'BD-01', media_action_id: 'media-12345678', park_id: 7 },
+      payload: { defect_code: 'BD-01', media_id: 'media-12345678', park_id: 7 },
     })
   })
 })

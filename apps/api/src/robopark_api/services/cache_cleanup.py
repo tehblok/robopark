@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
-from robopark_api.services import emergency_cache, tracker_cache
+from robopark_api.services import emergency_cache, media_uploads, tracker_cache
 from robopark_api.services.diagnostic_unknowns import prune_diagnostic_unknowns
 from robopark_api.services.live_merge import get_live_merge_store
 from robopark_api.services.ops.context import resolved_ops_dir
@@ -334,6 +334,7 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
     files_removed = store.prune(now=current.timestamp()) if store is not None else 0
     with SessionLocal() as db:
         unknowns_removed = prune_diagnostic_unknowns(db, now=current)
+        media_uploads_removed = media_uploads.cleanup_expired(db, now=current.timestamp())
         actions_removed, attachments_removed = prune_tracker_outbox(db, now=current.timestamp())
         pending_reports_removed = reconcile_pending_report_deletions(db)
     deleted_report_files = prune_deleted_report_files(now=current.timestamp())
@@ -350,6 +351,8 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
             actions_removed,
             attachments_removed,
         )
+    if media_uploads_removed:
+        logger.info("Pruned %s expired media upload(s)", media_uploads_removed)
     if deleted_report_files:
         logger.info("Pruned %s deleted-report quarantine file(s)", deleted_report_files)
     if pending_reports_removed:

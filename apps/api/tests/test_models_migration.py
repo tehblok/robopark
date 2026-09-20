@@ -75,6 +75,7 @@ def test_metadata_has_required_tables():
         "inventory_count_lines",
         "inventory_migration_conflicts",
         "offline_sync_receipts",
+        "media_upload_sessions",
         "ip_geo_cache",
         "ip_geo_quota",
     }
@@ -107,10 +108,10 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_is_offline_sync_receipts():
+def test_alembic_head_is_resumable_media_uploads():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0033_offline_sync_receipts"]
+    assert script.get_heads() == ["0034_resumable_media_uploads"]
 
 
 def test_alembic_revision_ids_fit_version_table_column():

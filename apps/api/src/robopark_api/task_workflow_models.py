@@ -4,6 +4,7 @@ import time
 from uuid import uuid4
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Float,
     ForeignKey,
@@ -84,6 +85,31 @@ class OfflineSyncReceipt(Base):
     payload_hash: Mapped[str] = mapped_column(String(64))
     result_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class MediaUploadSession(Base):
+    __tablename__ = "media_upload_sessions"
+    __table_args__ = (
+        UniqueConstraint("actor_user_id", "media_id", name="uq_media_upload_actor_media"),
+        CheckConstraint("size_bytes > 0 AND received_offset >= 0 AND received_offset <= size_bytes", name="ck_media_upload_offsets"),
+        Index("ix_media_upload_expiry", "completed", "expires_at", "id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid4()))
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    media_id: Mapped[str] = mapped_column(String(64))
+    issue_key: Mapped[str] = mapped_column(String(128))
+    original_name: Mapped[str] = mapped_column(String(256))
+    mime_type: Mapped[str] = mapped_column(String(128))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    received_offset: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    blob_name: Mapped[str] = mapped_column(String(256))
+    completed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+    expires_at: Mapped[float] = mapped_column(Float)
+    completed_at: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class TaskMessage(Base):
