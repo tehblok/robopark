@@ -24,6 +24,7 @@ import { resourceStore, useCachedResource } from '../lib/resource'
 import { useParkScope } from '../app/park/parkScope'
 import { SlaPolicyEditor } from '../domains/insights/SlaPolicyEditor'
 import { ManagementNavigation } from '../domains/management/ManagementNavigation'
+import { DomainPresentation } from '../app/interface/DomainPresentation'
 import { MetricCard } from '../design-system/data/MetricCard'
 import { StatusBadge } from '../design-system/status/StatusBadge'
 
@@ -145,7 +146,7 @@ export function Admin() {
     user?.id, user?.username, user?.role, user?.tracker_login,
     user?.permissions, user?.parks, contextParkId,
   ])
-  return <div className="rp-management"><AdminWorkspace key={context} bootstrapKey={`admin:bootstrap:${context}`} /></div>
+  return <div className="rp-management"><DomainPresentation route="admin-settings" context={<p>Настройки платформы</p>}><AdminWorkspace key={context} bootstrapKey={`admin:bootstrap:${context}`} /></DomainPresentation></div>
 }
 
 function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {

@@ -134,3 +134,16 @@ test('inventory is loaded for every production-authorized role and denied to dri
   await expect(page).toHaveURL(/\/overview(?:\?|$)/)
   await expect(page.getByRole('heading', { name: 'Склад', exact: true })).toHaveCount(0)
 })
+
+test('canonical rebuilt domains expose A zones and keep Classic free of them', async ({ page }) => {
+  const routes = ['operator-parks', 'reports', 'reports-new', 'report-detail', 'campaign-detail', 'admin', 'admin-settings', 'admin-users', 'admin-roles', 'admin-robot-check'] as const
+  for (const routeId of routes) {
+    const user = userForRole(routeId === 'operator-parks' ? 'operator' : 'royal')
+    await openRouteFixture(page, routeId, user)
+    await selectInterface(page, 'Классический')
+    await expect(page.locator('[data-a-route]')).toHaveCount(0)
+    await selectInterface(page, 'Новый А')
+    await expect(page.locator(`[data-a-route="${routeId}"]`)).toBeVisible()
+    await expect(page.locator('[data-a-zone="workflow"], [data-a-zone="report-list"], [data-a-zone="report-compose"], [data-a-zone="report-workflow"], [data-a-zone="campaign-workflow"]').first()).toBeVisible()
+  }
+})
