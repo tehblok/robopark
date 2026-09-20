@@ -42,6 +42,8 @@ services:
       PGPASSFILE: /run/secrets/pgpass
       REPORT_ATTACHMENTS_DIR: /data/report-attachments
       OPS_DIR: /data/ops
+      HOST_DATA_PATH: /data
+      HOST_HEALTH_PATH: /data/ops/host-health.json
       OPS_HOST_ENV_PATH: /run/robopark/snapshot.env
       # UVICORN_WORKERS comes from host.env; entrypoint defaults to 2.
     volumes:

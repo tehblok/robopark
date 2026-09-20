@@ -2,13 +2,46 @@
 
 from __future__ import annotations
 
+import heapq
 import os
 import stat
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 GIB = 1024**3
+ALLOWED_CATEGORIES = ("confirmed_tracker",)
+
+
+@contextmanager
+def pinned_directory(path: Path):
+    """Pin an owned directory through no-follow openat traversal."""
+    descriptors: list[int] = []
+    try:
+        descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        descriptors.append(descriptor)
+        for part in path.absolute().parts[1:]:
+            descriptor = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor
+            )
+            descriptors.append(descriptor)
+        yield descriptor
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def unlink_unchanged(descriptor: int, name: str, before: os.stat_result) -> None:
+    current = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or current.st_nlink != 1
+        or (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)
+        != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+    ):
+        raise OSError("changed")
+    os.unlink(name, dir_fd=descriptor)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,65 +68,58 @@ def cleanup_storage(
     max_deletions: int = 128,
 ) -> dict:
     """Clean only API-owned duplicates; callers cannot add primary-data roots."""
-    allowed = ("cache", "tmp", "thumbnails", "diagnostics", "logs", "confirmed_tracker")
-    unknown = sorted(set(roots) - set(allowed))
+    unknown = sorted(set(roots) - set(ALLOWED_CATEGORIES))
     blocked = bool(unknown)
     candidates = []
-    skipped = []
-    for priority, category in enumerate(allowed):
+    skipped_counts: dict[str, int] = {}
+    opened: list[int] = []
+
+    def skip(reason: str) -> None:
+        skipped_counts[reason] = skipped_counts.get(reason, 0) + 1
+
+    for category in ALLOWED_CATEGORIES:
         root = roots.get(category)
         if root is None:
             continue
         try:
-            if (
-                root.is_symlink()
-                or not root.is_dir()
-                or root.resolve(strict=True) != root.absolute()
-            ):
-                blocked = True
-                skipped.append({"category": category, "reason": "unsafe_root"})
-                continue
-            for entry in os.scandir(root):
+            manager = pinned_directory(root)
+            descriptor = manager.__enter__()
+            opened.append((manager, descriptor))
+            for entry in os.scandir(descriptor):
                 info = entry.stat(follow_symlinks=False)
                 if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
-                    candidates.append(
-                        (priority, info.st_mtime_ns, category, Path(entry.path), info)
-                    )
+                    item = (-info.st_mtime_ns, entry.name, category, info, descriptor)
+                    if len(candidates) < max(0, max_deletions):
+                        heapq.heappush(candidates, item)
+                    elif candidates and item > candidates[0]:
+                        heapq.heapreplace(candidates, item)
                 else:
-                    skipped.append(
-                        {"category": category, "path": entry.name, "reason": "not_owned_file"}
-                    )
+                    skip("not_owned_file")
         except OSError:
             blocked = True
-            skipped.append({"category": category, "reason": "scan_failed"})
-    candidates.sort(key=lambda item: (item[0], item[1], item[3].name))
+            skip("scan_failed")
+    candidates.sort(key=lambda item: (-item[0], item[1]))
     reclaimed = 0
     planned = []
     deleted = []
-    for _, _, category, path, before in candidates:
+    for _, name, category, before, descriptor in candidates:
         if len(planned) >= max(0, max_deletions) or reclaimed >= budget.bytes_to_reclaim:
             break
-        item = {"category": category, "path": path.name, "bytes": before.st_size}
+        item = {"category": category, "path": name, "bytes": before.st_size}
         planned.append(item)
         if dry_run:
             reclaimed += before.st_size
             continue
         try:
-            current = path.stat(follow_symlinks=False)
-            if (
-                not stat.S_ISREG(current.st_mode)
-                or current.st_nlink != 1
-                or (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)
-                != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-            ):
-                raise OSError("changed")
-            path.unlink()
+            unlink_unchanged(descriptor, name, before)
             deleted.append(item)
             reclaimed += before.st_size
         except OSError:
             blocked = True
-            skipped.append({"category": category, "path": path.name, "reason": "delete_failed"})
+            skip("delete_failed")
             break
+    for manager, _ in reversed(opened):
+        manager.__exit__(None, None, None)
     return {
         "dry_run": dry_run,
         "floor_bytes": budget.floor_bytes,
@@ -106,7 +132,7 @@ def cleanup_storage(
         "blocked": blocked,
         "bounded": len(planned) <= max(0, max_deletions),
         "unknown_categories": unknown,
-        "skipped": skipped,
+        "skipped_counts": skipped_counts,
     }
 
 
@@ -143,3 +169,26 @@ class MemoryPressureController:
                 return {"sustained": True, "evicted": False, "failed": True}
             return {"sustained": True, "evicted": True, "failed": False}
         return {"sustained": True, "evicted": False, "failed": True}
+
+
+class CleanupRetry:
+    """Bounded exponential retry and error-log throttling for scheduled cleanup."""
+
+    def __init__(self, *, minimum: float = 30.0, maximum: float = 900.0) -> None:
+        self.minimum = minimum
+        self.maximum = max(minimum, maximum)
+        self._delay = 0.0
+        self._last_log = float("-inf")
+
+    def failed(self) -> float:
+        self._delay = min(self.maximum, max(self.minimum, self._delay * 2))
+        return self._delay
+
+    def succeeded(self) -> None:
+        self._delay = 0.0
+
+    def should_log(self, now: float) -> bool:
+        if now - self._last_log < self.maximum:
+            return False
+        self._last_log = now
+        return True

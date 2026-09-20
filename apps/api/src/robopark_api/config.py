@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     report_attachments_dir: str | None = None
     #: Component and spare-part catalog photos.
     inventory_photos_dir: str | None = None
+    #: Actual application data mount and sanitized host-only health projection.
+    host_data_path: str = "/data"
+    host_health_path: str = "/ops/host-health.json"
 
     @model_validator(mode="after")
     def resolve_sqlite_database_path(self) -> "Settings":

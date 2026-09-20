@@ -101,6 +101,42 @@ def test_cleanup_loop_runs_without_sleeping_and_stops_on_event(monkeypatch):
     asyncio.run(exercise())
 
 
+def test_cleanup_failure_backs_off_while_pressure_sampling_continues(monkeypatch):
+    cleanup_calls = 0
+    sample_calls = 0
+
+    def failing_cleanup():
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        raise RuntimeError("disk temporarily unavailable")
+
+    async def no_wait(awaitable, *, timeout):
+        awaitable.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(cache_cleanup, "prune_cache_once", failing_cleanup)
+    monkeypatch.setattr(asyncio, "wait_for", no_wait)
+
+    async def exercise():
+        nonlocal sample_calls
+        stop_event = asyncio.Event()
+
+        def sample():
+            nonlocal sample_calls
+            sample_calls += 1
+            if sample_calls == 3:
+                stop_event.set()
+
+        monkeypatch.setattr(cache_cleanup, "sample_memory_pressure", sample)
+        await cache_cleanup.run_cache_cleanup_loop(
+            stop_event, interval_seconds=3600, pressure_interval_seconds=30
+        )
+
+    asyncio.run(exercise())
+    assert cleanup_calls == 1
+    assert sample_calls == 3
+
+
 @pytest.mark.parametrize(
     ("merge_enabled", "won_lease"),
     [(True, False), (True, True), (False, False), (False, True)],

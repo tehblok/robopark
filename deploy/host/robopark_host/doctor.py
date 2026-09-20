@@ -551,7 +551,11 @@ def _capability_check(paths: HostPaths) -> CheckResult:
 
     capabilities = probe_host_capabilities(paths.root)
     with suppress(OSError):
-        write_capabilities(paths.state / "capabilities.json", capabilities)
+        write_capabilities(
+            paths.state / "capabilities.json",
+            capabilities,
+            public_path=paths.var / "api-ops/host-health.json",
+        )
     return CheckResult(
         "host_capabilities",
         "ok",

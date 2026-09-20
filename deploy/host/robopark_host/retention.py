@@ -7,6 +7,7 @@ filter: false positives reject a command, never replay it. It is never reset.
 
 import fcntl
 import hashlib
+import heapq
 import json
 import os
 import re
@@ -34,15 +35,11 @@ GIB = 1024**3
 MIN_FREE_BYTES = 6 * GIB
 MIN_FREE_RATIO = 0.15
 MAX_STORAGE_DELETIONS = 128
-STORAGE_CATEGORIES = ("cache", "tmp", "thumbnails", "diagnostics", "logs", "confirmed_tracker")
+STORAGE_CATEGORIES = ("diagnostics", "logs")
 STORAGE_PRIORITY = {name: index for index, name in enumerate(STORAGE_CATEGORIES)}
 STORAGE_TTL = {
-    "cache": 30 * 86400,
-    "tmp": 7 * 86400,
-    "thumbnails": 30 * 86400,
     "diagnostics": 7 * 86400,
     "logs": 14 * 86400,
-    "confirmed_tracker": 7 * 86400,
 }
 STORAGE_MAX_BYTES = {"logs": 256 * 1024**2}
 
@@ -87,45 +84,56 @@ def cleanup_storage_roots(
     now = time.time() if now is None else now
     unknown = sorted(set(roots) - set(STORAGE_CATEGORIES))
     blocked = bool(unknown)
-    candidates: list[tuple[int, int, str, Path, os.stat_result]] = []
-    skipped: list[dict[str, str]] = []
+    candidates: list[tuple[int, int, str, str, os.stat_result, int]] = []
+    skipped_counts: dict[str, int] = {}
+    opened: list[int] = []
+    category_totals: dict[str, int] = {}
+
+    def skip(reason: str) -> None:
+        skipped_counts[reason] = skipped_counts.get(reason, 0) + 1
+
+    def open_pinned(path: Path) -> int:
+        descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        opened.append(descriptor)
+        for part in path.absolute().parts[1:]:
+            descriptor = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor
+            )
+            opened.append(descriptor)
+        return descriptor
+
     for category in STORAGE_CATEGORIES:
         root = roots.get(category)
         if root is None:
             continue
         try:
-            root_info = root.lstat()
-            if (
-                not stat.S_ISDIR(root_info.st_mode)
-                or root.is_symlink()
-                or root.resolve(strict=True) != root.absolute()
-            ):
-                blocked = True
-                skipped.append({"category": category, "reason": "unsafe_root"})
-                continue
-            with os.scandir(root) as listing:
+            descriptor = open_pinned(root)
+            with os.scandir(descriptor) as listing:
                 for entry in listing:
                     info = entry.stat(follow_symlinks=False)
                     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                        skipped.append({"category": category, "path": entry.name, "reason": "not_owned_file"})
+                        skip("not_owned_file")
                         continue
-                    candidates.append(
-                        (STORAGE_PRIORITY[category], info.st_mtime_ns, category, root / entry.name, info)
-                    )
-        except (FileNotFoundError, NotADirectoryError):
+                    category_totals[category] = category_totals.get(category, 0) + info.st_size
+                    item = (-info.st_mtime_ns, -len(entry.name), category, entry.name, info, descriptor)
+                    if len(candidates) < max(0, max_deletions):
+                        heapq.heappush(candidates, item)
+                    elif candidates and item > candidates[0]:
+                        heapq.heapreplace(candidates, item)
+        except FileNotFoundError:
             continue
+        except NotADirectoryError:
+            blocked = True
+            skip("unsafe_root")
         except OSError:
             blocked = True
-            skipped.append({"category": category, "reason": "scan_failed"})
-    candidates.sort(key=lambda item: (item[0], item[1], item[3].name))
+            skip("scan_failed")
+    candidates.sort(key=lambda item: (STORAGE_PRIORITY[item[2]], -item[0], item[3]))
     target = budget.bytes_to_reclaim
     reclaimed = 0
     planned: list[dict[str, object]] = []
     deleted: list[dict[str, object]] = []
-    category_totals: dict[str, int] = {}
-    for _, _, category, _, info in candidates:
-        category_totals[category] = category_totals.get(category, 0) + info.st_size
-    for _, _, category, path, before in candidates:
+    for _, _, category, name, before, descriptor in candidates:
         expired = now - before.st_mtime >= STORAGE_TTL[category]
         over_category_budget = category_totals.get(category, 0) > STORAGE_MAX_BYTES.get(
             category, 2**63 - 1
@@ -135,14 +143,14 @@ def cleanup_storage_roots(
             break
         if not (expired or over_category_budget or under_pressure):
             continue
-        item = {"category": category, "path": path.name, "bytes": before.st_size}
+        item = {"category": category, "path": name, "bytes": before.st_size}
         planned.append(item)
         if dry_run:
             reclaimed += before.st_size
             category_totals[category] -= before.st_size
             continue
         try:
-            current = path.stat(follow_symlinks=False)
+            current = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
             if not stat.S_ISREG(current.st_mode) or (
                 current.st_dev,
                 current.st_ino,
@@ -150,14 +158,16 @@ def cleanup_storage_roots(
                 current.st_mtime_ns,
             ) != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns):
                 raise RetentionBlocked("artifact_changed")
-            path.unlink()
+            os.unlink(name, dir_fd=descriptor)
             deleted.append(item)
             reclaimed += before.st_size
             category_totals[category] -= before.st_size
         except (OSError, ValueError):
             blocked = True
-            skipped.append({"category": category, "path": path.name, "reason": "delete_failed"})
+            skip("delete_failed")
             break
+    for descriptor in reversed(opened):
+        os.close(descriptor)
     category_bytes = category_totals
     pressure_category = planned[-1]["category"] if planned and budget.free_bytes + reclaimed < budget.floor_bytes else None
     return {
@@ -172,7 +182,7 @@ def cleanup_storage_roots(
         "pressure": budget.free_bytes + reclaimed < budget.floor_bytes,
         "blocked": blocked,
         "unknown_categories": unknown,
-        "skipped": skipped,
+        "skipped_counts": skipped_counts,
         "category_bytes": category_bytes,
         "pressure_category": pressure_category,
         "completed_at": time.time(),
@@ -184,11 +194,8 @@ def retain_storage(paths, *, dry_run: bool = False, max_deletions: int = MAX_STO
     from .state import HostBusy, host_operation
 
     roots = {
-        "cache": paths.var / "cache",
-        "thumbnails": paths.var / "thumbnails",
         "diagnostics": paths.var / "diagnostics",
         "logs": paths.root / "var/log/robopark",
-        "confirmed_tracker": paths.var / "tracker-confirmed",
     }
     try:
         paths.state.mkdir(parents=True, exist_ok=True)
@@ -214,6 +221,24 @@ def retain_storage(paths, *, dry_run: bool = False, max_deletions: int = MAX_STO
         }
     if not dry_run and not paths.state.is_symlink():
         atomic_write_json(paths.state / "storage-retention.json", report)
+        from .health_projection import update_public_health
+
+        update_public_health(
+            paths.var / "api-ops/host-health.json",
+            storage={
+                key: report.get(key)
+                for key in (
+                    "floor_bytes",
+                    "bytes_to_reclaim",
+                    "reclaimed_bytes",
+                    "pressure",
+                    "blocked",
+                    "category_bytes",
+                    "pressure_category",
+                    "completed_at",
+                )
+            },
+        )
     return report
 
 

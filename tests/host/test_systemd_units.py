@@ -183,6 +183,8 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
     assert document["services"]["db"]["image"] == "sha256:" + "2" * 64
     assert "build" not in api
     assert "UVICORN_WORKERS" not in api["environment"]
+    assert api["environment"]["HOST_DATA_PATH"] == "/data"
+    assert api["environment"]["HOST_HEALTH_PATH"] == "/ops/host-health.json"
     mounts = {v["target"]: v for v in api["volumes"]}
     assert mounts["/ops"]["source"] == str(host_paths.var / "api-ops")
     assert mounts["/data"]["source"] == str(host_paths.var / "data")

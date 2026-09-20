@@ -257,8 +257,8 @@ def process_observations(
     }
 
 
-def _capabilities(ops_dir: Path) -> dict:
-    value = _read_json(ops_dir / "state/capabilities.json")
+def _capabilities(public_health: dict) -> dict:
+    value = public_health.get("capabilities", {})
     return {
         "profile": value.get("profile", "generic-arm"),
         "jpeg_backend": value.get("jpeg_backend", "software"),
@@ -269,8 +269,11 @@ def _capabilities(ops_dir: Path) -> dict:
     }
 
 
-def cached_host_snapshot(data_dir: Path, ops_dir: Path) -> dict:
-    key = str(data_dir) + ":" + str(ops_dir)
+def cached_host_snapshot(
+    data_dir: Path, ops_dir: Path, public_health_path: Path | None = None
+) -> dict:
+    public_health_path = public_health_path or ops_dir / "host-health.json"
+    key = str(data_dir) + ":" + str(ops_dir) + ":" + str(public_health_path)
     now = time.time()
     with _snapshot_lock:
         cached = _snapshot_cache.get(key)
@@ -282,6 +285,11 @@ def cached_host_snapshot(data_dir: Path, ops_dir: Path) -> dict:
             disk = {"total_bytes": usage.total, "free_bytes": usage.free}
         except OSError:
             pass
+        public_health = _read_json(public_health_path)
+        from robopark_api.services.live_merge import default_live_merge_root
+        from robopark_api.services.report_attachments import attachments_root
+        from robopark_api.services.task_timeline import staged_attachments_root
+
         result = {
             "sampled_at": now,
             "window_seconds": WINDOW_SECONDS,
@@ -291,22 +299,24 @@ def cached_host_snapshot(data_dir: Path, ops_dir: Path) -> dict:
             "requests": read_observations(ops_dir / "observations", now=now),
             "process": process_observations(
                 category_roots={
-                    "cache": data_dir / "cache",
-                    "thumbnails": data_dir / "thumbnails",
-                    "diagnostics": data_dir / "diagnostics",
-                    "confirmed_tracker": data_dir / "tracker-confirmed",
+                    "live_merge": default_live_merge_root(),
+                    "report_attachments": attachments_root(),
+                    "tracker_uploads": staged_attachments_root(),
                 },
-                cleanup_state=ops_dir / "state/storage-retention.json",
+                cleanup_state=None,
             ),
-            "capabilities": _capabilities(ops_dir),
+            "capabilities": _capabilities(public_health),
         }
-        cleanup = result["process"]["last_cleanup"]
+        cleanup = public_health.get("storage", {})
+        result["process"]["last_cleanup"] = cleanup
         floor = max(6 * 1024**3, int((disk["total_bytes"] or 0) * 0.15))
         free = disk["free_bytes"] or 0
         result["storage"] = {
             "floor_bytes": floor,
             "bytes_to_reclaim": max(0, floor - free),
-            "category_bytes": result["process"]["directory_bytes"],
+            "category_bytes": cleanup.get(
+                "category_bytes", result["process"]["directory_bytes"]
+            ),
             "last_cleanup_at": cleanup.get("completed_at"),
             "cleanup_failed": cleanup.get("blocked") is True or cleanup.get("pressure") is True,
         }

@@ -103,3 +103,97 @@ def test_api_retention_deletes_only_confirmed_tracker_duplicates(tmp_path):
     assert not (confirmed / "blob").exists()
     assert (unconfirmed / "blob").exists()
     assert (actions / "blob").exists()
+
+
+def test_api_retention_parent_replacement_and_report_are_bounded(tmp_path, monkeypatch):
+    import os
+
+    from robopark_api.services import storage_retention
+
+    confirmed = tmp_path / "confirmed"
+    outside = tmp_path / "outside"
+    confirmed.mkdir()
+    outside.mkdir()
+    for index in range(1000):
+        (confirmed / f"blob-{index:04d}").write_bytes(b"x")
+        (confirmed / f"link-{index:04d}").symlink_to(outside / "protected")
+    protected = outside / "protected"
+    protected.write_bytes(b"outside")
+    moved = tmp_path / "moved"
+    original = os.unlink
+    replaced = False
+
+    def replace_then_unlink(name, *, dir_fd=None):
+        nonlocal replaced
+        if not replaced:
+            confirmed.rename(moved)
+            confirmed.symlink_to(outside, target_is_directory=True)
+            replaced = True
+        return original(name, dir_fd=dir_fd)
+
+    monkeypatch.setattr(storage_retention.os, "unlink", replace_then_unlink)
+    report = storage_retention.cleanup_storage(
+        roots={"confirmed_tracker": confirmed},
+        budget=storage_retention.StorageBudget(10_000, 0, minimum_free_bytes=10_000),
+        dry_run=False,
+        max_deletions=128,
+    )
+
+    assert report["deleted_count"] == 128
+    assert len(report["planned"]) == 128
+    assert report["skipped_counts"] == {"not_owned_file": 1000}
+    assert protected.read_bytes() == b"outside"
+
+
+def test_cleanup_retry_is_bounded_and_rate_limited():
+    from robopark_api.services.storage_retention import CleanupRetry
+
+    retry = CleanupRetry(minimum=30, maximum=120)
+    assert [retry.failed() for _ in range(5)] == [30, 60, 120, 120, 120]
+    assert retry.should_log(0) is True
+    assert retry.should_log(119) is False
+    assert retry.should_log(120) is True
+    retry.succeeded()
+    assert retry.failed() == 30
+
+
+def test_host_snapshot_reads_actual_data_mount_and_only_public_projection(tmp_path, monkeypatch):
+    from robopark_api.services import (
+        live_merge,
+        operational_health,
+        report_attachments,
+        task_timeline,
+    )
+
+    data = tmp_path / "data"
+    ops = tmp_path / "ops"
+    private = ops / "state"
+    for path in (data, ops, private):
+        path.mkdir()
+    public = ops / "host-health.json"
+    public.write_text(
+        '{"capabilities":{"profile":"orin","jpeg_backend":"software",'
+        '"hardware_jpeg":false,"cuda_available":true},'
+        '"storage":{"completed_at":123,"blocked":false,"pressure":false}}'
+    )
+    (private / "capabilities.json").write_text(
+        '{"profile":"private-leak","jpeg_backend":"nvjpeg","hardware_jpeg":true}'
+    )
+    for name in ("live", "reports", "uploads"):
+        (data / name).mkdir()
+    monkeypatch.setattr(live_merge, "default_live_merge_root", lambda: data / "live")
+    monkeypatch.setattr(report_attachments, "attachments_root", lambda: data / "reports")
+    monkeypatch.setattr(task_timeline, "staged_attachments_root", lambda: data / "uploads")
+    operational_health._snapshot_cache.clear()
+
+    result = operational_health.cached_host_snapshot(data, ops, public)
+
+    assert result["disk"]["total_bytes"] > 0
+    assert result["capabilities"]["profile"] == "orin"
+    assert result["capabilities"]["jpeg_backend"] == "software"
+    assert result["storage"]["last_cleanup_at"] == 123
+    assert set(result["process"]["directory_bytes"]) == {
+        "live_merge",
+        "report_attachments",
+        "tracker_uploads",
+    }

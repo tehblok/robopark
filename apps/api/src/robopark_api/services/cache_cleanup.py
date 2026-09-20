@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -20,7 +22,12 @@ from robopark_api.services.report_attachments import (
     prune_deleted_report_files,
     reconcile_pending_report_deletions,
 )
-from robopark_api.services.storage_retention import MemoryPressureController
+from robopark_api.services.storage_retention import (
+    CleanupRetry,
+    MemoryPressureController,
+    pinned_directory,
+    unlink_unchanged,
+)
 from robopark_api.services.task_timeline import staged_attachments_root
 from robopark_api.task_workflow_models import ReliableAction, TaskAttachment
 
@@ -91,29 +98,40 @@ def prune_tracker_outbox(db: Session, *, now: float) -> tuple[int, int]:
             .limit(_RETENTION_BATCH_SIZE)
         ).all()
     )
-    blob_names = [attachment.blob_name for attachment in attachments]
-    for attachment in attachments:
-        db.delete(attachment)
-
-    actions = list(
-        db.scalars(
-            select(ReliableAction)
-            .where(
-                ReliableAction.state == "succeeded",
-                ReliableAction.updated_at < now - _SUCCESS_RETENTION_SECONDS,
-            )
-            .order_by(ReliableAction.updated_at, ReliableAction.id)
-            .limit(_RETENTION_BATCH_SIZE)
-        ).all()
-    )
-    for action in actions:
-        db.delete(action)
-    db.commit()
-
     root = staged_attachments_root()
-    for blob_name in blob_names:
-        with contextlib.suppress(OSError):
-            (root / blob_name).unlink()
+    pinned_blobs: list[tuple[str, os.stat_result]] = []
+    manager = pinned_directory(root) if root.exists() else contextlib.nullcontext(None)
+    with manager as root_fd:
+        for attachment in attachments:
+            name = attachment.blob_name
+            if name != Path(name).name:
+                continue
+            try:
+                info = os.stat(name, dir_fd=root_fd, follow_symlinks=False) if root_fd is not None else None
+            except OSError:
+                info = None
+            if info is not None and stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                pinned_blobs.append((name, info))
+            db.delete(attachment)
+
+        actions = list(
+            db.scalars(
+                select(ReliableAction)
+                .where(
+                    ReliableAction.state == "succeeded",
+                    ReliableAction.updated_at < now - _SUCCESS_RETENTION_SECONDS,
+                )
+                .order_by(ReliableAction.updated_at, ReliableAction.id)
+                .limit(_RETENTION_BATCH_SIZE)
+            ).all()
+        )
+        for action in actions:
+            db.delete(action)
+        db.commit()
+        for blob_name, before in pinned_blobs:
+            with contextlib.suppress(OSError):
+                assert root_fd is not None
+                unlink_unchanged(root_fd, blob_name, before)
     return len(actions), len(attachments)
 
 
@@ -155,20 +173,30 @@ async def run_cache_cleanup_loop(
 ) -> None:
     loop = asyncio.get_running_loop()
     next_cleanup = 0.0
+    retry = CleanupRetry(minimum=max(30.0, pressure_interval_seconds))
     while not stop_event.is_set():
-        try:
-            now = loop.time()
-            if now >= next_cleanup:
+        now = loop.time()
+        if now >= next_cleanup:
+            try:
                 await asyncio.to_thread(prune_cache_once)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                next_cleanup = now + retry.failed()
+                if retry.should_log(now):
+                    logger.exception("Cache cleanup cycle failed; retry is bounded")
+            else:
+                retry.succeeded()
                 next_cleanup = now + interval_seconds
+        try:
             await asyncio.to_thread(sample_memory_pressure)
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("Cache cleanup cycle failed")
+            logger.exception("Memory pressure sampling failed")
 
         if stop_event.is_set():
             break
-        timeout = min(pressure_interval_seconds, max(0.01, next_cleanup - loop.time()))
+        timeout = max(1.0, pressure_interval_seconds)
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop_event.wait(), timeout=timeout)

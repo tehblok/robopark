@@ -5,12 +5,14 @@
 - Added one storage-pressure contract with a free-space floor of
   `max(15% of the partition, 6 GiB)`, deterministic category order, TTL/log caps,
   dry-run output and a 128-item execution batch.
-- Scheduled host cleanup owns only explicit ephemeral roots: cache, thumbnails,
-  diagnostics, Robopark logs and confirmed Tracker copies. It does not scan releases,
+- Scheduled host cleanup owns only the real host diagnostics and Robopark log roots.
+  API cleanup reuses the existing live-merge, report-attachment and delivery-confirmed
+  Tracker-upload owners. It does not scan releases,
   rollback/recovery, PostgreSQL, inventory, users/roles/parks, diagnostic rules,
   active work, pending actions or unconfirmed uploads.
-- Cleanup refuses symlink roots, symlinked ancestors, symlink entries, hard-linked
-  files and changed inodes. It executes under Task 2's stable host lock and records a
+- Cleanup opens every root component without following symlinks, pins directory
+  descriptors, and revalidates before descriptor-relative unlink. It refuses symlink
+  entries, hard-linked files and changed inodes. It executes under Task 2's stable host lock and records a
   bounded category report for doctor and host health.
 - Existing API outbox retention remains delivery-gated: only `succeeded` actions and
   uploaded staged blobs are eligible. Existing report deletion markers remain the
@@ -20,9 +22,10 @@
   last cleanup and hardware capabilities.
 - Three consecutive cgroup samples above 90% evict Task 3 Tracker/Emergency caches
   once. Continued pressure or an eviction error is surfaced; no restart is requested.
-- Added fail-soft VIM4, New VIM4, Orin and generic ARM capability probes. JPEG hardware
-  is selected only after a bounded local plugin/library probe; software remains the
-  fallback. CUDA/NPU discovery is informational and never gates startup.
+- Added fail-soft VIM4, New VIM4, Orin and generic ARM capability probes. Because no
+  hardware thumbnail consumer exists yet, JPEG remains software and hardware JPEG is
+  not advertised; plugin/library presence alone is not treated as a health probe.
+  CUDA/NPU discovery is informational and never gates startup.
 - Admin UI exposes the selected profile/JPEG backend, storage budget, cleanup state,
   process/leak signals and persistent memory-pressure failure. The database label now
   reflects PostgreSQL.
@@ -72,3 +75,21 @@
 - The API matrix was first invoked from the repository root and produced two Alembic
   path failures in report tests; rerunning from the suite's required `apps/api` cwd
   passed all 140 tests. This was a command-context issue, not a product failure.
+
+## Review round 1
+
+- Host and API bounded cleanup now retain at most 128 candidates in memory, aggregate
+  skipped reasons, and keep reports bounded under thousand-entry stress fixtures.
+- Parent replacement during cleanup cannot redirect deletion: regression tests swap
+  the visible root immediately before unlink and verify the outside file is untouched.
+- Cleanup failures use exponential 30–900 second retry, while memory-pressure sampling
+  continues every interval; identical cleanup errors are logged at most once per cap.
+- The API computes disk health from its real `/data` mount and reads capabilities and
+  last cleanup only from the sanitized `/ops/host-health.json` projection. Runtime and
+  manual Compose contracts name both paths and never mount private host state.
+- Health directory observations now use the real Task 3 live-merge store, report
+  attachments and staged Tracker uploads. Tracker blob deletion remains gated by an
+  uploaded attachment joined to a succeeded reliable action.
+- Verification: focused matrix `69 passed`; full host `752 passed in 486.56s`; full API
+  `1789 passed, 7 skipped`; full web `147 files / 2080 tests`; scoped Ruff clean;
+  web lint exited 0 (existing warnings only) and production build succeeded.

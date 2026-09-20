@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import yaml
-
 from robopark_host.runtime import DatabaseProfile, HostProfile, select_host_profile
 
 
@@ -19,6 +18,8 @@ def test_production_compose_uses_local_postgresql_17_and_health_gates_api():
     assert database["volumes"] == ["${ROBOPARK_POSTGRES_SOURCE:-robopark_postgres}:/var/lib/postgresql/data"]
     assert api["depends_on"]["db"]["condition"] == "service_healthy"
     assert api["environment"]["DATABASE_URL"].startswith("postgresql+")
+    assert api["environment"]["HOST_DATA_PATH"] == "/data"
+    assert api["environment"]["HOST_HEALTH_PATH"] == "/data/ops/host-health.json"
     assert "sqlite" not in Path("deploy/docker-compose.yml").read_text().lower()
 
 

@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import ctypes
-import ctypes.util
-import shutil
-import subprocess
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .health_projection import update_public_health
 from .state import atomic_write_json
 
 
@@ -39,23 +36,12 @@ def _exists(root: Path, *names: str) -> bool:
 
 
 def probe_jpeg_backend(backend: str) -> bool:
-    """Run a local bounded plugin/library probe; failures keep software active."""
-    try:
-        if backend == "gstreamer":
-            executable = shutil.which("gst-inspect-1.0")
-            if executable is None:
-                return False
-            return (
-                subprocess.run(
-                    [executable, "amlvdec"], capture_output=True, timeout=3, check=False
-                ).returncode
-                == 0
-            )
-        if backend == "nvjpeg":
-            library = ctypes.util.find_library("nvjpeg")
-            return library is not None and ctypes.CDLL(library) is not None
-    except (OSError, subprocess.SubprocessError):
-        return False
+    """No hardware thumbnail consumer is installed, so never advertise one.
+
+    Library/plugin discovery is not an encode/decode health check.  A future
+    thumbnail owner must replace this with a bounded round trip and consume the
+    selected backend before returning true.
+    """
     return False
 
 
@@ -94,25 +80,20 @@ def probe_host_capabilities(
     nvme = any(
         (root / "sys/class/block" / name).exists() for name in ("nvme0n1", "nvme1n1")
     )
-    candidate = "software"
-    if is_orin and _exists(
-        root, "/usr/lib/libnvjpeg.so", "/usr/lib/aarch64-linux-gnu/libnvjpeg.so"
-    ):
-        candidate = "nvjpeg"
-    elif is_vim4 and _exists(root, "/usr/lib/libgstaml.so", "/dev/video0"):
-        candidate = "gstreamer"
-    healthy = False
-    health_probe = jpeg_health_probe or probe_jpeg_backend
-    if candidate != "software":
-        try:
-            healthy = health_probe(candidate) is True
-        except Exception:  # noqa: BLE001 - an optional vendor probe must always fail soft.
-            healthy = False
-    backend = candidate if healthy else "software"
+    # Hardware discovery remains informational (CUDA/NPU) and can never become
+    # a startup dependency. There is currently no hardware thumbnail consumer,
+    # so selecting a backend would be a false capability advertisement.
+    backend = "software"
     return HostCapabilities(
         profile, model or "unknown", backend, backend != "software", npu, cuda, nvme
     )
 
 
-def write_capabilities(path: Path, capabilities: HostCapabilities) -> None:
+def write_capabilities(
+    path: Path, capabilities: HostCapabilities, *, public_path: Path | None = None
+) -> None:
     atomic_write_json(path, capabilities.as_dict())
+    if public_path is not None:
+        public = capabilities.as_dict()
+        public.pop("model", None)
+        update_public_health(public_path, capabilities=public)

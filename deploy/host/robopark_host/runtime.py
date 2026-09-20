@@ -273,6 +273,8 @@ def production_config(document, paths, release, image_tag):
         OPS_HOST_ENV_PATH="",
         OPS_HOST_ROOT="/host-ops",
         OPS_RELEASE_PUBLIC_KEY_PATH="/etc/robopark/release-public-key.pem",
+        HOST_DATA_PATH="/data",
+        HOST_HEALTH_PATH="/ops/host-health.json",
     )
     api["volumes"] = [
         {
