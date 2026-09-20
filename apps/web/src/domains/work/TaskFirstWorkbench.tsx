@@ -6,21 +6,24 @@ export function TaskFirstWorkbench({ enabled, activeTab, focus, canCheck, onChan
   enabled: boolean; activeTab: WorkSection; focus: 'repair' | 'chat'; canCheck: boolean
   onChange(tab: WorkSection | 'chat'): void
 }) {
-  const items = enabled ? [
+  const workflowItems = enabled ? [
     { id: 'task', label: 'Ремонт' },
     ...(canCheck ? [{ id: 'check', label: 'Проверка' }] : []),
     { id: 'chat', label: 'Чат' },
   ] : [
-    { id: 'task', label: 'Задача' }, { id: 'open', label: 'Открытые задачи' },
-    { id: 'closed', label: 'Закрытые задачи' }, ...(canCheck ? [{ id: 'check', label: 'Проверка робота' }] : []),
+    { id: 'task', label: 'Задача' }, ...(canCheck ? [{ id: 'check', label: 'Проверка робота' }] : []),
+  ]
+  const relatedItems = [
+    { id: 'open', label: 'Открытые задачи' },
+    { id: 'closed', label: 'Закрытые задачи' },
   ]
   return <div className="rp-work-sections">
     <Tabs ariaLabel="Разделы задачи" value={enabled && activeTab === 'task' && focus === 'chat' ? 'chat' : activeTab}
-      items={items} onChange={tab => onChange(tab as WorkSection | 'chat')}
+      items={workflowItems} onChange={tab => onChange(tab as WorkSection | 'chat')}
       panelIdFor={tab => `work-panel-${tab === 'chat' ? 'task' : tab}`} />
-    {enabled ? <nav className="a-work-related" aria-label="Другие задачи робота">
-      <button id="tab-open" type="button" aria-pressed={activeTab === 'open'} onClick={() => onChange('open')}>Открытые задачи</button>
-      <button id="tab-closed" type="button" aria-pressed={activeTab === 'closed'} onClick={() => onChange('closed')}>Закрытые задачи</button>
-    </nav> : null}
+    <div className="a-work-related">
+      <Tabs ariaLabel="Другие задачи робота" value={activeTab} items={relatedItems}
+        onChange={tab => onChange(tab as WorkSection)} panelIdFor={tab => `work-panel-${tab}`} />
+    </div>
   </div>
 }

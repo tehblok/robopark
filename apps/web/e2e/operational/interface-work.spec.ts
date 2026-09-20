@@ -8,6 +8,18 @@ const repair = { ...issue, claim: { park_id: 7 }, workflow: {
 } }
 const photo = { name: 'repair.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA/0AAAAASUVORK5CYII=', 'base64') }
 
+async function expectTaskGeometry(page: import('@playwright/test').Page, width: number) {
+  const header = await page.locator('.rp-work-detail-pane [data-task-header]').boundingBox()
+  const body = await page.locator('.rp-work-detail-pane [data-task-body]').boundingBox()
+  const workflow = await page.locator('.rp-work-sections > .rp-tabs').boundingBox()
+  const related = await page.locator('.rp-work-sections > .a-work-related').boundingBox()
+  expect(header && body && workflow && related).toBeTruthy()
+  expect(Math.abs(header!.x - body!.x)).toBeLessThanOrEqual(1)
+  expect(Math.abs(header!.x + header!.width - body!.x - body!.width)).toBeLessThanOrEqual(1)
+  if (width < 900) expect(related!.y).toBeGreaterThanOrEqual(workflow!.y + workflow!.height - 1)
+  else expect(Math.abs(related!.y - workflow!.y)).toBeLessThanOrEqual(1)
+}
+
 for (const width of [390, 1440]) {
   test(`repair chat check preserve draft and photo across interfaces ${width}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 })
@@ -19,10 +31,12 @@ for (const width of [390, 1440]) {
     await page.goto('/work/ROBOPARK-42?park=7')
     await selectInterface(page, 'Новый А')
     await expect(page.getByRole('tab', { name: 'Ремонт', exact: true })).toBeVisible()
+    await expectTaskGeometry(page, width)
     await expect.poll(() => snapshotRequests).toBe(1)
     const taskLoaded = snapshotRequests
     await selectInterface(page, 'Классический')
     await expect(page.locator('.a-task-sequence')).toHaveCount(0)
+    await expectTaskGeometry(page, width)
     await selectInterface(page, 'Новый А')
     expect(snapshotRequests).toBe(taskLoaded)
     const comment = page.getByRole('textbox', { name: 'Комментарии', exact: true })

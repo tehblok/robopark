@@ -34,10 +34,10 @@
 .issue-rich-text pre {
   max-width: 100%;
   overflow-x: auto;
-  padding: 0.75rem;
+  padding: var(--rp-card-padding);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 0.5rem;
+  border-radius: var(--rp-radius-control);
 }
 .issue-rich-text code { white-space: pre-wrap; }
 .issue-rich-text pre code { white-space: pre; }
@@ -47,9 +47,9 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.75rem;
+  padding: var(--rp-card-padding);
   border: 1px solid var(--border);
-  border-radius: 0.5rem;
+  border-radius: var(--rp-radius-control);
   background: var(--bg);
   margin-bottom: 1rem;
 }
@@ -84,7 +84,7 @@
   .issue-actions :is(.btn, .rp-button) { min-height: 44px; }
 }
 
-.issue-collaboration { margin-block: 1rem; padding: .75rem; border: 1px solid var(--border); border-radius: .5rem; }
+.issue-collaboration { margin-block: 1rem; padding: var(--rp-card-padding); border: 1px solid var(--border); border-radius: var(--rp-radius-card); }
 .issue-collaboration summary { cursor: pointer; font-weight: 600; }
 .issue-handoff-field { display: grid; gap: .35rem; margin-block: .75rem; }
 .issue-handoff-field textarea { width: 100%; min-width: 0; resize: vertical; }

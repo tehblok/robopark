@@ -11,6 +11,8 @@ it('renders the promised A workflow, context and bottom action as separate zones
   expect(screen.getByTestId('task-context-zone')).toHaveTextContent('Робот сейчас')
   expect(screen.getByTestId('task-action-zone')).toHaveTextContent('Передать на проверку')
   expect(screen.getByText('Контекст задачи').closest('details')).not.toHaveAttribute('open')
+  expect(container.querySelector('[data-task-header]')).toHaveTextContent('Задача RP-1')
+  expect(container.querySelector('[data-task-body]')).toHaveTextContent('Что сейчас нужно сделать')
   const zones = Array.from(container.querySelectorAll('[data-task-zone]')).map(node => node.getAttribute('data-task-zone'))
   expect(zones).toEqual(['header', 'context', 'workflow', 'action'])
 })
@@ -18,6 +20,8 @@ it('renders the promised A workflow, context and bottom action as separate zones
 it('leaves Classic content structurally untouched', () => {
   const { container } = render(<TaskFirstTaskLayout enabled={false} context={<p>Контекст</p>} action={<button type="button">Действие</button>}><p>Classic</p></TaskFirstTaskLayout>)
   expect(container).toHaveTextContent('Classic')
+  expect(container.querySelector('[data-task-header]')).toBeInTheDocument()
+  expect(container.querySelector('[data-task-body]')).toHaveTextContent('Classic')
   expect(container.querySelector('[data-task-zone]')).toBeNull()
   expect(container).not.toHaveTextContent('Контекст')
 })
