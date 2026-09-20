@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { extname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,6 +19,7 @@ const contentTypes = new Map([
   ['.webp', 'image/webp'],
   ['.woff2', 'font/woff2'],
 ])
+let fixtureVersion = 'v1'
 
 function controlledPrivateResponse(pathname) {
   if (pathname === '/api/private-pwa-probe') return 'controlled-private-api-response'
@@ -40,6 +41,11 @@ async function resolvePublicFile(pathname) {
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+  if (request.method === 'POST' && url.pathname === '/__pwa_fixture__/version') {
+    fixtureVersion = 'v2'
+    response.writeHead(204, { 'cache-control': 'no-store' }).end()
+    return
+  }
   const controlled = controlledPrivateResponse(url.pathname)
   if (controlled !== null) {
     response.writeHead(200, {
@@ -60,7 +66,17 @@ const server = createServer(async (request, response) => {
     'content-type': contentTypes.get(extname(file)) ?? 'application/octet-stream',
   })
   if (request.method === 'HEAD') response.end()
-  else createReadStream(file).pipe(response)
+  else if (file === join(dist, 'index.html')) {
+    const source = await readFile(file, 'utf8')
+    response.end(source.replace('</head>', `<meta name="pwa-fixture-version" content="${fixtureVersion}"></head>`))
+  } else if (file === join(dist, 'sw.js')) {
+    const source = await readFile(file, 'utf8')
+    const versionedSource = source.replace(
+      /^(const version = ['"])([^'"]+)(['"])$/m,
+      `$1$2-${fixtureVersion}$3`,
+    )
+    response.end(`${versionedSource}\n// pwa-fixture-version:${fixtureVersion}\n`)
+  } else createReadStream(file).pipe(response)
 })
 
 server.listen(port, '127.0.0.1')
