@@ -73,6 +73,21 @@ it.each(['users', 'roles'] as const)('keeps the %s draft available after a trans
   expect(screen.queryByText(adminAccessDeniedMessage)).not.toBeInTheDocument()
 })
 
+it('purges users on a revoked principal while ignoring the previous principal late response', async () => {
+  let finishOld!: (rows: AdminUser[]) => void
+  const users = vi.spyOn(api, 'adminUsers')
+    .mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve }))
+    .mockRejectedValueOnce(new ApiError(403, 'access_denied'))
+  vi.spyOn(api, 'adminRoles').mockResolvedValue([role])
+  const mounted = render(tree('users'))
+  await waitFor(() => expect(users).toHaveBeenCalledTimes(1))
+  mounted.rerender(tree('users', { ...actor, id: 9, permissions: [] }))
+  await screen.findByText(adminAccessDeniedMessage)
+  await act(async () => { finishOld([account]) })
+  expect(screen.queryByRole('button', { name: 'Open account private-account' })).not.toBeInTheDocument()
+  expect(screen.queryByText('private-account')).not.toBeInTheDocument()
+})
+
 
 it('retires a pending background role read before refreshing after a saved mutation', async () => {
   const roles = vi.spyOn(api, 'adminRoles').mockResolvedValue([role])
