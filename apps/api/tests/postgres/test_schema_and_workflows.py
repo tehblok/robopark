@@ -120,7 +120,7 @@ def test_postgresql_17_upgrades_operator_inventory_grants_to_read_only(
         command.upgrade(config, "head")
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0032_operator_inv_readonly"
+                "0033_offline_sync_receipts"
             )
             assert (
                 connection.scalar(
@@ -213,7 +213,7 @@ def test_stock_postgres_17_accepts_configured_user_restore_command(
         capture_output=True,
         text=True,
     ).stdout.strip()
-    assert head == "0032_operator_inv_readonly"
+    assert head == "0033_offline_sync_receipts"
 
 
 def _seed_inventory(engine: Engine) -> tuple[int, int, int]:

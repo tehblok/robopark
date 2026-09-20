@@ -65,6 +65,27 @@ class ReliableAction(Base):
         return "needs_attention" if value == "uncertain" else value
 
 
+class OfflineSyncReceipt(Base):
+    __tablename__ = "offline_sync_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "actor_user_id",
+            "device_id",
+            "client_action_id",
+            name="uq_offline_sync_receipt_actor_device_action",
+        ),
+        Index("ix_offline_sync_receipts_created", "created_at", "id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid4()))
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    device_id: Mapped[str] = mapped_column(String(128))
+    client_action_id: Mapped[str] = mapped_column(String(64))
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    result_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
 class TaskMessage(Base):
     __tablename__ = "task_messages"
     __table_args__ = (

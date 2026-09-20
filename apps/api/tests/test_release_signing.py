@@ -395,7 +395,7 @@ def test_pack_release_wrapper_propagates_reviewed_migration_metadata(
 
     assert packed.returncode == 0, packed.stderr
     meta = inspect_archive(output.read_bytes(), expected_kind=KIND_RELEASE, public_key=public)
-    assert meta.migration_head == "0032_operator_inv_readonly"
+    assert meta.migration_head == "0033_offline_sync_receipts"
     with zipfile.ZipFile(output) as archive:
         manifest = json.loads(archive.read("manifest.json"))
     assert manifest["migration_compatibility"] == {
@@ -409,6 +409,7 @@ def test_pack_release_wrapper_propagates_reviewed_migration_metadata(
             "0029_campaign_snapshot",
             "0030_user_activity",
             "0031_postgresql_runtime",
+            "0032_operator_inv_readonly",
         ],
         "reversible": True,
     }
