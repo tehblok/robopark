@@ -64,3 +64,4 @@ The pre-existing uncommitted `progress.md` edit was preserved and is not part of
 
 - Campaign ticket completion now has a synchronous submission lock in the shared owner. Two submits before React commits `busy` produce one request; a 503 becomes a visible alert and releases the same form for retry.
 - Regression: `CampaignsPage.test.tsx` — **12 passed**.
+- Campaign detail now has a real mode branch over the shared controller: Interface A composes independent context and workflow zones in a two-column task-first layout, while Classic keeps its original linear composition. A structural regression asserts all three canonical A markers. Campaign tests are now **13 passed** and production build passes.

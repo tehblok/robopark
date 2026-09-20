@@ -8,6 +8,7 @@ import {
   type CampaignTicket,
 } from '../../api'
 import { useParkScope } from '../../app/park/parkScope'
+import { usePresentationMode } from '../../app/interface/presentationModeContext'
 import { useAuth } from '../../auth-context'
 import { ParkMultiSelect } from '../../components/admin/ParkMultiSelect'
 import { Button } from '../../design-system/actions/Button'
@@ -97,6 +98,7 @@ function CampaignCreateForm({ apiClient, onCreated, campaign }: { apiClient: Cam
 }
 
 function CampaignList({ apiClient }: { apiClient: CampaignApi }) {
+  const taskFirst = usePresentationMode() === 'task-first'
   const { user } = useAuth()
   const { selectedPark } = useParkScope()
   const navigate = useNavigate()
@@ -116,7 +118,7 @@ function CampaignList({ apiClient }: { apiClient: CampaignApi }) {
     {failure ? <ErrorState description={failure.description} onRetry={failure.retryable ? load : undefined} title={failure.title} />
       : !items ? <LoadingState label="Загружаем кампании" variant="page" />
         : !items.length ? <EmptyState description="Администратор ещё не добавил кампании для доступных парков." icon="work" title="Кампаний нет" />
-          : <div className="campaign-list">{items.map(item => <Panel className="campaign-card" density="dense" key={item.id}>
+          : <div className={taskFirst ? 'campaign-list campaign-list--task-first' : 'campaign-list'} data-a-zone={taskFirst ? 'campaign-workflow' : undefined}>{items.map(item => <Panel className="campaign-card" density="dense" key={item.id}>
             <div className="campaign-card__heading"><div><div className="campaign-card__badges"><StatusBadge tone="neutral">{kindLabel(item.kind)}</StatusBadge><StatusBadge tone={!item.is_active ? 'neutral' : item.overdue ? 'critical' : 'info'}>{campaignStatusLabel(item)}</StatusBadge></div><h2><Link to={`/campaigns/${item.id}`}>{item.name}</Link></h2><p>{item.park_names.join(', ')} · {dateLabel(item.starts_on)} — {dateLabel(item.due_on)}</p></div><Progress label={item.name} value={item.percent_complete} /></div>
             <ResponsiveDisclosureGroup label={`Метрики ${item.name}`}><ResponsiveDisclosure id="metrics" summary={`${item.percent_complete}% выполнено`} title="Метрики"><CampaignMetrics campaign={item} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>
           </Panel>)}</div>}
@@ -174,6 +176,7 @@ function TicketCard({ ticket, campaign, apiClient, reload, editing, onEditingCha
 }
 
 function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; apiClient: CampaignApi }) {
+  const taskFirst = usePresentationMode() === 'task-first'
   const { user } = useAuth()
   const navigate = useNavigate()
   const [data, setData] = useState<CampaignDetail | null>(null)
@@ -229,14 +232,15 @@ function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; api
     <p role="status">{data.snapshot_at ? `Последнее обновление: ${new Date(data.snapshot_at).toLocaleString('ru-RU')}. ` : 'Данные Tracker ещё не получены. '}{data.snapshot_state === 'error' ? 'Tracker временно недоступен; показаны сохранённые данные.' : data.snapshot_state === 'pending' || data.snapshot_state === 'running' ? 'Обновляем в фоне.' : null}</p>
     {refreshMessage ? <p role="status">{refreshMessage}</p> : null}
     {failure ? <p role="status">Показаны последние полученные данные. Обновление не удалось: {failure.description}</p> : null}
-    <ResponsiveDisclosureGroup label="Разделы кампании"><ResponsiveDisclosure id="metrics" summary={`${data.percent_complete}% · ${data.completed_count} из ${data.total_count}`} title="Метрики"><CampaignMetrics campaign={data} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>
-    {manager ? <CampaignCreateForm apiClient={apiClient} campaign={data} onCreated={load} /> : null}
-    <div className="campaign-columns">
+    <div className={taskFirst ? 'campaign-detail-composition campaign-detail-composition--task-first' : 'campaign-detail-composition'} data-a-route={taskFirst ? 'campaign-detail' : undefined}>
+    <aside data-a-zone={taskFirst ? 'campaign-context' : undefined}><ResponsiveDisclosureGroup label="Разделы кампании"><ResponsiveDisclosure id="metrics" summary={`${data.percent_complete}% · ${data.completed_count} из ${data.total_count}`} title="Метрики"><CampaignMetrics campaign={data} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>
+    {manager ? <CampaignCreateForm apiClient={apiClient} campaign={data} onCreated={load} /> : null}</aside>
+    <div className="campaign-columns" data-a-zone={taskFirst ? 'campaign-workflow' : undefined}>
       <Panel density="dense" title={`Открытые · ${data.open_tickets.length}`}><label className="field campaign-search"><span>Поиск по роботу</span><input onChange={event => setQuery(event.target.value)} placeholder="Номер робота или тикет" value={query} /></label>
         <div className="campaign-tickets">{open.map(ticket => <TicketCard apiClient={apiClient} campaign={data} editing={editingTicketKey === ticket.key} key={ticket.key} onEditingChange={editing => setEditingTicketKey(editing ? ticket.key : null)} reload={load} ticket={ticket} />)}{!open.length ? <p>Открытые тикеты не найдены.</p> : null}</div>
       </Panel>
       <Panel density="dense"><ResponsiveDisclosureGroup label="История кампании"><ResponsiveDisclosure id="closed" summary={`${data.closed_tickets.length} тикетов`} title={`Закрытые · ${data.closed_tickets.length}`}><div className="campaign-tickets">{data.closed_tickets.map(ticket => <TicketCard apiClient={apiClient} campaign={data} editing={editingTicketKey === ticket.key} key={ticket.key} onEditingChange={editing => setEditingTicketKey(editing ? ticket.key : null)} reload={load} ticket={ticket} />)}{!data.closed_tickets.length ? <p>Закрытых тикетов пока нет.</p> : null}</div></ResponsiveDisclosure></ResponsiveDisclosureGroup></Panel>
-    </div>
+    </div></div>
   </PageLayout>
 }
 

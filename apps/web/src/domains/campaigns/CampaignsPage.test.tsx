@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, ApiError, type CampaignDetail, type Park, type User } from '../../api'
 import { ParkScopeContext } from '../../app/park/parkScope'
+import { PresentationModeContext } from '../../app/interface/presentationModeContext'
 import { AuthContext } from '../../auth-context'
 import { CampaignsPage } from './CampaignsPage'
 
@@ -20,8 +21,8 @@ const detail: CampaignDetail = {
   ],
 }
 
-function renderPage(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>, currentUser: User = user) {
-  return render(<MemoryRouter initialEntries={['/campaigns/4']}><AuthContext.Provider value={{ user: currentUser, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={apiClient} />} path="/campaigns/:campaignId" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>)
+function renderPage(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>, currentUser: User = user, mode: 'classic' | 'task-first' = 'classic') {
+  return render(<PresentationModeContext.Provider value={mode}><MemoryRouter initialEntries={['/campaigns/4']}><AuthContext.Provider value={{ user: currentUser, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={apiClient} />} path="/campaigns/:campaignId" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter></PresentationModeContext.Provider>)
 }
 
 function renderList(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>) {
@@ -171,6 +172,14 @@ it('serializes a failed ticket completion and exposes a retryable error', async 
   reject(new ApiError(503, 'offline', 'campaign-request'))
   expect(await within(openPanel).findByRole('alert')).toBeVisible()
   expect(within(openPanel).getByRole('button', { name: 'Отправить оператору' })).toBeEnabled()
+})
+
+it('uses distinct task-first context and workflow zones without changing the controller', async () => {
+  renderPage({ ...api, campaign: vi.fn(async () => detail) }, user, 'task-first')
+  await screen.findByRole('heading', { name: 'СК Альфа' })
+  expect(document.querySelector('[data-a-route="campaign-detail"]')).not.toBeNull()
+  expect(document.querySelector('[data-a-zone="campaign-context"]')).not.toBeNull()
+  expect(document.querySelector('[data-a-zone="campaign-workflow"]')).not.toBeNull()
 })
 
 it('keeps only one ticket completion form open on a phone', async () => {
