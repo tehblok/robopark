@@ -7,10 +7,19 @@ import { openOfflineDb, purgeOfflineScope } from './offlineDb'
 import { SyncCoordinator } from './syncCoordinator'
 import { SyncEngine, type OfflineActionInput, type SyncState } from './syncEngine'
 
-export type SyncEngineLike = Pick<SyncEngine, 'start' | 'dispose' | 'subscribe' | 'getState'> & Partial<Pick<SyncEngine, 'enqueueAction' | 'syncNow' | 'cancelAction' | 'resolveConflict'>>
+export type SyncEngineLike = {
+  start(): void
+  dispose(): void
+  subscribe(listener: () => void): () => void
+  getState(): SyncState
+  enqueueAction?(input: OfflineActionInput): Promise<unknown>
+  syncNow?(reason: string): Promise<boolean>
+  cancelAction?(id: string): Promise<void>
+  resolveConflict?(id: string, baseRevision: string | null): Promise<void>
+}
 export type SyncEngineFactory = (options: { accountId: number, park: string, user: ReturnType<typeof useAuth>['user'] }) => Promise<SyncEngineLike>
 
-type SyncContextValue = {
+export type SyncContextValue = {
   state: SyncState
   enqueueAction(input: OfflineActionInput): Promise<unknown>
   syncNow(reason?: string): Promise<boolean>
@@ -92,4 +101,8 @@ export function useSync(): SyncContextValue {
   const value = useContext(SyncContext)
   if (!value) throw new Error('useSync must be used inside SyncProvider')
   return value
+}
+
+export function useOptionalSync(): SyncContextValue | null {
+  return useContext(SyncContext)
 }

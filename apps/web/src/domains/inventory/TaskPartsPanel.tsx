@@ -1,23 +1,31 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, type InventoryOverview } from '../../api'
+import { api, type InventoryInt64, type InventoryOverview } from '../../api'
 import { Button } from '../../design-system/actions/Button'
 import { ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { classifyApiError } from '../../shared/api/classifyApiError'
 import { inventoryInt64Compare, isPositiveInventoryQuantity } from './inventoryTypes'
+import type { OfflineActionInput } from '../../pwa/syncEngine'
+import { buildInventoryWriteoffAction } from '../work/offlineTaskActions'
 import './inventory.css'
 
 type TaskPartsApi = Pick<typeof api, 'inventory' | 'writeoffInventoryForTask' | 'inventoryComponentPhotoUrl' | 'inventoryPartPhotoUrl'> & {
   searchInventory?: typeof api.searchInventory
 }
 
-type TaskPartsProps = { parkId: number | null; issueKey: string; apiClient?: TaskPartsApi; onWritten?: () => void }
+type TaskPartsProps = {
+  parkId: number | null
+  issueKey: string
+  apiClient?: TaskPartsApi
+  onWritten?: () => void
+  enqueueAction?: (input: OfflineActionInput) => Promise<unknown>
+}
 
 export function TaskPartsPanel(props: TaskPartsProps) {
   return <TaskPartsContent key={`${props.parkId}:${props.issueKey}`} {...props} />
 }
 
-function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten }: TaskPartsProps) {
+function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueueAction }: TaskPartsProps) {
   const [data, setData] = useState<InventoryOverview | null>(null)
   const [componentId, setComponentId] = useState(0)
   const [partId, setPartId] = useState(0)
@@ -103,18 +111,40 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten }: Task
   }, [componentId, currentData, partId, quantity])
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (submitting.current || !part || !isPositiveInventoryQuantity(quantity) || inventoryInt64Compare(quantity, part.quantity) > 0) return
+    if (parkId == null || submitting.current || !part || !isPositiveInventoryQuantity(quantity) || inventoryInt64Compare(quantity, part.quantity) > 0) return
     submitting.current = true
     setBusy(true); setError(null); setLoadFailed(false); setReceipt('')
     try {
       idempotencyKey.current ??= globalThis.crypto.randomUUID()
-      await apiClient.writeoffInventoryForTask(issueKey, globalCatalog ? -part.id : part.id, quantity, idempotencyKey.current)
+      const adapterPartId = globalCatalog ? -part.id : part.id
+      if (enqueueAction) {
+        await enqueueAction(buildInventoryWriteoffAction({
+          issueKey,
+          parkId,
+          id: idempotencyKey.current,
+          partId: adapterPartId,
+          quantity,
+        }))
+      } else {
+        await apiClient.writeoffInventoryForTask(issueKey, adapterPartId, quantity, idempotencyKey.current)
+      }
       if (!mounted.current) return
       idempotencyKey.current = null
-      setReceipt(`Списано: ${part.name} · ${quantity} шт. Место: ${part.location}`)
+      setReceipt(`${enqueueAction ? 'Сохранено на устройстве' : 'Списано'}: ${part.name} · ${quantity} шт. Место: ${part.location}`)
+      if (enqueueAction) {
+        setData(current => current ? {
+          ...current,
+          components: current.components.map(component => ({
+            ...component,
+            parts: component.parts.map(item => item.id === part.id
+              ? { ...item, quantity: (BigInt(item.quantity) - BigInt(quantity)).toString() as InventoryInt64 }
+              : item),
+          })),
+        } : current)
+      }
       setPartId(0); setQuantity('1')
       onWritten?.()
-      await load(0, false)
+      if (!enqueueAction) await load(0, false)
     }
     catch (reason) { if (mounted.current) setError(reason) }
     finally { submitting.current = false; if (mounted.current) setBusy(false) }

@@ -4,8 +4,8 @@ import { StatusBadge } from '../../design-system/status/StatusBadge'
 const labels: Record<TaskSyncState, string> = {
   saved: '',
   synced: '',
-  pending: 'Отправляется в Tracker',
-  needs_attention: 'Требует внимания',
+  pending: 'Отправляется',
+  needs_attention: 'Нужно внимание',
 }
 
 const reasons: Record<string, string> = {

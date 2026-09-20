@@ -59,6 +59,8 @@ import { TaskSyncStatus } from './TaskSyncStatus'
 import { TaskTimeline } from './TaskTimeline'
 import { StableMutationKey } from './stableMutationKey'
 import { loadWorkPage, oldestFirst } from './workData'
+import { buildCommentAction, buildHandoffAction } from './offlineTaskActions'
+import { useOptionalSync } from '../../pwa/SyncProvider'
 import {
   buildWorkSearch,
   readWorkScroll,
@@ -492,6 +494,7 @@ export function TaskController({
   accessKey: string
   getAccessGeneration: () => number
 }) {
+  const sync = useOptionalSync()
   const cachePrefix = `work:${user.id}:`
   const { mode } = useInterfaceMode()
   const taskFirst = mode === 'task-first'
@@ -790,6 +793,32 @@ export function TaskController({
     return result
   }, [])
 
+  const enqueueComment = useCallback(async (text: string) => {
+    if (!sync || !issueKey || taskParkId == null) throw new Error('offline_sync_unavailable')
+    const serialized = JSON.stringify({ text })
+    const id = mutationKeys.current.get('message', serialized)
+    const pending = buildCommentAction({ issueKey, parkId: taskParkId, id, author: user.username, text })
+    await sync.enqueueAction(pending.action)
+    mutationKeys.current.succeeded('message', serialized)
+    const current = resourceStore.get<TaskTimelineItem[]>(commentsKey) ?? comments.data ?? []
+    if (!current.some(item => item.id === pending.timelineItem.id)) {
+      resourceStore.set(commentsKey, [...current, pending.timelineItem], false)
+    }
+  }, [comments.data, commentsKey, issueKey, sync, taskParkId, user.username])
+
+  const enqueueHandoff = useCallback(async (value: { assignee: string; reason: string; done?: string; remaining?: string; obstacles?: string }) => {
+    if (!sync || !issueKey || taskParkId == null) throw new Error('offline_sync_unavailable')
+    const serialized = JSON.stringify(value)
+    const id = mutationKeys.current.get('handoff', serialized)
+    const pending = buildHandoffAction({ issueKey, parkId: taskParkId, id, ...value })
+    await sync.enqueueAction(pending.action)
+    mutationKeys.current.succeeded('handoff', serialized)
+    const current = resourceStore.get<TaskTimelineItem[]>(commentsKey) ?? comments.data ?? []
+    if (!current.some(item => item.id === pending.timelineItem.id)) {
+      resourceStore.set(commentsKey, [...current, pending.timelineItem], false)
+    }
+  }, [comments.data, commentsKey, issueKey, sync, taskParkId])
+
   const runTaskControl = useCallback(async (
     action: string,
     payload: unknown,
@@ -986,11 +1015,13 @@ export function TaskController({
                             async (assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'attach', await attachmentIdentity(file), headers => apiClient.trackerAttach(detail.data!.key, file, headers), assertCurrent),
                           )}
                         onClose={detail.data.workflow ? async () => undefined : () => mutate((assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'close', {}, headers => apiClient.trackerClose(detail.data!.key, headers), assertCurrent), onCloseIssue)}
-                        onComment={(text) => mutate(
-                          (assertCurrent) => detail.data!.workflow && apiClient.taskMessage
-                            ? lifecycleMutation('message', text, key => apiClient.taskMessage!(detail.data!.key, text, key))
-                            : runTrackerSubmission(user.username, detail.data!, 'comment', { text }, headers => apiClient.trackerComment(detail.data!.key, text, headers), assertCurrent),
-                        )}
+                        onComment={(text) => sync && detail.data!.workflow && taskParkId != null
+                          ? enqueueComment(text)
+                          : mutate(
+                            (assertCurrent) => detail.data!.workflow && apiClient.taskMessage
+                              ? lifecycleMutation('message', text, key => apiClient.taskMessage!(detail.data!.key, text, key))
+                              : runTrackerSubmission(user.username, detail.data!, 'comment', { text }, headers => apiClient.trackerComment(detail.data!.key, text, headers), assertCurrent),
+                          )}
                         onSubmitReview={async () => { setReviewOpen(true) }}
                         onReturnReview={async () => { setReturnReviewOpen(true) }}
                         onApproveReview={async () => {
@@ -1027,7 +1058,7 @@ export function TaskController({
                       {user.role === 'mechanic' && mechanicCanWork ? (
                         <ClosedDisclosure title="Списать запчасть" open={partsOpen} onOpenChange={setPartsOpen}>
                           <div id="parts" ref={partsRef} tabIndex={-1}>
-                            <TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={taskParkId} />
+                            <TaskPartsPanel apiClient={apiClient} enqueueAction={sync?.enqueueAction} issueKey={detail.data.key} onWritten={() => { if (!sync) void comments.refresh() }} parkId={taskParkId} />
                           </div>
                         </ClosedDisclosure>
                       ) : null}
@@ -1037,12 +1068,14 @@ export function TaskController({
                             active={activeTab === 'task' && mechanicCanWork}
                             canWrite={detail.data.capabilities.comment && mechanicCanWork}
                             lifecycle
-                            onHandoff={value => mutate(() => lifecycleMutation('handoff', value, key => apiClient.taskHandoff!(detail.data!.key, value, key)))}
+                            onHandoff={value => sync && taskParkId != null
+                              ? enqueueHandoff(value)
+                              : mutate(() => lifecycleMutation('handoff', value, key => apiClient.taskHandoff!(detail.data!.key, value, key)))}
                             onAuthorizationFailure={observeAuthorizationFailure} />
                         </div>
                       </ClosedDisclosure>
                     </div> : detail.data ? <ResponsiveDisclosureGroup label="Дополнительные разделы задачи">
-                      {user.role === 'mechanic' && mechanicCanWork ? <ResponsiveDisclosure id="parts" title="Использовать запчасть"><TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={taskParkId} /></ResponsiveDisclosure> : null}
+                      {user.role === 'mechanic' && mechanicCanWork ? <ResponsiveDisclosure id="parts" title="Использовать запчасть"><TaskPartsPanel apiClient={apiClient} enqueueAction={sync?.enqueueAction} issueKey={detail.data.key} onWritten={() => { if (!sync) void comments.refresh() }} parkId={taskParkId} /></ResponsiveDisclosure> : null}
                       <ResponsiveDisclosure id="handoff" title="Передача смены"><EmbeddedTaskCollaboration issueKey={detail.data.key} owner={user.username} active={activeTab === 'task' && mechanicCanWork} canWrite={detail.data.capabilities.comment && mechanicCanWork} onAuthorizationFailure={observeAuthorizationFailure} /></ResponsiveDisclosure>
                     </ResponsiveDisclosureGroup> : null}
                     </TaskFirstTaskLayout>

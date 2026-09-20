@@ -10,8 +10,8 @@ it('explains a missing Tracker transition without exposing unknown error text', 
 })
 
 it.each([
-  ['pending', 'Отправляется в Tracker'],
-  ['needs_attention', 'Требует внимания'],
+  ['pending', 'Отправляется'],
+  ['needs_attention', 'Нужно внимание'],
 ] as const)('renders %s as plain-language synchronization status', (state, label) => {
   render(<TaskSyncStatus state={state} />)
   expect(screen.getByRole('status')).toHaveTextContent(label)

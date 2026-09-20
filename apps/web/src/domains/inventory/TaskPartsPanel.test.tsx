@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
 import { api, type InventoryCatalogSearchItem } from '../../api'
 import { TaskPartsPanel } from './TaskPartsPanel'
+import type { OfflineActionInput } from '../../pwa/syncEngine'
 
 const issueParkPart: InventoryCatalogSearchItem = {
   id: 900719925,
@@ -47,6 +48,30 @@ it('uses the issue-park global catalog result and writes off through its negativ
 
   expect(searchInventory).toHaveBeenCalledWith({ parkId: 77, query: '', limit: 200, offset: 0 })
   await waitFor(() => expect(writeoff).toHaveBeenCalledWith('RP-77', -issueParkPart.id, '9007199254740993', expect.any(String)))
+})
+
+it('saves a writeoff locally without waiting for the network and reserves the visible stock', async () => {
+  const enqueueAction = vi.fn(async (_input: OfflineActionInput) => undefined)
+  const writeoff = vi.fn()
+  render(<TaskPartsPanel apiClient={{
+    inventory: vi.fn(),
+    searchInventory: vi.fn(async () => ({ items: [{ ...issueParkPart, quantity: '2' as const }], limit: 200, offset: 0, total: 1 })),
+    writeoffInventoryForTask: writeoff,
+    inventoryComponentPhotoUrl: vi.fn(),
+    inventoryPartPhotoUrl: vi.fn(),
+  }} enqueueAction={enqueueAction} issueKey="RP-OFFLINE" parkId={77} />)
+  await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Компонента' }), '22')
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Запчасть' }), String(issueParkPart.id))
+
+  await userEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
+
+  await waitFor(() => expect(enqueueAction).toHaveBeenCalledOnce())
+  expect(enqueueAction.mock.calls[0]?.[0]).toMatchObject({
+    action: 'inventory_writeoff', resourceId: 'RP-OFFLINE',
+    payload: { part_id: -issueParkPart.id, quantity: '1', park_id: 77 },
+  })
+  expect(writeoff).not.toHaveBeenCalled()
+  expect(screen.getByRole('status')).toHaveTextContent('Сохранено на устройстве: Шина · 1 шт.')
 })
 
 it('reuses the same idempotency key when a writeoff response is retried', async () => {

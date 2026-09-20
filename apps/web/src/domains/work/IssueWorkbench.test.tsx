@@ -24,6 +24,7 @@ import { collaborationClient } from '../../components/tracker/collaborationClien
 import { resetCoalescingForTests, resourceStore } from '../../lib/resource'
 import { IssueWorkbench, type IssueWorkbenchApiClient } from './IssueWorkbench'
 import { WorkPage } from './WorkPage'
+import { SyncProvider, type SyncEngineLike } from '../../pwa/SyncProvider'
 import {
   buildWorkSearch,
   readWorkScroll,
@@ -402,6 +403,7 @@ function renderWorkbench({
   strictMode = false,
   initialPath = '/',
   presentationMode = 'classic',
+  syncEngine,
 }: {
   client?: IssueWorkbenchApiClient
   selectedIssue?: string
@@ -412,6 +414,7 @@ function renderWorkbench({
   strictMode?: boolean
   initialPath?: string
   presentationMode?: 'classic' | 'task-first'
+  syncEngine?: SyncEngineLike
 } = {}) {
   const modeStore = createInterfaceModeStore(() => ({
     getItem: () => presentationMode,
@@ -427,7 +430,14 @@ function renderWorkbench({
       onStateChange={(next, options) => { onStateChange(next, options); setValue(next) }}
       selectedPark={selectedPark} state={value} user={currentUser} />
   }
-  const view = render(<ControlledWorkbench />, {
+  const content = syncEngine
+    ? <AuthContext.Provider value={{ user: currentUser, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}>
+      <ParkScopeContext.Provider value={{ parkId: selectedPark.id, selectedPark, parks: currentUser.parks, loading: false, locked: false, setParkId: vi.fn(), refreshParks: vi.fn() }}>
+        <SyncProvider engineFactory={async () => syncEngine}><ControlledWorkbench /></SyncProvider>
+      </ParkScopeContext.Provider>
+    </AuthContext.Provider>
+    : <ControlledWorkbench />
+  const view = render(content, {
     wrapper: ({ children }) => <InterfaceModeProvider accountId={currentUser.id} store={modeStore}><MemoryRouter initialEntries={[initialPath]}>{children}</MemoryRouter></InterfaceModeProvider>,
     reactStrictMode: strictMode,
   })
@@ -559,6 +569,28 @@ describe('IssueWorkbench', () => {
     fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
     await waitFor(() => expect(taskMessage).toHaveBeenCalledTimes(2))
     expect(taskMessage.mock.calls[0]?.[2]).toBe(taskMessage.mock.calls[1]?.[2])
+  })
+
+  it('shows an offline comment immediately and does not wait for Tracker', async () => {
+    const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
+    const workflowIssue: TrackerIssueDetail = { ...issue, claim: { park_id: park.id }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'saved', has_current_cycle_comment: false } }
+    const taskMessage = vi.fn()
+    const enqueueAction = vi.fn(async () => undefined)
+    const syncEngine = {
+      start: vi.fn(), dispose: vi.fn(), subscribe: vi.fn(() => () => undefined),
+      getState: () => ({ status: 'idle' as const, pending: 0, conflicts: 0 }), enqueueAction,
+    } satisfies SyncEngineLike
+    renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskMessage }), syncEngine })
+    const composer = await screen.findByRole('textbox', { name: ru.tracker.comments })
+    fireEvent.change(composer, { target: { value: 'Заменил датчик офлайн' } })
+    fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
+
+    await waitFor(() => expect(enqueueAction).toHaveBeenCalledOnce())
+    expect(enqueueAction).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'comment', resourceId: issue.key, payload: { text: 'Заменил датчик офлайн', park_id: park.id },
+    }))
+    expect(taskMessage).not.toHaveBeenCalled()
+    expect(await screen.findByText('Заменил датчик офлайн')).toBeVisible()
   })
 
   it('uses lifecycle handoff and keeps its key when the response is lost', async () => {
