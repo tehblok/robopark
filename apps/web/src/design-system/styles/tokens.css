@@ -20,6 +20,7 @@
   --rp-radius-control: 8px;
   --rp-radius-panel: 12px;
   --rp-radius-card: 12px;
+  --rp-radius-sheet: 16px;
   --rp-motion-fast: 120ms;
   --rp-motion-normal: 180ms;
 }

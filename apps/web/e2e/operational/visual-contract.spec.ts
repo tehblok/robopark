@@ -2,6 +2,46 @@ import { expect, test } from '@playwright/test'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 import { installOperational, settlePage, snapshot } from './fixtures'
 
+for (const width of [390, 1440] as const) {
+  test(`shared geometry tokens drive visible controls at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await installOperational(page, { role: 'mechanic' })
+    await page.goto('/robots?park=7')
+
+    const geometry = await page.evaluate(() => {
+      const panel = document.createElement('section')
+      panel.className = 'rp-panel'
+      const button = document.createElement('button')
+      button.className = 'rp-button'
+      button.textContent = 'Действие'
+      panel.append(button)
+      document.body.append(panel)
+      const root = getComputedStyle(document.documentElement)
+      const result = {
+        gutter: root.getPropertyValue('--rp-page-gutter').trim(),
+        sectionGap: root.getPropertyValue('--rp-section-gap').trim(),
+        cardPadding: root.getPropertyValue('--rp-card-padding').trim(),
+        formGap: root.getPropertyValue('--rp-form-gap').trim(),
+        controlRadius: root.getPropertyValue('--rp-radius-control').trim(),
+        cardRadius: root.getPropertyValue('--rp-radius-card').trim(),
+        buttonHeight: button.getBoundingClientRect().height,
+      }
+      panel.remove()
+      return result
+    })
+
+    expect(geometry).toEqual({
+      gutter: width <= 599 ? '12px' : '24px',
+      sectionGap: width <= 599 ? '20px' : '24px',
+      cardPadding: width <= 599 ? '16px' : '20px',
+      formGap: width <= 599 ? '12px' : '16px',
+      controlRadius: '8px',
+      cardRadius: '12px',
+      buttonHeight: 44,
+    })
+  })
+}
+
 test('overview readiness follows the current role-aware triage structure', async ({ page }) => {
   await installOperational(page, { role: 'operator' })
   await page.goto('/overview?park=7')

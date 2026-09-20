@@ -1,6 +1,6 @@
 .rp-page-layout {
   display: grid;
-  gap: var(--rp-space-6);
+  gap: var(--rp-section-gap);
   margin-inline: auto;
   max-width: 1440px;
   width: 100%;
@@ -55,7 +55,7 @@
 
 .rp-page-layout__content {
   display: grid;
-  gap: var(--rp-density-gap);
+  gap: var(--rp-section-gap);
 }
 
 /* Run only when a page mounts, not when its live data refreshes. */
@@ -73,11 +73,11 @@
 .rp-panel {
   background: var(--rp-surface);
   border: 1px solid var(--rp-border);
-  border-radius: var(--rp-radius-panel);
+  border-radius: var(--rp-radius-card);
   box-shadow: none;
   display: grid;
-  gap: var(--rp-space-4);
-  padding: var(--rp-density-panel-padding);
+  gap: var(--rp-form-gap);
+  padding: var(--rp-card-padding);
 }
 
 .rp-panel__title {

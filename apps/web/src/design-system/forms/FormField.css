@@ -1,6 +1,6 @@
 .rp-form-field {
   display: grid;
-  gap: var(--rp-space-2);
+  gap: var(--rp-form-gap);
 }
 
 .rp-form-field__label {

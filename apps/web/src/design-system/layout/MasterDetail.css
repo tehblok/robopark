@@ -1,6 +1,6 @@
 .rp-master-detail {
   display: grid;
-  gap: var(--rp-density-gap);
+  gap: var(--rp-form-gap);
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   min-block-size: 0;
 }
@@ -11,19 +11,19 @@
 .rp-entity-row {
   background: var(--rp-surface);
   border: 1px solid var(--rp-border);
-  border-radius: var(--rp-radius-panel);
+  border-radius: var(--rp-radius-card);
 }
 
 .rp-master-detail__list,
 .rp-master-detail__detail {
   min-block-size: 0;
   overflow: auto;
-  padding: var(--rp-density-panel-padding);
+  padding: var(--rp-card-padding);
 }
 
 .rp-master-detail__detail {
   display: grid;
-  gap: var(--rp-density-gap);
+  gap: var(--rp-form-gap);
 }
 
 .rp-master-detail__detail-actions {
@@ -38,7 +38,7 @@
   display: grid;
   gap: var(--rp-space-1);
   margin: 0;
-  padding: var(--rp-density-panel-padding);
+  padding: var(--rp-card-padding);
 }
 
 .rp-metric-card__label,
@@ -143,7 +143,7 @@
 @media (max-width: 599px) {
   .rp-master-detail__list,
   .rp-master-detail__detail {
-    padding-inline: var(--rp-space-2);
+    padding-inline: var(--rp-card-padding);
   }
 
   .rp-entity-row {

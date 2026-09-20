@@ -12,15 +12,15 @@
 .rp-dialog {
   background: var(--rp-surface-elevated);
   border: 1px solid var(--rp-border);
-  border-radius: var(--rp-radius-panel);
+  border-radius: var(--rp-radius-sheet);
   box-shadow: var(--rp-shadow-panel);
   color: var(--rp-text);
   display: grid;
-  gap: var(--rp-space-4);
+  gap: var(--rp-form-gap);
   max-height: calc(100dvh - var(--rp-space-8));
   max-width: 36rem;
   overflow: auto;
-  padding: var(--rp-density-panel-padding);
+  padding: var(--rp-card-padding);
   position: relative;
   width: 100%;
 }
@@ -44,7 +44,7 @@
 
 .rp-dialog__body {
   display: grid;
-  gap: var(--rp-density-gap);
+  gap: var(--rp-form-gap);
 }
 
 .rp-dialog__footer {
@@ -56,8 +56,8 @@
 
 .rp-dialog__close {
   position: absolute;
-  right: var(--rp-density-panel-padding);
-  top: var(--rp-density-panel-padding);
+  right: var(--rp-card-padding);
+  top: var(--rp-card-padding);
 }
 
 .rp-bottom-sheet {

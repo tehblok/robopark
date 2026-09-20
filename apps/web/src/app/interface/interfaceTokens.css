@@ -1,3 +1,20 @@
 :root {
+  --rp-page-gutter: 24px;
+  --rp-section-gap: 24px;
+  --rp-card-padding: 20px;
+  --rp-form-gap: 16px;
+  --rp-radius-control: 8px;
+  --rp-radius-card: 12px;
+  --rp-radius-panel: var(--rp-radius-card);
+  --rp-radius-sheet: 16px;
   --rp-shell-mobile-nav-height: 72px;
+}
+
+@media (max-width: 599px) {
+  :root {
+    --rp-page-gutter: 12px;
+    --rp-section-gap: 20px;
+    --rp-card-padding: 16px;
+    --rp-form-gap: 12px;
+  }
 }
