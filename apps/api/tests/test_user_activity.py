@@ -29,7 +29,7 @@ def test_disabled_provider_hides_stored_location_but_keeps_activity(
     client, db_session, seed_royal, test_settings
 ):
     headers = {
-        "x-real-ip": "203.0.113.11",
+        "x-real-ip": "8.8.8.8",
         "user-agent": "Mozilla/5.0 (Linux; Android 15) Chrome/130.0",
     }
     assert (
@@ -40,7 +40,7 @@ def test_disabled_provider_hides_stored_location_but_keeps_activity(
         ).status_code
         == 204
     )
-    seed_royal.last_ip = "203.0.113.11"
+    seed_royal.last_ip = "8.8.8.8"
     seed_royal.last_device = "Android · Chrome"
     seed_royal.last_location = "Москва, Москва, Россия"
     db_session.commit()
@@ -53,7 +53,7 @@ def test_disabled_provider_hides_stored_location_but_keeps_activity(
     assert hidden["last_location"] is None
     assert hidden["location_source"] == "disabled"
     assert hidden["location_availability"] == "disabled"
-    assert hidden["last_ip"] == "203.0.113.11"
+    assert hidden["last_ip"] == "8.8.8.8"
     assert hidden["last_device"] == "Android · Chrome"
     db_session.refresh(seed_royal)
     assert seed_royal.last_location == "Москва, Москва, Россия"
@@ -69,7 +69,7 @@ def test_disabled_provider_hides_stored_location_but_keeps_activity(
     assert visible["location_availability"] == "available"
 
 
-def test_enabled_geo_provider_explains_missing_ip_and_failed_lookup(
+def test_enabled_geo_provider_requires_public_ip_before_reporting_lookup_failure(
     client, db_session, seed_royal, test_settings, monkeypatch
 ):
     from robopark_api.services import ip_location
@@ -79,21 +79,25 @@ def test_enabled_geo_provider_explains_missing_ip_and_failed_lookup(
         "/auth/login", json={"username": "royal", "password": "secret"}
     ).status_code == 204
     test_settings.ip_geo_provider = "ipwhois"
-    seed_royal.last_ip = None
-    seed_royal.last_location = None
-    db_session.commit()
-    missing_ip = next(
-        row for row in client.get("/admin/users").json() if row["id"] == seed_royal.id
-    )
-    assert missing_ip["location_source"] == "ipwhois"
-    assert missing_ip["location_availability"] == "no_ip"
+    for ineligible_ip in (None, "192.168.1.5", "not-an-ip"):
+        seed_royal.last_ip = ineligible_ip
+        seed_royal.last_location = None
+        db_session.commit()
+        headers = {"x-real-ip": ineligible_ip} if ineligible_ip else {}
+        no_ip = next(
+            row
+            for row in client.get("/admin/users", headers=headers).json()
+            if row["id"] == seed_royal.id
+        )
+        assert no_ip["location_source"] == "ipwhois"
+        assert no_ip["location_availability"] == "no_ip"
 
-    seed_royal.last_ip = "203.0.113.11"
+    seed_royal.last_ip = "8.8.8.8"
     db_session.commit()
     unavailable = next(
         row
         for row in client.get(
-            "/admin/users", headers={"x-real-ip": "203.0.113.11"}
+            "/admin/users", headers={"x-real-ip": "8.8.8.8"}
         ).json()
         if row["id"] == seed_royal.id
     )

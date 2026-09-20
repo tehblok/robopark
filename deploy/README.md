@@ -221,12 +221,13 @@ Update API dependencies deliberately with `cd apps/api && uv lock && uv lock
 deliberate changes and require the full gate to pass before release.
 
 For the current 0.1.45 source tree only focused module tests and static checks
-have been run. Task 6 passed a short production-PWA smoke on its earlier source
-revision; that result is historical and is not evidence for the current tree.
-Task 9 must rerun it at the final HEAD. Full API/web/PostgreSQL, target host,
-load, soak, installer/VM and OTA gates remain pending explicit approval. The
-checked-in release evidence is intentionally stale and validation must stay
-fail-closed until the required gates are rerun for the exact source tree.
+have been run. Task 9 passed a short production-PWA smoke on the application
+revision immediately before the documentation updates: a controlling v1 worker
+was upgraded through a waiting v2 worker and safe activation. That focused result
+is not a release `PASS` for the exact final source hash. Full API/web/PostgreSQL,
+target host, load, soak, installer/VM and OTA gates remain pending explicit
+approval. The checked-in release evidence is intentionally stale and validation
+must stay fail-closed until the required gates are rerun for the exact source tree.
 
 Pack a *release* ZIP on a machine with the repo (not a snapshot):
 

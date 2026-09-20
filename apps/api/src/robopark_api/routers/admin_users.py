@@ -14,6 +14,7 @@ from robopark_api.models import AccessStatus, AuthSession, Park, Report, Role, U
 from robopark_api.schemas import ParkOut
 from robopark_api.security import PasswordPolicyError, hash_password, validate_password
 from robopark_api.services import audit, rbac
+from robopark_api.services.user_activity import public_ip
 
 router = APIRouter(prefix="/admin/users", tags=["admin-users"])
 
@@ -76,7 +77,7 @@ def _user_out(
         "disabled"
         if not location_enabled
         else "no_ip"
-        if not user.last_ip
+        if public_ip(user.last_ip) is None
         else "available"
         if user.last_location
         else "unavailable"

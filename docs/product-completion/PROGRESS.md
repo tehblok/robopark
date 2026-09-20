@@ -72,10 +72,12 @@ release-evidence для текущих исходников.
 - Точечно проверены новые DB-модели/миграция, bounded Web Push,
   server-side Tracker poller, общий auth throttle, default-off IP-геолокация,
   разделение browser/soak/PWA gates и короткие lifecycle-контракты.
-- Исторический production-PWA smoke Task 6: 1 Chromium сценарий прошёл
-  на тогдашнем `dist`; API и приватные вложения не попали в Cache Storage.
-  Результат не привязан к текущему source hash; Task 9 должен повторить
-  его на финальном HEAD.
+- В Task 9 на предшествующей правкам документации ревизии кода прошёл
+  реальный production-PWA smoke: активный worker v1 → worker v2 в `waiting` →
+  безопасная активация. Проверены смена controller, перезагрузка, маркер v2,
+  удаление старого кэша и исключение API/приватных запросов из Cache Storage.
+  Это точечное свидетельство предыдущей ревизии, а не release `PASS` для точного
+  финального source hash.
 - Frontend correctness: точечные Vitest для resource/robot registry/robot
   check/SLA проходят; чтение mutable refs и `Date.now()` из render убрано.
 - Не запускались: full API, full web, реальные PostgreSQL-контракты,
