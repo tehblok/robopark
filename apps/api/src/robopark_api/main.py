@@ -169,25 +169,30 @@ def create_app() -> FastAPI:
             yield
         finally:
             stop_event.set()
-            startup.cancel()
-            with suppress(asyncio.CancelledError):
-                await startup
-            for task in tasks:
-                task.cancel()
-            # Await each task separately: a single `await` chain would skip the
-            # remaining tasks as soon as the first CancelledError propagates.
-            for task in tasks:
+            try:
+                startup.cancel()
                 with suppress(asyncio.CancelledError):
-                    await task
-            # Cancelling an asyncio.to_thread waiter does not stop its thread.
-            # Keep the lease until the bounded Tracker call and worker exit.
-            if outbox_task is not None:
-                with suppress(asyncio.CancelledError):
-                    await outbox_task
-            if campaign_task is not None:
-                with suppress(asyncio.CancelledError):
-                    await campaign_task
-            job_lease.release()
+                    await startup
+                for task in tasks:
+                    task.cancel()
+                # Await each task separately: a single `await` chain would skip the
+                # remaining tasks as soon as the first CancelledError propagates.
+                for task in tasks:
+                    with suppress(asyncio.CancelledError):
+                        await task
+                # Cancelling an asyncio.to_thread waiter does not stop its thread.
+                # Keep the lease until the bounded Tracker call and worker exit.
+                if outbox_task is not None:
+                    with suppress(asyncio.CancelledError):
+                        await outbox_task
+                if campaign_task is not None:
+                    with suppress(asyncio.CancelledError):
+                        await campaign_task
+            finally:
+                try:
+                    await asyncio.to_thread(_app.state.push_service.close)
+                finally:
+                    job_lease.release()
 
     app = FastAPI(
         title="Robopark API",

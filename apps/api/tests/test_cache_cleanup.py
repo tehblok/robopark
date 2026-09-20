@@ -379,6 +379,7 @@ def test_lifespan_awaits_blocking_outbox_before_releasing_job_lease(
     outbox_started = threading.Event()
     finish_outbox = threading.Event()
     lease_released = threading.Event()
+    app_holder = []
 
     class Lease:
         def __init__(self, root, name):
@@ -409,7 +410,15 @@ def test_lifespan_awaits_blocking_outbox_before_releasing_job_lease(
     monkeypatch.setattr(main, "run_tracker_outbox_loop", blocking_outbox)
 
     def serve():
-        with TestClient(main.create_app()):
+        app = main.create_app()
+        app_holder.append(app)
+        with TestClient(app):
+            future = app.state.push_service._submit_deliveries(
+                [("hash", "endpoint", "p256dh", "auth")],
+                lambda _delivery: None,
+                max_workers=1,
+            )[0]
+            future.result(timeout=1)
             entered.set()
             close_context.wait(timeout=2)
 
@@ -420,12 +429,15 @@ def test_lifespan_awaits_blocking_outbox_before_releasing_job_lease(
     close_context.set()
     try:
         assert not lease_released.wait(timeout=0.1)
+        assert not app_holder[0].state.push_service._delivery_closed
     finally:
         finish_outbox.set()
         thread.join(timeout=2)
 
     assert not thread.is_alive()
     assert lease_released.is_set()
+    assert app_holder[0].state.push_service._delivery_closed
+    assert app_holder[0].state.push_service._delivery_executor is None
 
 
 def test_cleanup_limits_each_outbox_retention_batch_to_500(db_engine, db_session, seed_mechanic):
