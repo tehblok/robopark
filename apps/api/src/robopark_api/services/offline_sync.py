@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import contextmanager
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from robopark_api.models import Park, User, UserPark
@@ -193,6 +194,27 @@ def _receipt(
     return row, canonical, digest
 
 
+@contextmanager
+def _receipt_lock(db: Session, user: User, device_id: str, item: SyncActionIn):
+    """Serialize one offline receipt across PostgreSQL API workers.
+
+    The receipt has a uniqueness constraint, but inserting it *after* a
+    workflow dispatch permits two concurrent requests to perform the side
+    effect before one loses the insert race. A session advisory lock spans
+    commits made by the underlying workflow and is released explicitly in all
+    outcomes. SQLite keeps its existing single-host writer serialization.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        yield
+        return
+    key = f"offline-sync:{user.id}:{device_id}:{item.client_action_id}"
+    db.execute(text("SELECT pg_advisory_lock(hashtext(:key))"), {"key": key})
+    try:
+        yield
+    finally:
+        db.execute(text("SELECT pg_advisory_unlock(hashtext(:key))"), {"key": key})
+
+
 def _visible_scopes(db: Session, user: User, requested: Iterable[str]) -> tuple[set[str], set[str]]:
     park_ids = set(db.scalars(select(UserPark.park_id).where(UserPark.user_id == user.id)))
     staff = rbac.is_admin_or_royal(user) or rbac.has_permission(
@@ -247,61 +269,60 @@ def synchronize(
             results.append(result)
             states[item.client_action_id] = result.state
             continue
-        existing, _canonical, payload_hash = _receipt(db, user, batch.device_id, item)
-        if existing is not None:
-            if existing.payload_hash != payload_hash:
-                result = SyncActionResultOut(
-                    client_action_id=item.client_action_id,
-                    state="conflict",
-                    code="sync_payload_conflict",
-                )
+        with _receipt_lock(db, user, batch.device_id, item):
+            existing, _canonical, payload_hash = _receipt(db, user, batch.device_id, item)
+            if existing is not None:
+                if existing.payload_hash != payload_hash:
+                    result = SyncActionResultOut(
+                        client_action_id=item.client_action_id,
+                        state="conflict",
+                        code="sync_payload_conflict",
+                    )
+                else:
+                    result = SyncActionResultOut.model_validate_json(existing.result_json)
             else:
-                result = SyncActionResultOut.model_validate_json(existing.result_json)
-            results.append(result)
-            states[item.client_action_id] = result.state
-            continue
-        if not _park_allowed(db, user, item.park_id):
-            result = SyncActionResultOut(
-                client_action_id=item.client_action_id,
-                state="rejected",
-                code="park_forbidden",
-            )
-            if item.park_id is not None:
-                revoked.add(f"work:park:{item.park_id}")
-        else:
-            try:
-                value = dispatch_action(db, user, item)
-                result = SyncActionResultOut(
-                    client_action_id=item.client_action_id,
-                    state="confirmed",
-                    result=value,
-                )
-                changed_scopes.add("work")
-                if item.park_id is not None:
-                    changed_scopes.add(f"work:park:{item.park_id}")
-                    if item.action == "inventory_writeoff":
-                        changed_scopes.add(f"inventory:{item.park_id}")
-            except Exception as exc:
-                db.rollback()
-                state, code = _classification(exc)
-                result = SyncActionResultOut(
-                    client_action_id=item.client_action_id,
-                    state=state,
-                    code=code,
-                )
-        # Temporary upstream failures must remain replayable. Persist only
-        # terminal outcomes; otherwise one 503 becomes permanent.
-        if result.state != "attention":
-            db.add(
-                OfflineSyncReceipt(
-                    actor_user_id=user.id,
-                    device_id=batch.device_id,
-                    client_action_id=item.client_action_id,
-                    payload_hash=payload_hash,
-                    result_json=result.model_dump_json(),
-                )
-            )
-            db.commit()
+                if not _park_allowed(db, user, item.park_id):
+                    result = SyncActionResultOut(
+                        client_action_id=item.client_action_id,
+                        state="rejected",
+                        code="park_forbidden",
+                    )
+                    if item.park_id is not None:
+                        revoked.add(f"work:park:{item.park_id}")
+                else:
+                    try:
+                        value = dispatch_action(db, user, item)
+                        result = SyncActionResultOut(
+                            client_action_id=item.client_action_id,
+                            state="confirmed",
+                            result=value,
+                        )
+                        changed_scopes.add("work")
+                        if item.park_id is not None:
+                            changed_scopes.add(f"work:park:{item.park_id}")
+                            if item.action == "inventory_writeoff":
+                                changed_scopes.add(f"inventory:{item.park_id}")
+                    except Exception as exc:
+                        db.rollback()
+                        state, code = _classification(exc)
+                        result = SyncActionResultOut(
+                            client_action_id=item.client_action_id,
+                            state=state,
+                            code=code,
+                        )
+                # Temporary upstream failures must remain replayable. Persist only
+                # terminal outcomes; otherwise one 503 becomes permanent.
+                if result.state != "attention":
+                    db.add(
+                        OfflineSyncReceipt(
+                            actor_user_id=user.id,
+                            device_id=batch.device_id,
+                            client_action_id=item.client_action_id,
+                            payload_hash=payload_hash,
+                            result_json=result.model_dump_json(),
+                        )
+                    )
+                    db.commit()
         results.append(result)
         states[item.client_action_id] = result.state
 

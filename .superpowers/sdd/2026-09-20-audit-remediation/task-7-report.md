@@ -54,3 +54,30 @@ That is an environment limitation, not a test failure.
   service is already available.
 - No full API/web suite, Docker build, load benchmark, soak, installer/VM or
   OTA/signature operation was run or changed.
+
+## Review remediation
+
+- Added real `load` and `soak` command branches. They are unreachable from
+  `fast` and `full`; `soak` was checked fail-safe without its required
+  environment and stopped before any browser/container work.
+- Replaced the sequential PostgreSQL sync replay contract with two concurrent
+  HTTP requests held across the dispatch path. PostgreSQL now uses a
+  per-receipt session advisory lock, so the workflow dispatch and receipt
+  persist exactly once even though lower layers may commit independently.
+- Replaced the sequential media completion assertion with two concurrent HTTP
+  completions held at the staged-file rename. Completion now reads the upload
+  row with `FOR UPDATE`, ensuring the second caller observes the completed
+  result rather than a missing staged file.
+- The schedule/push contract now opens a fresh database session and verifies
+  the persisted encrypted subscription row belongs to the HTTP user.
+- The lifecycle test now tracks all eight individual jobs and a fake
+  `PushService.close`; lease release asserts every job and Push service has
+  stopped, rather than relying on one shared event.
+
+Additional short verification:
+
+- `tests/test_offline_sync.py tests/test_media_uploads.py tests/test_lifespan_jobs.py`
+  — `12 passed` (only the existing Starlette/httpx deprecation warning).
+- New PostgreSQL selections remain `3 skipped` because the opt-in Docker gate
+  is absent; Docker was not started.
+- Scoped Ruff/format, `sh -n scripts/verify.sh` and `git diff --check` passed.

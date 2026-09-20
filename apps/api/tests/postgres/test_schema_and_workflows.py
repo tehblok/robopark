@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -260,16 +261,26 @@ def _seed_http_mechanic(factory) -> tuple[int, int, str]:
         return user.id, park.id, user.username
 
 
-def test_postgresql_http_sync_replay_returns_same_receipt_without_second_dispatch(
+def test_postgresql_http_concurrent_sync_replay_dispatches_once_and_returns_one_receipt(
     migrated_engine: Engine, tmp_path: Path, monkeypatch
 ) -> None:
     from robopark_api.services import offline_sync
+    from robopark_api.task_workflow_models import OfflineSyncReceipt
 
     calls: list[str] = []
+    dispatch_entered = threading.Event()
+    allow_dispatch_to_finish = threading.Event()
+
+    def dispatch(_db, _user, item):
+        calls.append(item.client_action_id)
+        dispatch_entered.set()
+        assert allow_dispatch_to_finish.wait(timeout=1)
+        return {"message_id": "pg-1"}
+
     monkeypatch.setattr(
         offline_sync,
         "dispatch_action",
-        lambda _db, _user, item: calls.append(item.client_action_id) or {"message_id": "pg-1"},
+        dispatch,
     )
     with _postgres_http_client(migrated_engine, tmp_path, monkeypatch) as (client, factory):
         _user_id, park_id, username = _seed_http_mechanic(factory)
@@ -296,15 +307,32 @@ def test_postgresql_http_sync_replay_returns_same_receipt_without_second_dispatc
                 }
             ],
         }
-        first = client.post("/sync/batch", json=body)
-        second = client.post("/sync/batch", json=body)
+        start_requests = threading.Barrier(3)
+
+        def post_batch():
+            start_requests.wait(timeout=1)
+            return client.post("/sync/batch", json=body)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_future = executor.submit(post_batch)
+            second_future = executor.submit(post_batch)
+            start_requests.wait(timeout=1)
+            assert dispatch_entered.wait(timeout=1)
+            allow_dispatch_to_finish.set()
+            first = first_future.result(timeout=2)
+            second = second_future.result(timeout=2)
+        with factory() as db:
+            receipt_count = (
+                db.query(OfflineSyncReceipt).filter_by(client_action_id="pg-replay").count()
+            )
 
     assert first.status_code == second.status_code == 200
     assert first.json() == second.json()
     assert calls == ["pg-replay"]
+    assert receipt_count == 1
 
 
-def test_postgresql_http_media_completion_is_idempotent(
+def test_postgresql_http_concurrent_media_completion_returns_one_stable_result(
     migrated_engine: Engine, tmp_path: Path, monkeypatch
 ) -> None:
     import hashlib
@@ -313,6 +341,17 @@ def test_postgresql_http_media_completion_is_idempotent(
 
     upload_root = tmp_path / "uploaded-media"
     monkeypatch.setattr(media_uploads, "uploads_root", lambda: upload_root)
+    original_replace = Path.replace
+    replace_entered = threading.Event()
+    allow_replace = threading.Event()
+
+    def hold_replace(path: Path, target: Path):
+        if path.suffix == ".part":
+            replace_entered.set()
+            assert allow_replace.wait(timeout=1)
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", hold_replace)
     with _postgres_http_client(migrated_engine, tmp_path, monkeypatch) as (client, factory):
         _user_id, _park_id, username = _seed_http_mechanic(factory)
         assert (
@@ -343,8 +382,20 @@ def test_postgresql_http_media_completion_is_idempotent(
             ).status_code
             == 200
         )
-        completed = client.post(f"/media/uploads/{upload_id}/complete")
-        replayed = client.post(f"/media/uploads/{upload_id}/complete")
+        start_requests = threading.Barrier(3)
+
+        def complete_upload():
+            start_requests.wait(timeout=1)
+            return client.post(f"/media/uploads/{upload_id}/complete")
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_future = executor.submit(complete_upload)
+            second_future = executor.submit(complete_upload)
+            start_requests.wait(timeout=1)
+            assert replace_entered.wait(timeout=1)
+            allow_replace.set()
+            completed = first_future.result(timeout=2)
+            replayed = second_future.result(timeout=2)
 
     assert completed.status_code == replayed.status_code == 200
     assert completed.json() == replayed.json()
@@ -354,6 +405,9 @@ def test_postgresql_http_media_completion_is_idempotent(
 def test_postgresql_http_schedule_and_push_subscription_persist_for_same_user(
     migrated_engine: Engine, tmp_path: Path, monkeypatch
 ) -> None:
+    from robopark_api.schedule_models import PushSubscription
+
+    endpoint = "https://push.example/postgres"
     with _postgres_http_client(migrated_engine, tmp_path, monkeypatch) as (client, factory):
         user_id, park_id, username = _seed_http_mechanic(factory)
         assert (
@@ -374,15 +428,23 @@ def test_postgresql_http_schedule_and_push_subscription_persist_for_same_user(
         )
         subscription = client.post(
             "/push/subscriptions",
-            json={"endpoint": "https://push.example/postgres", "p256dh": "key", "auth": "auth"},
+            json={"endpoint": endpoint, "p256dh": "key", "auth": "auth"},
         )
         event = client.app.state.push_service.emit_for_tests(
             event_type="new_task", park_id=park_id, protected_text="private task"
         )
         inbox = client.get("/push/inbox")
+        with factory() as db:
+            persisted_subscription = db.scalar(
+                select(PushSubscription).where(
+                    PushSubscription.endpoint_hash == sha256(endpoint.encode()).hexdigest()
+                )
+            )
 
     assert schedule.status_code == 201
     assert subscription.status_code == 201
+    assert persisted_subscription is not None
+    assert persisted_subscription.user_id == user_id
     assert event["event_id"]
     assert user_id in event["internal_recipient_ids"]
     assert inbox.status_code == 200

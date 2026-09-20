@@ -40,12 +40,15 @@ def _validate_name(value: str) -> str:
     return name
 
 
-def _session(db: Session, actor: User, upload_id: str) -> MediaUploadSession:
-    row = db.scalar(
-        select(MediaUploadSession).where(
-            MediaUploadSession.id == upload_id, MediaUploadSession.actor_user_id == actor.id
-        )
+def _session(
+    db: Session, actor: User, upload_id: str, *, for_update: bool = False
+) -> MediaUploadSession:
+    statement = select(MediaUploadSession).where(
+        MediaUploadSession.id == upload_id, MediaUploadSession.actor_user_id == actor.id
     )
+    if for_update:
+        statement = statement.with_for_update()
+    row = db.scalar(statement)
     if row is None:
         raise HTTPException(404, "media_upload_not_found")
     if not row.completed and row.expires_at <= time.time():
@@ -144,7 +147,11 @@ def append_chunk(
 
 
 def complete(db: Session, actor: User, upload_id: str) -> MediaUploadSession:
-    row = _session(db, actor, upload_id)
+    # PostgreSQL serializes duplicate completion requests before either caller
+    # can rename the staged blob. The second caller then observes `completed`
+    # and returns the original successful response instead of a missing-file
+    # race. SQLite retains its existing single-host request serialization.
+    row = _session(db, actor, upload_id, for_update=True)
     if row.completed:
         return row
     if row.received_offset != row.size_bytes:

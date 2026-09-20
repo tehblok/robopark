@@ -129,6 +129,12 @@ case "${1:-all}" in
   fast)
     run_fast
     ;;
+  load)
+    run_load
+    ;;
+  soak)
+    run_soak
+    ;;
   api)
     run_api
     ;;
