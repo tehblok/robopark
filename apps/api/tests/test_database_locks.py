@@ -263,6 +263,60 @@ def test_postgresql_lock_caps_independent_connections_and_times_out_waiter(monke
     assert maximum_active == 2
 
 
+@pytest.mark.parametrize("slow_phase", ["connect", "scalar"])
+def test_postgresql_lock_rejects_success_returned_after_deadline(monkeypatch, slow_phase):
+    """A late connect or scalar result must never enter the protected workflow."""
+    scalar_called = False
+
+    class Transaction:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def begin(self):
+            return Transaction()
+
+        def scalar(self, _statement, _parameters):
+            nonlocal scalar_called
+            scalar_called = True
+            if slow_phase == "scalar":
+                time.sleep(0.2)
+            return True
+
+    class LockEngine:
+        def connect(self):
+            if slow_phase == "connect":
+                time.sleep(0.2)
+            return Connection()
+
+    class RequestSession:
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    monkeypatch.setattr(database_locks, "LOCK_WAIT_SECONDS", 0.05)
+    state = database_locks._PostgresLockEngine(LockEngine(), threading.BoundedSemaphore(1))
+    monkeypatch.setattr(database_locks, "_postgres_lock_engine", lambda _bind: state)
+
+    entered = False
+    with (
+        pytest.raises(HTTPException, match="idempotency_lock_busy"),
+        database_idempotency_lock(RequestSession(), "late-success"),
+    ):
+        entered = True
+
+    assert entered is False
+    assert scalar_called is (slow_phase == "scalar")
+
+
 @pytest.mark.skipif(database_locks.fcntl is None, reason="fcntl flock requires Unix")
 def test_sqlite_bucket_locks_exclude_same_bucket_and_allow_different_bucket(tmp_path):
     """Child processes prove host-worker exclusion without a global file lock."""

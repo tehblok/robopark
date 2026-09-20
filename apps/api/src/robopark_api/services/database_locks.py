@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import os
 import threading
 import time
@@ -132,7 +131,8 @@ def _postgres_lock_engine(bind: Any) -> _PostgresLockEngine:
                 pool_size=POSTGRES_LOCK_POOL_SIZE,
                 max_overflow=0,
                 pool_timeout=LOCK_WAIT_SECONDS,
-                pool_pre_ping=True,
+                pool_pre_ping=False,
+                pool_recycle=0,
                 pool_use_lifo=True,
             )
 
@@ -140,12 +140,22 @@ def _postgres_lock_engine(bind: Any) -> _PostgresLockEngine:
             def _bound_physical_connect(_dialect, _record, _cargs, cparams) -> None:
                 deadline = getattr(_postgres_connect_deadline, "value", None)
                 if deadline is None:
-                    cparams["connect_timeout"] = max(1, math.ceil(LOCK_WAIT_SECONDS))
-                    return
+                    deadline = time.monotonic() + LOCK_WAIT_SECONDS
                 remaining = _remaining_seconds(deadline)
-                if remaining <= 0:
+                connect_seconds = int(remaining)
+                timeout_milliseconds = int(remaining * 1000)
+                if connect_seconds < 1 or timeout_milliseconds < 1:
                     raise _LockDeadlineExceeded
-                cparams["connect_timeout"] = max(1, math.ceil(remaining))
+                cparams["connect_timeout"] = connect_seconds
+                cparams["tcp_user_timeout"] = timeout_milliseconds
+                deadline_options = (
+                    f"-c statement_timeout={timeout_milliseconds} "
+                    f"-c lock_timeout={timeout_milliseconds}"
+                )
+                existing_options = str(cparams.get("options", "")).strip()
+                cparams["options"] = " ".join(
+                    option for option in (existing_options, deadline_options) if option
+                )
 
             state = _PostgresLockEngine(
                 engine=engine,
@@ -186,15 +196,26 @@ def database_idempotency_lock(db: Any, key: str) -> Iterator[None]:
                 raise HTTPException(503, "idempotency_lock_busy")
             _postgres_connect_deadline.value = deadline
             try:
-                with state.engine.connect() as connection, connection.begin():
-                    while not connection.scalar(
-                        text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"), {"key": key}
-                    ):
-                        remaining = _remaining_seconds(deadline)
-                        if remaining <= 0:
+                with state.engine.connect() as connection:
+                    if _remaining_seconds(deadline) <= 0:
+                        raise HTTPException(503, "idempotency_lock_busy")
+                    with connection.begin():
+                        while True:
+                            if _remaining_seconds(deadline) <= 0:
+                                raise HTTPException(503, "idempotency_lock_busy")
+                            acquired = connection.scalar(
+                                text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
+                                {"key": key},
+                            )
+                            remaining = _remaining_seconds(deadline)
+                            if remaining <= 0:
+                                raise HTTPException(503, "idempotency_lock_busy")
+                            if acquired:
+                                break
+                            time.sleep(min(_SLEEP_SECONDS, remaining))
+                        if _remaining_seconds(deadline) <= 0:
                             raise HTTPException(503, "idempotency_lock_busy")
-                        time.sleep(min(_SLEEP_SECONDS, remaining))
-                    yield
+                        yield
             except _LockDeadlineExceeded:
                 raise HTTPException(503, "idempotency_lock_busy") from None
             finally:

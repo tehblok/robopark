@@ -142,6 +142,35 @@ Round-4 TDD / short verification:
 - No PostgreSQL container, Docker, full suite, load, soak, installer, OTA or
   signature operation was run.
 
+## Final deadline remediation
+
+- Removed `pool_pre_ping` from the dedicated lock pool so checkout cannot add
+  an unbudgeted network round trip. Lock connections are recycled on every
+  checkout while the two-slot pool and semaphore continue to bound physical
+  connection concurrency.
+- Physical PostgreSQL connect settings now conservatively floor the remaining
+  deadline instead of rounding upward. A connect is rejected before reaching
+  the driver when less than its one-second granularity remains. PostgreSQL
+  also receives remaining-budget `statement_timeout`, `lock_timeout`, and
+  `tcp_user_timeout` values.
+- Added monotonic checks immediately after checkout and after every advisory
+  scalar response. A result that arrives after the five-second deadline is
+  rolled back/closed and reported as `idempotency_lock_busy`, even when the
+  database returned `true`.
+- Added deterministic 50 ms deadline regressions for a 200 ms fake connect and
+  a 200 ms fake advisory scalar. Neither is allowed to enter the protected
+  workflow.
+
+Final short verification:
+
+- RED: both late-success cases entered the protected workflow and failed with
+  `DID NOT RAISE HTTPException` before the fix.
+- GREEN: `tests/test_database_locks.py tests/test_lifespan_jobs.py` — `8 passed`
+  (only the existing Starlette/httpx deprecation warning).
+- Scoped Ruff, format check and `git diff --check` passed.
+- No PostgreSQL container, Docker, full suite, load, soak, installer, OTA or
+  signature operation was run.
+
 ## Review remediation round 2
 
 - Replaced the request-session PostgreSQL advisory lock with a bounded
