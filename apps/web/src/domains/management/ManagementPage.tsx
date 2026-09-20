@@ -7,6 +7,7 @@ import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { ManagementNavigation } from './ManagementNavigation'
 import { managementHref, managementSections } from './managementSections'
 import './management.css'
+import { DomainPresentation } from '../../app/interface/DomainPresentation'
 
 export function ManagementPage() {
   const { user } = useAuth()
@@ -19,7 +20,7 @@ export function ManagementPage() {
       subtitle="Доступ команды и настройки рабочего пространства."
       title="Управление"
     >
-      <ManagementNavigation />
+      <DomainPresentation route="admin" context={<ManagementNavigation />}>
       <div className="rp-management-metrics">
         <MetricCard label="Доступные разделы" value={visibleLinks.length} />
         <MetricCard label="Назначенные парки" value={user?.parks.length ?? 0} />
@@ -33,6 +34,7 @@ export function ManagementPage() {
         ))}
       </div>
       </Panel>
+      </DomainPresentation>
     </PageShell></div>
   )
 }

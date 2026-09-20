@@ -7,6 +7,7 @@ import { mapApiError } from '../i18n/errors'
 import { requestStatusLabel, ru } from '../i18n/ru'
 import { useAuth } from '../auth-context'
 import { useCachedResource } from '../lib/resource'
+import { DomainPresentation } from '../app/interface/DomainPresentation'
 
 function requestBadgeClass(status: string): string {
   switch (status) {
@@ -63,6 +64,7 @@ export function OperatorParks() {
         title={ru.parks.myParks}
       >
         {error && <Alert tone="error">{error}</Alert>}
+        <DomainPresentation route="operator-parks" context={<p>{parks.length} парков · {requests.length} заявок</p>}>
 
         <Panel hint="Парки, к которым администратор уже выдал доступ." title={ru.parks.myParks}>
           {parksLoading ? (
@@ -136,6 +138,7 @@ export function OperatorParks() {
             <EmptyBlock icon="📥" title={ru.empty} />
           )}
         </Panel>
+        </DomainPresentation>
       </PageShell>
       <RequestParkModal
         onClose={() => setParkModalOpen(false)}

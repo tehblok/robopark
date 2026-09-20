@@ -8,6 +8,7 @@ import { useAuth } from '../../auth-context'
 import { adminResourceKey, adminResourceOptions } from '../../components/admin/adminResources'
 import { ManagementNavigation } from './ManagementNavigation'
 import './management.css'
+import { DomainPresentation } from '../../app/interface/DomainPresentation'
 
 export function UserManagementPage() {
   const { user } = useAuth()
@@ -16,10 +17,11 @@ export function UserManagementPage() {
 
   return (
     <div className="rp-management"><PageShell subtitle="Роли, парки и доступы каждого участника команды." title="Пользователи">
-      <ManagementNavigation />
+      <DomainPresentation route="admin-users" context={<ManagementNavigation />}>
       {error && <Alert tone="error">{error}</Alert>}
       {parks.isLoading && !parks.data ? <Spinner label="Загрузка парков…" /> : null}
       {parks.data ? <AdminUsersPanel parks={parks.data} /> : null}
+      </DomainPresentation>
     </PageShell></div>
   )
 }
