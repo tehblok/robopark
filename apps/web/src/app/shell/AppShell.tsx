@@ -19,6 +19,8 @@ import { reportsAccessIdentity } from '../../domains/reports/reports'
 import { clearInstallPrompt, currentInstallPrompt, subscribeInstallPrompt } from '../../pwa/installPrompt'
 import './AppShell.css'
 import { InterfaceChoice } from '../interface/InterfaceChoice'
+import { usePresentationMode } from '../interface/presentationModeContext'
+import { PresentationShell } from '../interface/PresentationShell'
 
 const GROUPS: readonly NavGroup[] = [
   'operations',
@@ -274,6 +276,7 @@ export function AppShell() {
     resolvedDensity,
     setDensityPreference,
   } = useTheme()
+  const presentationMode = usePresentationMode()
   const location = useLocation()
   const navigationType = useNavigationType()
   const navigationTypeRef = useRef(navigationType)
@@ -456,7 +459,7 @@ export function AppShell() {
     focusTarget?.focus()
   }, [phoneViewport])
 
-  if (!user) return null
+  if (!user || !presentationMode) return null
 
   const groupLabels = ru.appShell.groups
   const focusMain = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -465,16 +468,18 @@ export function AppShell() {
   }
 
   return (
-    <div
-      className={`app-shell rp-app-shell${railCollapsed ? ' is-rail-collapsed' : ''}`}
-      data-density={resolvedDensity}
-      data-theme={resolvedTheme}
-    >
-      <a className="rp-shell__skip-link" href="#main-content" onClick={focusMain}>
-        {ru.appShell.skipToContent}
-      </a>
-
-      <aside className="sidebar rp-shell__sidebar">
+    <>
+      <PresentationShell
+        density={resolvedDensity}
+        mode={presentationMode}
+        shellClassName={railCollapsed ? 'is-rail-collapsed' : ''}
+        theme={resolvedTheme}
+        slots={{
+          navigation: <>
+          <a className="rp-shell__skip-link" href="#main-content" onClick={focusMain}>
+            {ru.appShell.skipToContent}
+          </a>
+          <aside className="sidebar rp-shell__sidebar">
         {!phoneViewport ? (
           <ParkIdentity
             allowAllParks={allowAllParks}
@@ -516,10 +521,32 @@ export function AppShell() {
             )
           })}
         </nav>
-      </aside>
-
-      <div className="app-main rp-shell__main-column">
-        <header className="rp-shell__topbar">
+          </aside>
+          {phoneViewport ? (
+            <nav aria-label={ru.appShell.mainNavigation} className="rp-shell__bottom-nav">
+              {primaryMobileItems.map((item) => (
+                <NavigationLink
+                  active={item.id === mobileCurrent?.id}
+                  className="rp-shell__mobile-link"
+                  item={item}
+                  key={item.id}
+                  reportsBadge={reportsBadge}
+                />
+              ))}
+              <button
+                aria-current={moreCurrent ? 'page' : undefined}
+                aria-expanded={moreOpen}
+                className={`rp-shell__mobile-link${moreOpen || moreCurrent ? ' is-active' : ''}`}
+                onClick={() => setMoreOpen(true)}
+                type="button"
+              >
+                <Icon name="more" size={20} />
+                <span className="rp-shell__nav-label">{ru.nav.more}</span>
+              </button>
+            </nav>
+          ) : null}
+          </>,
+          header: <>
           <div className="rp-shell__context"><strong>{desktopCurrent?.label ?? 'Рабочее пространство'}</strong><span>{selectedPark?.name ?? 'Доступные парки'}</span></div>
           {phoneViewport ? (
             <ParkIdentity
@@ -548,9 +575,8 @@ export function AppShell() {
               </Button>
             ) : null}
           </div>
-        </header>
-
-        <main className="app-content rp-shell__content" id="main-content" tabIndex={-1}>
+          </>,
+          content: <>
           {loadError ? (
             <div aria-live="polite" className="rp-shell__scope-alert" role="status">
               <span><strong>Список парков может быть устаревшим.</strong> {loadError}</span>
@@ -564,32 +590,9 @@ export function AppShell() {
             </div>
           ) : null}
           <Outlet />
-        </main>
-
-        {phoneViewport ? (
-          <nav aria-label={ru.appShell.mainNavigation} className="rp-shell__bottom-nav">
-            {primaryMobileItems.map((item) => (
-              <NavigationLink
-                active={item.id === mobileCurrent?.id}
-                className="rp-shell__mobile-link"
-                item={item}
-                key={item.id}
-                reportsBadge={reportsBadge}
-              />
-            ))}
-            <button
-              aria-current={moreCurrent ? 'page' : undefined}
-              aria-expanded={moreOpen}
-              className={`rp-shell__mobile-link${moreOpen || moreCurrent ? ' is-active' : ''}`}
-              onClick={() => setMoreOpen(true)}
-              type="button"
-            >
-              <Icon name="more" size={20} />
-              <span className="rp-shell__nav-label">{ru.nav.more}</span>
-            </button>
-          </nav>
-        ) : null}
-      </div>
+          </>,
+        }}
+      />
 
       <BottomSheet
         description={`${user.username} · ${roleLabel(user.role)}`}
@@ -597,6 +600,7 @@ export function AppShell() {
         open={moreOpen}
         title={ru.nav.more}
       >
+        <div className={presentationMode === 'task-first' ? 'rp-task-first-shell' : 'rp-classic-shell'}>
         {secondaryMobileItems.length > 0 ? (
           <nav aria-label={ru.appShell.secondaryNavigation} className="rp-shell__more-nav">
             {secondaryMobileItems.map((item) => (
@@ -670,7 +674,8 @@ export function AppShell() {
           {ru.signOut}
         </Button>
         <footer className="rp-shell__about">Разработчик: tehblokdan</footer>
+        </div>
       </BottomSheet>
-    </div>
+    </>
   )
 }

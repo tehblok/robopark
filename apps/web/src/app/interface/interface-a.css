@@ -1,10 +1,10 @@
 /* Interface A: one live tree, shared controllers, opt-in presentation only. */
-html[data-interface='task-first'] {
+.rp-task-first-shell {
   --rp-radius-panel: 12px;
   --rp-layout-gutter: 0px;
   --rp-control-min-size: 44px;
 
-  .rp-app-shell { grid-template-columns: 224px minmax(0, 1fr); }
+  & { grid-template-columns: 224px minmax(0, 1fr); }
   .rp-shell__sidebar { padding: 16px 12px; gap: 20px; }
   .rp-shell__park-brand { border-radius: 8px; padding: 10px; }
   .rp-shell__desktop-nav { gap: 20px; }
@@ -243,7 +243,7 @@ html[data-interface='task-first'] {
   .page-header-actions { flex-wrap: wrap; }
 
   @media (max-width: 1199px) and (min-width: 900px) {
-    .rp-app-shell.is-rail-collapsed { grid-template-columns: 80px minmax(0, 1fr); }
+    &.is-rail-collapsed { grid-template-columns: 80px minmax(0, 1fr); }
   }
   @media (max-width: 899px) {
     .rp-work-sections { display: grid; gap: 0; }

@@ -10,6 +10,7 @@ import { AuthContext } from './auth-context'
 import { pruneLegacyResourceSnapshots, resourceStore } from './lib/resource'
 import { clearProtectedBrowserStorage } from './shared/auth/protectedBrowserStorage'
 import { InterfaceModeProvider } from './app/interface/InterfaceModeProvider'
+import { interfaceModeStore } from './app/interface/interfaceModeStore'
 import { activateDeviceResourceCache, purgeDeviceResourceCache } from './lib/deviceResourceCache'
 
 export function AuthProvider({ children }: PropsWithChildren) {
@@ -24,6 +25,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     clearApiValidators()
     void purgeDeviceResourceCache()
     clearProtectedBrowserStorage()
+    interfaceModeStore.setAccount(null)
     setUser(null)
     setLoading(false)
     return generation
@@ -36,7 +38,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
       .me()
       .then(async (nextUser) => {
         await activateDeviceResourceCache(nextUser)
-        if (generation === sessionGeneration.current) setUser(nextUser)
+        if (generation === sessionGeneration.current) {
+          interfaceModeStore.setAccount(nextUser.id)
+          setUser(nextUser)
+        }
       })
       .catch((error) => {
         if (generation !== sessionGeneration.current) return
@@ -65,6 +70,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     if (generation !== sessionGeneration.current) throw new Error('session_changed')
     await activateDeviceResourceCache(authenticatedUser)
     if (generation !== sessionGeneration.current) throw new Error('session_changed')
+    interfaceModeStore.setAccount(authenticatedUser.id)
     setUser(authenticatedUser)
     return authenticatedUser
   }
@@ -76,7 +82,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
       if (generation === sessionGeneration.current) {
         clearApiValidators()
         await activateDeviceResourceCache(authenticatedUser)
-        if (generation === sessionGeneration.current) setUser(authenticatedUser)
+        if (generation === sessionGeneration.current) {
+          interfaceModeStore.setAccount(authenticatedUser.id)
+          setUser(authenticatedUser)
+        }
       }
       return authenticatedUser
     } catch (error) {

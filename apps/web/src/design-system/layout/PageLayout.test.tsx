@@ -52,6 +52,13 @@ it('styles only headings owned by the layout primitives', () => {
   expect(source).not.toMatch(/\.rp-panel\s+h2/)
 })
 
+it('leaves horizontal page gutters to the selected presentation shell', () => {
+  const source = readFileSync(resolve('src/design-system/layout/PageLayout.css'), 'utf8')
+
+  expect(source).not.toMatch(/\.rp-page-layout\s*\{[^}]*\bpadding\s*:/s)
+  expect(source).not.toMatch(/\.rp-page-layout\s*\{[^}]*\bpadding-inline\s*:/s)
+})
+
 describe('Panel', () => {
   it('uses the saved fallback when no collapse preference exists', () => {
     render(

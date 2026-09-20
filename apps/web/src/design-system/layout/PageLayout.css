@@ -3,7 +3,6 @@
   gap: var(--rp-space-6);
   margin-inline: auto;
   max-width: 1440px;
-  padding: var(--rp-layout-gutter);
   width: 100%;
 }
 
@@ -109,11 +108,6 @@
 }
 
 @media (max-width: 599px) {
-  .rp-page-layout {
-    padding-inline: calc(var(--rp-space-3) + env(safe-area-inset-left))
-      calc(var(--rp-space-3) + env(safe-area-inset-right));
-  }
-
   .rp-page-layout__header,
   .rp-panel__header {
     align-items: stretch;

@@ -38,12 +38,12 @@ describe('interface selection lifecycle', () => {
     const first = store.beginMutation()
     const second = store.beginMutation()
     store.requestMode('task-first')
-    expect(store.getSnapshot()).toEqual({ mode: 'classic', pendingMode: 'task-first', mutationCount: 2 })
+    expect(store.getSnapshot()).toEqual({ accountId: 101, mode: 'classic', pendingMode: 'task-first', mutationCount: 2 })
     first(); first()
     expect(store.getSnapshot().mode).toBe('classic')
     expect(store.getSnapshot().mutationCount).toBe(1)
     second()
-    expect(store.getSnapshot()).toEqual({ mode: 'task-first', pendingMode: null, mutationCount: 0 })
+    expect(store.getSnapshot()).toEqual({ accountId: 101, mode: 'task-first', pendingMode: null, mutationCount: 0 })
   })
 
   it('cancels a deferred choice when the current mode is selected again', () => {
@@ -64,7 +64,7 @@ describe('interface selection lifecycle', () => {
     store.setAccount(2)
     const newRelease = store.beginMutation()
     oldRelease()
-    expect(store.getSnapshot()).toEqual({ mode: 'classic', pendingMode: null, mutationCount: 1 })
+    expect(store.getSnapshot()).toEqual({ accountId: 2, mode: 'classic', pendingMode: null, mutationCount: 1 })
     newRelease()
     expect(store.getSnapshot().mutationCount).toBe(0)
   })

@@ -1,5 +1,6 @@
 export type InterfaceMode = 'classic' | 'task-first'
 export type InterfaceModeSnapshot = {
+  accountId: number | null
   mode: InterfaceMode
   pendingMode: InterfaceMode | null
   mutationCount: number
@@ -16,10 +17,11 @@ export type InterfaceStorage = Pick<Storage, 'getItem' | 'setItem'>
 export function createInterfaceModeStore(storage: () => InterfaceStorage): InterfaceModeStore {
   let accountId: number | null = null
   let generation = 0
-  let snapshot: InterfaceModeSnapshot = { mode: 'classic', pendingMode: null, mutationCount: 0 }
+  let snapshot: InterfaceModeSnapshot = { accountId: null, mode: 'classic', pendingMode: null, mutationCount: 0 }
   const listeners = new Set<() => void>()
   const publish = (next: InterfaceModeSnapshot) => {
-    if (next.mode === snapshot.mode && next.pendingMode === snapshot.pendingMode && next.mutationCount === snapshot.mutationCount) return
+    if (next.accountId === snapshot.accountId && next.mode === snapshot.mode
+      && next.pendingMode === snapshot.pendingMode && next.mutationCount === snapshot.mutationCount) return
     snapshot = next
     for (const listener of listeners) listener()
   }
@@ -27,7 +29,7 @@ export function createInterfaceModeStore(storage: () => InterfaceStorage): Inter
     if (accountId !== null) {
       try { storage().setItem(`robopark:interface:v1:${accountId}`, mode) } catch { /* Memory-only when storage is unavailable. */ }
     }
-    publish({ ...snapshot, mode, pendingMode: null })
+    publish({ ...snapshot, accountId, mode, pendingMode: null })
   }
   return {
     getSnapshot: () => snapshot,
@@ -42,7 +44,7 @@ export function createInterfaceModeStore(storage: () => InterfaceStorage): Inter
           if (storage().getItem(`robopark:interface:v1:${accountId}`) === 'task-first') mode = 'task-first'
         } catch { /* No preference may block login. */ }
       }
-      publish({ mode, pendingMode: null, mutationCount: 0 })
+      publish({ accountId, mode, pendingMode: null, mutationCount: 0 })
     },
     requestMode(mode) {
       if (snapshot.mutationCount > 0) {

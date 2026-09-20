@@ -1,0 +1,9 @@
+.rp-classic-shell {
+  --rp-shell-gutter: var(--rp-space-6);
+}
+
+@media (max-width: 899px) {
+  .rp-classic-shell {
+    --rp-shell-gutter: var(--rp-space-3);
+  }
+}

@@ -1,5 +1,5 @@
 /* Approved classic baseline: 5b465cc + robot-check-ux/proposal.css. */
-html:not([data-interface='task-first']) {
+.rp-classic-shell {
   .rp-page-layout:has(.rp-check-workspace) { gap: 8px; }
   .rp-page-layout:has(.rp-check-workspace) .rp-page-layout__title { font-size: 22px; }
   .rp-check-backlinks { margin: 0; }

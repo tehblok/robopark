@@ -24,38 +24,70 @@ for (const role of roles) {
   })
 }
 
-test('unknown address preserves the safe login redirect and interface choice', async ({ page }) => {
+test('unknown address preserves a neutral pre-authentication presentation', async ({ page }) => {
   await installMockApi(page, { user: null })
   await page.goto('/missing-interface-route')
   await expect(page.getByRole('heading', { name: 'Вход', exact: true })).toBeVisible()
-  await page.getByText('Вид интерфейса', { exact: true }).click()
-  await page.getByRole('radio', { name: 'Новый А', exact: true }).check()
-  await expect(page.locator('html')).toHaveAttribute('data-interface', 'task-first')
+  await expect(page.locator('html')).not.toHaveAttribute('data-interface')
+  await expect(page.locator('.rp-classic-shell, .rp-task-first-shell')).toHaveCount(0)
   await expect(page).toHaveURL(/\/login$/)
 })
 
-for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark']) {
-  test(`A shell visual ${theme} ${width}`, async ({ page }, testInfo) => {
+test('persisted account A mode has no first-paint Classic shell and does not duplicate route GETs', async ({ page }) => {
+  const user = userForRole('mechanic')
+  await page.addInitScript(({ accountId }) => {
+    localStorage.setItem(`robopark:interface:v1:${accountId}`, 'task-first')
+    const modes: string[] = []
+    Object.defineProperty(window, '__roboparkShellModes', { value: modes })
+    new MutationObserver(() => {
+      if (document.querySelector('.rp-classic-shell')) modes.push('classic')
+      if (document.querySelector('.rp-task-first-shell')) modes.push('task-first')
+    }).observe(document, { childList: true, subtree: true })
+  }, { accountId: user.id })
+  let overviewGets = 0
+  page.on('request', request => {
+    if (request.method() === 'GET' && request.url().includes('/api/operations/overview')) overviewGets += 1
+  })
+  await openRouteFixture(page, 'overview', user)
+  await expect(page.locator('.rp-task-first-shell')).toBeVisible()
+  expect(await page.evaluate(() => (window as unknown as { __roboparkShellModes: string[] }).__roboparkShellModes)).not.toContain('classic')
+  const before = overviewGets
+  await selectInterface(page, 'Классический')
+  await selectInterface(page, 'Новый А')
+  expect(overviewGets).toBe(before)
+})
+
+for (const mode of ['Классический', 'Новый А'] as const)
+for (const width of [320, 390, 412, 899, 1440]) for (const theme of ['light', 'dark']) {
+  test(`${mode} shell visual ${theme} ${width}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 })
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await page.addInitScript(value => localStorage.setItem('robopark-theme', value), theme)
     await openRouteFixture(page, 'overview', userForRole('mechanic'))
-    await selectInterface(page, 'Новый А')
+    if (mode === 'Новый А') await selectInterface(page, mode)
+    const shell = page.locator(mode === 'Новый А' ? '.rp-task-first-shell' : '.rp-classic-shell')
+    await expect(shell).toBeVisible()
+    await expect(shell.locator('[data-shell-zone="navigation"]')).toHaveCount(1)
+    await expect(shell.locator('[data-shell-zone="header"]')).toHaveCount(1)
+    await expect(shell.locator('[data-shell-zone="content"]')).toHaveCount(1)
+    await expect(shell.locator('[data-shell-zone="context"]')).toHaveCount(1)
+    await expect(shell.locator('[data-shell-zone="action"]')).toHaveCount(1)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-    await page.screenshot({ path: testInfo.outputPath('shell.png'), fullPage: true })
+    if (width < 900) {
+      for (const label of await page.locator('.rp-shell__bottom-nav .rp-shell__nav-label:visible').all()) {
+        expect(await label.evaluate(element => element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight)).toBe(true)
+      }
+    }
+    await page.screenshot({ path: testInfo.outputPath(`${mode === 'Новый А' ? 'a' : 'classic'}-shell.png`), fullPage: true })
   })
 }
 
 for (const route of ROUTE_MANIFEST.filter(item => item.surface === 'public')) {
-  test(`anonymous ${route.id} has an independent interface choice`, async ({ page }) => {
+  test(`anonymous ${route.id} stays presentation-neutral`, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 800 })
     await installMockApi(page, { user: null })
     await page.goto(route.path)
-    await page.getByText('Вид интерфейса', { exact: true }).click()
-    await page.getByRole('radio', { name: 'Новый А', exact: true }).check()
-    await expect(page.locator('html')).toHaveAttribute('data-interface', 'task-first')
+    await expect(page.locator('html')).not.toHaveAttribute('data-interface')
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-    await page.getByRole('radio', { name: 'Классический', exact: true }).check()
-    await expect(page.locator('html')).toHaveAttribute('data-interface', 'classic')
   })
 }

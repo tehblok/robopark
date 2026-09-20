@@ -1,0 +1,9 @@
+.rp-task-first-shell {
+  --rp-shell-gutter: 24px;
+}
+
+@media (max-width: 899px) {
+  .rp-task-first-shell {
+    --rp-shell-gutter: 12px;
+  }
+}
