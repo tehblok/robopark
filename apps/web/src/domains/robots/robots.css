@@ -2,12 +2,12 @@
   min-width: 0;
 }
 
-.rp-robot-registry__filters { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto auto; gap: 1rem; align-items: end; }
-.rp-robot-registry__filters label { display: grid; gap: .5rem; min-width: 0; }
+.rp-robot-registry__filters { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto auto; gap: var(--rp-form-gap); align-items: end; }
+.rp-robot-registry__filters label { display: grid; gap: var(--rp-space-2); min-width: 0; }
 .rp-robot-registry__filters input[type='search'], .rp-robot-registry__filters select { width: 100%; min-width: 0; min-height: 44px; font-size: 16px; }
 .rp-robot-registry__filters .rp-robot-registry__check { display: flex; align-items: center; min-height: 44px; }
 .rp-robot-registry__check input { width: 20px; height: 20px; min-width: 20px; min-height: 20px; flex: 0 0 20px; }
-.rp-robot-registry__summary, .rp-robot-registry__pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .75rem; margin-top: 1rem; }
+.rp-robot-registry__summary, .rp-robot-registry__pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--rp-form-gap); margin-top: var(--rp-form-gap); }
 .rp-robot-registry__note { color: var(--rp-text-muted); }
 .rp-robot-registry__rows { display: grid; gap: 0; }
 .rp-robot-registry__rows .rp-entity-row { border-radius: 0; border-width: 0 0 1px; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.4fr) minmax(5rem, .5fr); }
@@ -47,7 +47,7 @@
 .rp-robots-recent-card > a,
 .rp-robot-scanner__actions {
   display: flex;
-  gap: 0.75rem;
+  gap: var(--rp-form-gap);
 }
 
 .rp-robot-resolver__form {
@@ -76,7 +76,7 @@
 
 .rp-robots-recent-list {
   display: grid;
-  gap: 0.75rem;
+  gap: var(--rp-form-gap);
   grid-template-columns: minmax(0, 1fr);
   list-style: none;
   margin: 0;
@@ -86,7 +86,7 @@
 .rp-robots-recent-card {
   background: var(--rp-surface-raised);
   border: 1px solid var(--rp-border);
-  border-radius: var(--rp-radius-control);
+  border-radius: var(--rp-radius-card);
   min-width: 0;
 }
 
@@ -95,7 +95,7 @@
   flex-direction: column;
   min-height: 44px;
   overflow-wrap: anywhere;
-  padding: 0.75rem;
+  padding: var(--rp-card-padding);
   text-decoration: none;
 }
 
@@ -113,7 +113,7 @@
 
 .rp-robot-scanner__actions {
   flex-wrap: wrap;
-  margin-top: 1rem;
+  margin-top: var(--rp-form-gap);
 }
 
 @media (min-width: 600px) and (max-width: 1199px) {
@@ -131,7 +131,7 @@
 
 .rp-robot-detail {
   display: grid;
-  gap: 1rem;
+  gap: var(--rp-section-gap);
   grid-template-columns: minmax(0, 1fr);
   min-width: 0;
 }
@@ -156,7 +156,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.75rem;
+  gap: var(--rp-form-gap);
 }
 
 .rp-robot-identity {
@@ -168,9 +168,9 @@
 
 .rp-robot-identity__illustration {
   background: var(--rp-surface-sunken);
-  border-radius: var(--rp-radius-control);
+  border-radius: var(--rp-radius-card);
   margin: 0;
-  padding: 1rem;
+  padding: var(--rp-card-padding);
   text-align: center;
 }
 
@@ -202,7 +202,7 @@
 
 .rp-robot-detail__tasks {
   display: grid;
-  gap: 1rem;
+  gap: var(--rp-form-gap);
   list-style: none;
   margin: 0;
   padding: 0;

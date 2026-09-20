@@ -93,8 +93,8 @@
   .a-task-action__buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 
   /* Robot: real illustration and readings, separate diagnosis workspace. */
-  .a-robot-layout { grid-template-columns: minmax(300px, .85fr) minmax(0, 1.3fr); gap: 24px; align-items: start; }
-  .rp-check-first-level { background: var(--rp-surface); padding: 20px; border: 1px solid var(--rp-border); border-radius: 12px; gap: 12px; }
+  .a-robot-layout { grid-template-columns: minmax(300px, .85fr) minmax(0, 1.3fr); gap: var(--rp-section-gap); align-items: start; }
+  .rp-check-first-level { background: var(--rp-surface); padding: var(--rp-card-padding); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-card); gap: var(--rp-form-gap); }
   .rp-check-summary { background: transparent; border: 0; padding: 0; }
   .rp-check-summary-header { border-bottom: 1px solid var(--rp-border); padding-bottom: 12px; }
   .rp-check-summary-values { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
@@ -106,7 +106,7 @@
   .rp-check-photo-frame { width: min(100%, 240px); }
   .rp-check-overlay-frame { min-height: 240px; padding: 12px; }
   .rp-check-navigation { background: transparent; border-bottom: 1px solid var(--rp-border); padding: 0; border-radius: 0; }
-  .rp-check-panel { margin-top: 16px; padding: 20px; border: 1px solid var(--rp-border); border-radius: 12px; background: var(--rp-surface); }
+  .rp-check-panel { margin-top: var(--rp-form-gap); padding: var(--rp-card-padding); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-card); background: var(--rp-surface); }
   .rp-check-diagnostic-block { padding: 0; background: transparent; border: 0; }
   .rp-check-block-selector { border-bottom: 1px solid var(--rp-border); padding-bottom: 12px; }
   .rp-check-block-photo-frame { inline-size: min(100%, 220px); }
@@ -309,10 +309,10 @@
     .a-task-action { grid-column: 1; bottom: calc(var(--rp-shell-mobile-nav-height) + env(safe-area-inset-bottom)); margin-top: 0; padding: 10px 0; flex-direction: column; align-items: stretch; }
     .a-task-action > span { font-size: 14px; }
     .a-task-action .rp-button { width: 100%; }
-    .a-robot-layout, .rp-robots-page .rp-page-layout__content { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+    .a-robot-layout, .rp-robots-page .rp-page-layout__content { grid-template-columns: minmax(0, 1fr); gap: var(--rp-section-gap); }
     .rp-robots-search-panel { position: static; }
-    .rp-check-first-level, .rp-check-panel { padding: 14px; }
-    .rp-check-photo-frame { width: min(86vw, 320px); }
+    .rp-check-first-level, .rp-check-panel { padding: var(--rp-card-padding); }
+    .rp-check-photo-frame { width: min(100%, 320px); }
     .rp-check-overlay-frame { min-height: 200px; }
     .rp-check-summary-values dd { font-size: 14px; }
     .rp-check-block-photo-frame { inline-size: min(100%, 180px); }

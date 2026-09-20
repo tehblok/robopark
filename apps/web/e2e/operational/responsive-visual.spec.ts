@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import type { EmergencyReading, EmergencySnapshot, TrackerIssueDetail } from '../../src/api'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
+import { selectInterface } from '../support/interfaceMode'
 import { installOperational, issue, settlePage, snapshot } from './fixtures'
 import { assertResponsiveContracts } from './routeFixtures'
 
@@ -149,6 +150,53 @@ async function assertRobotReadingGeometry(page: Page) {
     expect(box!.x + box!.width / 2).toBeGreaterThan(robot!.x)
     expect(box!.x + box!.width / 2).toBeLessThan(robot!.x + robot!.width)
   }
+}
+
+async function assertRobotCheckGeometry(page: Page, width: number) {
+  const overview = await page.locator('[data-robot-overview]').boundingBox()
+  const details = await page.locator('[data-robot-details]').boundingBox()
+  const summary = await page.locator('.rp-check-summary').boundingBox()
+  const photo = await page.locator('.rp-check-photo-frame').boundingBox()
+  const navigation = await page.locator('.rp-check-navigation').boundingBox()
+  const panel = await page.locator('.rp-check-panel').boundingBox()
+  expect(overview && details && summary && photo && navigation && panel).toBeTruthy()
+
+  expect(summary!.x).toBeGreaterThanOrEqual(overview!.x - 1)
+  expect(summary!.x + summary!.width).toBeLessThanOrEqual(overview!.x + overview!.width + 1)
+  expect(photo!.x).toBeGreaterThanOrEqual(overview!.x - 1)
+  expect(photo!.x + photo!.width).toBeLessThanOrEqual(overview!.x + overview!.width + 1)
+  expect(Math.abs(navigation!.x - panel!.x)).toBeLessThanOrEqual(1)
+  expect(Math.abs(navigation!.width - panel!.width)).toBeLessThanOrEqual(1)
+  if (width >= 900) expect(Math.abs(overview!.y - details!.y)).toBeLessThanOrEqual(1)
+  else expect(overview!.y + overview!.height).toBeLessThanOrEqual(details!.y + 1)
+
+  const controls = await page.locator('.rp-check-navigation :is([role="tab"], .rp-check-more > button):visible').all()
+  for (const control of controls) {
+    const box = await control.boundingBox()
+    expect(box).toBeTruthy()
+    expect(box!.width).toBeGreaterThanOrEqual(44)
+    expect(box!.height).toBeGreaterThanOrEqual(44)
+    expect(box!.x).toBeGreaterThanOrEqual(navigation!.x - 1)
+    expect(box!.x + box!.width).toBeLessThanOrEqual(navigation!.x + navigation!.width + 1)
+  }
+  for (let index = 1; index < controls.length; index += 1) {
+    const previous = await controls[index - 1].boundingBox()
+    const current = await controls[index].boundingBox()
+    expect(previous!.x + previous!.width).toBeLessThanOrEqual(current!.x + 1)
+  }
+}
+
+for (const mode of ['Классический', 'Новый А'] as const) for (const width of [320, 390, 768, 1440] as const) {
+  test(`robot-check geometry stays aligned in ${mode} at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await installOperational(page, { role: 'mechanic', snapshot: measuredSnapshot })
+    await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=scheme`)
+    if (mode === 'Новый А') await selectInterface(page, mode)
+    await expect(page.getByRole('button', { name: 'Показание: Ток колеса, 4,2 А' })).toBeVisible()
+    await assertRobotCheckGeometry(page, width)
+    await assertRobotReadingGeometry(page)
+    await assertResponsiveContracts(page, width)
+  })
 }
 
 for (const width of widths) for (const theme of themes) {
