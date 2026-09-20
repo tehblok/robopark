@@ -814,14 +814,25 @@ export class ApiTimeoutError extends Error {
 const JSON_TIMEOUT_MS = 30_000
 const BLOB_TIMEOUT_MS = 60_000
 const FORM_TIMEOUT_MS = 90_000
+export type AuthFailureScope = 'query' | 'mutation'
+
+type RequestMetadata = {
+  authFailureScope?: AuthFailureScope
+}
+
+function defaultAuthFailureScope(init: RequestInit): AuthFailureScope {
+  const method = (init.method ?? 'GET').toUpperCase()
+  return method === 'GET' || method === 'HEAD' ? 'query' : 'mutation'
+}
 
 async function fetchWithTimeout<T>(
   input: RequestInfo | URL,
   init: RequestInit,
   timeoutMs: number,
   consume: (response: Response) => Promise<T>,
+  metadata: RequestMetadata = {},
 ): Promise<T> {
-  return trackInterfaceMutation(interfaceModeStore, init.method ?? 'GET', () => consumeWithTimeout(input, init, timeoutMs, consume))
+  return trackInterfaceMutation(interfaceModeStore, init.method ?? 'GET', () => consumeWithTimeout(input, init, timeoutMs, consume, metadata))
 }
 
 async function consumeWithTimeout<T>(
@@ -829,6 +840,7 @@ async function consumeWithTimeout<T>(
   init: RequestInit,
   timeoutMs: number,
   consume: (response: Response) => Promise<T>,
+  metadata: RequestMetadata,
 ): Promise<T> {
   const controller = new AbortController()
   const sourceSignal = init.signal
@@ -844,9 +856,9 @@ async function consumeWithTimeout<T>(
 
   try {
     const response = await fetch(input, { ...init, signal: controller.signal })
-    const method = (init.method ?? 'GET').toUpperCase()
     const authorizationChanged = response.status === 401
-      || (response.status === 403 && (method === 'GET' || method === 'HEAD'))
+      || (response.status === 403
+        && (metadata.authFailureScope ?? defaultAuthFailureScope(init)) === 'query')
     if (authorizationChanged && typeof window !== 'undefined') {
       clearApiValidators()
       window.dispatchEvent(new CustomEvent('robopark:authorization-failure', {
@@ -1016,7 +1028,7 @@ export function isInventoryDuplicateErrorDetail(detail: InventoryApiErrorDetail 
   return false
 }
 
-export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit, metadata?: RequestMetadata): Promise<T> {
   return fetchWithTimeout(
     `/api${path}`,
     {
@@ -1040,6 +1052,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
       return response.json() as Promise<T>
     },
+    metadata,
   )
 }
 
@@ -1454,7 +1467,7 @@ export const api = {
     request<{ vin: string; sections: EmergencySection[] }>('/mechanic/emergency/resolve', {
       method: 'POST',
       body: JSON.stringify({ robot_number }),
-    }),
+    }, { authFailureScope: 'query' }),
   mechanicEmergencySection: (vin: string, sectionId: string) =>
     request<EmergencySectionDetail>(
       `/mechanic/emergency/${encodeURIComponent(vin)}/sections/${encodeURIComponent(sectionId)}`,
@@ -1463,7 +1476,7 @@ export const api = {
     request<{ vin: string; sections: EmergencySection[] }>('/emergency/resolve', {
       method: 'POST',
       body: JSON.stringify({ robot_number }),
-    }),
+    }, { authFailureScope: 'query' }),
   emergencySnapshot: (vin: string) =>
     request<EmergencySnapshot>(`/emergency/${encodeURIComponent(vin)}/snapshot`),
   emergencyView: (vin: string, sectionId?: string) => {

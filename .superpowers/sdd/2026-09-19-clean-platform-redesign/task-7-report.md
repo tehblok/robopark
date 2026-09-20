@@ -136,3 +136,20 @@ The pre-existing uncommitted `progress.md` edit was preserved and is not part of
 - Full web unit suite: **153 files, 2129 tests passed**.
 - Full API gate including Ruff/format: **1968 passed, 8 skipped**, 21 warnings.
 - Production and service-worker build: `npm run build` — exit 0.
+
+## Review round 5
+
+- Replaced the remaining inferred owner behavior with explicit state drivers. Each of the 161 executable delegated states now names its exact route control or protected selector, and async states name the exact method/path, fixture transition and protected-data assertion. Loading, empty, error, stale and late-denial paths exercise the real owner API; tabs, forms, files and dialogs operate named DOM controls. The collector rejects generic `main`, missing form/file/dialog contracts, mismatched state ids and missing implementation assertions.
+- Corrected the evidence manifest instead of inventing production refresh/API behavior. Twelve states are explicit semantic N/A contracts: the synchronous administration landing owns no async request, Analytics has no revalidation owner for stale UI, draft-protecting settings/diagnostic editors disable refresh, campaign list/detail expose no loaded-data revalidation, and the wildcard CatchAll redirects rather than mounting a not-found view. Analytics loading/empty/error/denied continue to use its real `GET /api/analytics` owner.
+- Made authentication-failure classification semantic rather than method-only. The central request transport accepts `authFailureScope: 'query' | 'mutation'`, defaults GET/HEAD to query and writes to mutation, and marks both emergency-resolve POST endpoints as query operations. A query 403 now clears validators, protected resource/device caches and protected browser storage while retaining the authenticated session; a report-delete mutation 403 stays local and emits no global authorization failure. Regression coverage also proves a response from the previous authorization generation cannot restore its validator.
+
+### Round-5 verification
+
+- Explicit delegated owner matrix: **323 passed** (161 states in Classic and A plus the exact collector audit).
+- Executable route-state evidence: **65 passed**.
+- Complete route/role/viewport/mode matrix: **846 passed, 294 policy-skipped, 0 failed** across **1140 collected cases**.
+- Focused route manifest/API/auth units: **53 passed**.
+- Full web unit suite: `npm test -- --run` — **153 files, 2131 tests passed**.
+- Full API gate including Ruff/format: `./scripts/verify.sh api` — **1968 passed, 8 skipped**, 21 warnings.
+- Production and service-worker build: `npm run build` — exit 0.
+- `git diff --check` — clean.

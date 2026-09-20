@@ -55,6 +55,8 @@ function routeMockRoutes(): MockRoute[] {
       roles: ['mechanic', 'operator', 'admin', 'royal', 'driver'],
       fields: [],
     }] }) },
+    { method: 'GET', path: '/api/admin/diagnostic-rules', handler: () => ({ json: [] }) },
+    { method: 'GET', path: '/api/admin/emergency-readings', handler: () => ({ json: [] }) },
     { method: 'GET', path: '/api/admin/park-requests', handler: () => ({ json: routeRequests }) },
     { method: 'GET', path: '/api/admin/settings/integrations', handler: () => ({ json: { tracker_token_masked: 'set', tracker_token_updated_at: '2026-09-02T09:00:00Z', emergency_cookie_masked: 'set', emergency_cookie_updated_at: '2026-09-02T09:00:00Z', emergency_cookie_valid: true, emergency_cookie_status: 'valid', emergency_cookie_checked_at: '2026-09-02T09:00:00Z', emergency_cookie_checked_robot: '447' } }) },
     { method: 'GET', path: '/api/admin/settings/tracker-policy', handler: () => ({ json: { operator_show_untagged: true, operator_show_raw: false, operator_show_firmware_profile: false, mechanic_can_write: true } }) },

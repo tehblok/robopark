@@ -101,6 +101,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       const status = (event as CustomEvent<{ status?: number }>).detail?.status
       resourceStore.clearAll()
       void purgeDeviceResourceCache()
+      clearProtectedBrowserStorage()
       if (status === 401) clearSessionState()
     }
     window.addEventListener('robopark:authorization-failure', authorizationFailure)

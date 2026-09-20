@@ -3,125 +3,110 @@ import { ROUTE_MANIFEST } from '../../src/app/routing/routeManifest'
 import { ROUTE_STATE_EVIDENCE, type RouteStateEvidence } from '../../src/app/routing/routeStateEvidence'
 import { installMockApi } from '../support/mockApi'
 import { selectInterface } from '../support/interfaceMode'
-import { installOperational, parkNorth, userForRole } from './fixtures'
+import { installOperational, issue, parkNorth, userForRole } from './fixtures'
 import { fixturePath, openRouteFixture } from './routeFixtures'
 
 const owners = ROUTE_STATE_EVIDENCE.filter(item => item.fixture === 'owner-test')
 const modes = ['Классический', 'Новый А'] as const
-const bootstrapPaths = new Set(['/api/auth/me', '/api/ops/maintenance', '/api/reports/badge', '/api/parks'])
-
-function ownerApiPath(requests: string[]) {
-  return requests
-    .filter(request => request.startsWith('GET '))
-    .map(request => request.replace(/^GET /, ''))
-    .find(path => !bootstrapPaths.has(path))
-}
-
-function emptyFixture(value: unknown): unknown {
-  if (Array.isArray(value)) return []
-  if (!value || typeof value !== 'object') return typeof value === 'number' ? 0 : value
-  return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, emptyFixture(nested)]))
-}
-
-async function installOwnerTransition(
-  page: Page,
-  targetPath: string,
-  handler: (route: Route) => Promise<void>,
-) {
+async function installOwnerTransition(page: Page, method: string, targetPath: string, handler: (route: Route) => Promise<void>) {
   await page.route('**/api/**', async route => {
     const request = route.request()
-    if (request.method() === 'GET' && new URL(request.url()).pathname === targetPath) await handler(route)
+    if (request.method() === method && new URL(request.url()).pathname === targetPath) await handler(route)
     else await route.fallback()
   })
 }
 
-async function exerciseAsyncOwnerState(
-  page: Page,
-  owner: RouteStateEvidence,
-  apiRequests: string[],
-  responseBodies: Map<string, unknown>,
-) {
-  let targetPath = ownerApiPath(apiRequests)
-  let directProbe = false
-  if (!targetPath) {
-    const resolver = page.locator('main input[type="search"]:visible,main input[type="text"]:visible,main input:not([type]):visible').first()
-    if (await resolver.count()) {
-      await resolver.fill('447')
-      const submit = page.locator('main button[type="submit"]:visible').first()
-      const search = page.getByRole('button', { name: /Найти|Поиск/ }).first()
-      if (await submit.count() && await submit.isEnabled()) await submit.click()
-      else if (await search.count()) await search.click()
-      else if (!await submit.count()) await resolver.press('Enter')
-      targetPath = ownerApiPath(apiRequests)
-    }
-  }
-  if (!targetPath) {
-    targetPath = '/api/reports/mine'
-    directProbe = true
-  }
-  expect(targetPath, `${owner.caseId}: loaded owner issued a domain API request`).toBeTruthy()
-  const main = page.locator('main')
-  const loadedHeading = (await main.getByRole('heading').first().innerText()).trim()
-
-  if (owner.kind === 'stale') {
-    await page.evaluate(() => {
-      Object.defineProperty(navigator, 'onLine', { configurable: true, value: false })
-      window.dispatchEvent(new Event('offline'))
-    })
-    await expect(main.getByRole('heading', { name: loadedHeading, exact: true }).first(), `${owner.caseId}: stale owner keeps its loaded DOM while offline`).toBeVisible()
-    expect((await main.innerText()).trim().length, `${owner.caseId}: stale owner retains inspectable content`).toBeGreaterThan(0)
-    await page.evaluate(() => {
-      Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
-      window.dispatchEvent(new Event('online'))
-    })
-    return
-  }
-
+async function exerciseAsyncOwnerState(page: Page, owner: RouteStateEvidence, driver: NonNullable<RouteStateEvidence['ownerDriver']>) {
+  const endpoint = driver.endpoint!
   let intercepted = 0
   let heldRoute: Route | undefined
-  await installOwnerTransition(page, targetPath!, async route => {
+  const refreshesInBackground = driver.asyncFixture === 'stale-503' || driver.asyncFixture === 'denied-403'
+  const actionDriven = Boolean(driver.triggerSelector)
+  if (refreshesInBackground) {
+    if (driver.triggerSelector && driver.fieldSelector && !driver.setupFields?.length) {
+      await page.locator(driver.fieldSelector).fill(driver.fieldValue!)
+      await page.locator(driver.triggerSelector).click()
+      await expect(page).toHaveURL(/\/robots\/YASADR00000000447/)
+      await page.goBack({ waitUntil: 'domcontentloaded' })
+    }
+    await expect(page.locator(driver.protectedSelector!), `${owner.caseId}: protected fixture is preloaded before the late response`).toBeVisible()
+  }
+  await installOwnerTransition(page, endpoint.method, endpoint.path, async route => {
     intercepted += 1
-    if (owner.kind === 'loading') {
+    if (endpoint.expectedBody !== undefined) {
+      expect(route.request().postDataJSON(), `${owner.caseId}: exact mutation body`).toEqual(endpoint.expectedBody)
+    }
+    if (driver.asyncFixture === 'pending' || driver.asyncFixture === 'denied-403') {
       heldRoute = route
       return
     }
-    if (owner.kind === 'empty') {
-      const body = emptyFixture(responseBodies.get(targetPath!))
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body ?? []) })
+    if (driver.asyncFixture === 'empty-200') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(endpoint.emptyBody) })
       return
     }
     await route.fulfill({
-      status: owner.kind === 'denied' ? 403 : 503,
+      status: 503,
       contentType: 'application/json',
-      body: JSON.stringify({ detail: owner.kind === 'denied' ? 'forbidden' : 'fixture_unavailable' }),
+      body: JSON.stringify({ detail: driver.asyncFixture === 'denied-403' ? 'forbidden' : 'fixture_unavailable' }),
     })
   })
-
-  if (directProbe) {
-    const probe = page.evaluate(async path => {
-      try { const response = await fetch(path); return response.status } catch { return 0 }
-    }, targetPath)
-    await expect.poll(() => intercepted, { message: `${owner.caseId}: state fixture controls a real API request` }).toBeGreaterThan(0)
-    await expect(main, `${owner.caseId}: direct controller probe keeps the real owner mounted`).toBeVisible()
-    if (owner.kind === 'loading') await heldRoute!.abort('failed')
-    const status = await probe
-    if (owner.kind !== 'loading') expect(status, `${owner.caseId}: state fixture response reaches the browser controller`).toBe(owner.kind === 'denied' ? 403 : owner.kind === 'error' ? 503 : 200)
-    await page.unroute('**/api/**')
-    return
+  let navigation: Promise<unknown> = Promise.resolve(null)
+  for (const selector of driver.setupClicks ?? []) await page.locator(selector).click()
+  if (driver.setupFields?.length) {
+    for (const field of driver.setupFields) await page.locator(field.selector).fill(field.value)
+    await page.locator(driver.triggerSelector!).click()
+  } else if (driver.triggerSelector && driver.fieldSelector) {
+    await page.locator(driver.fieldSelector).fill(driver.fieldValue!)
+    await page.locator(driver.triggerSelector).click()
+  } else if (driver.triggerSelector) {
+    await page.locator(driver.triggerSelector).click()
+  } else if (driver.fieldSelector) {
+    await page.locator(driver.fieldSelector).fill(driver.fieldValue!)
+  } else if (driver.refreshStrategy === 'reload') {
+    if (driver.clearCacheBeforeReload) {
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent('robopark:authorization-failure', { detail: { status: 403 } })))
+    }
+    navigation = page.reload({ waitUntil: 'domcontentloaded' }).catch(() => null)
+  } else if (refreshesInBackground && !actionDriven) {
+    await page.evaluate(() => {
+      const currentNow = Date.now
+      Date.now = () => currentNow() + 121_000
+      Math.random = () => 0
+      window.dispatchEvent(new Event('focus'))
+    })
   }
-
-  if (owner.kind === 'loading') {
-    const navigation = page.reload({ waitUntil: 'domcontentloaded' }).catch(() => null)
-    await expect.poll(() => intercepted, { message: `${owner.caseId}: deferred real domain request` }).toBeGreaterThan(0)
-    await expect(main, `${owner.caseId}: loading owner remains mounted around a pending request`).toBeVisible()
-    expect(heldRoute, `${owner.caseId}: request is controlled by the loading fixture`).toBeTruthy()
+  if (!refreshesInBackground && !driver.triggerSelector && !driver.fieldSelector && driver.refreshStrategy !== 'reload') {
+    navigation = page.reload({ waitUntil: 'domcontentloaded' }).catch(() => null)
+  }
+  await expect.poll(() => intercepted, { message: `${owner.caseId}: ${endpoint.method} ${endpoint.path} is controlled by its named fixture` }).toBeGreaterThan(0)
+  if (driver.asyncFixture === 'pending') {
+    expect(heldRoute, `${owner.caseId}: named request remains pending`).toBeTruthy()
+    if (driver.pendingKeepsProtected) await expect(page.locator(driver.protectedSelector!), `${owner.caseId}: persisted protected fixture remains while its exact request is pending`).toBeVisible()
+    else await expect(page.locator(driver.protectedSelector!), `${owner.caseId}: initial pending request has not exposed protected data`).toBeHidden()
+    if (driver.expectedSelector !== driver.protectedSelector) await expect(page.locator(driver.expectedSelector), `${owner.caseId}: exact loading indicator is visible`).toBeVisible()
     await heldRoute!.abort('failed')
+  } else if (driver.asyncFixture === 'stale-503') {
     await navigation
+    await expect(page.locator(driver.protectedSelector!), `${owner.caseId}: transitioned owner exposes inspectable DOM`).toBeVisible()
+    if (driver.expectedSelector !== driver.protectedSelector) await expect(page.locator(driver.expectedSelector), `${owner.caseId}: exact stale-state boundary remains visible`).toBeVisible()
+  } else if (driver.asyncFixture === 'denied-403') {
+    expect(heldRoute, `${owner.caseId}: denied response is held after protected data rendered`).toBeTruthy()
+    if (driver.deniedKeepsUntilResponse !== false) await expect(page.locator(driver.protectedSelector!), `${owner.caseId}: protected fixture remains until the late denial resolves`).toBeVisible()
+    await heldRoute!.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ detail: 'forbidden' }) })
+    if (driver.deniedKeepsProtected) {
+      await expect(page.locator(driver.protectedSelector!), `${owner.caseId}: local mutation denial keeps its exact draft`).toBeVisible()
+      await expect(page.locator(driver.expectedSelector), `${owner.caseId}: local mutation denial renders its exact error`).toBeVisible()
+    } else {
+      if (driver.reloadAfterDenied) await page.reload({ waitUntil: 'domcontentloaded' })
+      await expect(page.locator(driver.protectedSelector!), `${owner.caseId}: denied response removes the preloaded protected view`).toBeHidden()
+      if (driver.expectedSelector !== driver.protectedSelector) await expect(page.locator(driver.expectedSelector), `${owner.caseId}: exact denied state is visible`).toBeVisible()
+    }
   } else {
-    await page.reload({ waitUntil: 'domcontentloaded' })
-    await expect.poll(() => intercepted, { message: `${owner.caseId}: real domain transition request` }).toBeGreaterThan(0)
-    await expect(main, `${owner.caseId}: transitioned owner exposes inspectable DOM`).toBeVisible()
-    expect((await main.innerText()).trim().length + await main.locator('button,a,input,select,textarea').count(), `${owner.caseId}: transitioned DOM is observable`).toBeGreaterThan(0)
+    await navigation
+    expect(intercepted, `${owner.caseId}: named async fixture completed`).toBeGreaterThan(0)
+    if (driver.completedHidesProtected) await expect(page.locator(driver.protectedSelector!), `${owner.caseId}: completed request clears its exact form`).toBeHidden()
+    if (driver.completedProtectedValue !== undefined) await expect(page.locator(driver.protectedSelector!), `${owner.caseId}: completed request resets its exact field`).toHaveValue(driver.completedProtectedValue)
+    if (driver.expectedSelector !== driver.protectedSelector) await expect(page.locator(driver.expectedSelector), `${owner.caseId}: exact completed state is visible`).toBeVisible()
   }
   await page.unroute('**/api/**')
 }
@@ -140,6 +125,8 @@ async function openSimpleOwner(page: Page, owner: RouteStateEvidence) {
         ? { ...base, access_status: 'pending' as const }
         : owner.routeId === 'access-rejected'
           ? { ...base, access_status: 'rejected' as const }
+          : owner.routeId === 'no-cabinet'
+            ? { ...base, role: 'royal' as const, permissions: [], parks: [parkNorth] }
           : owner.routeId === 'mechanic-no-park'
             ? { ...base, parks: [] }
             : { ...base, permissions: [], parks: [parkNorth] }
@@ -154,76 +141,115 @@ async function exerciseOwnerBehavior(
   owner: RouteStateEvidence,
   mode: typeof modes[number],
   apiRequests: string[],
-  responseBodies: Map<string, unknown>,
 ) {
   const route = ROUTE_MANIFEST.find(item => item.id === owner.routeId)!
   if (route.surface === 'shell') {
     if (owner.actorRole === 'guest' || owner.actorRole === 'restricted') throw new Error(`${owner.caseId}: executable owner needs a system role`)
-    await openRouteFixture(page, owner.routeId, userForRole(owner.actorRole))
+    if (owner.routeId === 'work-issue') {
+      await installOperational(page, { user: userForRole(owner.actorRole), issue: { ...issue, claim: { park_id: 7 }, workflow: { owner: { login: 'mechanic-e2e', display: '\u041c\u0435\u0445\u0430\u043d\u0438\u043a \u0441\u043c\u0435\u043d\u044b' }, review_state: null, display_status: 'in_progress', sync_state: 'synced', has_current_cycle_comment: true } } })
+      await page.goto(fixturePath(route))
+    } else {
+      await openRouteFixture(page, owner.routeId, userForRole(owner.actorRole))
+    }
     await selectInterface(page, mode)
   } else {
     await openSimpleOwner(page, owner)
   }
 
-  const main = page.locator('main')
-  await expect(main, `${owner.caseId}: real route owner is mounted`).toBeVisible()
-  await expect(main, `${owner.caseId}: owner rendered real DOM`).not.toBeEmpty()
+  const configuredDriver = owner.ownerDriver!
+  const modeDriver = mode === '\u041a\u043b\u0430\u0441\u0441\u0438\u0447\u0435\u0441\u043a\u0438\u0439' ? configuredDriver.classic : configuredDriver.nextA
+  const driver = { ...configuredDriver, ...modeDriver }
   expect(new URL(page.url()).pathname, `${owner.caseId}: owner resolved a concrete application route`).toMatch(/^\//)
 
-  if (route.surface === 'shell') {
-    expect(apiRequests.length, `${owner.caseId}: controller made a fixture API request`).toBeGreaterThan(0)
+  if (driver.routeSearch) {
+    await page.goto(`${new URL(page.url()).pathname}${driver.routeSearch}`)
+    await expect(page.locator(owner.routeId === 'report-detail' ? '.report-detail' : 'main')).toBeVisible()
   }
 
-  if (owner.kind === 'tab') {
-    const tabs = main.getByRole('tab')
-    if (await tabs.count()) {
-      const tab = tabs.nth(owner.stateId.length % await tabs.count())
-      await tab.click()
-      await expect(tab, `${owner.caseId}: real tab selection changed DOM state`).toHaveAttribute('aria-selected', 'true')
+  if (route.surface === 'shell') {
+    expect(apiRequests.length > 0, `${owner.caseId}: loaded owner issued a domain API request`).toBeTruthy()
+  }
+
+  let actionRequests = 0
+  if (owner.routeId === 'admin-settings' && (owner.stateId === 'backup' || owner.stateId === 'restore')) {
+    await installOwnerTransition(page, 'GET', '/api/admin/ops/system-health', async transition => {
+      await transition.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        version: 'evidence', git_sha: 'abcdef0', generated_at: '2026-09-02T09:00:00Z', overall: 'ok', checks: [],
+        update: { state: 'idle', publication: null }, last_backup: { status: 'unknown', completed_at: null },
+      }) })
+    })
+  }
+  if (driver.action !== 'async' && driver.endpoint) {
+    await installOwnerTransition(page, driver.endpoint.method, driver.endpoint.path, async transition => {
+      actionRequests += 1
+      await transition.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(driver.endpoint!.emptyBody) })
+    })
+  }
+
+  if (driver.tabName && driver.action !== 'tab') {
+    await page.getByRole('tab', { name: driver.tabName, exact: true }).click()
+  }
+  for (const selector of driver.setupClicks ?? []) await page.locator(selector).click()
+  if (driver.triggerSelector && driver.action !== 'dialog' && driver.action !== 'async') await page.locator(driver.triggerSelector).click()
+  if (driver.action === 'async') {
+    // Async drivers assert their exact protected target before/after the named response.
+  } else if (driver.action === 'file' || driver.targetSelector.includes('input[type="file"]')) {
+    await expect(page.locator(driver.targetSelector), `${owner.caseId}: exact route state target is mounted`).toBeAttached()
+  } else {
+    await expect(page.locator(driver.targetSelector), `${owner.caseId}: real route owner is mounted`).toBeVisible()
+  }
+
+  if (driver.action === 'tab') {
+    const tab = page.getByRole('tab', { name: driver.tabName!, exact: true })
+    await tab.click()
+    await expect(tab, `${owner.caseId}: exact named tab becomes selected`).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator(driver.expectedSelector), `${owner.caseId}: exact tab panel is visible`).toBeVisible()
+  } else if (driver.action === 'button') {
+    const button = page.locator(driver.targetSelector)
+    await button.click()
+    await expect(page.locator(driver.expectedSelector), `${owner.caseId}: exact named control owns the state`).toBeVisible()
+  } else if (driver.action === 'form') {
+    const field = page.locator(driver.fieldSelector!)
+    const fieldType = await field.getAttribute('type')
+    if (fieldType === 'checkbox' || fieldType === 'radio') {
+      await field.check()
+      await expect(field, `${owner.caseId}: exact named option owns the state`).toBeChecked()
+    } else if (await field.evaluate(element => element.tagName === 'SELECT')) {
+      await field.selectOption(driver.fieldValue!)
+      await expect(field, `${owner.caseId}: exact named selector owns the state`).toHaveValue(driver.fieldValue!)
     } else {
-      expect((await main.innerText()).trim().length, `${owner.caseId}: tab-like owner section is rendered`).toBeGreaterThan(0)
+      await field.fill(driver.fieldValue!)
+      await expect(field, `${owner.caseId}: exact named field owns the draft`).toHaveValue(driver.fieldValue!)
     }
-  } else if (owner.kind === 'form') {
-    const field = main.locator('input[type="text"]:visible,input[type="search"]:visible,input[type="url"]:visible,input[type="email"]:visible,textarea:visible').first()
-    if (await field.count()) {
-      await field.fill(`evidence-${owner.stateId}`)
-      await expect(field, `${owner.caseId}: real form controller accepts state`).toHaveValue(`evidence-${owner.stateId}`)
+  } else if (driver.action === 'file') {
+    await expect(page.locator(driver.fileSelector!), `${owner.caseId}: exact file or capture boundary is mounted`).toBeAttached()
+  } else if (driver.action === 'dialog') {
+    if (driver.dialogSelector!.startsWith('browser:')) {
+      const expectedMessage = driver.dialogSelector!.slice('browser:'.length)
+      const dialogMessage = new Promise<string>(resolve => page.once('dialog', async dialog => { resolve(dialog.message()); await dialog.dismiss() }))
+      await page.locator(driver.triggerSelector!).click()
+      expect(await dialogMessage, `${owner.caseId}: exact browser confirmation is opened`).toContain(expectedMessage)
     } else {
-      await expect(main.locator('select:visible,button:visible').first(), `${owner.caseId}: real form boundary exists`).toBeVisible()
-    }
-  } else if (owner.kind === 'file') {
-    const fileControls = main.locator('input[type="file"]:visible,a[href*="attachment"]:visible,button:visible')
-    if (!await fileControls.count()) {
-      const tabs = main.getByRole('tab')
-      for (let index = 0; index < await tabs.count() && !await fileControls.count(); index++) await tabs.nth(index).click()
-    }
-    await expect(fileControls.first(), `${owner.caseId}: real file/camera control exists`).toBeVisible()
-  } else if (owner.kind === 'dialog') {
-    let trigger = main.locator('button:visible:not([disabled])').filter({ hasText: /Добав|Созд|Запрос|Удал|Откр|Настро|Принят|Скан|Провер|Игнор|Ещё/ }).first()
-    if (!await trigger.count()) trigger = main.locator('button:visible:not([disabled])').first()
-    await expect(trigger, `${owner.caseId}: real dialog trigger exists`).toBeVisible()
-    await trigger.click()
-    const boundary = await page.getByRole('dialog').count() + await page.getByRole('alertdialog').count() + await page.getByRole('menu').count()
-    expect(boundary + await main.locator('button,a,input,select,textarea').count(), `${owner.caseId}: trigger exposes an inspectable controller boundary`).toBeGreaterThan(0)
-  } else if (['loading', 'empty', 'error', 'stale', 'denied'].includes(owner.kind)) {
-    if (route.surface === 'shell') {
-      await exerciseAsyncOwnerState(page, owner, apiRequests, responseBodies)
-    } else {
-      const before = await main.innerText()
-      const fields = main.locator('input:visible')
-      for (let index = 0; index < await fields.count(); index++) {
-        const field = fields.nth(index)
-        if (['checkbox', 'radio'].includes(await field.getAttribute('type') ?? '')) continue
-        await field.fill(index ? 'Fixture-password-1' : 'fixture-user')
-      }
-      const submit = main.locator('button[type="submit"]:visible').first()
-      if (await submit.count()) {
-        await submit.click()
-        await expect.poll(async () => Number((await main.innerText()) !== before) + await main.getByRole('alert').count() + await main.getByRole('status').count(), { message: `${owner.caseId}: standalone form owner changes or exposes its concrete state` }).toBeGreaterThan(0)
+      const trigger = page.locator(driver.triggerSelector!)
+      if (driver.triggerSelector!.includes('input[type="file"]')) {
+        await trigger.setInputFiles({ name: 'fixture.zip', mimeType: 'application/zip', buffer: Buffer.from('fixture') })
       } else {
-        expect(before.trim().length, `${owner.caseId}: standalone denial/empty owner renders its concrete state`).toBeGreaterThan(0)
+        await trigger.click()
       }
+      await expect(page.locator(driver.dialogSelector!), `${owner.caseId}: exact trigger opens its expected dialog`).toBeVisible()
     }
+  } else if (driver.action === 'async') {
+    if (route.surface === 'shell') {
+      await exerciseAsyncOwnerState(page, owner, driver)
+    } else {
+      await expect(page.locator(driver.expectedSelector), `${owner.caseId}: exact standalone state is visible`).toBeVisible()
+    }
+  } else {
+    await expect(page.locator(driver.expectedSelector), `${owner.caseId}: exact state assertion is visible`).toBeVisible()
+  }
+  if (driver.action !== 'async' && driver.endpoint) {
+    expect(actionRequests, `${owner.caseId}: exact ${driver.endpoint.method} ${driver.endpoint.path} mutation is executed once`).toBe(1)
+    await page.unroute('**/api/**')
   }
 }
 
@@ -232,17 +258,11 @@ test.describe.configure({ mode: 'parallel' })
 for (const owner of owners) for (const mode of modes) {
   test(`${owner.caseId} [${mode}]`, async ({ page }) => {
     const apiRequests: string[] = []
-    const responseBodies = new Map<string, unknown>()
     page.on('request', request => {
       const url = new URL(request.url())
       if (url.pathname.startsWith('/api/')) apiRequests.push(`${request.method()} ${url.pathname}`)
     })
-    page.on('response', async response => {
-      const path = new URL(response.url()).pathname
-      if (!path.startsWith('/api/') || !response.ok()) return
-      try { responseBodies.set(path, await response.json()) } catch { /* a 204 response has no fixture body */ }
-    })
-    await exerciseOwnerBehavior(page, owner, mode, apiRequests, responseBodies)
+    await exerciseOwnerBehavior(page, owner, mode, apiRequests)
   })
 }
 
@@ -251,7 +271,18 @@ test('owner collector resolves every delegated state to one exact Classic and A 
   for (const owner of owners) {
     expect(owner.ownerTest?.title).toBe(`${owner.caseId} [Классический]`)
     expect(owner.ownerTest?.stateKey).toBe(owner.caseId)
+    expect(owner.ownerDriver?.stateKey).toBe(owner.caseId)
+    expect(owner.ownerDriver?.stateKind).toBe(owner.kind)
+    expect(owner.ownerDriver?.targetSelector).toBeTruthy()
+    expect(owner.ownerDriver?.expectedSelector).toBeTruthy()
   }
+  expect(owners.filter(owner => owner.ownerDriver?.targetSelector === 'main').map(owner => owner.caseId)).toEqual([])
+  expect(owners.filter(owner => /^(main|body|\[role=["']?main)/.test(owner.ownerDriver?.targetSelector ?? '')).map(owner => owner.caseId)).toEqual([])
+  expect(owners.filter(owner => owner.kind === 'form' && !/(input|textarea|select|^#)/.test(owner.ownerDriver?.fieldSelector ?? '')).map(owner => owner.caseId)).toEqual([])
+  expect(owners.filter(owner => owner.kind === 'file' && !/(input.*file|issue-attach|attachment|has-text|scheme-host)/.test(owner.ownerDriver?.fileSelector ?? '')).map(owner => owner.caseId)).toEqual([])
+  expect(owners.filter(owner => owner.ownerDriver?.action === 'dialog' && (!owner.ownerDriver.triggerSelector || !owner.ownerDriver.dialogSelector)).map(owner => owner.caseId)).toEqual([])
+  expect(owners.filter(owner => owner.ownerDriver?.action === 'tab' && (!owner.ownerDriver.tabName || !/(role="tab"|#tab-)/.test(owner.ownerDriver.targetSelector))).map(owner => owner.caseId)).toEqual([])
+  expect(owners.filter(owner => owner.ownerDriver?.action === 'async' && (!owner.ownerDriver.endpoint?.path || !owner.ownerDriver.asyncFixture || !owner.ownerDriver.protectedSelector)).map(owner => owner.caseId)).toEqual([])
   expect(exerciseOwnerBehavior).toBeDefined()
   expect(exerciseAsyncOwnerState).toBeDefined()
 })

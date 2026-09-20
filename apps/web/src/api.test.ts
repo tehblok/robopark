@@ -121,6 +121,40 @@ describe('API transport metadata', () => {
     window.removeEventListener('robopark:authorization-failure', authorizationFailure)
   })
 
+  it('classifies emergency resolve as a query POST and invalidates late protected validators on 403', async () => {
+    let completeOldRequest!: (response: Response) => void
+    const oldRequest = new Promise<Response>(resolve => { completeOldRequest = resolve })
+    const authorizationFailure = vi.fn()
+    window.addEventListener('robopark:authorization-failure', authorizationFailure)
+    const payload = { items: [], total: 0, limit: 50, offset: 0, has_more: false }
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(oldRequest)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'forbidden' }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(payload), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const late = api.trackerIssues({ limit: 50 })
+    await expect(api.emergencyResolve('447')).rejects.toMatchObject({ status: 403 })
+    expect(authorizationFailure).toHaveBeenCalledOnce()
+    completeOldRequest(new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json', ETag: '"old-principal"' },
+    }))
+    await late
+    await api.trackerIssues({ limit: 50 })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/emergency/resolve', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ robot_number: '447' }),
+    }))
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/tracker/issues?sort=oldest&limit=50',
+      expect.objectContaining({ headers: {} }))
+    window.removeEventListener('robopark:authorization-failure', authorizationFailure)
+  })
+
   it.each(requestIdCases)('copies X-Request-ID into an ApiError for a %s request', async (_label, call) => {
     vi.stubGlobal(
       'fetch',

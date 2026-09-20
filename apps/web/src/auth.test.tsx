@@ -207,6 +207,25 @@ describe('AuthProvider session boundaries', () => {
     expectProtectedStateCleared()
   })
 
+  it('purges protected memory and account data when the emergency query POST returns 403', async () => {
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    expect(await screen.findByText('old-account')).toBeInTheDocument()
+    seedProtectedState()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ detail: 'forbidden' }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    )))
+
+    await act(async () => {
+      await expect(api.emergencyResolve('447')).rejects.toMatchObject({ status: 403 })
+    })
+
+    expect(screen.getByText('old-account')).toBeInTheDocument()
+    expectProtectedStateCleared()
+    vi.unstubAllGlobals()
+  })
+
   it('clears the authenticated session before refreshUser rethrows a 401', async () => {
     const denial = new ApiError(401, 'session_expired')
     vi.spyOn(api, 'me')
