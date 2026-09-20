@@ -220,7 +220,7 @@ describe('ROUTE_MANIFEST', () => {
       {
         id: 'admin',
         path: '/admin',
-        label: 'Администрирование',
+        label: 'Управление',
         icon: 'settings',
         anyPermissions: ['nav.admin', 'users.manage', 'roles.manage', 'parks.manage'],
         prerequisites: ['password-changed', 'approved', 'mechanic-has-park'],
