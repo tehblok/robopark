@@ -4,6 +4,7 @@ set +x
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 metadata="$root/deploy/release-metadata.json"
+acceptance="${ROBOPARK_ACCEPTANCE_EVIDENCE:-$root/docs/product-completion/release-evidence.json}"
 if [[ "${1:-}" == --metadata ]]; then
   [[ $# -ge 2 ]] || exit 2
   metadata="$2"
@@ -17,4 +18,5 @@ git_sha="$(python3 "$root/scripts/release-git-sha.py" "$root")"
 exec python3 "$root/scripts/release_pack.py" --repository \
   --root "$root" --output "$out" --version "$version" \
   --git-sha "$git_sha" --metadata "$metadata" \
+  --acceptance "$acceptance" \
   --signing-key "$ROBOPARK_SIGNING_KEY_FILE"

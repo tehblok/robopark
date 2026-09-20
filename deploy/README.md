@@ -1,6 +1,6 @@
 # Deployment: host + Tuna
 
-Для установочного архива **0.1.39** на Armbian/Debian/Ubuntu используйте [руководство оператора](INSTALL-ARMBIAN-RU.md) и [приёмку 200 пользователей](CAPACITY-RU.md). Реальная проверка systemd/Docker/Tuna и нагрузки остаётся **НЕ ВЫПОЛНЕНО** до запуска на устройстве. Ниже сохранён существующий ручной Compose-путь.
+Для чистого установочного архива **0.1.45** с PostgreSQL 17 на Armbian 26/Ubuntu 22 ARM64 используйте [руководство оператора](INSTALL-ARMBIAN-RU.md) и [приёмку 200 пользователей](CAPACITY-RU.md). Host-тесты проверяют install/update-over-install; реальная проверка systemd/Docker/Tuna на целевом устройстве остаётся отдельным deployment gate. Ниже сохранён ручной Compose-путь.
 
 Для Armbian 26 с 8 ГБ, 200 пользователей и переноса на Ubuntu с 32 ГБ:
 [пошаговая инструкция общего сервера](SHARED-HOST.md).

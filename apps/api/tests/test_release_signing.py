@@ -68,7 +68,28 @@ def isolated_checkout(tmp_path: Path, public_key: bytes) -> Path:
         if name.endswith(".sh"):
             target.chmod(0o755)
     (root / "deploy/keys/release-public-key.pem").write_bytes(public_key)
+    write_acceptance_evidence(root)
     return root
+
+
+def write_acceptance_evidence(root: Path) -> None:
+    packer = runpy.run_path(str(root / "scripts/release_pack.py"))
+    acceptance = runpy.run_path(str(root / "scripts/release_acceptance.py"))
+    source_paths = sorted(packer["source_files"](root, True))
+    evidence_root = root / "docs/product-completion"
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    report = evidence_root / "fixture-pass.json"
+    report.write_text('{"passed":true}\n')
+    evidence = {
+        "format": 1,
+        "source_tree_sha256": acceptance["source_tree_digest"](root, source_paths),
+        "source_paths": source_paths,
+        "gates": {
+            name: {"status": "PASS", "report": "docs/product-completion/fixture-pass.json"}
+            for name in acceptance["REQUIRED_GATES"]
+        },
+    }
+    (evidence_root / "release-evidence.json").write_text(json.dumps(evidence))
 
 
 def metadata_tree(root: Path, head="0017_driver_work_reports") -> Path:
@@ -489,6 +510,7 @@ def test_pack_extracted_release_resolves_sha_without_git(
     (root / ".github/workflows").mkdir(parents=True)
     (root / ".github/workflows/ci.yml").write_text("name: fixture\n")
     (root / ".github/private.env").write_text("TEST_ONLY_SECRET=never-package\n")
+    write_acceptance_evidence(root)
     key = tmp_path / "key.pem"
     key.write_bytes(private)
     key.chmod(0o600)

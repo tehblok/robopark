@@ -1,0 +1,11 @@
+{
+  "passed": true,
+  "reference_sha256": "a40a9eebf940a28efcda44b58aab6365a8c50561fd0c87427835c3a08ac9e304",
+  "reviewed_sha256": "3b8cc70667609fbfe93d25e4baf3c955f6f47eb382aef7e52468b01371542a2e",
+  "tests": 71,
+  "routes": 15,
+  "themes": ["light", "dark"],
+  "viewports": [320, 390, 412, 899, 1440],
+  "representative_roles": ["mechanic", "operator", "royal"],
+  "unresolved_deviations": []
+}

@@ -1,0 +1,21 @@
+{
+  "passed": false,
+  "ruling": "USER_CANCELLED",
+  "target_seconds": 28800,
+  "elapsed_seconds": 4800,
+  "samples": 16,
+  "source_tree_sha256": "265aadf101b59a34c8d6c6164dc3405e4fe6f8c9a99c062dd850c8fa26e64939",
+  "checkpoint_checksum": "3516acd728355d6b5f440453864150d9d896b9dca661b0cbf165540d9a4492b5",
+  "partial_observation": {
+    "errors": 0,
+    "monotonic_growth": [],
+    "rss_growth_bytes_after_warmup": -75005952,
+    "cache_growth_bytes_after_warmup": 13818,
+    "fd_growth": 0,
+    "timer_growth": 0,
+    "subscription_growth": 0,
+    "object_url_growth": 0,
+    "media_track_growth": 0
+  },
+  "note": "The user explicitly stopped the long soak. Partial observations are retained but are not an 8-hour PASS."
+}

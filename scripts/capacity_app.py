@@ -2,7 +2,7 @@
 
 The harness starts this module in a new temporary working directory with a
 minimal explicit environment. Settings are installed BEFORE importing db/main.
-Only the external client boundary is replaced; auth, ACLs, caches, SQLite,
+Only the external client boundary is replaced; auth, ACLs, caches, PostgreSQL,
 serialization and production lifespan remain real.
 """
 
@@ -19,6 +19,7 @@ import resource
 import signal
 import socket
 import sys
+import time
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -58,7 +59,7 @@ from robopark_api import config
 
 SETTINGS = config.Settings(
     _env_file=None,
-    database_url=f"sqlite:///{ROOT / 'capacity.db'}",
+    database_url=CONFIG["database_url"],
     secret_key="capacity-synthetic-key-never-use-in-production",
     seed_username=None,
     seed_password=None,
@@ -89,6 +90,7 @@ from robopark_api.services import (
     platform_settings,
     tracker_client,
 )
+from robopark_api.services.cache_metrics import snapshot_all
 from robopark_api.services.emergency_config import (
     DEFAULT_JSON_PATH,
     seed_emergency_config,
@@ -103,8 +105,12 @@ def seed():
     with SessionLocal() as db:
         ensure_rbac_catalog(db)
         seed_emergency_config(db, DEFAULT_JSON_PATH)
-        park = Park(name="Capacity Alpha", tag="CapacityAlpha", tracker_queue="ROBOPARK")
-        foreign = Park(name="Capacity Foreign", tag="CapacityForeign", tracker_queue="ROBOPARK")
+        park = Park(
+            name="Capacity Alpha", tag="CapacityAlpha", tracker_queue="ROBOPARK"
+        )
+        foreign = Park(
+            name="Capacity Foreign", tag="CapacityForeign", tracker_queue="ROBOPARK"
+        )
         db.add_all([park, foreign])
         db.flush()
         role = get_role_by_slug(db, "operator")
@@ -141,17 +147,28 @@ def seed():
                 )
             )
         db.commit()
-        platform_settings.set_setting(db, platform_settings.TRACKER_TOKEN_KEY, "synthetic-token")
+        platform_settings.set_setting(
+            db, platform_settings.TRACKER_TOKEN_KEY, "synthetic-token"
+        )
         platform_settings.set_setting(
             db, platform_settings.EMERGENCY_COOKIE_KEY, "Session_id=synthetic"
         )
-    print(json.dumps({"seeded_users": CONFIG["users"], "database": "temporary SQLite"}))
+    print(
+        json.dumps(
+            {
+                "seeded_users": CONFIG["users"],
+                "database": "disposable PostgreSQL 17",
+            }
+        )
+    )
 
 
 def _stub(operation, **kwargs):
     # Deliberately omit synthetic credentials; only operation arguments reach
     # the stub, which counts actual requests received from both worker PIDs.
-    data = json.dumps({"operation": operation, "args": kwargs, "worker": os.getpid()}).encode()
+    data = json.dumps(
+        {"operation": operation, "args": kwargs, "worker": os.getpid()}
+    ).encode()
     request = urllib.request.Request(
         CONFIG["stub_url"], data=data, headers={"Content-Type": "application/json"}
     )
@@ -171,11 +188,17 @@ def _install_stubs():
     tracker_client.search_issues = lambda *, token, **kw: _stub("search_issues", **kw)
     tracker_client.get_issue = lambda *, token, **kw: _stub("get_issue", **kw)
     tracker_client.list_comments = lambda *, token, **kw: _stub("list_comments", **kw)
-    tracker_client.search_robot_tickets = lambda *, token, **kw: _stub("search_robot_tickets", **kw)
-    tracker_client.fetch_park_blockers = lambda *, token, **kw: _stub("fetch_park_blockers", **kw)
+    tracker_client.search_robot_tickets = lambda *, token, **kw: _stub(
+        "search_robot_tickets", **kw
+    )
+    tracker_client.fetch_park_blockers = lambda *, token, **kw: _stub(
+        "fetch_park_blockers", **kw
+    )
     tracker_client.count_issues = lambda *, token, **kw: _stub("count_issues", **kw)
     tracker_client._client = lambda _token: SimpleNamespace(issues=StubIssues())
-    emergency_client.fetch_robot_payload = lambda *, cookie, **kw: _stub("emergency", **kw)
+    emergency_client.fetch_robot_payload = lambda *, cookie, **kw: _stub(
+        "emergency", **kw
+    )
 
 
 if __name__ == "__main__":
@@ -186,6 +209,8 @@ else:
     _install_stubs()
     from robopark_api.main import app
 
+    _started = time.monotonic()
+
     @app.middleware("http")
     async def identify_capacity_worker(request, call_next):
         response = await call_next(request)
@@ -193,5 +218,20 @@ else:
         rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         response.headers["X-Capacity-Peak-Rss-Bytes"] = str(
             rss if sys.platform == "darwin" else rss * 1024
+        )
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        elapsed = max(0.001, time.monotonic() - _started)
+        response.headers["X-Capacity-Cpu-Percent"] = str(
+            round(100 * (usage.ru_utime + usage.ru_stime) / elapsed, 3)
+        )
+        checked_out = getattr(engine.pool, "checkedout", lambda: 0)()
+        response.headers["X-Capacity-Db-Pool-Checked-Out"] = str(checked_out)
+        metrics = snapshot_all().values()
+        response.headers["X-Capacity-Cache-Hits"] = str(
+            sum(int(item["hits"]) for item in metrics)
+        )
+        metrics = snapshot_all().values()
+        response.headers["X-Capacity-Cache-Misses"] = str(
+            sum(int(item["misses"]) for item in metrics)
         )
         return response

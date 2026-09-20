@@ -1,0 +1,9 @@
+{
+  "passed": true,
+  "command": "./scripts/verify.sh api",
+  "tests_passed": 1968,
+  "tests_skipped": 8,
+  "duration_seconds": 520.81,
+  "ruff": "PASS",
+  "format_check": "PASS"
+}

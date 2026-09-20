@@ -1,0 +1,6 @@
+{
+  "passed": true,
+  "command": "./scripts/verify.sh api-postgres",
+  "tests_passed": 7,
+  "database": "PostgreSQL 17"
+}

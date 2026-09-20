@@ -1,0 +1,1357 @@
+{
+  "started_at": "2026-09-20T09:17:23.338511+00:00",
+  "configuration": {
+    "users": 200,
+    "distinct_sessions": 200,
+    "uvicorn_workers": 2,
+    "issues": 200,
+    "initial_reports": 200,
+    "cadence_distinct_issue_keys": 20,
+    "cadence_distinct_robot_vins": 20,
+    "duration_seconds": 60.0,
+    "cadence_seconds": 3.0,
+    "target_cadence_rps": 66.66666666666667,
+    "presence_writes": true,
+    "upstream_stub_delay_ms": 100,
+    "wifi_profile": {
+      "delay_ms_each_attempt": 35.0,
+      "deterministic_loss_percent": 1,
+      "retry_attempts": 1
+    },
+    "timeout_seconds": 15,
+    "stress_rounds": 3,
+    "max_in_flight_requests": 20,
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "python": "3.13.14",
+    "cpu_count": 10,
+    "network": "loopback HTTP with deterministic application-layer Wi-Fi delay/loss; excludes Tuna and real upstream limits"
+  },
+  "phases": {
+    "cold_reconnect_200_requests": {
+      "requests": 200,
+      "elapsed_seconds": 2.39,
+      "throughput_rps": 83.7,
+      "latency_ms": {
+        "p50": 187.95,
+        "p95": 475.45,
+        "p99": 627.21
+      },
+      "status_counts": {
+        "200": 200
+      },
+      "unexpected_responses": 0,
+      "server_errors": 0,
+      "timeouts": 0,
+      "data_leaks": 0,
+      "duplicate_mutations": 0,
+      "network_bytes": {
+        "request": 0,
+        "response": 3728600,
+        "total": 3728600
+      },
+      "wifi": {
+        "attempts": 202,
+        "simulated_losses": 2
+      },
+      "cache": {
+        "hits": 1203,
+        "misses": 4021,
+        "hit_ratio": 0.2303
+      },
+      "db_pool": {
+        "max_checked_out": 10
+      },
+      "process": {
+        "max_cpu_percent": 61.688
+      },
+      "disk": {
+        "before_bytes": 460255827,
+        "after_bytes": 460255827,
+        "growth_bytes": 0
+      },
+      "worker_pids": [
+        "21059",
+        "21060"
+      ],
+      "sum_worker_peak_rss_mb": 288.91,
+      "upstream_calls": {
+        "search_issues:Priority: blocker Resolution: empty() (Status: !closed AND Status: !\"Закрыт\" AND Status: !\"Closed\" AND Status: !resolved AND Status: !\"Решен\" AND Status: !\"Решён\") Queue: ROBOPARK": 1,
+        "issue_history:ROBOPARK-1": 1,
+        "issue_history:ROBOPARK-2": 1,
+        "issue_history:ROBOPARK-4": 1,
+        "issue_history:ROBOPARK-3": 1,
+        "issue_history:ROBOPARK-6": 1,
+        "issue_history:ROBOPARK-5": 1,
+        "issue_history:ROBOPARK-8": 1,
+        "issue_history:ROBOPARK-7": 1,
+        "issue_history:ROBOPARK-9": 1,
+        "issue_history:ROBOPARK-10": 1,
+        "issue_history:ROBOPARK-12": 1,
+        "issue_history:ROBOPARK-11": 1,
+        "issue_history:ROBOPARK-14": 1,
+        "issue_history:ROBOPARK-13": 1,
+        "issue_history:ROBOPARK-16": 1,
+        "issue_history:ROBOPARK-15": 1,
+        "issue_history:ROBOPARK-18": 1,
+        "issue_history:ROBOPARK-17": 1,
+        "issue_history:ROBOPARK-20": 1,
+        "issue_history:ROBOPARK-19": 1,
+        "issue_history:ROBOPARK-22": 1,
+        "issue_history:ROBOPARK-21": 1,
+        "issue_history:ROBOPARK-32": 1
+      },
+      "upstream_calls_total": 24,
+      "failures": [],
+      "by_route": {
+        "/tracker/issues?limit=50": {
+          "requests": 200,
+          "successful_mutations": 0,
+          "unexpected": 0
+        }
+      }
+    },
+    "cold_details_200_requests": {
+      "requests": 200,
+      "elapsed_seconds": 1.153,
+      "throughput_rps": 173.4,
+      "latency_ms": {
+        "p50": 93.23,
+        "p95": 247.07,
+        "p99": 278.36
+      },
+      "status_counts": {
+        "200": 200
+      },
+      "unexpected_responses": 0,
+      "server_errors": 0,
+      "timeouts": 0,
+      "data_leaks": 0,
+      "duplicate_mutations": 0,
+      "network_bytes": {
+        "request": 0,
+        "response": 236000,
+        "total": 236000
+      },
+      "wifi": {
+        "attempts": 202,
+        "simulated_losses": 2
+      },
+      "cache": {
+        "hits": 1401,
+        "misses": 4030,
+        "hit_ratio": 0.258
+      },
+      "db_pool": {
+        "max_checked_out": 10
+      },
+      "process": {
+        "max_cpu_percent": 61.031
+      },
+      "disk": {
+        "before_bytes": 460255827,
+        "after_bytes": 460255827,
+        "growth_bytes": 0
+      },
+      "worker_pids": [
+        "21059",
+        "21060"
+      ],
+      "sum_worker_peak_rss_mb": 289.09,
+      "upstream_calls": {
+        "get_issue:ROBOPARK-1": 1
+      },
+      "upstream_calls_total": 1,
+      "failures": [],
+      "by_route": {
+        "/tracker/issues/ROBOPARK-1": {
+          "requests": 200,
+          "successful_mutations": 0,
+          "unexpected": 0
+        }
+      }
+    },
+    "cold_robot_check_200_requests": {
+      "requests": 200,
+      "elapsed_seconds": 1.175,
+      "throughput_rps": 170.17,
+      "latency_ms": {
+        "p50": 83.11,
+        "p95": 383.31,
+        "p99": 389.93
+      },
+      "status_counts": {
+        "200": 200
+      },
+      "unexpected_responses": 0,
+      "server_errors": 0,
+      "timeouts": 0,
+      "data_leaks": 0,
+      "duplicate_mutations": 0,
+      "network_bytes": {
+        "request": 0,
+        "response": 313800,
+        "total": 313800
+      },
+      "wifi": {
+        "attempts": 202,
+        "simulated_losses": 2
+      },
+      "cache": {
+        "hits": 1593,
+        "misses": 4058,
+        "hit_ratio": 0.2819
+      },
+      "db_pool": {
+        "max_checked_out": 10
+      },
+      "process": {
+        "max_cpu_percent": 59.078
+      },
+      "disk": {
+        "before_bytes": 460255827,
+        "after_bytes": 460255827,
+        "growth_bytes": 0
+      },
+      "worker_pids": [
+        "21059",
+        "21060"
+      ],
+      "sum_worker_peak_rss_mb": 290.27,
+      "upstream_calls": {
+        "search_robot_tickets:447": 1,
+        "emergency:YASADR00000000447": 1
+      },
+      "upstream_calls_total": 2,
+      "failures": [],
+      "by_route": {
+        "/emergency/YASADR00000000447/view?section=status": {
+          "requests": 200,
+          "successful_mutations": 0,
+          "unexpected": 0
+        }
+      }
+    },
+    "warm_reconnect_200_requests": {
+      "requests": 200,
+      "elapsed_seconds": 2.187,
+      "throughput_rps": 91.46,
+      "latency_ms": {
+        "p50": 206.41,
+        "p95": 343.77,
+        "p99": 435.67
+      },
+      "status_counts": {
+        "200": 200
+      },
+      "unexpected_responses": 0,
+      "server_errors": 0,
+      "timeouts": 0,
+      "data_leaks": 0,
+      "duplicate_mutations": 0,
+      "network_bytes": {
+        "request": 0,
+        "response": 3728600,
+        "total": 3728600
+      },
+      "wifi": {
+        "attempts": 202,
+        "simulated_losses": 2
+      },
+      "cache": {
+        "hits": 5165,
+        "misses": 5780,
+        "hit_ratio": 0.4719
+      },
+      "db_pool": {
+        "max_checked_out": 10
+      },
+      "process": {
+        "max_cpu_percent": 57.718
+      },
+      "disk": {
+        "before_bytes": 460255827,
+        "after_bytes": 460255827,
+        "growth_bytes": 0
+      },
+      "worker_pids": [
+        "21059",
+        "21060"
+      ],
+      "sum_worker_peak_rss_mb": 292.61,
+      "upstream_calls": {
+        "issue_history:ROBOPARK-23": 1,
+        "issue_history:ROBOPARK-24": 1,
+        "issue_history:ROBOPARK-25": 1,
+        "issue_history:ROBOPARK-26": 1,
+        "issue_history:ROBOPARK-27": 1,
+        "issue_history:ROBOPARK-28": 1,
+        "issue_history:ROBOPARK-29": 1,
+        "issue_history:ROBOPARK-30": 1,
+        "issue_history:ROBOPARK-31": 1,
+        "issue_history:ROBOPARK-33": 1,
+        "issue_history:ROBOPARK-35": 1,
+        "issue_history:ROBOPARK-34": 1,
+        "issue_history:ROBOPARK-36": 1,
+        "issue_history:ROBOPARK-37": 1,
+        "issue_history:ROBOPARK-38": 1,
+        "issue_history:ROBOPARK-39": 1,
+        "issue_history:ROBOPARK-45": 1,
+        "issue_history:ROBOPARK-40": 1,
+        "issue_history:ROBOPARK-41": 1,
+        "issue_history:ROBOPARK-42": 1,
+        "issue_history:ROBOPARK-43": 1,
+        "issue_history:ROBOPARK-46": 1,
+        "issue_history:ROBOPARK-44": 1
+      },
+      "upstream_calls_total": 23,
+      "failures": [],
+      "by_route": {
+        "/tracker/issues?limit=50": {
+          "requests": 200,
+          "successful_mutations": 0,
+          "unexpected": 0
+        }
+      }
+    },
+    "warm_details_200_requests": {
+      "requests": 200,
+      "elapsed_seconds": 1.02,
+      "throughput_rps": 196.05,
+      "latency_ms": {
+        "p50": 93.18,
+        "p95": 134.83,
+        "p99": 180.73
+      },
+      "status_counts": {
+        "200": 200
+      },
+      "unexpected_responses": 0,
+      "server_errors": 0,
+      "timeouts": 0,
+      "data_leaks": 0,
+      "duplicate_mutations": 0,
+      "network_bytes": {
+        "request": 0,
+        "response": 236000,
+        "total": 236000
+      },
+      "wifi": {
+        "attempts": 202,
+        "simulated_losses": 2
+      },
+      "cache": {
+        "hits": 5369,
+        "misses": 5780,
+        "hit_ratio": 0.4816
+      },
+      "db_pool": {
+        "max_checked_out": 10
+      },
+      "process": {
+        "max_cpu_percent": 58.603
+      },
+      "disk": {
+        "before_bytes": 460255827,
+        "after_bytes": 460255827,
+        "growth_bytes": 0
+      },
+      "worker_pids": [
+        "21059",
+        "21060"
+      ],
+      "sum_worker_peak_rss_mb": 292.64,
+      "upstream_calls": {},
+      "upstream_calls_total": 0,
+      "failures": [],
+      "by_route": {
+        "/tracker/issues/ROBOPARK-1": {
+          "requests": 200,
+          "successful_mutations": 0,
+          "unexpected": 0
+        }
+      }
+    },
+    "warm_robot_check_200_requests": {
+      "requests": 200,
+      "elapsed_seconds": 1.032,
+      "throughput_rps": 193.79,
+      "latency_ms": {
+        "p50": 79.02,
+        "p95": 250.44,
+        "p99": 264.22
+      },
+      "status_counts": {
+        "200": 200
+      },
+      "unexpected_responses": 0,
+      "server_errors": 0,
+      "timeouts": 0,
+      "data_leaks": 0,
+      "duplicate_mutations": 0,
+      "network_bytes": {
+        "request": 0,
+        "response": 313800,
+        "total": 313800
+      },
+      "wifi": {
+        "attempts": 202,
+        "simulated_losses": 2
+      },
+      "cache": {
+        "hits": 5567,
+        "misses": 5794,
+        "hit_ratio": 0.49
+      },
+      "db_pool": {
+        "max_checked_out": 10
+      },
+      "process": {
+        "max_cpu_percent": 58.205
+      },
+      "disk": {
+        "before_bytes": 460255827,
+        "after_bytes": 460255827,
+        "growth_bytes": 0
+      },
+      "worker_pids": [
+        "21059",
+        "21060"
+      ],
+      "sum_worker_peak_rss_mb": 292.7,
+      "upstream_calls": {
+        "emergency:YASADR00000000447": 1
+      },
+      "upstream_calls_total": 1,
+      "failures": [],
+      "by_route": {
+        "/emergency/YASADR00000000447/view?section=status": {
+          "requests": 200,
+          "successful_mutations": 0,
+          "unexpected": 0
+        }
+      }
+    },
+    "scoped_denial_200_requests": {
+      "requests": 200,
+      "elapsed_seconds": 0.883,
+      "throughput_rps": 226.55,
+      "latency_ms": {
+        "p50": 67.86,
+        "p95": 219.26,
+        "p99": 234.94
+      },
+      "status_counts": {
+        "403": 200
+      },
+      "unexpected_responses": 0,
+      "server_errors": 0,
+      "timeouts": 0,
+      "data_leaks": 0,
+      "duplicate_mutations": 0,
+      "network_bytes": {
+        "request": 0,
+        "response": 7800,
+        "total": 7800
+      },
+      "wifi": {
+        "attempts": 202,
+        "simulated_losses": 2
+      },
+      "cache": {
+        "hits": 5663,
+        "misses": 5808,
+        "hit_ratio": 0.4937
+      },
+      "db_pool": {
+        "max_checked_out": 10
+      },
+      "process": {
+        "max_cpu_percent": 57.034
+      },
+      "disk": {
+        "before_bytes": 460255827,
+        "after_bytes": 460255827,
+        "growth_bytes": 0
+      },
+      "worker_pids": [
+        "21059",
+        "21060"
+      ],
+      "sum_worker_peak_rss_mb": 292.7,
+      "upstream_calls": {
+        "get_issue:ROBOPARK-FOREIGN": 1,
+        "search_robot_tickets:999": 1
+      },
+      "upstream_calls_total": 2,
+      "failures": [],
+      "by_route": {
+        "/emergency/YASADR00000000999/view?section=status": {
+          "requests": 66,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-FOREIGN": {
+          "requests": 67,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-FOREIGN/comments": {
+          "requests": 67,
+          "successful_mutations": 0,
+          "unexpected": 0
+        }
+      }
+    },
+    "200_open_clients_realistic_cadence": {
+      "requests": 4000,
+      "elapsed_seconds": 60.081,
+      "throughput_rps": 66.58,
+      "latency_ms": {
+        "p50": 57.6,
+        "p95": 166.19,
+        "p99": 205.17
+      },
+      "status_counts": {
+        "200": 3980,
+        "201": 20
+      },
+      "unexpected_responses": 0,
+      "server_errors": 0,
+      "timeouts": 0,
+      "data_leaks": 0,
+      "duplicate_mutations": 0,
+      "network_bytes": {
+        "request": 2229,
+        "response": 77711335,
+        "total": 77713564
+      },
+      "wifi": {
+        "attempts": 4040,
+        "simulated_losses": 40
+      },
+      "cache": {
+        "hits": 18382,
+        "misses": 6033,
+        "hit_ratio": 0.7529
+      },
+      "db_pool": {
+        "max_checked_out": 5
+      },
+      "process": {
+        "max_cpu_percent": 54.603
+      },
+      "disk": {
+        "before_bytes": 460255827,
+        "after_bytes": 460255827,
+        "growth_bytes": 0
+      },
+      "worker_pids": [
+        "21059",
+        "21060"
+      ],
+      "sum_worker_peak_rss_mb": 294.72,
+      "upstream_calls": {
+        "search_issues:Priority: blocker Resolution: empty() (Status: !closed AND Status: !\"Закрыт\" AND Status: !\"Closed\" AND Status: !resolved AND Status: !\"Решен\" AND Status: !\"Решён\") Queue: ROBOPARK": 3,
+        "issue_history:ROBOPARK-1": 1,
+        "issue_history:ROBOPARK-2": 1,
+        "issue_history:ROBOPARK-4": 1,
+        "issue_history:ROBOPARK-3": 1,
+        "issue_history:ROBOPARK-6": 1,
+        "issue_history:ROBOPARK-5": 1,
+        "issue_history:ROBOPARK-8": 1,
+        "issue_history:ROBOPARK-7": 1,
+        "issue_history:ROBOPARK-9": 1,
+        "issue_history:ROBOPARK-10": 1,
+        "issue_history:ROBOPARK-12": 1,
+        "issue_history:ROBOPARK-11": 1,
+        "issue_history:ROBOPARK-14": 1,
+        "issue_history:ROBOPARK-13": 1,
+        "issue_history:ROBOPARK-16": 1,
+        "issue_history:ROBOPARK-15": 1,
+        "issue_history:ROBOPARK-18": 1,
+        "issue_history:ROBOPARK-17": 1,
+        "issue_history:ROBOPARK-20": 1,
+        "issue_history:ROBOPARK-19": 1,
+        "issue_history:ROBOPARK-22": 1,
+        "issue_history:ROBOPARK-21": 1,
+        "issue_history:ROBOPARK-32": 1,
+        "get_issue:ROBOPARK-1": 22,
+        "search_robot_tickets:447": 2,
+        "emergency:YASADR00000000447": 4,
+        "issue_history:ROBOPARK-23": 1,
+        "issue_history:ROBOPARK-24": 1,
+        "issue_history:ROBOPARK-25": 1,
+        "issue_history:ROBOPARK-26": 1,
+        "issue_history:ROBOPARK-27": 1,
+        "issue_history:ROBOPARK-28": 1,
+        "issue_history:ROBOPARK-29": 1,
+        "issue_history:ROBOPARK-30": 1,
+        "issue_history:ROBOPARK-31": 1,
+        "issue_history:ROBOPARK-33": 1,
+        "issue_history:ROBOPARK-35": 1,
+        "issue_history:ROBOPARK-34": 1,
+        "issue_history:ROBOPARK-36": 1,
+        "issue_history:ROBOPARK-37": 1,
+        "issue_history:ROBOPARK-38": 1,
+        "issue_history:ROBOPARK-39": 1,
+        "issue_history:ROBOPARK-45": 1,
+        "issue_history:ROBOPARK-40": 1,
+        "issue_history:ROBOPARK-41": 1,
+        "issue_history:ROBOPARK-42": 1,
+        "issue_history:ROBOPARK-43": 1,
+        "issue_history:ROBOPARK-46": 1,
+        "issue_history:ROBOPARK-44": 1,
+        "get_issue:ROBOPARK-2": 22,
+        "get_issue:ROBOPARK-3": 22,
+        "search_robot_tickets:451": 2,
+        "get_issue:ROBOPARK-8": 22,
+        "get_issue:ROBOPARK-7": 22,
+        "issue_history:ROBOPARK-47": 1,
+        "issue_history:ROBOPARK-48": 1,
+        "search_robot_tickets:456": 2,
+        "get_issue:ROBOPARK-11": 22,
+        "get_issue:ROBOPARK-12": 22,
+        "get_issue:ROBOPARK-13": 22,
+        "list_comments:ROBOPARK-3": 4,
+        "search_robot_tickets:461": 2,
+        "list_comments:ROBOPARK-8": 4,
+        "emergency:YASADR00000000451": 4,
+        "issue_history:ROBOPARK-50": 1,
+        "issue_history:ROBOPARK-49": 1,
+        "get_issue:ROBOPARK-17": 22,
+        "emergency:YASADR00000000456": 4,
+        "get_issue:ROBOPARK-18": 22,
+        "search_robot_tickets:466": 2,
+        "list_comments:ROBOPARK-13": 4,
+        "emergency:YASADR00000000461": 4,
+        "list_comments:ROBOPARK-18": 4,
+        "emergency:YASADR00000000466": 4,
+        "list_comments:ROBOPARK-2": 4,
+        "search_robot_tickets:450": 2,
+        "get_issue:ROBOPARK-6": 22,
+        "list_comments:ROBOPARK-7": 4,
+        "get_issue:ROBOPARK-10": 22,
+        "search_robot_tickets:455": 2,
+        "emergency:YASADR00000000450": 4,
+        "list_comments:ROBOPARK-12": 4,
+        "search_robot_tickets:460": 2,
+        "get_issue:ROBOPARK-16": 22,
+        "list_comments:ROBOPARK-17": 4,
+        "emergency:YASADR00000000455": 4,
+        "search_robot_tickets:465": 2,
+        "get_issue:ROBOPARK-20": 22,
+        "emergency:YASADR00000000460": 4,
+        "emergency:YASADR00000000465": 4,
+        "list_comments:ROBOPARK-1": 4,
+        "search_robot_tickets:449": 2,
+        "get_issue:ROBOPARK-5": 22,
+        "list_comments:ROBOPARK-6": 4,
+        "search_robot_tickets:454": 2,
+        "get_issue:ROBOPARK-9": 22,
+        "emergency:YASADR00000000449": 4,
+        "search_robot_tickets:459": 2,
+        "get_issue:ROBOPARK-15": 22,
+        "emergency:YASADR00000000454": 4,
+        "list_comments:ROBOPARK-16": 4,
+        "search_robot_tickets:464": 2,
+        "list_comments:ROBOPARK-11": 4,
+        "get_issue:ROBOPARK-19": 22,
+        "emergency:YASADR00000000459": 4,
+        "emergency:YASADR00000000464": 4,
+        "search_robot_tickets:448": 2,
+        "get_issue:ROBOPARK-4": 22,
+        "list_comments:ROBOPARK-5": 4,
+        "search_robot_tickets:453": 2,
+        "emergency:YASADR00000000448": 4,
+        "list_comments:ROBOPARK-10": 4,
+        "search_robot_tickets:458": 2,
+        "get_issue:ROBOPARK-14": 22,
+        "emergency:YASADR00000000453": 4,
+        "list_comments:ROBOPARK-15": 4,
+        "search_robot_tickets:463": 2,
+        "emergency:YASADR00000000458": 4,
+        "list_comments:ROBOPARK-20": 4,
+        "emergency:YASADR00000000463": 4,
+        "list_comments:ROBOPARK-4": 4,
+        "search_robot_tickets:452": 2,
+        "list_comments:ROBOPARK-9": 4,
+        "search_robot_tickets:457": 2,
+        "emergency:YASADR00000000452": 4,
+        "list_comments:ROBOPARK-14": 4,
+        "search_robot_tickets:462": 2,
+        "emergency:YASADR00000000457": 4,
+        "list_comments:ROBOPARK-19": 4,
+        "emergency:YASADR00000000462": 4
+      },
+      "upstream_calls_total": 693,
+      "failures": [],
+      "by_route": {
+        "/emergency/YASADR00000000447/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000448/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000449/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000450/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000451/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000452/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000453/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000454/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000455/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000456/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000457/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000458/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000459/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000460/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000461/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000462/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000463/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000464/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000465/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/emergency/YASADR00000000466/view?section=status": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/reports": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/reports/inbox": {
+          "requests": 800,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-1": {
+          "requests": 30,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-1/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-1/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-10": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-10/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-10/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-11": {
+          "requests": 30,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-11/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-11/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-12": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-12/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-12/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-13": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-13/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-13/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-14": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-14/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-14/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-15": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-15/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-15/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-16": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-16/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-16/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-17": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-17/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-17/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-18": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-18/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-18/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-19": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-19/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-19/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-2": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-2/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-2/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-20": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-20/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-20/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-3": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-3/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-3/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-4": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-4/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-4/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-5": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-5/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-5/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-6": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-6/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-6/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-7": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-7/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-7/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-8": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-8/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-8/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-9": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-9/comments": {
+          "requests": 40,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-9/presence": {
+          "requests": 20,
+          "successful_mutations": 20,
+          "unexpected": 0
+        },
+        "/tracker/issues?limit=50": {
+          "requests": 400,
+          "successful_mutations": 0,
+          "unexpected": 0
+        }
+      }
+    },
+    "200_session_stress_bounded_inflight": {
+      "requests": 600,
+      "elapsed_seconds": 3.044,
+      "throughput_rps": 197.14,
+      "latency_ms": {
+        "p50": 90.19,
+        "p95": 156.07,
+        "p99": 254.7
+      },
+      "status_counts": {
+        "200": 600
+      },
+      "unexpected_responses": 0,
+      "server_errors": 0,
+      "timeouts": 0,
+      "data_leaks": 0,
+      "duplicate_mutations": 0,
+      "network_bytes": {
+        "request": 0,
+        "response": 12819720,
+        "total": 12819720
+      },
+      "wifi": {
+        "attempts": 606,
+        "simulated_losses": 6
+      },
+      "cache": {
+        "hits": 22826,
+        "misses": 6058,
+        "hit_ratio": 0.7903
+      },
+      "db_pool": {
+        "max_checked_out": 10
+      },
+      "process": {
+        "max_cpu_percent": 33.686
+      },
+      "disk": {
+        "before_bytes": 460255827,
+        "after_bytes": 460258276,
+        "growth_bytes": 2449
+      },
+      "worker_pids": [
+        "21059",
+        "21060"
+      ],
+      "sum_worker_peak_rss_mb": 296.73,
+      "upstream_calls": {
+        "emergency:YASADR00000000447": 1,
+        "issue_history:ROBOPARK-47": 1,
+        "issue_history:ROBOPARK-48": 1,
+        "issue_history:ROBOPARK-50": 1,
+        "issue_history:ROBOPARK-49": 1
+      },
+      "upstream_calls_total": 5,
+      "failures": [],
+      "by_route": {
+        "/emergency/YASADR00000000447/view?section=status": {
+          "requests": 120,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/reports/inbox": {
+          "requests": 120,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-1": {
+          "requests": 120,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues/ROBOPARK-1/comments": {
+          "requests": 120,
+          "successful_mutations": 0,
+          "unexpected": 0
+        },
+        "/tracker/issues?limit=50": {
+          "requests": 120,
+          "successful_mutations": 0,
+          "unexpected": 0
+        }
+      }
+    }
+  },
+  "database": {
+    "dialect": "postgresql",
+    "major_version": 17,
+    "users": 200,
+    "sessions": 200,
+    "reports_after": 220,
+    "presence_rows": 200,
+    "storage_bytes": 11171507,
+    "integrity_check": "ok"
+  },
+  "server_log_tail": "Cache cleanup cycle failed; retry is bounded\nTraceback (most recent call last):\n  File \"/Users/tehblokdan/Desktop/Проекты/robopark/.worktrees/robot-check-readings/apps/api/src/robopark_api/services/cache_cleanup.py\", line 373, in run_cache_cleanup_loop\n    await asyncio.to_thread(prune_cache_once)\n  File \"/Users/tehblokdan/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none/lib/python3.13/asyncio/threads.py\", line 26, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/tehblokdan/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none/lib/python3.13/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/Users/tehblokdan/Desktop/Проекты/robopark/.worktrees/robot-check-readings/apps/api/src/robopark_api/services/cache_cleanup.py\", line 340, in prune_cache_once\n    cleanup_storage_pressure(now=current.timestamp())\n    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/tehblokdan/Desktop/Проекты/robopark/.worktrees/robot-check-readings/apps/api/src/robopark_api/services/cache_cleanup.py\", line 213, in cleanup_storage_pressure\n    current = StorageBudget.for_path(data_path)\n  File \"/Users/tehblokdan/Desktop/Проекты/robopark/.worktrees/robot-check-readings/apps/api/src/robopark_api/services/storage_retention.py\", line 66, in for_path\n    usage = shutil.disk_usage(path)\n  File \"/Users/tehblokdan/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none/lib/python3.13/shutil.py\", line 1363, in disk_usage\n    st = os.statvfs(path)\nFileNotFoundError: [Errno 2] No such file or directory: '/data'\n",
+  "acceptance": {
+    "all_requests_match_contract": true,
+    "both_workers_served_load": true,
+    "cadence_achieves_90_percent_target": true,
+    "cold_search_coalesced_to_one": true,
+    "cold_detail_coalesced_to_one": true,
+    "status_history_coalesced_per_issue": true,
+    "cold_robot_coalesced_within_ttl": true,
+    "denied_comments_and_emergency_never_fetched": true,
+    "postgresql_17_integrity_ok": true,
+    "local_writes_persisted_once": true,
+    "presence_writes_persisted": true,
+    "no_harness_error": true
+  },
+  "passed": true,
+  "upstream_total": {
+    "count_issues:Queue: ROBOPARK Priority: blocker Tags: CapacityAlpha Created: >= \"2026-09-20 06:00:00\" Created: < \"2026-09-20 08:00:00\"": 1,
+    "count_issues:Queue: ROBOPARK Priority: blocker Tags: CapacityAlpha Resolution: fixed Resolved: >= \"2026-09-20 06:00:00\" Resolved: < \"2026-09-20 08:00:00\"": 1,
+    "count_issues:Queue: ROBOPARK Priority: blocker Tags: CapacityForeign Created: >= \"2026-09-20 06:00:00\" Created: < \"2026-09-20 08:00:00\"": 1,
+    "count_issues:Queue: ROBOPARK Priority: blocker Tags: CapacityForeign Resolution: fixed Resolved: >= \"2026-09-20 06:00:00\" Resolved: < \"2026-09-20 08:00:00\"": 1,
+    "fetch_park_blockers:park": 2,
+    "search_issues:Priority: blocker Resolution: empty() (Status: !closed AND Status: !\"Закрыт\" AND Status: !\"Closed\" AND Status: !resolved AND Status: !\"Решен\" AND Status: !\"Решён\") Queue: ROBOPARK": 4,
+    "issue_history:ROBOPARK-1": 2,
+    "issue_history:ROBOPARK-2": 2,
+    "issue_history:ROBOPARK-4": 2,
+    "issue_history:ROBOPARK-3": 2,
+    "issue_history:ROBOPARK-6": 2,
+    "issue_history:ROBOPARK-5": 2,
+    "issue_history:ROBOPARK-8": 2,
+    "issue_history:ROBOPARK-7": 2,
+    "issue_history:ROBOPARK-9": 2,
+    "issue_history:ROBOPARK-10": 2,
+    "issue_history:ROBOPARK-12": 2,
+    "issue_history:ROBOPARK-11": 2,
+    "issue_history:ROBOPARK-14": 2,
+    "issue_history:ROBOPARK-13": 2,
+    "issue_history:ROBOPARK-16": 2,
+    "issue_history:ROBOPARK-15": 2,
+    "issue_history:ROBOPARK-18": 2,
+    "issue_history:ROBOPARK-17": 2,
+    "issue_history:ROBOPARK-20": 2,
+    "issue_history:ROBOPARK-19": 2,
+    "issue_history:ROBOPARK-22": 2,
+    "issue_history:ROBOPARK-21": 2,
+    "issue_history:ROBOPARK-32": 2,
+    "get_issue:ROBOPARK-1": 23,
+    "search_robot_tickets:447": 3,
+    "emergency:YASADR00000000447": 7,
+    "issue_history:ROBOPARK-23": 2,
+    "issue_history:ROBOPARK-24": 2,
+    "issue_history:ROBOPARK-25": 2,
+    "issue_history:ROBOPARK-26": 2,
+    "issue_history:ROBOPARK-27": 2,
+    "issue_history:ROBOPARK-28": 2,
+    "issue_history:ROBOPARK-29": 2,
+    "issue_history:ROBOPARK-30": 2,
+    "issue_history:ROBOPARK-31": 2,
+    "issue_history:ROBOPARK-33": 2,
+    "issue_history:ROBOPARK-35": 2,
+    "issue_history:ROBOPARK-34": 2,
+    "issue_history:ROBOPARK-36": 2,
+    "issue_history:ROBOPARK-37": 2,
+    "issue_history:ROBOPARK-38": 2,
+    "issue_history:ROBOPARK-39": 2,
+    "issue_history:ROBOPARK-45": 2,
+    "issue_history:ROBOPARK-40": 2,
+    "issue_history:ROBOPARK-41": 2,
+    "issue_history:ROBOPARK-42": 2,
+    "issue_history:ROBOPARK-43": 2,
+    "issue_history:ROBOPARK-46": 2,
+    "issue_history:ROBOPARK-44": 2,
+    "get_issue:ROBOPARK-FOREIGN": 1,
+    "search_robot_tickets:999": 1,
+    "get_issue:ROBOPARK-2": 22,
+    "get_issue:ROBOPARK-3": 22,
+    "search_robot_tickets:451": 2,
+    "get_issue:ROBOPARK-8": 22,
+    "get_issue:ROBOPARK-7": 22,
+    "issue_history:ROBOPARK-47": 2,
+    "issue_history:ROBOPARK-48": 2,
+    "search_robot_tickets:456": 2,
+    "get_issue:ROBOPARK-11": 22,
+    "get_issue:ROBOPARK-12": 22,
+    "get_issue:ROBOPARK-13": 22,
+    "list_comments:ROBOPARK-3": 4,
+    "search_robot_tickets:461": 2,
+    "list_comments:ROBOPARK-8": 4,
+    "emergency:YASADR00000000451": 4,
+    "issue_history:ROBOPARK-50": 2,
+    "issue_history:ROBOPARK-49": 2,
+    "get_issue:ROBOPARK-17": 22,
+    "emergency:YASADR00000000456": 4,
+    "get_issue:ROBOPARK-18": 22,
+    "search_robot_tickets:466": 2,
+    "list_comments:ROBOPARK-13": 4,
+    "emergency:YASADR00000000461": 4,
+    "list_comments:ROBOPARK-18": 4,
+    "emergency:YASADR00000000466": 4,
+    "list_comments:ROBOPARK-2": 4,
+    "search_robot_tickets:450": 2,
+    "get_issue:ROBOPARK-6": 22,
+    "list_comments:ROBOPARK-7": 4,
+    "get_issue:ROBOPARK-10": 22,
+    "search_robot_tickets:455": 2,
+    "emergency:YASADR00000000450": 4,
+    "list_comments:ROBOPARK-12": 4,
+    "search_robot_tickets:460": 2,
+    "get_issue:ROBOPARK-16": 22,
+    "list_comments:ROBOPARK-17": 4,
+    "emergency:YASADR00000000455": 4,
+    "search_robot_tickets:465": 2,
+    "get_issue:ROBOPARK-20": 22,
+    "emergency:YASADR00000000460": 4,
+    "emergency:YASADR00000000465": 4,
+    "list_comments:ROBOPARK-1": 4,
+    "search_robot_tickets:449": 2,
+    "get_issue:ROBOPARK-5": 22,
+    "list_comments:ROBOPARK-6": 4,
+    "search_robot_tickets:454": 2,
+    "get_issue:ROBOPARK-9": 22,
+    "emergency:YASADR00000000449": 4,
+    "search_robot_tickets:459": 2,
+    "get_issue:ROBOPARK-15": 22,
+    "emergency:YASADR00000000454": 4,
+    "list_comments:ROBOPARK-16": 4,
+    "search_robot_tickets:464": 2,
+    "list_comments:ROBOPARK-11": 4,
+    "get_issue:ROBOPARK-19": 22,
+    "emergency:YASADR00000000459": 4,
+    "emergency:YASADR00000000464": 4,
+    "search_robot_tickets:448": 2,
+    "get_issue:ROBOPARK-4": 22,
+    "list_comments:ROBOPARK-5": 4,
+    "search_robot_tickets:453": 2,
+    "emergency:YASADR00000000448": 4,
+    "list_comments:ROBOPARK-10": 4,
+    "search_robot_tickets:458": 2,
+    "get_issue:ROBOPARK-14": 22,
+    "emergency:YASADR00000000453": 4,
+    "list_comments:ROBOPARK-15": 4,
+    "search_robot_tickets:463": 2,
+    "emergency:YASADR00000000458": 4,
+    "list_comments:ROBOPARK-20": 4,
+    "emergency:YASADR00000000463": 4,
+    "list_comments:ROBOPARK-4": 4,
+    "search_robot_tickets:452": 2,
+    "list_comments:ROBOPARK-9": 4,
+    "search_robot_tickets:457": 2,
+    "emergency:YASADR00000000452": 4,
+    "list_comments:ROBOPARK-14": 4,
+    "search_robot_tickets:462": 2,
+    "emergency:YASADR00000000457": 4,
+    "list_comments:ROBOPARK-19": 4,
+    "emergency:YASADR00000000462": 4
+  }
+}

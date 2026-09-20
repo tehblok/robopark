@@ -56,6 +56,82 @@ def test_status_history_gate_is_scoped_to_cold_setup_before_ttl_expiry():
     assert coalesced({"upstream_calls": {}}) is False
 
 
+def test_task8_load_summary_includes_transfer_and_resource_evidence():
+    api = local_benchmark_module()
+    records = [
+        {
+            "ms": 10.0,
+            "status": 200,
+            "ok": True,
+            "route": "/health",
+            "worker": "11",
+            "rss_bytes": 1024,
+            "response_bytes": 120,
+            "request_bytes": 30,
+            "attempts": 2,
+            "simulated_losses": 1,
+            "db_pool_checked_out": 1,
+            "cache_hits": 3,
+            "cache_misses": 1,
+            "cpu_percent": 12.5,
+        }
+    ]
+    result = api["summarize"](
+        records,
+        elapsed=2,
+        upstream={"search_issues:park": 1},
+        disk={"before_bytes": 1000, "after_bytes": 1100},
+    )
+    assert result["latency_ms"] == {"p50": 10.0, "p95": 10.0, "p99": 10.0}
+    assert result["network_bytes"] == {"request": 30, "response": 120, "total": 150}
+    assert result["wifi"] == {"attempts": 2, "simulated_losses": 1}
+    assert result["cache"] == {"hits": 3, "misses": 1, "hit_ratio": 0.75}
+    assert result["db_pool"]["max_checked_out"] == 1
+    assert result["process"]["max_cpu_percent"] == 12.5
+    assert result["disk"] == {
+        "before_bytes": 1000,
+        "after_bytes": 1100,
+        "growth_bytes": 100,
+    }
+
+
+def test_task8_acceptance_requires_no_duplicate_mutations_or_cross_scope_leak():
+    api = local_benchmark_module()
+    clean = {
+        "unexpected_responses": 0,
+        "server_errors": 0,
+        "data_leaks": 0,
+        "duplicate_mutations": 0,
+    }
+    assert api["phase_integrity_ok"](clean) is True
+    for field in (
+        "unexpected_responses",
+        "server_errors",
+        "data_leaks",
+        "duplicate_mutations",
+    ):
+        broken = {**clean, field: 1}
+        assert api["phase_integrity_ok"](broken) is False
+
+
+def test_task8_bounded_request_fanout_keeps_all_distinct_sessions():
+    api = local_benchmark_module()
+    active = 0
+    peak = 0
+
+    async def operation(index):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return index
+
+    result = asyncio.run(api["bounded_map"](range(200), 20, operation))
+    assert result == list(range(200))
+    assert peak == 20
+
+
 def config_file(tmp_path, **changes):
     value = {"base_url": "https://park.example", "session": "fixture-session-secret"}
     value.update(changes)
@@ -67,7 +143,10 @@ def config_file(tmp_path, **changes):
 
 def test_nearest_rank_latency_and_error_math():
     api = module()
-    samples = [api["Sample"](float(n), 200 if n != 100 else 503, body_bytes=20) for n in range(1, 101)]
+    samples = [
+        api["Sample"](float(n), 200 if n != 100 else 503, body_bytes=20)
+        for n in range(1, 101)
+    ]
     result = api["summarize"](samples, elapsed=10)
     assert result["latency_ms"] == {"p50": 50, "p95": 95, "p99": 99}
     assert result["throughput_rps"] == 10
@@ -139,7 +218,9 @@ def test_config_rejects_symlink_and_duplicate_keys(tmp_path):
 def test_transport_errors_and_server_bodies_are_never_published(tmp_path):
     api = module()
     config = api["load_config"](
-        config_file(tmp_path, users=2, duration_seconds=0.03, warmup_seconds=0, think_seconds=0)
+        config_file(
+            tmp_path, users=2, duration_seconds=0.03, warmup_seconds=0, think_seconds=0
+        )
     )
 
     def responder(request):
@@ -147,9 +228,13 @@ def test_transport_errors_and_server_bodies_are_never_published(tmp_path):
         assert request.method == "GET"
         if request.url.path.endswith("/me"):
             raise httpx.ConnectError("fixture-session-secret", request=request)
-        return httpx.Response(503, text="database is locked; Authorization: fixture-session-secret")
+        return httpx.Response(
+            503, text="database is locked; Authorization: fixture-session-secret"
+        )
 
-    result = asyncio.run(api["run_load"](config, transport=httpx.MockTransport(responder)))
+    result = asyncio.run(
+        api["run_load"](config, transport=httpx.MockTransport(responder))
+    )
     report = json.dumps(result)
     assert "fixture-session-secret" not in report
     assert result["metrics"]["error_rate"] == 1
@@ -160,7 +245,9 @@ def test_transport_errors_and_server_bodies_are_never_published(tmp_path):
 def test_transfer_metric_counts_encoded_response_body(tmp_path):
     api = module()
     config = api["load_config"](
-        config_file(tmp_path, users=1, duration_seconds=0.01, warmup_seconds=0, think_seconds=0)
+        config_file(
+            tmp_path, users=1, duration_seconds=0.01, warmup_seconds=0, think_seconds=0
+        )
     )
     encoded = gzip.compress(b"plain body" * 100)
 
@@ -168,13 +255,20 @@ def test_transfer_metric_counts_encoded_response_body(tmp_path):
         async def __aiter__(self):
             yield encoded
 
-    result = asyncio.run(api["run_load"](
-        config, transport=httpx.MockTransport(lambda _request: httpx.Response(
-            200, stream=EncodedStream(), headers={"content-encoding": "gzip"}
-        ))
-    ))
+    result = asyncio.run(
+        api["run_load"](
+            config,
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    200, stream=EncodedStream(), headers={"content-encoding": "gzip"}
+                )
+            ),
+        )
+    )
     assert result["metrics"]["requests"] > 0
-    assert result["metrics"]["response_bytes_total"] == result["metrics"]["requests"] * len(encoded)
+    assert result["metrics"]["response_bytes_total"] == result["metrics"][
+        "requests"
+    ] * len(encoded)
 
 
 def test_no_server_evidence_can_never_pass_target_gate():
@@ -186,21 +280,29 @@ def test_no_server_evidence_can_never_pass_target_gate():
         "latency_ms": {"p50": 100, "p95": 500, "p99": 900},
     }
     assert (
-        api["evaluate_gate"](metrics, users=200, duration=600, warmup=30, server_evidence=None)
+        api["evaluate_gate"](
+            metrics, users=200, duration=600, warmup=30, server_evidence=None
+        )
         == "PENDING_SERVER_EVIDENCE"
     )
     evidence = {"database_lock": 0, "event_loop": 0, "oom": 0, "restarts": 0}
     assert (
-        api["evaluate_gate"](metrics, users=200, duration=600, warmup=30, server_evidence=evidence)
+        api["evaluate_gate"](
+            metrics, users=200, duration=600, warmup=30, server_evidence=evidence
+        )
         == "PASS"
     )
     assert (
-        api["evaluate_gate"](metrics, users=2, duration=600, warmup=30, server_evidence=evidence)
+        api["evaluate_gate"](
+            metrics, users=2, duration=600, warmup=30, server_evidence=evidence
+        )
         == "FAIL"
     )
     evidence["event_loop"] = 1
     assert (
-        api["evaluate_gate"](metrics, users=200, duration=600, warmup=30, server_evidence=evidence)
+        api["evaluate_gate"](
+            metrics, users=200, duration=600, warmup=30, server_evidence=evidence
+        )
         == "FAIL"
     )
 
@@ -232,7 +334,9 @@ def test_isolated_write_run_only_updates_its_new_inactive_park(tmp_path, monkeyp
             writes.append(("update", json.loads(request.content)))
         return httpx.Response(200, json={})
 
-    result = asyncio.run(api["run_load"](config, transport=httpx.MockTransport(responder)))
+    result = asyncio.run(
+        api["run_load"](config, transport=httpx.MockTransport(responder))
+    )
     assert writes[0][0] == "create"
     assert writes[1] == ("update", {"is_active": False})
     assert writes[-1] == ("update", {"is_active": False})
@@ -243,7 +347,8 @@ def test_server_log_scan_retains_only_failure_counts(tmp_path):
     api = module()
     log = tmp_path / "api.log"
     log.write_text(
-        "secret=LEAK database is locked\nTask exception was never retrieved LEAK\nnormal\n"
+        "secret=LEAK database is locked\n"
+        "Task exception was never retrieved LEAK\nnormal\n"
     )
     evidence = api["scan_server_log"](log)
     assert evidence == {"database_lock": 1, "event_loop": 1, "oom": 0, "restarts": 0}
@@ -253,7 +358,9 @@ def test_server_log_scan_retains_only_failure_counts(tmp_path):
 def test_writes_need_explicit_environment_opt_in(tmp_path, monkeypatch):
     monkeypatch.delenv("ALLOW_ISOLATED_WRITES", raising=False)
     with pytest.raises(ValueError):
-        module()["load_config"](config_file(tmp_path, writes=True, isolated_test_data=True))
+        module()["load_config"](
+            config_file(tmp_path, writes=True, isolated_test_data=True)
+        )
 
 
 def test_evaluation_rejects_injected_fields_in_saved_report(tmp_path):
@@ -264,7 +371,11 @@ def test_evaluation_rejects_injected_fields_in_saved_report(tmp_path):
                 "format": 1,
                 "gate": "PASS",
                 "credential": "LEAK",
-                "workload": {"users": 200, "duration_seconds": 600, "warmup_seconds": 30},
+                "workload": {
+                    "users": 200,
+                    "duration_seconds": 600,
+                    "warmup_seconds": 30,
+                },
                 "metrics": {
                     "requests": 100000,
                     "throughput_rps": 200,
@@ -320,17 +431,23 @@ def test_write_cleanup_failure_fails_gate(tmp_path, monkeypatch):
         nonlocal deactivations
         if request.method == "POST":
             return httpx.Response(201, json={"id": 1})
-        if request.method == "PATCH" and json.loads(request.content) == {"is_active": False}:
+        if request.method == "PATCH" and json.loads(request.content) == {
+            "is_active": False
+        }:
             deactivations += 1
             return httpx.Response(200 if deactivations == 1 else 500)
         return httpx.Response(200, json={})
 
-    report = asyncio.run(api["run_load"](config, transport=httpx.MockTransport(respond)))
+    report = asyncio.run(
+        api["run_load"](config, transport=httpx.MockTransport(respond))
+    )
     assert report["cleanup_ok"] is False
     assert report["gate"] == "FAIL"
 
 
-@pytest.mark.parametrize("rejected_id", ["999", True, 0, -1, None, 999.0, 2**63, {}, []])
+@pytest.mark.parametrize(
+    "rejected_id", ["999", True, 0, -1, None, 999.0, 2**63, {}, []]
+)
 def test_rejected_created_park_id_never_becomes_a_cleanup_target(
     tmp_path, monkeypatch, rejected_id
 ):

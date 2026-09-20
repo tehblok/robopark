@@ -1,0 +1,6 @@
+{
+  "passed": true,
+  "command": "npm test -- --run",
+  "test_files_passed": 153,
+  "tests_passed": 2131
+}

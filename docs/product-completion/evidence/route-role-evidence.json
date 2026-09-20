@@ -1,0 +1,7 @@
+{
+  "passed": true,
+  "command": "npx playwright test e2e/operational/route-state-evidence.spec.ts --project chromium --workers 1",
+  "tests_passed": 65,
+  "modes": ["Классический", "Новый А"],
+  "roles": ["guest", "operator", "mechanic", "royal"]
+}

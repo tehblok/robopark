@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "command": "npm run build",
+  "typescript": "PASS",
+  "vite": "PASS",
+  "service_worker": "PASS",
+  "modules_transformed": 2223
+}

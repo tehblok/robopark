@@ -48,6 +48,9 @@ def safe_source_path(path, boundary):
 verifier_source = Path(__file__).with_name("verify-artifact.py")
 safe_source_path(verifier_source, REPOSITORY_ROOT)
 VERIFIER = runpy.run_path(str(verifier_source))
+acceptance_source = Path(__file__).with_name("release_acceptance.py")
+safe_source_path(acceptance_source, REPOSITORY_ROOT)
+ACCEPTANCE = runpy.run_path(str(acceptance_source))
 EXCLUDED_DIRS = {
     ".git",
     ".release-secrets",
@@ -68,7 +71,13 @@ EXCLUDED_DIRS = {
     ".worktrees",
     ".superpowers",
 }
-ROOT_FILES = ("README.md", "VERSION", ".dockerignore", ".gitignore", ".github/workflows/ci.yml")
+ROOT_FILES = (
+    "README.md",
+    "VERSION",
+    ".dockerignore",
+    ".gitignore",
+    ".github/workflows/ci.yml",
+)
 
 
 def excluded(relative):
@@ -88,7 +97,9 @@ def excluded(relative):
     ):
         return True
     if parts[:3] == ("apps", "web", "scripts") and (
-        name.endswith(".test.mjs") or name in {"generate-pwa-icons.mjs", "interface-load.mjs", "operational-demo.mjs"}
+        name.endswith(".test.mjs")
+        or name
+        in {"generate-pwa-icons.mjs", "interface-load.mjs", "operational-demo.mjs"}
     ):
         return True
     if relative.as_posix() == "apps/web/playwright.config.ts":
@@ -102,9 +113,18 @@ def excluded(relative):
         return True
     if parts[:1] in (("data",), ("diagnostics",)):
         return True
-    if (name == ".env" or name.startswith(".env.") or name.endswith(".env") or ".env." in name) and not (
-        name.endswith(".env.example") or name == ".env.example"
-    ):
+    if relative.as_posix() in {
+        "scripts/cache_soak.py",
+        "scripts/capacity_app.py",
+        "scripts/capacity_benchmark.py",
+    }:
+        return True
+    if (
+        name == ".env"
+        or name.startswith(".env.")
+        or name.endswith(".env")
+        or ".env." in name
+    ) and not (name.endswith(".env.example") or name == ".env.example"):
         return True
     patterns = (
         "*.pyc",
@@ -147,7 +167,9 @@ def source_files(root, repository=False, trusted_root=None):
     if root.is_symlink() or not root.is_dir():
         raise ValueError("unsafe_source")
     roots = (
-        [root / p for p in ("apps/api", "apps/web", "deploy", "scripts")] if repository else [root]
+        [root / p for p in ("apps/api", "apps/web", "deploy", "scripts")]
+        if repository
+        else [root]
     )
     files = {}
 
@@ -215,7 +237,9 @@ def validate_output(output, forbidden):
             raise ValueError("unsafe_output")
         resolved = path.resolve()
         for protected in forbidden:
-            if resolved == protected.resolve() or resolved.is_relative_to(protected.resolve()):
+            if resolved == protected.resolve() or resolved.is_relative_to(
+                protected.resolve()
+            ):
                 raise ValueError("output_overlaps_input")
             if path.exists() and protected.exists() and path.samefile(protected):
                 raise ValueError("output_overlaps_input")
@@ -241,13 +265,18 @@ def write_artifacts(output, raw, key, manifest, kind):
         "filename": output.name,
         "size": len(raw),
         "sha256": digest,
-        **{name: manifest[name] for name in ("app_version", "git_sha", "migration_head")},
+        **{
+            name: manifest[name]
+            for name in ("app_version", "git_sha", "migration_head")
+        },
     }
     assets = {
         "": raw,
         ".sig": key.sign(raw),
         ".sha256": f"{digest}  {output.name}\n".encode(),
-        ".json": (json.dumps(metadata, sort_keys=True, separators=(",", ":")) + "\n").encode(),
+        ".json": (
+            json.dumps(metadata, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode(),
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     for suffix, data in assets.items():
@@ -277,11 +306,16 @@ def release_metadata(args, files):
     if not isinstance(value, dict) or not required <= set(value) <= allowed:
         raise ValueError("invalid_release_metadata")
     compatibility = value["migration_compatibility"]
-    if not isinstance(compatibility, dict) or set(compatibility) != {"from_heads", "reversible"}:
+    if not isinstance(compatibility, dict) or set(compatibility) != {
+        "from_heads",
+        "reversible",
+    }:
         raise ValueError("invalid_release_metadata")
     revisions = {}
     for name, content in files.items():
-        if not name.startswith("apps/api/alembic/versions/") or not name.endswith(".py"):
+        if not name.startswith("apps/api/alembic/versions/") or not name.endswith(
+            ".py"
+        ):
             continue
         constants = {}
         for node in ast.parse(content).body:
@@ -293,7 +327,10 @@ def release_metadata(args, files):
                 else []
             )
             for target in targets:
-                if isinstance(target, ast.Name) and target.id in {"revision", "down_revision"}:
+                if isinstance(target, ast.Name) and target.id in {
+                    "revision",
+                    "down_revision",
+                }:
                     constants[target.id] = ast.literal_eval(node.value)
         if not constants:
             continue
@@ -319,7 +356,11 @@ def release_metadata(args, files):
         revisions[revision] = parents
     referenced = {parent for parents in revisions.values() for parent in parents}
     heads = set(revisions) - referenced
-    if not referenced <= set(revisions) or len(heads) != 1 or value["migration_head"] not in heads:
+    if (
+        not referenced <= set(revisions)
+        or len(heads) != 1
+        or value["migration_head"] not in heads
+    ):
         raise ValueError("migration_head_mismatch")
     if getattr(args, "migration_head", None) not in (None, value["migration_head"]):
         raise ValueError("migration_head_mismatch")
@@ -339,7 +380,8 @@ def release_metadata(args, files):
 
     visit(next(iter(heads)))
     if not isinstance(compatibility["from_heads"], list) or not all(
-        isinstance(head, str) and head in revisions for head in compatibility["from_heads"]
+        isinstance(head, str) and head in revisions
+        for head in compatibility["from_heads"]
     ):
         raise ValueError("invalid_migration_sources")
     if visited != set(revisions):
@@ -347,13 +389,34 @@ def release_metadata(args, files):
     return value
 
 
+def require_acceptance(args):
+    if not args.repository:
+        return None
+    path = getattr(args, "acceptance", None)
+    if path is None:
+        raise ValueError("acceptance_required")
+    root = args.root.absolute()
+    path = Path(path).absolute()
+    safe_source_path(path, root)
+    raw = VERIFIER["read_regular"](path, 16 * 1024 * 1024)
+    evidence = json.loads(raw, object_pairs_hook=VERIFIER["unique_object"])
+    return ACCEPTANCE["validate_acceptance"](root, evidence)
+
+
 def build_release(args):
     root = args.root.absolute()
-    forbidden = [root / p for p in ("apps", "deploy", "scripts")] if args.repository else [root]
-    metadata_path = getattr(args, "metadata", None) or root / "deploy/release-metadata.json"
+    acceptance = require_acceptance(args)
+    forbidden = (
+        [root / p for p in ("apps", "deploy", "scripts")] if args.repository else [root]
+    )
+    metadata_path = (
+        getattr(args, "metadata", None) or root / "deploy/release-metadata.json"
+    )
     output = validate_output(args.output, [*forbidden, args.signing_key, metadata_path])
     key, private = signing_key(args.signing_key)
     files = source_files(root, args.repository)
+    if acceptance is not None and not set(files) <= set(acceptance["source_paths"]):
+        raise ValueError("acceptance_source_paths")
     included_key = files.get("deploy/keys/release-public-key.pem")
     if included_key is not None and included_key != key.public_key().public_bytes(
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
@@ -388,7 +451,9 @@ def build_release(args):
             release_meta={
                 "git_sha": args.git_sha,
                 **metadata,
-                "created_at": datetime.fromtimestamp(stamp, UTC).isoformat().replace("+00:00", "Z"),
+                "created_at": datetime.fromtimestamp(stamp, UTC)
+                .isoformat()
+                .replace("+00:00", "Z"),
             },
             signing_key=private,
         )
@@ -414,9 +479,18 @@ def build_installer(args):
     root = REPOSITORY_ROOT
     output = validate_output(
         args.output,
-        [root / "deploy", root / "scripts", root / "apps", args.signing_key, args.public_key]
+        [
+            root / "deploy",
+            root / "scripts",
+            root / "apps",
+            args.signing_key,
+            args.public_key,
+        ]
         + ([args.preset] if args.preset is not None else [])
-        + [Path(str(args.release) + suffix) for suffix in ("", ".sig", ".sha256", ".json")],
+        + [
+            Path(str(args.release) + suffix)
+            for suffix in ("", ".sig", ".sha256", ".json")
+        ],
     )
     trusted = VERIFIER["read_regular"](args.public_key, 16384)
     manifest = VERIFIER["verify_artifact"](args.release, trusted)
@@ -438,17 +512,25 @@ def build_installer(args):
         args.release, VERIFIER["MAX_ARCHIVE"]
     )
     files["keys/release-public-key.pem"] = trusted
-    for package in ("robopark_api", "robopark_api/services", "robopark_api/services/ops"):
+    for package in (
+        "robopark_api",
+        "robopark_api/services",
+        "robopark_api/services/ops",
+    ):
         files["verifier/" + package + "/__init__.py"] = b""
     for name in ("archives.py", "release_signing.py"):
         source = root / "apps/api/src/robopark_api/services/ops" / name
-        files["verifier/robopark_api/services/ops/" + name] = read_source(source, root, 1024 * 1024)
+        files["verifier/robopark_api/services/ops/" + name] = read_source(
+            source, root, 1024 * 1024
+        )
     result = io.BytesIO()
     stamp = epoch()
     with gzip.GzipFile(  # noqa: SIM117 -- Python 3.9 parser compatibility
         fileobj=result, mode="wb", filename="", mtime=stamp, compresslevel=9
     ) as compressed:
-        with tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        with tarfile.open(
+            fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT
+        ) as archive:
             for name, content in sorted(files.items()):
                 info = tarfile.TarInfo(name)
                 info.size = len(content)
@@ -475,6 +557,11 @@ def main():
         help="reviewed release metadata JSON; defaults to deploy/release-metadata.json",
     )
     parser.add_argument("--signing-key", type=Path, required=True)
+    parser.add_argument(
+        "--acceptance",
+        type=Path,
+        help="source-bound Task 8 acceptance evidence (required with --repository)",
+    )
     parser.add_argument("--release", type=Path)
     parser.add_argument("--public-key", type=Path)
     parser.add_argument("--preset", type=Path)
@@ -487,7 +574,10 @@ def main():
     try:
         build_installer(args) if args.installer else build_release(args)
     except Exception:
-        print("Packaging failed: unsafe input, output, metadata or signing key.", file=sys.stderr)
+        print(
+            "Packaging failed: unsafe input, output, metadata or signing key.",
+            file=sys.stderr,
+        )
         return 1
     print(f"Created verified {args.output.name} and signature/checksum/metadata.")
     return 0

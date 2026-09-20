@@ -1,6 +1,6 @@
 # Установка Robopark на Armbian и Ubuntu и безопасные обновления
 
-Версия этого руководства и корневого `VERSION`: **0.1.39**. Целевые хосты — действующий Armbian 26 ARM64 с 8 GiB RAM и новый Ubuntu 22.04 ARM64 на Orin. Установщик не ограничивает номер версии ОС: он использует `apt` и кодовое имя базы из `/etc/os-release`, проверяет systemd, ARM64/AMD64 и свободное место. Хостовые скрипты рассчитаны на Python 3.10+; API внутри Docker использует Python 3.12. При первой установке профиль выбирается по ОЗУ: до 24 GiB — два API-процесса, от 24 GiB — четыре. Работающий Docker с Compose и Buildx сохраняется; при отсутствии плагина устанавливается только плагин. ARM32 и системы без systemd не поддерживаются. Проверка на macOS использует временный корень и подменяет внешние команды; настоящие Linux/systemd/Docker/Tuna и нагрузку 200 пользователей должен подтвердить целевой стенд.
+Версия этого руководства и корневого `VERSION`: **0.1.45**. Целевые хосты — Armbian 26 ARM64 с 8 GiB RAM и Ubuntu 22.04 ARM64 на Orin. Чистый установщик разворачивает PostgreSQL 17 как production database; SQLite в release payload и production-профиле отсутствует. Установщик использует `apt` и кодовое имя базы из `/etc/os-release`, проверяет systemd, ARM64/AMD64 и свободное место. Хостовые скрипты рассчитаны на Python 3.10+; API внутри Docker использует Python 3.12. При первой установке профиль выбирается по ОЗУ: до 24 GiB — два API-процесса, от 24 GiB — четыре. Работающий Docker с Compose и Buildx сохраняется; при отсутствии плагина устанавливается только плагин. ARM32 и системы без systemd не поддерживаются. Проверка на macOS использует временный корень и подменяет внешние команды; настоящий Linux/systemd/Docker/Tuna должен подтвердить целевой стенд.
 
 ## Простая установка
 
@@ -43,8 +43,8 @@ TLS обслуживает Tuna. Для Armbian с 8 GiB установщик в
 Скачайте комплект файлов с одинаковым базовым именем: `.tar.gz`, `.tar.gz.sig`, `.tar.gz.sha256`, `.tar.gz.json`. Для самостоятельного release ZIP нужен такой же набор `.zip` и трёх sidecar-файлов. На машине проверки нужны Python 3.10+ и `cryptography` (в Debian/Ubuntu пакет `python3-cryptography`).
 
 ```sh
-python3 verify-artifact.py --public-key release-public-key.pem robopark-installer-0.1.39.tar.gz
-python3 verify-artifact.py --public-key release-public-key.pem robopark-release-0.1.39.zip
+python3 verify-artifact.py --public-key release-public-key.pem robopark-installer-0.1.45.tar.gz
+python3 verify-artifact.py --public-key release-public-key.pem robopark-release-0.1.45.zip
 ```
 
 Продолжайте только после кода выхода 0. Внешняя утилита проверяет Ed25519-подпись всего архива, SHA-256, metadata, внутреннюю подпись манифеста, пути и хеши файлов. Сам локальный установщик и OTA сейчас не проверяют криптографическую подпись архива. Один checksum рядом с архивом не заменяет проверку подписи. Ошибка проверки означает остановку; не распаковывайте архив с обходом валидации.
@@ -52,9 +52,9 @@ python3 verify-artifact.py --public-key release-public-key.pem robopark-release-
 Ручной эквивалент простого запуска:
 
 ```sh
-mkdir robopark-installer-0.1.39
-tar -xzf robopark-installer-0.1.39.tar.gz -C robopark-installer-0.1.39
-cd robopark-installer-0.1.39
+mkdir robopark-installer-0.1.45
+tar -xzf robopark-installer-0.1.45.tar.gz -C robopark-installer-0.1.45
+cd robopark-installer-0.1.45
 ./START.sh
 ```
 
@@ -93,7 +93,7 @@ sudo systemctl is-active robopark.service robopark-tuna.service
 curl -fsS http://127.0.0.1:8080/api/health/ready
 ```
 
-Короткое имя `robopark` в тексте означает host utility; installer не создаёт глобальный alias. Полная команда: `sudo python3 -I /opt/robopark/host-tools/robopark status` (или `doctor`, `repair`). Readiness должен вернуть `status=ready` и `checks.database=ok`. В браузере откройте ваш стабильный HTTPS-адрес, выполните Royal login и проверьте раздел системного состояния. Web слушает только `127.0.0.1:8080`; API, SQLite и Docker socket не публикуются наружу.
+Короткое имя `robopark` в тексте означает host utility; installer не создаёт глобальный alias. Полная команда: `sudo python3 -I /opt/robopark/host-tools/robopark status` (или `doctor`, `repair`). Readiness должен вернуть `status=ready` и `checks.database=ok`. В браузере откройте ваш стабильный HTTPS-адрес, выполните Royal login и проверьте раздел системного состояния. Web слушает только `127.0.0.1:8080`; API, PostgreSQL и Docker socket не публикуются наружу.
 
 В согласованное окно выполните `sudo reboot`, дождитесь SSH/консоли и повторите команды выше, проверку HTTPS и Royal login. `robopark.service` перед запуском app выполняет root `restore --boot-recover`; затем `robopark-updater.service` восстанавливает незавершённый OTA. App требует Docker, Tuna требует app и снова проверяет API перед открытием туннеля. Состояние oneshot-служб и таймеров различается: inactive у завершённой диагностической oneshot не означает поломку, проверяйте последний результат и активный timer.
 
@@ -137,11 +137,11 @@ sudo python3 -I /opt/robopark/host-tools/robopark update --recover
 sudo python3 -I /opt/robopark/host-tools/robopark doctor
 ```
 
-Если проверенный предыдущий release или snapshot повреждён, либо нет возможности восстановить локальный readiness, оставьте maintenance включённым и привлеките ответственного за релизы. Сохраните job ID, sanitized status и diagnostics. Не удаляйте journal/maintenance marker, не меняйте current вручную, не редактируйте SQLite и не выполняйте `alembic downgrade` наугад. Восстановление из внешнего backup после потери обеих версий требует согласованного плана по версии приложения, миграции и ключам.
+Если проверенный предыдущий release или snapshot повреждён, либо нет возможности восстановить локальный readiness, оставьте maintenance включённым и привлеките ответственного за релизы. Сохраните job ID и sanitized status. Не удаляйте journal/maintenance marker, не меняйте current вручную, не редактируйте PostgreSQL и не выполняйте `alembic downgrade` наугад. Восстановление из внешнего backup после потери обеих версий требует согласованного плана по версии приложения, миграции и ключам.
 
-Installed restore принимает подтверждение «ВОССТАНОВИТЬ»: API публикует только approval и ZIP с привязкой к SHA-256. Root повторно проверяет архив и SQLite, требует текущий Alembic head, включает durable maintenance, останавливает все app-контейнеры, сохраняет прежний каталог данных и заменяет его целиком вместе с SQLite/WAL/SHM. После readiness запускается Tuna и снимается maintenance; отдельный ручной restart не требуется. При ошибке до открытия записей root восстанавливает предыдущие данные. Ошибка публикации не отменяет здоровые локальные данные.
+Installed restore принимает подтверждение «ВОССТАНОВИТЬ»: API публикует только approval и ZIP с привязкой к SHA-256. Root повторно проверяет архив и `pg_restore --list`, требует совместимый Alembic head, включает durable maintenance, останавливает app-контейнеры, выполняет проверенный `pg_restore` в изолированную базу и переключает приложение только после readiness. При ошибке до переключения сохраняется прежняя база. Ошибка публикации не отменяет здоровые локальные данные.
 
-Переносятся данные и attachments. Конфигурация `/etc/robopark`, ключи, пароли, приложение и API jobs сохраняются; config-файлы из ZIP не применяются. Архив со сторонними executable-файлами или SQLite WAL/SHM отклоняется. Legacy local mode сохраняет прежнее отдельное поведение. Убедитесь, что сохранённый SECRET_KEY соответствует зашифрованным данным в backup.
+Переносятся данные PostgreSQL и attachments. Конфигурация `/etc/robopark`, ключи, пароли, приложение и API jobs сохраняются; config-файлы из ZIP не применяются. Архив со сторонними executable-файлами, SQLite database/WAL/SHM или runtime diagnostics отклоняется. Убедитесь, что сохранённый SECRET_KEY соответствует зашифрованным данным в backup.
 
 После прерывания ручного restore ExecStartPre установленной и включённой `robopark.service` автоматически выполняет `restore --boot-recover` до обычного запуска app. Он читает root-private `ops/state/command-request.json` даже после удаления inbox, включая прерывание до первого `restore-journal.json`, и продолжает только уже утверждённую транзакцию. Повторная перезагрузка не запускает завершённое восстановление заново.
 
@@ -174,7 +174,7 @@ Secret scan не должен печатать найденные значени
 |---|---|---|
 | Идентификация устройства | Модель, архитектура, OS release/kernel, дата | **НЕ ВЫПОЛНЕНО** |
 | Ресурсы | RAM, CPU, свободные GiB/inodes на /opt и /var/lib | **НЕ ВЫПОЛНЕНО** |
-| Подписи | Версия 0.1.39, публичный fingerprint, hashes артефактов | **НЕ ВЫПОЛНЕНО** |
+| Подписи | Версия 0.1.45, публичный fingerprint, hashes артефактов | приложить к release evidence |
 | Чистая установка | Длительность, завершённые этапы, версия | **НЕ ВЫПОЛНЕНО** |
 | Resume/idempotence | Прерванный этап, успешный resume, сохранение конфигурации | **НЕ ВЫПОЛНЕНО** |
 | Docker/Compose/Tuna | Установленные версии, активные службы/timers | **НЕ ВЫПОЛНЕНО** |

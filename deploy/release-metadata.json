@@ -4,5 +4,5 @@
     "from_heads": ["0022_tracker_collaboration", "0024_inventory", "0025_local_task_claims", "0026_global_inventory_workflows", "0027_emergency_readings", "0028_reliable_task_workflow", "0029_campaign_snapshot", "0030_user_activity", "0031_postgresql_runtime"],
     "reversible": true
   },
-  "update_notes": "Оператор в складе остаётся только читателем; права на изменение остатков, проведение документов и экспорт отозваны."
+  "update_notes": "Чистый PostgreSQL 17 installer для Armbian 26/Ubuntu 22 ARM64; установка поверх существующей версии сохраняет данные и применяет проверенные миграции."
 }

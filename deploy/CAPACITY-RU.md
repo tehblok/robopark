@@ -15,7 +15,7 @@
 | Docker `ulimits.nofile`, soft/hard | 65536/65536 | 65536/65536 |
 | Host systemd `LimitNOFILE` | 65536 | 65536 |
 | Host systemd `TasksMax` | 4096 | 4096 |
-| SQLite | WAL, busy_timeout 5000 ms | WAL, busy_timeout 5000 ms |
+| PostgreSQL | 17, internal Docker network | 17, internal Docker network |
 | Начальный workload | 200 клиентов, 1 s think time | Такой же, для сравнения |
 
 Лимит systemd ограничивает host utility, Docker CLI и Tuna; контейнеры получают отдельные Docker ulimits/PID/memory limits. Эти значения оставляют часть RAM для ОС, page cache и сборки кандидата. Docker BuildKit находится вне memory limit API; на 8 GiB выполняйте только одну сборку/OTA за раз, следите за памятью и OOM. Swap не заменяет достаточную RAM. Смена workers в уже работающем env требует согласованной генерации нового runtime при следующем OTA; не редактируйте immutable `current-compose.json` вручную.
@@ -88,16 +88,15 @@ uv run --project apps/api --frozen --extra dev python scripts/capacity-gate.py \
   --evaluate capacity-read.json --server-log target-run.log --output capacity-read-final.json
 ```
 
-Log scanner считает строки с SQLite lock/busy, event-loop exceptions/slow callbacks, OOM и restart markers; наружу выходят только числа. Это наблюдение ошибок по журналам, а не измерение внутренней event-loop latency. Отсутствие строк в пустом/неполном log не является доказательством: оператор обязан подтвердить полный интервал, enabled logging, отсутствие OOM/restarts через inspect/kernel logs и приложить время/идентификатор прогона. Raw logs и cookie не прикладываются к общедоступному отчёту.
+Log scanner считает строки с PostgreSQL pool/connection errors, event-loop exceptions/slow callbacks, OOM и restart markers; наружу выходят только числа. Это наблюдение ошибок по журналам, а не измерение внутренней event-loop latency. Отсутствие строк в пустом/неполном log не является доказательством: оператор обязан подтвердить полный интервал, enabled logging, отсутствие OOM/restarts через inspect/kernel logs и приложить время/идентификатор прогона. Raw logs и cookie не прикладываются к общедоступному отчёту.
 
 ## Точные критерии
 
 Для каждого обязательного прогона (локальный/через Tuna; чтение и разрешённая запись на тестовом контуре) должны одновременно выполняться:
 
 - ровно **200** клиентов; warmup ≥30 s, измерение ≥600 s;
-- throughput **≥100 запросов/секунду**;
-- p50 **≤250 ms**, p95 **≤1000 ms**, p99 **≤2000 ms**;
-- error rate **≤0.001** (0.1%); все auth/RBAC ошибки тоже входят в него;
+- измеренные throughput, p50/p95/p99 и bytes зафиксированы в evidence без универсального порога для разных ARM64-хостов;
+- error rate **0**; все auth/RBAC, timeout и transport ошибки входят в него;
 - **0** DB lock, event-loop failure, OOM и непреднамеренных container restart;
 - нет переполнения лимита samples; `cleanup_ok=true` для write-прогона;
 - readiness/HTTPS/Royal login исправны после нагрузки, host doctor не имеет failed checks; свободные дисковые места/inodes и thermal/memory остаются в рабочих пределах.

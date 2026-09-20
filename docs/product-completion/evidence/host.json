@@ -1,0 +1,6 @@
+{
+  "passed": true,
+  "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=deploy/host:apps/api/src apps/api/.venv/bin/python -m pytest -p no:cacheprovider -q tests/host",
+  "tests_passed": 763,
+  "duration_seconds": 642.32
+}
