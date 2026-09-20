@@ -9,10 +9,10 @@ import type { DomainError } from '../../shared/api/classifyApiError'
 
 type CheckClient = Pick<typeof api, 'emergencyResolve' | 'emergencySnapshot' | 'emergencySection'>
 
-export function WorkRobotCheck({ robot, user, activeTab, onTabChange, onOpenTasks, onAuthorizationFailure, onSnapshot, enabled = true, apiClient = api }: {
+export function WorkRobotCheck({ robot, user, activeTab, onTabChange, onOpenTasks, onAuthorizationFailure, onSnapshot, apiClient = api }: {
   robot: string; user: User; activeTab?: string; onTabChange(tab: string): void
   onOpenTasks(): void; onAuthorizationFailure?: (failure: DomainError) => void; onSnapshot?: (snapshot: EmergencySnapshot | null) => void
-  enabled?: boolean; apiClient?: CheckClient
+  apiClient?: CheckClient
 }) {
   const [resolved, setResolved] = useState<Awaited<ReturnType<CheckClient['emergencyResolve']>> | null>(null)
   const [failure, setFailure] = useState<DomainError | null>(null)
@@ -23,7 +23,7 @@ export function WorkRobotCheck({ robot, user, activeTab, onTabChange, onOpenTask
   const allowed = canAccessRoute(user, 'robot-check')
   useEffect(() => {
     const generation = ++owner.current
-    if (!allowed || !enabled) return
+    if (!allowed) return
     setResolved(null)
     setFailure(null)
     void apiClient.emergencyResolve(robot).then(value => {
@@ -35,10 +35,9 @@ export function WorkRobotCheck({ robot, user, activeTab, onTabChange, onOpenTask
       if (classified.kind === 'unauthorized' || classified.kind === 'forbidden') notify.current?.(classified)
     })
     return () => { owner.current += 1 }
-  }, [robot, apiClient, attempt, allowed, enabled])
+  }, [robot, apiClient, attempt, allowed])
 
   if (!allowed) return <EmptyState title="Проверка робота недоступна для вашей роли" />
-  if (!enabled) return null
   if (failure) return <CheckError failure={failure} user={user} onRetry={() => setAttempt(value => value + 1)} />
   if (!resolved) return <LoadingState label="Находим робота" />
   const tab = parseRobotCheckTab(new URLSearchParams({ tab: activeTab ?? 'scheme' }), resolved.sections)

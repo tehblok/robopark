@@ -133,10 +133,21 @@ function mechanicOwnsIssue(user: User, issue: TrackerIssueDetail): boolean {
     && owner?.trim().toLocaleLowerCase() === expected
 }
 
-function ClosedDisclosure({ title, children }: { title: string; children: ReactNode }) {
-  const [open, setOpen] = useState(false)
+function ClosedDisclosure({ title, children, open: controlledOpen, onOpenChange }: {
+  title: string
+  children: ReactNode
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+}) {
+  const [localOpen, setLocalOpen] = useState(false)
+  const open = controlledOpen ?? localOpen
+  const toggle = () => {
+    const next = !open
+    if (controlledOpen === undefined) setLocalOpen(next)
+    onOpenChange?.(next)
+  }
   return <section className="rp-responsive-disclosure"><header className="rp-responsive-disclosure__header">
-    <button aria-expanded={open} className="rp-responsive-disclosure__trigger" onClick={() => setOpen(value => !value)} type="button">{title}</button>
+    <button aria-expanded={open} className="rp-responsive-disclosure__trigger" onClick={toggle} type="button">{title}</button>
   </header>{open ? <div className="rp-responsive-disclosure__content">{children}</div> : null}</section>
 }
 
@@ -191,13 +202,13 @@ function TaskContextRail({ issue, snapshot, canCheck, onCheck, onChat }: {
   </div>
 }
 
-function TaskRepairSequence({ canCheck, onCheck }: { canCheck: boolean; onCheck(): void }) {
+function TaskRepairSequence({ canCheck, onCheck, onParts }: { canCheck: boolean; onCheck(): void; onParts(): void }) {
   const reveal = (id: string) => document.getElementById(id)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   return <section aria-label="Последовательность ремонта" className="a-task-sequence">
     <h3>Проверить робота → Запчасти → Что было сделано</h3>
     <ol>
       <li><strong>Проверить робота</strong>{canCheck ? <Button onClick={onCheck} variant="secondary">Открыть проверку</Button> : null}</li>
-      <li><strong>Запчасти</strong><Button onClick={() => reveal('parts')} variant="secondary">Списать или заказать</Button></li>
+      <li><strong>Запчасти</strong><Button onClick={onParts} variant="secondary">Списать или заказать</Button></li>
       <li><strong>Что было сделано</strong><Button onClick={() => reveal('comment')} variant="secondary">Добавить комментарий</Button></li>
     </ol>
   </section>
@@ -510,12 +521,22 @@ export function TaskController({
   const [reviewOpen, setReviewOpen] = useState(false)
   const [returnReviewOpen, setReturnReviewOpen] = useState(false)
   const [hideOpen, setHideOpen] = useState(false)
+  const [partsOpen, setPartsOpen] = useState(false)
+  const partsRef = useRef<HTMLDivElement>(null)
+  const focusParts = useRef(false)
   const [taskActionHost, setTaskActionHost] = useState<HTMLElement | null>(null)
   const [robotSnapshot, setRobotSnapshot] = useState<EmergencySnapshot | null>(null)
   const [hideReason, setHideReason] = useState('')
   const [taskControlBusy, setTaskControlBusy] = useState(false)
   const [taskControlMessage, setTaskControlMessage] = useState('')
   const [taskControlError, setTaskControlError] = useState('')
+  useEffect(() => { setPartsOpen(false); focusParts.current = false }, [issueKey])
+  useLayoutEffect(() => {
+    if (!partsOpen || !focusParts.current || !partsRef.current) return
+    focusParts.current = false
+    partsRef.current.focus({ preventScroll: true })
+    partsRef.current.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+  }, [partsOpen])
   const location = useLocation()
   const [taskView, setTaskView] = useState<'queue' | 'mine'>(() =>
     user.role === 'mechanic' && new URLSearchParams(location.search).get('view') === 'mine' ? 'mine' : 'queue')
@@ -895,7 +916,10 @@ export function TaskController({
                       onCheck={() => changeTab('check')}
                       onChat={() => { setTaskFocus('chat'); changeTab('task') }} /> : null}>
                     {detail.data?.workflow ? <>
-                      <TaskRepairSequence canCheck={mechanicCanWork} onCheck={() => changeTab('check')} />
+                      {taskFirst ? <TaskRepairSequence canCheck={mechanicCanWork} onCheck={() => changeTab('check')} onParts={() => {
+                        focusParts.current = true
+                        setPartsOpen(true)
+                      }} /> : null}
                       {manager ? <section aria-label="Управление задачей" className="issue-section">
                         {detail.data.workflow.hidden ? <>
                           <p>Причина скрытия: {detail.data.workflow.hidden.reason}</p>
@@ -1000,8 +1024,8 @@ export function TaskController({
                       }} /> : null}
                     {detail.data?.workflow ? <div aria-label="Дополнительные разделы задачи" className="rp-responsive-disclosure-group" role="group">
                       {user.role === 'mechanic' && mechanicCanWork ? (
-                        <ClosedDisclosure title="Списать запчасть">
-                          <div id="parts">
+                        <ClosedDisclosure title="Списать запчасть" open={partsOpen} onOpenChange={setPartsOpen}>
+                          <div id="parts" ref={partsRef} tabIndex={-1}>
                             <TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={taskParkId} />
                           </div>
                         </ClosedDisclosure>
@@ -1034,7 +1058,7 @@ export function TaskController({
                     {mechanicCanWork ? <TabPanel id="work-panel-check" labelledBy="tab-check" active={activeTab === 'check'}>
                       {detail.data ? robotNumber ? <WorkRobotCheck
                         key={relatedPrefix} robot={robotNumber} user={user} activeTab={state.checkTab}
-                        enabled={taskFirst || activeTab === 'check'} onSnapshot={setRobotSnapshot}
+                        onSnapshot={setRobotSnapshot}
                         onAuthorizationFailure={failure => {
                           if (failure.kind === 'unauthorized') observeAuthorizationFailure(new ApiError(401, null, failure.requestId))
                         }}

@@ -74,3 +74,20 @@ A 503 double-click/recovery browser contract: GREEN, exactly 1 first POST and 0 
 Visual matrix first run: RED 10/10 (13 px context label) → GREEN 11/11 after 14 px accessibility fix
 Full web: 151 files, 2095 tests passed
 ```
+
+## Review round 2
+
+- The A `Запчасти` step now controls the existing `Списать запчасть` disclosure. It opens that owner, waits for the mounted `#parts` target in a layout effect, then focuses and scrolls the existing parts panel; it does not add a second parts form.
+- `WorkRobotCheck` and its keyed `RobotCheckController` now remain mounted for the selected task across A → Classic → A. Classic keeps the inactive check tab hidden/inert, while only A projects the retained snapshot into its context. A browser regression asserts one snapshot GET across both mode switches.
+- `TaskRepairSequence` is now rendered only when A is active. The Classic task DOM contains no `.a-task-sequence` and continues to use its existing task actions/layout.
+
+Round-2 RED/GREEN evidence:
+
+```text
+Focused browser RED: 3 failed (Classic sequence present at 390/1440; parts disclosure remained closed)
+Focused browser GREEN: 7 passed (one snapshot GET, A→Classic→A owner retention, disclosure open/mount/focus)
+Full web: 151 files, 2095 tests passed
+Relevant API: 165 passed
+Relevant Chromium E2E + visual matrix: 66 passed
+Build/nav/contrast/lint: exit 0 (existing lint warnings only)
+```

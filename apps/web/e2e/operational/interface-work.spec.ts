@@ -19,6 +19,12 @@ for (const width of [390, 1440]) {
     await page.goto('/work/ROBOPARK-42?park=7')
     await selectInterface(page, 'Новый А')
     await expect(page.getByRole('tab', { name: 'Ремонт', exact: true })).toBeVisible()
+    await expect.poll(() => snapshotRequests).toBe(1)
+    const taskLoaded = snapshotRequests
+    await selectInterface(page, 'Классический')
+    await expect(page.locator('.a-task-sequence')).toHaveCount(0)
+    await selectInterface(page, 'Новый А')
+    expect(snapshotRequests).toBe(taskLoaded)
     const comment = page.getByRole('textbox', { name: 'Комментарии', exact: true })
     await comment.fill('Колесо заменено, крепление проверено')
     await page.getByLabel('Выбрать фото', { exact: true }).setInputFiles(photo)
@@ -79,6 +85,18 @@ test('A footer approval locks synchronously, reports 503 and recovers without an
   await action.click()
   await expect.poll(() => approvals).toBe(2)
   await expect(page).toHaveURL(/\/work\?park=7/)
+})
+
+test('A parts step opens the existing disclosure and focuses its mounted content', async ({ page }) => {
+  await installOperational(page, { issue: repair })
+  await page.goto('/work/ROBOPARK-42?park=7')
+  await selectInterface(page, 'Новый А')
+  const disclosure = page.getByRole('button', { name: 'Списать запчасть' })
+  await expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+  await page.getByRole('button', { name: 'Списать или заказать' }).click()
+  await expect(disclosure).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.locator('#parts')).toBeVisible()
+  await expect(page.locator('#parts')).toBeFocused()
 })
 
 test('denied robot check does not reveal readings after changing interface', async ({ page }) => {
