@@ -93,3 +93,23 @@
 - Verification: focused matrix `69 passed`; full host `752 passed in 486.56s`; full API
   `1789 passed, 7 skipped`; full web `147 files / 2080 tests`; scoped Ruff clean;
   web lint exited 0 (existing warnings only) and production build succeeded.
+
+## Review round 2
+
+- Candidate eligibility is computed per category before bounded selection. Category
+  size/cap pressure outranks TTL cleanup, followed by configured category priority and
+  age, while memory remains proportional to the 128-item batch. The one-slot regression
+  with an expired diagnostic and a fresh 300 MiB log now selects the over-cap log.
+- Scheduled API cleanup now measures the actual `/data` filesystem with `StorageBudget`
+  and exhausts bounded batches in owner order: live-merge cache/tmp, deleted-report
+  diagnostic/log quarantine, then staged Tracker copies whose upload is joined to a
+  succeeded reliable action. Host cleanup retains exclusive ownership of host logs and
+  diagnostics, so the two schedulers do not delete the same paths.
+- Confirmed local Tracker copies and their duplicate attachment rows may be retired
+  under disk pressure; reliable-action audit remains. Unconfirmed files, actions and
+  primary application data remain untouched. The fixed-size aggregate result is written
+  to `/ops/api-storage-retention.json` and exposed in admin host health.
+- Verification: focused host `11 passed`; focused API owners/health/live-merge/reports
+  `72 passed`; full host `753 passed in 480.63s`; full API `1790 passed, 7 skipped`;
+  full web `147 files / 2080 tests`; scoped Ruff and diff checks passed; web lint exited
+  0 with existing warnings and production build succeeded.

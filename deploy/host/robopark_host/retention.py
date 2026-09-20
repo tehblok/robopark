@@ -55,7 +55,9 @@ class StorageBudget:
 
     @property
     def floor_bytes(self) -> int:
-        return max(self.minimum_free_bytes, int(self.partition_bytes * self.minimum_free_ratio))
+        return max(
+            self.minimum_free_bytes, int(self.partition_bytes * self.minimum_free_ratio)
+        )
 
     @property
     def bytes_to_reclaim(self) -> int:
@@ -84,10 +86,16 @@ def cleanup_storage_roots(
     now = time.time() if now is None else now
     unknown = sorted(set(roots) - set(STORAGE_CATEGORIES))
     blocked = bool(unknown)
-    candidates: list[tuple[int, int, str, str, os.stat_result, int]] = []
+    candidates: list[tuple[int, int, int, str, str, os.stat_result, int]] = []
     skipped_counts: dict[str, int] = {}
     opened: list[int] = []
     category_totals: dict[str, int] = {}
+
+    def retain_oldest(heap: list, item: tuple) -> None:
+        if len(heap) < max(0, max_deletions):
+            heapq.heappush(heap, item)
+        elif heap and item > heap[0]:
+            heapq.heapreplace(heap, item)
 
     def skip(reason: str) -> None:
         skipped_counts[reason] = skipped_counts.get(reason, 0) + 1
@@ -108,18 +116,38 @@ def cleanup_storage_roots(
             continue
         try:
             descriptor = open_pinned(root)
+            oldest: list[tuple[int, str, os.stat_result, int]] = []
+            expired: list[tuple[int, str, os.stat_result, int]] = []
             with os.scandir(descriptor) as listing:
                 for entry in listing:
                     info = entry.stat(follow_symlinks=False)
                     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                         skip("not_owned_file")
                         continue
-                    category_totals[category] = category_totals.get(category, 0) + info.st_size
-                    item = (-info.st_mtime_ns, -len(entry.name), category, entry.name, info, descriptor)
-                    if len(candidates) < max(0, max_deletions):
-                        heapq.heappush(candidates, item)
-                    elif candidates and item > candidates[0]:
-                        heapq.heapreplace(candidates, item)
+                    category_totals[category] = (
+                        category_totals.get(category, 0) + info.st_size
+                    )
+                    item = (-info.st_mtime_ns, entry.name, info, descriptor)
+                    retain_oldest(oldest, item)
+                    if now - info.st_mtime >= STORAGE_TTL[category]:
+                        retain_oldest(expired, item)
+            over_cap = category_totals.get(category, 0) > STORAGE_MAX_BYTES.get(
+                category, 2**63 - 1
+            )
+            selected = oldest if over_cap or budget.bytes_to_reclaim else expired
+            reason_priority = 0 if over_cap else 2 if budget.bytes_to_reclaim else 1
+            for mtime, name, info, owner_fd in selected:
+                candidates.append(
+                    (
+                        reason_priority,
+                        STORAGE_PRIORITY[category],
+                        mtime,
+                        category,
+                        name,
+                        info,
+                        owner_fd,
+                    )
+                )
         except FileNotFoundError:
             continue
         except NotADirectoryError:
@@ -128,12 +156,13 @@ def cleanup_storage_roots(
         except OSError:
             blocked = True
             skip("scan_failed")
-    candidates.sort(key=lambda item: (STORAGE_PRIORITY[item[2]], -item[0], item[3]))
+    candidates.sort(key=lambda item: (item[0], item[1], -item[2], item[4]))
+    candidates = candidates[: max(0, max_deletions)]
     target = budget.bytes_to_reclaim
     reclaimed = 0
     planned: list[dict[str, object]] = []
     deleted: list[dict[str, object]] = []
-    for _, _, category, name, before, descriptor in candidates:
+    for _, _, _, category, name, before, descriptor in candidates:
         expired = now - before.st_mtime >= STORAGE_TTL[category]
         over_category_budget = category_totals.get(category, 0) > STORAGE_MAX_BYTES.get(
             category, 2**63 - 1
@@ -169,7 +198,11 @@ def cleanup_storage_roots(
     for descriptor in reversed(opened):
         os.close(descriptor)
     category_bytes = category_totals
-    pressure_category = planned[-1]["category"] if planned and budget.free_bytes + reclaimed < budget.floor_bytes else None
+    pressure_category = (
+        planned[-1]["category"]
+        if planned and budget.free_bytes + reclaimed < budget.floor_bytes
+        else None
+    )
     return {
         "dry_run": dry_run,
         "bounded": len(planned) <= max(0, max_deletions),
@@ -189,7 +222,9 @@ def cleanup_storage_roots(
     }
 
 
-def retain_storage(paths, *, dry_run: bool = False, max_deletions: int = MAX_STORAGE_DELETIONS):
+def retain_storage(
+    paths, *, dry_run: bool = False, max_deletions: int = MAX_STORAGE_DELETIONS
+):
     """Scheduled cleanup of explicit ephemeral roots under the stable host lock."""
     from .state import HostBusy, host_operation
 
@@ -284,7 +319,11 @@ def _lock(directory, name):
         # First scheduled cleanup may precede the first API operation. Its lock
         # must remain writable by the API directory owner, never root-only.
         directory_owner = os.fstat(directory)
-        if name == "begin.lock" and info.st_uid != directory_owner.st_uid and os.geteuid() == 0:
+        if (
+            name == "begin.lock"
+            and info.st_uid != directory_owner.st_uid
+            and os.geteuid() == 0
+        ):
             os.fchown(descriptor, directory_owner.st_uid, directory_owner.st_gid)
         yield
     finally:
@@ -407,7 +446,10 @@ def command_retired(paths, identity):
         bits = _bloom(paths)
         if sum(byte.bit_count() for byte in bits) >= BLOOM_BYTES * 8 * MAX_FILL:
             return True
-        return all(bits[position // 8] & (1 << (position % 8)) for position in _positions(identity))
+        return all(
+            bits[position // 8] & (1 << (position % 8))
+            for position in _positions(identity)
+        )
     except (OSError, ValueError):
         return True
 
@@ -432,7 +474,10 @@ def _protected(paths):
         raw = read_object(path)
         if path.exists() and not raw:
             raise RetentionBlocked("invalid_active_state")
-        if path.name in {"approved.json", "command-request.json"} and raw.get("kind") == "restore":
+        if (
+            path.name in {"approved.json", "command-request.json"}
+            and raw.get("kind") == "restore"
+        ):
             from .commands import _validate
 
             _validate(raw, fresh=False)
@@ -506,8 +551,12 @@ def _cleanup_staging(paths, identities, *, now):
                     seen += 1
                     if seen > MAX_ENTRIES:
                         raise RetentionBlocked("too_many_artifacts")
-                    match = re.fullmatch(rf"(?:{UUID}|local-updater-({UUID}))", entry.name)
-                    identity = match.group(1) if match and match.group(1) else entry.name
+                    match = re.fullmatch(
+                        rf"(?:{UUID}|local-updater-({UUID}))", entry.name
+                    )
+                    identity = (
+                        match.group(1) if match and match.group(1) else entry.name
+                    )
                     info = entry.stat(follow_symlinks=False)
                     if (
                         match is None
@@ -538,7 +587,11 @@ def _cleanup_operation_residue(paths, identities, *, now):
             rf"\.(?:{UUID}|release-[a-f0-9]{{64}})\.json\.[a-z0-9_]{{8}}",
             "atomic_deleted",
         ),
-        (paths.root / "var/log/robopark", r"\.doctor-[a-z0-9_]{8}", "diagnostic_deleted"),
+        (
+            paths.root / "var/log/robopark",
+            r"\.doctor-[a-z0-9_]{8}",
+            "diagnostic_deleted",
+        ),
     )
     result.update(atomic_deleted=0, diagnostic_deleted=0)
     seen = 0
@@ -627,13 +680,16 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
             )
             result["deleted"] += restored_deleted
             total += restore_bytes
-            receipt_total = sum(item[3].st_size for item in entries if item[2] == "receipt")
+            receipt_total = sum(
+                item[3].st_size for item in entries if item[2] == "receipt"
+            )
             removals = []
             receipts = []
             for entry in entries:
                 fd, name, kind, info, owned = entry
                 protected = (
-                    name in names or name.removesuffix(".json").removesuffix(".zip") in identities
+                    name in names
+                    or name.removesuffix(".json").removesuffix(".zip") in identities
                 )
                 if kind == "github":
                     protected = protected or name.split(".zip")[0] + ".zip" in names
@@ -645,7 +701,9 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
                     and age < INSPECTION_TTL
                 ):
                     continue
-                retention_age = INSPECTION_TTL if kind in {"upload", "inspection"} else MAX_AGE
+                retention_age = (
+                    INSPECTION_TTL if kind in {"upload", "inspection"} else MAX_AGE
+                )
                 if (
                     age < retention_age
                     and total <= max_bytes
@@ -654,7 +712,9 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
                     continue
                 if kind == "receipt":
                     positions = _positions(_receipt_identity(entry))
-                    additions = sum(not bits[p // 8] & (1 << (p % 8)) for p in set(positions))
+                    additions = sum(
+                        not bits[p // 8] & (1 << (p % 8)) for p in set(positions)
+                    )
                     if fill + additions >= BLOOM_BYTES * 8 * MAX_FILL:
                         raise RetentionBlocked("replay_store_full")
                     for position in positions:
@@ -667,7 +727,9 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
                 total -= info.st_size
             # Commit all replay identities BEFORE the first full receipt deletion.
             if receipts:
-                atomic_write_json(paths.state / "retired-commands-required.json", {"format": 1})
+                atomic_write_json(
+                    paths.state / "retired-commands-required.json", {"format": 1}
+                )
                 atomic_write_json(
                     paths.state / "retired-commands.json",
                     {"format": 1, "bits": bits.hex()},

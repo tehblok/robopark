@@ -4,19 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import stat
+import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
 from robopark_api.services import emergency_cache, tracker_cache
 from robopark_api.services.diagnostic_unknowns import prune_diagnostic_unknowns
 from robopark_api.services.live_merge import get_live_merge_store
+from robopark_api.services.ops.context import resolved_ops_dir
 from robopark_api.services.ops.maintenance import host_maintenance_active
 from robopark_api.services.report_attachments import (
     prune_deleted_report_files,
@@ -25,6 +30,8 @@ from robopark_api.services.report_attachments import (
 from robopark_api.services.storage_retention import (
     CleanupRetry,
     MemoryPressureController,
+    StorageBudget,
+    cleanup_storage,
     pinned_directory,
     unlink_unchanged,
 )
@@ -36,6 +43,7 @@ logger = logging.getLogger(__name__)
 _RETENTION_BATCH_SIZE = 500
 _SUCCESS_RETENTION_SECONDS = 30 * 86400
 _UPLOADED_BLOB_RETENTION_SECONDS = 7 * 86400
+_STORAGE_BATCH_SIZE = 128
 
 
 def _evict_application_caches() -> None:
@@ -107,7 +115,11 @@ def prune_tracker_outbox(db: Session, *, now: float) -> tuple[int, int]:
             if name != Path(name).name:
                 continue
             try:
-                info = os.stat(name, dir_fd=root_fd, follow_symlinks=False) if root_fd is not None else None
+                info = (
+                    os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+                    if root_fd is not None
+                    else None
+                )
             except OSError:
                 info = None
             if info is not None and stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
@@ -135,6 +147,114 @@ def prune_tracker_outbox(db: Session, *, now: float) -> tuple[int, int]:
     return len(actions), len(attachments)
 
 
+def cleanup_confirmed_tracker_copies(
+    db: Session, *, budget: StorageBudget, max_deletions: int = _STORAGE_BATCH_SIZE
+) -> dict:
+    """Delete only local copies already confirmed by a succeeded delivery."""
+    attachments = list(
+        db.scalars(
+            select(TaskAttachment)
+            .join(ReliableAction, ReliableAction.id == TaskAttachment.id)
+            .where(
+                TaskAttachment.uploaded_at.is_not(None),
+                ReliableAction.state == "succeeded",
+            )
+            .order_by(TaskAttachment.uploaded_at, TaskAttachment.id)
+            .limit(max(0, max_deletions))
+        ).all()
+    )
+    names = {attachment.blob_name for attachment in attachments}
+    report = cleanup_storage(
+        roots={"confirmed_tracker": staged_attachments_root()},
+        budget=budget,
+        dry_run=False,
+        max_deletions=max_deletions,
+        eligible_names={"confirmed_tracker": names},
+    )
+    retired = {item["path"] for item in report["deleted"]}
+    retired.update(report["eligible_missing"].get("confirmed_tracker", []))
+    for attachment in attachments:
+        if attachment.blob_name in retired:
+            db.delete(attachment)
+    db.commit()
+    return report
+
+
+def _write_pressure_report(report: dict) -> None:
+    target = resolved_ops_dir(get_settings()) / "api-storage-retention.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(dir=target.parent, prefix=".retention-")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(report, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, target)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            Path(temporary_name).unlink()
+
+
+def cleanup_storage_pressure(*, now: float | None = None) -> dict:
+    """Coordinate API-owned pressure cleanup against the real data mount."""
+    settings = get_settings()
+    data_path = Path(settings.host_data_path)
+    current = StorageBudget.for_path(data_path)
+    initial = current
+    owners = {
+        "cache_tmp": {"deleted_count": 0, "batches": 0},
+        "diagnostics_logs": {"deleted_count": 0, "batches": 0},
+        "confirmed_tracker": {"deleted_count": 0, "batches": 0},
+    }
+    stamp = time.time() if now is None else now
+    store = get_live_merge_store()
+
+    def cache_batch(budget: StorageBudget) -> int:
+        if store is None:
+            return 0
+        return store.prune(
+            now=stamp,
+            blob_max_age_seconds=0,
+            tmp_max_age_seconds=0,
+            max_deletions=_STORAGE_BATCH_SIZE,
+        )
+
+    def diagnostic_batch(budget: StorageBudget) -> int:
+        return prune_deleted_report_files(
+            now=stamp, max_age_seconds=0, max_deletions=_STORAGE_BATCH_SIZE
+        )
+
+    def tracker_batch(budget: StorageBudget) -> int:
+        with SessionLocal() as db:
+            return cleanup_confirmed_tracker_copies(
+                db, budget=budget, max_deletions=_STORAGE_BATCH_SIZE
+            )["deleted_count"]
+
+    for name, owner in (
+        ("cache_tmp", cache_batch),
+        ("diagnostics_logs", diagnostic_batch),
+        ("confirmed_tracker", tracker_batch),
+    ):
+        while current.bytes_to_reclaim:
+            removed = owner(current)
+            owners[name]["batches"] += 1
+            owners[name]["deleted_count"] += removed
+            if removed == 0:
+                break
+            current = StorageBudget.for_path(data_path)
+
+    report = {
+        "floor_bytes": initial.floor_bytes,
+        "bytes_to_reclaim": initial.bytes_to_reclaim,
+        "free_bytes": current.free_bytes,
+        "pressure": current.bytes_to_reclaim > 0,
+        "owners": owners,
+        "completed_at": stamp,
+    }
+    _write_pressure_report(report)
+    return report
+
+
 def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
     if host_maintenance_active():
         return 0, 0
@@ -146,6 +266,7 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
         actions_removed, attachments_removed = prune_tracker_outbox(db, now=current.timestamp())
         pending_reports_removed = reconcile_pending_report_deletions(db)
     deleted_report_files = prune_deleted_report_files(now=current.timestamp())
+    cleanup_storage_pressure(now=current.timestamp())
     if files_removed or unknowns_removed:
         logger.info(
             "Pruned %s live-merge file(s) and %s diagnostic unknown(s)",

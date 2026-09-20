@@ -176,6 +176,10 @@ def test_host_snapshot_reads_actual_data_mount_and_only_public_projection(tmp_pa
         '"hardware_jpeg":false,"cuda_available":true},'
         '"storage":{"completed_at":123,"blocked":false,"pressure":false}}'
     )
+    (ops / "api-storage-retention.json").write_text(
+        '{"completed_at":124,"pressure":false,"owners":{"cache_tmp":'
+        '{"deleted_count":2,"batches":1}}}'
+    )
     (private / "capabilities.json").write_text(
         '{"profile":"private-leak","jpeg_backend":"nvjpeg","hardware_jpeg":true}'
     )
@@ -192,6 +196,8 @@ def test_host_snapshot_reads_actual_data_mount_and_only_public_projection(tmp_pa
     assert result["capabilities"]["profile"] == "orin"
     assert result["capabilities"]["jpeg_backend"] == "software"
     assert result["storage"]["last_cleanup_at"] == 123
+    assert result["storage"]["api_last_cleanup_at"] == 124
+    assert result["storage"]["api_cleanup_owners"]["cache_tmp"]["deleted_count"] == 2
     assert set(result["process"]["directory_bytes"]) == {
         "live_merge",
         "report_attachments",

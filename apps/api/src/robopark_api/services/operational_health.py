@@ -308,6 +308,7 @@ def cached_host_snapshot(
             "capabilities": _capabilities(public_health),
         }
         cleanup = public_health.get("storage", {})
+        api_cleanup = _read_json(ops_dir / "api-storage-retention.json")
         result["process"]["last_cleanup"] = cleanup
         floor = max(6 * 1024**3, int((disk["total_bytes"] or 0) * 0.15))
         free = disk["free_bytes"] or 0
@@ -319,6 +320,9 @@ def cached_host_snapshot(
             ),
             "last_cleanup_at": cleanup.get("completed_at"),
             "cleanup_failed": cleanup.get("blocked") is True or cleanup.get("pressure") is True,
+            "api_last_cleanup_at": api_cleanup.get("completed_at"),
+            "api_cleanup_failed": api_cleanup.get("pressure") is True,
+            "api_cleanup_owners": api_cleanup.get("owners", {}),
         }
         _snapshot_cache.clear()
         _snapshot_cache[key] = (now, result)

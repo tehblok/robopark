@@ -1,4 +1,5 @@
 import asyncio
+import os
 import threading
 from datetime import UTC, datetime
 
@@ -50,6 +51,11 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         "reconcile_pending_report_deletions",
         lambda session: calls.append(("pending-reports", session)) or 0,
     )
+    monkeypatch.setattr(
+        cache_cleanup,
+        "cleanup_storage_pressure",
+        lambda **kwargs: calls.append(("pressure", kwargs)) or {},
+    )
 
     assert cache_cleanup.prune_cache_once(now=now) == (4, 3)
     assert calls == [
@@ -58,6 +64,7 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         ("outbox", db, {"now": now.timestamp()}),
         ("pending-reports", db),
         ("report-files", {"now": now.timestamp()}),
+        ("pressure", {"now": now.timestamp()}),
     ]
 
 
@@ -389,3 +396,131 @@ def test_cleanup_limits_each_outbox_retention_batch_to_500(db_engine, db_session
 
     with Session(db_engine) as db:
         assert db.query(ReliableAction).count() == 1
+
+
+def test_pressure_coordinator_uses_real_owner_paths_in_order(
+    db_engine, db_session, seed_mechanic, test_settings, tmp_path, monkeypatch
+):
+    from robopark_api.services import report_attachments, storage_retention
+    from robopark_api.services.live_merge import LiveMergeStore
+
+    data = tmp_path / "data"
+    live_root = data / "live-merge"
+    namespace = live_root / "tracker"
+    namespace.mkdir(parents=True)
+    cache_file = namespace / "cache.json"
+    cache_file.write_text("{}")
+    cache_files = [cache_file]
+    for index in range(128):
+        path = namespace / f"cache-{index:03d}.json"
+        path.write_text("{}")
+        cache_files.append(path)
+    report_root = data / "report-attachments"
+    staging = report_root / ".delete-staging"
+    staging.mkdir(parents=True)
+    report_file = staging / "deleted.log"
+    report_file.write_bytes(b"report")
+    os.utime(report_file, (1, 1))
+    uploads = data / "task-attachments"
+    uploads.mkdir(parents=True)
+    upload = uploads / "confirmed-upload"
+    upload.write_bytes(b"upload")
+    unconfirmed = uploads / "unconfirmed-upload"
+    unconfirmed.write_bytes(b"keep")
+
+    action = ReliableAction(
+        id="pressure-confirmed",
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id="ROBOPARK-1",
+        action="attach",
+        idempotency_key="pressure-confirmed-0001",
+        payload_hash="0" * 64,
+        payload_json="{}",
+        state="succeeded",
+        next_attempt_at=0,
+        created_at=1,
+        updated_at=1,
+    )
+    message = TaskMessage(
+        id="pressure-message",
+        issue_key="ROBOPARK-1",
+        kind="system",
+        author_name="system",
+        text="audit",
+        sync_state="synced",
+        action_id=action.id,
+        created_at=1,
+        updated_at=1,
+    )
+    db_session.add_all([action, message])
+    db_session.flush()
+    db_session.add(
+        TaskAttachment(
+            id=action.id,
+            message_id=message.id,
+            blob_name=upload.name,
+            original_name="upload.bin",
+            mime_type="application/octet-stream",
+            size_bytes=6,
+            sha256="1" * 64,
+            created_at=1,
+            uploaded_at=2,
+        )
+    )
+    db_session.commit()
+
+    settings = test_settings.model_copy(
+        update={"host_data_path": str(data), "ops_dir": str(tmp_path / "ops")}
+    )
+    store = LiveMergeStore(live_root)
+    calls = []
+    real_prune = store.prune
+    real_reports = report_attachments.prune_deleted_report_files
+    real_tracker = cache_cleanup.cleanup_confirmed_tracker_copies
+
+    def cache_owner(**kwargs):
+        assert kwargs["max_deletions"] == 128
+        calls.append("cache_tmp")
+        return real_prune(**kwargs)
+
+    def report_owner(**kwargs):
+        calls.append("diagnostics_logs")
+        return real_reports(**kwargs)
+
+    def tracker_owner(*args, **kwargs):
+        calls.append("confirmed_tracker")
+        return real_tracker(*args, **kwargs)
+
+    def budget_for_path(cls, path):
+        pressure = any(item.exists() for item in (*cache_files, report_file, upload))
+        return cls(100, 0 if pressure else 100, minimum_free_bytes=1)
+
+    monkeypatch.setattr(cache_cleanup, "get_settings", lambda: settings)
+    monkeypatch.setattr(cache_cleanup, "get_live_merge_store", lambda: store)
+    monkeypatch.setattr(store, "prune", cache_owner)
+    monkeypatch.setattr(report_attachments, "attachments_root", lambda: report_root)
+    monkeypatch.setattr(cache_cleanup, "prune_deleted_report_files", report_owner)
+    monkeypatch.setattr(cache_cleanup, "staged_attachments_root", lambda: uploads)
+    monkeypatch.setattr(cache_cleanup, "SessionLocal", sessionmaker(bind=db_engine, future=True))
+    monkeypatch.setattr(cache_cleanup, "cleanup_confirmed_tracker_copies", tracker_owner)
+    monkeypatch.setattr(storage_retention.StorageBudget, "for_path", classmethod(budget_for_path))
+
+    report = cache_cleanup.cleanup_storage_pressure(now=100)
+
+    assert not any(path.exists() for path in cache_files)
+    assert not report_file.exists()
+    assert not upload.exists()
+    assert unconfirmed.read_bytes() == b"keep"
+    assert (
+        calls.index("cache_tmp")
+        < calls.index("diagnostics_logs")
+        < calls.index("confirmed_tracker")
+    )
+    assert report["pressure"] is False
+    assert report["owners"]["cache_tmp"]["deleted_count"] == 129
+    assert report["owners"]["cache_tmp"]["batches"] == 3
+    assert report["owners"]["confirmed_tracker"]["deleted_count"] == 1
+    with Session(db_engine) as db:
+        assert db.get(ReliableAction, action.id) is not None
+        assert db.get(TaskAttachment, action.id) is None

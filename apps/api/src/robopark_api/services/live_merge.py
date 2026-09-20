@@ -716,11 +716,14 @@ class LiveMergeStore:
         blob_max_age_seconds: float = 60.0,
         lock_max_age_seconds: float = 60.0,
         tmp_max_age_seconds: float = 3600.0,
+        max_deletions: int | None = None,
     ) -> int:
         """Best-effort removal of stale live-merge artifacts."""
         from robopark_api.services.ops.maintenance import require_application_writes
 
         require_application_writes()
+        if max_deletions is not None and max_deletions <= 0:
+            return 0
         removed = 0
         try:
             folders = list(self.root.iterdir())
@@ -769,6 +772,8 @@ class LiveMergeStore:
                 except OSError:
                     continue
                 removed += 1
+                if max_deletions is not None and removed >= max(0, max_deletions):
+                    return removed
         return removed
 
 

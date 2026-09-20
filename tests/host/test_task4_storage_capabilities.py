@@ -84,7 +84,9 @@ def test_storage_cleanup_rejects_a_root_below_a_symlinked_parent(tmp_path):
     assert victim.read_bytes() == b"safe"
 
 
-def test_storage_cleanup_parent_replacement_cannot_delete_outside(tmp_path, monkeypatch):
+def test_storage_cleanup_parent_replacement_cannot_delete_outside(
+    tmp_path, monkeypatch
+):
     import os
 
     from robopark_host import retention
@@ -139,6 +141,36 @@ def test_storage_cleanup_scan_and_report_are_bounded(tmp_path):
     assert len(report["planned"]) == 128
     assert report["skipped_counts"] == {"not_owned_file": 1000}
     assert "skipped" not in report
+
+
+def test_candidate_bound_does_not_hide_a_category_over_its_cap(tmp_path):
+    import os
+
+    from robopark_host.retention import StorageBudget, cleanup_storage_roots
+
+    diagnostics = tmp_path / "diagnostics"
+    logs = tmp_path / "logs"
+    diagnostics.mkdir()
+    logs.mkdir()
+    expired = diagnostics / "expired"
+    expired.write_bytes(b"old")
+    os.utime(expired, (1, 1))
+    (diagnostics / "fresh").write_bytes(b"fresh")
+    oversized_log = logs / "fresh.log"
+    with oversized_log.open("wb") as stream:
+        stream.truncate(300 * 1024**2)
+
+    report = cleanup_storage_roots(
+        {"diagnostics": diagnostics, "logs": logs},
+        StorageBudget(100, 100, minimum_free_bytes=0),
+        dry_run=True,
+        max_deletions=1,
+        now=8 * 86400,
+    )
+
+    assert report["planned"] == [
+        {"category": "logs", "path": "fresh.log", "bytes": 300 * 1024**2}
+    ]
 
 
 def _fixture(root: Path, *, model: str, compatible: str, devices=(), plugins=()):
@@ -227,7 +259,9 @@ def test_public_host_projection_is_sanitized(host_paths):
     public = host_paths.var / "api-ops/host-health.json"
     write_capabilities(
         host_paths.state / "capabilities.json",
-        HostCapabilities("orin", "secret serial model", "software", False, False, True, True),
+        HostCapabilities(
+            "orin", "secret serial model", "software", False, False, True, True
+        ),
         public_path=public,
     )
 

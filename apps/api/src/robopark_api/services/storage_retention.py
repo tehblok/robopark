@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import heapq
 import os
+import shutil
 import stat
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -59,6 +60,11 @@ class StorageBudget:
     def bytes_to_reclaim(self) -> int:
         return max(0, self.floor_bytes - self.free_bytes)
 
+    @classmethod
+    def for_path(cls, path: Path) -> StorageBudget:
+        usage = shutil.disk_usage(path)
+        return cls(partition_bytes=usage.total, free_bytes=usage.free)
+
 
 def cleanup_storage(
     *,
@@ -66,6 +72,7 @@ def cleanup_storage(
     budget: StorageBudget,
     dry_run: bool = True,
     max_deletions: int = 128,
+    eligible_names: dict[str, set[str]] | None = None,
 ) -> dict:
     """Clean only API-owned duplicates; callers cannot add primary-data roots."""
     unknown = sorted(set(roots) - set(ALLOWED_CATEGORIES))
@@ -73,6 +80,7 @@ def cleanup_storage(
     candidates = []
     skipped_counts: dict[str, int] = {}
     opened: list[int] = []
+    seen_eligible: dict[str, set[str]] = {}
 
     def skip(reason: str) -> None:
         skipped_counts[reason] = skipped_counts.get(reason, 0) + 1
@@ -86,6 +94,12 @@ def cleanup_storage(
             descriptor = manager.__enter__()
             opened.append((manager, descriptor))
             for entry in os.scandir(descriptor):
+                if eligible_names is not None and entry.name not in eligible_names.get(
+                    category, set()
+                ):
+                    skip("protected")
+                    continue
+                seen_eligible.setdefault(category, set()).add(entry.name)
                 info = entry.stat(follow_symlinks=False)
                 if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
                     item = (-info.st_mtime_ns, entry.name, category, info, descriptor)
@@ -120,6 +134,10 @@ def cleanup_storage(
             break
     for manager, _ in reversed(opened):
         manager.__exit__(None, None, None)
+    eligible_missing = {
+        category: sorted(names - seen_eligible.get(category, set()))
+        for category, names in (eligible_names or {}).items()
+    }
     return {
         "dry_run": dry_run,
         "floor_bytes": budget.floor_bytes,
@@ -133,6 +151,7 @@ def cleanup_storage(
         "bounded": len(planned) <= max(0, max_deletions),
         "unknown_categories": unknown,
         "skipped_counts": skipped_counts,
+        "eligible_missing": eligible_missing,
     }
 
 

@@ -51,10 +51,15 @@ def attachments_root() -> Path:
     return _API_ROOT / "data" / "report-attachments"
 
 
-def prune_deleted_report_files(*, now: float | None = None, max_age_seconds: float = 3600) -> int:
+def prune_deleted_report_files(
+    *,
+    now: float | None = None,
+    max_age_seconds: float = 3600,
+    max_deletions: int | None = None,
+) -> int:
     """Retry final unlink of files moved out of a deleted report transaction."""
     staging = attachments_root().resolve() / ".delete-staging"
-    if not staging.is_dir():
+    if not staging.is_dir() or (max_deletions is not None and max_deletions <= 0):
         return 0
     cutoff = (time.time() if now is None else now) - max_age_seconds
     removed = 0
@@ -65,6 +70,8 @@ def prune_deleted_report_files(*, now: float | None = None, max_age_seconds: flo
             if path.stat().st_mtime <= cutoff:
                 path.unlink()
                 removed += 1
+                if max_deletions is not None and removed >= max(0, max_deletions):
+                    return removed
         except OSError:
             continue
     return removed
