@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -62,6 +63,10 @@ class Settings(BaseSettings):
     # --- Emergency cache --------------------------------------------------
     #: Maximum simultaneous Emergency HTTP requests in one API worker.
     emergency_max_concurrency: int = 8
+
+    # --- Approximate IP geolocation --------------------------------------
+    #: Disabled unless the operator explicitly opts into the external service.
+    ip_geo_provider: Literal["off", "ipwhois"] = "off"
 
     # --- Web Push delivery ------------------------------------------------
     #: Maximum simultaneous Web Push requests in one API worker.

@@ -2,11 +2,13 @@
 
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 import httpx
 from sqlalchemy import delete, update
 from sqlalchemy.exc import IntegrityError
 
+from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
 from robopark_api.models import IpGeoCache, IpGeoQuota, User
 from robopark_api.services.user_activity import public_ip
@@ -17,7 +19,14 @@ POSITIVE_TTL = timedelta(days=7)
 NEGATIVE_TTL = timedelta(hours=1)
 
 
-def lookup_public_ip(ip: str) -> str | None:
+def lookup_public_ip(
+    ip: str, *, provider: Literal["off", "ipwhois"] | None = None
+) -> str | None:
+    selected_provider = get_settings().ip_geo_provider if provider is None else provider
+    if selected_provider == "off":
+        return None
+    if selected_provider != "ipwhois":
+        raise ValueError("unknown_ip_geo_provider")
     address = public_ip(ip)
     if address is None:
         return None
@@ -65,6 +74,9 @@ def _reserve_lookup() -> bool:
 
 
 def resolve_for_user(user_id: int, ip: str) -> None:
+    provider = get_settings().ip_geo_provider
+    if provider == "off":
+        return
     address = public_ip(ip)
     if address is None:
         return
@@ -79,7 +91,7 @@ def resolve_for_user(user_id: int, ip: str) -> None:
     if not fresh:
         if not _reserve_lookup():
             return
-        location = lookup_public_ip(address)
+        location = lookup_public_ip(address, provider=provider)
         with SessionLocal() as db:
             cached = db.get(IpGeoCache, address)
             if cached is None:

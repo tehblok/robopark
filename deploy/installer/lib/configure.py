@@ -21,6 +21,7 @@ HOST_DEFAULTS = {
     'LOGIN_ATTEMPT_WINDOW_SECONDS': '300', 'LOGIN_LOCKOUT_SECONDS': '900',
     'REGISTER_MAX_ATTEMPTS': '10', 'SEED_USERNAME': 'royal', 'SEED_ROLE': 'royal',
     'DEV_SEED': 'false', 'UVICORN_WORKERS': '', 'OPERATOR_SHARED_PASSWORD': '',
+    'IP_GEO_PROVIDER': 'off',
     'ROBOPARK_DATABASE_PROFILE': 'postgresql-17', 'ROBOPARK_HOST_PROFILE': '',
     'SECRET_KEY': '', 'SEED_PASSWORD': '', 'CORS_ORIGINS': '',
 }
@@ -360,6 +361,8 @@ def validate(values):
         raise ValueError('invalid_host_profile')
     if values['ROBOPARK_DATABASE_PROFILE'] != 'postgresql-17':
         raise ValueError('invalid_database_profile')
+    if values['IP_GEO_PROVIDER'] not in ('off', 'ipwhois'):
+        raise ValueError('invalid_ip_geo_provider')
     for key in ('ROBOPARK_ROLE', 'COOKIE_SECURE', 'PASSWORD_REQUIRE_COMPLEXITY', 'SEED_ROLE', 'DEV_SEED'):
         if values[key] != HOST_DEFAULTS[key]:
             raise ValueError('unsafe_host_setting')
