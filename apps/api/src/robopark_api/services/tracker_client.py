@@ -32,6 +32,7 @@ USER_AGENT = os.environ.get("TRACKER_USER_AGENT", "robopark-api/0.1")
 # Tracker API отдаёт не более 50 тикетов за один HTTP-запрос; find() сам
 # дочитывает следующие страницы по Link header при итерации.
 API_PAGE_SIZE = 50
+SEARCH_CALL_TIMEOUT_SECONDS = 30.0
 MAX_ROBOT_REFERENCE_LENGTH = 64
 DEFAULT_QUEUE = "SDCFLEETOPS"
 DEFAULT_ISSUE_TYPES = ("repair", "service", "calibration")
@@ -754,6 +755,7 @@ def _search(
     *,
     filter_open: bool = True,
     order: list[str] | None = None,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     client = _client(token)
     kwargs: dict[str, Any] = {"per_page": API_PAGE_SIZE}
@@ -763,15 +765,19 @@ def _search(
     def _run() -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         login_cache: dict[str, str] = {}
-        for issue in client.issues.find(query, **kwargs):
+        for seen, issue in enumerate(client.issues.find(query, **kwargs), start=1):
             item = issue_to_dict(issue, login_cache=login_cache)
             if filter_open and not is_issue_open_item(item):
+                if limit is not None and seen >= limit:
+                    break
                 continue
             item["_tracker_resource"] = issue
             items.append(item)
+            if limit is not None and seen >= limit:
+                break
         return items
 
-    return _run_tracked(_run, call_timeout=30.0)
+    return _run_tracked(_run, call_timeout=SEARCH_CALL_TIMEOUT_SECONDS)
 
 
 def count_issues(*, token: str, query: str) -> int:
@@ -844,6 +850,20 @@ def search_issues(
     order: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     return _search(token, query, filter_open=filter_open, order=order)
+
+
+def search_issue_page(
+    *,
+    token: str,
+    query: str,
+    limit: int,
+    filter_open: bool = True,
+    order: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Read at most one bounded page without exhausting the SDK iterator."""
+    if not 1 <= limit <= API_PAGE_SIZE:
+        raise ValueError("tracker_page_limit_invalid")
+    return _search(token, query, filter_open=filter_open, order=order, limit=limit)
 
 
 def get_issue(*, token: str, key: str) -> dict[str, Any] | None:

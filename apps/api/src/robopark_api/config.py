@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     tracker_notification_interval_seconds: float = Field(default=60.0, gt=0, le=3600.0)
     #: Maximum tasks inspected in one cursor page (Tracker API caps pages at 50).
     tracker_notification_page_size: int = Field(default=20, ge=1, le=50)
+    #: Wall-clock budget for one poll before it stops starting new deliveries.
+    tracker_notification_poll_deadline_seconds: float = Field(default=45.0, gt=30.0, le=300.0)
     #: Cross-worker cursor lease, renewed after every processed task.
     tracker_notification_lease_seconds: float = Field(default=300.0, ge=30.0, le=3600.0)
 
@@ -120,6 +122,14 @@ class Settings(BaseSettings):
         resolved = (_API_ROOT / path).resolve()
         resolved.parent.mkdir(parents=True, exist_ok=True)
         object.__setattr__(self, "database_url", f"sqlite:///{resolved}")
+        return self
+
+    @model_validator(mode="after")
+    def validate_tracker_notification_timing(self) -> "Settings":
+        max_operation = max(30.0, self.push_delivery_deadline_seconds)
+        required_lease = self.tracker_notification_poll_deadline_seconds + max_operation + 5.0
+        if self.tracker_notification_lease_seconds < required_lease:
+            raise ValueError("tracker_notification_lease_too_short")
         return self
 
 

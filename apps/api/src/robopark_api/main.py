@@ -173,6 +173,11 @@ def create_app() -> FastAPI:
                         interval_seconds=settings.tracker_notification_interval_seconds,
                         page_size=settings.tracker_notification_page_size,
                         lease_seconds=settings.tracker_notification_lease_seconds,
+                        poll_deadline_seconds=settings.tracker_notification_poll_deadline_seconds,
+                        max_operation_seconds=max(
+                            30.0,
+                            settings.push_delivery_deadline_seconds,
+                        ),
                     )
                 )
 

@@ -1,13 +1,23 @@
 import asyncio
+import json
 import threading
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
 from robopark_api import main
+from robopark_api.config import Settings
+from robopark_api.models import Park
 from robopark_api.schedule_models import TrackerNotificationCursor
-from robopark_api.services import platform_settings, tracker_cache, tracker_client
+from robopark_api.services import (
+    platform_settings,
+    tracker_cache,
+    tracker_client,
+    tracker_notifications,
+)
 from robopark_api.services.tracker_notifications import poll_tracker_notifications
 
 
@@ -31,14 +41,27 @@ def _capture(events):
     return lambda **event: events.append(event)
 
 
-def test_poller_emits_new_task_without_tracker_get(
+def _seed_cursor(db_session, created: str = "2026-09-20T18:00:00+00:00", key: str = ""):
+    db_session.add(
+        TrackerNotificationCursor(
+            scope_key="new-tasks",
+            cursor_value=json.dumps([created, key], separators=(",", ":")),
+        )
+    )
+    db_session.commit()
+
+
+def test_poller_bootstraps_without_emitting_historical_tasks(
     db_engine, db_session, seed_park_with_tracker, monkeypatch
 ):
+    del seed_park_with_tracker
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    searches = []
     monkeypatch.setattr(
         tracker_cache,
-        "search_issues",
-        lambda **_kwargs: [_issue("ROBOPARK-9", "2026-09-20T18:00:00Z")],
+        "search_issue_page",
+        lambda **kwargs: searches.append(kwargs)
+        or [_issue("ROBOPARK-OLD", "2026-08-20T18:00:00Z")],
     )
     emitted = []
 
@@ -46,15 +69,304 @@ def test_poller_emits_new_task_without_tracker_get(
         _factory(db_engine), _capture(emitted), page_size=10, owner_id="worker-a"
     )
 
+    assert processed == 0
+    assert emitted == []
+    assert searches == []
+    with Session(db_engine) as db:
+        cursor = db.get(TrackerNotificationCursor, "new-tasks")
+        assert cursor is not None
+        created, key = json.loads(cursor.cursor_value)
+        assert datetime.now(UTC) - datetime.fromisoformat(created) < timedelta(seconds=5)
+        assert key == ""
+
+
+def test_poller_rebootstraps_invalid_cursor_without_historical_fetch(
+    db_engine, db_session, seed_park_with_tracker, monkeypatch
+):
+    del seed_park_with_tracker
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    db_session.add(
+        TrackerNotificationCursor(scope_key="new-tasks", cursor_value="not-a-cursor")
+    )
+    db_session.commit()
+    searches = []
+    monkeypatch.setattr(
+        tracker_cache,
+        "search_issue_page",
+        lambda **kwargs: searches.append(kwargs)
+        or [_issue("ROBOPARK-OLD", "2026-08-20T18:00:00Z")],
+    )
+
+    processed = poll_tracker_notifications(
+        _factory(db_engine), lambda **_event: None, page_size=10, owner_id="worker-a"
+    )
+
+    assert processed == 0
+    assert searches == []
+    with Session(db_engine) as db:
+        cursor = db.get(TrackerNotificationCursor, "new-tasks")
+        assert cursor is not None
+        assert json.loads(cursor.cursor_value)[1] == ""
+
+
+def test_tracker_page_fetch_stops_sdk_iterator_at_limit(monkeypatch):
+    search_page = getattr(tracker_client, "search_issue_page", None)
+    assert callable(search_page)
+    yielded = []
+    captured = {}
+
+    class Issues:
+        def find(self, query, **kwargs):
+            captured.update(query=query, **kwargs)
+            for index in range(1000):
+                yielded.append(index)
+                yield {
+                    "key": f"ROBOPARK-{index}",
+                    "createdAt": f"2026-09-20T18:{index:02d}:00Z",
+                    "status": {"key": "queued", "display": "В очереди"},
+                }
+
+    client = type("Client", (), {"issues": Issues()})()
+    monkeypatch.setattr(tracker_client, "_client", lambda _token: client)
+    monkeypatch.setattr(
+        tracker_client,
+        "_run_tracked",
+        lambda operation, **_kwargs: operation(),
+    )
+
+    items = search_page(
+        token="token",
+        query="Queue: ROBOPARK",
+        filter_open=False,
+        order=["createdAt"],
+        limit=2,
+    )
+
+    assert [item["key"] for item in items] == ["ROBOPARK-0", "ROBOPARK-1"]
+    assert yielded == [0, 1]
+    assert captured == {
+        "query": "Queue: ROBOPARK",
+        "per_page": tracker_client.API_PAGE_SIZE,
+        "order": ["createdAt"],
+    }
+
+
+def test_tracker_page_limit_counts_rows_filtered_locally(monkeypatch):
+    yielded = []
+
+    class Issues:
+        def find(self, _query, **_kwargs):
+            rows = [
+                {
+                    "key": "ROBOPARK-CLOSED",
+                    "createdAt": "2026-09-20T18:00:00Z",
+                    "resolvedAt": "2026-09-20T18:01:00Z",
+                    "status": {"key": "closed", "display": "Closed"},
+                },
+                {
+                    "key": "ROBOPARK-OPEN",
+                    "createdAt": "2026-09-20T18:02:00Z",
+                    "status": {"key": "queued", "display": "В очереди"},
+                },
+                {
+                    "key": "ROBOPARK-NEXT-PAGE",
+                    "createdAt": "2026-09-20T18:03:00Z",
+                    "status": {"key": "queued", "display": "В очереди"},
+                },
+            ]
+            for row in rows:
+                yielded.append(row["key"])
+                yield row
+
+    client = type("Client", (), {"issues": Issues()})()
+    monkeypatch.setattr(tracker_client, "_client", lambda _token: client)
+    monkeypatch.setattr(
+        tracker_client,
+        "_run_tracked",
+        lambda operation, **_kwargs: operation(),
+    )
+
+    items = tracker_client.search_issue_page(
+        token="token",
+        query="Queue: ROBOPARK",
+        filter_open=True,
+        limit=2,
+    )
+
+    assert [item["key"] for item in items] == ["ROBOPARK-OPEN"]
+    assert yielded == ["ROBOPARK-CLOSED", "ROBOPARK-OPEN"]
+
+
+def test_poller_query_keeps_queue_and_cursor_boundary():
+    query = tracker_notifications._search_query(
+        ["ROBOPARK"],
+        (datetime(2026, 9, 20, 18, 30, tzinfo=UTC), "ROBOPARK-50"),
+    )
+
+    assert "Queue: ROBOPARK" in query
+    assert 'Created: >= "2026-09-20 18:30:00"' in query
+
+
+def test_poller_does_not_guess_park_for_shared_queue(
+    db_engine, db_session, seed_park_with_tracker, monkeypatch
+):
+    del seed_park_with_tracker
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    _seed_cursor(db_session)
+    db_session.add(
+        Park(name="Beta", tag="Beta", tracker_queue="ROBOPARK", is_active=True)
+    )
+    db_session.commit()
+    issue = {**_issue("ROBOPARK-20", "2026-09-20T18:05:00Z"), "tags": []}
+    monkeypatch.setattr(tracker_cache, "search_issue_page", lambda **_kwargs: [issue])
+    emitted = []
+
+    processed = poll_tracker_notifications(
+        _factory(db_engine), _capture(emitted), page_size=10, owner_id="worker-a"
+    )
+
+    assert processed == 0
+    assert emitted == []
+
+
+def test_poller_does_not_emit_for_inactive_tagged_park(
+    db_engine, db_session, seed_park_with_tracker, monkeypatch
+):
+    del seed_park_with_tracker
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    _seed_cursor(db_session)
+    db_session.add(
+        Park(name="Inactive Beta", tag="Beta", tracker_queue="ROBOPARK", is_active=False)
+    )
+    db_session.commit()
+    issue = {**_issue("ROBOPARK-21", "2026-09-20T18:06:00Z"), "tags": ["Beta"]}
+    monkeypatch.setattr(tracker_cache, "search_issue_page", lambda **_kwargs: [issue])
+    emitted = []
+
+    processed = poll_tracker_notifications(
+        _factory(db_engine), _capture(emitted), page_size=10, owner_id="worker-a"
+    )
+
+    assert processed == 0
+    assert emitted == []
+
+
+def test_tracker_notification_settings_reject_lease_shorter_than_poll_bound():
+    with pytest.raises(ValidationError, match="tracker_notification_lease_too_short"):
+        Settings(
+            _env_file=None,
+            tracker_notification_poll_deadline_seconds=31,
+            tracker_notification_lease_seconds=40,
+            push_delivery_deadline_seconds=30,
+        )
+
+
+def test_poller_stops_page_immediately_after_losing_lease(
+    db_engine, db_session, seed_park_with_tracker, monkeypatch
+):
+    del seed_park_with_tracker
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    _seed_cursor(db_session)
+    monkeypatch.setattr(
+        tracker_cache,
+        "search_issue_page",
+        lambda **_kwargs: [
+            _issue("ROBOPARK-30", "2026-09-20T18:10:00Z"),
+            _issue("ROBOPARK-31", "2026-09-20T18:11:00Z"),
+        ],
+    )
+    emitted = []
+
+    def steal_lease(**event):
+        emitted.append(event)
+        with Session(db_engine) as db:
+            cursor = db.get(TrackerNotificationCursor, "new-tasks")
+            cursor.lease_owner = "worker-b"
+            cursor.lease_until = datetime.now(UTC) + timedelta(minutes=5)
+            db.commit()
+
+    processed = poll_tracker_notifications(
+        _factory(db_engine), steal_lease, page_size=10, owner_id="worker-a"
+    )
+
     assert processed == 1
-    assert emitted == [
-        {
-            "event_type": "new_task",
-            "park_id": seed_park_with_tracker.id,
-            "protected_text": "Новая задача ROBOPARK-9",
-            "event_key": "new-task:ROBOPARK-9",
-        }
-    ]
+    assert [event["event_key"] for event in emitted] == ["new-task:ROBOPARK-30"]
+
+
+def test_poller_deadline_prevents_starting_another_emit(
+    db_engine, db_session, seed_park_with_tracker, monkeypatch
+):
+    del seed_park_with_tracker
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    _seed_cursor(db_session)
+    monkeypatch.setattr(
+        tracker_cache,
+        "search_issue_page",
+        lambda **_kwargs: [
+            _issue("ROBOPARK-40", "2026-09-20T18:20:00Z"),
+            _issue("ROBOPARK-41", "2026-09-20T18:21:00Z"),
+        ],
+    )
+    emitted = []
+    clock = iter([0.0, 0.0, 2.0])
+    monkeypatch.setattr(tracker_notifications, "monotonic", lambda: next(clock))
+
+    def emit(**event):
+        emitted.append(event)
+
+    processed = poll_tracker_notifications(
+        _factory(db_engine),
+        emit,
+        page_size=10,
+        owner_id="worker-a",
+        lease_seconds=2,
+        poll_deadline_seconds=1,
+        max_operation_seconds=0.05,
+    )
+
+    assert processed == 1
+    assert [event["event_key"] for event in emitted] == ["new-task:ROBOPARK-40"]
+
+
+def test_notification_loop_owns_and_joins_its_poll_thread(monkeypatch):
+    started = threading.Event()
+    finish = threading.Event()
+    worker_names = []
+
+    def bounded_poll(*_args, **_kwargs):
+        worker_names.append(threading.current_thread().name)
+        started.set()
+        finish.wait(timeout=0.2)
+        return 0
+
+    monkeypatch.setattr(tracker_notifications, "poll_tracker_notifications", bounded_poll)
+
+    async def exercise():
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            tracker_notifications.run_tracker_notification_loop(
+                _factory(None),
+                stop_event,
+                emit=lambda **_kwargs: None,
+                interval_seconds=60,
+                page_size=1,
+                lease_seconds=60,
+                poll_deadline_seconds=31,
+                max_operation_seconds=30,
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 0.5)
+        stop_event.set()
+        finish.set()
+        await asyncio.wait_for(task, timeout=0.5)
+
+    asyncio.run(exercise())
+
+    assert worker_names and worker_names[0].startswith("tracker-notification-poll")
+    assert not any(
+        thread.name.startswith("tracker-notification-poll") and thread.is_alive()
+        for thread in threading.enumerate()
+    )
 
 
 def test_two_workers_emit_one_event_for_the_same_issue(
@@ -62,9 +374,10 @@ def test_two_workers_emit_one_event_for_the_same_issue(
 ):
     del seed_park_with_tracker
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    _seed_cursor(db_session)
     monkeypatch.setattr(
         tracker_cache,
-        "search_issues",
+        "search_issue_page",
         lambda **_kwargs: [_issue("ROBOPARK-10", "2026-09-20T18:01:00Z")],
     )
     emitted = []
@@ -82,8 +395,9 @@ def test_restart_replays_cursor_boundary_without_duplicate(
 ):
     del seed_park_with_tracker
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    _seed_cursor(db_session)
     issues = [_issue("ROBOPARK-11", "2026-09-20T18:02:00Z")]
-    monkeypatch.setattr(tracker_cache, "search_issues", lambda **_kwargs: list(issues))
+    monkeypatch.setattr(tracker_cache, "search_issue_page", lambda **_kwargs: list(issues))
     emitted = []
     factory = _factory(db_engine)
 
@@ -109,6 +423,7 @@ def test_tracker_failure_preserves_cursor_and_next_poll_recovers(
 ):
     del seed_park_with_tracker
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    _seed_cursor(db_session)
     attempts = 0
 
     def search(**_kwargs):
@@ -118,7 +433,7 @@ def test_tracker_failure_preserves_cursor_and_next_poll_recovers(
             raise tracker_client.TrackerError("token leaked? no")
         return [_issue("ROBOPARK-13", "2026-09-20T18:04:00Z")]
 
-    monkeypatch.setattr(tracker_cache, "search_issues", search)
+    monkeypatch.setattr(tracker_cache, "search_issue_page", search)
     emitted = []
     factory = _factory(db_engine)
 
@@ -129,7 +444,7 @@ def test_tracker_failure_preserves_cursor_and_next_poll_recovers(
     with Session(db_engine) as db:
         failed = db.get(TrackerNotificationCursor, "new-tasks")
         assert failed is not None
-        assert failed.cursor_value is None
+        assert json.loads(failed.cursor_value) == ["2026-09-20T18:00:00+00:00", ""]
         assert failed.last_error == "tracker_unavailable"
 
     assert (

@@ -7,7 +7,10 @@ import contextlib
 import json
 import logging
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from functools import partial
+from time import monotonic
 from uuid import uuid4
 
 from sqlalchemy import or_, select, update
@@ -17,7 +20,8 @@ from sqlalchemy.orm import Session
 from robopark_api.models import Park
 from robopark_api.schedule_models import TrackerNotificationCursor
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_cache, tracker_client, tracker_filters, tracker_signatures
+from robopark_api.services import tracker_cache, tracker_client, tracker_filters
+from robopark_api.services.tracker_policy import issue_tags
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +108,7 @@ def _update_state(
     error: str | None = None,
     release: bool = False,
     lease_seconds: float,
-) -> None:
+) -> bool:
     now = datetime.now(UTC)
     values: dict = {
         "last_error": error,
@@ -115,7 +119,7 @@ def _update_state(
         values["cursor_value"] = _encode_cursor(cursor)
         values["last_success_at"] = now
     with session_factory() as db:
-        db.execute(
+        result = db.execute(
             update(TrackerNotificationCursor)
             .where(
                 TrackerNotificationCursor.scope_key == _SCOPE_KEY,
@@ -124,6 +128,7 @@ def _update_state(
             .values(**values)
         )
         db.commit()
+        return result.rowcount == 1
 
 
 def _query_context(session_factory: Callable[[], Session]) -> tuple[str | None, list[str]]:
@@ -156,6 +161,30 @@ def _search_query(queues: list[str], cursor: tuple[datetime, str] | None) -> str
     )
 
 
+def _resolve_active_park(db: Session, issue: dict) -> Park | None:
+    tags = issue_tags(issue)
+    tagged_parks = (
+        list(db.scalars(select(Park).where(Park.tag.in_(tags)))) if tags else []
+    )
+    if tagged_parks:
+        if len(tagged_parks) == 1 and tagged_parks[0].is_active:
+            return tagged_parks[0]
+        return None
+
+    queue = str(issue.get("queue") or "").strip()
+    if not queue:
+        return None
+    candidates = list(
+        db.scalars(
+            select(Park).where(
+                Park.tracker_queue == queue,
+                Park.is_active.is_(True),
+            )
+        )
+    )
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def poll_tracker_notifications(
     session_factory: Callable[[], Session],
     emit: Callable[..., dict | None],
@@ -163,8 +192,13 @@ def poll_tracker_notifications(
     page_size: int,
     owner_id: str,
     lease_seconds: float = 300.0,
+    poll_deadline_seconds: float = 45.0,
+    max_operation_seconds: float = tracker_client.SEARCH_CALL_TIMEOUT_SECONDS,
 ) -> int:
     """Process one bounded Tracker page, returning emitted event count."""
+    if lease_seconds < poll_deadline_seconds + max_operation_seconds:
+        raise ValueError("tracker_notification_lease_too_short")
+    deadline = monotonic() + poll_deadline_seconds
     claimed = _claim(
         session_factory,
         owner_id=owner_id,
@@ -174,6 +208,16 @@ def poll_tracker_notifications(
     if claimed is False:
         return 0
     cursor = _decode_cursor(claimed)
+    if cursor is None:
+        _update_state(
+            session_factory,
+            owner_id=owner_id,
+            cursor=(datetime.now(UTC), ""),
+            error=None,
+            release=True,
+            lease_seconds=lease_seconds,
+        )
+        return 0
     emitted = 0
     try:
         token, queues = _query_context(session_factory)
@@ -186,9 +230,10 @@ def poll_tracker_notifications(
                 lease_seconds=lease_seconds,
             )
             return 0
-        issues = tracker_cache.search_issues(
+        issues = tracker_cache.search_issue_page(
             token=token,
             query=_search_query(queues, cursor),
+            limit=page_size,
             filter_open=True,
             order=["createdAt"],
         )
@@ -196,11 +241,20 @@ def poll_tracker_notifications(
             (position, issue)
             for issue in issues
             if (position := _issue_position(issue)) is not None and (cursor is None or position > cursor)
-        )[:page_size]
+        )
         for position, issue in positioned:
+            if monotonic() >= deadline:
+                break
+            if not _update_state(
+                session_factory,
+                owner_id=owner_id,
+                error=None,
+                lease_seconds=lease_seconds,
+            ):
+                break
             if tracker_filters.issue_status_bucket(issue) in {"new", "queued"}:
                 with session_factory() as db:
-                    park = tracker_signatures.resolve_park(db, issue)
+                    park = _resolve_active_park(db, issue)
                     park_id = park.id if park is not None else None
                 issue_key = position[1]
                 if park_id is not None:
@@ -212,13 +266,14 @@ def poll_tracker_notifications(
                     )
                     emitted += 1
             cursor = position
-            _update_state(
+            if not _update_state(
                 session_factory,
                 owner_id=owner_id,
                 cursor=cursor,
                 error=None,
                 lease_seconds=lease_seconds,
-            )
+            ):
+                break
         if not positioned:
             with session_factory() as db:
                 row = db.get(TrackerNotificationCursor, _SCOPE_KEY)
@@ -265,16 +320,26 @@ async def run_tracker_notification_loop(
     interval_seconds: float,
     page_size: int,
     lease_seconds: float,
+    poll_deadline_seconds: float,
+    max_operation_seconds: float,
 ) -> None:
     owner_id = str(uuid4())
-    while not stop_event.is_set():
-        await asyncio.to_thread(
-            poll_tracker_notifications,
-            session_factory,
-            emit,
-            page_size=page_size,
-            owner_id=owner_id,
-            lease_seconds=lease_seconds,
-        )
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tracker-notification-poll")
+    loop = asyncio.get_running_loop()
+    try:
+        while not stop_event.is_set():
+            operation = partial(
+                poll_tracker_notifications,
+                session_factory,
+                emit,
+                page_size=page_size,
+                owner_id=owner_id,
+                lease_seconds=lease_seconds,
+                poll_deadline_seconds=poll_deadline_seconds,
+                max_operation_seconds=max_operation_seconds,
+            )
+            await loop.run_in_executor(executor, operation)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)

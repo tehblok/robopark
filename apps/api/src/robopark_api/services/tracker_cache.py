@@ -164,6 +164,31 @@ def search_issues(
     )
 
 
+def search_issue_page(
+    *,
+    token: str,
+    query: str,
+    limit: int,
+    filter_open: bool = True,
+    order: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    key = f"page:{limit}|{filter_open}|{order or []}|{query}"
+    return _issues_cache.get_or_load(
+        key,
+        lambda: _remember_projection(
+            _issues_cache,
+            key,
+            tracker_client.search_issue_page(
+                token=token,
+                query=query,
+                limit=limit,
+                filter_open=filter_open,
+                order=order,
+            ),
+        ),
+    )
+
+
 def get_issue(*, token: str, key: str) -> dict[str, Any] | None:
     return _issue_cache.get_or_load(
         key,
