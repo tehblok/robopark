@@ -82,6 +82,33 @@ Additional short verification:
   is absent; Docker was not started.
 - Scoped Ruff/format, `sh -n scripts/verify.sh` and `git diff --check` passed.
 
+## Review remediation round 3
+
+- PostgreSQL locking now constructs a cached, lock-only `NullPool` Engine from
+  the bound URL. Advisory lock acquisition uses that independent connection,
+  never the potentially saturated request `QueuePool`; both connection setup
+  and `pg_try_advisory_xact_lock` share the five-second deadline. The cached
+  lock engines are disposed during lifespan shutdown before the job lease is
+  released.
+- SQLite no longer serializes every key through one lock file. It maps each
+  key deterministically to one of 64 stable sidecars, while retaining the
+  ref-count-pruned in-process keyed lock. File count is bounded at 64, and
+  different buckets can progress concurrently across host processes.
+- Added a request-pool isolation fake with a prechecked size-one `QueuePool`,
+  child-process `flock` exclusion/concurrency coverage (skipped only on
+  platforms without `fcntl`), and a bounded-file/process-lock-registry check.
+- Lifecycle coverage now verifies cached lock engines are disposed after every
+  background writer and Push service have stopped, before lease release.
+
+Round-3 short verification:
+
+- `tests/test_database_locks.py tests/test_offline_sync.py
+  tests/test_media_uploads.py tests/test_lifespan_jobs.py` — `18 passed`
+  (only the existing Starlette/httpx deprecation warning).
+- Scoped Ruff/format, `sh -n scripts/verify.sh` and `git diff --check` passed.
+- No PostgreSQL container, Docker, full suite, load, soak, installer or OTA
+  operation was run.
+
 ## Review remediation round 2
 
 - Replaced the request-session PostgreSQL advisory lock with a bounded

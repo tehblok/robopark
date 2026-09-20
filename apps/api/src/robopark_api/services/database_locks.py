@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 import time
@@ -12,7 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
+from sqlalchemy.pool import NullPool
 
 try:  # Robopark is deployed on Linux; keep unit tests portable.
     import fcntl
@@ -22,6 +25,7 @@ except ImportError:  # pragma: no cover - non-Unix development fallback
 
 LOCK_WAIT_SECONDS = 5.0
 _SLEEP_SECONDS = 0.02
+SQLITE_LOCK_BUCKETS = 64
 
 
 @dataclass
@@ -32,6 +36,8 @@ class _ProcessLock:
 
 _process_locks: dict[str, _ProcessLock] = {}
 _process_locks_guard = threading.Lock()
+_postgres_lock_engines: dict[str, Engine] = {}
+_postgres_lock_engines_guard = threading.Lock()
 
 
 def _acquire_process_lock(key: str) -> _ProcessLock:
@@ -56,17 +62,14 @@ def _release_process_lock(key: str, entry: _ProcessLock, *, acquired: bool = Tru
             del _process_locks[key]
 
 
-def _sqlite_lock_path(bind: Any) -> Path | None:
+def _sqlite_lock_path(bind: Any, key: str) -> Path | None:
     database = getattr(getattr(bind, "url", None), "database", None)
     if not database or database == ":memory:":
         return None
     root = Path(database).parent / ".robopark-idempotency-locks"
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    # One stable lock file avoids leaving an unbounded lock-file collection on
-    # constrained hosts. The in-process keyed lock keeps unrelated actions
-    # concurrent inside one worker; `flock` provides the conservative
-    # cross-process SQLite boundary.
-    return root / "sqlite-idempotency.lock"
+    bucket = int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], "big") % SQLITE_LOCK_BUCKETS
+    return root / f"bucket-{bucket:02d}.lock"
 
 
 @contextmanager
@@ -75,7 +78,7 @@ def _sqlite_file_lock(bind: Any, key: str) -> Iterator[None]:
     entry = _acquire_process_lock(key)
     descriptor: int | None = None
     try:
-        path = _sqlite_lock_path(bind)
+        path = _sqlite_lock_path(bind, key)
         if path is not None and fcntl is not None:
             descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
             deadline = time.monotonic() + LOCK_WAIT_SECONDS
@@ -98,21 +101,51 @@ def _sqlite_file_lock(bind: Any, key: str) -> Iterator[None]:
         _release_process_lock(key, entry)
 
 
+def _postgres_lock_engine(bind: Any) -> Engine:
+    """Return a lock-only engine which never waits for the request pool."""
+    url = bind.url.render_as_string(hide_password=False)
+    cache_key = hashlib.sha256(url.encode()).hexdigest()
+    with _postgres_lock_engines_guard:
+        engine = _postgres_lock_engines.get(cache_key)
+        if engine is None:
+            # NullPool gives each lock attempt an independent connection. The
+            # driver timeout bounds connection establishment; no URL is logged.
+            engine = create_engine(
+                url,
+                future=True,
+                poolclass=NullPool,
+                pool_pre_ping=True,
+                connect_args={"connect_timeout": max(1, int(LOCK_WAIT_SECONDS))},
+            )
+            _postgres_lock_engines[cache_key] = engine
+        return engine
+
+
+def dispose_database_lock_engines() -> None:
+    """Release cached lock-engine resources during application shutdown."""
+    with _postgres_lock_engines_guard:
+        engines = list(_postgres_lock_engines.values())
+        _postgres_lock_engines.clear()
+    for engine in engines:
+        engine.dispose()
+
+
 @contextmanager
 def database_idempotency_lock(db: Any, key: str) -> Iterator[None]:
     """Hold a bounded idempotency lock across commits and request re-binding.
 
-    PostgreSQL uses a dedicated connection and a transaction-scoped advisory
-    lock. It never relies on the request session, which may release and later
-    replace its physical connection around upstream waits. SQLite keeps a
-    keyed in-process lock and a non-blocking `flock` sidecar for coordination
-    across its separate host worker processes.
+    PostgreSQL uses an independent NullPool connection and a transaction-
+    scoped advisory lock. It never consumes a request-pool connection, which
+    may be released and later replaced around upstream waits. SQLite keeps a
+    keyed in-process lock and a bounded set of non-blocking `flock` sidecars
+    for coordination across its separate host worker processes.
     """
     bind = db.get_bind()
     dialect = bind.dialect.name
     if dialect == "postgresql":
-        with bind.connect() as connection, connection.begin():
-            deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        lock_engine = _postgres_lock_engine(bind)
+        with lock_engine.connect() as connection, connection.begin():
             while not connection.scalar(
                 text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"), {"key": key}
             ):

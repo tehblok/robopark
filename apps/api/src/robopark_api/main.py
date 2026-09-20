@@ -65,6 +65,7 @@ from robopark_api.services.change_revisions import (
     default_change_revision_store,
     scope_for_mutation,
 )
+from robopark_api.services.database_locks import dispose_database_lock_engines
 from robopark_api.services.emergency_config import ensure_default_section_roles
 from robopark_api.services.emergency_keepalive import run_keepalive_loop
 from robopark_api.services.live_merge import JobLease, default_live_merge_root, live_merge_enabled
@@ -213,7 +214,10 @@ def create_app() -> FastAPI:
                 try:
                     await asyncio.to_thread(_app.state.push_service.close)
                 finally:
-                    job_lease.release()
+                    try:
+                        await asyncio.to_thread(dispose_database_lock_engines)
+                    finally:
+                        job_lease.release()
 
     app = FastAPI(
         title="Robopark API",

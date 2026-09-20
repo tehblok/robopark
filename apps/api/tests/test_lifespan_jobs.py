@@ -30,6 +30,7 @@ def test_lifespan_holds_jobs_at_maintenance_barrier_and_releases_lease_after_shu
     worker_started = {name: threading.Event() for name in worker_names}
     worker_stopped = {name: threading.Event() for name in worker_names}
     push_closed = threading.Event()
+    lock_engines_disposed = threading.Event()
     lease_released = threading.Event()
     entered = threading.Event()
     close_context = threading.Event()
@@ -46,6 +47,7 @@ def test_lifespan_holds_jobs_at_maintenance_barrier_and_releases_lease_after_shu
         def release(self):
             assert all(event.is_set() for event in worker_stopped.values())
             assert push_closed.is_set()
+            assert lock_engines_disposed.is_set()
             lease_released.set()
 
     def bounded_idle(name):
@@ -98,6 +100,12 @@ def test_lifespan_holds_jobs_at_maintenance_barrier_and_releases_lease_after_shu
 
     monkeypatch.setattr(main.push, "PushService", PushService)
 
+    def dispose_lock_engines():
+        assert all(event.is_set() for event in worker_stopped.values())
+        lock_engines_disposed.set()
+
+    monkeypatch.setattr(main, "dispose_database_lock_engines", dispose_lock_engines)
+
     monkeypatch.setattr(main, "SessionLocal", sessionmaker(bind=db_engine, future=True))
     monkeypatch.setattr(main, "get_settings", lambda: test_settings)
     monkeypatch.setattr(
@@ -126,4 +134,5 @@ def test_lifespan_holds_jobs_at_maintenance_barrier_and_releases_lease_after_shu
     assert not thread.is_alive()
     assert all(event.is_set() for event in worker_stopped.values())
     assert push_closed.is_set()
+    assert lock_engines_disposed.is_set()
     assert lease_released.is_set()
