@@ -76,6 +76,33 @@ test('robot check uses one snapshot owner in both interfaces', async ({ page }) 
   expect(snapshots).toBe(loaded)
 })
 
+test('A workflow tabs use the visible item count', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await installOperational(page, { issue: repair })
+  await page.goto('/work/ROBOPARK-42?park=7')
+  await selectInterface(page, 'Новый А')
+
+  const tabs = page.locator('.rp-work-sections > .rp-tabs').first()
+  await tabs.evaluate(element => {
+    element.setAttribute('style', '--rp-tab-count: 2')
+    element.replaceChildren(...['Ремонт', 'Чат'].map(label => {
+      const button = document.createElement('button')
+      button.setAttribute('role', 'tab')
+      button.textContent = label
+      return button
+    }))
+  })
+  const widths = await tabs.getByRole('tab').evaluateAll(elements =>
+    elements.map(element => element.getBoundingClientRect().width),
+  )
+  const { rowWidth, columnGap } = await tabs.evaluate(element => ({
+    rowWidth: element.getBoundingClientRect().width,
+    columnGap: Number.parseFloat(getComputedStyle(element).columnGap) || 0,
+  }))
+  expect(Math.abs(widths[0] - widths[1])).toBeLessThanOrEqual(1)
+  expect(Math.abs(widths[0] + widths[1] + columnGap - rowWidth)).toBeLessThanOrEqual(2)
+})
+
 test('A footer approval locks synchronously, reports 503 and recovers without an unhandled rejection', async ({ page }) => {
   const workflow = { owner: { display: 'Механик смены', login: 'mechanic-e2e' }, review_state: 'pending' as const,
     display_status: 'review' as const, sync_state: 'saved' as const, has_current_cycle_comment: true }

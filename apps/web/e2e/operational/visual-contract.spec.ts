@@ -44,6 +44,51 @@ for (const width of [390, 1440] as const) {
   })
 }
 
+for (const width of [390, 1440] as const) {
+  test(`A domain surfaces keep the shared spacing contract at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await installOperational(page, { role: 'royal' })
+    await page.goto('/overview?park=7')
+    await selectInterface(page, 'Новый А')
+
+    const geometry = await page.evaluate(() => {
+      const shell = document.querySelector('.rp-task-first-shell')!
+      const pageLayout = document.createElement('div')
+      pageLayout.className = 'rp-page-layout'
+      const inventory = document.createElement('div')
+      inventory.className = 'inventory-document-list'
+      const report = document.createElement('div')
+      report.className = 'report-detail'
+      const analytics = document.createElement('div')
+      analytics.className = 'rp-analytics-park'
+      const management = document.createElement('div')
+      management.className = 'rp-management'
+      const managementList = document.createElement('div')
+      managementList.className = 'rp-master-detail__list'
+      management.append(managementList)
+      shell.append(pageLayout, inventory, report, analytics, management)
+      const read = (element: Element, property: string) => getComputedStyle(element).getPropertyValue(property)
+      const result = {
+        sectionGap: read(pageLayout, 'gap'),
+        inventoryPadding: read(inventory, 'padding-top'),
+        reportPadding: read(report, 'padding-top'),
+        analyticsPadding: read(analytics, 'padding-top'),
+        managementPadding: read(managementList, 'padding-top'),
+      }
+      pageLayout.remove(); inventory.remove(); report.remove(); analytics.remove(); management.remove()
+      return result
+    })
+
+    expect(geometry).toEqual(width === 390 ? {
+      sectionGap: '20px', inventoryPadding: '16px', reportPadding: '16px',
+      analyticsPadding: '16px', managementPadding: '16px',
+    } : {
+      sectionGap: '24px', inventoryPadding: '20px', reportPadding: '20px',
+      analyticsPadding: '20px', managementPadding: '16px',
+    })
+  })
+}
+
 for (const width of [599, 600] as const) for (const mode of ['Классический', 'Новый А'] as const) {
   test(`shared phone boundary remains stable at ${width}px in ${mode}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })

@@ -1,4 +1,4 @@
-import { test } from '@playwright/test'
+import { expect, test } from '@playwright/test'
 import { openRouteFixture, assertResponsiveContracts } from './routeFixtures'
 import { userForRole, settlePage } from './fixtures'
 import { selectInterface } from '../support/interfaceMode'
@@ -18,6 +18,11 @@ for (const mode of ['Классический', 'Новый А'] as const)
     await settlePage(page)
     await assertResponsiveContracts(page, width)
     await assertNoSeriousA11yViolations(page)
-    await page.screenshot({ path: info.outputPath(`${mode === 'Новый А' ? 'a' : 'classic'}-${route}-${theme}-${width}.png`), fullPage: true, animations: 'disabled' })
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+    const name = `${mode === 'Новый А' ? 'a' : 'classic'}-${route}-${theme}-${width}.png`
+    if (width === 390 || width === 1440)
+      await expect(page).toHaveScreenshot(name, { fullPage: true, animations: 'disabled', caret: 'hide' })
+    else
+      await page.screenshot({ path: info.outputPath(name), fullPage: true, animations: 'disabled' })
   })
 }
