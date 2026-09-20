@@ -138,10 +138,12 @@ function TicketCard({ ticket, campaign, apiClient, reload, editing, onEditingCha
   const [photo, setPhoto] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const submitting = useRef(false)
   const submitAttempt = useRef<{ fingerprint: string; key: string } | null>(null)
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (!photo) return
+    if (!photo || submitting.current) return
+    submitting.current = true
     setBusy(true); setError(null)
     try {
       const fingerprint = `${ticket.key}:${ticket.park_id}:${comment}:${photo.name}:${photo.size}:${photo.lastModified}`
@@ -152,7 +154,7 @@ function TicketCard({ ticket, campaign, apiClient, reload, editing, onEditingCha
       submitAttempt.current = null
       refreshReportsBadge(); reload()
     } catch (reason) { setError(classifyApiError(reason, 'Не удалось отправить тикет оператору.').description) }
-    finally { setBusy(false) }
+    finally { submitting.current = false; setBusy(false) }
   }
   const trackerState = transitionLabel(ticket.tracker_transition)
   const canSubmit = ticket.review_status == null || ticket.review_status === 'returned'

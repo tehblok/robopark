@@ -156,6 +156,23 @@ it('sends a comment and photo to operator review', async () => {
   expect(campaign).toHaveBeenCalledTimes(2)
 })
 
+it('serializes a failed ticket completion and exposes a retryable error', async () => {
+  let reject!: (reason: unknown) => void
+  const pending = new Promise<never>((_, rejectPromise) => { reject = rejectPromise })
+  const complete = vi.fn(() => pending)
+  renderPage({ ...api, campaign: vi.fn(async () => detail), completeCampaignTicket: complete })
+  const openPanel = (await screen.findByRole('heading', { name: 'Открытые · 1' })).closest('section')!
+  await userEvent.click(within(openPanel).getByRole('button', { name: 'Заполнить и отправить на проверку' }))
+  await userEvent.type(within(openPanel).getByRole('textbox', { name: 'Комментарий для оператора' }), 'Готово')
+  await userEvent.upload(within(openPanel).getByLabelText('Фото'), new File(['x'], 'done.jpg', { type: 'image/jpeg' }))
+  const form = within(openPanel).getByRole('button', { name: 'Отправить оператору' }).closest('form')!
+  fireEvent.submit(form); fireEvent.submit(form)
+  expect(complete).toHaveBeenCalledTimes(1)
+  reject(new ApiError(503, 'offline', 'campaign-request'))
+  expect(await within(openPanel).findByRole('alert')).toBeVisible()
+  expect(within(openPanel).getByRole('button', { name: 'Отправить оператору' })).toBeEnabled()
+})
+
 it('keeps only one ticket completion form open on a phone', async () => {
   useViewport(true)
   const twoOpen = {

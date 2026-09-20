@@ -59,3 +59,8 @@ The physical OnePlus camera cannot be exercised from this workspace. Existing br
 - `apps/web/src/app/interface/interface-a.css`
 
 The pre-existing uncommitted `progress.md` edit was preserved and is not part of this task's commit.
+
+## Review round 1 (in progress)
+
+- Campaign ticket completion now has a synchronous submission lock in the shared owner. Two submits before React commits `busy` produce one request; a 503 becomes a visible alert and releases the same form for retry.
+- Regression: `CampaignsPage.test.tsx` — **12 passed**.
