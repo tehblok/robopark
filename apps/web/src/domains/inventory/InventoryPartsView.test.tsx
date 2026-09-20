@@ -60,7 +60,9 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 describe('InventoryPartsView', () => {
   it.each([401, 403])('clears protected catalog and selected labels after %s', async status => {
     const search = vi.fn().mockResolvedValueOnce(page()).mockRejectedValue(new ApiError(status, 'denied'))
+    const lateComponents = deferred<{ items: Array<{ id: number; name: string; is_active: boolean; has_photo: boolean }>; limit: number; offset: number; total: number }>()
     const apiClient = client(search)
+    apiClient.inventoryCatalogComponents = vi.fn(() => lateComponents.promise)
     const view = render(<InventoryPartsView apiClient={apiClient} parkId={1} />)
     await screen.findByText('ABC-01')
     await userEvent.click(screen.getByRole('checkbox', { name: 'Выбрать для печати Тяга' }))
@@ -69,6 +71,8 @@ describe('InventoryPartsView', () => {
     await waitFor(() => expect(screen.queryByText('ABC-01')).not.toBeInTheDocument())
     expect(screen.queryByText('Полка A-1')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Печатать выбранные (0)' })).toBeDisabled()
+    await act(async () => lateComponents.resolve({ items: [{ id: 99, name: 'Закрытый каталог', is_active: true, has_photo: false }], limit: 200, offset: 0, total: 1 }))
+    expect(screen.queryByRole('option', { name: 'Закрытый каталог' })).not.toBeInTheDocument()
   })
   it('debounces search and renders a compact stock card without global controls', async () => {
     const apiClient = client()

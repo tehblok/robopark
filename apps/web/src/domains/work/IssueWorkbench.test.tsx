@@ -17,6 +17,8 @@ import {
 import { AuthContext } from '../../auth-context'
 import { ParkScopeContext } from '../../app/park/parkScope'
 import { ParkScopeProvider } from '../../app/park/ParkScopeProvider'
+import { InterfaceModeProvider } from '../../app/interface/InterfaceModeProvider'
+import { createInterfaceModeStore } from '../../app/interface/interfaceModeStore'
 import { ru } from '../../i18n/ru'
 import { collaborationClient } from '../../components/tracker/collaborationClient'
 import { resetCoalescingForTests, resourceStore } from '../../lib/resource'
@@ -371,6 +373,18 @@ it('renders a duplicate upstream task key only once', async () => {
   })).toHaveLength(1)
 })
 
+it('keeps the task route identity visible in A when workflow metadata is absent', async () => {
+  renderWorkbench({ presentationMode: 'task-first' })
+
+  const taskHeader = await waitFor(() => {
+    const header = document.querySelector<HTMLElement>('[data-task-zone="header"]')
+    expect(header).not.toBeNull()
+    return header!
+  })
+  expect(within(taskHeader).getByRole('heading', { name: `Задача ${issue.key}` })).toBeVisible()
+  expect(within(taskHeader).getByRole('heading', { name: issue.summary })).toBeVisible()
+})
+
 function Harness({ children }: { children: ReactNode }) {
   return <MemoryRouter>{children}</MemoryRouter>
 }
@@ -384,6 +398,7 @@ function renderWorkbench({
   onAuthorizationFailure = vi.fn(async () => undefined),
   strictMode = false,
   initialPath = '/',
+  presentationMode = 'classic',
 }: {
   client?: IssueWorkbenchApiClient
   selectedIssue?: string
@@ -393,7 +408,12 @@ function renderWorkbench({
   onAuthorizationFailure?: () => Promise<unknown>
   strictMode?: boolean
   initialPath?: string
+  presentationMode?: 'classic' | 'task-first'
 } = {}) {
+  const modeStore = createInterfaceModeStore(() => ({
+    getItem: () => presentationMode,
+    setItem: () => undefined,
+  }))
   const onStateChange = vi.fn()
   const onOpenIssue = vi.fn()
   const onCloseIssue = vi.fn()
@@ -405,7 +425,7 @@ function renderWorkbench({
       selectedPark={selectedPark} state={value} user={currentUser} />
   }
   const view = render(<ControlledWorkbench />, {
-    wrapper: ({ children }) => <MemoryRouter initialEntries={[initialPath]}>{children}</MemoryRouter>,
+    wrapper: ({ children }) => <InterfaceModeProvider accountId={currentUser.id} store={modeStore}><MemoryRouter initialEntries={[initialPath]}>{children}</MemoryRouter></InterfaceModeProvider>,
     reactStrictMode: strictMode,
   })
   return {

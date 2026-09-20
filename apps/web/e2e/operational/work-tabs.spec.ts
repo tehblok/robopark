@@ -115,7 +115,10 @@ for (const width of [390, 1440]) {
     await expect(page.getByRole('tab', { name: 'Задача', exact: true })).toHaveAttribute('aria-selected', 'true')
     await settlePage(page)
     expect(queries).toEqual([])
-    expect(emergency).toEqual([])
+    await expect.poll(() => emergency).toEqual(expect.arrayContaining([
+      '/api/emergency/resolve', `/api/emergency/${snapshot.vin}/snapshot`,
+    ]))
+    const initialEmergencyCount = emergency.length
 
     const draft = 'Черновик комментария главного блокера'
     await page.getByRole('textbox', { name: 'Комментарии', exact: true }).fill(draft)
@@ -127,7 +130,7 @@ for (const width of [390, 1440]) {
     await expect.poll(() => queries.length).toBeGreaterThan(0)
     expectRelatedQuery(queries.at(-1)!, rootKey, false)
     expect(queries.every(params => params.get('status') !== 'closed')).toBe(true)
-    expect(emergency).toEqual([])
+    expect(emergency).toHaveLength(initialEmergencyCount)
     await page.getByRole('tab', { name: 'Задача', exact: true }).click()
     await expectWorkLocation(page, rootKey)
     await expect(page.getByRole('textbox', { name: 'Комментарии', exact: true })).toHaveValue(draft)
@@ -187,6 +190,10 @@ for (const width of [390, 1440]) {
     await expect(page.getByRole('heading', { name: `Задача ${rootKey}`, exact: true })).toBeVisible()
     await settlePage(page)
     expect(queries).toEqual([])
+    await expect.poll(() => emergency).toEqual(expect.arrayContaining([
+      '/api/emergency/resolve', `/api/emergency/${snapshot.vin}/snapshot`,
+    ]))
+    const initialEmergencyCount = emergency.length
     await page.getByRole('tab', { name: 'Закрытые задачи', exact: true }).click()
     await expectWorkLocation(page, rootKey, 'closed')
     const panel = page.getByRole('tabpanel')
@@ -198,7 +205,7 @@ for (const width of [390, 1440]) {
     await expect(rows.last()).toHaveAttribute('aria-label', 'Открыть задачу ROBOPARK-309: Выполненный ремонт 10')
     expectRelatedQuery(queries.at(-1)!, rootKey, true)
     expect(queries.every(params => params.get('status') === 'closed')).toBe(true)
-    expect(emergency).toEqual([])
+    expect(emergency).toHaveLength(initialEmergencyCount)
     await expect(panel.getByRole('button', { name: 'Назад', exact: true })).toBeDisabled()
     await panel.getByRole('button', { name: 'Вперёд', exact: true }).click()
     await expect(rows).toHaveCount(1)

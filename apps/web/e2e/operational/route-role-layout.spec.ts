@@ -1,12 +1,24 @@
 import { expect, test } from '@playwright/test'
 import { canAccessRoute } from '../../src/app/routing/accessPolicy'
 import { ROUTE_MANIFEST } from '../../src/app/routing/routeManifest'
+import type { User } from '../../src/api'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 import { parkNorth, roles, userForRole } from './fixtures'
 import { assertResponsiveContracts, openRouteFixture } from './routeFixtures'
 import { selectInterface } from '../support/interfaceMode'
 
-const widths = [320, 390, 768, 1024, 1440] as const
+const widths = [320, 390, 412, 899, 1440] as const
+const restrictedUser: User = {
+  id: 160,
+  username: 'field-lead-e2e',
+  role: 'field_lead',
+  access_status: 'approved',
+  tracker_login: 'field.lead',
+  must_change_password: false,
+  screenshot_guard: false,
+  permissions: ['nav.dashboard', 'nav.robot_search', 'nav.reports', 'reports.create', 'tracker.read'],
+  parks: [parkNorth],
+}
 
 for (const mode of ['Классический', 'Новый А'] as const) for (const role of roles) for (const route of ROUTE_MANIFEST.filter(item => item.surface === 'shell')) for (const width of widths) {
   test(`${mode} ${role}: ${route.id} at ${width}px`, async ({ page }) => {
@@ -17,6 +29,27 @@ for (const mode of ['Классический', 'Новый А'] as const) for (
     await selectInterface(page, mode)
     await assertResponsiveContracts(page, width)
     await assertNoSeriousA11yViolations(page)
+  })
+}
+
+for (const mode of ['Классический', 'Новый А'] as const) for (const route of ROUTE_MANIFEST.filter(item => item.surface === 'shell')) for (const width of [390, 1440] as const) {
+  test(`${mode} restricted: ${route.id} at ${width}px`, async ({ page }) => {
+    test.skip(!canAccessRoute(restrictedUser, route.id), 'route denied by access policy')
+    await page.setViewportSize({ width, height: 900 })
+    await openRouteFixture(page, route.id, restrictedUser)
+    await selectInterface(page, mode)
+    await assertResponsiveContracts(page, width)
+    await assertNoSeriousA11yViolations(page)
+  })
+}
+
+for (const mode of ['Классический', 'Новый А'] as const) {
+  test(`${mode} restricted role cannot retain protected administration`, async ({ page }) => {
+    await openRouteFixture(page, 'overview', restrictedUser)
+    await selectInterface(page, mode)
+    await page.goto('/admin/users?park=7')
+    await expect(page).not.toHaveURL(/\/admin\/users/)
+    await expect(page.getByRole('button', { name: /Открыть аккаунт/ })).toHaveCount(0)
   })
 }
 

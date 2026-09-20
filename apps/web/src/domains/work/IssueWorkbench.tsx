@@ -903,13 +903,14 @@ export function TaskController({
                         }} />
                     </> : null}
                     <TabPanel id="work-panel-task" labelledBy={taskFirst && taskFocus === 'chat' ? 'tab-chat' : 'tab-task'} active={activeTab === 'task'} key={issueKey}>
-                    <TaskFirstTaskLayout enabled={taskFirst} onActionHost={setTaskActionHost} header={detail.data?.workflow ? <>
+                    <TaskFirstTaskLayout enabled={taskFirst} onActionHost={setTaskActionHost} header={detail.data && (taskFirst || detail.data.workflow) ? <>
+                      {taskFirst ? <h1 className="a-task-title">Задача {detail.data.key}</h1> : null}
                       <SyncStatus updatedAt={hiddenDetail ? detail.updatedAt : detail.updatedAt !== null && comments.updatedAt !== null ? Math.min(detail.updatedAt, comments.updatedAt) : null}
                         isRevalidating={detail.isRevalidating || (!hiddenDetail && comments.isRevalidating)}
                         error={detail.error || (!hiddenDetail ? comments.error : null)} />
                       <TaskIssueSummary issue={detail.data} now={now} robotReadOnly={!mechanicCanWork}
                         onOpenRobotCheck={mechanicCanWork ? () => changeTab('check') : undefined} />
-                      <TaskSyncStatus state={detail.data.workflow.sync_state} errorCode={detail.data.workflow.sync_error_code} />
+                      {detail.data.workflow ? <TaskSyncStatus state={detail.data.workflow.sync_state} errorCode={detail.data.workflow.sync_error_code} /> : null}
                     </> : null} context={detail.data ? <TaskContextRail
                       issue={detail.data} snapshot={robotSnapshot} canCheck={mechanicCanWork}
                       onCheck={() => changeTab('check')}

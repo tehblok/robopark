@@ -24,12 +24,19 @@ test('50 mode and work-tab cycles retain one File, draft and bounded intervals w
     Object.defineProperty(window, '__intervalCount', { get: () => ids.size })
   })
   let writes = 0
-  page.on('request', request => { if (request.url().includes('/api/') && request.method() !== 'GET') writes++ })
+  let resolutionReads = 0
+  page.on('request', request => {
+    if (!request.url().includes('/api/') || request.method() === 'GET') return
+    if (new URL(request.url()).pathname === '/api/emergency/resolve') resolutionReads++
+    else writes++
+  })
   await installOperational(page, { issue: { ...issue, claim: { park_id: 7 }, workflow: {
     owner: { login: 'mechanic-e2e', display: 'Механик' }, review_state: null,
     display_status: 'in_progress', sync_state: 'synced', has_current_cycle_comment: true,
   } } })
   await page.goto('/work/ROBOPARK-42?park=7')
+  await expect.poll(() => resolutionReads).toBeGreaterThan(0)
+  const initialResolutionReads = resolutionReads
   const comment = page.getByRole('textbox', { name: 'Комментарии', exact: true })
   const file = page.getByLabel('Выбрать фото', { exact: true })
   await comment.fill('Черновик после ремонта')
@@ -45,5 +52,6 @@ test('50 mode and work-tab cycles retain one File, draft and bounded intervals w
     expect(await file.evaluate((input: HTMLInputElement) => input.files?.[0]?.name)).toBe('repair.png')
     expect(await count()).toBeLessThanOrEqual(initial)
   }
+  expect(resolutionReads).toBe(initialResolutionReads)
   expect(writes).toBe(0)
 })
