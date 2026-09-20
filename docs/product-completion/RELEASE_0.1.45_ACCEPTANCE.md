@@ -1,8 +1,14 @@
 # Release 0.1.45 acceptance
 
-Status: **ACCEPTED WITH USER RULING**. The 8-hour soak started at `2026-09-20T09:38:15Z` and was explicitly stopped by the user after 4,800 seconds. It is recorded as `USER_CANCELLED`, not PASS; the user directed release completion without spending the remaining wall time.
+Status for the archived 0.1.45 candidate: **ACCEPTED WITH USER RULING**. This
+document is historical and is not evidence for the current source tree. Its
+non-soak PASS records are bound to source-tree SHA-256
+`c4591526ecdc5bcc56ba7608d8b7336a3726e6f9f35599a8546961b4457d74e0`;
+the current audit source is **UNVERIFIED** by these records. The 8-hour soak
+started at `2026-09-20T09:38:15Z` and was explicitly stopped by the user after
+4,800 seconds. It is recorded as `USER_CANCELLED`, not PASS.
 
-## Gates completed
+## Historical gates for the archived candidate
 
 | Gate | Evidence | Result |
 | --- | --- | --- |

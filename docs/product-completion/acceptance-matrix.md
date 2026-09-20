@@ -2,6 +2,23 @@
 
 Evidence is recorded only after the named command exits successfully. The release does not require an unattended soak.
 
+## Current-source status
+
+The current audit work is based on Git HEAD `d00cd1dda1d5b1e4d65075566406743a8bdc3298`
+plus the Task 9 review fixes. No broad gate below is a current-source PASS. The
+stored full-suite, PostgreSQL, host, visual and 200-user records are historical:
+they belong to source-tree SHA-256
+`c4591526ecdc5bcc56ba7608d8b7336a3726e6f9f35599a8546961b4457d74e0`.
+The partial soak belongs to a different source hash and ended `USER_CANCELLED`.
+
+| Current gate | Status |
+|---|---|
+| Full API / full web / production build | **UNVERIFIED for current source** |
+| PostgreSQL / host / route-role / visual | **UNVERIFIED for current source** |
+| 200-user load | **UNVERIFIED for current source** |
+| 8-hour soak | **NOT RUN for current source**; historical attempt was cancelled |
+| Targeted Task 9 checks | Recorded in the Task 9 report; scoped evidence only, never a release PASS |
+
 ## Verification targets
 
 | Target | Purpose | Expected duration | What it deliberately excludes |
@@ -25,13 +42,14 @@ Evidence is recorded only after the named command exits successfully. The releas
 | Notifications | New tasks, report/review actions and host-health transitions; role/on-shift targeting, internal fallback and explicit permission request | API push, tracker-read, system-notification and web notification tests |
 | Host resources | Expired receipts/uploads and confirmed temporary files are deleted in bounded batches; pending data is protected | `apps/api/tests/test_cache_cleanup.py` |
 | Privacy telemetry | Sampled numeric aggregates only; arbitrary task text, identifiers and photos are rejected | client telemetry API/web tests |
-| 200 users | Harness contract and disposable PostgreSQL capacity benchmark | 46 harness tests passed; 200 sessions/4000 cadence requests passed, p95 167.64 ms, no 5xx/timeouts/leaks/duplicates (`/private/tmp/robopark-capacity-pwa.json`) |
+| 200 users | Harness contract and disposable PostgreSQL capacity benchmark | Historical only: 46 harness tests and 200 sessions/4000 cadence requests passed for source hash `c459…74e0`; current source is UNVERIFIED |
 
-## Final verification
+## Historical verification (not current release evidence)
 
-- `./scripts/verify.sh api` — 1993 passed, 8 skipped.
-- `cd apps/web && npm test` — 2197 passed.
-- `cd apps/web && npm run build` — production build passed.
-- `cd apps/web && npm run check:contrast` — both themes passed.
-- `cd apps/web && npx playwright test e2e/pwa-offline.spec.ts --project=chromium` — 3 passed.
-- `apps/api/.venv/bin/python scripts/capacity_benchmark.py --users 200 --duration 60 ...` — passed all acceptance gates.
+- `./scripts/verify.sh api` — historical run only; current source UNVERIFIED.
+- `cd apps/web && npm test` — historical run only; current source UNVERIFIED.
+- `cd apps/web && npm run build` — historical run only; current source UNVERIFIED.
+- `cd apps/web && npm run check:contrast` — historical run only; current source UNVERIFIED.
+- Browser/PWA runs recorded before Task 9 are historical; current scoped smoke is
+  reported separately and does not replace the complete web gate.
+- The 200-user capacity run is historical; it was not repeated for current source.
