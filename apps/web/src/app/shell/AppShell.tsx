@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react'
-import { Link, Outlet, useLocation, useNavigationType } from 'react-router-dom'
+import { Link, Outlet, useLocation, useNavigate, useNavigationType } from 'react-router-dom'
 import { api, type Park, type User } from '../../api'
 import { useAuth } from '../../auth-context'
 import { Button, IconButton } from '../../design-system/actions/Button'
@@ -21,6 +21,10 @@ import './AppShell.css'
 import { InterfaceChoice } from '../interface/InterfaceChoice'
 import { usePresentationMode } from '../interface/presentationModeContext'
 import { PresentationShell } from '../interface/PresentationShell'
+import { ShareTargetInbox } from '../../pwa/ShareTargetInbox'
+import { SyncCenter } from '../../pwa/SyncCenter'
+import { readReportPhotoDraft, writeReportPhotoDraft } from '../../domains/reports/reportPhotoDrafts'
+import { reportDraftKey } from '../../domains/reports/reports'
 
 const GROUPS: readonly NavGroup[] = [
   'operations',
@@ -300,6 +304,7 @@ export function AppShell() {
   } = useTheme()
   const presentationMode = usePresentationMode()
   const location = useLocation()
+  const navigate = useNavigate()
   const navigationType = useNavigationType()
   const navigationTypeRef = useRef(navigationType)
   const previousPathname = useRef(location.pathname)
@@ -590,6 +595,7 @@ export function AppShell() {
             />
           ) : null}
           <div className="rp-shell__topbar-actions">
+            <SyncCenter />
             <span className="rp-shell__user">
               <strong>{user.username}</strong>
               <span>{roleLabel(user.role)}</span>
@@ -705,6 +711,25 @@ export function AppShell() {
         <footer className="rp-shell__about">Разработчик: tehblokdan</footer>
         </div>
       </BottomSheet>
+      <ShareTargetInbox
+        onAttachTask={async (taskKey, draft) => {
+          const file = new File([draft.blob], draft.name, { type: draft.type, lastModified: draft.createdAt })
+          await api.taskPhoto(taskKey, file, crypto.randomUUID())
+          navigate(`/work/${encodeURIComponent(taskKey)}${parkId == null ? '' : `?park=${parkId}`}`)
+        }}
+        onAttachReport={parkId == null ? undefined : async draft => {
+          const key = reportDraftKey(user.id, parkId)
+          const current = await readReportPhotoDraft(key)
+          await writeReportPhotoDraft({
+            key, ownerKey: badgeIdentity, revision: crypto.randomUUID(),
+            activeForm: current?.activeForm ?? 'problem', trackerKey: current?.trackerKey ?? '',
+            title: current?.title ?? '', body: current?.body ?? '', createdReportId: current?.createdReportId ?? null,
+            attachmentKind: 'device_photo',
+            attachment: { blob: draft.blob, name: draft.name, lastModified: draft.createdAt },
+          })
+          navigate(`/reports/new?park=${parkId}`)
+        }}
+      />
     </>
   )
 }

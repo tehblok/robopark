@@ -8,8 +8,17 @@ const maxRuntimeEntries = 100
 const hashedAsset = /^\/assets\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+-[A-Za-z0-9_-]{2,}\.(?:js|css|png|svg|webp|woff2?)$/
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(shellCache).then((cache) => cache.addAll(precache)))
+  event.waitUntil((async () => {
+    const cache = await caches.open(shellCache)
+    await cache.addAll(precache)
+    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+    clients.forEach((client) => client.postMessage({ type: 'UPDATE_READY' }))
+  })())
   // Do not call skipWaiting: an open page must keep using its existing bundle.
+})
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'ACTIVATE_WHEN_SAFE') void self.skipWaiting()
 })
 
 self.addEventListener('activate', (event) => {
@@ -23,15 +32,24 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const request = event.request
-  if (request.method !== 'GET') return
   const url = new URL(request.url)
+  if (request.method === 'POST' && url.origin === self.location.origin && url.pathname === '/share-target') {
+    event.respondWith(storeSharedPhoto(request))
+    return
+  }
+  if (request.method !== 'GET') return
   if (url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return
 
   if (request.mode === 'navigate') {
-    event.respondWith(fetch(request).catch(async () => {
-      const cache = await caches.open(shellCache)
-      return cache.match('/offline.html')
-    }))
+    const shell = caches.open(shellCache).then(async (cache) => {
+      const refresh = fetch('/index.html', { cache: 'no-store' }).then(async (response) => {
+        if (response.ok && response.type !== 'opaque') await cache.put('/index.html', response.clone())
+        return response
+      })
+      event.waitUntil(refresh.then(() => undefined).catch(() => undefined))
+      return (await cache.match('/index.html')) ?? refresh.catch(() => cache.match('/offline.html'))
+    })
+    event.respondWith(shell)
     return
   }
   if (url.search || !hashedAsset.test(url.pathname)) return
@@ -49,3 +67,42 @@ self.addEventListener('fetch', (event) => {
     return response
   })())
 })
+
+function openShareInbox() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('robopark-share-inbox', 1)
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains('drafts')) request.result.createObjectStore('drafts', { keyPath: 'id' })
+    }
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+async function storeSharedPhoto(request) {
+  try {
+    const form = await request.formData()
+    const photo = form.get('photo')
+    if (photo instanceof Blob && photo.type.startsWith('image/')) {
+      const db = await openShareInbox()
+      const transaction = db.transaction('drafts', 'readwrite')
+      transaction.objectStore('drafts').put({
+        id: crypto.randomUUID(),
+        createdAt: Date.now(),
+        name: photo.name || 'shared-photo',
+        type: photo.type,
+        blob: photo,
+        assignment: null,
+      })
+      await new Promise((resolve, reject) => {
+        transaction.oncomplete = resolve
+        transaction.onerror = () => reject(transaction.error)
+        transaction.onabort = () => reject(transaction.error)
+      })
+      db.close()
+    }
+  } catch {
+    // Opening the application is still useful when the shared file cannot be stored.
+  }
+  return Response.redirect(`${self.location.origin}/?shared=1`, 303)
+}

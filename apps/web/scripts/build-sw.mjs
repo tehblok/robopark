@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
-const staticFiles = ['/offline.html', '/pwa-icon-192.png', '/pwa-icon-512.png']
+const staticFiles = ['/index.html', '/offline.html', '/pwa-icon-192.png', '/pwa-icon-512.png']
 
 export async function buildServiceWorker(distDirectory) {
   const dist = resolve(distDirectory)
