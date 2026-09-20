@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ROUTE_MANIFEST } from './routeManifest'
 import { ROUTE_COVERAGE_MANIFEST } from './routeCoverageManifest'
+import { ROUTE_STATE_EVIDENCE } from './routeStateEvidence'
 
 describe('executable route coverage manifest', () => {
   it('covers every reachable route exactly once', () => {
@@ -43,6 +44,13 @@ describe('executable route coverage manifest', () => {
       for (const assertion of action.apiPermissionAssertions) {
         expect(assertion, `${route.routeId}:${action.id}`).toMatch(/^apps\/api\/tests\/test_[^:]+\.py::test_/)
       }
+    }
+  })
+
+  it('requires an auditable reason for every not-applicable evidence case', () => {
+    for (const item of ROUTE_STATE_EVIDENCE.filter(item => item.fixture === 'not-applicable')) {
+      expect(item.notApplicableReason?.length, item.caseId).toBeGreaterThan(30)
+      expect(item.selector, item.caseId).toBe('')
     }
   })
 
