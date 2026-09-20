@@ -137,3 +137,24 @@
   `753 passed in 479.79s`; full API `1796 passed, 7 skipped`; full web
   `147 files / 2080 tests`; scoped Ruff and diff checks passed; web lint exited 0 with
   existing warnings and production build succeeded.
+
+## Review round 4
+
+- Live-merge and staged Tracker root factories now preserve the configured lexical
+  path. They no longer resolve a root or ancestor symlink before the pinned
+  `O_NOFOLLOW` walk, so a `/data`-shaped alias to protected storage is rejected and
+  no outside file or confirmed-upload metadata is retired.
+- The pressure coordinator propagates its absolute 0.5-second deadline, remaining
+  deletion allowance and a 4096-entry scan allowance through confirmed Tracker
+  cleanup into the streaming storage scanner. Reports include `scanned_count`,
+  `partial` and the exact `stop_reason` for deadline/scan/deletion exhaustion.
+- A partial or failed scan never classifies unseen eligible blobs as missing. Only a
+  completed scan may retire metadata for an already-absent, delivery-confirmed local
+  copy; unconfirmed uploads and reliable-action audit rows remain protected.
+- RED evidence: the live-merge ancestor-symlink regression deleted one outside file;
+  the staged-root regression deleted the outside upload and its row; the protected
+  upload stream exceeded the sentinel instead of observing the coordinator deadline.
+- Verification: focused API retention/live-merge/health/report/outbox matrix
+  `113 passed`; full host `753 passed in 491.59s`; full API `1800 passed, 7 skipped`;
+  full web `147 files / 2080 tests`; production build, scoped Ruff `E,F,I` and diff
+  checks passed.

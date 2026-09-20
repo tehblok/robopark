@@ -374,6 +374,27 @@ def test_pressure_prune_pins_parent_and_never_follows_namespace_symlinks(tmp_pat
     assert protected.read_text() == "outside"
 
 
+def test_default_root_factory_keeps_symlink_visible_to_no_follow_guard(tmp_path, monkeypatch):
+    from robopark_api.config import reset_settings_cache
+    from robopark_api.services.live_merge import default_live_merge_root
+
+    protected = tmp_path / "protected"
+    namespace = protected / "live-merge" / "ns"
+    namespace.mkdir(parents=True)
+    victim = namespace / "victim.json"
+    victim.write_text("outside")
+    data_alias = tmp_path / "data"
+    data_alias.symlink_to(protected, target_is_directory=True)
+    configured = data_alias / "live-merge"
+    monkeypatch.setenv("LIVE_MERGE_DIR", str(configured))
+    reset_settings_cache()
+
+    store = LiveMergeStore(default_live_merge_root())
+
+    assert store.prune(now=time.time(), blob_max_age_seconds=0) == 0
+    assert victim.read_text() == "outside"
+
+
 def test_pressure_prune_does_not_remove_active_atomic_write_tmp(tmp_path, monkeypatch):
     store = LiveMergeStore(tmp_path)
     target = store.result_path("ns", "active")

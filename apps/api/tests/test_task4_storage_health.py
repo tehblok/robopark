@@ -145,6 +145,41 @@ def test_api_retention_parent_replacement_and_report_are_bounded(tmp_path, monke
     assert protected.read_bytes() == b"outside"
 
 
+def test_api_retention_reports_partial_when_protected_scan_reaches_budget(
+    tmp_path, monkeypatch
+):
+    from robopark_api.services import storage_retention
+
+    class ProtectedEntries:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return None
+
+        def __iter__(self):
+            for index in range(1_000_000):
+                yield type("Entry", (), {"name": f"protected-{index}"})()
+
+    root = tmp_path / "confirmed"
+    root.mkdir()
+    monkeypatch.setattr(storage_retention.os, "scandir", lambda descriptor: ProtectedEntries())
+
+    report = storage_retention.cleanup_storage(
+        roots={"confirmed_tracker": root},
+        budget=storage_retention.StorageBudget(100, 0, minimum_free_bytes=1),
+        dry_run=False,
+        max_deletions=1,
+        eligible_names={"confirmed_tracker": {"confirmed-upload"}},
+        max_scanned_entries=4,
+    )
+
+    assert report["scanned_count"] == 4
+    assert report["partial"] is True
+    assert report["stop_reason"] == "scan_budget"
+    assert report["eligible_missing"] == {"confirmed_tracker": []}
+
+
 def test_cleanup_retry_is_bounded_and_rate_limited():
     from robopark_api.services.storage_retention import CleanupRetry
 

@@ -70,13 +70,13 @@ def _sqlite_parent() -> Path | None:
     raw = url.removeprefix("sqlite:///")
     if raw == ":memory:":
         return None
-    return Path(raw).resolve().parent
+    return Path(raw).parent
 
 
 def default_live_merge_root() -> Path:
     settings = get_settings()
     if settings.live_merge_dir:
-        return Path(settings.live_merge_dir).resolve()
+        return Path(settings.live_merge_dir)
     parent = _sqlite_parent()
     if parent is not None:
         return parent / LIVE_MERGE_DIRNAME

@@ -6,6 +6,7 @@ import heapq
 import os
 import shutil
 import stat
+import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -73,14 +74,20 @@ def cleanup_storage(
     dry_run: bool = True,
     max_deletions: int = 128,
     eligible_names: dict[str, set[str]] | None = None,
+    max_scanned_entries: int | None = None,
+    deadline_monotonic: float | None = None,
 ) -> dict:
     """Clean only API-owned duplicates; callers cannot add primary-data roots."""
     unknown = sorted(set(roots) - set(ALLOWED_CATEGORIES))
     blocked = bool(unknown)
     candidates = []
     skipped_counts: dict[str, int] = {}
-    opened: list[int] = []
+    opened = []
     seen_eligible: dict[str, set[str]] = {}
+    completed_categories: set[str] = set()
+    scanned_count = 0
+    partial = False
+    stop_reason: str | None = None
 
     def skip(reason: str) -> None:
         skipped_counts[reason] = skipped_counts.get(reason, 0) + 1
@@ -94,6 +101,15 @@ def cleanup_storage(
             descriptor = manager.__enter__()
             opened.append((manager, descriptor))
             for entry in os.scandir(descriptor):
+                if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                    partial = True
+                    stop_reason = "time_budget"
+                    break
+                if max_scanned_entries is not None and scanned_count >= max_scanned_entries:
+                    partial = True
+                    stop_reason = "scan_budget"
+                    break
+                scanned_count += 1
                 if eligible_names is not None and entry.name not in eligible_names.get(
                     category, set()
                 ):
@@ -109,14 +125,24 @@ def cleanup_storage(
                         heapq.heapreplace(candidates, item)
                 else:
                     skip("not_owned_file")
+            else:
+                completed_categories.add(category)
         except OSError:
             blocked = True
             skip("scan_failed")
+            partial = True
+            stop_reason = stop_reason or "scan_failed"
+        if partial:
+            break
     candidates.sort(key=lambda item: (-item[0], item[1]))
     reclaimed = 0
     planned = []
     deleted = []
     for _, name, category, before, descriptor in candidates:
+        if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+            partial = True
+            stop_reason = "time_budget"
+            break
         if len(planned) >= max(0, max_deletions) or reclaimed >= budget.bytes_to_reclaim:
             break
         item = {"category": category, "path": name, "bytes": before.st_size}
@@ -131,11 +157,17 @@ def cleanup_storage(
         except OSError:
             blocked = True
             skip("delete_failed")
+            partial = True
+            stop_reason = stop_reason or "delete_failed"
             break
     for manager, _ in reversed(opened):
         manager.__exit__(None, None, None)
     eligible_missing = {
-        category: sorted(names - seen_eligible.get(category, set()))
+        category: (
+            sorted(names - seen_eligible.get(category, set()))
+            if category in completed_categories
+            else []
+        )
         for category, names in (eligible_names or {}).items()
     }
     return {
@@ -149,6 +181,9 @@ def cleanup_storage(
         "pressure": budget.free_bytes + reclaimed < budget.floor_bytes,
         "blocked": blocked,
         "bounded": len(planned) <= max(0, max_deletions),
+        "scanned_count": scanned_count,
+        "partial": partial,
+        "stop_reason": stop_reason or "complete",
         "unknown_categories": unknown,
         "skipped_counts": skipped_counts,
         "eligible_missing": eligible_missing,
