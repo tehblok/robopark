@@ -3,21 +3,27 @@ from __future__ import annotations
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from sqlalchemy import Engine, inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import QueuePool
 
+from robopark_api import main
 from robopark_api.collaboration_models import TrackerPresence
-from robopark_api.db import configure_engine
+from robopark_api.config import Settings, get_settings
+from robopark_api.db import configure_engine, get_db
 from robopark_api.models import (
+    AccessStatus,
     AuthThrottleState,
     Base,
     InventoryCatalogComponent,
@@ -29,11 +35,14 @@ from robopark_api.models import (
     Role,
     RolePermission,
     User,
+    UserPark,
 )
 from robopark_api.routers.tracker_collaboration import _presence_insert
+from robopark_api.security import hash_password
 from robopark_api.services import inventory_exports, inventory_stock, task_timeline
 from robopark_api.services.login_throttle import LoginThrottle
 from robopark_api.services.ops.snapshot import restore_snapshot_tree
+from robopark_api.services.rbac import RoleSlug
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
 from robopark_api.task_workflow_models import ReliableAction, TaskMessage
 
@@ -87,9 +96,7 @@ def test_audit_remediation_state_has_postgresql_upsert_and_cleanup_indexes(
     assert database.get_pk_constraint("tracker_notification_cursors")["constrained_columns"] == [
         "scope_key"
     ]
-    assert database.get_pk_constraint("auth_throttle_states")["constrained_columns"] == [
-        "key_hash"
-    ]
+    assert database.get_pk_constraint("auth_throttle_states")["constrained_columns"] == ["key_hash"]
     assert {index["name"] for index in database.get_indexes("system_incident_occurrences")} >= {
         "uq_system_incident_active_key",
         "ix_system_incident_cleanup",
@@ -174,6 +181,212 @@ def test_postgresql_17_upgrades_operator_inventory_grants_to_read_only(
             capture_output=True,
             text=True,
         )
+
+
+@contextmanager
+def _postgres_http_client(migrated_engine: Engine, tmp_path: Path, monkeypatch):
+    """Exercise HTTP routes on PostgreSQL while replacing long-lived jobs with fakes."""
+    factory = sessionmaker(bind=migrated_engine, future=True)
+    host_env = tmp_path / "host.env"
+    host_env.write_text("SECRET_KEY=postgres-contract-test\n", encoding="utf-8")
+    settings = Settings(
+        _env_file=None,
+        database_url=str(migrated_engine.url),
+        secret_key="postgres-contract-test",
+        seed_username=None,
+        seed_password=None,
+        report_attachments_dir=str(tmp_path / "reports"),
+        staged_attachments_dir=str(tmp_path / "uploads"),
+        ops_dir=str(tmp_path / "ops"),
+        ops_apply_root=str(tmp_path / "apply"),
+        ops_host_env_path=str(host_env),
+        ops_sync=True,
+    )
+
+    async def idle(stop_event, **_kwargs):
+        await stop_event.wait()
+
+    async def idle_with_factory(_session_factory, stop_event, **_kwargs):
+        await stop_event.wait()
+
+    for name in (
+        "run_keepalive_loop",
+        "run_blocker_history_loop",
+        "run_session_cleanup_loop",
+        "run_cache_cleanup_loop",
+        "run_system_notification_loop",
+    ):
+        monkeypatch.setattr(main, name, idle)
+    for name in (
+        "run_tracker_outbox_loop",
+        "run_campaign_refresh_loop",
+        "run_tracker_notification_loop",
+    ):
+        monkeypatch.setattr(main, name, idle_with_factory)
+    monkeypatch.setattr(main, "SessionLocal", factory)
+    monkeypatch.setattr(main, "get_settings", lambda: settings)
+    monkeypatch.setattr(main, "live_merge_enabled", lambda: False)
+
+    app = main.create_app()
+
+    def database_override():
+        with factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = database_override
+    app.dependency_overrides[get_settings] = lambda: settings
+    with TestClient(app) as client:
+        yield client, factory
+
+
+def _seed_http_mechanic(factory) -> tuple[int, int, str]:
+    suffix = uuid4().hex[:10]
+    with factory() as db:
+        ensure_rbac_catalog(db)
+        role = db.scalar(select(Role).where(Role.slug == RoleSlug.MECHANIC))
+        assert role is not None
+        park = Park(name=f"HTTP park {suffix}", tag=f"http-{suffix}", tracker_queue="HTTP")
+        user = User(
+            username=f"http-mech-{suffix}",
+            password_hash=hash_password("secret"),
+            role_id=role.id,
+            access_status=AccessStatus.approved.value,
+            is_active=True,
+        )
+        db.add_all([park, user])
+        db.flush()
+        db.add(UserPark(user_id=user.id, park_id=park.id))
+        db.commit()
+        return user.id, park.id, user.username
+
+
+def test_postgresql_http_sync_replay_returns_same_receipt_without_second_dispatch(
+    migrated_engine: Engine, tmp_path: Path, monkeypatch
+) -> None:
+    from robopark_api.services import offline_sync
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        offline_sync,
+        "dispatch_action",
+        lambda _db, _user, item: calls.append(item.client_action_id) or {"message_id": "pg-1"},
+    )
+    with _postgres_http_client(migrated_engine, tmp_path, monkeypatch) as (client, factory):
+        _user_id, park_id, username = _seed_http_mechanic(factory)
+        assert (
+            client.post(
+                "/auth/login", json={"username": username, "password": "secret"}
+            ).status_code
+            == 204
+        )
+        body = {
+            "device_id": "postgres-device",
+            "known_revisions": {"work": 0},
+            "actions": [
+                {
+                    "client_action_id": "pg-replay",
+                    "resource_type": "tracker_issue",
+                    "resource_id": "HTTP-1",
+                    "action": "comment",
+                    "idempotency_key": "pg-replay-idempotency",
+                    "base_revision": None,
+                    "park_id": park_id,
+                    "dependencies": [],
+                    "payload": {"text": "one"},
+                }
+            ],
+        }
+        first = client.post("/sync/batch", json=body)
+        second = client.post("/sync/batch", json=body)
+
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert calls == ["pg-replay"]
+
+
+def test_postgresql_http_media_completion_is_idempotent(
+    migrated_engine: Engine, tmp_path: Path, monkeypatch
+) -> None:
+    import hashlib
+
+    from robopark_api.services import media_uploads
+
+    upload_root = tmp_path / "uploaded-media"
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: upload_root)
+    with _postgres_http_client(migrated_engine, tmp_path, monkeypatch) as (client, factory):
+        _user_id, _park_id, username = _seed_http_mechanic(factory)
+        assert (
+            client.post(
+                "/auth/login", json={"username": username, "password": "secret"}
+            ).status_code
+            == 204
+        )
+        content = b"\xff\xd8\xffpostgres-contract"
+        started = client.post(
+            "/media/uploads",
+            json={
+                "media_id": "pg-media-1",
+                "issue_key": "HTTP-1",
+                "name": "robot.jpg",
+                "mime_type": "image/jpeg",
+                "size_bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            },
+        )
+        assert started.status_code == 201
+        upload_id = started.json()["upload_id"]
+        assert (
+            client.put(
+                f"/media/uploads/{upload_id}/chunks/0",
+                content=content,
+                headers={"X-Chunk-SHA256": hashlib.sha256(content).hexdigest()},
+            ).status_code
+            == 200
+        )
+        completed = client.post(f"/media/uploads/{upload_id}/complete")
+        replayed = client.post(f"/media/uploads/{upload_id}/complete")
+
+    assert completed.status_code == replayed.status_code == 200
+    assert completed.json() == replayed.json()
+    assert completed.json()["completed"] is True
+
+
+def test_postgresql_http_schedule_and_push_subscription_persist_for_same_user(
+    migrated_engine: Engine, tmp_path: Path, monkeypatch
+) -> None:
+    with _postgres_http_client(migrated_engine, tmp_path, monkeypatch) as (client, factory):
+        user_id, park_id, username = _seed_http_mechanic(factory)
+        assert (
+            client.post(
+                "/auth/login", json={"username": username, "password": "secret"}
+            ).status_code
+            == 204
+        )
+        now = datetime.now(UTC)
+        schedule = client.post(
+            "/schedules",
+            json={
+                "park_id": park_id,
+                "kind": "shift",
+                "start_at": (now - timedelta(minutes=1)).isoformat(),
+                "end_at": (now + timedelta(hours=1)).isoformat(),
+            },
+        )
+        subscription = client.post(
+            "/push/subscriptions",
+            json={"endpoint": "https://push.example/postgres", "p256dh": "key", "auth": "auth"},
+        )
+        event = client.app.state.push_service.emit_for_tests(
+            event_type="new_task", park_id=park_id, protected_text="private task"
+        )
+        inbox = client.get("/push/inbox")
+
+    assert schedule.status_code == 201
+    assert subscription.status_code == 201
+    assert event["event_id"]
+    assert user_id in event["internal_recipient_ids"]
+    assert inbox.status_code == 200
+    assert inbox.json()[0]["event_type"] == "new_task"
 
 
 def test_stock_postgres_17_accepts_configured_user_restore_command(

@@ -2,6 +2,17 @@
 
 Evidence is recorded only after the named command exits successfully. The release does not require an unattended soak.
 
+## Verification targets
+
+| Target | Purpose | Expected duration | What it deliberately excludes |
+|---|---|---:|---|
+| `./scripts/verify.sh fast` | Focused regression and static checks for a local change or PR | under 2 minutes on a warm developer machine | Docker, PostgreSQL container, build images, browser install, capacity and soak |
+| `./scripts/verify.sh full` | Full application, PostgreSQL, web, Docker and host gate | many minutes | Capacity and soak remain separate |
+| `./scripts/verify.sh load` | Disposable 200-user capacity benchmark | several minutes | Existing host, Tracker and production data |
+| `./scripts/verify.sh soak` | Explicit browser endurance run | caller-selected | It refuses to start without duration and output path |
+
+`all` remains an alias for `full` for compatibility. Neither `fast` nor the default contributor workflow may start a load or soak run implicitly.
+
 | Area | Acceptance | Evidence |
 |---|---|---|
 | Scoped local data | Account/role/permission/park isolation; pending actions survive restart; revoked scope is purged | `apps/web/src/pwa/offlineDb.test.ts`, `deviceResourceCache.test.ts` |

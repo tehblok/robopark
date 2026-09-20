@@ -16,6 +16,28 @@ run_api() {
   )
 }
 
+# Deliberately bounded developer/PR gate.  It does not start containers,
+# build images, install browsers, or run capacity/soak scenarios.
+run_fast() {
+  (
+    cd apps/api
+    uv sync --frozen --extra dev
+    uv run --frozen --extra dev ruff check src/robopark_api tests/test_lifespan_jobs.py
+    PYTHONDONTWRITEBYTECODE=1 uv run --frozen --extra dev \
+      python -m pytest -p no:cacheprovider -q \
+      tests/test_lifespan_jobs.py \
+      tests/test_login_throttle.py \
+      tests/test_tracker_notifications.py \
+      tests/test_system_notifications.py \
+      tests/test_push.py
+  )
+  (
+    cd apps/web
+    npm run lint
+    npm run check-nav
+  )
+}
+
 run_api_postgres() {
   command -v docker >/dev/null 2>&1 || {
     echo "docker is required for the PostgreSQL verification target" >&2
@@ -68,8 +90,34 @@ run_host() {
       python tests/host/installer_scenarios.py
 }
 
+run_load() {
+  command -v docker >/dev/null 2>&1 || {
+    echo "docker is required for the load verification target" >&2
+    return 127
+  }
+  PYTHONDONTWRITEBYTECODE=1 \
+    uv run --project apps/api --frozen --extra dev \
+      python scripts/capacity_benchmark.py --users "${ROBOPARK_LOAD_USERS:-200}" \
+      --duration "${ROBOPARK_LOAD_DURATION_SECONDS:-60}"
+}
+
+run_soak() {
+  : "${ROBOPARK_SOAK_DURATION_SECONDS:?set an explicit soak duration in seconds}"
+  : "${ROBOPARK_SOAK_OUTPUT:?set an explicit relative soak output path}"
+  ROBOPARK_E2E_SUITE=soak ROBOPARK_SOAK_DURATION_SECONDS="$ROBOPARK_SOAK_DURATION_SECONDS" \
+    ROBOPARK_SOAK_OUTPUT="$ROBOPARK_SOAK_OUTPUT" \
+    npm --prefix apps/web run test:e2e:soak
+}
+
 usage() {
-  echo "usage: $0 [api|api-postgres|web|docker|host|all]" >&2
+  cat >&2 <<EOF
+usage: $0 [fast|full|load|soak|api|api-postgres|web|docker|host]
+
+fast  Short static and focused regression checks (typically under 2 minutes).
+full  Full API, PostgreSQL, web, Docker and host verification; may take many minutes.
+load  Explicit capacity benchmark; starts disposable PostgreSQL and production workers.
+soak  Explicit browser soak; requires ROBOPARK_SOAK_DURATION_SECONDS and ROBOPARK_SOAK_OUTPUT.
+EOF
 }
 
 if [ "$#" -gt 1 ]; then
@@ -78,6 +126,9 @@ if [ "$#" -gt 1 ]; then
 fi
 
 case "${1:-all}" in
+  fast)
+    run_fast
+    ;;
   api)
     run_api
     ;;
@@ -93,7 +144,7 @@ case "${1:-all}" in
   host)
     run_host
     ;;
-  all)
+  full|all)
     run_api
     run_api_postgres
     run_web
