@@ -60,6 +60,17 @@ function draftFromUser(user: AdminUser): UserDraft {
   }
 }
 
+function locationStatus(user: AdminUser): string {
+  if (user.location_availability === 'disabled') return 'Примерное местоположение: определение отключено'
+  if (user.location_availability === 'no_ip') return 'Примерное местоположение: нет публичного IP'
+  if (user.location_availability === 'unavailable') return 'Примерное местоположение: сервис не дал результат'
+  return `Примерное местоположение по IP: ${user.last_location || 'Нет данных'}`
+}
+
+function locationSource(user: AdminUser): string {
+  return user.location_source === 'ipwhois' ? 'Источник: ipwho.is' : 'Источник: отключён'
+}
+
 function activityTime(value?: string | null): string {
   if (!value) return 'Нет данных'
   const parsed = new Date(value)
@@ -448,7 +459,8 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
                 <span>{activityTime(selectedUser.last_seen_at)} МСК</span>
                 <span>IP: {selectedUser.last_ip || 'Нет данных'}</span>
                 <span>Устройство: {selectedUser.last_device || 'Нет данных'}</span>
-                <span>Примерное местоположение по IP: {selectedUser.last_location || 'Недоступно'}</span>
+                <span>{locationStatus(selectedUser)}</span>
+                <span>{locationSource(selectedUser)}</span>
                 <small>Местоположение по IP не подтверждает присутствие в парке или офисе.</small>
               </div>
               <label className="field">

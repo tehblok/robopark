@@ -34,6 +34,8 @@ class UserAdminOut(BaseModel):
     last_ip: str | None = None
     last_device: str | None = None
     last_location: str | None = None
+    location_source: str
+    location_availability: str
 
 
 class UserCreate(BaseModel):
@@ -69,6 +71,16 @@ def _can_manage_users(db: Session, actor: User) -> bool:
 def _user_out(
     db: Session, user: User, parks: list[Park], settings: Settings
 ) -> UserAdminOut:
+    location_enabled = settings.ip_geo_provider == "ipwhois"
+    location_availability = (
+        "disabled"
+        if not location_enabled
+        else "no_ip"
+        if not user.last_ip
+        else "available"
+        if user.last_location
+        else "unavailable"
+    )
     return UserAdminOut(
         id=user.id,
         username=user.username,
@@ -85,6 +97,8 @@ def _user_out(
         last_ip=user.last_ip,
         last_device=user.last_device,
         last_location=user.last_location if settings.ip_geo_provider == "ipwhois" else None,
+        location_source="ipwhois" if location_enabled else "disabled",
+        location_availability=location_availability,
     )
 
 

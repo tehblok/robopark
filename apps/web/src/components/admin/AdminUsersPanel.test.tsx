@@ -45,6 +45,8 @@ const managedUser: AdminUser = {
   last_ip: '203.0.113.11',
   last_device: 'Android · Chrome',
   last_location: 'Москва, Москва, Россия',
+  location_source: 'ipwhois',
+  location_availability: 'available',
 }
 
 afterEach(() => { vi.restoreAllMocks(); resourceStore.clearAll() })
@@ -94,9 +96,31 @@ it('updates a user with the controlled park selection without changing the park_
   expect(screen.getByText('IP: 203.0.113.11')).toBeVisible()
   expect(screen.getByText('Устройство: Android · Chrome')).toBeVisible()
   expect(screen.getByText('Примерное местоположение по IP: Москва, Москва, Россия')).toBeVisible()
+  expect(screen.getByText('Источник: ipwho.is')).toBeVisible()
   fireEvent.click(screen.getByRole('checkbox', { name: 'Север' }))
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
 
   await screen.findByText('Изменения сохранены')
   expect(update).toHaveBeenCalledWith(3, expect.objectContaining({ park_ids: [1, 2] }))
+})
+
+it('distinguishes disabled IP geolocation from an unavailable result', async () => {
+  vi.spyOn(api, 'adminUsers').mockResolvedValue([{
+    ...managedUser,
+    last_location: null,
+    location_source: 'disabled',
+    location_availability: 'disabled',
+  }])
+  vi.spyOn(api, 'adminRoles').mockResolvedValue(roles)
+  vi.spyOn(api, 'adminRolePermissionCatalog').mockResolvedValue([])
+
+  render(
+    <AuthContext.Provider value={{ user: actor, loading: false, login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn() }}>
+      <AdminUsersPanel parks={[]} />
+    </AuthContext.Provider>,
+  )
+
+  expect(await screen.findByText('Примерное местоположение: определение отключено')).toBeVisible()
+  expect(screen.getByText('Источник: отключён')).toBeVisible()
+  expect(screen.queryByText(/Примерное местоположение по IP: Недоступно/)).not.toBeInTheDocument()
 })

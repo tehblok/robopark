@@ -142,6 +142,8 @@ export type AdminUser = {
   last_ip?: string | null
   last_device?: string | null
   last_location?: string | null
+  location_source?: 'disabled' | 'ipwhois'
+  location_availability?: 'disabled' | 'no_ip' | 'available' | 'unavailable'
 }
 
 export type IntegrationSettings = {

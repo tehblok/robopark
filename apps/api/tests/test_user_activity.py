@@ -21,6 +21,8 @@ def test_admin_sees_only_latest_activity_without_exposing_it_in_profile(client, 
     assert user["last_device"] == "Android · Chrome"
     assert user["last_seen_at"] is not None
     assert user["last_location"] is None
+    assert user["location_source"] == "disabled"
+    assert user["location_availability"] == "disabled"
 
 
 def test_disabled_provider_hides_stored_location_but_keeps_activity(
@@ -49,6 +51,8 @@ def test_disabled_provider_hides_stored_location_but_keeps_activity(
         if row["id"] == seed_royal.id
     )
     assert hidden["last_location"] is None
+    assert hidden["location_source"] == "disabled"
+    assert hidden["location_availability"] == "disabled"
     assert hidden["last_ip"] == "203.0.113.11"
     assert hidden["last_device"] == "Android · Chrome"
     db_session.refresh(seed_royal)
@@ -61,6 +65,40 @@ def test_disabled_provider_hides_stored_location_but_keeps_activity(
         if row["id"] == seed_royal.id
     )
     assert visible["last_location"] == "Москва, Москва, Россия"
+    assert visible["location_source"] == "ipwhois"
+    assert visible["location_availability"] == "available"
+
+
+def test_enabled_geo_provider_explains_missing_ip_and_failed_lookup(
+    client, db_session, seed_royal, test_settings, monkeypatch
+):
+    from robopark_api.services import ip_location
+
+    monkeypatch.setattr(ip_location, "resolve_for_user", lambda *_args: None)
+    assert client.post(
+        "/auth/login", json={"username": "royal", "password": "secret"}
+    ).status_code == 204
+    test_settings.ip_geo_provider = "ipwhois"
+    seed_royal.last_ip = None
+    seed_royal.last_location = None
+    db_session.commit()
+    missing_ip = next(
+        row for row in client.get("/admin/users").json() if row["id"] == seed_royal.id
+    )
+    assert missing_ip["location_source"] == "ipwhois"
+    assert missing_ip["location_availability"] == "no_ip"
+
+    seed_royal.last_ip = "203.0.113.11"
+    db_session.commit()
+    unavailable = next(
+        row
+        for row in client.get(
+            "/admin/users", headers={"x-real-ip": "203.0.113.11"}
+        ).json()
+        if row["id"] == seed_royal.id
+    )
+    assert unavailable["location_source"] == "ipwhois"
+    assert unavailable["location_availability"] == "unavailable"
 
 
 def test_disabled_geo_provider_never_performs_http_lookup(monkeypatch):
