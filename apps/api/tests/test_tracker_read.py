@@ -79,7 +79,7 @@ def test_tracker_read_list_issues(client, db_session, seed_park_with_tracker, mo
     assert unchanged.content == b""
 
 
-def test_tracker_read_emits_recent_new_task_once_with_stable_key(
+def test_tracker_read_does_not_emit_new_task_notification(
     client, db_session, seed_park_with_tracker, monkeypatch
 ):
     _seed_operator(db_session, seed_park_with_tracker)
@@ -106,14 +106,7 @@ def test_tracker_read_emits_recent_new_task_once_with_stable_key(
 
     assert client.get("/tracker/issues").status_code == 200
 
-    assert emitted == [
-        {
-            "event_type": "new_task",
-            "park_id": seed_park_with_tracker.id,
-            "protected_text": "Новая задача ROBOPARK-9",
-            "event_key": "new-task:ROBOPARK-9",
-        }
-    ]
+    assert emitted == []
 
 
 def test_tracker_list_honors_oldest_and_newest_sort(

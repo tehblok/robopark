@@ -69,6 +69,14 @@ class Settings(BaseSettings):
     #: Total wall-clock budget for delivering one emitted event.
     push_delivery_deadline_seconds: float = Field(default=10.0, gt=0, le=120.0)
 
+    # --- Tracker task notifications --------------------------------------
+    #: Delay between bounded searches for newly created Tracker tasks.
+    tracker_notification_interval_seconds: float = Field(default=60.0, gt=0, le=3600.0)
+    #: Maximum tasks inspected in one cursor page (Tracker API caps pages at 50).
+    tracker_notification_page_size: int = Field(default=20, ge=1, le=50)
+    #: Cross-worker cursor lease, renewed after every processed task.
+    tracker_notification_lease_seconds: float = Field(default=300.0, ge=30.0, le=3600.0)
+
     # --- Royal ops (snapshot / restore / ZIP update) -----------------------
     #: Directory for job state, staging, and snapshot artifacts.
     ops_dir: str | None = None

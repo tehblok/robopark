@@ -73,6 +73,7 @@ from robopark_api.services.ops.reconcile import reconcile_pending_rebuild
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
 from robopark_api.services.session_cleanup import run_session_cleanup_loop
 from robopark_api.services.system_notifications import run_system_notification_loop
+from robopark_api.services.tracker_notifications import run_tracker_notification_loop
 from robopark_api.services.tracker_outbox import run_tracker_outbox_loop
 
 
@@ -120,9 +121,10 @@ def create_app() -> FastAPI:
         tasks = []
         outbox_task: asyncio.Task[None] | None = None
         campaign_task: asyncio.Task[None] | None = None
+        tracker_notification_task: asyncio.Task[None] | None = None
 
         async def start_writers():
-            nonlocal outbox_task, campaign_task
+            nonlocal outbox_task, campaign_task, tracker_notification_task
             # Candidate readiness is read-only. Start seeding and workers only
             # after root commits the release and publishes writes_resumed.
             while host_maintenance_active(settings):
@@ -163,6 +165,16 @@ def create_app() -> FastAPI:
                 campaign_task = asyncio.create_task(
                     run_campaign_refresh_loop(SessionLocal, stop_event)
                 )
+                tracker_notification_task = asyncio.create_task(
+                    run_tracker_notification_loop(
+                        SessionLocal,
+                        stop_event,
+                        emit=_app.state.push_service.emit,
+                        interval_seconds=settings.tracker_notification_interval_seconds,
+                        page_size=settings.tracker_notification_page_size,
+                        lease_seconds=settings.tracker_notification_lease_seconds,
+                    )
+                )
 
         startup = asyncio.create_task(start_writers())
         try:
@@ -188,6 +200,9 @@ def create_app() -> FastAPI:
                 if campaign_task is not None:
                     with suppress(asyncio.CancelledError):
                         await campaign_task
+                if tracker_notification_task is not None:
+                    with suppress(asyncio.CancelledError):
+                        await tracker_notification_task
             finally:
                 try:
                     await asyncio.to_thread(_app.state.push_service.close)
