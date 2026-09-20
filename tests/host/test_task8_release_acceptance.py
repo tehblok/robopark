@@ -43,7 +43,7 @@ def test_acceptance_manifest_requires_every_release_gate_and_current_source_tree
     for gate in evidence["gates"].values():
         report = tmp_path / gate["report"]
         report.parent.mkdir(exist_ok=True)
-        report.write_text('{"passed":true}\n')
+        report.write_text(json.dumps({"passed": True, "source_tree_sha256": tree}))
 
     api["validate_acceptance"](tmp_path, evidence)
 
@@ -60,15 +60,40 @@ def test_acceptance_manifest_requires_every_release_gate_and_current_source_tree
         api["validate_acceptance"](tmp_path, evidence)
 
 
+def test_acceptance_cannot_rebind_old_gate_reports_to_changed_sources(tmp_path):
+    api = acceptance_module()
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("reviewed source\n")
+    old_tree = api["source_tree_digest"](tmp_path, ["tracked.txt"])
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({"passed": True, "source_tree_sha256": old_tree}))
+
+    tracked.write_text("changed after gates ran\n")
+    new_tree = api["source_tree_digest"](tmp_path, ["tracked.txt"])
+    evidence = {
+        "format": 1,
+        "source_tree_sha256": new_tree,
+        "source_paths": ["tracked.txt"],
+        "gates": {
+            name: {"status": "PASS", "report": "report.json"}
+            for name in api["REQUIRED_GATES"]
+        },
+    }
+
+    with pytest.raises(ValueError, match="acceptance_report_source_tree"):
+        api["validate_acceptance"](tmp_path, evidence)
+
+
 def test_acceptance_rejects_symlink_or_report_without_pass(tmp_path):
     api = acceptance_module()
     tracked = tmp_path / "tracked.txt"
     tracked.write_text("source\n")
     report = tmp_path / "report.json"
-    report.write_text('{"passed":false}\n')
+    tree = api["source_tree_digest"](tmp_path, ["tracked.txt"])
+    report.write_text(json.dumps({"passed": False, "source_tree_sha256": tree}))
     evidence = {
         "format": 1,
-        "source_tree_sha256": api["source_tree_digest"](tmp_path, ["tracked.txt"]),
+        "source_tree_sha256": tree,
         "source_paths": ["tracked.txt"],
         "gates": {
             name: {"status": "PASS", "report": "report.json"}
@@ -78,7 +103,7 @@ def test_acceptance_rejects_symlink_or_report_without_pass(tmp_path):
     with pytest.raises(ValueError, match="acceptance_report"):
         api["validate_acceptance"](tmp_path, evidence)
 
-    report.write_text('{"passed":true}\n')
+    report.write_text(json.dumps({"passed": True, "source_tree_sha256": tree}))
     alias = tmp_path / "alias.json"
     alias.symlink_to(report)
     evidence["gates"]["full_api"] = {"status": "PASS", "report": "alias.json"}
@@ -93,14 +118,22 @@ def test_acceptance_records_explicit_user_cancelled_soak_without_calling_it_pass
     tracked = tmp_path / "tracked.txt"
     tracked.write_text("source\n")
     passed = tmp_path / "passed.json"
-    passed.write_text('{"passed":true}\n')
+    tree = api["source_tree_digest"](tmp_path, ["tracked.txt"])
+    passed.write_text(json.dumps({"passed": True, "source_tree_sha256": tree}))
     cancelled = tmp_path / "cancelled.json"
     cancelled.write_text(
-        '{"passed":false,"ruling":"USER_CANCELLED","elapsed_seconds":4800}\n'
+        json.dumps(
+            {
+                "passed": False,
+                "ruling": "USER_CANCELLED",
+                "elapsed_seconds": 4800,
+                "source_tree_sha256": tree,
+            }
+        )
     )
     evidence = {
         "format": 1,
-        "source_tree_sha256": api["source_tree_digest"](tmp_path, ["tracked.txt"]),
+        "source_tree_sha256": tree,
         "source_paths": ["tracked.txt"],
         "gates": {
             name: {"status": "PASS", "report": "passed.json"}
@@ -141,12 +174,11 @@ def test_repository_release_pack_requires_valid_acceptance_evidence(tmp_path):
     tracked = tmp_path / "tracked.txt"
     tracked.write_text("source\n")
     report = tmp_path / "report.json"
-    report.write_text('{"passed":true}\n')
+    tree = acceptance["source_tree_digest"](tmp_path, ["tracked.txt"])
+    report.write_text(json.dumps({"passed": True, "source_tree_sha256": tree}))
     evidence = {
         "format": 1,
-        "source_tree_sha256": acceptance["source_tree_digest"](
-            tmp_path, ["tracked.txt"]
-        ),
+        "source_tree_sha256": tree,
         "source_paths": ["tracked.txt"],
         "gates": {
             name: {"status": "PASS", "report": "report.json"}

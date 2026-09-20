@@ -120,6 +120,11 @@ def validate_acceptance(root: Path, evidence: dict) -> dict:
         if name != "soak_8h" and gate["status"] != "PASS":
             raise ValueError("acceptance_gates")
         report = _json_object(_read_regular(root, gate["report"]), "acceptance_report")
+        if (
+            gate["status"] == "PASS"
+            and report.get("source_tree_sha256") != evidence["source_tree_sha256"]
+        ):
+            raise ValueError("acceptance_report_source_tree")
         if gate["status"] == "PASS" and report.get("passed") is True:
             continue
         if (

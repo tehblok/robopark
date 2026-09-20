@@ -16,7 +16,20 @@ Status: **ACCEPTED WITH USER RULING**. The 8-hour soak started at `2026-09-20T09
 | 200-session load | `evidence/load-200.json` | PASS |
 | 8-hour soak | `evidence/soak-8h.json`, `evidence/soak-checkpoint.json` | **USER_CANCELLED**, 4,800 / 28,800 s; not PASS |
 
-All non-soak test gates are complete.
+All non-soak gates were completed on the release candidate. After the final
+review fix, only the affected cache/auth and acceptance/packaging tests were
+re-run, at the user's explicit request to stop long test runs; the complete
+API/web/host suites were not repeated a second time.
+
+## Hardware acceptance limits
+
+- Armbian 26 ARM64 and Ubuntu 22 ARM64 installation, backup, restore and
+  reinstall flows are covered by host fixtures and packaging inspection, not
+  by a completed physical Orin/Khadas install cycle for this exact archive.
+- Camera permission/fallback behavior is covered in Chromium with a fake media
+  device. A physical OnePlus camera run was not performed for this archive.
+
+These are explicit remaining hardware checks, not claimed PASS results.
 
 ## Isolated PostgreSQL 17 load result
 

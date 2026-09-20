@@ -4,5 +4,11 @@
   "typescript": "PASS",
   "vite": "PASS",
   "service_worker": "PASS",
-  "modules_transformed": 2223
+  "modules_transformed": 2223,
+  "source_tree_sha256": "c4591526ecdc5bcc56ba7608d8b7336a3726e6f9f35599a8546961b4457d74e0",
+  "verification_basis": "fresh post-review production build on the current source tree",
+  "post_review_build": {
+    "passed": true,
+    "modules": 2223
+  }
 }

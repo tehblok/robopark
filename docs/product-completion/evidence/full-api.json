@@ -5,5 +5,6 @@
   "tests_skipped": 8,
   "duration_seconds": 520.81,
   "ruff": "PASS",
-  "format_check": "PASS"
+  "format_check": "PASS",
+  "source_tree_sha256": "c4591526ecdc5bcc56ba7608d8b7336a3726e6f9f35599a8546961b4457d74e0"
 }

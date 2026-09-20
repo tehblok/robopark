@@ -2,5 +2,11 @@
   "passed": true,
   "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=deploy/host:apps/api/src apps/api/.venv/bin/python -m pytest -p no:cacheprovider -q tests/host",
   "tests_passed": 763,
-  "duration_seconds": 642.32
+  "duration_seconds": 642.32,
+  "source_tree_sha256": "c4591526ecdc5bcc56ba7608d8b7336a3726e6f9f35599a8546961b4457d74e0",
+  "verification_basis": "baseline full suite plus post-review scoped acceptance verification; complete suite was not repeated after the final review fixes at the user’s request",
+  "post_review_scoped": {
+    "tests": 10,
+    "file": "tests/host/test_task8_release_acceptance.py"
+  }
 }

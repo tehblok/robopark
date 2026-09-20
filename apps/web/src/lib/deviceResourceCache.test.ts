@@ -7,6 +7,7 @@ import {
   currentDeviceResourceCache,
   purgeDeviceResourceCache,
 } from './deviceResourceCache'
+import { IndexedResourceStore } from './indexedResourceStore'
 import { resourceStore } from './resource'
 
 const user = (id: number, role = 'operator'): User => ({
@@ -36,6 +37,24 @@ it('ignores a late IndexedDB read after authorization purge', async () => {
   await Promise.all([hydration, purge])
 
   expect(resourceStore.get('tracker:secret')).toBeUndefined()
+})
+
+it('falls back to memory-only caching when IndexedDB cannot be opened', async () => {
+  vi.spyOn(IndexedResourceStore, 'open').mockRejectedValueOnce(new DOMException('blocked', 'SecurityError'))
+
+  await expect(activateDeviceResourceCache(user(1))).resolves.toBeUndefined()
+
+  expect(currentDeviceResourceCache()).toBeNull()
+})
+
+it('does not block the next account when purging the previous disk cache fails', async () => {
+  await activateDeviceResourceCache(user(1))
+  const previous = currentDeviceResourceCache()!
+  vi.spyOn(previous, 'purge').mockRejectedValueOnce(new Error('transaction failed'))
+
+  await expect(activateDeviceResourceCache(user(2))).resolves.toBeUndefined()
+
+  expect(currentDeviceResourceCache()).not.toBe(previous)
 })
 
 it('preserves disk age so a stale hydration remains stale', async () => {

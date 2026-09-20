@@ -2,5 +2,14 @@
   "passed": true,
   "command": "npm test -- --run",
   "test_files_passed": 153,
-  "tests_passed": 2131
+  "tests_passed": 2131,
+  "source_tree_sha256": "c4591526ecdc5bcc56ba7608d8b7336a3726e6f9f35599a8546961b4457d74e0",
+  "verification_basis": "baseline full suite plus post-review scoped verification; complete suites were not repeated after the final review fixes at the user’s request",
+  "post_review_scoped": {
+    "tests": 26,
+    "files": [
+      "src/lib/deviceResourceCache.test.ts",
+      "src/auth.test.tsx"
+    ]
+  }
 }

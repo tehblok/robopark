@@ -79,10 +79,13 @@ def write_acceptance_evidence(root: Path) -> None:
     evidence_root = root / "docs/product-completion"
     evidence_root.mkdir(parents=True, exist_ok=True)
     report = evidence_root / "fixture-pass.json"
-    report.write_text('{"passed":true}\n')
+    source_tree_sha256 = acceptance["source_tree_digest"](root, source_paths)
+    report.write_text(
+        json.dumps({"passed": True, "source_tree_sha256": source_tree_sha256})
+    )
     evidence = {
         "format": 1,
-        "source_tree_sha256": acceptance["source_tree_digest"](root, source_paths),
+        "source_tree_sha256": source_tree_sha256,
         "source_paths": source_paths,
         "gates": {
             name: {"status": "PASS", "report": "docs/product-completion/fixture-pass.json"}

@@ -23,14 +23,27 @@ export async function activateDeviceResourceCache(user: User, park = 'all'): Pro
   const previous = active
   active = null
   fingerprint = nextFingerprint
-  if (previous) { await previous.purge(); previous.close() }
+  if (previous) {
+    try {
+      await previous.purge()
+    } catch {
+      previous.close()
+      return
+    }
+    previous.close()
+  }
   if (typeof indexedDB === 'undefined') return
-  const opened = await IndexedResourceStore.open({
-    account: String(user.id),
-    permissions: `${user.role}:${[...(user.permissions ?? [])].sort().join(',')}`,
-    park,
-    schema: DEVICE_CACHE_SCHEMA,
-  })
+  let opened: IndexedResourceStore
+  try {
+    opened = await IndexedResourceStore.open({
+      account: String(user.id),
+      permissions: `${user.role}:${[...(user.permissions ?? [])].sort().join(',')}`,
+      park,
+      schema: DEVICE_CACHE_SCHEMA,
+    })
+  } catch {
+    return
+  }
   if (generation !== activation) { opened.close(); return }
   active = opened
 }
@@ -41,7 +54,7 @@ export function purgeDeviceResourceCache(): Promise<void> {
   active = null
   fingerprint = ''
   if (!current) return Promise.resolve()
-  return current.purge().finally(() => current.close())
+  return current.purge().catch(() => undefined).finally(() => current.close())
 }
 
 export function currentDeviceResourceCache(): IndexedResourceStore | null { return active }
