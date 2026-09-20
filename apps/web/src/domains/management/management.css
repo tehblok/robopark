@@ -45,6 +45,13 @@
   border-block-end: 1px solid var(--rp-border);
 }
 
+.rp-management-nav-select { display: none; inline-size: 100%; min-block-size: var(--rp-control-min-size); }
+
+@media (max-width: 899px) {
+  .rp-management-nav-select { display: block; }
+  .rp-management-nav { display: none; }
+}
+
 .rp-management-nav a {
   align-items: center;
   display: inline-flex;

@@ -39,6 +39,14 @@ export function InventoryTabs({ renderPanel, readOnly = false }: { renderPanel: 
 
   return (
     <section className="inventory-workflows">
+      <select
+        aria-label="Раздел склада"
+        className="inventory-workflows__mobile-select"
+        onChange={(event) => setView(event.target.value)}
+        value={activeView}
+      >
+        {visibleItems.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+      </select>
       <Tabs
         ariaLabel="Разделы склада"
         items={visibleItems}

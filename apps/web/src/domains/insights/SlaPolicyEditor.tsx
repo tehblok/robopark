@@ -83,7 +83,7 @@ export function SlaPolicyEditor({ parkId, user, apiClient = api, onSaved }: SlaP
     })
   }
 
-  return <Panel title="Норматив SLA" description="Целевое число календарных часов. Пустое поле явно удаляет норматив.">
+  return <Panel title="Норматив SLA" description="Целевое число рабочих часов с 09:00 до 21:00 МСК. Пустое поле возвращает норматив 5 часов.">
     <form className="rp-sla-editor" onSubmit={submit}>
       <FormField id="operations-sla-target" label="Норматив, часов">
         <input id="operations-sla-target" inputMode="numeric" min="1" max="8760" step="1" value={value} onChange={(event) => { setValue(event.target.value); setError(null); setSuccess(false) }} />

@@ -5,6 +5,7 @@ import type { IconName } from '../../design-system/icons/Icon'
 import type { StatusTone } from '../../design-system/status/StatusBadge'
 import { workIssueHref, workListHref, type WorkUrlState } from '../work/workUrl'
 import type { OverviewPayload } from './overviewData'
+import { STATUS_LABELS } from '../insights/operations'
 
 export type OverviewAction = { label: string; href: string; icon: IconName }
 export type OverviewRisk = {
@@ -355,7 +356,7 @@ function buildOperationalOverviewModel(data: OperationsOverview, role: string): 
       const option = data.status_options.find((item) => item.key === key)
       return {
         key,
-        label: option?.label || key,
+        label: option?.label && option.label !== key ? option.label : STATUS_LABELS[key] ?? key,
         taskCount: typeof data.counts[key] === 'number' ? data.counts[key] : null,
         selected: data.selected_status === key,
       }

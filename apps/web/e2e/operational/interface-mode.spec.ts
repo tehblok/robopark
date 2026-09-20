@@ -42,7 +42,7 @@ test('real API write defers mode change until the response and is not resent', a
   await page.getByRole('textbox', { name: 'Заголовок *' }).fill('Крепление крышки')
   await page.getByRole('button', { name: 'Создать', exact: true }).click()
   await expect.poll(() => requests).toBe(1)
-  await page.getByRole('button', { name: 'Ещё', exact: true }).click()
+  await page.getByRole('button', { name: /^(?:Ещё|Меню)$/ }).click()
   await page.getByRole('radio', { name: 'Новый А', exact: true }).check()
   await expect(page.getByText('Переключим после завершения операции')).toBeVisible()
   await expect(page.locator('html')).toHaveAttribute('data-interface', 'classic')

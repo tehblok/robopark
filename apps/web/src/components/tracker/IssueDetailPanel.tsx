@@ -23,6 +23,7 @@ import {
   statusTone,
 } from './issue-utils'
 import { RobotCheckPanel } from './RobotCheckPanel'
+import { trackerStatusLabel } from './trackerStatusLabel'
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -204,7 +205,7 @@ function IssueDetailPanelContent({
           ) : (
             <span className="issue-detail-key">{issue.key}</span>
           )}
-          <span className={`issue-status tone-${statusTone(issue)}`}>{issue.status}</span>
+          <span className={`issue-status tone-${statusTone(issue)}`}>{trackerStatusLabel(issue.status, issue.status_key)}</span>
           {priority && (
             <span className={`issue-badge tone-${priorityTone(issue.priority)}`}>
               {priority}

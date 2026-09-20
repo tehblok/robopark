@@ -223,6 +223,25 @@ function withMechanicTasks(items: NavigationItem[], user: User | null): Navigati
   return result
 }
 
+const MOBILE_PRIMARY_ROUTES: Partial<Record<User['role'], readonly NavigationItem['id'][]>> = {
+  mechanic: ['work', 'robots', 'inventory'],
+  operator: ['overview', 'work', 'robots', 'campaigns'],
+  admin: ['overview', 'work', 'reports', 'admin'],
+  royal: ['overview', 'work', 'reports', 'admin'],
+  driver: ['overview', 'robots', 'reports'],
+}
+
+function mobileNavigation(items: NavigationItem[], user: User) {
+  const preferred = MOBILE_PRIMARY_ROUTES[user.role] ?? []
+  const byId = new Map(items.map((item) => [item.id, item]))
+  const primary = preferred.flatMap((id) => {
+    const item = byId.get(id)
+    return item ? [item] : []
+  })
+  const primaryIds = new Set(primary.map((item) => item.id))
+  return { primary, secondary: items.filter((item) => !primaryIds.has(item.id)) }
+}
+
 function NavigationLink({
   item,
   reportsBadge,
@@ -325,11 +344,13 @@ export function AppShell() {
     [user],
   )
   const mobileItems = useMemo(
-    () => user ? withMechanicTasks(navigationForUser(user, 'mobile'), user) : [],
+    () => user ? navigationForUser(user, 'mobile') : [],
     [user],
   )
-  const primaryMobileItems = mobileItems.slice(0, 4)
-  const secondaryMobileItems = mobileItems.slice(4)
+  const { primary: primaryMobileItems, secondary: secondaryMobileItems } = useMemo(
+    () => user ? mobileNavigation(mobileItems, user) : { primary: [], secondary: [] },
+    [mobileItems, user],
+  )
   const desktopCurrent = currentNavigationItem(desktopItems, location.pathname, location.search)
   const mobileCurrent = currentNavigationItem(mobileItems, location.pathname, location.search)
   const moreCurrent = secondaryMobileItems.some((item) => item.id === mobileCurrent?.id)
@@ -523,7 +544,11 @@ export function AppShell() {
         </nav>
           </aside>
           {phoneViewport ? (
-            <nav aria-label={ru.appShell.mainNavigation} className="rp-shell__bottom-nav">
+            <nav
+              aria-label={ru.appShell.mainNavigation}
+              className="rp-shell__bottom-nav"
+              data-item-count={primaryMobileItems.length + 1}
+            >
               {primaryMobileItems.map((item) => (
                 <NavigationLink
                   active={item.id === mobileCurrent?.id}
@@ -541,7 +566,7 @@ export function AppShell() {
                 type="button"
               >
                 <Icon name="more" size={20} />
-                <span className="rp-shell__nav-label">{ru.nav.more}</span>
+                <span className="rp-shell__nav-label">Меню</span>
               </button>
             </nav>
           ) : null}
@@ -598,7 +623,7 @@ export function AppShell() {
         description={`${user.username} · ${roleLabel(user.role)}`}
         onOpenChange={setMoreOpen}
         open={moreOpen}
-        title={ru.nav.more}
+        title={phoneViewport ? 'Меню' : ru.nav.more}
       >
         <div className="rp-shell-controls" data-interface={presentationMode} data-theme={resolvedTheme}>
         {secondaryMobileItems.length > 0 ? (

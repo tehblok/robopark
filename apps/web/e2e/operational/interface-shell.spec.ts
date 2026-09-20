@@ -90,8 +90,9 @@ for (const width of [390, 1440]) {
     await openRouteFixture(page, 'overview', userForRole('mechanic'))
     if (mode === 'Новый А') await selectInterface(page, mode)
 
-    await page.getByRole('button', { name: 'Ещё', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: 'Ещё' })
+    const menuLabel = width < 900 ? 'Меню' : 'Ещё'
+    await page.getByRole('button', { name: menuLabel, exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: menuLabel })
     const controls = dialog.locator('.rp-shell-controls')
     await expect(dialog).toBeVisible()
     await expect(controls).toHaveCount(1)

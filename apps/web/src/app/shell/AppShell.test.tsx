@@ -85,7 +85,7 @@ it('offers installation in More and triggers the browser install prompt', async 
   installEvent.userChoice = Promise.resolve({ outcome: 'accepted' })
   fireEvent(window, installEvent)
   renderShellPath('/overview')
-  fireEvent.click(screen.getByRole('button', { name: 'Ещё' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Меню' }))
   fireEvent.click(screen.getByRole('button', { name: 'Установить приложение' }))
   await waitFor(() => expect(prompt).toHaveBeenCalledOnce())
 })
@@ -93,7 +93,7 @@ it('offers installation in More and triggers the browser install prompt', async 
 it('shows manual installation help when the browser omits an install prompt', () => {
   installMatchMedia({ width: 390 })
   renderShellPath('/overview')
-  fireEvent.click(screen.getByRole('button', { name: 'Ещё' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Меню' }))
   fireEvent.click(screen.getByRole('button', { name: 'Установить приложение' }))
   expect(screen.getByRole('status')).toHaveTextContent('Добавить на главный экран')
 })
@@ -208,15 +208,30 @@ describe('AppShell', () => {
     ])
   })
 
-  it('shows a separate My Tasks destination to mechanics on phone and desktop', () => {
+  it('keeps My Tasks on desktop but removes the duplicate from mechanic phone navigation', () => {
     act(() => media.setWidth(390))
     renderShellPath('/work?view=mine', testUser({
-      role: 'mechanic', parks: [north], permissions: ['nav.tasks', 'tracker.read'],
+      role: 'mechanic', parks: [north], permissions: ['nav.tasks', 'tracker.read', 'nav.robot_search', 'nav.inventory'],
     }))
-    for (const navigation of screen.getAllByRole('navigation', { name: 'Основная навигация' })) {
-      expect(within(navigation).getByRole('link', { name: 'Мои задачи' }))
-        .toHaveAttribute('href', '/work?view=mine')
-    }
+    const [desktop, phone] = screen.getAllByRole('navigation', { name: 'Основная навигация' })
+    expect(within(desktop).getByRole('link', { name: 'Мои задачи' })).toHaveAttribute('href', '/work?view=mine')
+    expect(within(phone).queryByRole('link', { name: 'Мои задачи' })).not.toBeInTheDocument()
+    expect(within(phone).getAllByRole('link').map(link => link.textContent)).toEqual(['Работа', 'Роботы', 'Склад'])
+    expect(within(phone).getByRole('button', { name: 'Меню' })).toBeVisible()
+  })
+
+  it('puts reports and management in the primary phone navigation for administrators', () => {
+    act(() => media.setWidth(390))
+    renderShellPath('/work', testUser({
+      role: 'royal', parks: [north], permissions: [
+        'nav.dashboard', 'nav.tasks', 'nav.reports', 'nav.admin', 'nav.robot_search',
+      ],
+    }))
+    const phone = screen.getAllByRole('navigation', { name: 'Основная навигация' })[1]
+    expect(within(phone).getAllByRole('link').map(link => link.textContent)).toEqual([
+      'Обзор', 'Работа', 'Репорты', 'Управление',
+    ])
+    expect(within(phone).getByRole('button', { name: 'Меню' })).toBeVisible()
   })
 
   it('does not expose the retired Startrek workspace in navigation', () => {
@@ -317,12 +332,12 @@ describe('AppShell', () => {
     const actor = userEvent.setup()
     act(() => media.setWidth(390))
     renderShellPath('/overview')
-    await actor.click(screen.getByRole('button', { name: 'Ещё' }))
-    const dialog = screen.getByRole('dialog', { name: 'Ещё' })
+    await actor.click(screen.getByRole('button', { name: 'Меню' }))
+    const dialog = screen.getByRole('dialog', { name: 'Меню' })
     await actor.click(within(dialog).getByRole('link', { name: 'Репорты' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Ещё' })).toHaveClass('is-active')
-    expect(screen.getByRole('button', { name: 'Ещё' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: 'Меню' })).toHaveClass('is-active')
+    expect(screen.getByRole('button', { name: 'Меню' })).toHaveAttribute('aria-current', 'page')
   })
 
   it('uses the accessible More sheet for appearance and secondary navigation', async () => {
@@ -778,7 +793,7 @@ describe('AppShell', () => {
     const navigation = screen.getAllByRole('navigation', {
       name: 'Основная навигация',
     })[0]
-    const parent = within(navigation).getByRole('link', { name: 'Администрирование' })
+    const parent = within(navigation).getByRole('link', { name: 'Управление' })
     const destination = within(navigation).getByRole('link', { name: destinationName })
     expect(parent).toHaveClass('is-active')
     expect(parent).toHaveAttribute('aria-current', 'true')

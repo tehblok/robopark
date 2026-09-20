@@ -199,8 +199,8 @@
   .rp-check-diagnostic-details { margin-block: var(--rp-space-4); }
 }
 @media (max-width: 599px) {
-  .rp-check-overlay-frame { min-height: 18rem; padding: var(--rp-space-2); }
-  .rp-check-photo-frame { width: min(74vw, 280px); }
+  .rp-check-overlay-frame { min-height: 19rem; padding: var(--rp-space-2) 0; }
+  .rp-check-photo-frame { width: min(86vw, 320px); }
   .rp-check-summary-values { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (prefers-reduced-motion: reduce) {

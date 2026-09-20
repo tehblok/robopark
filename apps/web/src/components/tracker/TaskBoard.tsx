@@ -10,6 +10,7 @@ import {
   priorityTone,
   statusTone,
 } from './issue-utils'
+import { trackerStatusLabel } from './trackerStatusLabel'
 
 export function TaskFilterBar({
   counts,
@@ -69,7 +70,7 @@ export function TaskList({
                 <span className="issue-row-top">
                   <span className="issue-key">{item.key}</span>
                   <span className={`issue-status tone-${statusTone(item)}`}>
-                    {item.status}
+                    {trackerStatusLabel(item.status, item.status_key)}
                   </span>
                 </span>
 

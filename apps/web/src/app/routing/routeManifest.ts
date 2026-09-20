@@ -233,7 +233,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
   {
     id: 'admin',
     path: '/admin',
-    label: ru.nav.admin,
+    label: 'Управление',
     icon: 'settings',
     anyPermissions: ['nav.admin', 'users.manage', 'roles.manage', 'parks.manage'],
     prerequisites: SHELL_PREREQUISITES,

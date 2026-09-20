@@ -315,14 +315,14 @@
     .a-robot-layout, .rp-robots-page .rp-page-layout__content { grid-template-columns: minmax(0, 1fr); gap: 16px; }
     .rp-robots-search-panel { position: static; }
     .rp-check-first-level, .rp-check-panel { padding: 14px; }
-    .rp-check-photo-frame { width: 190px; }
+    .rp-check-photo-frame { width: min(86vw, 320px); }
     .rp-check-overlay-frame { min-height: 200px; }
     .rp-check-summary-values dd { font-size: 14px; }
     .rp-check-block-photo-frame { inline-size: min(100%, 180px); }
     .rp-shell__context { display: none; }
     .rp-shell__topbar { min-height: 60px; padding: 8px 12px; gap: 8px; }
     .rp-shell__park-brand { flex: 1; max-width: none; padding: 8px; min-height: 44px; }
-    .rp-shell__content { padding: 16px 12px calc(88px + env(safe-area-inset-bottom)); }
+    .rp-shell__content { padding: 16px 12px calc(104px + env(safe-area-inset-bottom)); scroll-padding-bottom: calc(104px + env(safe-area-inset-bottom)); }
     .rp-shell__user { font-size: 14px; }
     .rp-shell__user > span { font-size: 14px; }
     .rp-shell__bottom-nav { padding-inline: 4px; }

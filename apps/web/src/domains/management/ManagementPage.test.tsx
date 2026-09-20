@@ -18,8 +18,9 @@ describe('Management routes', () => {
       role: 'royal', permissions: ['nav.admin', 'roles.manage', 'users.manage', 'parks.manage'], parks: [north],
     }))
     const navigation = screen.getAllByRole('navigation', { name: 'Основная навигация' })[0]
-    expect(within(navigation).getByRole('link', { name: 'Администрирование' })).toHaveAttribute('aria-current', 'page')
+    expect(within(navigation).getByRole('link', { name: 'Управление' })).toHaveAttribute('aria-current', 'page')
     const sections = await screen.findByRole('navigation', { name: 'Разделы управления' })
+    expect(screen.getByRole('combobox', { name: 'Раздел управления' })).toHaveValue('/admin/roles?park=7')
     expect(within(sections).getByRole('link', { name: 'Роли и доступы' })).toHaveAttribute('aria-current', 'page')
     await waitFor(() => expect(within(sections).getByRole('link', { name: 'Пользователи' })).toHaveAttribute('href', '/admin/users?park=7'))
   })

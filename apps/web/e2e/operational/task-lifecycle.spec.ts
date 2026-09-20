@@ -68,7 +68,7 @@ async function openIssue(page: Page) {
 }
 
 async function switchUser(page: Page, username: `${Actor}-browser`) {
-  await page.getByRole('button', { name: 'Ещё', exact: true }).click()
+  await page.getByRole('button', { name: /^(?:Ещё|Меню)$/ }).click()
   await page.getByRole('button', { name: 'Выйти', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Вход' })).toBeVisible()
   await page.getByRole('textbox', { name: 'Логин' }).fill(username)

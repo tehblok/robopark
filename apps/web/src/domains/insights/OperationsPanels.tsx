@@ -3,6 +3,7 @@ import type { OperationsOverview } from '../../api'
 import { Panel } from '../../design-system/layout/PageLayout'
 import { SLA_BASIS, STATUS_LABELS, moscowDate } from './operations'
 import { formatDurationHours } from '../../lib/timeFormat'
+import { trackerStatusLabel } from '../../components/tracker/trackerStatusLabel'
 
 function nullableCount(value: number | null | undefined): string {
   return value == null ? 'Нет данных' : String(value)
@@ -25,7 +26,7 @@ export function OperationsTasks({ data }: { data: OperationsOverview }) {
         <Link aria-label={`Открыть задачу ${task.key}`} to={`/work/${encodeURIComponent(task.key)}?park=${data.park_id}`}>
           <strong>{task.key}</strong><span>{task.summary}</span>
         </Link>
-        <span>{task.status}{task.robot ? ` · робот ${task.robot}` : ''}</span>
+        <span>{trackerStatusLabel(task.status)}{task.robot ? ` · робот ${task.robot}` : ''}</span>
       </li>)}
     </ul> : <p>Нет задач в выбранных статусах</p>}
     {data.tasks_truncated ? <p className="rp-insights-note">Показаны первые {data.tasks.length} из {data.tasks_total} задач.</p> : null}

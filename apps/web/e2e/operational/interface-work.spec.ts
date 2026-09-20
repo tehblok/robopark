@@ -147,7 +147,7 @@ test('review keeps defect code and one photo after failure and defers interface 
   await expect(form.getByRole('img', { name: 'Предпросмотр repair.png' })).toBeVisible()
   await form.getByRole('button', { name: 'Передать на проверку', exact: true }).click()
   await expect.poll(() => requests).toBe(1)
-  await page.locator('.rp-shell__bottom-nav').getByRole('button', { name: 'Ещё', exact: true }).click()
+  await page.locator('.rp-shell__bottom-nav').getByRole('button', { name: 'Меню', exact: true }).click()
   await page.getByRole('radio', { name: 'Новый А', exact: true }).check()
   await expect(page.locator('html')).toHaveAttribute('data-interface', 'classic')
   await expect(page.getByText('Переключим после завершения операции')).toBeVisible()

@@ -74,6 +74,16 @@ describe('inventory URL tabs', () => {
     expect(screen.queryByText('Поставки будут')).not.toBeInTheDocument()
   })
 
+  it('offers a compact workflow selector for narrow screens without losing URL state', async () => {
+    renderInventory('/inventory?park=7&view=parts')
+
+    const selector = await screen.findByRole('combobox', { name: 'Раздел склада' })
+    await userEvent.selectOptions(selector, 'export')
+
+    expect(screen.getByLabelText('Адрес')).toHaveTextContent('/inventory?park=7&view=export')
+    expect(screen.getByRole('tabpanel')).toHaveTextContent('Выгрузка парка')
+  })
+
   it('renders non-parts workflows without depending on the optional legacy overview', async () => {
     const inventory = vi.fn(async () => { throw new ApiError(503, 'legacy_unavailable') })
     renderInventory('/inventory?park=7&view=receipts', 'mechanic', inventory)

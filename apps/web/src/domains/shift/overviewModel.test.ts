@@ -365,6 +365,7 @@ describe('role-aware operational overview', () => {
     const model = buildOverviewModel(operationsSnapshot, 'mechanic')
 
     expect(model.statusCards.map((card) => card.key)).toEqual(['queued', 'diagnostics'])
+    expect(model.statusCards.map((card) => card.label)).toEqual(['Очередь', 'Диагностика'])
   })
 
   it.each(['operator', 'admin', 'royal'])('lets privileged %s select all permitted task statuses', (role) => {

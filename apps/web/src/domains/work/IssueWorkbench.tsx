@@ -27,6 +27,7 @@ import { IssueDetailPanel } from '../../components/tracker/IssueDetailPanel'
 import { IssueRichText } from '../../components/tracker/IssueRichText'
 import { summarizeIssueDescription } from '../../components/tracker/issueDescription'
 import { formatAge, personName, statusTone } from '../../components/tracker/issue-utils'
+import { trackerStatusLabel } from '../../components/tracker/trackerStatusLabel'
 import { Button } from '../../design-system/actions/Button'
 import { EntityRow } from '../../design-system/data/EntityRow'
 import {
@@ -345,7 +346,7 @@ function ClaimableIssueRow({ item, selected, onOpen, requireClaim, mechanicLogin
       : <Button busy={claiming} disabled={!mechanicLogin} onClick={() => void claim()}>Взять в работу</Button>
   return <EntityRow
     actions={<>{action}{claimError ? <span role="alert">{claimError}</span> : null}</>}
-    meta={issueMeta(item, now)} status={<StatusBadge tone={issueStatusTone(item)}>{item.status}</StatusBadge>}
+    meta={issueMeta(item, now)} status={<StatusBadge tone={issueStatusTone(item)}>{trackerStatusLabel(item.status, item.status_key)}</StatusBadge>}
     statusLabel={`Статус задачи ${item.key}`}
     title={<><strong>{item.key}</strong><span> · {item.summary}</span></>}
   />
