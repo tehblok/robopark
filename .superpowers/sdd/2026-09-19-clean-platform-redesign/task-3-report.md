@@ -129,3 +129,18 @@ Round-2 GREEN evidence: focused API `57 passed`; focused web `166 passed`; full 
 build and SW `2 passed`; lint and Ruff/format exited 0. The lint warnings are the existing
 repository warnings. Residual risks remain browser-specific quota behavior and the
 filesystem shared tier already called out above; neither round-2 race remains open.
+
+## Review round 3
+
+The route/interface acceptance test now uses the same interface-provider boundary as
+production: the shared `renderApp` helper mounts `InterfaceModeProvider` with the current
+account id. After the real `/work?park=7` to `/robots?park=7` navigation, the test clicks
+the actual mode radio, waits for lazy interface CSS to finish and for
+`html[data-interface="task-first"]` to be applied, verifies the account-scoped preference,
+and only then confirms that the badge GET count remains one.
+
+RED evidence: with the prior helper (no provider), the store-only assertion passed but
+the new DOM assertion timed out because `data-interface` was absent. GREEN evidence:
+the focused transition test passed; all render-helper consumers passed `136/136`; full
+web passed `147 files / 2079 tests`; production build and lint passed (existing warnings
+only). No production file changed in this review round.

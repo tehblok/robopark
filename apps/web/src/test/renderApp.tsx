@@ -5,6 +5,7 @@ import { vi } from 'vitest'
 import { api, type User } from '../api'
 import { AuthContext } from '../auth-context'
 import { AppRouter } from '../app/routing/AppRouter'
+import { InterfaceModeProvider } from '../app/interface/InterfaceModeProvider'
 import { ThemeProvider } from '../design-system/theme/ThemeProvider'
 
 type MutableMediaQuery = MediaQueryList & {
@@ -120,8 +121,10 @@ export function renderApp(
           refreshUser: vi.fn(),
           logout: vi.fn(),
         }}>
-          <AppRouter />
-          <LocationProbe />
+          <InterfaceModeProvider accountId={currentUser?.id ?? null}>
+            <AppRouter />
+            <LocationProbe />
+          </InterfaceModeProvider>
         </AuthContext.Provider>
       </ThemeProvider>
     </MemoryRouter>

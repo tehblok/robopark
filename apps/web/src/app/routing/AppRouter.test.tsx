@@ -57,7 +57,8 @@ describe('AppRouter', () => {
     expect(badge).toHaveBeenCalledTimes(1)
     await user.click(screen.getByRole('button', { name: 'Ещё' }))
     await user.click(screen.getByRole('radio', { name: 'Новый А' }))
-    expect(interfaceModeStore.getSnapshot().mode).toBe('task-first')
+    await waitFor(() => expect(document.documentElement).toHaveAttribute('data-interface', 'task-first'))
+    expect(localStorage.getItem('robopark:interface:v1:1')).toBe('task-first')
 
     expect(badge).toHaveBeenCalledTimes(1)
   })
