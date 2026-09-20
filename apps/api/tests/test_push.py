@@ -1,12 +1,26 @@
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+from sqlalchemy import func, select
+from sqlalchemy.orm import sessionmaker
+
 from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, User, UserPark
 from robopark_api.routers import push
+from robopark_api.schedule_models import NotificationEvent
 from robopark_api.security import hash_password
 from robopark_api.services.rbac import RoleSlug
+
+
+def _wait_until(predicate, *, timeout: float = 1.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return predicate()
 
 
 def _operator(db, park_id: int) -> User:
@@ -113,6 +127,7 @@ def test_push_config_and_delivery_send_only_event_identifier(
     )
 
     assert event["recipient_ids"] == [operator.id]
+    assert _wait_until(lambda: bool(delivered))
     assert delivered[0]["data"] == f'{{"event_id": "{event["event_id"]}"}}'
     assert "Закрытый" not in delivered[0]["data"]
 
@@ -159,6 +174,7 @@ def test_push_delivery_limits_batch_and_concurrency(
         protected_text="bounded",
     )
 
+    assert _wait_until(lambda: delivered == 5)
     assert delivered == 5
     assert maximum_active == 2
 
@@ -185,16 +201,18 @@ def test_push_delivery_concurrency_is_shared_across_parallel_emits(
     settings.push_delivery_deadline_seconds = 1.0
     active = 0
     maximum_active = 0
+    delivered = 0
     lock = threading.Lock()
 
     def bounded_webpush(**_kwargs):
-        nonlocal active, maximum_active
+        nonlocal active, delivered, maximum_active
         with lock:
             active += 1
             maximum_active = max(maximum_active, active)
         time.sleep(0.05)
         with lock:
             active -= 1
+            delivered += 1
 
     service = client.app.state.push_service
     monkeypatch.setattr(push, "webpush", bounded_webpush)
@@ -212,6 +230,7 @@ def test_push_delivery_concurrency_is_shared_across_parallel_emits(
         for future in futures:
             future.result()
 
+    assert _wait_until(lambda: delivered == 8)
     assert maximum_active == 2
     service.close()
 
@@ -248,6 +267,150 @@ def test_push_delivery_returns_at_total_deadline(
     assert time.monotonic() - started < 0.15
 
 
+def test_slow_push_delivery_does_not_block_emit_or_unrelated_executor_work(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    operator = _operator(db_session, seed_park_with_tracker.id)
+    login_as(client, operator.username, "secret")
+    assert (
+        client.post(
+            "/push/subscriptions",
+            json={
+                "endpoint": "https://push.example/async",
+                "p256dh": "key",
+                "auth": "auth",
+            },
+        ).status_code
+        == 201
+    )
+    delivery_started = threading.Event()
+    finish_delivery = threading.Event()
+
+    def slow_webpush(**_kwargs):
+        delivery_started.set()
+        finish_delivery.wait(timeout=1)
+
+    monkeypatch.setattr(push, "webpush", slow_webpush)
+    started = time.monotonic()
+    event = client.app.state.push_service.emit(
+        event_type="report",
+        park_id=seed_park_with_tracker.id,
+        protected_text="stored before delivery",
+    )
+    elapsed = time.monotonic() - started
+
+    try:
+        assert event["internal_recipient_ids"] == [operator.id]
+        assert elapsed < 0.1
+        assert delivery_started.wait(timeout=0.5)
+        with ThreadPoolExecutor(max_workers=1) as unrelated:
+            assert unrelated.submit(lambda: "ready").result(timeout=0.1) == "ready"
+    finally:
+        finish_delivery.set()
+
+
+def test_push_delivery_retries_once_without_blocking_emitter(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    operator = _operator(db_session, seed_park_with_tracker.id)
+    login_as(client, operator.username, "secret")
+    assert (
+        client.post(
+            "/push/subscriptions",
+            json={
+                "endpoint": "https://push.example/retry",
+                "p256dh": "key",
+                "auth": "auth",
+            },
+        ).status_code
+        == 201
+    )
+    delivered = threading.Event()
+    attempts = 0
+
+    def flaky_webpush(**_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary push failure")
+        delivered.set()
+
+    monkeypatch.setattr(push, "webpush", flaky_webpush)
+    client.app.state.push_service.emit(
+        event_type="report",
+        park_id=seed_park_with_tracker.id,
+        protected_text="retry",
+    )
+
+    assert delivered.wait(timeout=0.5)
+    assert attempts == 2
+
+
+def test_full_push_queue_drops_only_network_work_and_keeps_internal_events(
+    client, db_engine, db_session, seed_park_with_tracker, monkeypatch, caplog
+):
+    operator = _operator(db_session, seed_park_with_tracker.id)
+    login_as(client, operator.username, "secret")
+    assert (
+        client.post(
+            "/push/subscriptions",
+            json={
+                "endpoint": "https://push.example/backpressure",
+                "p256dh": "key",
+                "auth": "auth",
+            },
+        ).status_code
+        == 201
+    )
+    settings = push.get_settings()
+    settings.push_max_concurrency = 1
+    settings.push_delivery_deadline_seconds = 1.0
+    started = threading.Event()
+    finish = threading.Event()
+
+    def blocked_webpush(**_kwargs):
+        started.set()
+        finish.wait(timeout=1)
+
+    monkeypatch.setattr(push, "webpush", blocked_webpush)
+    session_factory = sessionmaker(bind=db_engine, future=True)
+    service = push.PushService(session_factory, delivery_queue_size=1)
+    try:
+        service.emit(
+            event_type="report",
+            park_id=seed_park_with_tracker.id,
+            protected_text="first",
+            event_key="backpressure:first",
+        )
+        assert started.wait(timeout=0.5)
+        service.emit(
+            event_type="report",
+            park_id=seed_park_with_tracker.id,
+            protected_text="second",
+            event_key="backpressure:second",
+        )
+        with caplog.at_level(logging.WARNING, logger=push.__name__):
+            service.emit(
+                event_type="report",
+                park_id=seed_park_with_tracker.id,
+                protected_text="third",
+                event_key="backpressure:third",
+            )
+        assert "Web Push queue full" in caplog.text
+        with session_factory() as db:
+            assert (
+                db.scalar(
+                    select(func.count(NotificationEvent.id)).where(
+                        NotificationEvent.user_id == operator.id
+                    )
+                )
+                == 3
+            )
+    finally:
+        finish.set()
+        service.close()
+
+
 def test_push_delivery_failure_does_not_lose_internal_notification(
     client, db_session, seed_park_with_tracker, monkeypatch
 ):
@@ -257,7 +420,7 @@ def test_push_delivery_failure_does_not_lose_internal_notification(
     def fail_delivery(*_args, **_kwargs):
         raise RuntimeError("delivery failed")
 
-    monkeypatch.setattr(client.app.state.push_service, "_deliver", fail_delivery)
+    monkeypatch.setattr(client.app.state.push_service, "_enqueue_delivery", fail_delivery)
     emitted = client.app.state.push_service.emit(
         event_type="report",
         park_id=seed_park_with_tracker.id,

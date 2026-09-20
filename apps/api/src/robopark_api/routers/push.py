@@ -5,8 +5,10 @@ import logging
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from threading import Lock
+from queue import Empty, Full, Queue
+from threading import Lock, Thread
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -50,6 +52,16 @@ EVENT_ROLES = {
 }
 
 
+@dataclass(frozen=True)
+class _DeliveryJob:
+    event_id: str
+    recipient_ids: tuple[int, ...]
+    deadline: float
+
+
+_STOP_DELIVERY = object()
+
+
 def prune_expired_subscriptions(db: Session, *, now: datetime | None = None) -> int:
     result = db.execute(
         delete(PushSubscription).where(
@@ -85,21 +97,98 @@ def prune_notification_data(
 
 
 class PushService:
-    def __init__(self, session_factory: Callable[[], Session]):
+    def __init__(
+        self,
+        session_factory: Callable[[], Session],
+        *,
+        delivery_queue_size: int = 256,
+    ):
         self._session_factory = session_factory
         self._delivery_lock = Lock()
+        self._delivery_queue: Queue[_DeliveryJob | object] = Queue(maxsize=delivery_queue_size)
+        self._delivery_thread: Thread | None = None
         self._delivery_executor: ThreadPoolExecutor | None = None
         self._delivery_executor_workers: int | None = None
         self._delivery_closed = False
 
     def close(self) -> None:
-        """Stop accepting Web Push work and release this worker's delivery pool."""
+        """Stop accepting delivery, drop queued work, and join active senders."""
         with self._delivery_lock:
+            if self._delivery_closed:
+                return
             self._delivery_closed = True
+            delivery_thread = self._delivery_thread
             executor = self._delivery_executor
-            self._delivery_executor = None
+            if delivery_thread is not None:
+                # Internal inbox rows were committed before enqueue. During
+                # shutdown, discard pending network-only work so draining is
+                # bounded by the one active batch deadline rather than queue size.
+                while True:
+                    try:
+                        self._delivery_queue.get_nowait()
+                    except Empty:
+                        break
+                    else:
+                        self._delivery_queue.task_done()
+                self._delivery_queue.put_nowait(_STOP_DELIVERY)
+        if delivery_thread is not None:
+            delivery_thread.join()
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=True)
+        with self._delivery_lock:
+            self._delivery_thread = None
+            self._delivery_executor = None
+
+    def _start_delivery_runtime(self, *, max_workers: int) -> None:
+        if self._delivery_executor is None:
+            self._delivery_executor = ThreadPoolExecutor(
+                max_workers=max_workers,
+                thread_name_prefix="robopark-webpush",
+            )
+            self._delivery_executor_workers = max_workers
+        elif self._delivery_executor_workers != max_workers:
+            raise RuntimeError("push_max_concurrency_changed")
+        if self._delivery_thread is None:
+            self._delivery_thread = Thread(
+                target=self._run_delivery_queue,
+                name="robopark-push-dispatch",
+                daemon=True,
+            )
+            self._delivery_thread.start()
+
+    def _enqueue_delivery(self, *, event_id: str, recipient_ids: list[int]) -> bool:
+        settings = get_settings()
+        job = _DeliveryJob(
+            event_id=event_id,
+            recipient_ids=tuple(recipient_ids),
+            deadline=time.monotonic() + settings.push_delivery_deadline_seconds,
+        )
+        with self._delivery_lock:
+            if self._delivery_closed:
+                return False
+            self._start_delivery_runtime(max_workers=settings.push_max_concurrency)
+            try:
+                self._delivery_queue.put_nowait(job)
+            except Full:
+                logger.warning(
+                    "Web Push queue full; network delivery dropped",
+                    extra={"event_id": event_id},
+                )
+                return False
+        return True
+
+    def _run_delivery_queue(self) -> None:
+        while True:
+            job = self._delivery_queue.get()
+            try:
+                if job is _STOP_DELIVERY:
+                    return
+                assert isinstance(job, _DeliveryJob)
+                self._deliver_job(job)
+            except Exception:
+                logger.exception("Web Push delivery worker failed")
+            finally:
+                self._delivery_queue.task_done()
 
     def _submit_deliveries(
         self,
@@ -109,8 +198,6 @@ class PushService:
         max_workers: int,
     ) -> list[Future[str | None]]:
         with self._delivery_lock:
-            if self._delivery_closed:
-                raise RuntimeError("push_service_closed")
             if self._delivery_executor is None:
                 self._delivery_executor = ThreadPoolExecutor(
                     max_workers=max_workers,
@@ -235,9 +322,9 @@ class PushService:
             db.commit()
             if deliver and recipients:
                 try:
-                    self._deliver(db, event_id=event_id, recipient_ids=recipients)
+                    self._enqueue_delivery(event_id=event_id, recipient_ids=recipients)
                 except Exception:
-                    logger.exception("Web Push delivery failed after internal notification commit")
+                    logger.exception("Web Push enqueue failed after internal notification commit")
             return {
                 "event_id": event_id,
                 "recipient_ids": recipients,
@@ -266,21 +353,21 @@ class PushService:
                     occurrence.resolved_at = now
             db.commit()
 
-    def _deliver(self, db: Session, *, event_id: str, recipient_ids: list[int]) -> None:
+    def _deliver_job(self, job: _DeliveryJob) -> None:
         settings = get_settings()
-        deadline = time.monotonic() + settings.push_delivery_deadline_seconds
         if not settings.secret_key:
             logger.warning("Web Push skipped: SECRET_KEY is not configured")
             return
         private_key, _ = _vapid_key_pair(settings.secret_key)
-        rows = list(
-            db.scalars(
-                select(PushSubscription)
-                .where(PushSubscription.user_id.in_(recipient_ids))
-                .order_by(PushSubscription.created_at, PushSubscription.id)
-                .limit(settings.push_delivery_batch_size)
+        with self._session_factory() as db:
+            rows = list(
+                db.scalars(
+                    select(PushSubscription)
+                    .where(PushSubscription.user_id.in_(job.recipient_ids))
+                    .order_by(PushSubscription.created_at, PushSubscription.id)
+                    .limit(settings.push_delivery_batch_size)
+                )
             )
-        )
         deliveries = [
             (
                 row.endpoint_hash,
@@ -290,33 +377,37 @@ class PushService:
             )
             for row in rows
         ]
+
         def send(delivery: tuple[str, str, str, str]) -> str | None:
             endpoint_hash, endpoint, p256dh, auth = delivery
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return None
-            try:
-                webpush(
-                    subscription_info={
-                        "endpoint": endpoint,
-                        "keys": {"p256dh": p256dh, "auth": auth},
-                    },
-                    data=json.dumps({"event_id": event_id}),
-                    vapid_private_key=private_key,
-                    vapid_claims={"sub": "mailto:robopark@localhost"},
-                    timeout=max(0.1, min(5.0, remaining)),
-                )
-            except WebPushException as exc:
-                response = getattr(exc, "response", None)
-                if response is not None and response.status_code in {404, 410}:
-                    return endpoint_hash
-                else:
-                    logger.warning("Web Push delivery failed", exc_info=exc)
-            except Exception:
-                logger.exception("Web Push delivery failed")
+            for attempt in range(2):
+                remaining = job.deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                try:
+                    webpush(
+                        subscription_info={
+                            "endpoint": endpoint,
+                            "keys": {"p256dh": p256dh, "auth": auth},
+                        },
+                        data=json.dumps({"event_id": job.event_id}),
+                        vapid_private_key=private_key,
+                        vapid_claims={"sub": "mailto:robopark@localhost"},
+                        timeout=max(0.1, min(5.0, remaining)),
+                    )
+                    return None
+                except WebPushException as exc:
+                    response = getattr(exc, "response", None)
+                    if response is not None and response.status_code in {404, 410}:
+                        return endpoint_hash
+                    if attempt == 1:
+                        logger.warning("Web Push delivery failed", exc_info=exc)
+                except Exception:
+                    if attempt == 1:
+                        logger.exception("Web Push delivery failed")
             return None
 
-        if not deliveries or time.monotonic() >= deadline:
+        if not deliveries or time.monotonic() >= job.deadline:
             return
         futures = self._submit_deliveries(
             deliveries,
@@ -325,18 +416,19 @@ class PushService:
         )
         done, pending = wait(
             futures,
-            timeout=max(0.0, deadline - time.monotonic()),
+            timeout=max(0.0, job.deadline - time.monotonic()),
         )
         for future in pending:
             future.cancel()
         rejected_hashes = {endpoint_hash for future in done if (endpoint_hash := future.result())}
         if rejected_hashes:
-            db.execute(
-                delete(PushSubscription).where(
-                    PushSubscription.endpoint_hash.in_(rejected_hashes)
+            with self._session_factory() as db:
+                db.execute(
+                    delete(PushSubscription).where(
+                        PushSubscription.endpoint_hash.in_(rejected_hashes)
+                    )
                 )
-            )
-            db.commit()
+                db.commit()
 
 
 def _vapid_key_pair(secret_key: str) -> tuple[str, str]:
