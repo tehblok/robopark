@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import QueuePool
 
 from robopark_api.services import database_locks
@@ -315,6 +316,130 @@ def test_postgresql_lock_rejects_success_returned_after_deadline(monkeypatch, sl
 
     assert entered is False
     assert scalar_called is (slow_phase == "scalar")
+
+
+def test_postgresql_phase_timeouts_fit_inside_total_deadline():
+    budget = database_locks._postgres_phase_timeouts(5.0)
+
+    assert budget.connect_seconds == 2
+    assert budget.query_milliseconds == 2000
+    assert budget.safety_milliseconds == 1000
+    assert (
+        budget.connect_seconds * 1000 + budget.query_milliseconds + budget.safety_milliseconds
+        <= 5000
+    )
+
+
+def test_postgresql_driver_timeout_is_retryable_and_releases_resources(monkeypatch):
+    events: list[str] = []
+
+    class Transaction:
+        def __enter__(self):
+            events.append("transaction-open")
+            return self
+
+        def __exit__(self, *_args):
+            events.append("transaction-closed")
+
+    class Connection:
+        def __enter__(self):
+            events.append("connection-open")
+            return self
+
+        def __exit__(self, *_args):
+            events.append("connection-closed")
+
+        def begin(self):
+            return Transaction()
+
+        def scalar(self, _statement, _parameters):
+            events.append("try-lock")
+            raise OperationalError("SELECT", {}, TimeoutError("driver timeout"))
+
+    class LockEngine:
+        def connect(self):
+            return Connection()
+
+    class RequestSession:
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    state = database_locks._PostgresLockEngine(LockEngine(), threading.BoundedSemaphore(1))
+    monkeypatch.setattr(database_locks, "_postgres_lock_engine", lambda _bind: state)
+
+    with (
+        pytest.raises(HTTPException, match="idempotency_lock_busy"),
+        database_idempotency_lock(RequestSession(), "driver-timeout"),
+    ):
+        pytest.fail("driver timeout must not enter the protected workflow")
+
+    assert events == [
+        "connection-open",
+        "transaction-open",
+        "try-lock",
+        "transaction-closed",
+        "connection-closed",
+    ]
+    assert state.slots.acquire(blocking=False)
+    state.slots.release()
+
+
+def test_postgresql_phase_timeout_bounds_elapsed_and_preserves_body_errors(monkeypatch):
+    total_seconds = 2.5
+    budget = database_locks._postgres_phase_timeouts(total_seconds)
+    fail_acquisition = True
+
+    class Transaction:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def begin(self):
+            return Transaction()
+
+        def scalar(self, _statement, _parameters):
+            if fail_acquisition:
+                time.sleep(budget.query_milliseconds / 1000)
+                raise OperationalError("SELECT", {}, TimeoutError("statement timeout"))
+            return True
+
+    class LockEngine:
+        def connect(self):
+            return Connection()
+
+    class RequestSession:
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    monkeypatch.setattr(database_locks, "LOCK_WAIT_SECONDS", total_seconds)
+    state = database_locks._PostgresLockEngine(LockEngine(), threading.BoundedSemaphore(1))
+    monkeypatch.setattr(database_locks, "_postgres_lock_engine", lambda _bind: state)
+
+    started = time.monotonic()
+    with (
+        pytest.raises(HTTPException, match="idempotency_lock_busy"),
+        database_idempotency_lock(RequestSession(), "bounded-driver-timeout"),
+    ):
+        pytest.fail("driver timeout must not enter the protected workflow")
+    assert time.monotonic() - started < total_seconds
+
+    fail_acquisition = False
+    body_error = OperationalError("body", {}, RuntimeError("workflow failure"))
+    with (
+        pytest.raises(OperationalError) as captured,
+        database_idempotency_lock(RequestSession(), "body-error"),
+    ):
+        raise body_error
+    assert captured.value is body_error
 
 
 @pytest.mark.skipif(database_locks.fcntl is None, reason="fcntl flock requires Unix")

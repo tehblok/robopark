@@ -15,6 +15,8 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.pool import QueuePool
 
 try:  # Robopark is deployed on Linux; keep unit tests portable.
@@ -41,6 +43,13 @@ class _PostgresLockEngine:
     slots: threading.BoundedSemaphore
 
 
+@dataclass(frozen=True)
+class _PostgresPhaseTimeouts:
+    connect_seconds: int
+    query_milliseconds: int
+    safety_milliseconds: int
+
+
 _process_locks: dict[str, _ProcessLock] = {}
 _process_locks_guard = threading.Lock()
 _postgres_lock_engines: dict[str, _PostgresLockEngine] = {}
@@ -54,6 +63,26 @@ class _LockDeadlineExceeded(TimeoutError):
 
 def _remaining_seconds(deadline: float) -> float:
     return max(0.0, deadline - time.monotonic())
+
+
+def _postgres_phase_timeouts(total_seconds: float) -> _PostgresPhaseTimeouts:
+    """Split one wall-clock budget into non-overlapping driver phases."""
+    total_milliseconds = max(0, int(total_seconds * 1000))
+    connect_milliseconds = int(total_milliseconds * 0.4)
+    query_milliseconds = int(total_milliseconds * 0.4)
+    safety_milliseconds = total_milliseconds - connect_milliseconds - query_milliseconds
+    connect_seconds = connect_milliseconds // 1000
+    if connect_seconds < 1 or query_milliseconds < 1 or safety_milliseconds < 1:
+        raise _LockDeadlineExceeded
+    return _PostgresPhaseTimeouts(
+        connect_seconds=connect_seconds,
+        query_milliseconds=query_milliseconds,
+        safety_milliseconds=safety_milliseconds,
+    )
+
+
+def _lock_busy() -> HTTPException:
+    return HTTPException(503, "idempotency_lock_busy")
 
 
 def _acquire_process_lock(key: str) -> _ProcessLock:
@@ -142,15 +171,12 @@ def _postgres_lock_engine(bind: Any) -> _PostgresLockEngine:
                 if deadline is None:
                     deadline = time.monotonic() + LOCK_WAIT_SECONDS
                 remaining = _remaining_seconds(deadline)
-                connect_seconds = int(remaining)
-                timeout_milliseconds = int(remaining * 1000)
-                if connect_seconds < 1 or timeout_milliseconds < 1:
-                    raise _LockDeadlineExceeded
-                cparams["connect_timeout"] = connect_seconds
-                cparams["tcp_user_timeout"] = timeout_milliseconds
+                budget = _postgres_phase_timeouts(remaining)
+                cparams["connect_timeout"] = budget.connect_seconds
+                cparams["tcp_user_timeout"] = budget.query_milliseconds
                 deadline_options = (
-                    f"-c statement_timeout={timeout_milliseconds} "
-                    f"-c lock_timeout={timeout_milliseconds}"
+                    f"-c statement_timeout={budget.query_milliseconds} "
+                    f"-c lock_timeout={budget.query_milliseconds}"
                 )
                 existing_options = str(cparams.get("options", "")).strip()
                 cparams["options"] = " ".join(
@@ -190,34 +216,45 @@ def database_idempotency_lock(db: Any, key: str) -> Iterator[None]:
         deadline = time.monotonic() + LOCK_WAIT_SECONDS
         state = _postgres_lock_engine(bind)
         if not state.slots.acquire(timeout=_remaining_seconds(deadline)):
-            raise HTTPException(503, "idempotency_lock_busy")
+            raise _lock_busy()
         try:
             if _remaining_seconds(deadline) <= 0:
-                raise HTTPException(503, "idempotency_lock_busy")
+                raise _lock_busy()
             _postgres_connect_deadline.value = deadline
             try:
-                with state.engine.connect() as connection:
+                try:
+                    connection_context = state.engine.connect()
+                except (DBAPIError, SQLAlchemyTimeoutError, _LockDeadlineExceeded):
+                    raise _lock_busy() from None
+                with connection_context as connection:
                     if _remaining_seconds(deadline) <= 0:
-                        raise HTTPException(503, "idempotency_lock_busy")
-                    with connection.begin():
+                        raise _lock_busy()
+                    try:
+                        transaction_context = connection.begin()
+                    except (DBAPIError, SQLAlchemyTimeoutError, _LockDeadlineExceeded):
+                        raise _lock_busy() from None
+                    with transaction_context:
                         while True:
                             if _remaining_seconds(deadline) <= 0:
-                                raise HTTPException(503, "idempotency_lock_busy")
-                            acquired = connection.scalar(
-                                text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
-                                {"key": key},
-                            )
+                                raise _lock_busy()
+                            try:
+                                acquired = connection.scalar(
+                                    text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
+                                    {"key": key},
+                                )
+                            except (DBAPIError, SQLAlchemyTimeoutError, _LockDeadlineExceeded):
+                                raise _lock_busy() from None
                             remaining = _remaining_seconds(deadline)
                             if remaining <= 0:
-                                raise HTTPException(503, "idempotency_lock_busy")
+                                raise _lock_busy()
                             if acquired:
                                 break
                             time.sleep(min(_SLEEP_SECONDS, remaining))
                         if _remaining_seconds(deadline) <= 0:
-                            raise HTTPException(503, "idempotency_lock_busy")
+                            raise _lock_busy()
                         yield
             except _LockDeadlineExceeded:
-                raise HTTPException(503, "idempotency_lock_busy") from None
+                raise _lock_busy() from None
             finally:
                 _postgres_connect_deadline.value = None
         finally:

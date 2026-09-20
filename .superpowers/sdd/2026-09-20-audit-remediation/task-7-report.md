@@ -171,6 +171,39 @@ Final short verification:
 - No PostgreSQL container, Docker, full suite, load, soak, installer, OTA or
   signature operation was run.
 
+## Final phase-budget remediation
+
+- Split the remaining PostgreSQL lock deadline into non-overlapping driver
+  phases: 40% for connect, 40% for the advisory query, and 20% safety/cleanup.
+  At the normal five-second deadline this is two seconds + two seconds + one
+  second; flooring for libpq's whole-second connect timeout can only shorten
+  the combined budget.
+- The physical connection startup options now carry the query-phase
+  `statement_timeout` and `lock_timeout` before the first SQL statement;
+  `connect_timeout` is limited to the separate connect phase and
+  `tcp_user_timeout` to the query phase. Post-connect and post-query monotonic
+  checks remain in place.
+- SQLAlchemy `DBAPIError`/driver timeout failures from connect, transaction
+  setup, or advisory acquisition are mapped to retryable
+  `503 idempotency_lock_busy`. The catch scope ends before `yield`, so database
+  or programmer exceptions raised by the protected workflow retain their
+  original type and identity.
+- Added cleanup assertions proving transaction/connection exit and semaphore
+  release after a driver timeout. A phase-aware fake consumes its configured
+  one-second query budget and confirms total elapsed time remains below the
+  2.5-second total contract. Another assertion proves a protected-body
+  `OperationalError` is not remapped.
+
+Final phase-budget TDD / short verification:
+
+- RED: the phase allocator did not exist and a fake driver timeout escaped as
+  raw `OperationalError`.
+- GREEN: `tests/test_database_locks.py tests/test_lifespan_jobs.py` — `11 passed`
+  (only the existing Starlette/httpx deprecation warning).
+- Scoped Ruff, format check and `git diff --check` passed.
+- No PostgreSQL container, Docker, full suite, load, soak, installer, OTA or
+  signature operation was run.
+
 ## Review remediation round 2
 
 - Replaced the request-session PostgreSQL advisory lock with a bounded
