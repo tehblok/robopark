@@ -66,7 +66,11 @@ for (const width of [390, 1440] as const) {
       const managementList = document.createElement('div')
       managementList.className = 'rp-master-detail__list'
       management.append(managementList)
-      shell.append(pageLayout, inventory, report, analytics, management)
+      const overview = document.createElement('div')
+      overview.className = 'rp-overview'
+      const insights = document.createElement('div')
+      insights.className = 'rp-insights-grid'
+      shell.append(pageLayout, inventory, report, analytics, management, overview, insights)
       const read = (element: Element, property: string) => getComputedStyle(element).getPropertyValue(property)
       const result = {
         sectionGap: read(pageLayout, 'gap'),
@@ -74,17 +78,22 @@ for (const width of [390, 1440] as const) {
         reportPadding: read(report, 'padding-top'),
         analyticsPadding: read(analytics, 'padding-top'),
         managementPadding: read(managementList, 'padding-top'),
+        managementGap: read(management, 'gap'),
+        overviewGap: read(overview, 'gap'),
+        insightsGap: read(insights, 'gap'),
       }
-      pageLayout.remove(); inventory.remove(); report.remove(); analytics.remove(); management.remove()
+      pageLayout.remove(); inventory.remove(); report.remove(); analytics.remove(); management.remove(); overview.remove(); insights.remove()
       return result
     })
 
     expect(geometry).toEqual(width === 390 ? {
       sectionGap: '20px', inventoryPadding: '16px', reportPadding: '16px',
-      analyticsPadding: '16px', managementPadding: '16px',
+      analyticsPadding: '16px', managementPadding: '16px', managementGap: '20px',
+      overviewGap: '20px', insightsGap: '20px',
     } : {
       sectionGap: '24px', inventoryPadding: '20px', reportPadding: '20px',
-      analyticsPadding: '20px', managementPadding: '16px',
+      analyticsPadding: '20px', managementPadding: '16px', managementGap: '24px',
+      overviewGap: '24px', insightsGap: '24px',
     })
   })
 }

@@ -216,7 +216,7 @@
   .rp-operator-parks .park-card { padding: 16px; border: 1px solid var(--rp-border); border-radius: 8px; background: var(--rp-surface); }
 
   /* Management uses entity navigation; host operations remain separate. */
-  .rp-management { display: grid; gap: 20px; }
+  .rp-management { display: grid; gap: var(--rp-section-gap); }
   .rp-management-nav { display: flex; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid var(--rp-border); padding-bottom: 12px; }
   .rp-management-nav a { padding: 10px 14px; min-height: 44px; border-radius: 8px; }
   .rp-management-nav a[aria-current='page'] { box-shadow: inset 0 -3px var(--rp-action); }
@@ -355,7 +355,9 @@
     .campaign-card__heading > div:first-child { min-width: 0; }
     .campaign-card__heading > .campaign-progress { align-self: start; }
     .campaign-metrics { grid-template-columns: minmax(0, 1fr); padding: var(--rp-card-padding); }
-    .a-overview-actions, .rp-overview, .rp-insights-grid, .rp-analytics-trends, .rp-operator-parks .page-body { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+    .a-overview-actions { grid-template-columns: minmax(0, 1fr); gap: var(--rp-form-gap); }
+    .rp-overview, .rp-insights-grid, .rp-operator-parks .page-body { grid-template-columns: minmax(0, 1fr); gap: var(--rp-section-gap); }
+    .rp-analytics-trends { grid-template-columns: minmax(0, 1fr); gap: var(--rp-form-gap); }
     .a-overview-actions a { min-height: 48px; }
     .a-overview-attention-panel, .a-overview-status-panel, .rp-overview-alerts, .rp-operator-parks .page-body > .panel:first-of-type { grid-column: 1; grid-row: auto; }
     .a-overview-attention-panel { order: -1; }
