@@ -3,6 +3,7 @@ import { Component, lazy, Suspense, type ReactElement } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AppShell } from '../shell/AppShell'
 import { ParkProvider } from '../../ParkProvider'
+import { SyncProvider } from '../../pwa/SyncProvider'
 import { Spinner } from '../../components/ui/Feedback'
 import { ru } from '../../i18n/ru'
 import { useAuth } from '../../auth-context'
@@ -123,7 +124,7 @@ function ShellBoundary() {
 
   return (
     <ParkProvider>
-      <AppShell />
+      <SyncProvider><AppShell /></SyncProvider>
     </ParkProvider>
   )
 }

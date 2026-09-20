@@ -392,6 +392,27 @@ export type TrackerIssueCapabilities = {
 }
 
 export type TaskSyncState = 'saved' | 'pending' | 'synced' | 'needs_attention'
+export type SyncBatchRequest = {
+  device_id: string
+  known_revisions: Record<string, number>
+  actions: Array<{
+    client_action_id: string
+    resource_type: string
+    resource_id: string
+    action: string
+    idempotency_key: string
+    base_revision: string | null
+    park_id: number | null
+    dependencies: string[]
+    payload: Record<string, unknown>
+  }>
+}
+export type SyncBatchResponse = {
+  results: Array<{ client_action_id: string, state: 'confirmed' | 'conflict' | 'attention' | 'rejected', code: string | null, result: Record<string, unknown> | null }>
+  deltas: Record<string, Array<Record<string, unknown>>>
+  revisions: Record<string, number>
+  revoked_scopes: string[]
+}
 export type TaskWorkflow = {
   owner: TrackerPerson | null
   review_state: 'pending' | 'returned' | 'closed' | null
@@ -1229,6 +1250,7 @@ async function conditionalChangeRevision(scope: string): Promise<{ revision: num
 }
 
 export const api = {
+  syncBatch: (body: SyncBatchRequest, signal?: AbortSignal) => request<SyncBatchResponse>('/sync/batch', { method: 'POST', body: JSON.stringify(body), signal }),
   changeRevision: conditionalChangeRevision,
   emergencyReadings: async (signal?: AbortSignal): Promise<EmergencyReadingCatalog> => {
     const result = await emergencyReadingRequest<EmergencyReading[]>('', { signal })

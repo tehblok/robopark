@@ -20,6 +20,7 @@ type EntityRecord = ScopedRecord & {
 type ActionRecord = ScopedRecord & OfflineAction & { resource: string }
 type MediaRecord = ScopedRecord & OfflineMedia
 type RevisionRecord = ScopedRecord & { section: string, revision: string, updatedAt: number }
+type MetaRecord = ScopedRecord & { key: string, value: unknown, updatedAt: number }
 
 let activeScope = ''
 let activeGeneration = 0
@@ -99,12 +100,20 @@ export type OfflineTransactionWriter = {
 
 export class OfflineDb {
   private closed = false
+  private readonly db: IDBDatabase
+  private readonly scope: string
+  private readonly generation: number
 
   constructor(
-    private readonly db: IDBDatabase,
-    private readonly scope: string,
-    private readonly generation: number,
-  ) { handles.add(this) }
+    db: IDBDatabase,
+    scope: string,
+    generation: number,
+  ) {
+    this.db = db
+    this.scope = scope
+    this.generation = generation
+    handles.add(this)
+  }
 
   captureGeneration(): number { return this.generation }
   isGenerationCurrent(generation = this.generation): boolean {
@@ -117,7 +126,7 @@ export class OfflineDb {
     return Array.from(transaction.objectStore(store).indexNames).sort()
   }
 
-  async transaction(mutator: (writer: OfflineTransactionWriter) => void): Promise<void> {
+  async transaction(mutator: (writer: OfflineTransactionWriter) => unknown): Promise<void> {
     if (!this.isGenerationCurrent()) throw new Error('Offline scope is no longer active')
     const transaction = this.db.transaction(['entities', 'actions', 'media'], 'readwrite')
     const writer: OfflineTransactionWriter = {
@@ -211,6 +220,34 @@ export class OfflineDb {
   }
   async getRevision(section: string): Promise<string | undefined> {
     return (await this.getRecord<RevisionRecord>('revisions', section))?.revision
+  }
+
+  async claimLease(owner: string, now: number, leaseMs: number): Promise<boolean> {
+    if (!this.isGenerationCurrent()) return false
+    const transaction = this.db.transaction('meta', 'readwrite')
+    const store = transaction.objectStore('meta')
+    const id = recordId(this.scope, 'sync-lease')
+    const current = await requestResult(store.get(id)) as MetaRecord | undefined
+    const lease = current?.value as { owner?: string, until?: number } | undefined
+    if (lease?.owner && lease.owner !== owner && Number(lease.until) > now) {
+      await transactionDone(transaction)
+      return false
+    }
+    const value = { owner, until: now + leaseMs }
+    store.put({ dbId: id, scope: this.scope, key: 'sync-lease', value, bytes: valueBytes(value), updatedAt: now } satisfies MetaRecord)
+    await transactionDone(transaction)
+    return true
+  }
+
+  async releaseLease(owner: string): Promise<void> {
+    if (!this.isGenerationCurrent()) return
+    const transaction = this.db.transaction('meta', 'readwrite')
+    const store = transaction.objectStore('meta')
+    const id = recordId(this.scope, 'sync-lease')
+    const current = await requestResult(store.get(id)) as MetaRecord | undefined
+    const lease = current?.value as { owner?: string } | undefined
+    if (lease?.owner === owner) store.delete(id)
+    await transactionDone(transaction)
   }
 
   async cleanup(options: OfflineCleanupOptions): Promise<void> {
