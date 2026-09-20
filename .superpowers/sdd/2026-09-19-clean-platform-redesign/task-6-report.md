@@ -25,9 +25,9 @@ Interface owner preservation: 5 passed
 
 ## Verification
 
-- Full web unit suite: `npm test` — **151 files, 2094 tests passed**.
+- Full web unit suite: `npm test` — **151 files, 2095 tests passed** after review round 1.
 - Relevant API workflow/Tracker/Emergency suite: `.venv/bin/python -m pytest -p no:cacheprovider -q tests/test_task_lifecycle.py tests/test_task_timeline.py tests/test_tracker_read.py tests/test_tracker_outbox.py tests/test_emergency_snapshot.py tests/test_emergency_router.py tests/test_emergency_readings.py tests/test_emergency_sections.py` — **165 passed**, one pre-existing Starlette/httpx deprecation warning.
-- Relevant Chromium E2E: `npx playwright test e2e/operational/task-robot-composition.spec.ts e2e/operational/interface-work.spec.ts e2e/operational/task-lifecycle.spec.ts e2e/operational/robots.spec.ts e2e/operational/compact-ui.spec.ts --project=chromium` — **64 passed**.
+- Relevant Chromium E2E: `npx playwright test e2e/operational/task-robot-composition.spec.ts e2e/operational/interface-work.spec.ts e2e/operational/task-lifecycle.spec.ts e2e/operational/robots.spec.ts e2e/operational/compact-ui.spec.ts --project=chromium` — **65 passed** after review round 1.
 - Visual matrix generated for work and robot at **320/390/412/899/1440**, light/dark. The 1440 task and robot screenshots were manually compared with the approved reference; zone order, rail separation, action hierarchy and real robot visual were checked.
 - `npm run build` — exit 0.
 - `npm run check-nav` — 30 route ids, OK.
@@ -55,3 +55,22 @@ The physical OnePlus camera cannot be exercised from this workspace. The browser
 - `apps/web/e2e/operational/task-robot-composition.spec.ts`
 
 The pre-existing uncommitted edit in `progress.md` was not modified or staged by Task 6.
+
+## Review round 1
+
+- The A footer lifecycle controls are now projected from the same `IssueActionsPanel` action runner as Classic. Its ref lock is synchronous, all repeated controls are disabled/busy, `ApiError` is caught into the existing visible alert, and recovery reuses the same idempotent lifecycle mutation path. Browser coverage proves a 503 double-click produces exactly one POST, no `pageerror`, and a later retry succeeds.
+- The A context is no longer placeholder copy. The single existing `RobotCheckController` projects its current snapshot into the task controller: error state, LTE label and connection type, both SIM signals, both batteries, and observation time. No second snapshot owner or cache was added. Operator presence is not claimed without presence data.
+- The repair column now exposes the approved, explicit sequence `Проверить робота → Запчасти → Что было сделано`; its controls open the existing robot check, parts panel, and shared comment form instead of creating duplicate forms or actions.
+- On phone widths the DOM and visual order is task header, closed context disclosure, repair workflow, sticky action. Desktop retains the right context rail. The 320/390/412/899/1440 light/dark matrix asserts this order, real values, geometry, accessibility sizing, and the Classic boundary.
+- Tracker wrappers now remove only `<[`, `]>`, `<{`, `}>` control delimiters, retaining meaningful inner text on standalone and inline forms.
+
+Review RED/GREEN evidence:
+
+```text
+Wrapper standalone inner text: RED 1 failed → GREEN
+Mobile task-zone order: RED 1 failed → GREEN
+Shared projected action runner: RED missing footer control → GREEN 28 tests
+A 503 double-click/recovery browser contract: GREEN, exactly 1 first POST and 0 page errors
+Visual matrix first run: RED 10/10 (13 px context label) → GREEN 11/11 after 14 px accessibility fix
+Full web: 151 files, 2095 tests passed
+```

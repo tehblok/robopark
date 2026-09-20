@@ -76,6 +76,28 @@ describe('IssueActionsPanel', () => {
     expect(screen.queryByRole('button', { name: 'Статус задачи' })).not.toBeInTheDocument()
   })
 
+  it('projects the task-first primary action through the same locked error-handling runner', async () => {
+    const host = document.createElement('footer')
+    document.body.append(host)
+    let release: (() => void) | undefined
+    const approve = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => { release = () => reject(new ApiError(503, 'unavailable')) }))
+      .mockResolvedValueOnce(undefined)
+    render(<IssueActionsPanel {...baseProps} actionHost={host} role="operator" reviewState="pending" onApproveReview={approve} />)
+
+    const action = within(host).getByRole('button', { name: 'Принять и закрыть' })
+    fireEvent.click(action)
+    fireEvent.click(action)
+    expect(approve).toHaveBeenCalledOnce()
+    expect(action).toBeDisabled()
+    release?.()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Tracker не настроен')
+
+    fireEvent.click(action)
+    await waitFor(() => expect(approve).toHaveBeenCalledTimes(2))
+    host.remove()
+  })
+
   it('shows return and approval only to an operator with a pending review', () => {
     const { rerender } = render(<IssueActionsPanel {...baseProps} role="operator" reviewState={null} onReturnReview={noop} onApproveReview={noop} />)
     expect(screen.queryByRole('button', { name: 'Вернуть в работу' })).not.toBeInTheDocument()

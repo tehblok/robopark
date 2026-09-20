@@ -15,6 +15,7 @@ import {
   ApiError,
   type Park,
   type Paged,
+  type EmergencySnapshot,
   type TrackerIssue,
   type TaskTimelineItem,
   type TrackerIssueDetail,
@@ -154,26 +155,52 @@ function TaskIssueSummary({ issue, now, onOpenRobotCheck, robotReadOnly }: { iss
   </article>
 }
 
-function TaskContextRail({ issue, canCheck, onCheck, onChat }: {
+function TaskContextRail({ issue, snapshot, canCheck, onCheck, onChat }: {
   issue: TrackerIssueDetail
+  snapshot: EmergencySnapshot | null
   canCheck: boolean
   onCheck(): void
   onChat(): void
 }) {
   const robot = normalizedRobotNumber(issue.robot)
+  const events = snapshot?.diagnostic_events ?? []
+  const observed = snapshot?.observed_at ? new Date(snapshot.observed_at) : null
+  const observedLabel = observed && !Number.isNaN(observed.getTime())
+    ? new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(observed)
+    : 'Нет данных'
+  const battery = (connected: boolean | null | undefined, percent: number | null | undefined) => connected === false
+    ? 'не подключена'
+    : percent == null ? 'нет данных' : `${percent} %`
   return <div className="a-task-context-rail">
     <section aria-labelledby="a-task-robot-now">
       <h3 id="a-task-robot-now">Робот сейчас</h3>
       <strong>{robot ? `Робот ${robot}` : 'Робот не указан'}</strong>
-      <p>Ошибки, связь, две АКБ и последняя диагностика — в проверке робота.</p>
+      {snapshot ? <dl className="a-task-context-values">
+        <div><dt>Ошибки</dt><dd>{snapshot.error_banner ?? (events.length ? `${events.length} активн.` : snapshot.wheels_fault.length ? `${snapshot.wheels_fault.length} по колёсам` : 'Нет')}</dd></div>
+        <div><dt>LTE</dt><dd>{snapshot.lte_label ?? 'Нет данных'} · {snapshot.connection === 'lte' ? 'мобильное' : snapshot.connection === 'wire' ? 'проводное' : 'тип неизвестен'}</dd></div>
+        <div><dt>SIM 1 / SIM 2</dt><dd>{snapshot.sim_signals?.[0] ?? '—'} / {snapshot.sim_signals?.[1] ?? '—'}</dd></div>
+        <div><dt>АКБ 1 / АКБ 2</dt><dd>{battery(snapshot.battery1_connected, snapshot.battery1_percent)} / {battery(snapshot.battery2_connected, snapshot.battery2_percent)}</dd></div>
+        <div><dt>Последняя проверка</dt><dd><time dateTime={snapshot.observed_at}>{observedLabel}</time></dd></div>
+      </dl> : <p>Загружаем актуальные показания робота…</p>}
       {canCheck ? <Button onClick={onCheck} variant="secondary">Все показания</Button> : null}
     </section>
     <section aria-labelledby="a-task-operator">
       <h3 id="a-task-operator">Оператор</h3>
-      <p>На смене · чат задачи</p>
       <Button onClick={onChat} variant="secondary">Открыть чат</Button>
     </section>
   </div>
+}
+
+function TaskRepairSequence({ canCheck, onCheck }: { canCheck: boolean; onCheck(): void }) {
+  const reveal = (id: string) => document.getElementById(id)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  return <section aria-label="Последовательность ремонта" className="a-task-sequence">
+    <h3>Проверить робота → Запчасти → Что было сделано</h3>
+    <ol>
+      <li><strong>Проверить робота</strong>{canCheck ? <Button onClick={onCheck} variant="secondary">Открыть проверку</Button> : null}</li>
+      <li><strong>Запчасти</strong><Button onClick={() => reveal('parts')} variant="secondary">Списать или заказать</Button></li>
+      <li><strong>Что было сделано</strong><Button onClick={() => reveal('comment')} variant="secondary">Добавить комментарий</Button></li>
+    </ol>
+  </section>
 }
 
 function taskWorkflowStatus(value: string | undefined): { label: string; tone: StatusTone } {
@@ -483,6 +510,8 @@ export function TaskController({
   const [reviewOpen, setReviewOpen] = useState(false)
   const [returnReviewOpen, setReturnReviewOpen] = useState(false)
   const [hideOpen, setHideOpen] = useState(false)
+  const [taskActionHost, setTaskActionHost] = useState<HTMLElement | null>(null)
+  const [robotSnapshot, setRobotSnapshot] = useState<EmergencySnapshot | null>(null)
   const [hideReason, setHideReason] = useState('')
   const [taskControlBusy, setTaskControlBusy] = useState(false)
   const [taskControlMessage, setTaskControlMessage] = useState('')
@@ -792,16 +821,6 @@ export function TaskController({
   )
   const taskComments = comments.data ?? []
   const hasQualifyingComment = detail.data?.workflow?.has_current_cycle_comment ?? false
-  const taskFirstAction = taskFirst && canRenderDetailActions && detail.data?.workflow
-    ? user.role === 'mechanic' && detail.data.workflow.review_state !== 'pending'
-      ? <><span>Ремонт → проверка оператором</span><Button onClick={() => setReviewOpen(true)}>Передать на проверку</Button></>
-      : user.role === 'operator' && detail.data.workflow.review_state === 'pending'
-        ? <><span>Проверьте ремонт и закройте задачу</span>
-          <div className="a-task-action__buttons"><Button onClick={() => setReturnReviewOpen(true)} variant="secondary">Вернуть в работу</Button><Button busy={taskControlBusy} onClick={() => void mutate(
-            () => lifecycleMutation('approve-review', {}, key => apiClient.taskApproveReview!(detail.data!.key, key)), onCloseIssue,
-          )}>Принять и закрыть</Button></div></>
-        : null
-    : null
   if (authorizationFailure) {
     return (
       <ErrorState
@@ -864,17 +883,19 @@ export function TaskController({
                         }} />
                     </> : null}
                     <TabPanel id="work-panel-task" labelledBy={taskFirst && taskFocus === 'chat' ? 'tab-chat' : 'tab-task'} active={activeTab === 'task'} key={issueKey}>
-                    <TaskFirstTaskLayout enabled={taskFirst} action={taskFirstAction} context={detail.data ? <TaskContextRail
-                      issue={detail.data} canCheck={mechanicCanWork}
-                      onCheck={() => changeTab('check')}
-                      onChat={() => { setTaskFocus('chat'); changeTab('task') }} /> : null}>
-                    <SyncStatus updatedAt={hiddenDetail ? detail.updatedAt : detail.updatedAt !== null && comments.updatedAt !== null ? Math.min(detail.updatedAt, comments.updatedAt) : null}
-                      isRevalidating={detail.isRevalidating || (!hiddenDetail && comments.isRevalidating)}
-                      error={detail.error || (!hiddenDetail ? comments.error : null)} />
-                    {detail.data?.workflow ? <>
+                    <TaskFirstTaskLayout enabled={taskFirst} onActionHost={setTaskActionHost} header={detail.data?.workflow ? <>
+                      <SyncStatus updatedAt={hiddenDetail ? detail.updatedAt : detail.updatedAt !== null && comments.updatedAt !== null ? Math.min(detail.updatedAt, comments.updatedAt) : null}
+                        isRevalidating={detail.isRevalidating || (!hiddenDetail && comments.isRevalidating)}
+                        error={detail.error || (!hiddenDetail ? comments.error : null)} />
                       <TaskIssueSummary issue={detail.data} now={now} robotReadOnly={!mechanicCanWork}
                         onOpenRobotCheck={mechanicCanWork ? () => changeTab('check') : undefined} />
                       <TaskSyncStatus state={detail.data.workflow.sync_state} errorCode={detail.data.workflow.sync_error_code} />
+                    </> : null} context={detail.data ? <TaskContextRail
+                      issue={detail.data} snapshot={robotSnapshot} canCheck={mechanicCanWork}
+                      onCheck={() => changeTab('check')}
+                      onChat={() => { setTaskFocus('chat'); changeTab('task') }} /> : null}>
+                    {detail.data?.workflow ? <>
+                      <TaskRepairSequence canCheck={mechanicCanWork} onCheck={() => changeTab('check')} />
                       {manager ? <section aria-label="Управление задачей" className="issue-section">
                         {detail.data.workflow.hidden ? <>
                           <p>Причина скрытия: {detail.data.workflow.hidden.reason}</p>
@@ -920,6 +941,7 @@ export function TaskController({
                     ) : null}
                     {canRenderDetailActions && detail.data?.workflow ? (
                       <IssueActionsPanel
+                        actionHost={taskFirst ? taskActionHost : null}
                         capabilities={detail.data.capabilities}
                         draftOwner={user.username}
                         currentUser={user.tracker_login ?? user.username}
@@ -944,9 +966,9 @@ export function TaskController({
                             ? lifecycleMutation('message', text, key => apiClient.taskMessage!(detail.data!.key, text, key))
                             : runTrackerSubmission(user.username, detail.data!, 'comment', { text }, headers => apiClient.trackerComment(detail.data!.key, text, headers), assertCurrent),
                         )}
-                        onSubmitReview={taskFirst ? undefined : async () => { setReviewOpen(true) }}
-                        onReturnReview={taskFirst ? undefined : async () => { setReturnReviewOpen(true) }}
-                        onApproveReview={taskFirst ? undefined : async () => {
+                        onSubmitReview={async () => { setReviewOpen(true) }}
+                        onReturnReview={async () => { setReturnReviewOpen(true) }}
+                        onApproveReview={async () => {
                           if (apiClient.taskApproveReview) await mutate(() => lifecycleMutation('approve-review', {}, key => apiClient.taskApproveReview!(detail.data!.key, key)), onCloseIssue)
                         }}
                         onTransition={detail.data.workflow ? async () => undefined : (transition) => mutate(
@@ -1010,8 +1032,9 @@ export function TaskController({
                       /> : <p>Робот в задаче не указан — связанные задачи недоступны.</p> : null}
                     </TabPanel>)}
                     {mechanicCanWork ? <TabPanel id="work-panel-check" labelledBy="tab-check" active={activeTab === 'check'}>
-                      {activeTab === 'check' && detail.data ? robotNumber ? <WorkRobotCheck
+                      {detail.data ? robotNumber ? <WorkRobotCheck
                         key={relatedPrefix} robot={robotNumber} user={user} activeTab={state.checkTab}
+                        enabled={taskFirst || activeTab === 'check'} onSnapshot={setRobotSnapshot}
                         onAuthorizationFailure={failure => {
                           if (failure.kind === 'unauthorized') observeAuthorizationFailure(new ApiError(401, null, failure.requestId))
                         }}

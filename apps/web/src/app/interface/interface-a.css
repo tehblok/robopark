@@ -63,17 +63,26 @@
   .rp-work-detail-pane .issue-comment-form textarea { min-height: 100px; }
   .a-work-chat { min-width: 0; padding: 20px; border: 1px solid var(--rp-border); border-radius: 12px; background: var(--rp-surface); }
   .a-task-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 300px); gap: 0 32px; align-items: start; }
-  .a-task-workflow { display: grid; gap: 0; min-width: 0; }
+  .a-task-header, .a-task-workflow { grid-column: 1; display: grid; gap: 0; min-width: 0; }
   .a-task-workflow > :where(.rp-sync-status, .rp-work-warning) { margin-block-end: 12px; }
   .a-task-workflow > .issue-detail { border: 0; border-radius: 0; border-bottom: 1px solid var(--rp-border); padding: 16px 0 24px; background: transparent; }
   .a-task-workflow > .issue-actions { border: 0; border-radius: 0; border-top: 1px solid var(--rp-border); padding: 24px 0; background: transparent; }
   .a-task-workflow > .rp-responsive-disclosure-group { border-top: 1px solid var(--rp-border); padding-block: 8px 20px; }
-  .a-task-context { grid-column: 2; grid-row: 1; min-width: 0; border-left: 1px solid var(--rp-border); padding-left: 32px; }
+  .a-task-context { grid-column: 2; grid-row: 1 / span 2; min-width: 0; border-left: 1px solid var(--rp-border); padding-left: 32px; }
   .a-task-context__disclosure { display: none; }
   .a-task-context-rail { display: grid; gap: 24px; }
   .a-task-context-rail section { display: grid; justify-items: start; gap: 12px; padding-bottom: 24px; border-bottom: 1px solid var(--rp-border); }
   .a-task-context-rail :where(h3, p) { margin: 0; }
   .a-task-context-rail p { color: var(--rp-text-muted); line-height: 1.5; }
+  .a-task-context-values { display: grid; gap: 10px; margin: 0; width: 100%; }
+  .a-task-context-values > div { display: grid; gap: 2px; }
+  .a-task-context-values dt { color: var(--rp-text-muted); font-size: 14px; }
+  .a-task-context-values dd { margin: 0; overflow-wrap: anywhere; }
+  .a-task-sequence { padding: 16px 0 24px; border-bottom: 1px solid var(--rp-border); }
+  .a-task-sequence h3 { margin: 0 0 12px; font-size: 16px; }
+  .a-task-sequence ol { display: grid; grid-template-columns: minmax(0, 1fr); margin: 0; padding: 0; list-style: none; counter-reset: repair-step; }
+  .a-task-sequence li { counter-increment: repair-step; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 76px; padding: 12px 0; border-bottom: 1px solid var(--rp-border); }
+  .a-task-sequence strong::before { content: counter(repair-step) '. '; color: var(--rp-text-muted); }
   .a-task-action { position: sticky; z-index: 8; bottom: 0; grid-column: 1/-1; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 76px; margin-top: 24px; padding: 12px 0; border-top: 1px solid var(--rp-border); background: color-mix(in srgb, var(--rp-canvas) 94%, transparent); backdrop-filter: blur(12px); }
   .a-task-action > span { color: var(--rp-text-muted); }
   .a-task-action__buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
@@ -274,7 +283,7 @@
     .rp-work-detail-pane .issue-detail .issue-fields { width: 100%; }
     .rp-work-detail-pane .issue-actions, .a-work-chat { padding: 14px; }
     .a-task-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-    .a-task-workflow { grid-column: 1; }
+    .a-task-header, .a-task-workflow { grid-column: 1; }
     .a-task-context { grid-column: 1; grid-row: auto; border-left: 0; padding-left: 0; }
     .a-task-context__desktop { display: none; }
     .a-task-context__disclosure { display: block; }
@@ -282,6 +291,7 @@
     .a-task-context__disclosure > summary { display: flex; align-items: center; min-height: 48px; cursor: pointer; font-weight: 700; }
     .a-task-context__disclosure:not([open]) > .a-task-context__body { display: none; }
     .a-task-context__body { padding: 12px 0; }
+    .a-task-sequence li { min-height: 0; grid-template-columns: minmax(0, 1fr); }
     .a-task-action { grid-column: 1; bottom: calc(var(--rp-shell-mobile-nav-height) + env(safe-area-inset-bottom)); margin-top: 0; padding: 10px 0; flex-direction: column; align-items: stretch; }
     .a-task-action > span { font-size: 14px; }
     .a-task-action .rp-button { width: 100%; }

@@ -9,7 +9,6 @@ const visibleLabels = new Map([
 /** Display projection only: preserve the Tracker source and free-form descriptions. */
 export function summarizeIssueDescription(text: string): string {
   const source = text.replace(/\r\n?/g, '\n').replace(/&(?:nbsp|#160|#xa0|#32|#x20);/gi, ' ')
-    .replace(/^[ \t]*<(?:\[|\{)[^\n>]*(?:\]|\})>[ \t]*$/gmu, '')
     .replace(/<(?:\[|\{)([^\n>]*?)(?:\]|\})>/gu, '$1')
     .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
   // Bold headings delimit arbitrary template fields. Plain headings are accepted

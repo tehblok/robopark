@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, type User } from '../../api'
+import { api, type EmergencySnapshot, type User } from '../../api'
 import { canAccessRoute } from '../../app/routing/accessPolicy'
 import { Button } from '../../design-system/actions/Button'
 import { EmptyState, LoadingState } from '../../design-system/feedback/AsyncState'
@@ -9,9 +9,10 @@ import type { DomainError } from '../../shared/api/classifyApiError'
 
 type CheckClient = Pick<typeof api, 'emergencyResolve' | 'emergencySnapshot' | 'emergencySection'>
 
-export function WorkRobotCheck({ robot, user, activeTab, onTabChange, onOpenTasks, onAuthorizationFailure, apiClient = api }: {
+export function WorkRobotCheck({ robot, user, activeTab, onTabChange, onOpenTasks, onAuthorizationFailure, onSnapshot, enabled = true, apiClient = api }: {
   robot: string; user: User; activeTab?: string; onTabChange(tab: string): void
-  onOpenTasks(): void; onAuthorizationFailure?: (failure: DomainError) => void; apiClient?: CheckClient
+  onOpenTasks(): void; onAuthorizationFailure?: (failure: DomainError) => void; onSnapshot?: (snapshot: EmergencySnapshot | null) => void
+  enabled?: boolean; apiClient?: CheckClient
 }) {
   const [resolved, setResolved] = useState<Awaited<ReturnType<CheckClient['emergencyResolve']>> | null>(null)
   const [failure, setFailure] = useState<DomainError | null>(null)
@@ -22,7 +23,7 @@ export function WorkRobotCheck({ robot, user, activeTab, onTabChange, onOpenTask
   const allowed = canAccessRoute(user, 'robot-check')
   useEffect(() => {
     const generation = ++owner.current
-    if (!allowed) return
+    if (!allowed || !enabled) return
     setResolved(null)
     setFailure(null)
     void apiClient.emergencyResolve(robot).then(value => {
@@ -34,13 +35,14 @@ export function WorkRobotCheck({ robot, user, activeTab, onTabChange, onOpenTask
       if (classified.kind === 'unauthorized' || classified.kind === 'forbidden') notify.current?.(classified)
     })
     return () => { owner.current += 1 }
-  }, [robot, apiClient, attempt, allowed])
+  }, [robot, apiClient, attempt, allowed, enabled])
 
   if (!allowed) return <EmptyState title="Проверка робота недоступна для вашей роли" />
+  if (!enabled) return null
   if (failure) return <CheckError failure={failure} user={user} onRetry={() => setAttempt(value => value + 1)} />
   if (!resolved) return <LoadingState label="Находим робота" />
   const tab = parseRobotCheckTab(new URLSearchParams({ tab: activeTab ?? 'scheme' }), resolved.sections)
   return <RobotCheckWorkspace vin={resolved.vin} sections={resolved.sections} user={user} apiClient={apiClient}
-    activeTab={tab} onTabChange={onTabChange} onAuthorizationFailure={onAuthorizationFailure}
+    activeTab={tab} onTabChange={onTabChange} onAuthorizationFailure={onAuthorizationFailure} onSnapshot={onSnapshot}
     renderTasks={() => <Button onClick={onOpenTasks} variant="secondary">Открытые задачи робота</Button>} />
 }

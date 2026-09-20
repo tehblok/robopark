@@ -38,7 +38,7 @@ it('keeps ordinary manually written descriptions and omits empty template fields
 
 it('removes Tracker control wrappers without dropping their useful text', () => {
   expect(summarizeIssueDescription('<[robotBlock]>\n<{service data}>\nПроверить крепление\n<[end]>'))
-    .toBe('Проверить крепление')
+    .toBe('robotBlock\nservice data\nПроверить крепление\nend')
   expect(summarizeIssueDescription('Заменить <[колесо]> и проверить <{подвеску}>'))
     .toBe('Заменить колесо и проверить подвеску')
 })

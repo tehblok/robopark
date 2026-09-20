@@ -1,4 +1,5 @@
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   api,
   ApiError,
@@ -148,6 +149,7 @@ function IssueActionsPanelContent({
   onSubmitReview,
   onReturnReview,
   onApproveReview,
+  actionHost,
 }: {
   canWrite?: boolean
   capabilities?: TrackerIssueCapabilities
@@ -167,6 +169,7 @@ function IssueActionsPanelContent({
   onSubmitReview?: () => Promise<void>
   onReturnReview?: () => Promise<void>
   onApproveReview?: () => Promise<void>
+  actionHost?: HTMLElement | null
 }) {
   const issueUrl = safeHttpUrl(issueUrlRaw) ?? undefined
   const effectiveCapabilities: TrackerIssueCapabilities = capabilities ?? {
@@ -290,6 +293,19 @@ function IssueActionsPanelContent({
     )
   }
 
+  const lifecycleActions = role === 'mechanic' && reviewState !== 'pending' && onSubmitReview ? (
+    <Button busy={busy === 'review'} disabled={Boolean(busy)} onClick={() => void run('review', onSubmitReview)} type="button">
+      Передать на проверку
+    </Button>
+  ) : role === 'operator' && reviewState === 'pending' ? <div className="issue-action-row">
+    {onReturnReview ? <Button busy={busy === 'return'} disabled={Boolean(busy)} onClick={() => void run('return', onReturnReview)} type="button" variant="secondary">Вернуть в работу</Button> : null}
+    {onApproveReview ? <Button busy={busy === 'approve'} disabled={Boolean(busy)} onClick={() => void run('approve', onApproveReview)} type="button">Принять и закрыть</Button> : null}
+  </div> : null
+  const projectedLifecycleActions = actionHost && lifecycleActions ? <>
+    <span>{role === 'operator' ? 'Проверьте ремонт и закройте задачу' : 'Ремонт → проверка оператором'}</span>
+    {lifecycleActions}
+  </> : lifecycleActions
+
   return (
     <section className="issue-actions">
       {pendingCount > 0 && !busy && <p role="status">Есть отправка без подтверждения. Проверьте историю Tracker перед изменением текста или новой отправкой. Повтор того же содержимого использует сохранённый ключ.</p>}
@@ -332,15 +348,7 @@ function IssueActionsPanelContent({
         )}
       </div>
 
-      {role === 'mechanic' && reviewState !== 'pending' && onSubmitReview ? (
-        <Button disabled={Boolean(busy)} onClick={() => void run('review', onSubmitReview)} type="button">
-          Передать на проверку
-        </Button>
-      ) : null}
-      {role === 'operator' && reviewState === 'pending' ? <div className="issue-action-row">
-        {onReturnReview ? <Button disabled={Boolean(busy)} onClick={() => void run('return', onReturnReview)} type="button" variant="secondary">Вернуть в работу</Button> : null}
-        {onApproveReview ? <Button disabled={Boolean(busy)} onClick={() => void run('approve', onApproveReview)} type="button">Принять и закрыть</Button> : null}
-      </div> : null}
+      {actionHost && projectedLifecycleActions ? createPortal(projectedLifecycleActions, actionHost) : projectedLifecycleActions}
 
       {!role ? <ResponsiveDisclosureGroup label="Дополнительные действия задачи">
         {(effectiveCapabilities.transition && transitions.length > 0) || issueUrl || effectiveCapabilities.close ? (

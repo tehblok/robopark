@@ -42,9 +42,10 @@ export function userForRole(role: OperationalRole): User {
 
 export const snapshot: EmergencySnapshot = {
   vin: 'YASADR00000000447', short_number: '447', observed_at: FIXED_TIME, online: true,
-  speed: 0, charge_percent: 84, battery1_percent: 85, battery2_percent: 83, disk_percent: 24,
+  speed: 0, charge_percent: 84, battery1_percent: 85, battery2_percent: 83,
+  battery1_connected: true, battery2_connected: true, disk_percent: 24,
   mode: 'Автономный', icp_label: 'Подключён', icp_ok: true, lte_label: 'Подключён', lte_ok: true,
-  connection: 'lte', error_banner: null, lat: 55.751244, lon: 37.618423, heading_deg: 90, wheels_fault: ['fl'],
+  connection: 'lte', sim_signals: [4, 3], error_banner: null, lat: 55.751244, lon: 37.618423, heading_deg: 90, wheels_fault: ['fl'],
 }
 export const issue: TrackerIssueDetail = {
   key: 'ROBOPARK-42', summary: 'Проверить переднее левое колесо робота 447', status: 'Открыт', status_key: 'open',

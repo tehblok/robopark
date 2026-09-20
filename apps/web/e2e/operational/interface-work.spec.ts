@@ -56,6 +56,31 @@ test('robot check uses one snapshot owner in both interfaces', async ({ page }) 
   expect(snapshots).toBe(loaded)
 })
 
+test('A footer approval locks synchronously, reports 503 and recovers without an unhandled rejection', async ({ page }) => {
+  const workflow = { owner: { display: 'Механик смены', login: 'mechanic-e2e' }, review_state: 'pending' as const,
+    display_status: 'review' as const, sync_state: 'saved' as const, has_current_cycle_comment: true }
+  let approvals = 0
+  const pageErrors: Error[] = []
+  page.on('pageerror', error => pageErrors.push(error))
+  await installOperational(page, { role: 'operator', issue: { ...issue, workflow }, routes: [
+    { method: 'POST', path: '/api/tracker/issues/ROBOPARK-42/review/approve', handler: () => {
+      approvals++
+      if (approvals === 1) return { status: 503, json: { detail: 'unavailable' } }
+      return { json: { key: issue.key, action: 'approve-review', status: 'Закрыт', actor: 'operator.test', performed_at: FIXED_TIME, sync_state: 'saved', workflow: { ...workflow, review_state: 'closed', display_status: 'closed' } } }
+    } },
+  ] })
+  await page.goto('/work/ROBOPARK-42?park=7')
+  await selectInterface(page, 'Новый А')
+  const action = page.getByTestId('task-action-zone').getByRole('button', { name: 'Принять и закрыть' })
+  await action.evaluate(button => { button.click(); button.click() })
+  await expect.poll(() => approvals).toBe(1)
+  await expect(page.getByRole('alert')).toBeVisible()
+  expect(pageErrors).toEqual([])
+  await action.click()
+  await expect.poll(() => approvals).toBe(2)
+  await expect(page).toHaveURL(/\/work\?park=7/)
+})
+
 test('denied robot check does not reveal readings after changing interface', async ({ page }) => {
   await installOperational(page, { role: 'royal', routes: [
     { method: 'GET', path: /^\/api\/emergency\/[^/]+\/snapshot$/, handler: () => ({ status: 403, json: { detail: 'forbidden' } }) },

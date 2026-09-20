@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type DiagnosticEvent, type DiagnosticView, type EmergencySection, type EmergencySectionDetail, type EmergencySnapshot } from '../../api'
 import { canAccessRoute, type AccessUser } from '../../app/routing/accessPolicy'
@@ -25,6 +25,7 @@ export type RobotCheckWorkspaceProps = {
   vin: string; user: AccessUser & { id?: number }; sections: EmergencySection[]; activeTab: string
   onTabChange: (tab: string) => void; apiClient?: RobotCheckApiClient
   onAuthorizationFailure?: (failure: DomainError) => void
+  onSnapshot?: (snapshot: EmergencySnapshot | null) => void
   renderSummary?: (snapshot: EmergencySnapshot, failure: DomainError | null, refresh: () => void) => ReactNode
   renderTasks?: (snapshot: EmergencySnapshot | null, failure: DomainError | null, refresh: () => void) => ReactNode
 }
@@ -32,10 +33,11 @@ export function CheckError({ failure, user, onRetry }: { failure: DomainError; u
   return <><ErrorState {...failure} onRetry={failure.retryable ? onRetry : undefined} />
     {failure.kind === 'configuration' && canAccessRoute(user, 'admin-robot-check') ? <Link to="/admin/emergency/config">Открыть настройки</Link> : null}</>
 }
-export function RobotCheckController({ vin, user, sections, activeTab, onTabChange, apiClient = api, onAuthorizationFailure, renderSummary, renderTasks }: RobotCheckWorkspaceProps) {
+export function RobotCheckController({ vin, user, sections, activeTab, onTabChange, apiClient = api, onAuthorizationFailure, onSnapshot, renderSummary, renderTasks }: RobotCheckWorkspaceProps) {
   const { mode } = useInterfaceMode()
   const online = useOnlineStatus()
   const [snapshot, setSnapshot] = useState<EmergencySnapshot | null>(null)
+  useEffect(() => { onSnapshot?.(snapshot) }, [onSnapshot, snapshot])
   const [snapshotError, setSnapshotError] = useState<DomainError | null>(null)
   const [details, setDetails] = useState<Record<string, EmergencySectionDetail>>({})
   const [errors, setErrors] = useState<Record<string, DomainError | null>>({})
