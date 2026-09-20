@@ -85,13 +85,23 @@ function RobotsPageOwner({
 
 function RecentRobotLink({ item, parkId }: { item: RecentRobot; parkId: number | null }) {
   const openedAt = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium' }).format(new Date(item.openedAt))
+  const labels = recentRobotLabels(item)
   return (
     <li className="rp-robots-recent-card">
       <Link to={`/robots/${encodeURIComponent(item.vin)}${parkId == null ? '' : `?park=${parkId}`}`}>
-        <strong>{item.query}</strong>
-        <span>{item.vin}</span>
+        <strong>{labels.primary}</strong>
+        {labels.secondary ? <span>{labels.secondary}</span> : null}
         <small>Открыт {openedAt}</small>
       </Link>
     </li>
   )
+}
+
+// oxlint-disable-next-line react/only-export-components
+export function recentRobotLabels(item: RecentRobot): { primary: string; secondary: string | null } {
+  if (item.query.trim().toLocaleUpperCase() === item.vin.trim().toLocaleUpperCase()) {
+    const short = item.vin.replace(/^YASADR0*/i, '') || '0'
+    return { primary: `Робот ${short}`, secondary: null }
+  }
+  return { primary: item.query, secondary: item.vin }
 }

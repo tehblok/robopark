@@ -103,13 +103,14 @@ export function Panel({
           </div>
           {actions || canCollapse ? <div className="rp-panel__actions">
             {canCollapse ? <button
+              aria-label={collapsed ? `Развернуть: ${title}` : `Свернуть: ${title}`}
               aria-controls={collapsed ? undefined : contentId}
               aria-expanded={!collapsed}
               className="rp-panel__collapse"
               onClick={toggleCollapsed}
               type="button"
             >
-              {collapsed ? `Развернуть: ${title}` : `Свернуть: ${title}`}
+              {collapsed ? 'Развернуть' : 'Свернуть'}
             </button> : null}
             {actions}
           </div> : null}

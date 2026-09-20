@@ -18,6 +18,7 @@ import { formatRobotMode } from './robotDetailModel'
 import { useVisibilityPolling } from './useVisibilityPolling'
 import './robot-check.css'
 import { TaskFirstRobotLayout } from './TaskFirstRobotLayout'
+import { useInterfaceMode } from '../../app/interface/InterfaceModeProvider'
 
 export type RobotCheckApiClient = Pick<typeof api, 'emergencySnapshot' | 'emergencySection'>
 export type RobotCheckWorkspaceProps = {
@@ -31,7 +32,8 @@ export function CheckError({ failure, user, onRetry }: { failure: DomainError; u
   return <><ErrorState {...failure} onRetry={failure.retryable ? onRetry : undefined} />
     {failure.kind === 'configuration' && canAccessRoute(user, 'admin-robot-check') ? <Link to="/admin/emergency/config">Открыть настройки</Link> : null}</>
 }
-function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient = api, onAuthorizationFailure, renderSummary, renderTasks }: RobotCheckWorkspaceProps) {
+export function RobotCheckController({ vin, user, sections, activeTab, onTabChange, apiClient = api, onAuthorizationFailure, renderSummary, renderTasks }: RobotCheckWorkspaceProps) {
+  const { mode } = useInterfaceMode()
   const online = useOnlineStatus()
   const [snapshot, setSnapshot] = useState<EmergencySnapshot | null>(null)
   const [snapshotError, setSnapshotError] = useState<DomainError | null>(null)
@@ -177,9 +179,9 @@ function WorkspaceOwner({ vin, user, sections, activeTab, onTabChange, apiClient
       </section>
     </div>
   return <div className="rp-check-workspace" data-unified={Boolean(renderSummary)}>
-    <TaskFirstRobotLayout identity={identity} detail={detail} />
+    <TaskFirstRobotLayout identity={identity} detail={detail} taskFirst={mode === 'task-first'} />
   </div>
 }
 export function RobotCheckWorkspace(props: RobotCheckWorkspaceProps) {
-  return <WorkspaceOwner key={`${props.user.id}:${props.vin}:${checkAccessIdentity(props.user)}`} {...props} />
+  return <RobotCheckController key={`${props.user.id}:${props.vin}:${checkAccessIdentity(props.user)}`} {...props} />
 }

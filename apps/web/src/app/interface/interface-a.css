@@ -31,6 +31,9 @@
   .a-layout:not(:has(> .a-context)) { grid-template-columns: minmax(0, 1fr); }
 
   /* Work: selected task becomes the workspace, not a card within a card. */
+  .rp-work-page--detail > .rp-page-layout__header,
+  .rp-work-page--detail > .rp-page-layout__content > .rp-work-summary { display: none; }
+  .rp-work-page--detail > .rp-page-layout__content { gap: 0; }
   .rp-work-domain[data-has-detail='true'] > .rp-work-filters { display: none; }
   .rp-workbench[data-has-detail='true'] .rp-master-detail { grid-template-columns: minmax(0, 1fr); }
   .rp-workbench[data-has-detail='true'] .rp-master-detail__list { display: none; }
@@ -39,6 +42,7 @@
   .rp-workbench[data-has-detail='true'] .rp-master-detail__back { display: inline-flex; }
   .rp-work-detail-pane > .rp-panel { border: 0; padding: 0; background: transparent; }
   .rp-work-detail-pane > .rp-panel > .rp-panel__header { padding-block: 8px; }
+  .rp-work-detail-pane > .rp-panel > .rp-panel__header { display: none; }
   .rp-work-sections { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 20px; border-bottom: 1px solid var(--rp-border); }
   .rp-work-sections > .rp-tabs { flex: 1; min-width: 0; border: 0; }
   .a-work-related { display: flex; gap: 4px; flex-wrap: wrap; }
@@ -58,6 +62,21 @@
   .rp-work-detail-pane .issue-attach-group { border-top: 1px solid var(--rp-border); padding-top: 12px; }
   .rp-work-detail-pane .issue-comment-form textarea { min-height: 100px; }
   .a-work-chat { min-width: 0; padding: 20px; border: 1px solid var(--rp-border); border-radius: 12px; background: var(--rp-surface); }
+  .a-task-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 300px); gap: 0 32px; align-items: start; }
+  .a-task-workflow { display: grid; gap: 0; min-width: 0; }
+  .a-task-workflow > :where(.rp-sync-status, .rp-work-warning) { margin-block-end: 12px; }
+  .a-task-workflow > .issue-detail { border: 0; border-radius: 0; border-bottom: 1px solid var(--rp-border); padding: 16px 0 24px; background: transparent; }
+  .a-task-workflow > .issue-actions { border: 0; border-radius: 0; border-top: 1px solid var(--rp-border); padding: 24px 0; background: transparent; }
+  .a-task-workflow > .rp-responsive-disclosure-group { border-top: 1px solid var(--rp-border); padding-block: 8px 20px; }
+  .a-task-context { grid-column: 2; grid-row: 1; min-width: 0; border-left: 1px solid var(--rp-border); padding-left: 32px; }
+  .a-task-context__disclosure { display: none; }
+  .a-task-context-rail { display: grid; gap: 24px; }
+  .a-task-context-rail section { display: grid; justify-items: start; gap: 12px; padding-bottom: 24px; border-bottom: 1px solid var(--rp-border); }
+  .a-task-context-rail :where(h3, p) { margin: 0; }
+  .a-task-context-rail p { color: var(--rp-text-muted); line-height: 1.5; }
+  .a-task-action { position: sticky; z-index: 8; bottom: 0; grid-column: 1/-1; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 76px; margin-top: 24px; padding: 12px 0; border-top: 1px solid var(--rp-border); background: color-mix(in srgb, var(--rp-canvas) 94%, transparent); backdrop-filter: blur(12px); }
+  .a-task-action > span { color: var(--rp-text-muted); }
+  .a-task-action__buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 
   /* Robot: real illustration and readings, separate diagnosis workspace. */
   .a-robot-layout { grid-template-columns: minmax(300px, .85fr) minmax(0, 1.3fr); gap: 24px; align-items: start; }
@@ -254,6 +273,18 @@
     .rp-work-detail-pane .issue-detail-summary { font-size: 20px; }
     .rp-work-detail-pane .issue-detail .issue-fields { width: 100%; }
     .rp-work-detail-pane .issue-actions, .a-work-chat { padding: 14px; }
+    .a-task-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+    .a-task-workflow { grid-column: 1; }
+    .a-task-context { grid-column: 1; grid-row: auto; border-left: 0; padding-left: 0; }
+    .a-task-context__desktop { display: none; }
+    .a-task-context__disclosure { display: block; }
+    .a-task-context__disclosure { border-block: 1px solid var(--rp-border); }
+    .a-task-context__disclosure > summary { display: flex; align-items: center; min-height: 48px; cursor: pointer; font-weight: 700; }
+    .a-task-context__disclosure:not([open]) > .a-task-context__body { display: none; }
+    .a-task-context__body { padding: 12px 0; }
+    .a-task-action { grid-column: 1; bottom: calc(var(--rp-shell-mobile-nav-height) + env(safe-area-inset-bottom)); margin-top: 0; padding: 10px 0; flex-direction: column; align-items: stretch; }
+    .a-task-action > span { font-size: 14px; }
+    .a-task-action .rp-button { width: 100%; }
     .a-robot-layout, .rp-robots-page .rp-page-layout__content { grid-template-columns: minmax(0, 1fr); gap: 16px; }
     .rp-robots-search-panel { position: static; }
     .rp-check-first-level, .rp-check-panel { padding: 14px; }

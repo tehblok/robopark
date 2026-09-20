@@ -46,6 +46,7 @@ import { resourceStore, useCachedResource } from '../../lib/resource'
 import { TabPanel } from '../../design-system/navigation/Tabs'
 import { useInterfaceMode } from '../../app/interface/InterfaceModeProvider'
 import { TaskFirstWorkbench, type WorkSection } from './TaskFirstWorkbench'
+import { TaskFirstTaskLayout } from './TaskFirstTaskLayout'
 import { WorkRobotCheck } from './WorkRobotCheck'
 import { TaskPartsPanel } from '../inventory/TaskPartsPanel'
 import { WorkFilters } from './WorkFilters'
@@ -151,6 +152,28 @@ function TaskIssueSummary({ issue, now, onOpenRobotCheck, robotReadOnly }: { iss
     <RepairSla deadline={issue.sla_deadline} now={now} source={issue.sla_source} />
     {description.trim() ? <section className="issue-section"><h3>Описание</h3><IssueRichText text={description} /></section> : null}
   </article>
+}
+
+function TaskContextRail({ issue, canCheck, onCheck, onChat }: {
+  issue: TrackerIssueDetail
+  canCheck: boolean
+  onCheck(): void
+  onChat(): void
+}) {
+  const robot = normalizedRobotNumber(issue.robot)
+  return <div className="a-task-context-rail">
+    <section aria-labelledby="a-task-robot-now">
+      <h3 id="a-task-robot-now">Робот сейчас</h3>
+      <strong>{robot ? `Робот ${robot}` : 'Робот не указан'}</strong>
+      <p>Ошибки, связь, две АКБ и последняя диагностика — в проверке робота.</p>
+      {canCheck ? <Button onClick={onCheck} variant="secondary">Все показания</Button> : null}
+    </section>
+    <section aria-labelledby="a-task-operator">
+      <h3 id="a-task-operator">Оператор</h3>
+      <p>На смене · чат задачи</p>
+      <Button onClick={onChat} variant="secondary">Открыть чат</Button>
+    </section>
+  </div>
 }
 
 function taskWorkflowStatus(value: string | undefined): { label: string; tone: StatusTone } {
@@ -412,7 +435,7 @@ function ResourceBoundary({
   )
 }
 
-function IssueWorkbenchOwner({
+export function TaskController({
   apiClient,
   user,
   selectedPark,
@@ -769,6 +792,16 @@ function IssueWorkbenchOwner({
   )
   const taskComments = comments.data ?? []
   const hasQualifyingComment = detail.data?.workflow?.has_current_cycle_comment ?? false
+  const taskFirstAction = taskFirst && canRenderDetailActions && detail.data?.workflow
+    ? user.role === 'mechanic' && detail.data.workflow.review_state !== 'pending'
+      ? <><span>Ремонт → проверка оператором</span><Button onClick={() => setReviewOpen(true)}>Передать на проверку</Button></>
+      : user.role === 'operator' && detail.data.workflow.review_state === 'pending'
+        ? <><span>Проверьте ремонт и закройте задачу</span>
+          <div className="a-task-action__buttons"><Button onClick={() => setReturnReviewOpen(true)} variant="secondary">Вернуть в работу</Button><Button busy={taskControlBusy} onClick={() => void mutate(
+            () => lifecycleMutation('approve-review', {}, key => apiClient.taskApproveReview!(detail.data!.key, key)), onCloseIssue,
+          )}>Принять и закрыть</Button></div></>
+        : null
+    : null
   if (authorizationFailure) {
     return (
       <ErrorState
@@ -831,6 +864,10 @@ function IssueWorkbenchOwner({
                         }} />
                     </> : null}
                     <TabPanel id="work-panel-task" labelledBy={taskFirst && taskFocus === 'chat' ? 'tab-chat' : 'tab-task'} active={activeTab === 'task'} key={issueKey}>
+                    <TaskFirstTaskLayout enabled={taskFirst} action={taskFirstAction} context={detail.data ? <TaskContextRail
+                      issue={detail.data} canCheck={mechanicCanWork}
+                      onCheck={() => changeTab('check')}
+                      onChat={() => { setTaskFocus('chat'); changeTab('task') }} /> : null}>
                     <SyncStatus updatedAt={hiddenDetail ? detail.updatedAt : detail.updatedAt !== null && comments.updatedAt !== null ? Math.min(detail.updatedAt, comments.updatedAt) : null}
                       isRevalidating={detail.isRevalidating || (!hiddenDetail && comments.isRevalidating)}
                       error={detail.error || (!hiddenDetail ? comments.error : null)} />
@@ -907,9 +944,9 @@ function IssueWorkbenchOwner({
                             ? lifecycleMutation('message', text, key => apiClient.taskMessage!(detail.data!.key, text, key))
                             : runTrackerSubmission(user.username, detail.data!, 'comment', { text }, headers => apiClient.trackerComment(detail.data!.key, text, headers), assertCurrent),
                         )}
-                        onSubmitReview={async () => { setReviewOpen(true) }}
-                        onReturnReview={async () => { setReturnReviewOpen(true) }}
-                        onApproveReview={async () => {
+                        onSubmitReview={taskFirst ? undefined : async () => { setReviewOpen(true) }}
+                        onReturnReview={taskFirst ? undefined : async () => { setReturnReviewOpen(true) }}
+                        onApproveReview={taskFirst ? undefined : async () => {
                           if (apiClient.taskApproveReview) await mutate(() => lifecycleMutation('approve-review', {}, key => apiClient.taskApproveReview!(detail.data!.key, key)), onCloseIssue)
                         }}
                         onTransition={detail.data.workflow ? async () => undefined : (transition) => mutate(
@@ -961,6 +998,7 @@ function IssueWorkbenchOwner({
                       {user.role === 'mechanic' && mechanicCanWork ? <ResponsiveDisclosure id="parts" title="Использовать запчасть"><TaskPartsPanel apiClient={apiClient} issueKey={detail.data.key} onWritten={() => void comments.refresh()} parkId={taskParkId} /></ResponsiveDisclosure> : null}
                       <ResponsiveDisclosure id="handoff" title="Передача смены"><EmbeddedTaskCollaboration issueKey={detail.data.key} owner={user.username} active={activeTab === 'task' && mechanicCanWork} canWrite={detail.data.capabilities.comment && mechanicCanWork} onAuthorizationFailure={observeAuthorizationFailure} /></ResponsiveDisclosure>
                     </ResponsiveDisclosureGroup> : null}
+                    </TaskFirstTaskLayout>
                     </TabPanel>
                     {(['open', 'closed'] as const).map(kind => <TabPanel key={kind} id={`work-panel-${kind}`} labelledBy={`tab-${kind}`} active={activeTab === kind}>
                       {activeTab === kind && detail.data ? robotNumber && relatedPrefix && relatedQueue ? <RelatedTasksPanel
@@ -1124,7 +1162,7 @@ export function IssueWorkbench({
   }
 
   return (
-    <IssueWorkbenchOwner
+    <TaskController
       {...props}
       apiClient={apiClient}
       accessKey={accessKey}

@@ -35,3 +35,10 @@ it('keeps ordinary manually written descriptions and omits empty template fields
   expect(summarizeIssueDescription(manual)).toBe(manual)
   expect(summarizeIssueDescription('Classificator: Disk space\nComment:\nZone: Lavka\nPort: Moscow')).toBe('**Classificator:** Disk space\n\n**Zone:** Lavka')
 })
+
+it('removes Tracker control wrappers without dropping their useful text', () => {
+  expect(summarizeIssueDescription('<[robotBlock]>\n<{service data}>\nПроверить крепление\n<[end]>'))
+    .toBe('Проверить крепление')
+  expect(summarizeIssueDescription('Заменить <[колесо]> и проверить <{подвеску}>'))
+    .toBe('Заменить колесо и проверить подвеску')
+})

@@ -113,6 +113,8 @@ describe('Panel', () => {
     expect(screen.queryByText('Данные')).not.toBeInTheDocument()
     expect(localStorage.getItem('robopark:panel:diagnostics:collapsed')).toBe('1')
     const toggle = screen.getByRole('button', { name: 'Развернуть: Диагностика' })
+    expect(toggle).toHaveTextContent('Развернуть')
+    expect(toggle).not.toHaveTextContent('Диагностика')
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(toggle).not.toHaveAttribute('aria-controls')
   })
