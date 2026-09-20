@@ -4,6 +4,8 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 from robopark_api.ops_schemas import SystemHealthOut
 from robopark_api.services.ops import host_bridge
@@ -55,31 +57,43 @@ async def run_system_notification_loop(
     interval_seconds: float = 60.0,
 ) -> None:
     active: set[str] = set()
-    while not stop_event.is_set():
-        alerts = await asyncio.to_thread(read_health_alerts, settings)
-        if alerts is not None:
-            current = {f"system:{signature}" for _, signature, _ in alerts}
-            emit_owner = getattr(emit, "__self__", None)
-            sync_incidents = getattr(emit_owner, "sync_system_incidents", None)
-            if callable(sync_incidents):
-                try:
-                    await asyncio.to_thread(sync_incidents, current)
-                except Exception:
-                    logger.exception("System incident lifecycle update failed")
-            for event_type, signature, text in alerts:
-                incident_key = f"system:{signature}"
-                if incident_key in active:
-                    continue
-                try:
-                    await asyncio.to_thread(
-                        emit,
-                        event_type=event_type,
-                        park_id=None,
-                        protected_text=text,
-                        event_key=incident_key,
-                    )
-                except Exception:
-                    logger.exception("System notification delivery failed")
-            active = current
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="system-notifications")
+    loop = asyncio.get_running_loop()
+    try:
+        while not stop_event.is_set():
+            alerts = await loop.run_in_executor(executor, read_health_alerts, settings)
+            if alerts is not None:
+                current = {f"system:{signature}" for _, signature, _ in alerts}
+                confirmed = active & current
+                emit_owner = getattr(emit, "__self__", None)
+                sync_incidents = getattr(emit_owner, "sync_system_incidents", None)
+                if callable(sync_incidents):
+                    try:
+                        await loop.run_in_executor(executor, sync_incidents, current)
+                    except Exception:
+                        logger.exception("System incident lifecycle update failed")
+                for event_type, signature, text in alerts:
+                    incident_key = f"system:{signature}"
+                    if incident_key in active:
+                        continue
+                    try:
+                        operation = partial(
+                            emit,
+                            event_type=event_type,
+                            park_id=None,
+                            protected_text=text,
+                            event_key=incident_key,
+                        )
+                        await loop.run_in_executor(executor, operation)
+                    except Exception:
+                        logger.exception("System notification delivery failed")
+                    else:
+                        confirmed.add(incident_key)
+                # A failed first emission must remain eligible for the next poll.
+                # PushService's stable occurrence/event keys make that retry idempotent
+                # even when the failure happened after its database commit.
+                active = confirmed
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)

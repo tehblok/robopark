@@ -1,6 +1,7 @@
 import asyncio
 import os
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from robopark_api import main
 from robopark_api.models import AuthThrottleState
+from robopark_api.schedule_models import SystemIncidentOccurrence
 from robopark_api.services import cache_cleanup
 from robopark_api.task_workflow_models import (
     OfflineSyncReceipt,
@@ -59,6 +61,11 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         lambda session, **kwargs: calls.append(("throttles", session, kwargs)) or 2,
     )
     monkeypatch.setattr(
+        cache_cleanup,
+        "prune_system_incident_occurrences",
+        lambda session, **kwargs: calls.append(("incidents", session, kwargs)) or 2,
+    )
+    monkeypatch.setattr(
         cache_cleanup.push,
         "prune_notification_data",
         lambda session, **kwargs: (
@@ -99,6 +106,7 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         ("media", db, {"now": now.timestamp()}),
         ("receipts", db, {"now": now.timestamp()}),
         ("throttles", db, {"now": now}),
+        ("incidents", db, {"now": now}),
         ("notifications", db, {"now": now}),
         ("schedules", db, {"now": now}),
         ("outbox", db, {"now": now.timestamp()}),
@@ -183,6 +191,50 @@ def test_cleanup_does_not_delete_auth_throttle_row_renewed_after_selection(
     assert db_session.get(AuthThrottleState, key_hash) is not None
 
 
+def test_cleanup_bounds_resolved_incidents_and_preserves_active(db_session):
+    now = datetime(2026, 9, 20, tzinfo=UTC)
+    old = now - timedelta(days=91)
+    rows = [
+        SystemIncidentOccurrence(
+            incident_key=f"system:old:{index}",
+            event_type="problem",
+            started_at=old - timedelta(minutes=1),
+            last_seen_at=old,
+            resolved_at=old,
+        )
+        for index in range(3)
+    ]
+    active = SystemIncidentOccurrence(
+        incident_key="system:active",
+        event_type="problem",
+        started_at=old,
+        last_seen_at=old,
+        resolved_at=None,
+    )
+    recent = SystemIncidentOccurrence(
+        incident_key="system:recent",
+        event_type="problem",
+        started_at=now - timedelta(days=2),
+        last_seen_at=now - timedelta(days=1),
+        resolved_at=now - timedelta(days=1),
+    )
+    db_session.add_all([*rows, active, recent])
+    db_session.commit()
+    old_ids = [row.id for row in rows]
+    active_id = active.id
+    recent_id = recent.id
+
+    assert cache_cleanup.prune_system_incident_occurrences(
+        db_session, now=now, limit=2
+    ) == 2
+    assert db_session.get(SystemIncidentOccurrence, active_id) is not None
+    assert db_session.get(SystemIncidentOccurrence, recent_id) is not None
+    assert sum(
+        db_session.get(SystemIncidentOccurrence, occurrence_id) is not None
+        for occurrence_id in old_ids
+    ) == 1
+
+
 def test_deleted_report_file_cleanup_only_removes_old_quarantine_files(tmp_path, monkeypatch):
     from robopark_api.services import report_attachments
 
@@ -221,6 +273,30 @@ def test_cleanup_loop_runs_without_sleeping_and_stops_on_event(monkeypatch):
         await task
 
     asyncio.run(exercise())
+
+
+def test_cleanup_loop_cancellation_joins_real_worker_thread(monkeypatch):
+    started = threading.Event()
+    finish = threading.Event()
+
+    def blocking_cleanup():
+        started.set()
+        finish.wait(timeout=1)
+        return (0, 0)
+
+    monkeypatch.setattr(cache_cleanup, "prune_cache_once", blocking_cleanup)
+
+    async def exercise():
+        task = asyncio.create_task(cache_cleanup.run_cache_cleanup_loop(asyncio.Event()))
+        assert await asyncio.to_thread(started.wait, 0.5)
+        threading.Timer(0.1, finish.set).start()
+        began = time.monotonic()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return time.monotonic() - began
+
+    assert asyncio.run(exercise()) >= 0.08
 
 
 def test_cleanup_failure_backs_off_while_pressure_sampling_continues(monkeypatch):
@@ -495,6 +571,76 @@ def test_lifespan_awaits_blocking_outbox_before_releasing_job_lease(
     assert lease_released.is_set()
     assert app_holder[0].state.push_service._delivery_closed
     assert app_holder[0].state.push_service._delivery_executor is None
+
+
+def test_lifespan_joins_real_cleanup_thread_before_closing_shared_resources(
+    db_engine, test_settings, monkeypatch
+):
+    entered = threading.Event()
+    close_context = threading.Event()
+    cleanup_started = threading.Event()
+    finish_cleanup = threading.Event()
+    lease_released = threading.Event()
+    app_holder = []
+
+    class Lease:
+        def __init__(self, root, name):
+            del root, name
+
+        def try_acquire(self):
+            return True
+
+        def release(self):
+            lease_released.set()
+
+    async def idle_loop(stop_event, **kwargs):
+        del kwargs
+        await stop_event.wait()
+
+    async def idle_factory_loop(session_factory, stop_event, **kwargs):
+        del session_factory, kwargs
+        await stop_event.wait()
+
+    def blocking_cleanup():
+        cleanup_started.set()
+        finish_cleanup.wait(timeout=2)
+        return (0, 0)
+
+    monkeypatch.setattr(cache_cleanup, "prune_cache_once", blocking_cleanup)
+    monkeypatch.setattr(main, "SessionLocal", sessionmaker(bind=db_engine, future=True))
+    monkeypatch.setattr(main, "get_settings", lambda: test_settings)
+    monkeypatch.setattr(main, "live_merge_enabled", lambda: True)
+    monkeypatch.setattr(main, "JobLease", Lease)
+    monkeypatch.setattr(main, "run_keepalive_loop", idle_loop)
+    monkeypatch.setattr(main, "run_blocker_history_loop", idle_loop)
+    monkeypatch.setattr(main, "run_session_cleanup_loop", idle_loop)
+    monkeypatch.setattr(main, "run_system_notification_loop", idle_loop)
+    monkeypatch.setattr(main, "run_tracker_outbox_loop", idle_factory_loop)
+    monkeypatch.setattr(main, "run_campaign_refresh_loop", idle_factory_loop)
+    monkeypatch.setattr(main, "run_tracker_notification_loop", idle_factory_loop)
+
+    def serve():
+        app = main.create_app()
+        app_holder.append(app)
+        with TestClient(app):
+            entered.set()
+            close_context.wait(timeout=2)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    assert entered.wait(timeout=1)
+    assert cleanup_started.wait(timeout=1)
+    close_context.set()
+    try:
+        assert not lease_released.wait(timeout=0.1)
+        assert not app_holder[0].state.push_service._delivery_closed
+    finally:
+        finish_cleanup.set()
+        thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert lease_released.is_set()
+    assert app_holder[0].state.push_service._delivery_closed
 
 
 def test_cleanup_limits_each_outbox_retention_batch_to_500(db_engine, db_session, seed_mechanic):

@@ -10,7 +10,8 @@ import os
 import stat
 import tempfile
 import time
-from datetime import UTC, datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import delete, select
@@ -20,6 +21,7 @@ from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
 from robopark_api.models import AuthThrottleState
 from robopark_api.routers import push
+from robopark_api.schedule_models import SystemIncidentOccurrence
 from robopark_api.services import emergency_cache, media_uploads, schedules, tracker_cache
 from robopark_api.services.diagnostic_unknowns import prune_diagnostic_unknowns
 from robopark_api.services.live_merge import get_live_merge_store
@@ -46,6 +48,7 @@ _RETENTION_BATCH_SIZE = 500
 _SUCCESS_RETENTION_SECONDS = 30 * 86400
 _SYNC_RECEIPT_RETENTION_SECONDS = 30 * 86400
 _UPLOADED_BLOB_RETENTION_SECONDS = 7 * 86400
+_SYSTEM_INCIDENT_RETENTION_SECONDS = 90 * 86400
 _STORAGE_BATCH_SIZE = 128
 _STORAGE_MAX_DELETIONS = 512
 _STORAGE_MAX_ITERATIONS = 16
@@ -189,6 +192,40 @@ def prune_auth_throttle_states(
     if key_hashes:
         db.commit()
     return removed
+
+
+def prune_system_incident_occurrences(
+    db: Session,
+    *,
+    now: datetime,
+    limit: int = _RETENTION_BATCH_SIZE,
+) -> int:
+    """Delete one bounded batch of old resolved incident occurrences."""
+    cutoff = now - timedelta(seconds=_SYSTEM_INCIDENT_RETENTION_SECONDS)
+    occurrence_ids = list(
+        db.scalars(
+            select(SystemIncidentOccurrence.id)
+            .where(
+                SystemIncidentOccurrence.resolved_at.is_not(None),
+                SystemIncidentOccurrence.resolved_at <= cutoff,
+            )
+            .order_by(SystemIncidentOccurrence.resolved_at, SystemIncidentOccurrence.id)
+            .limit(max(0, limit))
+        ).all()
+    )
+    if not occurrence_ids:
+        return 0
+    result = db.execute(
+        delete(SystemIncidentOccurrence)
+        .where(
+            SystemIncidentOccurrence.id.in_(occurrence_ids),
+            SystemIncidentOccurrence.resolved_at.is_not(None),
+            SystemIncidentOccurrence.resolved_at <= cutoff,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    return int(result.rowcount or 0)
 
 
 def _delete_expired_auth_throttle_keys(
@@ -394,6 +431,7 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
         media_uploads_removed = media_uploads.cleanup_expired(db, now=current.timestamp())
         sync_receipts_removed = prune_offline_sync_receipts(db, now=current.timestamp())
         throttle_states_removed = prune_auth_throttle_states(db, now=current)
+        incident_occurrences_removed = prune_system_incident_occurrences(db, now=current)
         notification_cleanup = push.prune_notification_data(db, now=current)
         schedules_removed = schedules.prune_old_entries(db, now=current)
         actions_removed, attachments_removed = prune_tracker_outbox(db, now=current.timestamp())
@@ -418,6 +456,8 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
         logger.info("Pruned %s expired offline sync receipt(s)", sync_receipts_removed)
     if throttle_states_removed:
         logger.info("Pruned %s expired authentication throttle row(s)", throttle_states_removed)
+    if incident_occurrences_removed:
+        logger.info("Pruned %s resolved system incident occurrence(s)", incident_occurrences_removed)
     if notification_cleanup["subscriptions"] or notification_cleanup["notifications"]:
         logger.info("Pruned notification data: %s", notification_cleanup)
     if schedules_removed:
@@ -436,31 +476,37 @@ async def run_cache_cleanup_loop(
     pressure_interval_seconds: float = 30.0,
 ) -> None:
     loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cache-cleanup")
     next_cleanup = 0.0
     retry = CleanupRetry(minimum=max(30.0, pressure_interval_seconds))
-    while not stop_event.is_set():
-        now = loop.time()
-        if now >= next_cleanup:
+    try:
+        while not stop_event.is_set():
+            now = loop.time()
+            if now >= next_cleanup:
+                try:
+                    await loop.run_in_executor(executor, prune_cache_once)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    next_cleanup = now + retry.failed()
+                    if retry.should_log(now):
+                        logger.exception("Cache cleanup cycle failed; retry is bounded")
+                else:
+                    retry.succeeded()
+                    next_cleanup = now + interval_seconds
             try:
-                await asyncio.to_thread(prune_cache_once)
+                await loop.run_in_executor(executor, sample_memory_pressure)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                next_cleanup = now + retry.failed()
-                if retry.should_log(now):
-                    logger.exception("Cache cleanup cycle failed; retry is bounded")
-            else:
-                retry.succeeded()
-                next_cleanup = now + interval_seconds
-        try:
-            await asyncio.to_thread(sample_memory_pressure)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Memory pressure sampling failed")
+                logger.exception("Memory pressure sampling failed")
 
-        if stop_event.is_set():
-            break
-        timeout = max(1.0, pressure_interval_seconds)
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(stop_event.wait(), timeout=timeout)
+            if stop_event.is_set():
+                break
+            timeout = max(1.0, pressure_interval_seconds)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop_event.wait(), timeout=timeout)
+    finally:
+        # asyncio cancellation cannot stop a running worker. Joining this owned
+        # executor keeps DB/file writes inside the singleton lease lifetime.
+        executor.shutdown(wait=True, cancel_futures=True)

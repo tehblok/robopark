@@ -117,3 +117,47 @@ def test_system_notification_loop_keeps_occurrence_open_while_source_unavailable
     assert [event.user_id for event in events] == [seed_royal.id]
     assert len(occurrences) == 1
     assert occurrences[0].resolved_at is None
+
+
+def test_system_notification_loop_retries_failed_emit_without_duplicate_occurrence(
+    monkeypatch, db_engine, seed_royal
+):
+    stop = asyncio.Event()
+    down = [("disk_low", "resources:failed", "Диск")]
+    states = [down, down]
+
+    def read(_settings):
+        value = states.pop(0)
+        if not states:
+            stop.set()
+        return value
+
+    session_factory = sessionmaker(bind=db_engine, future=True)
+    service = PushService(session_factory)
+    attempts = 0
+
+    def emit_then_fail_once(**event):
+        nonlocal attempts
+        attempts += 1
+        result = service.emit(**event)
+        if attempts == 1:
+            raise RuntimeError("delivery boundary failed")
+        return result
+
+    monkeypatch.setattr("robopark_api.services.system_notifications.read_health_alerts", read)
+    asyncio.run(
+        run_system_notification_loop(
+            stop,
+            settings=object(),
+            emit=emit_then_fail_once,
+            interval_seconds=0,
+        )
+    )
+
+    with session_factory() as db:
+        events = list(db.scalars(select(NotificationEvent)))
+        occurrences = list(db.scalars(select(SystemIncidentOccurrence)))
+    assert attempts == 2
+    assert [event.user_id for event in events] == [seed_royal.id]
+    assert len(occurrences) == 1
+    assert occurrences[0].resolved_at is None

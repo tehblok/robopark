@@ -250,6 +250,39 @@ def test_poller_keyset_progresses_past_full_boundary_page(
     assert calls[1]["order"] == ["createdAt", "key"]
 
 
+def test_poller_advances_past_raw_page_filtered_out_locally(
+    db_engine, db_session, seed_park_with_tracker, monkeypatch
+):
+    del seed_park_with_tracker
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    _seed_cursor(db_session, created="2026-09-20T17:59:59+00:00")
+    closed = {
+        **_issue("ROBOPARK-1", "2026-09-20T18:00:00Z"),
+        "status": "Closed",
+        "status_key": "closed",
+    }
+    new = _issue("ROBOPARK-2", "2026-09-20T18:01:00Z")
+    calls = []
+
+    def search_page(**kwargs):
+        calls.append(kwargs)
+        return [new] if 'Key: > "ROBOPARK-1"' in kwargs["query"] else [closed]
+
+    monkeypatch.setattr(tracker_cache, "search_issue_page", search_page)
+    emitted = []
+    factory = _factory(db_engine)
+
+    assert poll_tracker_notifications(
+        factory, _capture(emitted), page_size=1, owner_id="worker-a"
+    ) == 0
+    assert poll_tracker_notifications(
+        factory, _capture(emitted), page_size=1, owner_id="worker-b"
+    ) == 1
+
+    assert calls[0]["filter_open"] is False
+    assert [event["event_key"] for event in emitted] == ["new-task:ROBOPARK-2"]
+
+
 def test_poller_does_not_guess_park_for_shared_queue(
     db_engine, db_session, seed_park_with_tracker, monkeypatch
 ):

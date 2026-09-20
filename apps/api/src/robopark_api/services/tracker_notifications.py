@@ -240,7 +240,10 @@ def poll_tracker_notifications(
             token=token,
             query=_search_query(queues, cursor),
             limit=page_size,
-            filter_open=True,
+            # The Tracker query asks for open tasks, but stale/local status
+            # projection can still reject every row in a full raw page. Keep
+            # raw rows so their keyset position advances the durable cursor.
+            filter_open=False,
             order=["createdAt", "key"],
         )
         positioned = sorted(

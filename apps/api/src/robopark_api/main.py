@@ -192,10 +192,10 @@ def create_app() -> FastAPI:
                 startup.cancel()
                 with suppress(asyncio.CancelledError):
                     await startup
-                for task in tasks:
-                    task.cancel()
-                # Await each task separately: a single `await` chain would skip the
-                # remaining tasks as soon as the first CancelledError propagates.
+                # The shared stop event lets every loop leave after its current
+                # bounded operation. Do not cancel asyncio.to_thread waiters:
+                # cancellation detaches the real writer thread, after which the
+                # lease/DB locks/push pool could be released underneath it.
                 for task in tasks:
                     with suppress(asyncio.CancelledError):
                         await task
