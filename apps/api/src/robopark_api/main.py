@@ -57,6 +57,7 @@ from robopark_api.routers import (
 )
 from robopark_api.seed import ensure_seed_user
 from robopark_api.services import platform_settings as settings_svc
+from robopark_api.services import tracker_client
 from robopark_api.services.blocker_history_job import run_blocker_history_loop
 from robopark_api.services.cache_cleanup import run_cache_cleanup_loop
 from robopark_api.services.campaigns import run_refresh_loop as run_campaign_refresh_loop
@@ -175,7 +176,7 @@ def create_app() -> FastAPI:
                         lease_seconds=settings.tracker_notification_lease_seconds,
                         poll_deadline_seconds=settings.tracker_notification_poll_deadline_seconds,
                         max_operation_seconds=max(
-                            30.0,
+                            tracker_client.SEARCH_OPERATION_TIMEOUT_SECONDS,
                             settings.push_delivery_deadline_seconds,
                         ),
                     )

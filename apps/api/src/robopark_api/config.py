@@ -4,6 +4,8 @@ from pathlib import Path
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from robopark_api.services.tracker_api import NOTIFICATION_SEARCH_OPERATION_TIMEOUT_SEC
+
 _API_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -126,7 +128,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_tracker_notification_timing(self) -> "Settings":
-        max_operation = max(30.0, self.push_delivery_deadline_seconds)
+        max_operation = max(
+            NOTIFICATION_SEARCH_OPERATION_TIMEOUT_SEC,
+            self.push_delivery_deadline_seconds,
+        )
         required_lease = self.tracker_notification_poll_deadline_seconds + max_operation + 5.0
         if self.tracker_notification_lease_seconds < required_lease:
             raise ValueError("tracker_notification_lease_too_short")

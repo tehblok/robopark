@@ -22,7 +22,12 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from robopark_api.services.response_cache import ResponseCache
-from robopark_api.services.tracker_api import call_with_retry
+from robopark_api.services.tracker_api import (
+    NOTIFICATION_SEARCH_CALL_TIMEOUT_SEC,
+    NOTIFICATION_SEARCH_MAX_ATTEMPTS,
+    NOTIFICATION_SEARCH_OPERATION_TIMEOUT_SEC,
+    call_with_retry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +37,9 @@ USER_AGENT = os.environ.get("TRACKER_USER_AGENT", "robopark-api/0.1")
 # Tracker API отдаёт не более 50 тикетов за один HTTP-запрос; find() сам
 # дочитывает следующие страницы по Link header при итерации.
 API_PAGE_SIZE = 50
-SEARCH_CALL_TIMEOUT_SECONDS = 30.0
+SEARCH_CALL_TIMEOUT_SECONDS = NOTIFICATION_SEARCH_CALL_TIMEOUT_SEC
+SEARCH_MAX_ATTEMPTS = NOTIFICATION_SEARCH_MAX_ATTEMPTS
+SEARCH_OPERATION_TIMEOUT_SECONDS = NOTIFICATION_SEARCH_OPERATION_TIMEOUT_SEC
 MAX_ROBOT_REFERENCE_LENGTH = 64
 DEFAULT_QUEUE = "SDCFLEETOPS"
 DEFAULT_ISSUE_TYPES = ("repair", "service", "calibration")
@@ -777,7 +784,11 @@ def _search(
                 break
         return items
 
-    return _run_tracked(_run, call_timeout=SEARCH_CALL_TIMEOUT_SECONDS)
+    return _run_tracked(
+        _run,
+        max_attempts=SEARCH_MAX_ATTEMPTS,
+        call_timeout=SEARCH_CALL_TIMEOUT_SECONDS,
+    )
 
 
 def count_issues(*, token: str, query: str) -> int:

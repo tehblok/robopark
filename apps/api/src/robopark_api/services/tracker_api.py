@@ -48,6 +48,38 @@ _STATUS_RE = re.compile(r"\b(429|502|503|504)\b")
 _executor = ThreadPoolExecutor(max_workers=MAX_INFLIGHT, thread_name_prefix="tracker-api")
 
 
+def call_with_retry_upper_bound(
+    *,
+    max_attempts: int = 2,
+    base_delay: float = 0.5,
+    slot_timeout: float = DEFAULT_SLOT_WAIT_SEC,
+    call_timeout: float = DEFAULT_CALL_TIMEOUT_SEC,
+) -> float:
+    """Conservative wall-clock bound for ``call_with_retry``.
+
+    Each attempt can wait for a host slot and a process slot (including the
+    two-second stuck-slot fallback), then consume both the call and drain
+    waits. Rate limiting and exponential inter-attempt delays are included.
+    """
+    if max_attempts < 1:
+        raise ValueError("tracker_max_attempts_invalid")
+    slot_wait = 2 * max(1.0, slot_timeout) + 2.0
+    call_and_drain = 2 * max(5.0, call_timeout)
+    attempt_bound = slot_wait + MIN_INTERVAL_SEC + call_and_drain
+    retry_delays = sum(base_delay * (2**attempt) for attempt in range(max_attempts - 1))
+    return max_attempts * attempt_bound + retry_delays
+
+
+# Notification search uses this explicit envelope end-to-end: the client passes
+# the same retry inputs and Settings validates the cursor lease against it.
+NOTIFICATION_SEARCH_MAX_ATTEMPTS = 2
+NOTIFICATION_SEARCH_CALL_TIMEOUT_SEC = 30.0
+NOTIFICATION_SEARCH_OPERATION_TIMEOUT_SEC = call_with_retry_upper_bound(
+    max_attempts=NOTIFICATION_SEARCH_MAX_ATTEMPTS,
+    call_timeout=NOTIFICATION_SEARCH_CALL_TIMEOUT_SEC,
+)
+
+
 def _rate_limit_wait() -> None:
     global _last_call
     with _lock:

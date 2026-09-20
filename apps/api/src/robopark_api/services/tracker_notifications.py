@@ -150,9 +150,15 @@ def _search_query(queues: list[str], cursor: tuple[datetime, str] | None) -> str
     queue_clause = "(" + " OR ".join(
         f"Queue: {tracker_client.ql_token(queue)}" for queue in queues
     ) + ")"
-    created_clause = (
-        f'Created: >= "{cursor[0]:%Y-%m-%d %H:%M:%S}"' if cursor is not None else ""
-    )
+    created_clause = ""
+    if cursor is not None:
+        created = cursor[0].isoformat().replace("+00:00", "Z")
+        created_clause = f'Created: > "{created}"'
+        if cursor[1]:
+            created_clause = (
+                f'({created_clause} OR (Created: "{created}" '
+                f"AND Key: > {tracker_client.ql_quote(cursor[1])}))"
+            )
     return tracker_client.join_query(
         "Priority: blocker",
         tracker_client.open_issues_clause(),
@@ -193,7 +199,7 @@ def poll_tracker_notifications(
     owner_id: str,
     lease_seconds: float = 300.0,
     poll_deadline_seconds: float = 45.0,
-    max_operation_seconds: float = tracker_client.SEARCH_CALL_TIMEOUT_SECONDS,
+    max_operation_seconds: float = tracker_client.SEARCH_OPERATION_TIMEOUT_SECONDS,
 ) -> int:
     """Process one bounded Tracker page, returning emitted event count."""
     if lease_seconds < poll_deadline_seconds + max_operation_seconds:
@@ -235,7 +241,7 @@ def poll_tracker_notifications(
             query=_search_query(queues, cursor),
             limit=page_size,
             filter_open=True,
-            order=["createdAt"],
+            order=["createdAt", "key"],
         )
         positioned = sorted(
             (position, issue)

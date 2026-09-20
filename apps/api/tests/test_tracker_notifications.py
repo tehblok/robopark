@@ -14,6 +14,7 @@ from robopark_api.models import Park
 from robopark_api.schedule_models import TrackerNotificationCursor
 from robopark_api.services import (
     platform_settings,
+    tracker_api,
     tracker_cache,
     tracker_client,
     tracker_notifications,
@@ -204,7 +205,49 @@ def test_poller_query_keeps_queue_and_cursor_boundary():
     )
 
     assert "Queue: ROBOPARK" in query
-    assert 'Created: >= "2026-09-20 18:30:00"' in query
+    assert 'Created: > "2026-09-20T18:30:00Z"' in query
+    assert 'Key: > "ROBOPARK-50"' in query
+
+
+def test_poller_keyset_progresses_past_full_boundary_page(
+    db_engine, db_session, seed_park_with_tracker, monkeypatch
+):
+    del seed_park_with_tracker
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    _seed_cursor(db_session, created="2026-09-20T17:59:59+00:00")
+    same_second = "2026-09-20T18:00:00Z"
+    first_page = [
+        _issue("ROBOPARK-1", same_second),
+        _issue("ROBOPARK-2", same_second),
+    ]
+    last_page = [_issue("ROBOPARK-3", same_second)]
+    calls = []
+
+    def search_page(**kwargs):
+        calls.append(kwargs)
+        if 'Key: > "ROBOPARK-2"' in kwargs["query"]:
+            return last_page
+        return first_page
+
+    monkeypatch.setattr(tracker_cache, "search_issue_page", search_page)
+    emitted = []
+    factory = _factory(db_engine)
+
+    assert (
+        poll_tracker_notifications(factory, _capture(emitted), page_size=2, owner_id="worker-a")
+        == 2
+    )
+    assert (
+        poll_tracker_notifications(factory, _capture(emitted), page_size=2, owner_id="worker-b")
+        == 1
+    )
+
+    assert [event["event_key"] for event in emitted] == [
+        "new-task:ROBOPARK-1",
+        "new-task:ROBOPARK-2",
+        "new-task:ROBOPARK-3",
+    ]
+    assert calls[1]["order"] == ["createdAt", "key"]
 
 
 def test_poller_does_not_guess_park_for_shared_queue(
@@ -258,6 +301,36 @@ def test_tracker_notification_settings_reject_lease_shorter_than_poll_bound():
             tracker_notification_poll_deadline_seconds=31,
             tracker_notification_lease_seconds=40,
             push_delivery_deadline_seconds=30,
+        )
+
+
+def test_tracker_retry_bound_matches_search_lease_contract():
+    upper_bound = getattr(tracker_api, "call_with_retry_upper_bound", None)
+    assert callable(upper_bound)
+
+    tracker_bound = upper_bound(
+        max_attempts=2,
+        slot_timeout=25,
+        call_timeout=30,
+        base_delay=0.5,
+    )
+
+    assert tracker_bound == pytest.approx(224.8)
+    assert pytest.approx(tracker_bound) == tracker_client.SEARCH_OPERATION_TIMEOUT_SECONDS
+    required_lease = 31 + tracker_bound + 5
+    accepted = Settings(
+        _env_file=None,
+        tracker_notification_poll_deadline_seconds=31,
+        tracker_notification_lease_seconds=required_lease,
+        push_delivery_deadline_seconds=10,
+    )
+    assert accepted.tracker_notification_lease_seconds == pytest.approx(required_lease)
+    with pytest.raises(ValidationError, match="tracker_notification_lease_too_short"):
+        Settings(
+            _env_file=None,
+            tracker_notification_poll_deadline_seconds=31,
+            tracker_notification_lease_seconds=required_lease - 0.01,
+            push_delivery_deadline_seconds=10,
         )
 
 
