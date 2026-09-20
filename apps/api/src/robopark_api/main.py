@@ -115,8 +115,6 @@ def create_app() -> FastAPI:
                     data_dir=ctx.data_dir,
                 )
         except Exception:  # noqa: BLE001
-            import logging
-
             logging.getLogger(__name__).exception("ops rebuild reconcile failed on startup")
         stop_event = asyncio.Event()
         job_lease = JobLease(default_live_merge_root(), "lifespan-jobs")
@@ -190,26 +188,37 @@ def create_app() -> FastAPI:
             stop_event.set()
             try:
                 startup.cancel()
-                with suppress(asyncio.CancelledError):
-                    await startup
+                startup_results = await asyncio.gather(startup, return_exceptions=True)
+                for result in startup_results:
+                    if isinstance(result, BaseException) and not isinstance(
+                        result, asyncio.CancelledError
+                    ):
+                        logging.getLogger(__name__).error(
+                            "lifespan writer startup failed", exc_info=result
+                        )
                 # The shared stop event lets every loop leave after its current
                 # bounded operation. Do not cancel asyncio.to_thread waiters:
                 # cancellation detaches the real writer thread, after which the
                 # lease/DB locks/push pool could be released underneath it.
-                for task in tasks:
-                    with suppress(asyncio.CancelledError):
-                        await task
-                # Cancelling an asyncio.to_thread waiter does not stop its thread.
-                # Keep the lease until the bounded Tracker call and worker exit.
-                if outbox_task is not None:
-                    with suppress(asyncio.CancelledError):
-                        await outbox_task
-                if campaign_task is not None:
-                    with suppress(asyncio.CancelledError):
-                        await campaign_task
-                if tracker_notification_task is not None:
-                    with suppress(asyncio.CancelledError):
-                        await tracker_notification_task
+                writer_tasks = [
+                    *tasks,
+                    *(
+                        task
+                        for task in (outbox_task, campaign_task, tracker_notification_task)
+                        if task is not None
+                    ),
+                ]
+                # A failed sibling must never skip joining the remaining writers.
+                # In particular, cancelled ``to_thread`` waiters do not stop their
+                # real threads, so every task is collected before shared resources.
+                writer_results = await asyncio.gather(*writer_tasks, return_exceptions=True)
+                for result in writer_results:
+                    if isinstance(result, BaseException) and not isinstance(
+                        result, asyncio.CancelledError
+                    ):
+                        logging.getLogger(__name__).error(
+                            "lifespan background worker failed", exc_info=result
+                        )
             finally:
                 try:
                     await asyncio.to_thread(_app.state.push_service.close)
