@@ -1,5 +1,6 @@
 import type { User } from '../api'
 import { IndexedResourceStore } from './indexedResourceStore'
+import type { OfflineScope } from '../pwa/offlineTypes'
 
 const DEVICE_CACHE_SCHEMA = 1
 let active: IndexedResourceStore | null = null
@@ -14,6 +15,16 @@ function userFingerprint(user: User, park: string): string {
     parks: user.parks.map(park => park.id).sort((a, b) => a - b),
     park,
   })
+}
+
+export function offlineScopeForUser(user: User, park = 'all'): OfflineScope {
+  return {
+    account: String(user.id),
+    role: user.role,
+    permissions: [...(user.permissions ?? [])].sort().join(','),
+    park,
+    schema: DEVICE_CACHE_SCHEMA,
+  }
 }
 
 export async function activateDeviceResourceCache(user: User, park = 'all'): Promise<void> {

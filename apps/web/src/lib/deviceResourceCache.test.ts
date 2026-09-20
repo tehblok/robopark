@@ -9,6 +9,7 @@ import {
 } from './deviceResourceCache'
 import { IndexedResourceStore } from './indexedResourceStore'
 import { resourceStore } from './resource'
+import { offlineScopeForUser } from './deviceResourceCache'
 
 const user = (id: number, role = 'operator'): User => ({
   id, username: `user-${id}`, role, access_status: 'approved', permissions: ['tracker.read'], parks: [],
@@ -112,4 +113,16 @@ it('does not notify or restore a key when it is invalidated during hydration', a
   expect(resourceStore.get('tracker:item')).toBeUndefined()
   expect(listener).toHaveBeenCalledTimes(1)
   unsubscribe()
+})
+
+it('builds the same stable authorization scope regardless of permission or park order', () => {
+  const left = user(7, 'mechanic')
+  left.permissions = ['tracker.read', 'inventory.write']
+  left.parks = [{ id: 2, name: 'Two', tag: 'two' }, { id: 1, name: 'One', tag: 'one' }]
+  const right = { ...left, permissions: [...left.permissions].reverse(), parks: [...left.parks].reverse() }
+
+  expect(offlineScopeForUser(left, '2')).toEqual(offlineScopeForUser(right, '2'))
+  expect(offlineScopeForUser(left, '2')).toMatchObject({
+    account: '7', role: 'mechanic', park: '2', schema: 1,
+  })
 })
