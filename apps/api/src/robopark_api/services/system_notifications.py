@@ -37,14 +37,14 @@ def health_alerts(health: SystemHealthOut) -> list[tuple[str, str, str]]:
     return alerts
 
 
-def read_health_alerts(settings) -> list[tuple[str, str, str]]:
+def read_health_alerts(settings) -> list[tuple[str, str, str]] | None:
     if not settings.ops_host_root:
-        return []
+        return None
     try:
         return health_alerts(host_bridge.system_health(host_bridge.host_root(settings)))
     except (host_bridge.BridgeError, OSError):
         logger.warning("System notification health source is unavailable", exc_info=True)
-        return []
+        return None
 
 
 async def run_system_notification_loop(
@@ -57,28 +57,29 @@ async def run_system_notification_loop(
     active: set[str] = set()
     while not stop_event.is_set():
         alerts = await asyncio.to_thread(read_health_alerts, settings)
-        current = {f"system:{signature}" for _, signature, _ in alerts}
-        emit_owner = getattr(emit, "__self__", None)
-        sync_incidents = getattr(emit_owner, "sync_system_incidents", None)
-        if callable(sync_incidents):
-            try:
-                await asyncio.to_thread(sync_incidents, current)
-            except Exception:
-                logger.exception("System incident lifecycle update failed")
-        for event_type, signature, text in alerts:
-            incident_key = f"system:{signature}"
-            if incident_key in active:
-                continue
-            try:
-                await asyncio.to_thread(
-                    emit,
-                    event_type=event_type,
-                    park_id=None,
-                    protected_text=text,
-                    event_key=incident_key,
-                )
-            except Exception:
-                logger.exception("System notification delivery failed")
-        active = current
+        if alerts is not None:
+            current = {f"system:{signature}" for _, signature, _ in alerts}
+            emit_owner = getattr(emit, "__self__", None)
+            sync_incidents = getattr(emit_owner, "sync_system_incidents", None)
+            if callable(sync_incidents):
+                try:
+                    await asyncio.to_thread(sync_incidents, current)
+                except Exception:
+                    logger.exception("System incident lifecycle update failed")
+            for event_type, signature, text in alerts:
+                incident_key = f"system:{signature}"
+                if incident_key in active:
+                    continue
+                try:
+                    await asyncio.to_thread(
+                        emit,
+                        event_type=event_type,
+                        park_id=None,
+                        protected_text=text,
+                        event_key=incident_key,
+                    )
+                except Exception:
+                    logger.exception("System notification delivery failed")
+            active = current
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)

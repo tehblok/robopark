@@ -1,5 +1,6 @@
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, User, UserPark
@@ -160,6 +161,59 @@ def test_push_delivery_limits_batch_and_concurrency(
 
     assert delivered == 5
     assert maximum_active == 2
+
+
+def test_push_delivery_concurrency_is_shared_across_parallel_emits(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    operator = _operator(db_session, seed_park_with_tracker.id)
+    login_as(client, operator.username, "secret")
+    for index in range(4):
+        response = client.post(
+            "/push/subscriptions",
+            json={
+                "endpoint": f"https://push.example/shared/{index}",
+                "p256dh": "key",
+                "auth": "auth",
+            },
+        )
+        assert response.status_code == 201
+
+    settings = push.get_settings()
+    settings.push_max_concurrency = 2
+    settings.push_delivery_batch_size = 4
+    settings.push_delivery_deadline_seconds = 1.0
+    active = 0
+    maximum_active = 0
+    lock = threading.Lock()
+
+    def bounded_webpush(**_kwargs):
+        nonlocal active, maximum_active
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+
+    service = client.app.state.push_service
+    monkeypatch.setattr(push, "webpush", bounded_webpush)
+    with ThreadPoolExecutor(max_workers=2) as callers:
+        futures = [
+            callers.submit(
+                service.emit,
+                event_type="report",
+                park_id=seed_park_with_tracker.id,
+                protected_text=f"parallel-{index}",
+                event_key=f"parallel:{index}",
+            )
+            for index in range(2)
+        ]
+        for future in futures:
+            future.result()
+
+    assert maximum_active == 2
+    service.close()
 
 
 def test_push_delivery_returns_at_total_deadline(

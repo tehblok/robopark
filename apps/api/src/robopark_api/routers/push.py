@@ -4,8 +4,9 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from datetime import UTC, datetime, timedelta
+from threading import Lock
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -86,6 +87,39 @@ def prune_notification_data(
 class PushService:
     def __init__(self, session_factory: Callable[[], Session]):
         self._session_factory = session_factory
+        self._delivery_lock = Lock()
+        self._delivery_executor: ThreadPoolExecutor | None = None
+        self._delivery_executor_workers: int | None = None
+        self._delivery_closed = False
+
+    def close(self) -> None:
+        """Stop accepting Web Push work and release this worker's delivery pool."""
+        with self._delivery_lock:
+            self._delivery_closed = True
+            executor = self._delivery_executor
+            self._delivery_executor = None
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+
+    def _submit_deliveries(
+        self,
+        deliveries: list[tuple[str, str, str, str]],
+        send: Callable[[tuple[str, str, str, str]], str | None],
+        *,
+        max_workers: int,
+    ) -> list[Future[str | None]]:
+        with self._delivery_lock:
+            if self._delivery_closed:
+                raise RuntimeError("push_service_closed")
+            if self._delivery_executor is None:
+                self._delivery_executor = ThreadPoolExecutor(
+                    max_workers=max_workers,
+                    thread_name_prefix="robopark-webpush",
+                )
+                self._delivery_executor_workers = max_workers
+            elif self._delivery_executor_workers != max_workers:
+                raise RuntimeError("push_max_concurrency_changed")
+            return [self._delivery_executor.submit(send, delivery) for delivery in deliveries]
 
     def emit(
         self,
@@ -284,18 +318,17 @@ class PushService:
 
         if not deliveries or time.monotonic() >= deadline:
             return
-        executor = ThreadPoolExecutor(
+        futures = self._submit_deliveries(
+            deliveries,
+            send,
             max_workers=settings.push_max_concurrency,
-            thread_name_prefix="robopark-webpush",
         )
-        futures = [executor.submit(send, delivery) for delivery in deliveries]
         done, pending = wait(
             futures,
             timeout=max(0.0, deadline - time.monotonic()),
         )
         for future in pending:
             future.cancel()
-        executor.shutdown(wait=False, cancel_futures=True)
         rejected_hashes = {endpoint_hash for future in done if (endpoint_hash := future.result())}
         if rejected_hashes:
             db.execute(
