@@ -9,7 +9,7 @@ from sqlalchemy import BigInteger, LargeBinary, create_engine, inspect, select, 
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
-from robopark_api import models
+from robopark_api import models, schedule_models
 from robopark_api.models import (
     AuthSession,
     Base,
@@ -80,6 +80,9 @@ def test_metadata_has_required_tables():
         "push_subscriptions",
         "notification_preferences",
         "notification_events",
+        "tracker_notification_cursors",
+        "system_incident_occurrences",
+        "auth_throttle_states",
         "ip_geo_cache",
         "ip_geo_quota",
     }
@@ -112,10 +115,93 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_is_schedules_and_push():
+def test_alembic_head_is_audit_remediation_state():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0035_schedules_and_push"]
+    assert script.get_heads() == ["0036_audit_remediation_state"]
+
+
+def test_audit_remediation_models_support_atomic_claims_and_bounded_cleanup():
+    tracker_notification_cursor = schedule_models.TrackerNotificationCursor
+    system_incident_occurrence = schedule_models.SystemIncidentOccurrence
+    auth_throttle_state = models.AuthThrottleState
+    assert set(tracker_notification_cursor.__table__.columns.keys()) == {
+        "scope_key",
+        "cursor_value",
+        "lease_owner",
+        "lease_until",
+        "last_success_at",
+        "last_error",
+        "created_at",
+        "updated_at",
+    }
+    assert {index.name for index in tracker_notification_cursor.__table__.indexes} == {
+        "ix_tracker_notification_lease"
+    }
+
+    incident_indexes = {
+        index.name: index for index in system_incident_occurrence.__table__.indexes
+    }
+    assert set(incident_indexes) == {
+        "uq_system_incident_active_key",
+        "ix_system_incident_cleanup",
+    }
+    assert incident_indexes["uq_system_incident_active_key"].unique
+    assert (
+        str(incident_indexes["uq_system_incident_active_key"].dialect_options["postgresql"]["where"])
+        == "resolved_at IS NULL"
+    )
+
+    assert set(auth_throttle_state.__table__.columns.keys()) == {
+        "key_hash",
+        "failure_count",
+        "window_started_at",
+        "locked_until",
+        "expires_at",
+        "created_at",
+        "updated_at",
+    }
+    assert "key" not in auth_throttle_state.__table__.columns
+    assert {index.name for index in auth_throttle_state.__table__.indexes} == {
+        "ix_auth_throttle_expiry"
+    }
+
+
+def test_audit_remediation_state_upgrade_and_downgrade(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0035_schedules_and_push")
+    engine = create_engine(sqlite_database_url, future=True)
+
+    command.upgrade(config, "head")
+    inspector = inspect(engine)
+    assert {
+        "tracker_notification_cursors",
+        "system_incident_occurrences",
+        "auth_throttle_states",
+    } <= set(inspector.get_table_names())
+    assert {index["name"] for index in inspector.get_indexes("tracker_notification_cursors")} == {
+        "ix_tracker_notification_lease"
+    }
+    assert {index["name"] for index in inspector.get_indexes("system_incident_occurrences")} == {
+        "uq_system_incident_active_key",
+        "ix_system_incident_cleanup",
+    }
+    assert {index["name"] for index in inspector.get_indexes("auth_throttle_states")} == {
+        "ix_auth_throttle_expiry"
+    }
+    assert {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("auth_throttle_states")
+    } == {"ck_auth_throttle_failure_count", "ck_auth_throttle_key_hash"}
+    assert compare_metadata(MigrationContext.configure(engine.connect()), Base.metadata) == []
+
+    command.downgrade(config, "0035_schedules_and_push")
+    assert not {
+        "tracker_notification_cursors",
+        "system_incident_occurrences",
+        "auth_throttle_states",
+    } & set(inspect(engine).get_table_names())
 
 
 def test_alembic_revision_ids_fit_version_table_column():

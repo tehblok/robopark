@@ -76,6 +76,25 @@ def test_alembic_head_matches_model_tables_and_indexes(migrated_engine: Engine) 
         assert expected <= actual, table.name
 
 
+def test_audit_remediation_state_has_postgresql_upsert_and_cleanup_indexes(
+    migrated_engine: Engine,
+) -> None:
+    database = inspect(migrated_engine)
+    assert database.get_pk_constraint("tracker_notification_cursors")["constrained_columns"] == [
+        "scope_key"
+    ]
+    assert database.get_pk_constraint("auth_throttle_states")["constrained_columns"] == [
+        "key_hash"
+    ]
+    assert {index["name"] for index in database.get_indexes("system_incident_occurrences")} >= {
+        "uq_system_incident_active_key",
+        "ix_system_incident_cleanup",
+    }
+    assert {index["name"] for index in database.get_indexes("auth_throttle_states")} >= {
+        "ix_auth_throttle_expiry"
+    }
+
+
 def test_postgresql_17_upgrades_operator_inventory_grants_to_read_only(
     postgres_container_name: str,
     postgres_database_url: str,
@@ -120,7 +139,7 @@ def test_postgresql_17_upgrades_operator_inventory_grants_to_read_only(
         command.upgrade(config, "head")
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0035_schedules_and_push"
+                "0036_audit_remediation_state"
             )
             assert (
                 connection.scalar(
@@ -213,7 +232,7 @@ def test_stock_postgres_17_accepts_configured_user_restore_command(
         capture_output=True,
         text=True,
     ).stdout.strip()
-    assert head == "0035_schedules_and_push"
+    assert head == "0036_audit_remediation_state"
 
 
 def _seed_inventory(engine: Engine) -> tuple[int, int, int]:

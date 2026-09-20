@@ -132,6 +132,27 @@ class AuthSession(Base):
     user: Mapped[User] = relationship(back_populates="sessions")
 
 
+class AuthThrottleState(Base):
+    __tablename__ = "auth_throttle_states"
+    __table_args__ = (
+        CheckConstraint("length(key_hash) = 64", name="ck_auth_throttle_key_hash"),
+        CheckConstraint("failure_count >= 0", name="ck_auth_throttle_failure_count"),
+        Index("ix_auth_throttle_expiry", "expires_at", "key_hash"),
+    )
+
+    key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    window_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class IpGeoCache(Base):
     __tablename__ = "ip_geo_cache"
 

@@ -11,6 +11,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -79,3 +80,56 @@ class NotificationEvent(Base):
     protected_text: Mapped[str] = mapped_column(Text, default="")
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TrackerNotificationCursor(Base):
+    __tablename__ = "tracker_notification_cursors"
+    __table_args__ = (
+        CheckConstraint(
+            "(lease_owner IS NULL AND lease_until IS NULL) OR "
+            "(lease_owner IS NOT NULL AND lease_until IS NOT NULL)",
+            name="ck_tracker_notification_lease_pair",
+        ),
+        Index("ix_tracker_notification_lease", "lease_until", "scope_key"),
+    )
+
+    scope_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    cursor_value: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SystemIncidentOccurrence(Base):
+    __tablename__ = "system_incident_occurrences"
+    __table_args__ = (
+        CheckConstraint("last_seen_at >= started_at", name="ck_system_incident_seen_range"),
+        CheckConstraint(
+            "resolved_at IS NULL OR resolved_at >= started_at",
+            name="ck_system_incident_resolved_range",
+        ),
+        Index(
+            "uq_system_incident_active_key",
+            "incident_key",
+            unique=True,
+            sqlite_where=text("resolved_at IS NULL"),
+            postgresql_where=text("resolved_at IS NULL"),
+        ),
+        Index("ix_system_incident_cleanup", "resolved_at", "id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid4()))
+    incident_key: Mapped[str] = mapped_column(String(128))
+    event_type: Mapped[str] = mapped_column(String(32))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
