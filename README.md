@@ -1,6 +1,13 @@
 # Robopark
 
-Для установочного архива **0.1.38** на Armbian/Debian/Ubuntu используйте [руководство оператора](deploy/INSTALL-ARMBIAN-RU.md) и [приёмку 200 пользователей](deploy/CAPACITY-RU.md). Реальная проверка systemd/Docker/Tuna и нагрузки остаётся **НЕ ВЫПОЛНЕНО** до запуска на устройстве. Ниже сохранён существующий ручной Compose-путь.
+Текущая версия исходников: **0.1.45**. Production-профиль и чистый
+установщик используют **PostgreSQL 17**. Для Armbian/Ubuntu смотрите
+[руководство оператора](deploy/INSTALL-ARMBIAN-RU.md) и
+[приёмку 200 пользователей](deploy/CAPACITY-RU.md). Полные API/web/PostgreSQL,
+systemd/Docker/Tuna, load, soak, installer/VM и OTA gates для этого дерева
+остаются **НЕ ВЫПОЛНЕНЫ** до отдельного разрешённого запуска.
+Старые release-evidence к текущим исходникам не привязаны и не разрешают
+выпуск.
 
 Web-first fleet operations system (admin / operator / mechanic).
 
@@ -10,7 +17,10 @@ Web-first fleet operations system (admin / operator / mechanic).
 
 ## Phase 1
 
-Platform skeleton: FastAPI + React monorepo, session auth, role cabinets, SQLite on host, Docker Compose on the host; public access through [Tuna](https://tuna.am/docs/).
+Исторический skeleton-этап: FastAPI + React monorepo, session auth, role
+cabinets и Docker Compose на хосте. Текущий production runtime уже не
+использует SQLite: база работает на PostgreSQL 17, публичный доступ —
+через [Tuna](https://tuna.am/docs/).
 
 ## Phase 2
 
@@ -341,9 +351,10 @@ Admin cannot open this tab or call the APIs. Confirmation phrases: `ВОССТА
 - `GET /health/ready` — readiness: verifies the database and reports integration
   state; returns `503` when the database is unreachable.
 
-Both Compose services declare healthchecks, the API container runs as an
-unprivileged user, and SQLite is opened in WAL mode with `busy_timeout` and
-enforced foreign keys so the background jobs do not collide with requests.
+Compose services declare healthchecks, the API container runs as an
+unprivileged user, and PostgreSQL 17 is the only production database. Its
+credentials live in external root-private files and the database is not
+published outside the host.
 
 ## Continuous integration
 
@@ -353,12 +364,16 @@ push and pull request; this checks the frozen API environment, API lint and
 tests, the frozen web install, web lint/build/tests/navigation, Compose config,
 both Docker images, and the API runtime dependency boundary.
 
-Locally:
+Locally, use the bounded gate while developing. The explicit `full` target is
+the release gate and may start Docker and run for many minutes:
 
 ```bash
+./scripts/verify.sh fast
 ./scripts/verify.sh api
 ./scripts/verify.sh web
-./scripts/verify.sh       # canonical full gate; requires Docker
+./scripts/verify.sh full  # canonical release gate; requires Docker
+./scripts/verify.sh load  # opt-in capacity benchmark
+# soak is opt-in and also requires ROBOPARK_SOAK_DURATION_SECONDS/OUTPUT
 ```
 
 Update API dependencies deliberately with `cd apps/api && uv lock && uv lock

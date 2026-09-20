@@ -16,7 +16,7 @@ export function RobotCheckPanel({
   const [checking, setChecking] = useState(false)
   const [findings, setFindings] = useState<string[] | null>(null)
   const inspectRef = useRef(inspect)
-  inspectRef.current = inspect
+  useEffect(() => { inspectRef.current = inspect }, [inspect])
 
   useEffect(() => {
     if (!query) {

@@ -152,7 +152,7 @@ function ReportsOwner({
       createEnabled ? mineRes.refresh() : Promise.resolve(),
       inboxEnabled && (leader || parkId != null) ? inboxRes.refresh() : Promise.resolve(),
     ])
-  }, [createEnabled, inboxEnabled, inboxKey, inboxRes, mineKey, mineRes, parkId, user.role])
+  }, [createEnabled, inboxEnabled, inboxKey, inboxRes, leader, mineKey, mineRes, parkId])
   const handleDetailUpdated = async () => {
     const requestedNavigation = navigation.current
     const isCurrent = () => active.current && navigation.current === requestedNavigation

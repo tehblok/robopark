@@ -425,6 +425,22 @@ describe('automatic cached refresh', () => {
     await act(() => view.result.current.refresh())
     expect(view.result.current.data?.value).toBe('updated')
   })
+
+  it('uses the latest loader after its owner rerenders', async () => {
+    const firstLoader = vi.fn(async () => ({ value: 'first' }))
+    const secondLoader = vi.fn(async () => ({ value: 'second' }))
+    const view = renderHook(
+      ({ loader }) => useCachedResource('changing-loader', loader, { refreshIntervalMs: 0 }),
+      { initialProps: { loader: firstLoader } },
+    )
+    await waitFor(() => expect(view.result.current.data?.value).toBe('first'))
+
+    view.rerender({ loader: secondLoader })
+    await act(async () => { await view.result.current.refresh() })
+
+    expect(view.result.current.data?.value).toBe('second')
+    expect(secondLoader).toHaveBeenCalledOnce()
+  })
 })
 
 describe('successful synchronization timestamp', () => {

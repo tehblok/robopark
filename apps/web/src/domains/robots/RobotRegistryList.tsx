@@ -30,10 +30,10 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
   const requests = useRef(new Map<string, Promise<RobotRegistry>>())
   const settledPark = useRef<number | null | undefined>(scopePending ? undefined : parkId)
   const updateParams = useRef(setParams)
-  updateParams.current = setParams
   const denied = useRef<{ kind: string; parkId: number | null } | null>(null)
   const refresh = useRef(refreshUser)
-  refresh.current = refreshUser
+  useEffect(() => { updateParams.current = setParams }, [setParams])
+  useEffect(() => { refresh.current = refreshUser }, [refreshUser])
   const allowed = Boolean(user?.permissions?.includes('tracker.read'))
   useEffect(() => {
     let current = true
@@ -132,7 +132,8 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
     setParams(next, { replace: true })
   }
   const visible = resultPark === parkId && !scopePending
-  const failure = error && (visible || denied.current?.kind === 'unauthorized') ? classifyApiError(error, 'Не удалось загрузить реестр роботов.') : null
+  const classifiedError = error ? classifyApiError(error, 'Не удалось загрузить реестр роботов.') : null
+  const failure = classifiedError && (visible || classifiedError.kind === 'unauthorized') ? classifiedError : null
   const href = (vin: string, tab?: string) => {
     const next = new URLSearchParams()
     if (parkId != null) next.set('park', String(parkId))

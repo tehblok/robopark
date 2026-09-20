@@ -203,19 +203,28 @@ current ops-agent.
 ### Release verification
 
 [`../scripts/verify.sh`](../scripts/verify.sh) is the single source of truth for
-local and CI verification. From the checkout root, run the focused gates while
-developing and the canonical full gate on a Docker-capable host before a host
+local and CI verification. From the checkout root, run the bounded gate while
+developing and the explicit full gate on a Docker-capable host before a host
 upgrade or release ZIP:
 
 ```sh
+./scripts/verify.sh fast
 ./scripts/verify.sh api
 ./scripts/verify.sh web
-./scripts/verify.sh       # canonical full gate; requires Docker
+./scripts/verify.sh full  # canonical release gate; requires Docker
+./scripts/verify.sh load  # opt-in, starts the capacity environment
+# soak additionally requires explicit duration and output path
 ```
 
 Update API dependencies deliberately with `cd apps/api && uv lock && uv lock
 --check`, then run the canonical full gate. Base-image digest updates are also
 deliberate changes and require the full gate to pass before release.
+
+For the current 0.1.45 source tree only focused module tests, static checks and
+the short production-PWA smoke have been run. Full API/web/PostgreSQL, target
+host, load, soak, installer/VM and OTA gates remain pending explicit approval.
+The checked-in release evidence is intentionally stale and validation must stay
+fail-closed until those gates are rerun for the exact source tree.
 
 Pack a *release* ZIP on a machine with the repo (not a snapshot):
 

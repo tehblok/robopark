@@ -59,4 +59,22 @@ describe('RobotCheckPanel', () => {
       expect(screen.getByText(ru.tracker.robotCheck.noCritical)).toBeInTheDocument()
     })
   })
+
+  it('uses the latest inspection function when the robot changes', async () => {
+    const view = render(
+      <MemoryRouter>
+        <RobotCheckPanel inspect={async () => ['old result']} robot="447" />
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText('old result')).toBeInTheDocument()
+
+    view.rerender(
+      <MemoryRouter>
+        <RobotCheckPanel inspect={async () => ['new result']} robot="448" />
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText('new result')).toBeInTheDocument()
+    expect(screen.queryByText('old result')).not.toBeInTheDocument()
+  })
 })

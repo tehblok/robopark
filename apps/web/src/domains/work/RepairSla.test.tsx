@@ -25,4 +25,17 @@ describe('RepairSla', () => {
     expect(interval).not.toHaveBeenCalled()
     interval.mockRestore()
   })
+
+  it('keeps one render timestamp until its owner provides a new one', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime('2026-09-15T10:30:00Z')
+    const view = render(<RepairSla deadline="2026-09-15T12:00:00Z" source="status_history" />)
+    expect(screen.getByRole('status')).toHaveTextContent('Осталось 1.5 ч')
+
+    vi.setSystemTime('2026-09-15T11:30:00Z')
+    view.rerender(<RepairSla deadline="2026-09-15T12:00:00Z" source="status_history" />)
+
+    expect(screen.getByRole('status')).toHaveTextContent('Осталось 1.5 ч')
+    vi.useRealTimers()
+  })
 })

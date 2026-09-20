@@ -470,7 +470,7 @@ export function useCachedResource<T>(
   const [deviceHydrated, setDeviceHydrated] = useState(!devicePersist)
 
   const loaderRef = useRef(loader)
-  loaderRef.current = loader
+  useEffect(() => { loaderRef.current = loader }, [loader])
   const requestIdRef = useRef(0)
   const ownerGenerationRef = useRef(Symbol('cached-resource-owner'))
   const retryRef = useRef({ failures: 0, after: 0, blocked: false })
