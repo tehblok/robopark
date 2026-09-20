@@ -8,7 +8,16 @@ from concurrent.futures import Future, wait
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -391,6 +400,7 @@ def _build_query(
 def list_issues(
     request: Request,
     response: Response,
+    background_tasks: BackgroundTasks,
     queue: str | None = Query(default=None),
     park: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
@@ -548,6 +558,24 @@ def list_issues(
         )
         for issue in page_raw
     ]
+    if offset == 0:
+        for issue in page_raw:
+            try:
+                recent = float(issue.get("hours_created") or 999) <= 0.2
+            except (TypeError, ValueError):
+                recent = False
+            if not recent or tracker_filters.issue_status_bucket(issue) not in {"new", "queued"}:
+                continue
+            issue_key = str(issue.get("key") or "").strip()
+            issue_park = sig_svc.resolve_park(db, issue)
+            if issue_key and issue_park is not None:
+                background_tasks.add_task(
+                    request.app.state.push_service.emit,
+                    event_type="new_task",
+                    park_id=issue_park.id,
+                    protected_text=f"Новая задача {issue_key}",
+                    event_key=f"new-task:{issue_key}",
+                )
     return _conditional_private_json(
         request,
         response,

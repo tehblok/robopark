@@ -79,6 +79,43 @@ def test_tracker_read_list_issues(client, db_session, seed_park_with_tracker, mo
     assert unchanged.content == b""
 
 
+def test_tracker_read_emits_recent_new_task_once_with_stable_key(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [
+            {
+                **_scoped_issue("ROBOPARK-9", "2026-09-20T18:00:00Z"),
+                "status": "В очереди",
+                "status_key": "queued",
+                "hours_created": "0.1",
+            }
+        ],
+    )
+    emitted = []
+    monkeypatch.setattr(
+        client.app.state.push_service, "emit", lambda **kwargs: emitted.append(kwargs)
+    )
+    login_as(client, "op2", "secret")
+
+    assert client.get("/tracker/issues").status_code == 200
+
+    assert emitted == [
+        {
+            "event_type": "new_task",
+            "park_id": seed_park_with_tracker.id,
+            "protected_text": "Новая задача ROBOPARK-9",
+            "event_key": "new-task:ROBOPARK-9",
+        }
+    ]
+
+
 def test_tracker_list_honors_oldest_and_newest_sort(
     client, db_session, seed_park_with_tracker, monkeypatch
 ):

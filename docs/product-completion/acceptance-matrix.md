@@ -11,14 +11,14 @@ Evidence is recorded only after the named command exits successfully. The releas
 | Camera and media | Camera/file fallback, local decoder, worker image preparation, resumable checksummed upload, bounded cleanup | media/scanner tests; API media upload tests |
 | Installable shell | Warm navigation works offline; no authenticated API response enters CacheStorage; safe worker activation | service worker build tests, registration tests, `pwa-offline.spec.ts` |
 | Schedules | Self-service shifts/leave/sick; admin scoped read; royal edit, copy and bulk assignment | API and web schedule tests |
-| Notifications | Role/event matrix, on-shift targeting, internal fallback and explicit permission request | API push and web notification tests |
+| Notifications | New tasks, report/review actions and host-health transitions; role/on-shift targeting, internal fallback and explicit permission request | API push, tracker-read, system-notification and web notification tests |
 | Host resources | Expired receipts/uploads and confirmed temporary files are deleted in bounded batches; pending data is protected | `apps/api/tests/test_cache_cleanup.py` |
 | Privacy telemetry | Sampled numeric aggregates only; arbitrary task text, identifiers and photos are rejected | client telemetry API/web tests |
 | 200 users | Harness contract and disposable PostgreSQL capacity benchmark | 46 harness tests passed; 200 sessions/4000 cadence requests passed, p95 167.64 ms, no 5xx/timeouts/leaks/duplicates (`/private/tmp/robopark-capacity-pwa.json`) |
 
 ## Final verification
 
-- `./scripts/verify.sh api` — 1990 passed, 8 skipped.
+- `./scripts/verify.sh api` — 1993 passed, 8 skipped.
 - `cd apps/web && npm test` — 2197 passed.
 - `cd apps/web && npm run build` — production build passed.
 - `cd apps/web && npm run check:contrast` — both themes passed.

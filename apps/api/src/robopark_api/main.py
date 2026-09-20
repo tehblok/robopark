@@ -72,6 +72,7 @@ from robopark_api.services.ops.maintenance import host_maintenance_active
 from robopark_api.services.ops.reconcile import reconcile_pending_rebuild
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
 from robopark_api.services.session_cleanup import run_session_cleanup_loop
+from robopark_api.services.system_notifications import run_system_notification_loop
 from robopark_api.services.tracker_outbox import run_tracker_outbox_loop
 
 
@@ -149,6 +150,15 @@ def create_app() -> FastAPI:
             )
             if owns_job_lease:
                 tasks.append(asyncio.create_task(run_cache_cleanup_loop(stop_event)))
+                tasks.append(
+                    asyncio.create_task(
+                        run_system_notification_loop(
+                            stop_event,
+                            settings=settings,
+                            emit=_app.state.push_service.emit,
+                        )
+                    )
+                )
                 outbox_task = asyncio.create_task(run_tracker_outbox_loop(SessionLocal, stop_event))
                 campaign_task = asyncio.create_task(
                     run_campaign_refresh_loop(SessionLocal, stop_event)
