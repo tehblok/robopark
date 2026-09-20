@@ -1,7 +1,17 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from robopark_api.models import Base
@@ -9,10 +19,16 @@ from robopark_api.models import Base
 
 class ScheduleEntry(Base):
     __tablename__ = "schedule_entries"
-    __table_args__ = (CheckConstraint("kind IN ('shift','vacation','sick')", name="ck_schedule_kind"), CheckConstraint("end_at > start_at", name="ck_schedule_range"), Index("ix_schedule_park_range", "park_id", "start_at", "end_at"))
+    __table_args__ = (
+        CheckConstraint("kind IN ('shift','vacation','sick')", name="ck_schedule_kind"),
+        CheckConstraint("end_at > start_at", name="ck_schedule_range"),
+        Index("ix_schedule_park_range", "park_id", "start_at", "end_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid4()))
-    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    owner_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
     park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
     kind: Mapped[str] = mapped_column(String(16))
     start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -22,7 +38,9 @@ class ScheduleEntry(Base):
     created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     updated_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class PushSubscription(Base):
@@ -41,7 +59,9 @@ class PushSubscription(Base):
 
 class NotificationPreference(Base):
     __tablename__ = "notification_preferences"
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
     categories_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
     system_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
 
@@ -53,7 +73,9 @@ class NotificationEvent(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     event_type: Mapped[str] = mapped_column(String(32))
-    park_id: Mapped[int | None] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), nullable=True)
+    park_id: Mapped[int | None] = mapped_column(
+        ForeignKey("parks.id", ondelete="CASCADE"), nullable=True
+    )
     protected_text: Mapped[str] = mapped_column(Text, default="")
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

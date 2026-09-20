@@ -39,4 +39,17 @@ describe('registerServiceWorker', () => {
     expect(activateServiceWorkerWhenSafe(registration, { status: 'idle', pending: 0 })).toBe(true)
     expect(postMessage).toHaveBeenCalledWith({ type: 'ACTIVATE_WHEN_SAFE' })
   })
+
+  it('reloads an open client after the explicitly activated worker takes control', async () => {
+    const listeners = new Map<string, (event: { data?: unknown }) => void>()
+    const reload = vi.fn()
+    const registration = { update: vi.fn(async () => undefined), waiting: { postMessage: vi.fn() } }
+    await registerServiceWorker({
+      production: true, secure: true, reload,
+      serviceWorker: { register: vi.fn(async () => registration), addEventListener: (name, listener) => listeners.set(name, listener) },
+    })
+    expect(activateServiceWorkerWhenSafe(registration, { status: 'idle', pending: 0 })).toBe(true)
+    listeners.get('controllerchange')?.({})
+    expect(reload).toHaveBeenCalledTimes(1)
+  })
 })

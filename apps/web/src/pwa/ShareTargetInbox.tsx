@@ -17,10 +17,14 @@ export type ShareTargetStore = {
   save(draft: ShareDraft): Promise<void>
   assign(id: string, assignment: ShareDraftAssignment): Promise<void>
   discard(id: string): Promise<void>
+  clear(): Promise<void>
+  close?(): void
 }
 
 const DB_NAME = 'robopark-share-inbox'
 const STORE = 'drafts'
+const DRAFT_TTL_MS = 24 * 60 * 60 * 1000
+const MAX_DRAFTS = 10
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -48,7 +52,15 @@ export async function openShareTargetInbox(): Promise<ShareTargetStore> {
       const transaction = db.transaction(STORE, 'readonly')
       const result = await requestResult(transaction.objectStore(STORE).getAll()) as ShareDraft[]
       await transactionDone(transaction)
-      return result.sort((left, right) => left.createdAt - right.createdAt)
+      const sorted = result.sort((left, right) => left.createdAt - right.createdAt)
+      const keep = sorted.filter(item => item.createdAt >= Date.now() - DRAFT_TTL_MS).slice(-MAX_DRAFTS)
+      const keepIds = new Set(keep.map(item => item.id))
+      if (keep.length !== result.length) {
+        const cleanup = db.transaction(STORE, 'readwrite')
+        for (const item of result) if (!keepIds.has(item.id)) cleanup.objectStore(STORE).delete(item.id)
+        await transactionDone(cleanup)
+      }
+      return keep
     },
     async save(draft) {
       const transaction = db.transaction(STORE, 'readwrite')
@@ -67,7 +79,19 @@ export async function openShareTargetInbox(): Promise<ShareTargetStore> {
       transaction.objectStore(STORE).delete(id)
       await transactionDone(transaction)
     },
+    async clear() {
+      const transaction = db.transaction(STORE, 'readwrite')
+      transaction.objectStore(STORE).clear()
+      await transactionDone(transaction)
+    },
+    close() { db.close() },
   }
+}
+
+export async function clearShareTargetInbox(): Promise<void> {
+  if (typeof indexedDB === 'undefined') return
+  const inbox = await openShareTargetInbox()
+  try { await inbox.clear() } finally { inbox.close?.() }
 }
 
 export function ShareTargetInbox({ inbox: providedInbox, onAttachTask, onAttachReport }: {
@@ -84,10 +108,11 @@ export function ShareTargetInbox({ inbox: providedInbox, onAttachTask, onAttachR
 
   useEffect(() => {
     let active = true
+    let owned: ShareTargetStore | null = null
     if (providedInbox) { setInbox(providedInbox); return () => { active = false } }
     if (typeof indexedDB === 'undefined') return () => { active = false }
-    void openShareTargetInbox().then(value => { if (active) setInbox(value) }).catch(() => undefined)
-    return () => { active = false }
+    void openShareTargetInbox().then(value => { owned = value; if (active) setInbox(value); else value.close?.() }).catch(() => undefined)
+    return () => { active = false; owned?.close?.() }
   }, [providedInbox])
 
   useEffect(() => {

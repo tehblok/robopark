@@ -30,6 +30,14 @@ describe('ScheduleWorkspace', () => {
     expect(screen.queryByRole('button', { name: 'Добавить период' })).not.toBeInTheDocument()
   })
 
+  it('edits and displays server timestamps in Moscow time', async () => {
+    const utcEntry = { ...entry, start_at: '2026-09-21T06:00:00Z', end_at: '2026-09-21T18:00:00Z' }
+    render(<ScheduleWorkspace apiClient={client({ schedules: vi.fn(async () => [utcEntry]) })} user={mechanic} />)
+    expect(await screen.findByText(/21\.09\.2026, 09:00/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Изменить' }))
+    expect(screen.getByLabelText('Начало')).toHaveValue('2026-09-21T09:00')
+  })
+
   it('lets royal assign a bounded repeated schedule to several employees', async () => {
     const scheduleBulk = vi.fn(async () => [entry])
     const adminUsers = vi.fn(async () => [

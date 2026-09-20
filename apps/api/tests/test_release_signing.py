@@ -80,9 +80,7 @@ def write_acceptance_evidence(root: Path) -> None:
     evidence_root.mkdir(parents=True, exist_ok=True)
     report = evidence_root / "fixture-pass.json"
     source_tree_sha256 = acceptance["source_tree_digest"](root, source_paths)
-    report.write_text(
-        json.dumps({"passed": True, "source_tree_sha256": source_tree_sha256})
-    )
+    report.write_text(json.dumps({"passed": True, "source_tree_sha256": source_tree_sha256}))
     evidence = {
         "format": 1,
         "source_tree_sha256": source_tree_sha256,
@@ -410,8 +408,8 @@ def test_pack_release_wrapper_propagates_reviewed_migration_metadata(
             "0030_user_activity",
             "0031_postgresql_runtime",
             "0032_operator_inv_readonly",
-                "0033_offline_sync_receipts",
-                "0034_resumable_media_uploads",
+            "0033_offline_sync_receipts",
+            "0034_resumable_media_uploads",
         ],
         "reversible": True,
     }

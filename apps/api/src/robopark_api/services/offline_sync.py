@@ -34,7 +34,11 @@ def _ordered(actions: list[SyncActionIn]) -> list[SyncActionIn]:
     ordered: list[SyncActionIn] = []
     done: set[str] = set()
     while remaining:
-        ready = [item for item in remaining if all(dep in done or dep not in by_id for dep in item.dependencies)]
+        ready = [
+            item
+            for item in remaining
+            if all(dep in done or dep not in by_id for dep in item.dependencies)
+        ]
         if not ready:
             raise HTTPException(400, "sync_dependency_cycle")
         for item in ready:
@@ -49,9 +53,12 @@ def _park_allowed(db: Session, user: User, park_id: int | None) -> bool:
         return True
     if rbac.is_admin_or_royal(user) or rbac.has_permission(db, user, rbac.PERMISSION_PARKS_MANAGE):
         return db.get(Park, park_id) is not None
-    return db.scalar(
-        select(UserPark.user_id).where(UserPark.user_id == user.id, UserPark.park_id == park_id)
-    ) is not None
+    return (
+        db.scalar(
+            select(UserPark.user_id).where(UserPark.user_id == user.id, UserPark.park_id == park_id)
+        )
+        is not None
+    )
 
 
 def _issue(db: Session, user: User, item: SyncActionIn) -> dict:
@@ -188,7 +195,9 @@ def _receipt(
 
 def _visible_scopes(db: Session, user: User, requested: Iterable[str]) -> tuple[set[str], set[str]]:
     park_ids = set(db.scalars(select(UserPark.park_id).where(UserPark.user_id == user.id)))
-    staff = rbac.is_admin_or_royal(user) or rbac.has_permission(db, user, rbac.PERMISSION_PARKS_MANAGE)
+    staff = rbac.is_admin_or_royal(user) or rbac.has_permission(
+        db, user, rbac.PERMISSION_PARKS_MANAGE
+    )
     visible: set[str] = set()
     revoked: set[str] = set()
     for scope in requested:
@@ -196,7 +205,9 @@ def _visible_scopes(db: Session, user: User, requested: Iterable[str]) -> tuple[
             visible.add(scope)
             continue
         suffix = scope.rsplit(":", 1)[-1]
-        if (scope.startswith("work:park:") or scope.startswith("inventory:")) and suffix.isdecimal():
+        if (
+            scope.startswith("work:park:") or scope.startswith("inventory:")
+        ) and suffix.isdecimal():
             if staff or int(suffix) in park_ids:
                 visible.add(scope)
             else:
@@ -278,16 +289,19 @@ def synchronize(
                     state=state,
                     code=code,
                 )
-        db.add(
-            OfflineSyncReceipt(
-                actor_user_id=user.id,
-                device_id=batch.device_id,
-                client_action_id=item.client_action_id,
-                payload_hash=payload_hash,
-                result_json=result.model_dump_json(),
+        # Temporary upstream failures must remain replayable. Persist only
+        # terminal outcomes; otherwise one 503 becomes permanent.
+        if result.state != "attention":
+            db.add(
+                OfflineSyncReceipt(
+                    actor_user_id=user.id,
+                    device_id=batch.device_id,
+                    client_action_id=item.client_action_id,
+                    payload_hash=payload_hash,
+                    result_json=result.model_dump_json(),
+                )
             )
-        )
-        db.commit()
+            db.commit()
         results.append(result)
         states[item.client_action_id] = result.state
 

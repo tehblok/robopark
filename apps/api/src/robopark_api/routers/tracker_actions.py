@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -284,6 +285,7 @@ def handoff_task(
 def submit_task_review(
     key: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     defect_code: str = Form(...),
     photo: list[UploadFile] = File(...),
     comment: str | None = Form(default=None),
@@ -294,6 +296,7 @@ def submit_task_review(
     issue = _lifecycle_issue(
         db, user, key, request=request, actions=("comment", "attach", "transition")
     )
+    park = task_lifecycle.issue_park(db, issue)
     if len(photo) != 1:
         raise HTTPException(400, "task_review_exactly_one_photo")
     upload = photo[0]
@@ -315,6 +318,13 @@ def submit_task_review(
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+    background_tasks.add_task(
+        request.app.state.push_service.emit,
+        event_type="review_task",
+        park_id=park.id,
+        protected_text=f"Задача {key} ожидает проверки",
+        event_key=f"review:{key}:{idempotency_key or result['performed_at']}",
+    )
     return TrackerActionOut(**result)
 
 
@@ -323,22 +333,32 @@ def return_task_review(
     key: str,
     payload: TaskReviewReturnIn,
     request: Request,
+    background_tasks: BackgroundTasks,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
-    _lifecycle_issue(db, user, key, request=request, actions=("comment", "transition"))
+    issue = _lifecycle_issue(db, user, key, request=request, actions=("comment", "transition"))
+    park = task_lifecycle.issue_park(db, issue)
     with submissions.task_mutation_lease(db, key):
-        return TrackerActionOut(
-            **task_lifecycle.return_review(
-                db,
-                actor=user,
-                issue_key=key,
-                reason=payload.reason,
-                assignee=payload.assignee,
-                idempotency_key=idempotency_key,
-            )
+        result = task_lifecycle.return_review(
+            db,
+            actor=user,
+            issue_key=key,
+            reason=payload.reason,
+            assignee=payload.assignee,
+            idempotency_key=idempotency_key,
         )
+    claim = task_lifecycle.get_claim(db, key)
+    background_tasks.add_task(
+        request.app.state.push_service.emit,
+        event_type="return",
+        park_id=park.id,
+        protected_text=f"Задача {key} возвращена с проверки",
+        target_user_ids={claim.owner_user_id} if claim is not None else None,
+        event_key=f"return:{key}:{idempotency_key or result['performed_at']}",
+    )
+    return TrackerActionOut(**result)
 
 
 @router.post("/issues/{key}/review/approve", response_model=TrackerActionOut)
@@ -472,6 +492,7 @@ def add_comment(
     key: str,
     payload: TrackerCommentIn,
     request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
@@ -506,7 +527,18 @@ def add_comment(
         detail=audit.describe(body, limit=200),
         client_ip=client_ip(request),
     )
-    return submissions.finish(db, submission, _ok(key, "comment", user, issue))
+    result = submissions.finish(db, submission, _ok(key, "comment", user, issue))
+    if user.role == RoleSlug.OPERATOR:
+        claim = task_lifecycle.get_claim(db, key)
+        background_tasks.add_task(
+            request.app.state.push_service.emit,
+            event_type="operator_comment",
+            park_id=park.id if park is not None else None,
+            protected_text=f"Оператор прокомментировал задачу {key}",
+            target_user_ids={claim.owner_user_id} if claim is not None else None,
+            event_key=f"operator-comment:{key}:{submission.id if submission is not None else result.performed_at}",
+        )
+    return result
 
 
 @router.post(

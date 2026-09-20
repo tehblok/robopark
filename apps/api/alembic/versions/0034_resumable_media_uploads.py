@@ -27,12 +27,20 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.Float(), nullable=False),
         sa.Column("expires_at", sa.Float(), nullable=False),
         sa.Column("completed_at", sa.Float(), nullable=True),
-        sa.CheckConstraint("size_bytes > 0 AND received_offset >= 0 AND received_offset <= size_bytes", name="ck_media_upload_offsets"),
+        sa.CheckConstraint(
+            "size_bytes > 0 AND received_offset >= 0 AND received_offset <= size_bytes",
+            name="ck_media_upload_offsets",
+        ),
         sa.ForeignKeyConstraint(["actor_user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("actor_user_id", "media_id", name="uq_media_upload_actor_media"),
     )
-    op.create_index("ix_media_upload_expiry", "media_upload_sessions", ["completed", "expires_at", "id"], unique=False)
+    op.create_index(
+        "ix_media_upload_expiry",
+        "media_upload_sessions",
+        ["completed", "expires_at", "id"],
+        unique=False,
+    )
 
 
 def downgrade() -> None:

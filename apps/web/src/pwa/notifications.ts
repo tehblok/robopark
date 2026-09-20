@@ -9,6 +9,12 @@ function base64Url(buffer: ArrayBuffer | null): string {
   for (const byte of bytes) binary += String.fromCharCode(byte)
   return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
 }
+
+export function decodeApplicationServerKey(value: string): Uint8Array<ArrayBuffer> {
+  const padded = value.replaceAll('-', '+').replaceAll('_', '/').padEnd(Math.ceil(value.length / 4) * 4, '=')
+  const binary = atob(padded)
+  return Uint8Array.from(binary, character => character.charCodeAt(0)) as Uint8Array<ArrayBuffer>
+}
 export async function enableSystemNotifications(
   registration: ServiceWorkerRegistration,
   applicationServerKey: Uint8Array<ArrayBuffer>,

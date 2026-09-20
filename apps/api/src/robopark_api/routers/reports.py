@@ -1,7 +1,18 @@
 from collections.abc import Callable
 from typing import TypeVar
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -67,6 +78,8 @@ def _run_svc(fn: Callable[[], T]) -> T:
 @router.post("", response_model=ReportOut, status_code=status.HTTP_201_CREATED)
 def create_report(
     payload: ReportCreateIn,
+    request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(_require_report_author),
     db: Session = Depends(get_db),
 ) -> ReportOut:
@@ -81,6 +94,12 @@ def create_report(
             tracker_key=payload.tracker_key,
             tracker_url=payload.tracker_url,
         )
+    )
+    background_tasks.add_task(
+        request.app.state.push_service.emit,
+        event_type="report",
+        park_id=report.park_id,
+        protected_text=f"Новый репорт: {report.title}",
     )
     return _report_out(report)
 
@@ -176,10 +195,19 @@ def delete_report(
 def return_report(
     report_id: int,
     payload: ReportReturnIn,
+    request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> ReportOut:
     report = _run_svc(lambda: reports_svc.return_report(db, user, report_id, payload.comment))
+    background_tasks.add_task(
+        request.app.state.push_service.emit,
+        event_type="return",
+        park_id=report.park_id,
+        protected_text=f"Репорт возвращён: {report.title}",
+        target_user_ids={report.author_user_id},
+    )
     return _report_out(report)
 
 
@@ -197,6 +225,8 @@ def done_report(
 def resubmit_report(
     report_id: int,
     payload: ReportResubmitIn,
+    request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(_require_report_author),
     db: Session = Depends(get_db),
 ) -> ReportOut:
@@ -210,6 +240,12 @@ def resubmit_report(
             tracker_key=payload.tracker_key,
             tracker_url=payload.tracker_url,
         )
+    )
+    background_tasks.add_task(
+        request.app.state.push_service.emit,
+        event_type="report",
+        park_id=report.park_id,
+        protected_text=f"Репорт отправлен повторно: {report.title}",
     )
     return _report_out(report)
 

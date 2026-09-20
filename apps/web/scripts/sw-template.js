@@ -30,6 +30,30 @@ self.addEventListener('activate', (event) => {
   })())
 })
 
+self.addEventListener('push', (event) => {
+  let eventId = 'event'
+  try { eventId = event.data?.json()?.event_id || eventId } catch { /* malformed payload */ }
+  event.waitUntil(self.registration.showNotification('Новое событие', {
+    body: 'Откройте приложение, чтобы посмотреть подробности.',
+    tag: `robopark-${eventId}`,
+    data: { url: '/schedule' },
+  }))
+})
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  event.waitUntil((async () => {
+    const url = new URL(event.notification.data?.url || '/', self.location.origin).href
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+    const existing = windows[0]
+    if (existing) {
+      await existing.navigate(url)
+      return existing.focus()
+    }
+    return self.clients.openWindow(url)
+  })())
+})
+
 self.addEventListener('fetch', (event) => {
   const request = event.request
   const url = new URL(request.url)
@@ -83,7 +107,7 @@ async function storeSharedPhoto(request) {
   try {
     const form = await request.formData()
     const photo = form.get('photo')
-    if (photo instanceof Blob && photo.type.startsWith('image/')) {
+    if (photo instanceof Blob && photo.type.startsWith('image/') && photo.size <= 15 * 1024 * 1024) {
       const db = await openShareInbox()
       const transaction = db.transaction('drafts', 'readwrite')
       transaction.objectStore('drafts').put({

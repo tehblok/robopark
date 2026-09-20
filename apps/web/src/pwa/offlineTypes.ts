@@ -26,7 +26,7 @@ export type OfflineAction = {
   dependencies: string[]
   payload: unknown
   state: OfflineActionState
-  attempts: number
+  attempts?: number
   createdAt: number
   updatedAt: number
 }
@@ -43,6 +43,7 @@ export type OfflineMedia = {
   sha256: string
   sizeBytes: number
   state: OfflineMediaState
+  attempts?: number
   createdAt: number
   updatedAt: number
 }

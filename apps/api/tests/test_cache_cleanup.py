@@ -9,7 +9,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from robopark_api import main
 from robopark_api.services import cache_cleanup
-from robopark_api.task_workflow_models import ReliableAction, TaskAttachment, TaskMessage
+from robopark_api.task_workflow_models import (
+    OfflineSyncReceipt,
+    ReliableAction,
+    TaskAttachment,
+    TaskMessage,
+)
 
 
 def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
@@ -42,6 +47,24 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         lambda session, **kwargs: calls.append(("outbox", session, kwargs)) or (0, 0),
     )
     monkeypatch.setattr(
+        cache_cleanup,
+        "prune_offline_sync_receipts",
+        lambda session, **kwargs: calls.append(("receipts", session, kwargs)) or 1,
+    )
+    monkeypatch.setattr(
+        cache_cleanup.push,
+        "prune_notification_data",
+        lambda session, **kwargs: (
+            calls.append(("notifications", session, kwargs))
+            or {"subscriptions": 1, "notifications": 2}
+        ),
+    )
+    monkeypatch.setattr(
+        cache_cleanup.schedules,
+        "prune_old_entries",
+        lambda session, **kwargs: calls.append(("schedules", session, kwargs)) or 2,
+    )
+    monkeypatch.setattr(
         cache_cleanup.media_uploads,
         "cleanup_expired",
         lambda session, **kwargs: calls.append(("media", session, kwargs)) or 2,
@@ -67,11 +90,40 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         ("files", {"now": now.timestamp()}),
         ("unknowns", db, {"now": now}),
         ("media", db, {"now": now.timestamp()}),
+        ("receipts", db, {"now": now.timestamp()}),
+        ("notifications", db, {"now": now}),
+        ("schedules", db, {"now": now}),
         ("outbox", db, {"now": now.timestamp()}),
         ("pending-reports", db),
         ("report-files", {"now": now.timestamp()}),
         ("pressure", {"now": now.timestamp()}),
     ]
+
+
+def test_cleanup_bounds_confirmed_offline_sync_receipts(db_session, seed_mechanic):
+    now = datetime(2026, 9, 20, tzinfo=UTC).timestamp()
+    old = OfflineSyncReceipt(
+        actor_user_id=seed_mechanic.id,
+        device_id="old-device",
+        client_action_id="old-action",
+        payload_hash="a" * 64,
+        result_json="{}",
+        created_at=now - 31 * 86400,
+    )
+    recent = OfflineSyncReceipt(
+        actor_user_id=seed_mechanic.id,
+        device_id="new-device",
+        client_action_id="new-action",
+        payload_hash="b" * 64,
+        result_json="{}",
+        created_at=now - 86400,
+    )
+    db_session.add_all([old, recent])
+    db_session.commit()
+
+    assert cache_cleanup.prune_offline_sync_receipts(db_session, now=now) == 1
+    assert db_session.get(OfflineSyncReceipt, old.id) is None
+    assert db_session.get(OfflineSyncReceipt, recent.id) is not None
 
 
 def test_deleted_report_file_cleanup_only_removes_old_quarantine_files(tmp_path, monkeypatch):

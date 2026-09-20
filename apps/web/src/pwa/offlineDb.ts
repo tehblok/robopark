@@ -6,6 +6,9 @@ import type {
 } from './offlineTypes'
 
 export const OFFLINE_DATABASE_NAME = 'robopark-offline'
+const DEFAULT_OFFLINE_BUDGET = 64 * 1024 * 1024
+const MIN_OFFLINE_BUDGET = 256 * 1024
+const MAX_OFFLINE_BUDGET = 128 * 1024 * 1024
 const DATABASE_VERSION = 2
 const STORES = ['actions', 'entities', 'media', 'meta', 'revisions'] as const
 type StoreName = typeof STORES[number]
@@ -25,6 +28,20 @@ type MetaRecord = ScopedRecord & { key: string, value: unknown, updatedAt: numbe
 let activeScope = ''
 let activeGeneration = 0
 const handles = new Set<OfflineDb>()
+
+export async function estimateOfflineBudget(
+  estimate: () => Promise<{ quota?: number, usage?: number }> = () => navigator.storage.estimate(),
+): Promise<number> {
+  try {
+    const { quota, usage = 0 } = await estimate()
+    if (!quota || !Number.isFinite(quota)) return DEFAULT_OFFLINE_BUDGET
+    const available = Math.max(0, quota - usage)
+    if (available <= MIN_OFFLINE_BUDGET) return Math.floor(available)
+    return Math.max(MIN_OFFLINE_BUDGET, Math.min(MAX_OFFLINE_BUDGET, Math.floor(quota * 0.1), Math.floor(available * 0.5)))
+  } catch {
+    return DEFAULT_OFFLINE_BUDGET
+  }
+}
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {

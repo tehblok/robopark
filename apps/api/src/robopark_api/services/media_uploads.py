@@ -28,13 +28,24 @@ def uploads_root() -> Path:
 
 def _validate_name(value: str) -> str:
     name = value.strip()
-    if not name or name != Path(name).name or "/" in name or "\\" in name or ".." in name or "\x00" in name:
+    if (
+        not name
+        or name != Path(name).name
+        or "/" in name
+        or "\\" in name
+        or ".." in name
+        or "\x00" in name
+    ):
         raise HTTPException(400, "media_filename_invalid")
     return name
 
 
 def _session(db: Session, actor: User, upload_id: str) -> MediaUploadSession:
-    row = db.scalar(select(MediaUploadSession).where(MediaUploadSession.id == upload_id, MediaUploadSession.actor_user_id == actor.id))
+    row = db.scalar(
+        select(MediaUploadSession).where(
+            MediaUploadSession.id == upload_id, MediaUploadSession.actor_user_id == actor.id
+        )
+    )
     if row is None:
         raise HTTPException(404, "media_upload_not_found")
     if not row.completed and row.expires_at <= time.time():
@@ -46,18 +57,44 @@ def start(db: Session, actor: User, payload: MediaUploadCreateIn) -> MediaUpload
     if payload.mime_type not in ALLOWED_MIMES:
         raise HTTPException(400, "media_invalid_type")
     name = _validate_name(payload.name)
-    existing = db.scalar(select(MediaUploadSession).where(MediaUploadSession.actor_user_id == actor.id, MediaUploadSession.media_id == payload.media_id))
+    existing = db.scalar(
+        select(MediaUploadSession).where(
+            MediaUploadSession.actor_user_id == actor.id,
+            MediaUploadSession.media_id == payload.media_id,
+        )
+    )
     if existing is not None:
-        identity = (existing.issue_key, existing.original_name, existing.mime_type, existing.size_bytes, existing.sha256)
-        if identity != (payload.issue_key, name, payload.mime_type, payload.size_bytes, payload.sha256):
+        identity = (
+            existing.issue_key,
+            existing.original_name,
+            existing.mime_type,
+            existing.size_bytes,
+            existing.sha256,
+        )
+        if identity != (
+            payload.issue_key,
+            name,
+            payload.mime_type,
+            payload.size_bytes,
+            payload.sha256,
+        ):
             raise HTTPException(409, "media_upload_payload_conflict")
         return existing
     now = time.time()
     row = MediaUploadSession(
-        actor_user_id=actor.id, media_id=payload.media_id, issue_key=payload.issue_key,
-        original_name=name, mime_type=payload.mime_type, size_bytes=payload.size_bytes,
-        sha256=payload.sha256, received_offset=0, blob_name=f"{uuid4().hex}.part",
-        completed=False, created_at=now, updated_at=now, expires_at=now + SESSION_TTL_SECONDS,
+        actor_user_id=actor.id,
+        media_id=payload.media_id,
+        issue_key=payload.issue_key,
+        original_name=name,
+        mime_type=payload.mime_type,
+        size_bytes=payload.size_bytes,
+        sha256=payload.sha256,
+        received_offset=0,
+        blob_name=f"{uuid4().hex}.part",
+        completed=False,
+        created_at=now,
+        updated_at=now,
+        expires_at=now + SESSION_TTL_SECONDS,
     )
     db.add(row)
     db.commit()
@@ -65,7 +102,9 @@ def start(db: Session, actor: User, payload: MediaUploadCreateIn) -> MediaUpload
     return row
 
 
-def append_chunk(db: Session, actor: User, upload_id: str, offset: int, content: bytes, chunk_sha256: str) -> int:
+def append_chunk(
+    db: Session, actor: User, upload_id: str, offset: int, content: bytes, chunk_sha256: str
+) -> int:
     row = _session(db, actor, upload_id)
     if row.completed:
         raise HTTPException(409, "media_upload_completed")
@@ -144,10 +183,20 @@ def content_path(row: MediaUploadSession) -> Path:
 
 def cleanup_expired(db: Session, *, now: float | None = None) -> int:
     cutoff = now or time.time()
-    rows = list(db.scalars(select(MediaUploadSession).where(
-        (MediaUploadSession.completed.is_(False) & (MediaUploadSession.expires_at <= cutoff))
-        | (MediaUploadSession.completed.is_(True) & (MediaUploadSession.completed_at <= cutoff - COMPLETED_RETENTION_SECONDS))
-    )))
+    rows = list(
+        db.scalars(
+            select(MediaUploadSession).where(
+                (
+                    MediaUploadSession.completed.is_(False)
+                    & (MediaUploadSession.expires_at <= cutoff)
+                )
+                | (
+                    MediaUploadSession.completed.is_(True)
+                    & (MediaUploadSession.completed_at <= cutoff - COMPLETED_RETENTION_SECONDS)
+                )
+            )
+        )
+    )
     for row in rows:
         with suppress(OSError):
             (uploads_root() / row.blob_name).unlink()

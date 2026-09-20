@@ -30,6 +30,7 @@ from robopark_api.routers import (
     auth,
     campaigns,
     changes,
+    client_telemetry,
     dashboard,
     emergency,
     health,
@@ -44,8 +45,10 @@ from robopark_api.routers import (
     operator_report,
     operator_robots,
     parks,
+    push,
     reports,
     robot_registry,
+    schedules,
     sync,
     task_timeline,
     tracker_actions,
@@ -252,6 +255,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(campaigns.router)
     app.include_router(changes.router)
+    app.include_router(client_telemetry.router)
     app.include_router(inventory.router)
     app.include_router(health.router)
     app.include_router(parks.router)
@@ -285,6 +289,9 @@ def create_app() -> FastAPI:
     app.include_router(reports.router)
     app.include_router(sync.router)
     app.include_router(media_uploads.router)
+    app.include_router(schedules.router)
+    app.include_router(push.router)
+    app.state.push_service = push.PushService(lambda: SessionLocal())
     return app
 
 

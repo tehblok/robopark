@@ -5,8 +5,11 @@ import type { SyncCoordinator } from './syncCoordinator'
 
 export type SyncStatus = 'idle' | 'syncing' | 'offline' | 'attention'
 export type SyncState = { status: SyncStatus, pending: number, conflicts: number }
+export const WEAK_LINK_BATCH_LIMIT = 2
+export const SYNC_BATCH_LIMIT = 20
+export const MEDIA_CONCURRENCY = 2
 export type OfflineActionInput = Omit<OfflineAction, 'state' | 'attempts' | 'createdAt' | 'updatedAt'>
-export type OfflineMediaInput = Omit<OfflineMedia, 'state' | 'createdAt' | 'updatedAt'>
+export type OfflineMediaInput = Omit<OfflineMedia, 'state' | 'attempts' | 'createdAt' | 'updatedAt'>
 
 type EventEnvironment = {
   addEventListener(name: string, listener: EventListener): void
@@ -91,7 +94,7 @@ export class SyncEngine {
     this.started = true
     this.environment?.addEventListener('online', this.wake)
     this.environment?.addEventListener('focus', this.wake)
-    void this.refreshState()
+    void this.refreshState().catch(() => {})
     void this.syncNow('start')
   }
 
@@ -106,8 +109,9 @@ export class SyncEngine {
 
   async enqueueMedia(input: OfflineMediaInput): Promise<OfflineMedia> {
     const now = this.now()
-    const media: OfflineMedia = { ...input, state: 'ready', createdAt: now, updatedAt: now }
+    const media: OfflineMedia = { ...input, state: 'ready', attempts: 0, createdAt: now, updatedAt: now }
     if (!await this.db.putMedia(media)) throw new Error('offline_scope_inactive')
+    await this.refreshState()
     if (this.started) void this.syncNow('media')
     return media
   }
@@ -161,19 +165,28 @@ export class SyncEngine {
       this.setState({ ...this.state, status: 'syncing' })
       this.abortController = new AbortController()
       try {
-        for (const media of pendingMedia.slice(0, this.weakLink() ? 1 : 2)) {
+        for (const media of pendingMedia.slice(0, this.weakLink() ? 1 : MEDIA_CONCURRENCY)) {
           await this.db.putMedia({ ...media, state: 'uploading', updatedAt: this.now() })
           await this.uploadMedia(media, this.abortController.signal)
           await this.db.putMedia({ ...media, state: 'confirmed', updatedAt: this.now() })
         }
-      } catch {
+      } catch (error) {
+        let maxAttempts = 1
+        const status = typeof error === 'object' && error !== null && 'status' in error ? Number((error as { status?: unknown }).status) : 0
+        const permanent = status >= 400 && status < 500 && ![408, 425, 429].includes(status)
         for (const media of pendingMedia) {
           if ((await this.db.getMedia(media.id))?.state === 'uploading') {
-            await this.db.putMedia({ ...media, state: 'ready', updatedAt: this.now() })
+            const attempts = (media.attempts ?? 0) + 1
+            maxAttempts = Math.max(maxAttempts, attempts)
+            await this.db.putMedia({ ...media, state: permanent ? 'attention' : 'ready', attempts, updatedAt: this.now() })
           }
         }
-        this.setState({ ...this.state, status: 'offline' })
-        if (!this.disposed) this.retryTimer = this.scheduleRetry(() => { this.retryTimer = null; void this.syncNow('media-retry') }, 1_000)
+        await this.refreshState()
+        if (!permanent) {
+          this.setState({ ...this.state, status: 'offline' })
+          const delay = Math.min(60_000, 1_000 * 2 ** (maxAttempts - 1)) * (1 + this.random() * 0.25)
+          if (!this.disposed) this.retryTimer = this.scheduleRetry(() => { this.retryTimer = null; void this.syncNow('media-retry') }, delay)
+        }
         return false
       } finally {
         this.abortController = null
@@ -182,7 +195,7 @@ export class SyncEngine {
     const all = await this.db.listActions()
     const ready = causalOrder(all.filter(item => item.state === 'ready' || item.state === 'local'))
     if (!ready.length) { await this.refreshState(); return false }
-    const batch = ready.slice(0, this.weakLink() ? 2 : 20)
+    const batch = ready.slice(0, this.weakLink() ? WEAK_LINK_BATCH_LIMIT : SYNC_BATCH_LIMIT)
     const sending = batch.map(item => ({ ...item, state: 'sending' as const, updatedAt: this.now() }))
     for (const item of sending) await this.db.putAction(item)
     this.setState({ ...this.state, status: 'syncing' })
@@ -203,22 +216,33 @@ export class SyncEngine {
           payload: item.payload as Record<string, unknown>,
         })),
       }, this.abortController.signal)
+      let retryAttempts = 0
       for (const result of response.results) {
         const item = sending.find(candidate => candidate.id === result.client_action_id)
         if (!item) continue
-        const state = result.state === 'confirmed' ? 'confirmed' : result.state === 'conflict' ? 'conflict' : 'attention'
-        await this.db.putAction({ ...item, state, updatedAt: this.now() })
+        if (result.state === 'attention') {
+          const attempts = (item.attempts ?? 0) + 1
+          retryAttempts = Math.max(retryAttempts, attempts)
+          await this.db.putAction({ ...item, state: 'ready', attempts, updatedAt: this.now() })
+        } else {
+          const state = result.state === 'confirmed' ? 'confirmed' : result.state === 'conflict' ? 'conflict' : 'attention'
+          await this.db.putAction({ ...item, state, updatedAt: this.now() })
+        }
       }
       for (const [section, revision] of Object.entries(response.revisions)) {
         await this.db.setRevision(section, String(revision))
       }
       if (response.revoked_scopes.length) this.onRevokedScopes?.(response.revoked_scopes)
       await this.refreshState()
+      if (retryAttempts && !this.disposed) {
+        const delay = Math.min(60_000, 1_000 * 2 ** (retryAttempts - 1)) * (1 + this.random() * 0.25)
+        this.retryTimer = this.scheduleRetry(() => { this.retryTimer = null; void this.syncNow('server-retry') }, delay)
+      }
       return true
     } catch {
       let maxAttempts = 1
       for (const item of sending) {
-        const attempts = item.attempts + 1
+        const attempts = (item.attempts ?? 0) + 1
         maxAttempts = Math.max(maxAttempts, attempts)
         await this.db.putAction({ ...item, state: 'ready', attempts, updatedAt: this.now() })
       }
@@ -233,8 +257,11 @@ export class SyncEngine {
 
   private async refreshState(): Promise<void> {
     const actions = await this.db.listActions()
+    const media = await this.db.listMedia()
     const conflicts = actions.filter(item => item.state === 'conflict' || item.state === 'attention').length
+      + media.filter(item => item.state === 'attention').length
     const pending = actions.filter(item => !['confirmed', 'cancelled'].includes(item.state)).length
+      + media.filter(item => item.state !== 'confirmed').length
     this.setState({ status: conflicts ? 'attention' : pending ? this.state.status === 'offline' ? 'offline' : 'idle' : 'idle', pending, conflicts })
   }
 

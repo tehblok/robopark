@@ -1268,6 +1268,7 @@ export const api = {
   scheduleBulk: (body: ScheduleCreate & { owner_user_ids: number[]; repeat_count: number; repeat_every_days: number }) => request<ScheduleEntry[]>('/schedules/bulk', { method: 'POST', body: JSON.stringify(body) }),
   notificationInbox: () => request<NotificationEvent[]>('/push/inbox'),
   notificationRead: (id: string) => request<{ ok: boolean }>(`/push/inbox/${id}/read`, { method: 'POST' }),
+  pushConfig: () => request<{ public_key: string }>('/push/config'),
   pushSubscribe: (body: { endpoint: string; p256dh: string; auth: string }) => request<{ id: string; endpoint_hash: string }>('/push/subscriptions', { method: 'POST', body: JSON.stringify(body) }),
   pushPreferences: (categories: string[], system_enabled = true) => request<{ categories: string[]; system_enabled: boolean }>('/push/preferences', { method: 'PUT', body: JSON.stringify({ categories, system_enabled }) }),
   syncBatch: (body: SyncBatchRequest, signal?: AbortSignal) => request<SyncBatchResponse>('/sync/batch', { method: 'POST', body: JSON.stringify(body), signal }),

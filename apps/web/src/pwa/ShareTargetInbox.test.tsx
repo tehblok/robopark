@@ -6,7 +6,7 @@ import { openShareTargetInbox, ShareTargetInbox } from './ShareTargetInbox'
 describe('ShareTargetInbox', () => {
   it('keeps a shared photo as an unassigned draft until the user attaches it', async () => {
     const inbox = await openShareTargetInbox()
-    await inbox.save({ id: 'shared-1', createdAt: 1, name: 'robot.jpg', type: 'image/jpeg',
+    await inbox.save({ id: 'shared-1', createdAt: Date.now() - 4, name: 'robot.jpg', type: 'image/jpeg',
       blob: new Blob(['photo'], { type: 'image/jpeg' }), assignment: null })
     render(<ShareTargetInbox inbox={inbox} />)
 
@@ -19,7 +19,7 @@ describe('ShareTargetInbox', () => {
 
   it('deletes a shared draft only after explicit cancellation', async () => {
     const inbox = await openShareTargetInbox()
-    await inbox.save({ id: 'shared-2', createdAt: 2, name: 'robot.png', type: 'image/png',
+    await inbox.save({ id: 'shared-2', createdAt: Date.now() - 3, name: 'robot.png', type: 'image/png',
       blob: new Blob(['photo'], { type: 'image/png' }), assignment: null })
     render(<ShareTargetInbox inbox={inbox} />)
     fireEvent.click(await screen.findByRole('button', { name: 'Удалить черновик robot.png' }))
@@ -28,7 +28,7 @@ describe('ShareTargetInbox', () => {
 
   it('hands the real blob to the task flow and deletes it only after success', async () => {
     const inbox = await openShareTargetInbox()
-    const draft = { id: 'shared-3', createdAt: 3, name: 'robot.jpg', type: 'image/jpeg',
+    const draft = { id: 'shared-3', createdAt: Date.now() - 2, name: 'robot.jpg', type: 'image/jpeg',
       blob: new Blob(['photo'], { type: 'image/jpeg' }), assignment: null }
     await inbox.save(draft)
     const onAttachTask = vi.fn(async () => undefined)
@@ -41,7 +41,7 @@ describe('ShareTargetInbox', () => {
 
   it('retains the shared draft when delivery fails', async () => {
     const inbox = await openShareTargetInbox()
-    await inbox.save({ id: 'shared-4', createdAt: 4, name: 'robot.jpg', type: 'image/jpeg', blob: new Blob(['photo']), assignment: null })
+    await inbox.save({ id: 'shared-4', createdAt: Date.now() - 1, name: 'robot.jpg', type: 'image/jpeg', blob: new Blob(['photo']), assignment: null })
     render(<ShareTargetInbox inbox={inbox} onAttachTask={async () => { throw new Error('offline') }} />)
     fireEvent.change(await screen.findByLabelText('Номер задачи'), { target: { value: 'SDCFLEETOPS-2' } })
     fireEvent.click(screen.getByRole('button', { name: 'Прикрепить' }))

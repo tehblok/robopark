@@ -1,12 +1,13 @@
-import { createContext, useContext, useEffect, useMemo, useState, type PropsWithChildren } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type PropsWithChildren } from 'react'
 import { api } from '../api'
 import { useAuth } from '../auth-context'
 import { useParkScope } from '../app/park/parkScope'
 import { offlineScopeForUser } from '../lib/deviceResourceCache'
-import { openOfflineDb, purgeOfflineScope } from './offlineDb'
+import { estimateOfflineBudget, OfflineStorageFullError, openOfflineDb, purgeOfflineScope } from './offlineDb'
 import { SyncCoordinator } from './syncCoordinator'
 import { SyncEngine, type OfflineActionInput, type OfflineMediaInput, type SyncState } from './syncEngine'
 import { uploadMedia } from './resumableUpload'
+import { ClientTelemetry } from './clientTelemetry'
 
 export type SyncEngineLike = {
   start(): void
@@ -40,6 +41,11 @@ export function SyncContextProvider({ children, value }: PropsWithChildren<{ val
 async function defaultEngineFactory(options: Parameters<SyncEngineFactory>[0]): Promise<SyncEngineLike> {
   if (!options.user) throw new Error('sync_user_required')
   const db = await openOfflineDb(offlineScopeForUser(options.user, options.park))
+  try {
+    await db.cleanup({ maxBytes: await estimateOfflineBudget() })
+  } catch (error) {
+    if (!(error instanceof OfflineStorageFullError)) throw error
+  }
   const lockManager = typeof navigator !== 'undefined' && 'locks' in navigator
     ? navigator.locks as unknown as ConstructorParameters<typeof SyncCoordinator>[0]['lockManager']
     : undefined
@@ -74,7 +80,16 @@ export function SyncProvider({ children, engineFactory = defaultEngineFactory }:
   const { parkId } = useParkScope()
   const [engine, setEngine] = useState<SyncEngineLike | null>(null)
   const [state, setState] = useState<SyncState>(DEFAULT_STATE)
+  const telemetry = useRef<ClientTelemetry | null>(null)
+  const startedAt = useRef(0)
   const park = parkId == null ? 'all' : String(parkId)
+
+  useEffect(() => {
+    startedAt.current = typeof performance === 'undefined' ? 0 : performance.now()
+    telemetry.current = new ClientTelemetry()
+    return () => { telemetry.current?.dispose(); telemetry.current = null }
+  }, [])
+  useEffect(() => { telemetry.current?.record('queue_length', state.pending) }, [state.pending])
 
   useEffect(() => {
     if (!user) { setEngine(null); setState(DEFAULT_STATE); return }
@@ -87,6 +102,7 @@ export function SyncProvider({ children, engineFactory = defaultEngineFactory }:
         current = created
         setEngine(created)
         setState(created.getState())
+        telemetry.current?.record('startup_ms', Math.max(0, (typeof performance === 'undefined' ? 0 : performance.now()) - startedAt.current))
         unsubscribe = created.subscribe(() => setState(created.getState()))
         created.start()
       })

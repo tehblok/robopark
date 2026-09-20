@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { enableSystemNotifications } from './notifications'
+import { decodeApplicationServerKey, enableSystemNotifications } from './notifications'
 
 describe('enableSystemNotifications', () => {
+  it('decodes the VAPID public key', () => {
+    expect([...decodeApplicationServerKey('AQIDBA')]).toEqual([1, 2, 3, 4])
+  })
   it('asks browser permission only when explicitly invoked', async () => {
     const requestPermission = vi.fn(async () => 'granted' as NotificationPermission)
     vi.stubGlobal('Notification', { permission: 'default', requestPermission })

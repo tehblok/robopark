@@ -74,6 +74,42 @@ describe('SyncEngine', () => {
     engine.dispose()
   })
 
+  it('retries a temporary server result instead of freezing it in attention', async () => {
+    const db = await openOfflineDb(scope)
+    const scheduleRetry = vi.fn(() => 1 as unknown as ReturnType<typeof setTimeout>)
+    const engine = new SyncEngine({ db, coordinator: coordinator(db), deviceId: 'phone', random: () => 0, scheduleRetry, sendBatch: async batch => ({
+      results: [{ client_action_id: batch.actions[0].client_action_id, state: 'attention', code: 'tracker_upstream_error', result: null }],
+      deltas: {}, revisions: {}, revoked_scopes: [],
+    }) })
+    await engine.enqueueAction(input('temporary'))
+
+    await engine.syncNow('test')
+
+    expect(await db.getAction('temporary')).toMatchObject({ state: 'ready', attempts: 1 })
+    expect(scheduleRetry).toHaveBeenCalledWith(expect.any(Function), 1_000)
+    engine.dispose()
+  })
+
+  it('backs off transient media failures and stops retrying permanent client errors', async () => {
+    const db = await openOfflineDb(scope)
+    const scheduleRetry = vi.fn(() => 1 as unknown as ReturnType<typeof setTimeout>)
+    const uploadMedia = vi.fn().mockRejectedValueOnce(new TypeError('offline')).mockRejectedValueOnce({ status: 400 })
+    const engine = new SyncEngine({ db, coordinator: coordinator(db), deviceId: 'phone', random: () => 0, scheduleRetry, uploadMedia, sendBatch: async () => ({ results: [], deltas: {}, revisions: {}, revoked_scopes: [] }) })
+    const media = { id: 'photo', actionId: 'review', issueKey: 'TASK-1', name: 'robot.jpg', blob: new Blob(['x']), mimeType: 'image/jpeg', sha256: 'a', sizeBytes: 1 }
+    await engine.enqueueMedia(media)
+    expect(engine.getState().pending).toBe(1)
+
+    await engine.syncNow('offline')
+    expect(await db.getMedia('photo')).toMatchObject({ state: 'ready', attempts: 1 })
+    expect(scheduleRetry).toHaveBeenLastCalledWith(expect.any(Function), 1_000)
+
+    await engine.syncNow('bad-file')
+    expect(await db.getMedia('photo')).toMatchObject({ state: 'attention', attempts: 2 })
+    expect(engine.getState()).toMatchObject({ pending: 1, conflicts: 1, status: 'attention' })
+    expect(scheduleRetry).toHaveBeenCalledTimes(1)
+    engine.dispose()
+  })
+
   it('pauses a conflicting action and forwards revoked scopes', async () => {
     const db = await openOfflineDb(scope)
     const revoked = vi.fn()

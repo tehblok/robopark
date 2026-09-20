@@ -12,6 +12,8 @@ import { clearProtectedBrowserStorage } from './shared/auth/protectedBrowserStor
 import { InterfaceModeProvider } from './app/interface/InterfaceModeProvider'
 import { interfaceModeStore } from './app/interface/interfaceModeStore'
 import { activateDeviceResourceCache, purgeDeviceResourceCache } from './lib/deviceResourceCache'
+import { purgeOfflineScope } from './pwa/offlineDb'
+import { clearShareTargetInbox } from './pwa/ShareTargetInbox'
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const [user, setUser] = useState<User | null>(null)
@@ -43,9 +45,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
           setUser(nextUser)
         }
       })
-      .catch((error) => {
+      .catch(async (error) => {
         if (generation !== sessionGeneration.current) return
         if (error instanceof ApiError && error.status === 401) {
+          await Promise.all([purgeOfflineScope().catch(() => {}), clearShareTargetInbox().catch(() => {})])
           clearSessionState()
         } else {
           setUser(null)
@@ -64,6 +67,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     // account) is dropped before we authenticate — different roles see
     // different rows and we must not paint the previous user's data.
     const generation = clearSessionState()
+    await Promise.all([purgeOfflineScope().catch(() => {}), clearShareTargetInbox().catch(() => {})])
     await api.login(username, password, rememberMe)
     if (generation !== sessionGeneration.current) throw new Error('session_changed')
     const authenticatedUser = await api.me()
@@ -90,6 +94,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       return authenticatedUser
     } catch (error) {
       if (generation === sessionGeneration.current && error instanceof ApiError && error.status === 401) {
+        await Promise.all([purgeOfflineScope().catch(() => {}), clearShareTargetInbox().catch(() => {})])
         clearSessionState()
       }
       throw error
@@ -102,7 +107,11 @@ export function AuthProvider({ children }: PropsWithChildren) {
       resourceStore.clearAll()
       void purgeDeviceResourceCache()
       clearProtectedBrowserStorage()
-      if (status === 401) clearSessionState()
+      if (status === 401) {
+        clearSessionState()
+        void purgeOfflineScope().catch(() => {})
+        void clearShareTargetInbox().catch(() => {})
+      }
     }
     window.addEventListener('robopark:authorization-failure', authorizationFailure)
     return () => window.removeEventListener('robopark:authorization-failure', authorizationFailure)
@@ -111,6 +120,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const logout = async () => {
     const generation = clearSessionState()
     try {
+      await purgeOfflineScope().catch(() => {})
+      await clearShareTargetInbox().catch(() => {})
       await api.logout()
     } finally {
       if (generation === sessionGeneration.current) clearSessionState()

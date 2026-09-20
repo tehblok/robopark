@@ -201,9 +201,9 @@ describe('landingPathForUser', () => {
 
     expect(landingPathForUser(custom)).toBe('/overview')
     expect(navigationForUser(custom, 'mobile').map((item) => item.id))
-      .toEqual(['overview', 'work', 'campaigns'])
+      .toEqual(['overview', 'work', 'campaigns', 'schedule'])
     expect(navigationForUser(custom, 'mobile').map((item) => item.priority))
-      .toEqual([1010, 1030, 1065])
+      .toEqual([1010, 1030, 1065, 1068])
   })
 })
 

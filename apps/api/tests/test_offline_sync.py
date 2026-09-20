@@ -48,7 +48,12 @@ def test_batch_orders_comment_before_review_and_returns_revisions(
     response = client.post(
         "/sync/batch",
         json=_batch(
-            _action("review", action="submit_review", park_id=seed_park_with_tracker.id, dependencies=["comment"]),
+            _action(
+                "review",
+                action="submit_review",
+                park_id=seed_park_with_tracker.id,
+                dependencies=["comment"],
+            ),
             _action("comment", park_id=seed_park_with_tracker.id),
         ),
     )
@@ -97,17 +102,21 @@ def test_same_client_action_with_different_payload_is_a_conflict(
     )
     second = client.post(
         "/sync/batch",
-        json=_batch(_action("same", park_id=seed_park_with_tracker.id, payload={"text": "changed"})),
+        json=_batch(
+            _action("same", park_id=seed_park_with_tracker.id, payload={"text": "changed"})
+        ),
     )
 
     assert first.status_code == 200
     assert second.status_code == 200
-    assert second.json()["results"] == [{
-        "client_action_id": "same",
-        "state": "conflict",
-        "code": "sync_payload_conflict",
-        "result": None,
-    }]
+    assert second.json()["results"] == [
+        {
+            "client_action_id": "same",
+            "state": "conflict",
+            "code": "sync_payload_conflict",
+            "result": None,
+        }
+    ]
 
 
 def test_unassigned_park_is_rejected_before_dispatch(
@@ -163,12 +172,19 @@ def test_mixed_batch_classifies_closed_task_stale_stock_and_server_failure(
     )
 
     assert response.status_code == 200
-    assert [(item["client_action_id"], item["state"], item["code"]) for item in response.json()["results"]] == [
+    assert [
+        (item["client_action_id"], item["state"], item["code"])
+        for item in response.json()["results"]
+    ] == [
         ("ok", "confirmed", None),
         ("closed", "conflict", "task_already_closed"),
         ("stock", "conflict", "inventory_revision_conflict"),
         ("server", "attention", "tracker_upstream_error"),
     ]
+    from robopark_api.task_workflow_models import OfflineSyncReceipt
+
+    receipts = set(db_session.scalars(select(OfflineSyncReceipt.client_action_id)))
+    assert receipts == {"ok", "closed", "stock"}
 
 
 def test_failed_dependency_is_not_dispatched(
@@ -188,7 +204,12 @@ def test_failed_dependency_is_not_dispatched(
         "/sync/batch",
         json=_batch(
             _action("comment", park_id=seed_park_with_tracker.id),
-            _action("review", action="submit_review", park_id=seed_park_with_tracker.id, dependencies=["comment"]),
+            _action(
+                "review",
+                action="submit_review",
+                park_id=seed_park_with_tracker.id,
+                dependencies=["comment"],
+            ),
         ),
     )
 

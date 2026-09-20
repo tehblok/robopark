@@ -41,6 +41,7 @@ if (import.meta.env.PROD) {
       onVisible: (callback) => document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') callback()
       }),
+      reload: () => window.location.reload(),
     })
   }, { once: true })
 }

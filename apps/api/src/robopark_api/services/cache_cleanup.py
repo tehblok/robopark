@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
-from robopark_api.services import emergency_cache, media_uploads, tracker_cache
+from robopark_api.routers import push
+from robopark_api.services import emergency_cache, media_uploads, schedules, tracker_cache
 from robopark_api.services.diagnostic_unknowns import prune_diagnostic_unknowns
 from robopark_api.services.live_merge import get_live_merge_store
 from robopark_api.services.ops.context import resolved_ops_dir
@@ -36,12 +37,13 @@ from robopark_api.services.storage_retention import (
     unlink_unchanged,
 )
 from robopark_api.services.task_timeline import staged_attachments_root
-from robopark_api.task_workflow_models import ReliableAction, TaskAttachment
+from robopark_api.task_workflow_models import OfflineSyncReceipt, ReliableAction, TaskAttachment
 
 logger = logging.getLogger(__name__)
 
 _RETENTION_BATCH_SIZE = 500
 _SUCCESS_RETENTION_SECONDS = 30 * 86400
+_SYNC_RECEIPT_RETENTION_SECONDS = 30 * 86400
 _UPLOADED_BLOB_RETENTION_SECONDS = 7 * 86400
 _STORAGE_BATCH_SIZE = 128
 _STORAGE_MAX_DELETIONS = 512
@@ -149,6 +151,22 @@ def prune_tracker_outbox(db: Session, *, now: float) -> tuple[int, int]:
                 assert root_fd is not None
                 unlink_unchanged(root_fd, blob_name, before)
     return len(actions), len(attachments)
+
+
+def prune_offline_sync_receipts(db: Session, *, now: float) -> int:
+    rows = list(
+        db.scalars(
+            select(OfflineSyncReceipt)
+            .where(OfflineSyncReceipt.created_at < now - _SYNC_RECEIPT_RETENTION_SECONDS)
+            .order_by(OfflineSyncReceipt.created_at, OfflineSyncReceipt.id)
+            .limit(_RETENTION_BATCH_SIZE)
+        ).all()
+    )
+    for row in rows:
+        db.delete(row)
+    if rows:
+        db.commit()
+    return len(rows)
 
 
 def cleanup_confirmed_tracker_copies(
@@ -335,6 +353,9 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
     with SessionLocal() as db:
         unknowns_removed = prune_diagnostic_unknowns(db, now=current)
         media_uploads_removed = media_uploads.cleanup_expired(db, now=current.timestamp())
+        sync_receipts_removed = prune_offline_sync_receipts(db, now=current.timestamp())
+        notification_cleanup = push.prune_notification_data(db, now=current)
+        schedules_removed = schedules.prune_old_entries(db, now=current)
         actions_removed, attachments_removed = prune_tracker_outbox(db, now=current.timestamp())
         pending_reports_removed = reconcile_pending_report_deletions(db)
     deleted_report_files = prune_deleted_report_files(now=current.timestamp())
@@ -353,6 +374,12 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
         )
     if media_uploads_removed:
         logger.info("Pruned %s expired media upload(s)", media_uploads_removed)
+    if sync_receipts_removed:
+        logger.info("Pruned %s expired offline sync receipt(s)", sync_receipts_removed)
+    if notification_cleanup["subscriptions"] or notification_cleanup["notifications"]:
+        logger.info("Pruned notification data: %s", notification_cleanup)
+    if schedules_removed:
+        logger.info("Pruned %s old schedule entrie(s)", schedules_removed)
     if deleted_report_files:
         logger.info("Pruned %s deleted-report quarantine file(s)", deleted_report_files)
     if pending_reports_removed:

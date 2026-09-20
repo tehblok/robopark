@@ -91,7 +91,10 @@ class MediaUploadSession(Base):
     __tablename__ = "media_upload_sessions"
     __table_args__ = (
         UniqueConstraint("actor_user_id", "media_id", name="uq_media_upload_actor_media"),
-        CheckConstraint("size_bytes > 0 AND received_offset >= 0 AND received_offset <= size_bytes", name="ck_media_upload_offsets"),
+        CheckConstraint(
+            "size_bytes > 0 AND received_offset >= 0 AND received_offset <= size_bytes",
+            name="ck_media_upload_offsets",
+        ),
         Index("ix_media_upload_expiry", "completed", "expires_at", "id"),
     )
 
