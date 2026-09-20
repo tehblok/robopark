@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from robopark_api.media_schemas import MediaUploadCreateIn
 from robopark_api.models import User
+from robopark_api.services.database_locks import database_idempotency_lock
 from robopark_api.services.task_timeline import staged_attachments_root
 from robopark_api.task_workflow_models import MediaUploadSession
 
@@ -147,36 +148,39 @@ def append_chunk(
 
 
 def complete(db: Session, actor: User, upload_id: str) -> MediaUploadSession:
-    # PostgreSQL serializes duplicate completion requests before either caller
-    # can rename the staged blob. The second caller then observes `completed`
-    # and returns the original successful response instead of a missing-file
-    # race. SQLite retains its existing single-host request serialization.
-    row = _session(db, actor, upload_id, for_update=True)
-    if row.completed:
+    lock_key = f"media-complete:{actor.id}:{upload_id}"
+    with database_idempotency_lock(db, lock_key):
+        # PostgreSQL locks the row too; SQLite is protected by the file-backed
+        # cross-process idempotency lock. In both cases a duplicate caller sees
+        # the committed ready blob instead of racing the rename.
+        row = _session(db, actor, upload_id, for_update=True)
+        if row.completed:
+            return row
+        if row.received_offset != row.size_bytes:
+            raise HTTPException(409, "media_upload_incomplete")
+        path = uploads_root() / row.blob_name
+        if not path.is_file():
+            raise HTTPException(409, "media_upload_missing")
+        content = path.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        if digest != row.sha256:
+            raise HTTPException(400, "media_checksum_invalid")
+        signatures = {
+            "image/jpeg": content.startswith(b"\xff\xd8\xff"),
+            "image/png": content.startswith(b"\x89PNG\r\n\x1a\n"),
+            "image/webp": len(content) >= 12
+            and content[:4] == b"RIFF"
+            and content[8:12] == b"WEBP",
+        }
+        if not signatures.get(row.mime_type, False):
+            raise HTTPException(400, "media_signature_invalid")
+        ready_name = f"{row.id}.ready"
+        path.replace(uploads_root() / ready_name)
+        row.blob_name = ready_name
+        row.completed = True
+        row.completed_at = row.updated_at = time.time()
+        db.commit()
         return row
-    if row.received_offset != row.size_bytes:
-        raise HTTPException(409, "media_upload_incomplete")
-    path = uploads_root() / row.blob_name
-    if not path.is_file():
-        raise HTTPException(409, "media_upload_missing")
-    content = path.read_bytes()
-    digest = hashlib.sha256(content).hexdigest()
-    if digest != row.sha256:
-        raise HTTPException(400, "media_checksum_invalid")
-    signatures = {
-        "image/jpeg": content.startswith(b"\xff\xd8\xff"),
-        "image/png": content.startswith(b"\x89PNG\r\n\x1a\n"),
-        "image/webp": len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP",
-    }
-    if not signatures.get(row.mime_type, False):
-        raise HTTPException(400, "media_signature_invalid")
-    ready_name = f"{row.id}.ready"
-    path.replace(uploads_root() / ready_name)
-    row.blob_name = ready_name
-    row.completed = True
-    row.completed_at = row.updated_at = time.time()
-    db.commit()
-    return row
 
 
 def content_path(row: MediaUploadSession) -> Path:

@@ -1,7 +1,13 @@
 import hashlib
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+from sqlalchemy.orm import Session
 
 from conftest import login_as
+from robopark_api.models import User
 from robopark_api.services import media_uploads
 from robopark_api.task_workflow_models import MediaUploadSession
 
@@ -68,6 +74,64 @@ def test_resumable_upload_validates_offsets_checksums_and_replays(
         "media_id": "media-12345678",
         "completed": True,
     }
+
+
+def test_sqlite_concurrent_media_completion_returns_same_completed_upload(
+    db_engine, seed_mechanic, tmp_path, monkeypatch
+):
+    """Separate SQLite sessions serialize the staged-file rename."""
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    content = b"\xff\xd8\xffsqlite-concurrent"
+    with Session(db_engine) as db:
+        user = db.get(User, seed_mechanic.id)
+        upload = media_uploads.start(
+            db,
+            user,
+            media_uploads.MediaUploadCreateIn(
+                media_id="sqlite-concurrent-media",
+                issue_key="ROBOPARK-51",
+                name="robot.jpg",
+                mime_type="image/jpeg",
+                size_bytes=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+            ),
+        )
+        media_uploads.append_chunk(
+            db, user, upload.id, 0, content, hashlib.sha256(content).hexdigest()
+        )
+        upload_id = upload.id
+
+    original_replace = Path.replace
+    replace_entered = threading.Event()
+    allow_replace = threading.Event()
+    start = threading.Barrier(3)
+
+    def hold_replace(path: Path, target: Path):
+        if path.suffix == ".part":
+            replace_entered.set()
+            assert allow_replace.wait(timeout=1)
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", hold_replace)
+
+    def complete_once():
+        start.wait(timeout=1)
+        with Session(db_engine) as db:
+            user = db.get(User, seed_mechanic.id)
+            completed = media_uploads.complete(db, user, upload_id)
+            return completed.id, completed.completed
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(complete_once)
+        second = executor.submit(complete_once)
+        start.wait(timeout=1)
+        assert replace_entered.wait(timeout=1)
+        allow_replace.set()
+        first_result = first.result(timeout=2)
+        second_result = second.result(timeout=2)
+
+    assert first_result == second_result == (upload_id, True)
+    assert (tmp_path / f"{upload_id}.ready").is_file()
 
 
 def test_upload_session_is_private_to_its_owner(client, seed_mechanic, seed_admin):

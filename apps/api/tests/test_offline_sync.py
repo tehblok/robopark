@@ -1,10 +1,13 @@
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from conftest import login_as
-from robopark_api.models import Park
+from robopark_api.models import Park, User
 
 
 def _action(
@@ -87,6 +90,64 @@ def test_replaying_batch_after_response_loss_returns_receipt_without_second_acti
     assert first.status_code == second.status_code == 200
     assert first.json() == second.json()
     assert calls == 1
+
+
+def test_sqlite_concurrent_sync_replay_uses_one_dispatch_and_one_receipt(
+    db_engine, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    """Separate SQLite sessions must not dispatch the same client action twice."""
+    from robopark_api.services import offline_sync
+    from robopark_api.task_workflow_models import OfflineSyncReceipt
+
+    calls: list[str] = []
+    dispatch_entered = threading.Event()
+    allow_dispatch = threading.Event()
+    start = threading.Barrier(3)
+
+    class Revisions:
+        def mark_changed(self, _scope):
+            pass
+
+        def current(self, _scope):
+            return 0
+
+    def dispatch(_db, _user, item):
+        calls.append(item.client_action_id)
+        dispatch_entered.set()
+        assert allow_dispatch.wait(timeout=1)
+        return {"message_id": "sqlite-1"}
+
+    monkeypatch.setattr(offline_sync, "dispatch_action", dispatch)
+    body = offline_sync.SyncBatchIn.model_validate(
+        _batch(_action("concurrent", park_id=seed_park_with_tracker.id))
+    )
+
+    def synchronize_once():
+        start.wait(timeout=1)
+        with Session(db_engine) as db:
+            user = db.get(User, seed_mechanic.id)
+            return offline_sync.synchronize(db, user, body, revision_store=Revisions())
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(synchronize_once)
+        second = executor.submit(synchronize_once)
+        start.wait(timeout=1)
+        assert dispatch_entered.wait(timeout=1)
+        allow_dispatch.set()
+        first_result = first.result(timeout=2)
+        second_result = second.result(timeout=2)
+
+    with Session(db_engine) as db:
+        receipts = list(
+            db.scalars(
+                select(OfflineSyncReceipt).where(
+                    OfflineSyncReceipt.client_action_id == "concurrent"
+                )
+            )
+        )
+    assert calls == ["concurrent"]
+    assert first_result == second_result
+    assert len(receipts) == 1
 
 
 def test_same_client_action_with_different_payload_is_a_conflict(

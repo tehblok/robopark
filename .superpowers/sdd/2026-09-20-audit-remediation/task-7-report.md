@@ -81,3 +81,31 @@ Additional short verification:
 - New PostgreSQL selections remain `3 skipped` because the opt-in Docker gate
   is absent; Docker was not started.
 - Scoped Ruff/format, `sh -n scripts/verify.sh` and `git diff --check` passed.
+
+## Review remediation round 2
+
+- Replaced the request-session PostgreSQL advisory lock with a bounded
+  transaction-scoped `pg_try_advisory_xact_lock` held on a dedicated Engine
+  connection. This connection remains alive even if a request `Session` drops
+  and rebinds while a Tracker dependency yields; the transaction context
+  releases the lock deterministically and surfaces close/transaction errors.
+- Added `database_locks.py`, shared by offline receipts and media completion.
+  SQLite uses a ref-counted, prunable process keyed lock plus a single stable
+  nonblocking `flock` sidecar file for host-worker coordination. The single
+  sidecar prevents unbounded lock-file accumulation on constrained devices.
+- Media completion now uses that lock around the row read, staged-file rename
+  and commit. The existing PostgreSQL row lock remains an additional database
+  safeguard; the SQLite path now has equivalent cross-session serialization.
+- Added real separate-session/thread SQLite regressions for duplicate sync
+  dispatch/receipt and concurrent media completion. A focused fake test also
+  proves the PostgreSQL lock is on its dedicated transaction while the request
+  session rebinds.
+
+Round-2 short verification:
+
+- `tests/test_database_locks.py tests/test_offline_sync.py
+  tests/test_media_uploads.py tests/test_lifespan_jobs.py` — `15 passed`
+  (only the existing Starlette/httpx deprecation warning).
+- PostgreSQL concurrent-contract selection — `3 skipped` under the absent
+  opt-in gate; Docker was not started.
+- Scoped Ruff/format, `sh -n scripts/verify.sh` and `git diff --check` passed.
