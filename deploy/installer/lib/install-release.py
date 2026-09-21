@@ -160,7 +160,11 @@ def historical_resume(root, target, key_data, metadata):
     return True
 
 
-def install(root, bundle, resume_mode=None):
+def install(root, bundle, *modes):
+    if not set(modes) <= {'--resume-incomplete', '--repair-existing'} or len(modes) != len(set(modes)):
+        raise ValueError('invalid_arguments')
+    resume_mode = '--resume-incomplete' if '--resume-incomplete' in modes else None
+    repair_existing = '--repair-existing' in modes
     root, bundle = Path(root), Path(bundle).resolve()
     verifier = load_bootstrap_verifier(bundle)
     inspect_archive, unpack_archive = verifier.inspect_archive, verifier.unpack_archive
@@ -215,20 +219,38 @@ def install(root, bundle, resume_mode=None):
     releases.mkdir(parents=True, exist_ok=True, mode=0o755)
     if releases.is_symlink() or target.is_symlink():
         raise ValueError('invalid_release_path')
+    target_matches = False
     if target.exists():
         actual_files = {p.relative_to(target).as_posix() for p in target.rglob('*') if p.is_file() or p.is_symlink()}
-        if actual_files != set(meta.files) | set(authenticated_metadata):
+        target_matches = actual_files == set(meta.files) | set(authenticated_metadata)
+        if target_matches:
+            target_matches = all(
+                not (target / name).is_symlink() and (target / name).read_bytes() == expected
+                for name, expected in authenticated_metadata.items()
+            ) and all(
+                not (target / name).is_symlink()
+                and (target / name).is_file()
+                and hashlib.sha256((target / name).read_bytes()).hexdigest() == digest
+                for name, digest in meta.files.items()
+            )
+        repair_authorized = (
+            repair_existing
+            and current.is_symlink()
+            and current.resolve(strict=True) == target.resolve(strict=True)
+            and (
+                resumed_trust
+                or (
+                    resume_mode == '--resume-incomplete'
+                    and not trust_state.exists()
+                    and not trust_state.is_symlink()
+                )
+            )
+        )
+        if not target_matches and not repair_authorized:
             raise ValueError('existing_release_mismatch')
-        for name, expected in authenticated_metadata.items():
-            path = target / name
-            if path.is_symlink() or path.read_bytes() != expected:
-                raise ValueError('existing_release_mismatch')
-        for name, digest in meta.files.items():
-            path = target / name
-            if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-                raise ValueError('existing_release_mismatch')
-    else:
+    if not target.exists() or not target_matches:
         staging = Path(tempfile.mkdtemp(prefix='.install-', dir=releases))
+        backup = None
         try:
             unpack_archive(data, staging, expected_kind=KIND_RELEASE, public_key=key_data)
             for name, content in authenticated_metadata.items():
@@ -241,11 +263,20 @@ def install(root, bundle, resume_mode=None):
                     path.chmod(0o755 if executable else 0o644)
             staging.chmod(0o755)
             sync_tree(staging)
+            if target.exists():
+                backup = Path(tempfile.mkdtemp(prefix='.repair-old-', dir=releases))
+                backup.rmdir()
+                os.replace(target, backup)
             os.replace(staging, target)
             sync_directory(releases)
+            if backup is not None:
+                shutil.rmtree(backup)
         finally:
             if staging.exists():
                 shutil.rmtree(staging)
+            if backup is not None and backup.exists() and not target.exists():
+                os.replace(backup, target)
+                sync_directory(releases)
     current = opt / 'current'
     if current.is_symlink() and current.resolve() != target.resolve() and not bootstrap_recovery:
         # Re-running an old bootstrap is not an OTA or downgrade authorization.

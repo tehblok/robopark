@@ -84,6 +84,44 @@ class InstallerScenarios(unittest.TestCase):
             self.assertNotIn(secret, result.stdout + result.stderr)
         return result
 
+    def run_start_tty(self, args, answers, success=True, **env):
+        child, master = pty.fork()
+        if child == 0:
+            os.execve(
+                '/bin/sh',
+                ['sh', str(self.bundle / 'START.sh'), *args],
+                {**self.env, **env},
+            )
+        output = b''
+        pending_answers = list(answers)
+        status = None
+        deadline = time.monotonic() + 20
+        try:
+            while time.monotonic() < deadline:
+                if select.select([master], [], [], 0.1)[0]:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError:
+                        chunk = b''
+                    output += chunk
+                    if pending_answers and output.rstrip().endswith(b':'):
+                        os.write(master, (pending_answers.pop(0) + '\n').encode())
+                pid, status = os.waitpid(child, os.WNOHANG)
+                if pid:
+                    child = None
+                    break
+            if child is not None:
+                os.kill(child, 9)
+                _, status = os.waitpid(child, 0)
+                child = None
+                self.fail('START.sh interactive action timed out: ' + output.decode(errors='replace'))
+        finally:
+            os.close(master)
+        self.assertFalse(pending_answers, output.decode(errors='replace'))
+        code = os.waitstatus_to_exitcode(status)
+        self.assertEqual(code == 0, success, output.decode(errors='replace'))
+        return output.decode(errors='replace')
+
     def commands(self, name=None):
         path = self.root / 'commands.jsonl'
         values = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
@@ -152,6 +190,203 @@ class InstallerScenarios(unittest.TestCase):
         self.assertEqual(key_mount['source'], str(self.root / 'etc/robopark/release-public-key.pem'))
         self.assertEqual(Path(key_mount['source']).read_bytes(), (self.bundle / 'keys/release-public-key.pem').read_bytes())
         self.assertEqual(stat.S_IMODE(Path(key_mount['source']).stat().st_mode), 0o644)
+
+    def test_start_status_reports_host_install_and_bundle_versions_without_mutation(self):
+        result = self.run_start('status')
+        self.assertIn('armbian', result.stdout)
+        self.assertIn('arm64', result.stdout)
+        self.assertIn('не установлена', result.stdout)
+        self.assertIn('Версия в архиве: 1.0.0', result.stdout)
+        self.assertFalse(self.commands('apt-get'))
+        self.run_installer()
+        before = len(self.commands())
+
+        result = self.run_start('status')
+
+        self.assertIn('установлена', result.stdout)
+        self.assertIn('Установленная версия: 1.0.0', result.stdout)
+        self.assertIn('Совпадает с архивом', result.stdout)
+        self.assertEqual(len(self.commands()), before + 1)  # root check (`id`) only
+
+    def test_explicit_install_over_older_release_routes_through_updater(self):
+        self.run_installer()
+        (self.source / 'VERSION').write_text('1.0.1\n')
+        for name in (
+            'apps/api/Dockerfile', 'apps/api/pyproject.toml', 'apps/api/uv.lock',
+            'apps/web/Dockerfile', 'apps/web/package.json', 'apps/web/package-lock.json',
+            'deploy/Dockerfile.api-tests', 'scripts/verify.sh',
+        ):
+            target = self.source / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(REPO / name, target)
+        self.write_release('1.0.1')
+
+        result = self.run_start('install')
+
+        self.assertIn('Обнаружена версия 1.0.0', result.stdout)
+        self.assertIn('Локальное обновление завершено', result.stdout)
+        self.assertEqual((self.root / 'opt/robopark/current/VERSION').read_text(), '1.0.1\n')
+
+    def test_reinstall_same_version_restores_missing_host_tools_without_data_loss(self):
+        self.run_installer()
+        data = self.root / 'var/lib/robopark/data/operator-state.txt'
+        data.write_text('keep-me')
+        (self.root / 'opt/robopark/host-tools').unlink()
+
+        result = self.run_start('reinstall')
+
+        self.assertIn('Переустанавливаю системные файлы версии 1.0.0', result.stdout)
+        self.assertTrue((self.root / 'opt/robopark/host-tools/robopark').is_file())
+        self.assertEqual(data.read_text(), 'keep-me')
+
+    def test_reinstall_same_version_restores_corrupted_release_file(self):
+        self.run_installer()
+        current = (self.root / 'opt/robopark/current').resolve()
+        damaged = current / 'run.sh'
+        damaged.unlink()
+
+        result = self.run_start('reinstall')
+
+        self.assertIn('Переустанавливаю системные файлы', result.stdout)
+        self.assertEqual(damaged.read_text(), '#!/bin/sh\necho release\n')
+
+    def test_update_refuses_implicit_downgrade_before_host_mutation(self):
+        (self.source / 'VERSION').write_text('1.0.1\n')
+        self.write_release('1.0.1')
+        self.run_installer()
+        (self.source / 'VERSION').write_text('1.0.0\n')
+        self.write_release('1.0.0')
+        before = len(self.commands())
+
+        result = self.run_start('update', success=False)
+
+        self.assertIn('Откат версии запрещён', result.stderr)
+        added = self.commands()[before:]
+        self.assertFalse([call for call in added if call['name'] in {'apt-get', 'docker', 'systemctl'}])
+
+    def test_incomplete_install_cannot_bypass_downgrade_refusal(self):
+        (self.source / 'VERSION').write_text('1.0.1\n')
+        self.write_release('1.0.1')
+        self.run_installer()
+        state = self.root / 'var/lib/robopark/ops/state/install.json'
+        state.write_text('{"phase":"services","status":"failed","packages_complete":true}\n')
+        (self.source / 'VERSION').write_text('1.0.0\n')
+        self.write_release('1.0.0')
+        before = len(self.commands())
+
+        result = self.run_start('reinstall', success=False)
+
+        self.assertIn('Откат версии запрещён', result.stderr)
+        self.assertEqual((self.root / 'opt/robopark/current/VERSION').read_text(), '1.0.1\n')
+        added = self.commands()[before:]
+        self.assertFalse([call for call in added if call['name'] in {'apt-get', 'docker', 'systemctl'}])
+
+    def test_repair_recovers_damaged_installation(self):
+        self.run_installer()
+        (self.root / 'opt/robopark/host-tools').unlink()
+
+        result = self.run_start('repair')
+
+        self.assertIn('повреждена', result.stdout)
+        self.assertTrue((self.root / 'opt/robopark/host-tools/robopark').is_file())
+
+    def test_remove_accepts_damaged_or_data_only_state_and_preserves_data(self):
+        self.run_installer()
+        data = self.root / 'var/lib/robopark/data/operator-state.txt'
+        data.write_text('keep-me')
+        (self.root / 'opt/robopark/host-tools').unlink()
+
+        output = self.run_start_tty(['remove'], ['УДАЛИТЬ'])
+
+        self.assertIn('Локальные данные сохранены', output)
+        self.assertFalse((self.root / 'opt/robopark').exists())
+        self.assertEqual(data.read_text(), 'keep-me')
+        self.assertTrue(any(
+            call['args'] == [
+                'rm', '--force', 'robopark-web-1', 'robopark-api-1', 'robopark-db-1'
+            ]
+            for call in self.commands('docker')
+        ))
+        result = self.run_start('status')
+        self.assertIn('удалена, данные сохранены', result.stdout)
+
+    def test_purge_removes_exact_data_root_logs_and_postgres_volume(self):
+        self.run_installer()
+        logs = self.root / 'var/log/robopark'
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / 'host.log').write_text('log')
+
+        output = self.run_start_tty(
+            ['remove', '--purge-data'],
+            ['УДАЛИТЬ', 'УДАЛИТЬ ДАННЫЕ'],
+        )
+
+        self.assertIn('локальные данные удалены', output.lower())
+        self.assertFalse((self.root / 'var/lib/robopark').exists())
+        self.assertFalse(logs.exists())
+        self.assertTrue(any(
+            call['args'] == ['volume', 'rm', 'robopark_robopark_postgres']
+            for call in self.commands('docker')
+        ))
+
+    def test_remove_refuses_active_host_lock_or_pending_operation_before_prompt(self):
+        self.run_installer()
+        before = len(self.commands())
+        lock_path = self.root / 'run/lock/robopark/host.lock'
+        with lock_path.open('a') as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            output = self.run_start_tty(['remove'], [], success=False)
+        self.assertIn('host_busy', output)
+        self.assertTrue((self.root / 'opt/robopark').exists())
+        added = self.commands()[before:]
+        self.assertFalse([call for call in added if call['name'] in {'docker', 'systemctl'}])
+
+        pending = self.root / 'var/lib/robopark/ops/state/command-request.json'
+        pending.write_text('{"kind":"update"}\n')
+        output = self.run_start_tty(['remove'], [], success=False)
+        self.assertIn('host_busy', output)
+        self.assertTrue((self.root / 'opt/robopark').exists())
+
+    def test_remove_rechecks_pending_operation_after_quiescing(self):
+        self.run_installer()
+
+        output = self.run_start_tty(
+            ['remove'], ['УДАЛИТЬ'], success=False,
+            PUBLISH_CLAIM_ON_SYSTEMCTL_STOP='1',
+        )
+
+        self.assertIn('host_busy', output)
+        self.assertTrue((self.root / 'opt/robopark').exists())
+        self.assertTrue(
+            (self.root / 'var/lib/robopark/ops/state/update-worker-request.json').is_file()
+        )
+
+    def test_purge_refuses_symlinked_root_before_prompt(self):
+        self.run_installer()
+        alias = self.base / 'root-alias'
+        alias.symlink_to(self.root, target_is_directory=True)
+
+        output = self.run_start_tty(
+            ['remove', '--purge-data'], [], success=False, ROBOPARK_ROOT=str(alias)
+        )
+
+        self.assertIn('unsafe_data_root', output)
+        self.assertTrue((self.root / 'var/lib/robopark').exists())
+
+    def test_purge_keeps_data_and_fails_if_existing_database_volume_cannot_be_removed(self):
+        self.run_installer()
+        data = self.root / 'var/lib/robopark/data/operator-state.txt'
+        data.write_text('keep-me')
+
+        output = self.run_start_tty(
+            ['remove', '--purge-data'],
+            ['УДАЛИТЬ', 'УДАЛИТЬ ДАННЫЕ'],
+            success=False,
+            VOLUME_RM_FAIL='1',
+        )
+
+        self.assertIn('database_volume_removal_failed', output)
+        self.assertEqual(data.read_text(), 'keep-me')
 
     def test_doctor_output_directories_are_provisioned_root_only(self):
         self.run_installer()

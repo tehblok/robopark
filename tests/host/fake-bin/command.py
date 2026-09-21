@@ -96,6 +96,8 @@ elif name == 'docker':
             sys.exit(1)
     if args[:2] == ['image', 'inspect']:
         print('sha256:' + ('1' if 'api' in args[-1] else '2') * 64)
+    elif args[:2] == ['volume', 'rm'] and os.environ.get('VOLUME_RM_FAIL') == '1':
+        sys.exit(1)
     elif 'pg_dump' in args:
         output = next(arg for arg in args if arg.startswith('--file='))
         relative = output.removeprefix('--file=/host-rollbacks/')

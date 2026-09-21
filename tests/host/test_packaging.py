@@ -339,6 +339,7 @@ def test_installer_is_reproducible_self_contained_and_does_not_embed_private_key
             "START.sh",
             "install.sh",
             "lib/install-release.py",
+            "lib/lifecycle.py",
             "lib/local-update.py",
             "payload/robopark-release.zip",
             "keys/release-public-key.pem",

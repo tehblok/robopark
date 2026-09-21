@@ -13,10 +13,12 @@ MODE=interactive
 CONFIG_FILE=
 RESUME=0
 CLEAN_REINSTALL=0
+REPAIR_EXISTING=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --resume) RESUME=1 ;;
         --clean-reinstall) CLEAN_REINSTALL=1 ;;
+        --repair-existing) REPAIR_EXISTING=1 ;;
         --non-interactive)
             [ "$#" -ge 2 ] || die invalid_arguments
             MODE=non-interactive
@@ -27,7 +29,7 @@ while [ "$#" -gt 0 ]; do
             MODE=interactive
             CONFIG_FILE=$2
             shift ;;
-        --help) printf '%s\n' './START.sh или sudo ./install.sh [--resume] [--clean-reinstall] [--defaults CONFIG_FILE] [--non-interactive CONFIG_FILE]'; exit 0 ;;
+        --help) printf '%s\n' './START.sh или sudo ./install.sh [--resume] [--repair-existing] [--clean-reinstall] [--defaults CONFIG_FILE] [--non-interactive CONFIG_FILE]'; exit 0 ;;
         *) die invalid_arguments ;;
     esac
     shift
