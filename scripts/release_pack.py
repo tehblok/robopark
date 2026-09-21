@@ -134,6 +134,7 @@ def excluded(relative):
     ) and not (name.endswith(".env.example") or name == ".env.example"):
         return True
     patterns = (
+        ".ds_store",
         "*.pyc",
         "*.pyo",
         "*.log",
@@ -397,7 +398,7 @@ def release_metadata(args, files):
 
 
 def require_acceptance(args):
-    if not args.repository:
+    if not args.repository or getattr(args, "candidate", False):
         return None
     path = getattr(args, "acceptance", None)
     if path is None:
@@ -412,6 +413,8 @@ def require_acceptance(args):
 
 def build_release(args):
     root = args.root.absolute()
+    if getattr(args, "candidate", False) and "-" not in args.version:
+        raise ValueError("candidate_requires_prerelease")
     acceptance = require_acceptance(args)
     forbidden = (
         [root / p for p in ("apps", "deploy", "scripts")] if args.repository else [root]
@@ -579,6 +582,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--installer", action="store_true")
     parser.add_argument("--repository", action="store_true")
+    parser.add_argument(
+        "--candidate",
+        action="store_true",
+        help="package clean repository sources without release evidence; prerelease versions only",
+    )
     parser.add_argument("--root", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--version")
@@ -599,6 +607,10 @@ def main():
     parser.add_argument("--public-key", type=Path)
     parser.add_argument("--preset", type=Path)
     args = parser.parse_args()
+    if args.candidate and (args.installer or not args.repository):
+        parser.error(
+            "--candidate requires --repository and cannot package an installer"
+        )
     if args.installer:
         if args.release is None or args.public_key is None:
             parser.error("--release and --public-key are required")

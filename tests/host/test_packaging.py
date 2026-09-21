@@ -20,7 +20,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def run(*args, **kwargs):
-    return subprocess.run([str(a) for a in args], capture_output=True, text=True, **kwargs)
+    return subprocess.run(
+        [str(a) for a in args], capture_output=True, text=True, **kwargs
+    )
 
 
 @pytest.fixture
@@ -97,7 +99,9 @@ def verify(public, output, script=None):
     )
 
 
-def test_release_reproducible_with_normalized_zip_and_standalone_verifier(packaging, tmp_path):
+def test_release_reproducible_with_normalized_zip_and_standalone_verifier(
+    packaging, tmp_path
+):
     a, b = tmp_path / "a/release.zip", tmp_path / "b/release.zip"
     assert pack(packaging, a).returncode == 0
     os.utime(packaging[0] / "apps/api/main.py", (1800000000, 1800000000))
@@ -108,7 +112,9 @@ def test_release_reproducible_with_normalized_zip_and_standalone_verifier(packag
     with zipfile.ZipFile(a) as archive:
         assert archive.namelist() == sorted(archive.namelist())
         assert {i.date_time for i in archive.infolist()} == {(2023, 11, 14, 22, 13, 20)}
-        assert all(stat.S_IMODE(i.external_attr >> 16) == 0o644 for i in archive.infolist())
+        assert all(
+            stat.S_IMODE(i.external_attr >> 16) == 0o644 for i in archive.infolist()
+        )
     standalone = tmp_path / "verify.py"
     shutil.copyfile(ROOT / "scripts/verify-artifact.py", standalone)
     result = verify(packaging[2], a, standalone)
@@ -166,7 +172,9 @@ def test_release_rejects_public_key_that_disagrees_with_signer(packaging, tmp_pa
     public.write_bytes(
         Ed25519PrivateKey.generate()
         .public_key()
-        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
     )
     output = tmp_path / "release.zip"
     assert pack(packaging, output).returncode != 0
@@ -234,7 +242,9 @@ def test_release_refuses_unsafe_inputs_before_writing(packaging, tmp_path, kind)
         "wrong_key",
     ],
 )
-def test_verifier_rejects_tampering_even_with_valid_outer_signature(packaging, tmp_path, mutation):
+def test_verifier_rejects_tampering_even_with_valid_outer_signature(
+    packaging, tmp_path, mutation
+):
     output = tmp_path / "release.zip"
     assert pack(packaging, output).returncode == 0
     public, key = packaging[2:4]
@@ -261,7 +271,9 @@ def test_verifier_rejects_tampering_even_with_valid_outer_signature(packaging, t
                     if mutation == "duplicate"
                     else __import__("contextlib").nullcontext()
                 ):
-                    new.writestr(name, bytes(1024 * 1024) if mutation == "oversize" else b"evil")
+                    new.writestr(
+                        name, bytes(1024 * 1024) if mutation == "oversize" else b"evil"
+                    )
         output.write_bytes(data.getvalue())
         digest = hashlib.sha256(data.getvalue()).hexdigest()
         Path(str(output) + ".sig").write_bytes(key.sign(data.getvalue()))
@@ -279,7 +291,8 @@ def test_verifier_rejects_tampering_even_with_valid_outer_signature(packaging, t
             Ed25519PrivateKey.generate()
             .public_key()
             .public_bytes(
-                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
             )
         )
     else:
@@ -339,7 +352,13 @@ def test_installer_is_reproducible_self_contained_and_does_not_embed_private_key
         assert expected <= set(names)
         for member in archive:
             assert member.isfile()
-            assert (member.uid, member.gid, member.uname, member.gname, member.mtime) == (
+            assert (
+                member.uid,
+                member.gid,
+                member.uname,
+                member.gname,
+                member.mtime,
+            ) == (
                 0,
                 0,
                 "",
@@ -408,20 +427,27 @@ def test_version_sources_match_authoritative_version():
     import tomllib
 
     version = (ROOT / "VERSION").read_text().strip()
-    assert json.loads((ROOT / "apps/web/package.json").read_text())["version"] == version
+    assert (
+        json.loads((ROOT / "apps/web/package.json").read_text())["version"] == version
+    )
     lock = json.loads((ROOT / "apps/web/package-lock.json").read_text())
     assert lock["version"] == lock["packages"][""]["version"] == version
     assert (
-        tomllib.loads((ROOT / "apps/api/pyproject.toml").read_text())["project"]["version"]
+        tomllib.loads((ROOT / "apps/api/pyproject.toml").read_text())["project"][
+            "version"
+        ]
         == version
     )
-    context = ast.parse((ROOT / "apps/api/src/robopark_api/services/ops/context.py").read_text())
+    context = ast.parse(
+        (ROOT / "apps/api/src/robopark_api/services/ops/context.py").read_text()
+    )
     values = [
         ast.literal_eval(node.value)
         for node in context.body
         if isinstance(node, ast.Assign)
         and any(
-            isinstance(target, ast.Name) and target.id == "APP_VERSION" for target in node.targets
+            isinstance(target, ast.Name) and target.id == "APP_VERSION"
+            for target in node.targets
         )
     ]
     assert values == [version]
@@ -436,12 +462,18 @@ def test_release_tag_consistency(tag_kind):
         "missing_prefix": version,
         "injection": f"v{version};echo evil",
     }[tag_kind]
-    result = run(sys.executable, ROOT / "scripts/check-release-version.py", "--tag", tag)
+    result = run(
+        sys.executable, ROOT / "scripts/check-release-version.py", "--tag", tag
+    )
     assert (result.returncode == 0) == (tag_kind == "valid")
 
 
-@pytest.mark.parametrize("secret", ["valid", "missing", "invalid", "wrong_key", "ed448"])
-def test_ci_key_is_ephemeral_private_and_matches_committed_trust(packaging, tmp_path, secret):
+@pytest.mark.parametrize(
+    "secret", ["valid", "missing", "invalid", "wrong_key", "ed448"]
+)
+def test_ci_key_is_ephemeral_private_and_matches_committed_trust(
+    packaging, tmp_path, secret
+):
     import base64
 
     from cryptography.hazmat.primitives.asymmetric.ed448 import Ed448PrivateKey
@@ -518,8 +550,81 @@ def test_repository_packer_refuses_symlinked_source_parent(packaging, tmp_path):
     assert not output.exists()
 
 
+def test_repository_candidate_is_clean_and_prerelease_only(packaging, tmp_path):
+    source = packaging[0]
+    (source / "apps/web").mkdir(parents=True)
+    (source / "apps/web/app.ts").write_text("export {}\n")
+    (source / "apps/api/tests").mkdir()
+    (source / "apps/api/tests/old-test.py").write_text("raise RuntimeError\n")
+    (source / "scripts").mkdir()
+    (source / "scripts/run.sh").write_text("#!/bin/sh\n")
+    (source / "artifacts/old").mkdir(parents=True)
+    (source / "artifacts/old/release.zip").write_bytes(b"old")
+    (source / "apps/api/.DS_Store").write_bytes(b"junk")
+    (source / "deploy/support-policy.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "stable_support_months": 6,
+                "lts_support_months": 24,
+                "channels": ["stable", "rc", "manual"],
+                "lts_lines": ["1.0"],
+            }
+        )
+    )
+    (source / "deploy/migration-policy.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "target_head": "initial",
+                "known_heads": ["initial"],
+                "bridge_before": "1.0.0",
+                "bridge_version": "1.0.0",
+                "reversible": False,
+                "recovery": "snapshot",
+            }
+        )
+    )
+    output = tmp_path / "candidate.zip"
+    command = [
+        sys.executable,
+        ROOT / "scripts/release_pack.py",
+        "--repository",
+        "--candidate",
+        "--root",
+        source,
+        "--output",
+        output,
+        "--version",
+        "1.2.3-rc.1",
+        "--git-sha",
+        "a" * 40,
+        "--signing-key",
+        packaging[1],
+    ]
+
+    result = run(*command, env=packaging[4])
+
+    assert result.returncode == 0, result.stderr
+    with zipfile.ZipFile(output) as archive:
+        names = archive.namelist()
+    assert "apps/web/app.ts" in names
+    assert not any("artifacts/" in name for name in names)
+    assert not any("apps/api/tests/" in name for name in names)
+    assert not any(".DS_Store" in name for name in names)
+
+    command[command.index("1.2.3-rc.1")] = "1.2.3"
+    stable = tmp_path / "stable.zip"
+    command[command.index(output)] = stable
+    result = run(*command, env=packaging[4])
+    assert result.returncode != 0
+    assert not stable.exists()
+
+
 @pytest.mark.parametrize("kind", ["ed448", "permissions", "disguised_private"])
-def test_packer_refuses_wrong_algorithm_or_exposed_private_key(packaging, tmp_path, kind):
+def test_packer_refuses_wrong_algorithm_or_exposed_private_key(
+    packaging, tmp_path, kind
+):
     from cryptography.hazmat.primitives.asymmetric.ed448 import Ed448PrivateKey
 
     if kind == "ed448":
@@ -540,7 +645,9 @@ def test_packer_refuses_wrong_algorithm_or_exposed_private_key(packaging, tmp_pa
 
 
 @pytest.mark.parametrize("kind", ["detached", "metadata", "zip_oversize", "fifo"])
-def test_verifier_bounds_reads_before_loading_untrusted_input(packaging, tmp_path, kind):
+def test_verifier_bounds_reads_before_loading_untrusted_input(
+    packaging, tmp_path, kind
+):
     output = tmp_path / "release.zip"
     assert pack(packaging, output).returncode == 0
     if kind == "detached":
@@ -573,7 +680,9 @@ def test_release_workflow_enforces_order_trust_and_cleanup():
     job = workflow["jobs"]["release"]
     steps = job["steps"]
     actions = [s["uses"] for s in steps if "uses" in s]
-    assert actions and all(re.fullmatch(r"[^@]+@[a-f0-9]{40}", action) for action in actions)
+    assert actions and all(
+        re.fullmatch(r"[^@]+@[a-f0-9]{40}", action) for action in actions
+    )
     names = [s.get("name", "") for s in steps]
     gates = [
         "Check tag and version sources",
@@ -585,22 +694,31 @@ def test_release_workflow_enforces_order_trust_and_cleanup():
         "Publish verified assets",
         "Delete ephemeral signing material",
     ]
-    assert [names.index(name) for name in gates] == sorted(names.index(name) for name in gates)
+    assert [names.index(name) for name in gates] == sorted(
+        names.index(name) for name in gates
+    )
     assert all(not s.get("continue-on-error") for s in steps)
-    pwa_gate = next(step for step in steps if step.get("name") == "Production PWA smoke gate")
+    pwa_gate = next(
+        step for step in steps if step.get("name") == "Production PWA smoke gate"
+    )
     assert pwa_gate["working-directory"] == "apps/web"
     assert pwa_gate["run"] == "npm run test:e2e:pwa:linux"
     assert steps[-1]["if"] == "always()"
     assert "rm -f" in steps[-1]["run"]
     secret_steps = [s for s in steps if "secrets." in str(s)]
-    assert len(secret_steps) == 1 and secret_steps[0]["name"] == "Prepare ephemeral signing key"
+    assert (
+        len(secret_steps) == 1
+        and secret_steps[0]["name"] == "Prepare ephemeral signing key"
+    )
     assert "environment" in job
 
 
 @pytest.mark.parametrize(
     "mutation", ["bootstrap", "alias", "duplicate", "symlink", "inner_release"]
 )
-def test_installer_verifier_rejects_unsafe_or_tampered_bundle(packaging, tmp_path, mutation):
+def test_installer_verifier_rejects_unsafe_or_tampered_bundle(
+    packaging, tmp_path, mutation
+):
     release = tmp_path / "release.zip"
     assert pack(packaging, release).returncode == 0
     output = tmp_path / "installer.tar.gz"
@@ -624,12 +742,17 @@ def test_installer_verifier_rejects_unsafe_or_tampered_bundle(packaging, tmp_pat
             if mutation == "bootstrap" and member.name == "install.sh":
                 content = b"evil script\n"
                 member.size = len(content)
-            if mutation == "inner_release" and member.name == "payload/robopark-release.zip":
+            if (
+                mutation == "inner_release"
+                and member.name == "payload/robopark-release.zip"
+            ):
                 content = b"not a signed release"
                 member.size = len(content)
             new.addfile(member, io.BytesIO(content))
         if mutation in {"alias", "duplicate", "symlink"}:
-            member = tarfile.TarInfo("lib/../evil" if mutation == "alias" else "install.sh")
+            member = tarfile.TarInfo(
+                "lib/../evil" if mutation == "alias" else "install.sh"
+            )
             if mutation == "symlink":
                 member.name = "lib/evil"
                 member.type = tarfile.SYMTYPE
@@ -649,7 +772,8 @@ def test_installer_verifier_rejects_unsafe_or_tampered_bundle(packaging, tmp_pat
 
 
 @pytest.mark.parametrize(
-    "kind,key_name", [("release", "private"), ("installer", "private"), ("installer", "public")]
+    "kind,key_name",
+    [("release", "private"), ("installer", "private"), ("installer", "public")],
 )
 @pytest.mark.parametrize("suffix", ["", ".sig", ".sha256", ".json"])
 @pytest.mark.parametrize("alias", ["direct", "parent_symlink", "hardlink"])
@@ -699,7 +823,9 @@ def test_all_outputs_reject_key_collisions_before_first_write(
     for extension in ("", ".sig", ".sha256", ".json"):
         candidate = Path(str(output) + extension)
         if extension != suffix:
-            assert not candidate.exists(), "reject before publishing any artifact or sidecar"
+            assert not candidate.exists(), (
+                "reject before publishing any artifact or sidecar"
+            )
 
 
 @pytest.fixture
@@ -716,7 +842,9 @@ def installer_source_copy(tmp_path):
         ignore=shutil.ignore_patterns("__pycache__"),
     )
     shutil.copytree(
-        ROOT / "apps/api/src", root / "apps/api/src", ignore=shutil.ignore_patterns("__pycache__")
+        ROOT / "apps/api/src",
+        root / "apps/api/src",
+        ignore=shutil.ignore_patterns("__pycache__"),
     )
     return root
 
@@ -771,7 +899,11 @@ def test_installer_rejects_symlink_components_in_required_sources(
 def test_standalone_verifier_matches_production_zip_member_limit(
     packaging, tmp_path, members, accepted
 ):
-    from robopark_api.services.ops.archives import KIND_RELEASE, ArchiveError, inspect_archive
+    from robopark_api.services.ops.archives import (
+        KIND_RELEASE,
+        ArchiveError,
+        inspect_archive,
+    )
 
     payload = b"x"
     names = [f"files/{i:05d}" for i in range(members - 2)]
@@ -787,7 +919,8 @@ def test_standalone_verifier_matches_production_zip_member_limit(
         "created_at": "2023-11-14T22:13:20Z",
         "update_notes": "",
         "files": {
-            name: {"size": 1, "sha256": hashlib.sha256(payload).hexdigest()} for name in names
+            name: {"size": 1, "sha256": hashlib.sha256(payload).hexdigest()}
+            for name in names
         },
     }
     canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
@@ -813,10 +946,14 @@ def test_standalone_verifier_matches_production_zip_member_limit(
     }
     Path(str(output) + ".json").write_text(json.dumps(metadata))
     if accepted:
-        inspect_archive(raw, expected_kind=KIND_RELEASE, public_key=packaging[2].read_bytes())
+        inspect_archive(
+            raw, expected_kind=KIND_RELEASE, public_key=packaging[2].read_bytes()
+        )
     else:
         with pytest.raises(ArchiveError, match="too_many_files"):
-            inspect_archive(raw, expected_kind=KIND_RELEASE, public_key=packaging[2].read_bytes())
+            inspect_archive(
+                raw, expected_kind=KIND_RELEASE, public_key=packaging[2].read_bytes()
+            )
     assert (verify(packaging[2], output).returncode == 0) is accepted
 
 
