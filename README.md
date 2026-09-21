@@ -1,6 +1,6 @@
 # Robopark
 
-Текущая версия исходников: **0.1.45**. Production-профиль и чистый
+Текущая версия исходников: **0.2.0-rc.1**. Production-профиль и чистый
 установщик используют **PostgreSQL 17**. Для Armbian/Ubuntu смотрите
 [руководство оператора](deploy/INSTALL-ARMBIAN-RU.md) и
 [приёмку 200 пользователей](deploy/CAPACITY-RU.md). Полные API/web/PostgreSQL,

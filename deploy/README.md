@@ -1,6 +1,6 @@
 # Deployment: host + Tuna
 
-Для чистого установочного архива **0.1.45** с PostgreSQL 17 на Armbian 26/Ubuntu 22 ARM64 используйте [руководство оператора](INSTALL-ARMBIAN-RU.md) и [приёмку 200 пользователей](CAPACITY-RU.md). Host-тесты проверяют install/update-over-install; реальная проверка systemd/Docker/Tuna на целевом устройстве остаётся отдельным deployment gate. Ниже сохранён ручной Compose-путь.
+Для чистого установочного архива **0.2.0-rc.1** с PostgreSQL 17 на Armbian 26/Ubuntu 22 ARM64 используйте [руководство оператора](INSTALL-ARMBIAN-RU.md) и [приёмку 200 пользователей](CAPACITY-RU.md). Host-тесты проверяют install/update-over-install; реальная проверка systemd/Docker/Tuna на целевом устройстве остаётся отдельным deployment gate. Ниже сохранён ручной Compose-путь.
 
 Для Armbian 26 с 8 ГБ, 200 пользователей и переноса на Ubuntu с 32 ГБ:
 [пошаговая инструкция общего сервера](SHARED-HOST.md).
@@ -220,7 +220,7 @@ Update API dependencies deliberately with `cd apps/api && uv lock && uv lock
 --check`, then run the canonical full gate. Base-image digest updates are also
 deliberate changes and require the full gate to pass before release.
 
-For the current 0.1.45 source tree only focused module tests and static checks
+For the current 0.2.0-rc.1 source tree only focused module tests and static checks
 have been run. Task 9 passed a short production-PWA smoke on the application
 revision immediately before the documentation updates: a controlling v1 worker
 was upgraded through a waiting v2 worker and safe activation. That focused result
