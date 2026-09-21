@@ -31,6 +31,9 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       # The default gate includes unprivileged host/installer tests.
+      - name: Verify repository governance
+        run: python3 scripts/check-tech-debt.py && python3 scripts/check-module-boundaries.py
+
       - name: Verify repository
         run: ./scripts/verify.sh
 
