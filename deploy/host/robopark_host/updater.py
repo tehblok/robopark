@@ -1365,7 +1365,6 @@ def _complete(paths, journal, runner):
                     pass
     if not _wait_public_ready(paths, runner, timeout=PUBLIC_READY_TIMEOUT):
         publication_degraded = True
-    _publish_release_lifecycle(paths, manifest)
     phase("publication_checked", publication_degraded=publication_degraded)
     # Persist the irreversible boundary BEFORE opening writes. Recovery must never
     # restore an old snapshot after this record, even if the unlink was interrupted.
@@ -1390,6 +1389,12 @@ def _success_housekeeping(paths, journal, runner):
         {"successful": True},
     )
     _phase(paths, journal, "succeeded")
+    current = _release_target(paths, paths.current)
+    manifest = verify_directory(current, directory_key(paths, current))
+    try:
+        _publish_release_lifecycle(paths, manifest)
+    except (OSError, ReleaseError, TypeError, UnicodeError, ValueError):
+        _phase(paths, journal, "succeeded", publication_degraded=True)
     _cleanup_staging(paths, journal, runner)
     _retention(paths, journal)
     cleanup_images(paths, runner)

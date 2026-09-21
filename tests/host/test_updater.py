@@ -424,6 +424,28 @@ def test_release_lifecycle_publishes_support_window_and_bridge(host):
     }
 
 
+def test_failed_trust_activation_never_publishes_candidate_lifecycle(host, monkeypatch):
+    from robopark_host import updater
+
+    result = apply_release(host.request(), host.paths, host.runner)
+    assert result.state == "awaiting_reconciliation"
+    monkeypatch.setattr(
+        updater,
+        "activate_trust",
+        lambda *_args: (_ for _ in ()).throw(ReleaseError("trust_activation_failed")),
+    )
+
+    result = reconcile_after_exit(host.paths, host.runner)
+
+    assert result.state == "previous_restored"
+    assert host.paths.current.resolve().name == "1.0.0"
+    lifecycle = host.paths.ops / "public/release-status.json"
+    assert (
+        not lifecycle.exists()
+        or json.loads(lifecycle.read_text())["version"] == "1.0.0"
+    )
+
+
 def test_failed_pre_cutover_snapshot_records_failed_backup(host, monkeypatch):
     from robopark_host import updater
 
