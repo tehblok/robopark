@@ -44,7 +44,7 @@
 - Test: `tests/host/test_packaging.py`
 
 **Interfaces:**
-- Produces: `ReleaseVersion.parse(value: str) -> ReleaseVersion`, `ReleaseVersion.channel -> Literal["stable", "rc"]`.
+- Produces: `ReleaseVersion.parse(value: str) -> ReleaseVersion`, `ReleaseVersion.stage -> Literal["stable", "rc"]`.
 - Produces: `BuildIdentity(version: str, git_sha: str, migration_head: str, build_id: str)`.
 - Produces CLI: `python scripts/set-release-version.py 0.2.0-rc.1 --check|--write`.
 
@@ -52,8 +52,8 @@
 
 ```python
 def test_rc_channel_and_stable_channel():
-    assert ReleaseVersion.parse("0.2.0-rc.1").channel == "rc"
-    assert ReleaseVersion.parse("1.0.0").channel == "stable"
+    assert ReleaseVersion.parse("0.2.0-rc.1").stage == "rc"
+    assert ReleaseVersion.parse("1.0.0").stage == "stable"
 
 def test_set_version_updates_every_shipped_source(tmp_path, repository_copy):
     run_set_version(repository_copy, "0.2.0-rc.1")
@@ -73,7 +73,7 @@ Expected: FAIL because `robopark_version.py` and the synchronization CLI do not 
 class ReleaseVersion:
     raw: str
     precedence: tuple
-    channel: Literal["stable", "rc"]
+    stage: Literal["stable", "rc"]
 
     @classmethod
     def parse(cls, value: str) -> "ReleaseVersion":
@@ -116,15 +116,16 @@ git commit -m "feat(release): centralize version identity"
 **Interfaces:**
 - Consumes: `ReleaseVersion` from Task 1.
 - Produces: `SupportPolicy.from_file(path) -> SupportPolicy`.
-- Produces manifest v3 fields: `eligible_channels`, `built_at`, `supported_until`, `build_id`, `artifact_digest`, `upgrade_policy`.
+- Produces manifest v3 fields: `eligible_channels`, `built_at`, `support_class`, `support_months`, `build_id`, `content_digest`, `upgrade_policy`.
 - Backward read support remains for manifest v2; new artifacts are v3 only.
 
 - [ ] **Step 1: Add failing policy and manifest tests**
 
 ```python
 def test_lts_policy_is_24_months(policy):
-    release = policy.release("1.0.0", released_at="2026-11-01T00:00:00Z", lts=True)
-    assert release.supported_until == "2028-11-01T00:00:00Z"
+    release = policy.release("1.0.0", lts=True)
+    assert release.support_class == "lts"
+    assert release.support_months == 24
 
 def test_stable_manifest_rejects_prerelease_channel(manifest_v3):
     manifest_v3.update(app_version="1.0.0-rc.1", eligible_channels=["stable"])
@@ -134,7 +135,7 @@ def test_stable_manifest_rejects_prerelease_channel(manifest_v3):
 
 - [ ] **Step 2: Confirm tests fail on the current v2 contract**
 
-Run: `uv run --project apps/api --frozen --extra dev pytest -q tests/host/test_release_metadata.py tests/host/test_packaging.py -k 'policy or manifest_v3 or supported_until'`
+Run: `uv run --project apps/api --frozen --extra dev pytest -q tests/host/test_release_metadata.py tests/host/test_packaging.py -k 'policy or manifest_v3 or support_months'`
 
 - [ ] **Step 3: Implement the policy schema and v2/v3 readers**
 
@@ -150,8 +151,9 @@ Run: `uv run --project apps/api --frozen --extra dev pytest -q tests/host/test_r
 }
 ```
 
-`artifact_digest` is computed from the finished unsigned release payload content
-before detached artifact metadata is written. `build_id` is deterministic from
+`content_digest` is computed from the canonical ordered source-file entries, excluding
+the generated outer manifest. The final archive SHA-256 is written only to detached
+metadata/evidence after the archive exists. `build_id` is deterministic from
 `version + git_sha + migration_head`. A prerelease may only declare `rc`; a stable
 SemVer may declare `rc`, `stable`, or both. The active publication channel is external
 catalog state and is not rewritten inside the artifact.
@@ -288,7 +290,7 @@ git commit -m "feat(updater): plan compatible bridge upgrades"
 
 **Interfaces:**
 - Produces API `GET /api/admin/ops/release-status` for admin/royal.
-- Produces `ReleaseStatusOut` with version, build identity, channel, support state, DB head, installer version, available update, bridges, disk and cleanup status.
+- Produces `ReleaseStatusOut` with version, build identity, channel, catalog `released_at`/`supported_until`, support state, DB head, installer version, available update, bridges, disk and cleanup status.
 
 - [ ] **Step 1: Write failing API support-state tests**
 
