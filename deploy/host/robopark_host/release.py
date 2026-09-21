@@ -440,7 +440,8 @@ def validate_policy_metadata(manifest):
             or type(manifest.get("support_months")) is not int
             or not re.fullmatch(r"[a-f0-9]{20}", manifest.get("build_id", ""))
             or not re.fullmatch(r"[a-f0-9]{64}", manifest.get("content_digest", ""))
-            or manifest.get("upgrade_policy") != {"mode": "graph"}
+            or not isinstance(manifest.get("upgrade_policy"), dict)
+            or manifest["upgrade_policy"].get("mode") != "graph"
         ):
             raise ValueError("invalid_release_policy")
     if "signing_key_rotation" in manifest:

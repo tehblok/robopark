@@ -109,7 +109,8 @@ def validate_manifest_policy(manifest: dict) -> None:
             or len(manifest["build_id"]) != 20
             or not isinstance(manifest["content_digest"], str)
             or len(manifest["content_digest"]) != 64
-            or manifest["upgrade_policy"] != {"mode": "graph"}
+            or not isinstance(manifest["upgrade_policy"], dict)
+            or manifest["upgrade_policy"].get("mode") != "graph"
         ):
             raise ValueError
         int(manifest["build_id"], 16)

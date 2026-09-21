@@ -28,6 +28,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 # packer is intentionally usable from an extracted source tree as well as CLI.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from migration_graph import MigrationPolicy
 from release_policy import SupportPolicy, manifest_policy_fields
 
 UTC = timezone.utc
@@ -440,6 +441,20 @@ def build_release(args):
         migration_head=metadata["migration_head"],
         files=files,
     )
+    migration_policy_path = root / "deploy/migration-policy.json"
+    if migration_policy_path.exists():
+        migration_policy = MigrationPolicy.from_file(migration_policy_path)
+        if migration_policy.target_head != metadata["migration_head"]:
+            raise ValueError("migration_head_mismatch")
+        policy_fields["upgrade_policy"] = {
+            "mode": "graph",
+            "bridge_before": migration_policy.bridge_before.raw,
+            "bridge_version": migration_policy.bridge_version.raw,
+            "reversible": migration_policy.reversible,
+            "recovery": migration_policy.recovery,
+        }
+    elif args.repository:
+        raise ValueError("migration_policy_missing")
     # Release construction imports only checked repository code. Installer
     # construction never needs to import API source modules at all.
     api = REPOSITORY_ROOT / "apps/api/src"

@@ -505,6 +505,19 @@ def test_pack_extracted_release_resolves_sha_without_git(
     shutil.copyfile(
         repository / "deploy/support-policy.json", root / "deploy/support-policy.json"
     )
+    (root / "deploy/migration-policy.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "target_head": "initial",
+                "known_heads": ["initial"],
+                "bridge_before": "0.1.45",
+                "bridge_version": "0.1.45",
+                "reversible": False,
+                "recovery": "snapshot",
+            }
+        )
+    )
     metadata_tree(root, "initial")
     (root / "apps/api/data").mkdir()
     (root / "apps/api/data/emergency_sections.json").write_text("{}")
