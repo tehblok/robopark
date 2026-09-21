@@ -290,6 +290,20 @@ class InstallerScenarios(unittest.TestCase):
         self.assertIn('повреждена', result.stdout)
         self.assertTrue((self.root / 'opt/robopark/host-tools/robopark').is_file())
 
+    def test_repair_recovers_broken_release_links_after_interrupted_removal(self):
+        self.run_installer()
+        data = self.root / 'var/lib/robopark/data/operator-state.txt'
+        data.write_text('keep-me')
+        release = (self.root / 'opt/robopark/current').resolve()
+        shutil.rmtree(release)
+
+        result = self.run_start('repair')
+
+        self.assertIn('повреждена', result.stdout)
+        self.assertTrue((self.root / 'opt/robopark/current/VERSION').is_file())
+        self.assertTrue((self.root / 'opt/robopark/host-tools/robopark').is_file())
+        self.assertEqual(data.read_text(), 'keep-me')
+
     def test_remove_accepts_damaged_or_data_only_state_and_preserves_data(self):
         self.run_installer()
         data = self.root / 'var/lib/robopark/data/operator-state.txt'

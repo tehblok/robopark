@@ -58,9 +58,22 @@ def atomic_link(path, target):
     sync_directory(path.parent)
 
 
-def validate_link(path, releases):
+def validate_link(path, releases, repair_existing=False):
     if path.is_symlink():
-        target = path.resolve(strict=True)
+        try:
+            target = path.resolve(strict=True)
+        except FileNotFoundError:
+            try:
+                target = (path.parent / os.readlink(path)).resolve(strict=False)
+                inside_releases = target.is_relative_to(releases.resolve(strict=False))
+            except (OSError, RuntimeError):
+                inside_releases = False
+            if not inside_releases or not repair_existing:
+                raise ValueError('invalid_existing_link')
+            path.unlink()
+            return
+        except (OSError, RuntimeError) as error:
+            raise ValueError('invalid_existing_link') from error
         if not target.is_relative_to(releases.resolve()) or not target.is_dir():
             raise ValueError('invalid_existing_link')
     elif path.exists():
@@ -173,7 +186,7 @@ def install(root, bundle, *modes):
     etc, opt = root / 'etc/robopark', root / 'opt/robopark'
     releases = opt / 'releases'
     for name in ('current', 'previous', 'host-tools'):
-        validate_link(opt / name, releases)
+        validate_link(opt / name, releases, repair_existing=repair_existing)
     trusted_key = bundle / 'keys/release-public-key.pem'
     if not trusted_key.is_file():
         trusted_key = bundle.parent / 'keys/release-public-key.pem'
