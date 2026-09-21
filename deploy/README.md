@@ -255,3 +255,9 @@ Royal uploads that ZIP on the same admin tab, types `ОБНОВИТЬ`. The API 
 ## What we removed
 
 WireGuard VPS hub (`deploy/vps/`, `deploy/wireguard/`) is gone. Access is HTTPS via Tuna only.
+# Версии и поддержка
+
+Каноническая версия хранится в `VERSION`. Каналы обновления: `stable`, `rc` и
+`manual`; смена канала не устанавливает обновление автоматически. Матрица
+совместимости находится в `docs/releases/compatibility.json`, а политика сроков —
+в `deploy/support-policy.json`.

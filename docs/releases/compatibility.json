@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "target_version": "0.2.0-rc.1",
+  "migration_head": "0036_audit_remediation_state",
+  "known_heads": [
+    "0022_tracker_collaboration",
+    "0024_inventory",
+    "0025_local_task_claims",
+    "0026_global_inventory_workflows",
+    "0027_emergency_readings",
+    "0028_reliable_task_workflow",
+    "0029_campaign_snapshot",
+    "0030_user_activity",
+    "0031_postgresql_runtime",
+    "0032_operator_inv_readonly",
+    "0033_offline_sync_receipts",
+    "0034_resumable_media_uploads",
+    "0035_schedules_and_push",
+    "0036_audit_remediation_state"
+  ],
+  "bridge_before": "0.1.45",
+  "bridge_version": "0.1.45",
+  "recovery": "snapshot",
+  "eligible_channels": ["rc"]
+}
