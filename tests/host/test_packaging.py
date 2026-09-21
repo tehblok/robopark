@@ -578,6 +578,7 @@ def test_release_workflow_enforces_order_trust_and_cleanup():
     gates = [
         "Check tag and version sources",
         "Full verification gate",
+        "Production PWA smoke gate",
         "Prepare ephemeral signing key",
         "Build architecture-neutral release and installer",
         "Independently verify all publishable artifacts",
@@ -586,6 +587,9 @@ def test_release_workflow_enforces_order_trust_and_cleanup():
     ]
     assert [names.index(name) for name in gates] == sorted(names.index(name) for name in gates)
     assert all(not s.get("continue-on-error") for s in steps)
+    pwa_gate = next(step for step in steps if step.get("name") == "Production PWA smoke gate")
+    assert pwa_gate["working-directory"] == "apps/web"
+    assert pwa_gate["run"] == "npm run test:e2e:pwa:linux"
     assert steps[-1]["if"] == "always()"
     assert "rm -f" in steps[-1]["run"]
     secret_steps = [s for s in steps if "secrets." in str(s)]

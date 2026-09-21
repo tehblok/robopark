@@ -204,6 +204,7 @@ def test_ci_uses_only_the_pinned_verification_entrypoints():
     assert re.findall(r"^\s+run:\s+(.+)$", workflow, flags=re.MULTILINE) == [
         "./scripts/verify.sh",
         "npm run test:e2e:linux",
+        "npm run test:e2e:pwa:linux",
     ]
     assert "uv pip install" not in workflow
 

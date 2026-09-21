@@ -36,6 +36,9 @@ jobs:
         run: uv run --directory apps/api --frozen --extra dev python ../../scripts/check-release-version.py --tag "$RELEASE_TAG"
       - name: Full verification gate
         run: ./scripts/verify.sh
+      - name: Production PWA smoke gate
+        working-directory: apps/web
+        run: npm run test:e2e:pwa:linux
       - name: Prepare ephemeral signing key
         env:
           ROBOPARK_RELEASE_SIGNING_KEY_B64: ${{ secrets.ROBOPARK_RELEASE_SIGNING_KEY_B64 }}
