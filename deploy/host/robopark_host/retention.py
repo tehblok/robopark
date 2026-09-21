@@ -16,6 +16,7 @@ import stat
 import time
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .operational_state import read_object
@@ -527,7 +528,7 @@ def _receipt_identity(entry):
 
 
 def _remove(entry):
-    fd, name, kind, before, owned = entry
+    fd, name, _kind, before, _owned = entry
     now = os.stat(name, dir_fd=fd, follow_symlinks=False)
     if (now.st_dev, now.st_ino, now.st_size, now.st_mtime_ns) != (
         before.st_dev,
@@ -597,24 +598,23 @@ def _cleanup_operation_residue(paths, identities, *, now):
     seen = 0
     for directory, pattern, category in locations:
         try:
-            with _directory(paths, directory) as parent:
-                with os.scandir(parent) as listing:
-                    for entry in listing:
-                        seen += 1
-                        if seen > MAX_ENTRIES:
-                            raise RetentionBlocked("too_many_artifacts")
-                        info = entry.stat(follow_symlinks=False)
-                        if (
-                            re.fullmatch(pattern, entry.name) is None
-                            or any(identity in entry.name for identity in identities)
-                            or not stat.S_ISREG(info.st_mode)
-                            or info.st_nlink != 1
-                            or info.st_uid not in {0, os.geteuid()}
-                            or now - info.st_mtime < STAGING_TTL
-                        ):
-                            continue
-                        _remove((parent, entry.name, "temporary", info, True))
-                        result[category] += 1
+            with _directory(paths, directory) as parent, os.scandir(parent) as listing:
+                for entry in listing:
+                    seen += 1
+                    if seen > MAX_ENTRIES:
+                        raise RetentionBlocked("too_many_artifacts")
+                    info = entry.stat(follow_symlinks=False)
+                    if (
+                        re.fullmatch(pattern, entry.name) is None
+                        or any(identity in entry.name for identity in identities)
+                        or not stat.S_ISREG(info.st_mode)
+                        or info.st_nlink != 1
+                        or info.st_uid not in {0, os.geteuid()}
+                        or now - info.st_mtime < STAGING_TTL
+                    ):
+                        continue
+                    _remove((parent, entry.name, "temporary", info, True))
+                    result[category] += 1
         except FileNotFoundError:
             continue
     result["temporary_deleted"] = sum(result.values())
@@ -632,6 +632,10 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
         "bytes": 0,
         "pressure": False,
         "blocked": False,
+        "reclaimed_bytes": 0,
+        "kept": 0,
+        "removed": 0,
+        "errors": [],
     }
     if paths.root.as_posix() == "/" and os.geteuid() != 0:
         return {**result, "blocked": True}
@@ -686,7 +690,7 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
             removals = []
             receipts = []
             for entry in entries:
-                fd, name, kind, info, owned = entry
+                _fd, name, kind, info, owned = entry
                 protected = (
                     name in names
                     or name.removesuffix(".json").removesuffix(".zip") in identities
@@ -735,9 +739,15 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
                     {"format": 1, "bits": bits.hex()},
                 )
             for entry in removals + receipts:
+                result["reclaimed_bytes"] += entry[3].st_size
                 _remove(entry)
                 result["deleted"] += 1
-            result.update(bytes=total, pressure=total > max_bytes)
+            result.update(
+                bytes=total,
+                pressure=total > max_bytes,
+                kept=len(entries) - len(removals) - len(receipts),
+                removed=len(removals) + len(receipts),
+            )
     except BlockingIOError:
         result.update(blocked=True, busy=True)
     except (OSError, ValueError, RecursionError) as exc:
@@ -745,9 +755,27 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
             result.update(blocked=True, busy=True)
         else:
             result.update(blocked=True, pressure=True)
+    result["errors"] = ["cleanup_blocked"] if result["blocked"] else []
+    result["completed_at"] = datetime.now(UTC).isoformat()
     # Bounded root-owned outcome lets doctor report blocked/saturated cleanup.
     if not paths.state.is_symlink():
         atomic_write_json(paths.state / "retention.json", result)
+    public = paths.ops / "public"
+    if not public.is_symlink():
+        atomic_write_json(
+            public / "retention-status.json",
+            {
+                key: result[key]
+                for key in (
+                    "kept",
+                    "removed",
+                    "reclaimed_bytes",
+                    "completed_at",
+                    "errors",
+                )
+            },
+            mode=0o644,
+        )
     return result
 
 
