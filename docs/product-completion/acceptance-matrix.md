@@ -8,8 +8,8 @@ only external channel metadata and never runs the packer or signing step.
 
 ## Current-source status
 
-The current audit work is based on Git HEAD `d00cd1dda1d5b1e4d65075566406743a8bdc3298`
-plus the Task 9 review fixes. No broad gate below is a current-source PASS. The
+The current versioning work is the commit range after design baseline `e424a1a`.
+No broad gate below is a current-source PASS. The
 stored full-suite, PostgreSQL, host, visual and 200-user records are historical:
 they belong to source-tree SHA-256
 `c4591526ecdc5bcc56ba7608d8b7336a3726e6f9f35599a8546961b4457d74e0`.
@@ -21,7 +21,7 @@ The partial soak belongs to a different source hash and ended `USER_CANCELLED`.
 | PostgreSQL / host / route-role / visual | **UNVERIFIED for current source** |
 | 200-user load | **UNVERIFIED for current source** |
 | 8-hour soak | **NOT RUN for current source**; historical attempt was cancelled |
-| Targeted Task 9 checks | Recorded in the Task 9 report; scoped evidence only, never a release PASS |
+| Fast/static scope | **PASS**: `verify.sh fast` (59 tests), TypeScript build, 79 focused release/host/API tests and one focused UI test; scoped evidence only, never a release PASS |
 
 ## Verification targets
 
