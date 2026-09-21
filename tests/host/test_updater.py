@@ -47,7 +47,9 @@ class FakeRunner:
                         "api": {
                             "build": {"context": "../apps/api"},
                             "env_file": [{"path": str(self.paths.etc / "host.env")}],
-                            "environment": {"DATABASE_URL": "sqlite:////data/robopark.db"},
+                            "environment": {
+                                "DATABASE_URL": "sqlite:////data/robopark.db"
+                            },
                             "volumes": [
                                 {
                                     "type": "bind",
@@ -65,7 +67,9 @@ class FakeRunner:
             ).encode()
         if argv[0] == "curl":
             return (
-                b'{"status":"ready"}\n200' if self.public_health else b'{"status":"degraded"}\n503'
+                b'{"status":"ready"}\n200'
+                if self.public_health
+                else b'{"status":"degraded"}\n503'
             )
         if any("SELECT version_num FROM alembic_version" in str(arg) for arg in argv):
             if "psql" in argv:
@@ -132,12 +136,17 @@ def host(host_paths):
                 release_meta={
                     "git_sha": "a" * 40,
                     "migration_head": "new",
-                    "migration_compatibility": {"from_heads": ["old"], "reversible": True},
+                    "migration_compatibility": {
+                        "from_heads": ["old"],
+                        "reversible": True,
+                    },
                     **(meta or {}),
                 },
                 signing_key=self.private,
             )
-            artifact = self.paths.ops / "artifacts" / (filename or f"release-{version}.zip")
+            artifact = (
+                self.paths.ops / "artifacts" / (filename or f"release-{version}.zip")
+            )
             artifact.write_bytes(blob)
             return artifact
 
@@ -164,7 +173,9 @@ def host(host_paths):
         directory.mkdir(parents=True, exist_ok=True)
     key = Ed25519PrivateKey.generate()
     host.private = key.private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
     )
     (host_paths.etc / "release-public-key.pem").write_bytes(
         key.public_key().public_bytes(
@@ -174,7 +185,9 @@ def host(host_paths):
     (host_paths.etc / "host.env").write_text(
         "SECRET_KEY=never-log-this\nTUNA_TOKEN=also-secret\nCORS_ORIGINS=https://robopark.example.tuna.am\n"
     )
-    old = host.package("1.0.0", meta={"migration_head": "old", "migration_compatibility": {}})
+    old = host.package(
+        "1.0.0", meta={"migration_head": "old", "migration_compatibility": {}}
+    )
     previous = host_paths.releases / "1.0.0"
     previous.mkdir()
     with zipfile.ZipFile(old) as archive:
@@ -278,7 +291,9 @@ def test_build_failure_keeps_current_code_config_and_data(host):
     assert result.error == "build_failed"
     assert host.paths.current.resolve().name == "1.0.0"
     assert (host.paths.var / "data/robopark.db").read_text() == "original"
-    assert (host.paths.state / "current-compose.json").resolve().name == "compose-1.0.0.json"
+    assert (
+        host.paths.state / "current-compose.json"
+    ).resolve().name == "compose-1.0.0.json"
     assert not (host.paths.state / "maintenance.json").exists()
     public = (host.paths.ops / "rebuild.result").read_text() + (
         host.paths.state / "updater-journal.json"
@@ -335,7 +350,9 @@ def test_success_stages_isolated_compose_then_reconciles_after_worker_exit(host)
     assert (host.paths.state / "maintenance.json").exists()
     assert host.runner.observations and set(host.runner.observations) == {"1.0.0"}
     assert all(
-        "-p" in c and "-f" in c for c in host.runner.commands if c[:2] == ["docker", "compose"]
+        "-p" in c and "-f" in c
+        for c in host.runner.commands
+        if c[:2] == ["docker", "compose"]
     )
     configs = list((host.paths.state / "compose").glob("*.json"))
     assert configs
@@ -356,19 +373,70 @@ def test_success_stages_isolated_compose_then_reconciles_after_worker_exit(host)
     assert (
         host.paths.state / "current-compose.json"
     ).resolve().name == request.job_id + "-production.json"
-    assert (host.paths.opt / "host-tools").resolve() == host.paths.current.resolve() / "deploy/host"
+    assert (
+        host.paths.opt / "host-tools"
+    ).resolve() == host.paths.current.resolve() / "deploy/host"
     assert json.loads((host.paths.ops / "rebuild.result").read_text())["ok"] is True
-    assert json.loads((host.paths.state / "last-backup.json").read_text())["status"] == "success"
+    assert (
+        json.loads((host.paths.state / "last-backup.json").read_text())["status"]
+        == "success"
+    )
+    lifecycle = json.loads((host.paths.ops / "public/release-status.json").read_text())
+    assert lifecycle["version"] == "2.0.0"
+    assert lifecycle["database_head"] == "new"
+    assert lifecycle["installer_version"] == "1.0.0"
+
+
+def test_release_lifecycle_publishes_support_window_and_bridge(host):
+    from robopark_host.updater import _publish_release_lifecycle
+
+    updater_env = host.paths.etc / "updater.env"
+    updater_env.write_text(
+        "GITHUB_REPOSITORY=\nGITHUB_ENABLED=false\nROBOPARK_UPDATE_CHANNEL=rc\n"
+    )
+    updater_env.chmod(0o600)
+    _publish_release_lifecycle(
+        host.paths,
+        {
+            "format": 3,
+            "app_version": "1.0.0",
+            "git_sha": "a" * 40,
+            "migration_head": "new",
+            "build_id": "b" * 20,
+            "built_at": "2026-01-31T10:00:00Z",
+            "support_class": "lts",
+            "support_months": 1,
+            "upgrade_policy": {"mode": "graph", "bridge_version": "0.1.45"},
+        },
+    )
+    value = json.loads((host.paths.ops / "public/release-status.json").read_text())
+    assert value == {
+        "version": "1.0.0",
+        "build_id": "b" * 20,
+        "git_sha": "a" * 40,
+        "channel": "rc",
+        "support_class": "lts",
+        "released_at": "2026-01-31T10:00:00+00:00",
+        "supported_until": "2026-02-28T10:00:00+00:00",
+        "database_head": "new",
+        "installer_version": "1.0.0",
+        "bridges": ["0.1.45"],
+    }
 
 
 def test_failed_pre_cutover_snapshot_records_failed_backup(host, monkeypatch):
     from robopark_host import updater
 
-    monkeypatch.setattr(updater, "snapshot", lambda *_args: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(
+        updater, "snapshot", lambda *_args: (_ for _ in ()).throw(OSError())
+    )
     result = apply_release(host.request(), host.paths, host.runner)
 
     assert result.error == "update_failed"
-    assert json.loads((host.paths.state / "last-backup.json").read_text())["status"] == "failed"
+    assert (
+        json.loads((host.paths.state / "last-backup.json").read_text())["status"]
+        == "failed"
+    )
 
 
 def test_pre_cutover_backup_is_postgres_custom_format_and_rollback_restores_it(host):
@@ -379,7 +447,9 @@ def test_pre_cutover_backup_is_postgres_custom_format_and_rollback_restores_it(h
 
     commands = [" ".join(command) for command in host.runner.commands]
     dump = f"/host-rollbacks/{request.job_id}/database.dump"
-    assert any(f"pg_dump --format=custom --file={dump}" in command for command in commands)
+    assert any(
+        f"pg_dump --format=custom --file={dump}" in command for command in commands
+    )
     assert any(f"pg_restore --list {dump}" in command for command in commands)
     assert any(
         f"pg_restore --clean --if-exists --no-owner --no-privileges --username=robopark --dbname=robopark {dump}"
@@ -405,11 +475,17 @@ def test_failed_health_restores_previous_code_units_and_snapshot(host):
     result = apply_release(host.request(), host.paths, host.runner)
     assert result.error == "cutover_unhealthy"
     assert host.paths.current.resolve().name == "1.0.0"
-    assert (host.paths.state / "current-compose.json").resolve().name == "compose-1.0.0.json"
+    assert (
+        host.paths.state / "current-compose.json"
+    ).resolve().name == "compose-1.0.0.json"
     assert (host.paths.var / "data/robopark.db").read_text() == "original"
     assert (host.paths.var / "data/attachment").read_bytes() == b"attachment"
-    assert (host.paths.root / "etc/systemd/system/robopark.service").read_text() == "old unit\n"
-    assert (host.paths.opt / "host-tools").resolve() == host.paths.current.resolve() / "deploy/host"
+    assert (
+        host.paths.root / "etc/systemd/system/robopark.service"
+    ).read_text() == "old unit\n"
+    assert (
+        host.paths.opt / "host-tools"
+    ).resolve() == host.paths.current.resolve() / "deploy/host"
     assert not (host.paths.state / "maintenance.json").exists()
 
 
@@ -424,10 +500,15 @@ def test_both_releases_unhealthy_keep_maintenance_and_snapshot(host):
 def test_system_runner_bounds_output_and_timeout():
     runner = SystemRunner()
     with pytest.raises(ReleaseError, match="command_output_limit"):
-        runner.run([sys.executable, "-c", "print('x'*3000000)"], timeout=5, capture=True)
+        runner.run(
+            [sys.executable, "-c", "print('x'*3000000)"], timeout=5, capture=True
+        )
     with pytest.raises(ReleaseError, match="command_timeout"):
         runner.run([sys.executable, "-c", "import time; time.sleep(3)"], timeout=0.1)
-    assert runner.run([sys.executable, "-c", "print('ok')"], timeout=5, capture=True) == b"ok\n"
+    assert (
+        runner.run([sys.executable, "-c", "print('ok')"], timeout=5, capture=True)
+        == b"ok\n"
+    )
 
 
 def test_system_runner_places_docker_config_in_writable_ops(host_paths, monkeypatch):
@@ -452,7 +533,11 @@ def test_system_runner_classifies_and_retains_root_only_failed_command_log(
 
     with pytest.raises(ReleaseError, match="docker_out_of_memory"):
         SystemRunner(log).run(
-            [sys.executable, "-c", "import sys; print('build exhausted memory'); sys.exit(137)"],
+            [
+                sys.executable,
+                "-c",
+                "import sys; print('build exhausted memory'); sys.exit(137)",
+            ],
             timeout=5,
         )
 
@@ -487,7 +572,9 @@ def test_retention_keeps_three_successes_after_third_update(host):
     apply_release(host.request(), host.paths, host.runner)
     reconcile_after_exit(host.paths, host.runner)
     second = host.paths.current.resolve()
-    third = host.package("3.0.0", meta={"migration_head": "new", "migration_compatibility": {}})
+    third = host.package(
+        "3.0.0", meta={"migration_head": "new", "migration_compatibility": {}}
+    )
     result = apply_release(host.request(third), host.paths, host.runner)
     assert result.state == "awaiting_reconciliation"
     reconcile_after_exit(host.paths, host.runner)
@@ -531,7 +618,11 @@ def test_failed_candidate_is_removed_but_previous_material_retained(host):
 def test_self_test_executes_without_system_state_mutation(host):
     result = subprocess.run(
         [sys.executable, "-B", "deploy/host/robopark", "--self-test"],
-        env={**os.environ, "ROBOPARK_TESTING": "1", "ROBOPARK_ROOT": str(host.paths.root)},
+        env={
+            **os.environ,
+            "ROBOPARK_TESTING": "1",
+            "ROBOPARK_ROOT": str(host.paths.root),
+        },
         capture_output=True,
         timeout=10,
     )
@@ -551,7 +642,9 @@ def test_cli_can_process_explicit_request_and_reconcile(host, monkeypatch):
     assert not (host.paths.state / "maintenance.json").exists()
 
 
-def test_cli_reconcile_cleans_expired_artifacts_after_terminal_update(host, monkeypatch):
+def test_cli_reconcile_cleans_expired_artifacts_after_terminal_update(
+    host, monkeypatch
+):
     from robopark_host import cli
 
     monkeypatch.setattr("robopark_host.updater.SystemRunner", lambda: host.runner)
@@ -586,9 +679,9 @@ def test_stable_launcher_waits_for_old_worker_before_successor_reconciliation(ho
                 apply_release(UpdateRequest.from_file(path), host.paths, host.runner)
             else:
                 assert "--reconcile" in argv
-                assert str(host.paths.current.resolve() / "deploy/host/robopark") in list(
-                    map(str, argv)
-                )
+                assert str(
+                    host.paths.current.resolve() / "deploy/host/robopark"
+                ) in list(map(str, argv))
                 assert old != (host.paths.opt / "host-tools").resolve()
                 reconcile_after_exit(host.paths, host.runner)
             return b""
@@ -617,7 +710,9 @@ def test_production_config_migrates_legacy_mounts_to_host_owned_data(host):
     request = host.request()
     apply_release(request, host.paths, host.runner)
     config = json.loads(
-        (host.paths.state / "compose" / (request.job_id + "-production.json")).read_text()
+        (
+            host.paths.state / "compose" / (request.job_id + "-production.json")
+        ).read_text()
     )
     mounts = {item["target"]: item for item in config["services"]["api"]["volumes"]}
     assert mounts["/data"]["source"] == str(host.paths.var / "data")
@@ -631,7 +726,9 @@ def test_production_config_migrates_legacy_mounts_to_host_owned_data(host):
     assert config["services"]["api"]["environment"]["OPS_DIR"] == "/ops"
 
 
-@pytest.mark.parametrize("external_error", ["SECRET_KEY=never-log-this", "lowercase_secret_token"])
+@pytest.mark.parametrize(
+    "external_error", ["SECRET_KEY=never-log-this", "lowercase_secret_token"]
+)
 def test_raw_external_error_cannot_enter_journal_or_status(host, external_error):
     original = host.runner.run
 
@@ -718,11 +815,12 @@ def test_candidate_source_render_and_production_config_use_sanitized_snapshot(ho
         host.paths.etc / "snapshot.env"
     )
     production = json.loads(
-        (host.paths.state / "compose" / (request.job_id + "-production.json")).read_text()
+        (
+            host.paths.state / "compose" / (request.job_id + "-production.json")
+        ).read_text()
     )
     mounts = {
-        volume["target"]: volume
-        for volume in production["services"]["api"]["volumes"]
+        volume["target"]: volume for volume in production["services"]["api"]["volumes"]
     }
     assert mounts["/run/robopark/snapshot.env"]["source"] == str(
         host.paths.etc / "snapshot.env"
@@ -763,7 +861,10 @@ def test_candidate_and_rendered_configs_pass_real_compose_validation(host, tmp_p
     journal = {"job_id": identity, "candidate": candidate}
     _, smoke_path = _render_configs(host.paths, journal, RealComposeRunner(), stage)
     production_path = host.paths.state / "compose" / (identity + "-production.json")
-    for project, config in (("candidate-real", smoke_path), ("production-real", production_path)):
+    for project, config in (
+        ("candidate-real", smoke_path),
+        ("production-real", production_path),
+    ):
         subprocess.run(
             [
                 "docker",
@@ -795,7 +896,8 @@ def test_low_disk_rejects_before_staging(host, monkeypatch):
     import shutil
 
     monkeypatch.setattr(
-        "robopark_host.updater.shutil.disk_usage", lambda _p: shutil._ntuple_diskusage(100, 99, 1)
+        "robopark_host.updater.shutil.disk_usage",
+        lambda _p: shutil._ntuple_diskusage(100, 99, 1),
     )
     result = apply_release(host.request(), host.paths, host.runner)
     assert result.error == "insufficient_space"
@@ -906,7 +1008,11 @@ def test_cli_rejects_fifo_inputs_without_blocking(host, fifo_kind):
             str(path),
             "--worker",
         ],
-        env={**os.environ, "ROBOPARK_TESTING": "1", "ROBOPARK_ROOT": str(host.paths.root)},
+        env={
+            **os.environ,
+            "ROBOPARK_TESTING": "1",
+            "ROBOPARK_ROOT": str(host.paths.root),
+        },
         capture_output=True,
         timeout=2,
         check=False,
@@ -945,7 +1051,9 @@ def test_tuna_failure_marks_publication_degraded_without_database_rollback(host)
     assert result.state == "current_healthy"
     assert (host.paths.var / "data/robopark.db").read_text() == "migrated"
     assert (
-        json.loads((host.paths.ops / "public/host-status.json").read_text())["publication"]
+        json.loads((host.paths.ops / "public/host-status.json").read_text())[
+            "publication"
+        ]
         == "degraded"
     )
 
@@ -1016,7 +1124,9 @@ def test_reconciliation_rechecks_actual_head_before_resuming_writes(host):
     assert (host.paths.var / "data/robopark.db").read_text() == "original"
 
 
-def test_successful_tuna_restart_with_unreachable_public_route_is_degraded(host, monkeypatch):
+def test_successful_tuna_restart_with_unreachable_public_route_is_degraded(
+    host, monkeypatch
+):
     import robopark_host.updater as updater
 
     monkeypatch.setattr(updater, "PUBLIC_READY_TIMEOUT", 0.02, raising=False)
@@ -1026,11 +1136,15 @@ def test_successful_tuna_restart_with_unreachable_public_route_is_degraded(host,
     assert result.state == "current_healthy"
     assert (host.paths.var / "data/robopark.db").read_text() == "migrated"
     assert (
-        json.loads((host.paths.ops / "public/host-status.json").read_text())["publication"]
+        json.loads((host.paths.ops / "public/host-status.json").read_text())[
+            "publication"
+        ]
         == "degraded"
     )
     probes = [argv for argv in host.runner.commands if argv[0] == "curl"]
-    assert probes and probes[0][-1] == "https://robopark.example.tuna.am/api/health/ready"
+    assert (
+        probes and probes[0][-1] == "https://robopark.example.tuna.am/api/health/ready"
+    )
     assert "also-secret" not in json.dumps(host.runner.commands)
 
 
@@ -1048,7 +1162,15 @@ def test_database_head_probe_reads_actual_database_without_modifying_it(host):
     class LocalDatabaseRunner:
         def run(self, argv, *, timeout, capture):
             assert argv[:4] == ["docker", "compose", "-p", "robopark"]
-            assert argv[6:13] == ["run", "--rm", "--no-deps", "--entrypoint", "python", "api", "-c"]
+            assert argv[6:13] == [
+                "run",
+                "--rm",
+                "--no-deps",
+                "--entrypoint",
+                "python",
+                "api",
+                "-c",
+            ]
             return SystemRunner().run(
                 [sys.executable, "-c", argv[-1]],
                 timeout=timeout,
@@ -1080,7 +1202,9 @@ def test_database_head_probe_reads_actual_database_without_modifying_it(host):
 def test_public_origin_rejects_ambiguous_or_sensitive_values(host, origin):
     from robopark_host.updater import _wait_public_ready
 
-    (host.paths.etc / "host.env").write_text(f"CORS_ORIGINS={origin}\nTUNA_TOKEN=secret\n")
+    (host.paths.etc / "host.env").write_text(
+        f"CORS_ORIGINS={origin}\nTUNA_TOKEN=secret\n"
+    )
     assert not _wait_public_ready(host.paths, host.runner, timeout=0.01)
     assert not host.runner.commands
 
@@ -1126,7 +1250,9 @@ def test_public_origin_override_and_https_probe_contract(host):
         b'{"status":"ready"}\n503',
     ],
 )
-def test_public_probe_retries_with_bounded_budget_and_rejects_wrong_response(host, response):
+def test_public_probe_retries_with_bounded_budget_and_rejects_wrong_response(
+    host, response
+):
     import time
 
     from robopark_host.updater import _wait_public_ready
@@ -1156,7 +1282,9 @@ def test_public_origin_rejects_file_owned_by_another_user(host, monkeypatch):
     def foreign_owner(descriptor):
         metadata = actual(descriptor)
         return SimpleNamespace(
-            st_mode=metadata.st_mode, st_uid=metadata.st_uid + 1, st_size=metadata.st_size
+            st_mode=metadata.st_mode,
+            st_uid=metadata.st_uid + 1,
+            st_size=metadata.st_size,
         )
 
     monkeypatch.setattr(updater.os, "fstat", foreign_owner)
@@ -1194,7 +1322,12 @@ def test_public_probe_retries_transient_failure_within_budget(host, monkeypatch)
 @pytest.mark.parametrize("version", ["2.0.0-rc.1", "2.0.0+build.1"])
 def test_prerelease_semver_can_complete_host_update_and_reconciliation(host, version):
     request = host.request(host.package(version, filename="semver.zip"))
-    assert apply_release(request, host.paths, host.runner).state == "awaiting_reconciliation"
+    assert (
+        apply_release(request, host.paths, host.runner).state
+        == "awaiting_reconciliation"
+    )
     assert host.paths.current.resolve().name == version + "-" + request.job_id
     assert reconcile_after_exit(host.paths, host.runner).state == "current_healthy"
-    assert json.loads((host.paths.ops / "public/rebuild.result").read_text())["ok"] is True
+    assert (
+        json.loads((host.paths.ops / "public/rebuild.result").read_text())["ok"] is True
+    )

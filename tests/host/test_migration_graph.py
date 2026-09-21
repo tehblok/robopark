@@ -11,7 +11,10 @@ from migration_graph import MigrationPolicy, plan_upgrade
 
 def test_old_release_requires_declared_bridge():
     policy = MigrationPolicy.from_file(ROOT / "deploy/migration-policy.json")
-    target = {"app_version": "0.2.0-rc.1", "migration_head": "0036_audit_remediation_state"}
+    target = {
+        "app_version": "0.2.0-rc.1",
+        "migration_head": "0036_audit_remediation_state",
+    }
     plan = plan_upgrade("0.1.18", "0022_tracker_collaboration", target, policy)
     assert plan.releases == ("0.1.45", "0.2.0-rc.1")
     assert plan.recovery == "snapshot"
@@ -19,7 +22,10 @@ def test_old_release_requires_declared_bridge():
 
 def test_recent_release_can_update_directly():
     policy = MigrationPolicy.from_file(ROOT / "deploy/migration-policy.json")
-    target = {"app_version": "0.2.0-rc.1", "migration_head": "0036_audit_remediation_state"}
+    target = {
+        "app_version": "0.2.0-rc.1",
+        "migration_head": "0036_audit_remediation_state",
+    }
     plan = plan_upgrade("0.1.45", "0036_audit_remediation_state", target, policy)
     assert plan.releases == ("0.2.0-rc.1",)
 
@@ -30,6 +36,59 @@ def test_unknown_schema_is_rejected_before_mutation():
         plan_upgrade(
             "0.1.9",
             "unknown",
-            {"app_version": "0.2.0-rc.1", "migration_head": "0036_audit_remediation_state"},
+            {
+                "app_version": "0.2.0-rc.1",
+                "migration_head": "0036_audit_remediation_state",
+            },
             policy,
         )
+
+
+def test_host_admission_requires_declared_bridge_before_mutation():
+    from robopark_host.release import ReleaseError, check_compatibility
+
+    candidate = {
+        "app_version": "0.2.0-rc.1",
+        "migration_head": "0036_audit_remediation_state",
+        "migration_compatibility": {
+            "from_heads": ["0022_tracker_collaboration"],
+            "reversible": True,
+        },
+        "min_installer_version": "0",
+        "required_capabilities": [],
+        "upgrade_policy": {
+            "mode": "graph",
+            "bridge_before": "0.1.45",
+            "bridge_version": "0.1.45",
+            "reversible": False,
+            "recovery": "snapshot",
+        },
+        "files": {
+            name: {}
+            for name in (
+                "deploy/Dockerfile.api-tests",
+                "apps/api/Dockerfile",
+                "apps/api/uv.lock",
+                "apps/api/pyproject.toml",
+                "apps/web/Dockerfile",
+                "apps/web/package-lock.json",
+                "apps/web/package.json",
+                "scripts/verify.sh",
+            )
+        },
+    }
+    with pytest.raises(ReleaseError, match="bridge_required"):
+        check_compatibility(
+            candidate,
+            {
+                "app_version": "0.1.18",
+                "migration_head": "0022_tracker_collaboration",
+            },
+        )
+    check_compatibility(
+        candidate,
+        {
+            "app_version": "0.1.45",
+            "migration_head": "0022_tracker_collaboration",
+        },
+    )

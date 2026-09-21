@@ -106,13 +106,18 @@ class UpdateRequest:
     @classmethod
     def from_dict(cls, value):
         try:
-            if not isinstance(value, dict) or set(value) != set(cls.__dataclass_fields__):
+            if not isinstance(value, dict) or set(value) != set(
+                cls.__dataclass_fields__
+            ):
                 raise ValueError()
             if str(UUID(value["job_id"])) != value["job_id"]:
                 raise ValueError()
             if value["kind"] != "update":
                 raise ValueError()
-            if type(value["actor_user_id"]) is not int or not 0 < value["actor_user_id"] < 2**63:
+            if (
+                type(value["actor_user_id"]) is not int
+                or not 0 < value["actor_user_id"] < 2**63
+            ):
                 raise ValueError()
             if not isinstance(value["artifact"], str) or not re.fullmatch(
                 r"[A-Za-z0-9][A-Za-z0-9._-]{0,150}\.zip", value["artifact"]
@@ -143,7 +148,9 @@ class UpdateRequest:
     def read_artifact(self, paths):
         # Revalidate even callers constructing the frozen dataclass directly.
         self.from_dict(vars(self))
-        private = bool(re.fullmatch(r"github-release-[1-9][0-9]{0,18}\.zip", self.artifact))
+        private = bool(
+            re.fullmatch(r"github-release-[1-9][0-9]{0,18}\.zip", self.artifact)
+        )
         root = paths.state / "github-artifacts" if private else paths.ops / "artifacts"
         expected = (
             paths.state.resolve() / "github-artifacts"
@@ -172,7 +179,12 @@ class UpdateRequest:
 
 
 def safe_member(name):
-    if not isinstance(name, str) or not name or "\\" in name or any(ord(c) < 32 for c in name):
+    if (
+        not isinstance(name, str)
+        or not name
+        or "\\" in name
+        or any(ord(c) < 32 for c in name)
+    ):
         raise ReleaseError("unsafe_path")
     if any(part in {"", ".", ".."} or part.strip() != part for part in name.split("/")):
         raise ReleaseError("unsafe_path")
@@ -211,14 +223,17 @@ def verify_manifest(raw, signature, public_key):
 
             key = serialization.load_pem_public_key(public_key)
             if rotation["next_public_key"].encode() == key.public_bytes(
-                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
             ):
                 raise ValueError("same_key_rotation")
         except (ValueError, TypeError, AttributeError) as exc:
             raise ReleaseError("signature_invalid") from exc
     version(manifest["app_version"])
     version(
-        "0.0.0" if manifest["min_installer_version"] == "0" else manifest["min_installer_version"]
+        "0.0.0"
+        if manifest["min_installer_version"] == "0"
+        else manifest["min_installer_version"]
     )
     if not isinstance(manifest["git_sha"], str) or not re.fullmatch(
         r"[a-fA-F0-9]{40}", manifest["git_sha"]
@@ -238,7 +253,9 @@ def verify_manifest(raw, signature, public_key):
         raise ReleaseError("invalid_manifest")
     try:
         timestamp_key = "created_at" if manifest["format"] == 2 else "built_at"
-        if (timestamp(manifest[timestamp_key]) - datetime.now(UTC)).total_seconds() > 300:
+        if (
+            timestamp(manifest[timestamp_key]) - datetime.now(UTC)
+        ).total_seconds() > 300:
             raise ValueError()
     except (ValueError, TypeError, OverflowError) as exc:
         raise ReleaseError("invalid_manifest") from exc
@@ -268,7 +285,9 @@ def verify_manifest(raw, signature, public_key):
             {"path": name, "size": value["size"], "sha256": value["sha256"]}
             for name, value in sorted(files.items())
         ]
-        canonical = json.dumps(entries, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        canonical = json.dumps(
+            entries, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
         if hashlib.sha256(canonical.encode()).hexdigest() != manifest["content_digest"]:
             raise ReleaseError("invalid_manifest")
     return manifest
@@ -290,10 +309,15 @@ class VerifiedRelease:
                     stream.flush()
                     os.fsync(stream.fileno())
                 destination.chmod(
-                    0o755 if name.endswith(".sh") or name == "deploy/host/robopark" else 0o644
+                    0o755
+                    if name.endswith(".sh") or name == "deploy/host/robopark"
+                    else 0o644
                 )
         # Directory entries must survive power loss, not just their contents.
-        for directory in [p for p in target.rglob("*") if p.is_dir()] + [target, target.parent]:
+        for directory in [p for p in target.rglob("*") if p.is_dir()] + [
+            target,
+            target.parent,
+        ]:
             descriptor = os.open(directory, os.O_RDONLY)
             try:
                 os.fsync(descriptor)
@@ -388,11 +412,27 @@ def check_compatibility(candidate, current):
     if version(candidate["app_version"]) <= version(current["app_version"]):
         raise ReleaseError("downgrade_rejected")
     if version(
-        "0.0.0" if candidate["min_installer_version"] == "0" else candidate["min_installer_version"]
+        "0.0.0"
+        if candidate["min_installer_version"] == "0"
+        else candidate["min_installer_version"]
     ) > version(INSTALLER_VERSION):
         raise ReleaseError("installer_incompatible")
     if set(candidate["required_capabilities"]) - CAPABILITIES:
         raise ReleaseError("capability_missing")
+    policy = candidate.get("upgrade_policy", {})
+    if (
+        set(policy)
+        == {
+            "mode",
+            "bridge_before",
+            "bridge_version",
+            "reversible",
+            "recovery",
+        }
+        and version(current["app_version"]) < version(policy["bridge_before"])
+        and version(candidate["app_version"]) > version(policy["bridge_version"])
+    ):
+        raise ReleaseError("bridge_required")
     if candidate["migration_head"] != current["migration_head"]:
         migration = candidate["migration_compatibility"]
         if (
@@ -429,21 +469,41 @@ def validate_policy_metadata(manifest):
     if manifest.get("format") == 3:
         channels = manifest.get("eligible_channels")
         prerelease = "-" in manifest.get("app_version", "")
+        upgrade_policy = manifest.get("upgrade_policy")
         if (
             not isinstance(channels, list)
             or not channels
             or len(channels) != len(set(channels))
             or not set(channels) <= {"stable", "rc", "manual"}
-            or prerelease and channels != ["rc"]
-            or not prerelease and "stable" in channels and "rc" not in channels
+            or prerelease
+            and channels != ["rc"]
+            or not prerelease
+            and "stable" in channels
+            and "rc" not in channels
             or manifest.get("support_class") not in {"candidate", "standard", "lts"}
             or type(manifest.get("support_months")) is not int
             or not re.fullmatch(r"[a-f0-9]{20}", manifest.get("build_id", ""))
             or not re.fullmatch(r"[a-f0-9]{64}", manifest.get("content_digest", ""))
-            or not isinstance(manifest.get("upgrade_policy"), dict)
-            or manifest["upgrade_policy"].get("mode") != "graph"
+            or not isinstance(upgrade_policy, dict)
+            or upgrade_policy.get("mode") != "graph"
         ):
             raise ValueError("invalid_release_policy")
+        if set(upgrade_policy) != {"mode"}:
+            if (
+                set(upgrade_policy)
+                != {
+                    "mode",
+                    "bridge_before",
+                    "bridge_version",
+                    "reversible",
+                    "recovery",
+                }
+                or type(upgrade_policy["reversible"]) is not bool
+                or upgrade_policy["recovery"] not in {"rollback", "snapshot"}
+            ):
+                raise ValueError("invalid_release_policy")
+            version(upgrade_policy["bridge_before"])
+            version(upgrade_policy["bridge_version"])
     if "signing_key_rotation" in manifest:
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -463,7 +523,8 @@ def validate_policy_metadata(manifest):
         if (
             not isinstance(key, Ed25519PublicKey)
             or key.public_bytes(
-                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
             ).decode("ascii")
             != pem
         ):

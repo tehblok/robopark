@@ -37,18 +37,36 @@ def release_status(root: Path, *, now: datetime | None = None) -> ReleaseStatusO
             else "supported"
         )
     return ReleaseStatusOut(
-        version=lifecycle.get("version") if isinstance(lifecycle.get("version"), str) else health.get("version"),
+        version=lifecycle.get("version")
+        if isinstance(lifecycle.get("version"), str)
+        else health.get("version"),
         build_id=lifecycle.get("build_id") if isinstance(lifecycle.get("build_id"), str) else None,
-        git_sha=health.get("git_sha") if isinstance(health.get("git_sha"), str) else None,
-        channel=lifecycle.get("channel") if lifecycle.get("channel") in {"stable", "rc", "manual"} else None,
-        support_class=lifecycle.get("support_class") if lifecycle.get("support_class") in {"candidate", "standard", "lts"} else None,
+        git_sha=(
+            lifecycle.get("git_sha")
+            if isinstance(lifecycle.get("git_sha"), str)
+            else health.get("git_sha")
+            if isinstance(health.get("git_sha"), str)
+            else None
+        ),
+        channel=lifecycle.get("channel")
+        if lifecycle.get("channel") in {"stable", "rc", "manual"}
+        else None,
+        support_class=lifecycle.get("support_class")
+        if lifecycle.get("support_class") in {"candidate", "standard", "lts"}
+        else None,
         released_at=released_at,
         supported_until=supported_until,
         support_status=support_status,
         operations_blocked=False,
-        database_head=lifecycle.get("database_head") if isinstance(lifecycle.get("database_head"), str) else None,
-        installer_version=lifecycle.get("installer_version") if isinstance(lifecycle.get("installer_version"), str) else None,
-        available_update=available.get("release") if available.get("state") == "available" else None,
+        database_head=lifecycle.get("database_head")
+        if isinstance(lifecycle.get("database_head"), str)
+        else None,
+        installer_version=lifecycle.get("installer_version")
+        if isinstance(lifecycle.get("installer_version"), str)
+        else None,
+        available_update=available.get("release")
+        if available.get("state") == "available"
+        else None,
         bridges=lifecycle.get("bridges") if isinstance(lifecycle.get("bridges"), list) else [],
         cleanup=retention or None,
     )

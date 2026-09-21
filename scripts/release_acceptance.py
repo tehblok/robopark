@@ -25,6 +25,7 @@ REQUIRED_GATES = (
     "load_200",
     "soak_8h",
 )
+REQUIRED_PROMOTION_GATES = frozenset((*REQUIRED_GATES, "platform"))
 MAX_REPORT_BYTES = 64 * 1024 * 1024
 RELEASE_PREFIXES = ("apps/api/", "apps/web/", "deploy/", "scripts/")
 RELEASE_ROOT_FILES = {
@@ -180,7 +181,7 @@ def validate_promotion_evidence(
             or not isinstance(evidence["command"], str)
             or not evidence["command"].strip()
             or not isinstance(evidence["gates"], dict)
-            or not evidence["gates"]
+            or set(evidence["gates"]) != REQUIRED_PROMOTION_GATES
             or any(status != "PASS" for status in evidence["gates"].values())
         ):
             raise ValueError

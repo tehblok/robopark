@@ -7,6 +7,7 @@ Neither boundary may log secret values or include command output in exceptions.
 
 from __future__ import annotations
 
+import calendar
 import copy
 import json
 import os
@@ -33,10 +34,12 @@ from .image_retention import reserve as reserve_images
 from .operational_state import record_backup
 from .paths import HostPaths
 from .release import (
+    INSTALLER_VERSION,
     ReleaseError,
     UpdateRequest,
     check_compatibility,
     safe_member,
+    timestamp,
     unique_object,
     verify_archive,
     verify_directory,
@@ -329,7 +332,16 @@ class SystemRunner:
                 )
                 self.run(
                     prefix
-                    + ["exec", "-T", "web", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"],
+                    + [
+                        "exec",
+                        "-T",
+                        "web",
+                        "wget",
+                        "-q",
+                        "-O",
+                        "/dev/null",
+                        "http://127.0.0.1/",
+                    ],
                     timeout=min(10, max(0.1, deadline - time.monotonic())),
                 )
                 self.run(
@@ -373,7 +385,9 @@ def _phase(paths, journal, phase, **changes):
     journal.update(changes)
     journal["phase"] = phase
     atomic_write_json(_journal_path(paths), journal)
-    _publish_status(paths, {"state": "updating", "phase": phase, "job_id": journal["job_id"]})
+    _publish_status(
+        paths, {"state": "updating", "phase": phase, "job_id": journal["job_id"]}
+    )
 
 
 def _public_directory(paths):
@@ -389,9 +403,78 @@ def _publish_status(paths, payload):
     atomic_write_json(paths.ops / "public/host-status.json", payload, mode=0o644)
 
 
+def _configured_update_channel(paths):
+    descriptor = os.open(paths.etc / "updater.env", os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "r", encoding="ascii") as stream:
+        info = os.fstat(stream.fileno())
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_size > 16384
+            or info.st_mode & 0o077
+        ):
+            raise ValueError("invalid_update_channel")
+        values = {}
+        for line in stream:
+            key, separator, value = line.strip().partition("=")
+            if separator and key in {"GITHUB_CHANNEL", "ROBOPARK_UPDATE_CHANNEL"}:
+                if key in values:
+                    raise ValueError("invalid_update_channel")
+                values[key] = value.strip("'")
+    if {"GITHUB_CHANNEL", "ROBOPARK_UPDATE_CHANNEL"} <= set(values):
+        raise ValueError("invalid_update_channel")
+    channel = values.get(
+        "ROBOPARK_UPDATE_CHANNEL", values.get("GITHUB_CHANNEL", "stable")
+    )
+    channel = "rc" if channel == "prerelease" else channel
+    if channel not in {"stable", "rc", "manual"}:
+        raise ValueError("invalid_update_channel")
+    return channel
+
+
+def _publish_release_lifecycle(paths, manifest):
+    """Publish the installed signed lifecycle contract for the read-only API bridge."""
+    released = timestamp(manifest["built_at"]) if manifest.get("format") == 3 else None
+    months = manifest.get("support_months", 0)
+    supported_until = None
+    if released is not None and type(months) is int and months > 0:
+        month_index = released.year * 12 + released.month - 1 + months
+        year, month_zero = divmod(month_index, 12)
+        month = month_zero + 1
+        supported_until = released.replace(
+            year=year,
+            month=month,
+            day=min(released.day, calendar.monthrange(year, month)[1]),
+        )
+    try:
+        channel = _configured_update_channel(paths)
+    except (OSError, UnicodeError, ValueError):
+        channel = None
+    policy = manifest.get("upgrade_policy", {})
+    bridge = policy.get("bridge_version") if isinstance(policy, dict) else None
+    atomic_write_json(
+        _public_directory(paths) / "release-status.json",
+        {
+            "version": manifest.get("app_version"),
+            "build_id": manifest.get("build_id"),
+            "git_sha": manifest.get("git_sha"),
+            "channel": channel,
+            "support_class": manifest.get("support_class"),
+            "released_at": released.isoformat() if released else None,
+            "supported_until": supported_until.isoformat() if supported_until else None,
+            "database_head": manifest.get("migration_head"),
+            "installer_version": INSTALLER_VERSION,
+            "bridges": [bridge] if isinstance(bridge, str) else [],
+        },
+        mode=0o644,
+    )
+
+
 def _maintenance(paths, enabled):
     _public_directory(paths)
-    for path in (paths.state / "maintenance.json", paths.ops / "public/maintenance.json"):
+    for path in (
+        paths.state / "maintenance.json",
+        paths.ops / "public/maintenance.json",
+    ):
         if enabled:
             atomic_write_json(
                 path,
@@ -412,7 +495,11 @@ def publish_result(paths, payload):
 
 
 def _finish(paths, journal, state, error=None):
-    result = {"job_id": journal["job_id"], "ok": state == "current_healthy", "error": error}
+    result = {
+        "job_id": journal["job_id"],
+        "ok": state == "current_healthy",
+        "error": error,
+    }
     publish_result(paths, result)
     status = {"state": state, "error": error, "job_id": journal["job_id"]}
     if journal["publication_degraded"]:
@@ -423,7 +510,11 @@ def _finish(paths, journal, state, error=None):
 
 def _release_target(paths, link):
     target = link.resolve(strict=True)
-    if not link.is_symlink() or target.parent != paths.releases.resolve() or target.is_symlink():
+    if (
+        not link.is_symlink()
+        or target.parent != paths.releases.resolve()
+        or target.is_symlink()
+    ):
         raise ReleaseError("unsafe_release_path")
     return target
 
@@ -454,7 +545,9 @@ def _successful_release_receipts(paths):
                     continue
                 try:
                     descriptor = os.open(
-                        entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent
+                        entry.name,
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                        dir_fd=parent,
                     )
                     with os.fdopen(descriptor, "rb") as stream:
                         current = os.fstat(stream.fileno())
@@ -505,7 +598,9 @@ def _configuration_target(paths):
 
 def _disk_preflight(paths, release):
     # Account for immutable payload, test copy, build layers, and two data copies.
-    data_size = sum(p.stat().st_size for p in (paths.var / "data").rglob("*") if p.is_file())
+    data_size = sum(
+        p.stat().st_size for p in (paths.var / "data").rglob("*") if p.is_file()
+    )
     unpacked = sum(f["size"] for f in release.manifest["files"].values())
     required = unpacked * 3 + data_size * 2 + 2 * 1024**3
     if (
@@ -660,8 +755,18 @@ def _render_configs(paths, journal, runner, stage):
 def _cleanup_staging(paths, journal, runner, *, discard_displaced=True):
     for target in ("api", "web"):
         commands = [
-            ["docker", "rm", "--force", "robopark-tests-" + journal["job_id"] + "-" + target],
-            ["docker", "image", "rm", "robopark-" + target + "-tests:" + journal["job_id"]],
+            [
+                "docker",
+                "rm",
+                "--force",
+                "robopark-tests-" + journal["job_id"] + "-" + target,
+            ],
+            [
+                "docker",
+                "image",
+                "rm",
+                "robopark-" + target + "-tests:" + journal["job_id"],
+            ],
         ]
         for command in commands:
             # Already removed resources are normal after --rm or interrupted cleanup.
@@ -735,7 +840,9 @@ def _retention(paths, journal):
             shutil.rmtree(directory)
 
 
-def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> UpdateResult:
+def apply_release(
+    request: UpdateRequest, paths: HostPaths, runner: Runner
+) -> UpdateResult:
     try:
         raw = request.read_artifact(paths)
         key = admission_key(paths)
@@ -780,7 +887,10 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
             current_manifest = verify_directory(previous, current_key)
             if old and old["job_id"] == request.job_id and old["phase"] == "succeeded":
                 release = verify_archive(raw, current_key)
-                if current_manifest == release.manifest and previous.name == old["candidate"]:
+                if (
+                    current_manifest == release.manifest
+                    and previous.name == old["candidate"]
+                ):
                     return UpdateResult("current_healthy")
                 raise ReleaseError("request_replayed")
             release = verify_archive(raw, key)
@@ -826,16 +936,22 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
             # creates avoidable memory pressure on the supported 8 GiB ARM host.
             runner.run(prefix + ["build", "--pull", "api"], timeout=1800)
             runner.run(prefix + ["build", "--pull", "web"], timeout=1800)
-            production_path = paths.state / "compose" / (request.job_id + "-production.json")
+            production_path = (
+                paths.state / "compose" / (request.job_id + "-production.json")
+            )
             production = json.loads(production_path.read_text())
-            pin_images(production, lambda argv: runner.run(argv, timeout=30, capture=True))
+            pin_images(
+                production, lambda argv: runner.run(argv, timeout=30, capture=True)
+            )
             record_images(paths, candidate, request.job_id, production)
             atomic_write_json(production_path, production)
             phase("built")
             phase("smoking")
             runner.run(prefix + ["up", "-d", "--no-build"], timeout=180)
             if not runner.wait_ready(
-                project="robopark-candidate-" + request.job_id, config=smoke_config, timeout=180
+                project="robopark-candidate-" + request.job_id,
+                config=smoke_config,
+                timeout=180,
             ):
                 raise ReleaseError("smoke_failed")
             runner.run(prefix + ["down", "--volumes", "--remove-orphans"], timeout=120)
@@ -904,7 +1020,9 @@ def apply_release(request: UpdateRequest, paths: HostPaths, runner: Runner) -> U
             phase("activated")
             phase("health_check")
             if not runner.wait_ready(
-                project="robopark", config=paths.state / "current-compose.json", timeout=180
+                project="robopark",
+                config=paths.state / "current-compose.json",
+                timeout=180,
             ):
                 raise ReleaseError("cutover_unhealthy")
             phase("healthy")
@@ -947,7 +1065,9 @@ def _handle_failure(paths, journal, runner, error):
             # The restored app is locally ready; publication failure cannot undo it.
             publication_degraded = False
             try:
-                runner.run(["systemctl", "restart", "robopark-tuna.service"], timeout=90)
+                runner.run(
+                    ["systemctl", "restart", "robopark-tuna.service"], timeout=90
+                )
             except Exception:
                 publication_degraded = True
             if not _wait_public_ready(paths, runner, timeout=PUBLIC_READY_TIMEOUT):
@@ -1050,7 +1170,10 @@ def _load_journal(paths):
         ):
             if type(journal[key]) is not bool:
                 raise ValueError()
-        if type(journal["actor_user_id"]) is not int or not 0 < journal["actor_user_id"] < 2**63:
+        if (
+            type(journal["actor_user_id"]) is not int
+            or not 0 < journal["actor_user_id"] < 2**63
+        ):
             raise ValueError()
         if not isinstance(journal["phase"], str) or journal["phase"] not in PHASES:
             raise ValueError()
@@ -1106,7 +1229,9 @@ def _public_origin(paths):
         or directory.st_mode & 0o022
     ):
         raise ValueError("invalid_public_origin")
-    descriptor = os.open(paths.etc / "host.env", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    descriptor = os.open(
+        paths.etc / "host.env", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    )
     with os.fdopen(descriptor, "rb") as stream:
         metadata = os.fstat(stream.fileno())
         if (
@@ -1178,7 +1303,11 @@ def _wait_public_ready(paths, runner, *, timeout):
                 capture=True,
             )
             body, _, status = output.rpartition(b"\n")
-            if len(body) <= 4096 and status == b"200" and json.loads(body).get("status") == "ready":
+            if (
+                len(body) <= 4096
+                and status == b"200"
+                and json.loads(body).get("status") == "ready"
+            ):
                 return True
         except (ReleaseError, OSError, ValueError, AttributeError):
             pass
@@ -1216,19 +1345,27 @@ def _complete(paths, journal, runner):
             # Tuna unit when available, but never roll back database writes here.
             publication_degraded = True
             previous_unit = (
-                paths.ops / "rollbacks" / journal["job_id"] / "units/robopark-tuna.service"
+                paths.ops
+                / "rollbacks"
+                / journal["job_id"]
+                / "units/robopark-tuna.service"
             )
             if previous_unit.is_file():
                 atomic_copy(
-                    previous_unit, paths.root / "etc/systemd/system/robopark-tuna.service", 0o644
+                    previous_unit,
+                    paths.root / "etc/systemd/system/robopark-tuna.service",
+                    0o644,
                 )
                 try:
                     runner.run(["systemctl", "daemon-reload"], timeout=60)
-                    runner.run(["systemctl", "restart", "robopark-tuna.service"], timeout=90)
+                    runner.run(
+                        ["systemctl", "restart", "robopark-tuna.service"], timeout=90
+                    )
                 except Exception:
                     pass
     if not _wait_public_ready(paths, runner, timeout=PUBLIC_READY_TIMEOUT):
         publication_degraded = True
+    _publish_release_lifecycle(paths, manifest)
     phase("publication_checked", publication_degraded=publication_degraded)
     # Persist the irreversible boundary BEFORE opening writes. Recovery must never
     # restore an old snapshot after this record, even if the unlink was interrupted.
@@ -1236,16 +1373,21 @@ def _complete(paths, journal, runner):
     phase("resuming", writes_resumed=True)
     _maintenance(paths, False)
     result = _success_housekeeping(paths, journal, runner)
-    runner.run(["systemctl", "try-restart", "--no-block", "robopark-updater.service"], timeout=60)
+    runner.run(
+        ["systemctl", "try-restart", "--no-block", "robopark-updater.service"],
+        timeout=60,
+    )
     return result
 
 
 def _success_housekeeping(paths, journal, runner):
     atomic_write_json(
-        paths.state / "successful-releases" / (journal["previous"] + ".json"), {"successful": True}
+        paths.state / "successful-releases" / (journal["previous"] + ".json"),
+        {"successful": True},
     )
     atomic_write_json(
-        paths.state / "successful-releases" / (journal["candidate"] + ".json"), {"successful": True}
+        paths.state / "successful-releases" / (journal["candidate"] + ".json"),
+        {"successful": True},
     )
     _phase(paths, journal, "succeeded")
     _cleanup_staging(paths, journal, runner)
@@ -1319,8 +1461,12 @@ def recover_interrupted_update(paths: HostPaths, runner: Runner) -> RecoveryResu
                     return _handle_failure(
                         paths, journal, runner, _failure_token(journal["phase"], exc)
                     )
-            return _handle_failure(paths, journal, runner, journal["error"] or "interrupted")
+            return _handle_failure(
+                paths, journal, runner, journal["error"] or "interrupted"
+            )
         except Exception:
             _maintenance(paths, True)
-            _publish_status(paths, {"state": "maintenance", "error": "manual_recovery_required"})
+            _publish_status(
+                paths, {"state": "maintenance", "error": "manual_recovery_required"}
+            )
             return UpdateResult("maintenance", "manual_recovery_required")

@@ -1,6 +1,6 @@
 # Доработка рабочих сценариев
 
-Исходная база этого раздела: 326964e (0.1.42). Текущий `VERSION`: 0.1.45.
+Исходная база этого раздела: 326964e (0.1.42). Текущий `VERSION`: 0.2.0-rc.1.
 Ветка: codex/product-completion.
 Независимые ai/codex-platform и ai/vscode-product-ui не объединяются до передачи их результатов.
 
@@ -68,6 +68,13 @@ release-evidence для текущих исходников.
 - Полные наборы выше запускались до последних точечных исправлений; после них повторены затронутые наборы, не вся система.
 
 ### Текущий аудит и статус release-gates, 21.09.2026
+
+- Введены SemVer, каналы `stable`/`rc`/`manual`, manifest v3,
+  граф bridge-миграций, сроки поддержки и неизменяемое
+  продвижение релиза без пересборки.
+- Короткие проверки текущего дерева: `verify.sh fast` — 59 passed;
+  релизные/host/API — 79 passed; SystemVersionPanel — 1 passed;
+  TypeScript и `git diff --check` — PASS.
 
 - Точечно проверены новые DB-модели/миграция, bounded Web Push,
   server-side Tracker poller, общий auth throttle, default-off IP-геолокация,
