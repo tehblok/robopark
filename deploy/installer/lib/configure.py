@@ -2,8 +2,6 @@
 import getpass
 import json
 import os
-from datetime import datetime
-from pathlib import Path
 import re
 import secrets
 import shutil
@@ -11,6 +9,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -26,8 +26,8 @@ HOST_DEFAULTS = {
     'SECRET_KEY': '', 'SEED_PASSWORD': '', 'CORS_ORIGINS': '',
 }
 TUNA_DEFAULTS = {'TUNA_TOKEN': '', 'TUNA_LOCATION': 'ru', 'TUNA_SUBDOMAIN': '', 'TUNA_DOMAIN': '', 'TUNA_BIND': '127.0.0.1:8080'}
-UPDATER_DEFAULTS = {'GITHUB_REPOSITORY': 'tehblok/robopark', 'GITHUB_TOKEN': '', 'GITHUB_CHANNEL': 'stable', 'GITHUB_ENABLED': 'true'}
-ALLOWED = set(HOST_DEFAULTS) | set(TUNA_DEFAULTS) | set(UPDATER_DEFAULTS)
+UPDATER_DEFAULTS = {'GITHUB_REPOSITORY': 'tehblok/robopark', 'GITHUB_TOKEN': '', 'ROBOPARK_UPDATE_CHANNEL': 'stable', 'GITHUB_ENABLED': 'true'}
+ALLOWED = set(HOST_DEFAULTS) | set(TUNA_DEFAULTS) | set(UPDATER_DEFAULTS) | {'GITHUB_CHANNEL'}
 
 UPDATER_JOURNAL_FIELDS = {
     'schema', 'job_id', 'actor_user_id', 'candidate', 'previous',
@@ -82,7 +82,7 @@ def _read_journal(path):
                 raise ValueError('invalid_journal')
             value = json.loads(stream.read(16385), object_pairs_hook=_unique_object)
         if not isinstance(value, dict):
-            raise ValueError('invalid_journal')
+            raise ValueError('invalid_journal')  # noqa: TRY004 -- normalized at trust boundary
         return value
     except (OSError, ValueError, UnicodeError, RecursionError) as exc:
         raise ValueError('invalid_journal') from exc
@@ -217,7 +217,7 @@ def clean_host_state_is_idle(var_root):
 def probed_cpu_count(root):
     path = Path(root) / 'proc/cpuinfo'
     if path.exists():
-        return len(re.findall(r'^processor\s*:', path.read_text(), re.M))
+        return len(re.findall(r'^processor\s*:', path.read_text(), re.MULTILINE))
     return os.cpu_count() or 0 if Path(root) == Path('/') else 0
 
 
@@ -351,7 +351,7 @@ def validate(values):
         raise ValueError('invalid_github_repository')
     if values['GITHUB_TOKEN'] and not repo:
         raise ValueError('github_repository_required')
-    if values['GITHUB_CHANNEL'] not in ('stable', 'prerelease'):
+    if values['ROBOPARK_UPDATE_CHANNEL'] not in ('stable', 'rc', 'manual'):
         raise ValueError('invalid_github_channel')
     values['GITHUB_ENABLED'] = 'true' if repo else 'false'
     if values['UVICORN_WORKERS'] not in ('2', '4'):
@@ -384,6 +384,9 @@ def configure(root, mode, filename, resume):
         values.update(read_env(Path(filename)))
     # Reinstall and crash recovery never rotate non-empty host-owned values.
     values.update({key: value for key, value in existing.items() if value})
+    legacy_channel = values.pop('GITHUB_CHANNEL', None)
+    if legacy_channel:
+        values['ROBOPARK_UPDATE_CHANNEL'] = 'rc' if legacy_channel == 'prerelease' else legacy_channel
     if mode == 'interactive' and not (existing.get('TUNA_TOKEN') and existing.get('SEED_PASSWORD')):
         required = []
         if not values['TUNA_TOKEN']:
@@ -410,7 +413,7 @@ def configure(root, mode, filename, resume):
     if not values['UVICORN_WORKERS']:
         memory_path = Path(root) / 'proc/meminfo'
         memory = memory_path.read_text() if memory_path.exists() else ''
-        total = re.search(r'^MemTotal:\s+(\d+) kB', memory, re.M)
+        total = re.search(r'^MemTotal:\s+(\d+) kB', memory, re.MULTILINE)
         values['UVICORN_WORKERS'] = (
             '4'
             if total
@@ -425,7 +428,7 @@ def configure(root, mode, filename, resume):
     validate(values)
     if values['UVICORN_WORKERS'] == '4':
         memory = (Path(root) / 'proc/meminfo').read_text()
-        total = re.search(r'^MemTotal:\s+(\d+) kB', memory, re.M)
+        total = re.search(r'^MemTotal:\s+(\d+) kB', memory, re.MULTILINE)
         if (
             not total
             or int(total.group(1)) < 24 * 1024 * 1024
@@ -436,8 +439,8 @@ def configure(root, mode, filename, resume):
     if etc.is_symlink():
         raise ValueError('invalid_config_directory')
     os.chmod(etc, 0o700)
-    for filename, defaults in (('host.env', HOST_DEFAULTS), ('tuna.env', TUNA_DEFAULTS), ('updater.env', UPDATER_DEFAULTS)):
-        atomic_env(etc / filename, {key: values[key] for key in defaults})
+    for config_filename, defaults in (('host.env', HOST_DEFAULTS), ('tuna.env', TUNA_DEFAULTS), ('updater.env', UPDATER_DEFAULTS)):
+        atomic_env(etc / config_filename, {key: values[key] for key in defaults})
     password = atomic_secret(etc / 'postgres-password', secrets.token_urlsafe(48))
     pgpass = etc / 'pgpass'
     atomic_secret(pgpass, f'db:5432:robopark:robopark:{password}')

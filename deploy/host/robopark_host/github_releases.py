@@ -21,7 +21,14 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from .release import MAX_ARCHIVE, UTC, ReleaseError, timestamp, unique_object, verify_archive
+from .release import (
+    MAX_ARCHIVE,
+    UTC,
+    ReleaseError,
+    timestamp,
+    unique_object,
+    verify_archive,
+)
 from .release import version as semver
 from .rollback import sync_directory
 from .state import atomic_write_json, exclusive_lock
@@ -93,6 +100,7 @@ class GithubConfig:
                         "GITHUB_TOKEN",
                         "GITHUB_CHANNEL",
                         "GITHUB_ENABLED",
+                        "ROBOPARK_UPDATE_CHANNEL",
                     }
                     and key not in values
                 )
@@ -112,8 +120,10 @@ class GithubConfig:
                     )
                 )
             )
-            channel = values.get("GITHUB_CHANNEL", "stable")
-            require(channel in {"stable", "prerelease"})
+            require(not ({"GITHUB_CHANNEL", "ROBOPARK_UPDATE_CHANNEL"} <= set(values)))
+            channel = values.get("ROBOPARK_UPDATE_CHANNEL", values.get("GITHUB_CHANNEL", "stable"))
+            require(channel in {"stable", "rc", "manual", "prerelease"})
+            channel = "rc" if channel == "prerelease" else channel
             current = _read(paths.current / "VERSION", 256).decode().strip()
             semver(current)
             return cls(
@@ -260,7 +270,7 @@ def _http_worker(client, reader, writer, url, token, asset, limit):
             view = memoryview(chunk)
             while view:
                 view = view[os.write(writer, view) :]
-    except Exception:
+    except Exception:  # noqa: BLE001 -- isolated worker reports only success/failure
         os._exit(1)
     os._exit(0)
 
@@ -321,7 +331,7 @@ def _release(config, http, value):
     )
     require(value.get("draft") is False and type(value.get("prerelease")) is bool)
     require(value["prerelease"] == ("-" in version))
-    require(config.channel == "prerelease" or not value["prerelease"])
+    require(config.channel == "rc" or not value["prerelease"])
     name = "robopark-release-" + version + ".zip"
     wanted = {name + suffix for suffix in ("", ".sig", ".sha256", ".json")}
     entries = value.get("assets")
@@ -415,12 +425,12 @@ def _saved_release(value):
         and release.filename == "robopark-release-" + release.version + ".zip"
     )
     require(type(release.size) is int and 0 < release.size <= MAX_ARCHIVE)
-    for value, pattern in (
+    for field_value, pattern in (
         (release.git_sha, r"[a-fA-F0-9]{40}"),
         (release.sha256, r"[a-f0-9]{64}"),
         (release.migration_head, r"[A-Za-z0-9_.-]{1,128}"),
     ):
-        require(isinstance(value, str) and bool(re.fullmatch(pattern, value)))
+        require(isinstance(field_value, str) and bool(re.fullmatch(pattern, field_value)))
     wanted = {release.filename + suffix for suffix in ("", ".sig", ".sha256", ".json")}
     require(isinstance(release.assets, dict) and set(release.assets) == wanted)
     ids = set()
@@ -481,8 +491,8 @@ def check_latest_release(config, http):
     """Record availability only. Every network/configuration failure is sanitized."""
     with exclusive_lock(config.paths.host_lock):
         try:
-            if not config.enabled:
-                _publish(config.paths, "disabled")
+            if not config.enabled or config.channel == "manual":
+                _publish(config.paths, "manual" if config.channel == "manual" else "disabled")
                 return None
             history = _history(config)
             values = _json(_fetch(config, http, "/releases?per_page=100", MAX_API))
@@ -522,6 +532,19 @@ def check_latest_release(config, http):
         ):
             _publish(config.paths, "discovery_stale")
             return None
+
+
+def promote_release(candidate, target_channel, expected_digest):
+    """Return catalog state for the exact artifact; never rebuild or mutate its manifest."""
+    if not isinstance(candidate, dict) or target_channel not in {"rc", "stable"}:
+        raise ReleaseError("promotion_channel_ineligible")
+    if candidate.get("sha256") != expected_digest:
+        raise ReleaseError("promotion_digest_mismatch")
+    if target_channel not in candidate.get("eligible_channels", []):
+        raise ReleaseError("promotion_channel_ineligible")
+    if target_channel == "stable" and "-" in candidate.get("app_version", ""):
+        raise ReleaseError("promotion_channel_ineligible")
+    return {**candidate, "channel": target_channel}
 
 
 def current_available(paths, release_id):
@@ -581,6 +604,10 @@ def download_approved_release(release, paths, http):
         require(isinstance(key, Ed25519PublicKey) and len(signature) == 64)
         key.verify(signature, raw)
         manifest = verify_archive(raw, trusted).manifest
+        require(
+            manifest.get("format") != 3
+            or config.channel in manifest.get("eligible_channels", [])
+        )
         require(
             all(
                 manifest[field] == getattr(release, attr)
