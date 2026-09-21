@@ -9,6 +9,7 @@ import { Dialog } from '../../design-system/overlays/Dialog'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { Panel } from '../PageShell'
 import { SystemHealthPanel } from './SystemHealthPanel'
+import { SystemVersionPanel } from './SystemVersionPanel'
 import { age, opsText, repairLabels, updateProgress, useOpsResource } from './opsPresentation'
 import { activeJob, useOpsJob } from './useOpsJob'
 import './AdminOpsPanel.css'
@@ -17,7 +18,7 @@ const CONFIRM = 'ОБНОВИТЬ'
 const jobKinds: Record<string, string> = { snapshot: 'Снимок', restore: 'Восстановление', update: 'Обновление', diagnostics: 'Диагностика', repair: 'Исправление' }
 const jobStates: Record<string, string> = { queued: 'В очереди', running: 'Выполняется', succeeded: 'Завершено', failed: 'Не удалось завершить' }
 const phases: Record<string, string> = { awaiting_host: 'Ожидаем хост', host_dispatched: 'Операция передана хосту', building_snapshot: 'Создаём снимок', validating: 'Проверяем архив', replacing_data: 'Восстанавливаем данные', testing: 'Проверяем новую версию', pre_cutover_snapshot: 'Создаём резервную копию', awaiting_rebuild: 'Ожидаем запуска новой версии', applying: 'Устанавливаем версию', rolling_back: 'Восстанавливаем предыдущую версию' }
-const discoveryLabels = { available: 'Доступна новая версия', up_to_date: 'Установлена актуальная версия', discovery_stale: 'Сведения об обновлении устарели. Ожидаем проверку хоста.', disabled: 'Проверка обновлений отключена на хосте', approved: 'Обновление уже подтверждено' }
+const discoveryLabels = { available: 'Доступна новая версия', up_to_date: 'Установлена актуальная версия', discovery_stale: 'Сведения об обновлении устарели. Ожидаем проверку хоста.', disabled: 'Проверка обновлений отключена на хосте', manual: 'Автопоиск отключён: доступны локальные обновления', approved: 'Обновление уже подтверждено' }
 
 async function download(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
@@ -31,6 +32,7 @@ async function download(blob: Blob, filename: string) {
 export function AdminOpsPanel() {
   const { job, accept, error: pollingError, refresh: refreshJob } = useOpsJob()
   const available = useOpsResource('ops:available-update', api.opsAvailableUpdate)
+  const releaseStatus = useOpsResource('ops:release-status', api.opsReleaseStatus)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const actionLock = useRef(false)
@@ -138,6 +140,7 @@ export function AdminOpsPanel() {
 
   return <div className="ops-stack">
     {error && <OpsAlert tone="error">{error}</OpsAlert>}
+    {releaseStatus.data && <SystemVersionPanel value={releaseStatus.data} />}
     <SystemHealthPanel onRepair={() => void run(api.opsRepair)} busy={blocked || inspecting} revision={healthRevision} />
     {pollingError && <OpsAlert>Связь с хостом временно потеряна. Последний статус сохранён; проверка продолжится автоматически.</OpsAlert>}
     {job && job.id && job.state !== 'idle' ? <Panel title="Текущая операция">

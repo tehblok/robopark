@@ -22,12 +22,13 @@ from sqlalchemy.orm import Session
 
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
-from robopark_api.deps import require_royal
+from robopark_api.deps import require_builtin_admin_or_royal, require_royal
 from robopark_api.models import User
 from robopark_api.ops_schemas import (
     AvailableUpdateOut,
     GithubApprovalIn,
     HostResultOut,
+    ReleaseStatusOut,
     SystemHealthOut,
     UpdateApprovalIn,
     UpdateInspectionOut,
@@ -56,6 +57,7 @@ from robopark_api.services.ops.runner import (
     artifact_path,
     start_and_run,
 )
+from robopark_api.services.release_status import release_status
 
 ACTION_OPS_SNAPSHOT = "admin.ops.snapshot"
 ACTION_OPS_RESTORE = "admin.ops.restore"
@@ -409,6 +411,14 @@ def get_system_health(
     root = _bridge_root(settings)
     host_bridge.reconcile_host_job(resolved_ops_dir(settings), root)
     return host_bridge.system_health(root)
+
+
+@router.get("/admin/ops/release-status", response_model=ReleaseStatusOut)
+def get_release_status(
+    _user: User = Depends(require_builtin_admin_or_royal),
+    settings: Settings = Depends(get_settings),
+):
+    return release_status(_bridge_root(settings))
 
 
 @router.post("/admin/ops/update/inspect", response_model=UpdateInspectionOut)

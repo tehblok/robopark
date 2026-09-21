@@ -139,7 +139,7 @@ class AvailableReleaseOut(BaseModel):
 
 
 class AvailableUpdateOut(BaseModel):
-    state: Literal["available", "up_to_date", "discovery_stale", "disabled", "approved"] = (
+    state: Literal["available", "up_to_date", "discovery_stale", "disabled", "manual", "approved"] = (
         "discovery_stale"
     )
     checked_at: datetime | None = None
@@ -150,3 +150,20 @@ class GithubApprovalIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     release_id: int = Field(strict=True, gt=0, lt=2**63)
     confirm: str
+
+
+class ReleaseStatusOut(BaseModel):
+    version: str | None = None
+    build_id: str | None = None
+    git_sha: str | None = None
+    channel: Literal["stable", "rc", "manual"] | None = None
+    support_class: Literal["candidate", "standard", "lts"] | None = None
+    released_at: datetime | None = None
+    supported_until: datetime | None = None
+    support_status: Literal["supported", "ending", "expired", "unknown"] = "unknown"
+    operations_blocked: bool = False
+    database_head: str | None = None
+    installer_version: str | None = None
+    available_update: dict | None = None
+    bridges: list[str] = []
+    cleanup: dict | None = None

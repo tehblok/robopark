@@ -1,4 +1,5 @@
 import { vi } from 'vitest'
+import type { ReleaseStatus } from '../../api'
 
 export const healthFixture = {
   version: '1.2.0', git_sha: 'a'.repeat(40), generated_at: new Date().toISOString(),
@@ -6,6 +7,7 @@ export const healthFixture = {
   update: { state: 'rolled_back', publication: null }, last_backup: { status: 'success', completed_at: new Date(Date.now() - 3600000).toISOString() },
 }
 export const releaseFixture = { state: 'available', checked_at: new Date().toISOString(), release: { release_id: 42, version: '1.3.0', git_sha: 'b'.repeat(40), size: 10485760, sha256: 'c'.repeat(64) } }
+export const releaseStatusFixture: ReleaseStatus = { version: '1.0.0', build_id: 'a'.repeat(20), git_sha: 'b'.repeat(40), channel: 'stable', support_class: 'lts', released_at: '2026-01-01T00:00:00Z', supported_until: '2028-01-01T00:00:00Z', support_status: 'supported', operations_blocked: false, database_head: '0036_audit_remediation_state', installer_version: '1.0.0', available_update: null, bridges: [], cleanup: null }
 export const inspectionFixture = { inspection_id: 'inspection-one', version: '1.4.0', git_sha: 'd'.repeat(40), migration_head: 'migration_14', notes: 'Улучшена диагностика' }
 export function jobFixture(kind = 'diagnostics', state = 'running') {
   return { id: 'job-1', kind, state, phase: 'host_dispatched', log: '', error: null, artifact_ready: state === 'succeeded', restart_required: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), restore_phrase: 'ВОССТАНОВИТЬ', update_phrase: 'ОБНОВИТЬ', progress_percent: null, progress_phase: null, host_result: null }
@@ -14,6 +16,7 @@ export function mockOpsServer(overrides: Record<string, unknown | (() => unknown
   const responses: Record<string, unknown | (() => unknown)> = {
     '/admin/ops/system-health': healthFixture,
     '/admin/ops/available-update': releaseFixture,
+    '/admin/ops/release-status': releaseStatusFixture,
     '/admin/ops/job': jobFixture('', 'idle'),
     '/admin/ops/update/inspect': inspectionFixture,
     '/admin/ops/update/approve': jobFixture('update'),

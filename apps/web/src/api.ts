@@ -637,9 +637,19 @@ export type SystemHealth = {
 }
 
 export type AvailableUpdate = {
-  state: 'available' | 'up_to_date' | 'discovery_stale' | 'disabled' | 'approved'
+  state: 'available' | 'up_to_date' | 'discovery_stale' | 'disabled' | 'manual' | 'approved'
   checked_at: string | null
   release: { release_id: number; version: string; git_sha: string; size: number; sha256: string } | null
+}
+
+export type ReleaseStatus = {
+  version: string | null; build_id: string | null; git_sha: string | null
+  channel: 'stable' | 'rc' | 'manual' | null
+  support_class: 'candidate' | 'standard' | 'lts' | null
+  released_at: string | null; supported_until: string | null
+  support_status: 'supported' | 'ending' | 'expired' | 'unknown'
+  operations_blocked: boolean; database_head: string | null; installer_version: string | null
+  available_update: Record<string, unknown> | null; bridges: string[]; cleanup: Record<string, unknown> | null
 }
 
 export type UpdateInspection = {
@@ -1862,6 +1872,7 @@ export const api = {
         : `/reports/badge?park_id=${parkId}`,
     ),
   opsSystemHealth: () => request<SystemHealth>('/admin/ops/system-health'),
+  opsReleaseStatus: () => request<ReleaseStatus>('/admin/ops/release-status'),
   opsAvailableUpdate: () => request<AvailableUpdate>('/admin/ops/available-update'),
   opsInspectUpdate: (file: File) => {
     const form = new FormData()
