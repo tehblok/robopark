@@ -251,6 +251,36 @@ def test_run_keepalive_loop_sets_thread_stop_on_cancel(monkeypatch):
     assert captured_stop[0].is_set()
 
 
+def test_run_keepalive_loop_bridges_shutdown_to_worker_and_joins_it(monkeypatch):
+    """Normal lifespan shutdown must interrupt and join the real worker thread."""
+    worker_started = threading.Event()
+    worker_saw_stop = threading.Event()
+    worker_returned = threading.Event()
+
+    def blocking_keepalive_once(*, stop_event=None):
+        worker_started.set()
+        if stop_event.wait(timeout=0.5):
+            worker_saw_stop.set()
+        worker_returned.set()
+
+    monkeypatch.setattr(emergency_keepalive, "keepalive_once", blocking_keepalive_once)
+
+    async def stop_while_worker_runs():
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(emergency_keepalive.run_keepalive_loop(stop_event))
+        assert await asyncio.to_thread(worker_started.wait, 0.2)
+        started = time.monotonic()
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=0.3)
+        return time.monotonic() - started
+
+    elapsed = asyncio.run(stop_while_worker_runs())
+
+    assert elapsed < 0.3
+    assert worker_saw_stop.is_set()
+    assert worker_returned.is_set()
+
+
 def test_lifespan_starts_and_stops_keepalive(db_engine, test_settings, monkeypatch):
     started = threading.Event()
     stopped = threading.Event()

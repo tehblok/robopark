@@ -99,12 +99,23 @@ async def run_keepalive_loop(
 ) -> None:
     """Run keep-alive cycles until shutdown, with an injectable test interval."""
     thread_stop = threading.Event()
+
+    async def bridge_shutdown() -> None:
+        await stop_event.wait()
+        thread_stop.set()
+
+    shutdown_bridge = asyncio.create_task(bridge_shutdown())
     try:
         while not stop_event.is_set():
+            worker = asyncio.create_task(asyncio.to_thread(keepalive_once, stop_event=thread_stop))
             try:
-                await asyncio.to_thread(keepalive_once, stop_event=thread_stop)
+                # Shield the executor future so cancellation cannot detach its
+                # real thread. The cancellation branch below signals and joins it.
+                await asyncio.shield(worker)
             except asyncio.CancelledError:
                 thread_stop.set()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(worker)
                 raise
             except Exception:
                 logger.exception("Emergency keep-alive cycle failed")
@@ -121,3 +132,6 @@ async def run_keepalive_loop(
                 await asyncio.wait_for(stop_event.wait(), timeout=delay)
     finally:
         thread_stop.set()
+        shutdown_bridge.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await shutdown_bridge
