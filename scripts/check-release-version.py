@@ -4,25 +4,16 @@
 import argparse
 import ast
 import json
-import re
 import sys
-import tomllib
 from pathlib import Path
+
+import tomllib
+from robopark_version import ReleaseVersion
 
 
 def check(root, tag=None):
     version = (root / "VERSION").read_text().strip()
-    pattern = (
-        r"(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})"
-        r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
-    )
-    match = re.fullmatch(pattern, version) if len(version) <= 100 else None
-    if (
-        not match
-        or match[4]
-        and any(part.isdigit() and len(part) > 1 and part[0] == "0" for part in match[4].split("."))
-    ):
-        raise ValueError()
+    ReleaseVersion.parse(version)
     api = tomllib.loads((root / "apps/api/pyproject.toml").read_text())["project"]["version"]
     api_lock = tomllib.loads((root / "apps/api/uv.lock").read_text())
     locked_api_versions = [
@@ -60,6 +51,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     try:
         print(check(Path(__file__).resolve().parent.parent, args.tag))
-    except Exception:
+    except (KeyError, OSError, SyntaxError, TypeError, ValueError, tomllib.TOMLDecodeError):
         print("Release tag/version sources are inconsistent.", file=sys.stderr)
         sys.exit(1)
