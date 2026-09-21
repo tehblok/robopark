@@ -7,9 +7,11 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 
 REQUIRED_GATES = (
@@ -141,6 +143,63 @@ def validate_acceptance(root: Path, evidence: dict) -> dict:
     return evidence
 
 
+def validate_promotion_evidence(
+    evidence: dict,
+    *,
+    expected_source_sha: str,
+    expected_artifact_sha256: str,
+    expected_manifest_digest: str,
+    now: datetime | None = None,
+) -> dict:
+    """Validate immutable artifact-bound evidence used only for channel promotion."""
+    required = {
+        "format",
+        "source_sha",
+        "artifact_sha256",
+        "manifest_digest",
+        "command",
+        "started_at",
+        "completed_at",
+        "expires_at",
+        "gates",
+    }
+    try:
+        if (
+            not isinstance(evidence, dict)
+            or set(evidence) != required
+            or evidence["format"] != 2
+        ):
+            raise ValueError
+        if (
+            not re.fullmatch(r"[a-f0-9]{40}", evidence["source_sha"])
+            or not re.fullmatch(r"[a-f0-9]{64}", evidence["artifact_sha256"])
+            or not re.fullmatch(r"[a-f0-9]{64}", evidence["manifest_digest"])
+            or evidence["source_sha"] != expected_source_sha
+            or evidence["artifact_sha256"] != expected_artifact_sha256
+            or evidence["manifest_digest"] != expected_manifest_digest
+            or not isinstance(evidence["command"], str)
+            or not evidence["command"].strip()
+            or not isinstance(evidence["gates"], dict)
+            or not evidence["gates"]
+            or any(status != "PASS" for status in evidence["gates"].values())
+        ):
+            raise ValueError
+        started = datetime.fromisoformat(evidence["started_at"].replace("Z", "+00:00"))
+        completed = datetime.fromisoformat(
+            evidence["completed_at"].replace("Z", "+00:00")
+        )
+        expires = datetime.fromisoformat(evidence["expires_at"].replace("Z", "+00:00"))
+        current = now or datetime.now(UTC)
+        if (
+            not started <= completed <= current <= expires
+            or expires - completed > timedelta(days=14)
+        ):
+            raise ValueError
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
+        raise ValueError("release_acceptance_failed") from error
+    return evidence
+
+
 def is_release_source(relative: str) -> bool:
     """Limit the digest to product/release inputs, never worktree bookkeeping."""
     return relative in RELEASE_ROOT_FILES or relative.startswith(RELEASE_PREFIXES)
@@ -182,13 +241,32 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--validate", type=Path)
     parser.add_argument("--create", type=Path)
+    parser.add_argument("--validate-promotion", type=Path)
+    parser.add_argument("--source-sha")
+    parser.add_argument("--artifact-sha256")
+    parser.add_argument("--manifest-digest")
     parser.add_argument("--gate", action="append", default=[], metavar="NAME=REPORT")
     args = parser.parse_args()
     root = args.root.resolve()
     try:
-        if bool(args.validate) == bool(args.create):
+        modes = sum(
+            bool(value)
+            for value in (args.validate, args.create, args.validate_promotion)
+        )
+        if modes != 1:
             raise ValueError("choose_create_or_validate")
-        if args.validate:
+        if args.validate_promotion:
+            if not all((args.source_sha, args.artifact_sha256, args.manifest_digest)):
+                raise ValueError("release_acceptance_failed")
+            relative = args.validate_promotion.resolve().relative_to(root).as_posix()
+            evidence = _json_object(_read_regular(root, relative), "acceptance_format")
+            validate_promotion_evidence(
+                evidence,
+                expected_source_sha=args.source_sha,
+                expected_artifact_sha256=args.artifact_sha256,
+                expected_manifest_digest=args.manifest_digest,
+            )
+        elif args.validate:
             relative = args.validate.resolve().relative_to(root).as_posix()
             evidence = _json_object(_read_regular(root, relative), "acceptance_format")
             validate_acceptance(root, evidence)

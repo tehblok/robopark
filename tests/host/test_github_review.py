@@ -47,8 +47,8 @@ def publish_flags(tmp_path, version, *, tag=None):
     return result, json.loads(capture.read_text()) if capture.exists() else None
 
 
-@pytest.mark.parametrize("version,prerelease", [("1.3.0", False), ("1.3.0-rc.1", True)])
-def test_validated_tag_publishes_matching_channel(tmp_path, version, prerelease):
+@pytest.mark.parametrize("version", ["1.3.0", "1.3.0-rc.1"])
+def test_validated_tag_enters_rc_catalog(tmp_path, version):
     source = tmp_path / "version-sources"
     files = {
         "VERSION": version,
@@ -72,9 +72,17 @@ def test_validated_tag_publishes_matching_channel(tmp_path, version, prerelease)
     result, args = publish_flags(tmp_path, version)
     assert result.returncode == 0, result.stderr.decode()
     assert args[:3] == ["release", "create", "v" + version]
-    assert ("--prerelease" in args) is prerelease
+    assert "--prerelease" in args
     assert "--verify-tag" in args
     assert f"artifacts/robopark-release-{version}.zip.sig" in args
+
+
+def test_stable_promotion_never_rebuilds_or_resigns():
+    workflow = (ROOT / ".github/workflows/promote-release.yml").read_text()
+    assert "release_pack.py" not in workflow
+    assert "pack-release.sh" not in workflow
+    assert "--prerelease=false" in workflow
+    assert "--validate-promotion" in workflow
 
 
 def test_version_gate_rejects_stale_api_lock(tmp_path):

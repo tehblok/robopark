@@ -2,6 +2,10 @@
 
 Evidence is recorded only after the named command exits successfully. The release does not require an unattended soak.
 
+Stable promotion is stricter than local development: it consumes format-2 evidence
+bound to the exact source SHA, archive SHA-256 and manifest digest. Promotion edits
+only external channel metadata and never runs the packer or signing step.
+
 ## Current-source status
 
 The current audit work is based on Git HEAD `d00cd1dda1d5b1e4d65075566406743a8bdc3298`

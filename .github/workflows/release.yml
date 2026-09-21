@@ -81,10 +81,9 @@ jobs:
           set -euo pipefail
           version="$(cat VERSION)"
           test "$RELEASE_TAG" = "v$version"
-          publish_flags=(--verify-tag)
-          if [[ "$version" == *-* ]]; then
-            publish_flags+=(--prerelease)
-          fi
+          # Every new artifact enters the external rc catalog first. Stable is
+          # a later metadata-only promotion of this exact release and digest.
+          publish_flags=(--verify-tag --prerelease)
           gh release create "$RELEASE_TAG" "${publish_flags[@]}" --title "Robopark $version" --generate-notes \
             "artifacts/robopark-release-$version.zip"{,.sig,.sha256,.json} \
             "artifacts/robopark-installer-$version.tar.gz"{,.sig,.sha256,.json} \
