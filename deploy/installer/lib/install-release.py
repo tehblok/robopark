@@ -152,6 +152,16 @@ def historical_resume(root, target, key_data, metadata):
     pins = value['pins']
     if not isinstance(pins, dict) or len(pins) > 2:
         raise ValueError('invalid_trust_state')
+    try:
+        active_key = value['active_key'].encode('ascii')
+    except (AttributeError, UnicodeError) as error:
+        raise ValueError('invalid_trust_state') from error
+    if len(active_key) > 16_384:
+        raise ValueError('invalid_trust_state')
+    if not target.exists() and not target.is_symlink():
+        if active_key != key_data:
+            raise ValueError('key_rotation_requires_signed_update')
+        return False
     current = root / 'opt/robopark/current'
     if (
         not current.is_symlink()
@@ -212,6 +222,17 @@ def install(root, bundle, *modes):
         authenticated_metadata = {name: archive.read(name) for name in ('manifest.json', 'manifest.sig')}
     target = releases / meta.app_version
     resumed_trust = historical_resume(root, target, key_data, authenticated_metadata)
+    if (
+        not resumed_trust
+        and trust_state.exists()
+        and not trust_state.is_symlink()
+        and not target_key.exists()
+        and not target_key.is_symlink()
+    ):
+        # Normal removal keeps authoritative data/trust state but removes /etc.
+        # The check above proved that this bundle uses the active key, so restore
+        # the disposable public projection before services start.
+        atomic_bytes(target_key, key_data, 0o644)
     if not resumed_trust and target_key.exists() and target_key.read_bytes() != key_data:
         raise ValueError('key_rotation_requires_signed_update')
     current = opt / 'current'

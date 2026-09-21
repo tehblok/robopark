@@ -104,8 +104,13 @@ fi
 if [ -z "$ACTION" ]; then
     print_status
     if [ "$STATE" = incomplete ]; then
-        printf '%s\n' 'Найдена незавершённая установка — автоматически продолжаю её.'
-        ACTION=reinstall
+        if [ "$RELATION" = older ]; then
+            printf '%s\n' 'Найдена незавершённая старая установка — продолжаю через безопасное обновление.'
+            ACTION=update
+        else
+            printf '%s\n' 'Найдена незавершённая установка — автоматически продолжаю её.'
+            ACTION=reinstall
+        fi
     elif [ "$STATE" = absent ] || [ "$STATE" = removed-data ]; then
         ACTION=install
     elif [ "$STATE" = damaged ]; then
@@ -320,6 +325,7 @@ case "$ACTION" in
         [ "$RELATION" != newer ] || refuse_downgrade
         case "$STATE:$RELATION" in
             absent:*|removed-data:*) run_install ;;
+            incomplete:older) ACTION=update; run_local_update ;;
             incomplete:*) ACTION=reinstall; run_install ;;
             *:older) printf '%s\n' "Обнаружена версия $INSTALLED_VERSION. Выполняю обновление до $BUNDLE_VERSION."; ACTION=update; run_local_update ;;
             *:same) ACTION=reinstall; printf '%s\n' "Переустанавливаю системные файлы версии $BUNDLE_VERSION."; run_install ;;
@@ -329,6 +335,7 @@ case "$ACTION" in
     reinstall)
         [ "$RELATION" != newer ] || refuse_downgrade
         case "$STATE:$RELATION" in
+            incomplete:older) ACTION=update; run_local_update ;;
             absent:*|removed-data:*|incomplete:*) run_install ;;
             *:older) printf '%s\n' "Сначала обновляю $INSTALLED_VERSION до $BUNDLE_VERSION."; ACTION=update; run_local_update ;;
             *:same) printf '%s\n' "Переустанавливаю системные файлы версии $BUNDLE_VERSION."; run_install ;;

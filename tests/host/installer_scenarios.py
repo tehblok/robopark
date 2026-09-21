@@ -131,7 +131,7 @@ class InstallerScenarios(unittest.TestCase):
         return json.loads((self.root / 'var/lib/robopark/ops/state/install.json').read_text())
 
     def test_services_are_installed_and_tuna_starts_after_readiness(self):
-        self.run_installer()
+        self.run_start('install')
         installed = self.root / 'etc/systemd/system'
         for source in (self.source / 'deploy/systemd').iterdir():
             target = installed / source.name
@@ -281,6 +281,26 @@ class InstallerScenarios(unittest.TestCase):
         added = self.commands()[before:]
         self.assertFalse([call for call in added if call['name'] in {'apt-get', 'docker', 'systemctl'}])
 
+    def test_incomplete_journal_with_older_live_release_routes_through_updater(self):
+        self.run_installer()
+        state = self.root / 'var/lib/robopark/ops/state/install.json'
+        state.write_text('{"phase":"services","status":"failed","packages_complete":true}\n')
+        (self.source / 'VERSION').write_text('1.0.1\n')
+        for name in (
+            'apps/api/Dockerfile', 'apps/api/pyproject.toml', 'apps/api/uv.lock',
+            'apps/web/Dockerfile', 'apps/web/package.json', 'apps/web/package-lock.json',
+            'deploy/Dockerfile.api-tests', 'scripts/verify.sh',
+        ):
+            target = self.source / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(REPO / name, target)
+        self.write_release('1.0.1')
+
+        result = self.run_start()
+
+        self.assertIn('Локальное обновление завершено', result.stdout)
+        self.assertEqual((self.root / 'opt/robopark/current/VERSION').read_text(), '1.0.1\n')
+
     def test_repair_recovers_damaged_installation(self):
         self.run_installer()
         (self.root / 'opt/robopark/host-tools').unlink()
@@ -303,6 +323,25 @@ class InstallerScenarios(unittest.TestCase):
         self.assertTrue((self.root / 'opt/robopark/current/VERSION').is_file())
         self.assertTrue((self.root / 'opt/robopark/host-tools/robopark').is_file())
         self.assertEqual(data.read_text(), 'keep-me')
+
+    def test_reinstall_after_system_removal_restores_active_signing_projection(self):
+        state = self.root / 'var/lib/robopark/ops/state/signing-trust.json'
+        state.parent.mkdir(parents=True)
+        active_key = (self.bundle / 'keys/release-public-key.pem').read_text()
+        state.write_text(json.dumps({
+            'format': 1,
+            'job_id': None,
+            'active_key': active_key,
+            'pins': {},
+            'certificate': None,
+        }))
+        state.chmod(0o600)
+
+        self.run_installer()
+
+        projected = self.root / 'etc/robopark/release-public-key.pem'
+        self.assertEqual(projected.read_text(), active_key)
+        self.assertTrue((self.root / 'opt/robopark/current/VERSION').is_file())
 
     def test_remove_accepts_damaged_or_data_only_state_and_preserves_data(self):
         self.run_installer()
