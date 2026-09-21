@@ -37,6 +37,15 @@ MANIFEST_KEYS = {
     "update_notes",
     "files",
 }
+MANIFEST_V3_KEYS = (MANIFEST_KEYS - {"created_at"}) | {
+    "built_at",
+    "eligible_channels",
+    "support_class",
+    "support_months",
+    "build_id",
+    "content_digest",
+    "upgrade_policy",
+}
 METADATA_KEYS = {
     "format",
     "kind",
@@ -130,10 +139,9 @@ def verify_release(raw, key):
         require(archive.getinfo("manifest.json").file_size <= MAX_MANIFEST)
         require(archive.getinfo("manifest.sig").file_size == 64)
         manifest = json.loads(archive.read("manifest.json"), object_pairs_hook=unique_object)
-        require(
-            isinstance(manifest, dict)
-            and set(manifest) in (MANIFEST_KEYS, MANIFEST_KEYS | {"signing_key_rotation"})
-        )
+        require(isinstance(manifest, dict))
+        expected_keys = MANIFEST_KEYS if manifest.get("format") == 2 else MANIFEST_V3_KEYS
+        require(set(manifest) in (expected_keys, expected_keys | {"signing_key_rotation"}))
         key.verify(
             archive.read("manifest.sig"),
             json.dumps(
@@ -143,7 +151,7 @@ def verify_release(raw, key):
         require(
             manifest["kind"] == "release"
             and type(manifest["format"]) is int
-            and manifest["format"] == 2
+            and manifest["format"] in {2, 3}
         )
         validate_policy_metadata(manifest)
         require(
@@ -172,9 +180,10 @@ def verify_release(raw, key):
             isinstance(manifest["required_capabilities"], list)
             and all(isinstance(v, str) and v for v in manifest["required_capabilities"])
         )
-        require(isinstance(manifest["created_at"], str) and len(manifest["created_at"]) <= 40)
+        timestamp_key = "created_at" if manifest["format"] == 2 else "built_at"
+        require(isinstance(manifest[timestamp_key], str) and len(manifest[timestamp_key]) <= 40)
         require(
-            datetime.fromisoformat(manifest["created_at"].replace("Z", "+00:00")).utcoffset()
+            datetime.fromisoformat(manifest[timestamp_key].replace("Z", "+00:00")).utcoffset()
             is not None
         )
         files = manifest["files"]
@@ -194,6 +203,13 @@ def verify_release(raw, key):
                 len(content) == descriptor["size"]
                 and hashlib.sha256(content).hexdigest() == descriptor["sha256"]
             )
+        if manifest["format"] == 3:
+            entries = [
+                {"path": name, "size": value["size"], "sha256": value["sha256"]}
+                for name, value in sorted(files.items())
+            ]
+            canonical = json.dumps(entries, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            require(hashlib.sha256(canonical.encode()).hexdigest() == manifest["content_digest"])
         return manifest
 
 
@@ -271,7 +287,7 @@ def main():
         manifest = verify_artifact(args.artifact, trusted)
         if bridge:
             require(require_semver(manifest["app_version"]) > require_semver(bridge["app_version"]))
-    except Exception:
+    except Exception:  # noqa: BLE001 -- fail-closed standalone verifier boundary
         print("Artifact verification failed.", file=sys.stderr)
         return 1
     print("Artifact verified: detached Ed25519 signature, metadata and release contents.")
@@ -282,7 +298,7 @@ def validate_policy_metadata(manifest):
     """Strict signed policy fields; empty compatibility remains valid for old releases."""
     migration = manifest["migration_compatibility"]
     if not isinstance(migration, dict):
-        raise ValueError("invalid_release_policy")
+        raise TypeError("invalid_release_policy")
     if migration:
         if (
             set(migration) != {"from_heads", "reversible"}
@@ -298,6 +314,23 @@ def validate_policy_metadata(manifest):
                 for head in heads
             )
             or len(set(heads)) != len(heads)
+        ):
+            raise ValueError("invalid_release_policy")
+    if manifest.get("format") == 3:
+        channels = manifest.get("eligible_channels")
+        prerelease = "-" in manifest.get("app_version", "")
+        if (
+            not isinstance(channels, list)
+            or not channels
+            or len(channels) != len(set(channels))
+            or not set(channels) <= {"stable", "rc", "manual"}
+            or prerelease and channels != ["rc"]
+            or not prerelease and "stable" in channels and "rc" not in channels
+            or manifest.get("support_class") not in {"candidate", "standard", "lts"}
+            or type(manifest.get("support_months")) is not int
+            or not re.fullmatch(r"[a-f0-9]{20}", manifest.get("build_id", ""))
+            or not re.fullmatch(r"[a-f0-9]{64}", manifest.get("content_digest", ""))
+            or manifest.get("upgrade_policy") != {"mode": "graph"}
         ):
             raise ValueError("invalid_release_policy")
     if "signing_key_rotation" in manifest:

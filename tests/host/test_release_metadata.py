@@ -8,10 +8,54 @@ import pytest
 from test_packaging import ROOT, run
 from test_packaging import packaging as packaging_factory
 
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from release_policy import SupportPolicy, validate_manifest_policy
+
 
 @pytest.fixture
 def packaging(tmp_path):
     return packaging_factory.__wrapped__(tmp_path)
+
+
+def test_support_policy_assigns_lts_and_standard_windows():
+    policy = SupportPolicy.from_file(ROOT / "deploy/support-policy.json")
+    assert policy.release("1.0.0").support_class == "lts"
+    assert policy.release("1.0.0").support_months == 24
+    assert policy.release("1.1.0").support_class == "standard"
+    assert policy.release("1.1.0").support_months == 6
+
+
+def test_manifest_v3_rejects_prerelease_on_stable_channel():
+    manifest = {
+        "format": 3,
+        "app_version": "1.0.0-rc.1",
+        "eligible_channels": ["stable"],
+        "support_class": "candidate",
+        "support_months": 0,
+        "build_id": "a" * 20,
+        "content_digest": "b" * 64,
+        "upgrade_policy": {"mode": "graph"},
+    }
+    with pytest.raises(ValueError, match="invalid_release_policy"):
+        validate_manifest_policy(manifest)
+
+
+def test_public_packer_emits_support_aware_manifest_v3(packaging, tmp_path):
+    metadata = {
+        "migration_head": "new",
+        "migration_compatibility": {"from_heads": ["old"], "reversible": True},
+    }
+    result, output = metadata_pack(packaging, tmp_path, metadata, version="1.0.0")
+    assert result.returncode == 0, result.stderr
+    with zipfile.ZipFile(output) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+    assert manifest["format"] == 3
+    assert manifest["eligible_channels"] == ["rc", "stable"]
+    assert manifest["support_class"] == "lts"
+    assert manifest["support_months"] == 24
+    assert len(manifest["build_id"]) == 20
+    assert len(manifest["content_digest"]) == 64
 
 
 def metadata_pack(packaging, tmp_path, metadata, version="1.2.3"):

@@ -24,7 +24,13 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-UTC = timezone.utc  # noqa: UP017 -- packaging also runs with system Python 3.10
+# ``runpy`` does not add the script's own directory to ``sys.path``. The
+# packer is intentionally usable from an extracted source tree as well as CLI.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from release_policy import SupportPolicy, manifest_policy_fields
+
+UTC = timezone.utc
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 
@@ -253,7 +259,7 @@ def signing_key(path):
         raise ValueError("private_key_permissions")
     key = serialization.load_pem_private_key(data, password=None)
     if not isinstance(key, Ed25519PrivateKey):
-        raise ValueError("ed25519_required")
+        raise TypeError("ed25519_required")
     return key, data
 
 
@@ -423,6 +429,17 @@ def build_release(args):
     ):
         raise ValueError("signing_key_mismatch")
     metadata = release_metadata(args, files)
+    policy_path = root / "deploy/support-policy.json"
+    if not policy_path.exists() and not args.repository:
+        policy_path = REPOSITORY_ROOT / "deploy/support-policy.json"
+    support_policy = SupportPolicy.from_file(policy_path)
+    policy_fields = manifest_policy_fields(
+        support_policy,
+        version=args.version,
+        git_sha=args.git_sha,
+        migration_head=metadata["migration_head"],
+        files=files,
+    )
     # Release construction imports only checked repository code. Installer
     # construction never needs to import API source modules at all.
     api = REPOSITORY_ROOT / "apps/api/src"
@@ -451,7 +468,8 @@ def build_release(args):
             release_meta={
                 "git_sha": args.git_sha,
                 **metadata,
-                "created_at": datetime.fromtimestamp(stamp, UTC)
+                **policy_fields,
+                "built_at": datetime.fromtimestamp(stamp, UTC)
                 .isoformat()
                 .replace("+00:00", "Z"),
             },
@@ -573,7 +591,7 @@ def main():
         parser.error("--root, --version and --git-sha are required")
     try:
         build_installer(args) if args.installer else build_release(args)
-    except Exception:
+    except Exception:  # noqa: BLE001 -- fail-closed CLI boundary
         print(
             "Packaging failed: unsafe input, output, metadata or signing key.",
             file=sys.stderr,

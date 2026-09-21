@@ -27,7 +27,7 @@ from typing import BinaryIO
 # ``datetime.UTC`` is unavailable to the system Python used by pack-release.sh.
 UTC = getattr(datetime, "UTC", timezone.utc)  # noqa: UP017
 FORMAT_VERSION = 1
-RELEASE_FORMAT_VERSION = 2
+RELEASE_FORMAT_VERSION = 3
 KIND_SNAPSHOT = "snapshot"
 KIND_RELEASE = "release"
 MANIFEST_NAME = "manifest.json"
@@ -51,6 +51,15 @@ _RELEASE_MANIFEST_KEYS = {
     "created_at",
     "update_notes",
     "files",
+}
+_RELEASE_MANIFEST_V3_KEYS = (_RELEASE_MANIFEST_KEYS - {"created_at"}) | {
+    "built_at",
+    "eligible_channels",
+    "support_class",
+    "support_months",
+    "build_id",
+    "content_digest",
+    "upgrade_policy",
 }
 
 # Caps apply to both kinds. Large SQLite files need headroom; zip bombs do not.
@@ -113,15 +122,42 @@ def _release_manifest(
     if not isinstance(release_meta, dict):
         raise ArchiveError("invalid_manifest")
     if set(release_meta) - (
-        {"git_sha", "migration_head", "created_at", "signing_key_rotation"}
+        {
+            "git_sha",
+            "migration_head",
+            "built_at",
+            "eligible_channels",
+            "support_class",
+            "support_months",
+            "build_id",
+            "content_digest",
+            "upgrade_policy",
+            "signing_key_rotation",
+        }
         | set(_RELEASE_METADATA_DEFAULTS)
     ):
         raise ArchiveError("invalid_manifest")
     metadata = {
         **_RELEASE_METADATA_DEFAULTS,
-        "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "built_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         **release_meta,
     }
+    prerelease = "-" in app_version
+    lts = app_version.split("-", 1)[0].rsplit(".", 1)[0] == "1.0"
+    descriptors = [
+        {"path": name, "size": value["size"], "sha256": value["sha256"]}
+        for name, value in sorted(files.items())
+    ]
+    canonical = json.dumps(descriptors, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    metadata.setdefault("eligible_channels", ["rc"] if prerelease else ["rc", "stable"])
+    metadata.setdefault("support_class", "candidate" if prerelease else "lts" if lts else "standard")
+    metadata.setdefault("support_months", 0 if prerelease else 24 if lts else 6)
+    identity = (
+        f"{app_version}\0{metadata.get('git_sha', '')}\0{metadata.get('migration_head', '')}"
+    ).encode()
+    metadata.setdefault("build_id", hashlib.sha256(identity).hexdigest()[:20])
+    metadata.setdefault("content_digest", hashlib.sha256(canonical.encode()).hexdigest())
+    metadata.setdefault("upgrade_policy", {"mode": "graph"})
     manifest = {
         "kind": KIND_RELEASE,
         "format": RELEASE_FORMAT_VERSION,
@@ -134,12 +170,13 @@ def _release_manifest(
 
 
 def _validate_release_manifest(manifest: object) -> tuple[dict[str, str], str, str]:
-    if not isinstance(manifest, dict) or set(manifest) not in (
-        _RELEASE_MANIFEST_KEYS,
-        _RELEASE_MANIFEST_KEYS | {"signing_key_rotation"},
-    ):
+    if not isinstance(manifest, dict):
         raise ArchiveError("invalid_manifest")
-    if manifest.get("kind") != KIND_RELEASE or manifest.get("format") != RELEASE_FORMAT_VERSION:
+    fmt = manifest.get("format")
+    expected = _RELEASE_MANIFEST_KEYS if fmt == 2 else _RELEASE_MANIFEST_V3_KEYS
+    if set(manifest) not in (expected, expected | {"signing_key_rotation"}):
+        raise ArchiveError("invalid_manifest")
+    if manifest.get("kind") != KIND_RELEASE or fmt not in {2, RELEASE_FORMAT_VERSION}:
         raise ArchiveError("unsupported_format")
     from .release_signing import validate_policy_metadata
 
@@ -168,7 +205,8 @@ def _validate_release_manifest(manifest: object) -> tuple[dict[str, str], str, s
         isinstance(value, str) and value for value in manifest["required_capabilities"]
     ):
         raise ArchiveError("invalid_manifest")
-    if not isinstance(manifest.get("created_at"), str) or not manifest["created_at"]:
+    timestamp_key = "created_at" if fmt == 2 else "built_at"
+    if not isinstance(manifest.get(timestamp_key), str) or not manifest[timestamp_key]:
         raise ArchiveError("invalid_manifest")
     if not isinstance(manifest.get("update_notes"), str):
         raise ArchiveError("invalid_manifest")
@@ -195,6 +233,16 @@ def _validate_release_manifest(manifest: object) -> tuple[dict[str, str], str, s
         if normalized in {MANIFEST_NAME, MANIFEST_SIGNATURE_NAME} or normalized in listed:
             raise ArchiveError("invalid_manifest")
         listed[normalized] = digest
+    if fmt == 3:
+        descriptors = [
+            {"path": name, "size": value["size"], "sha256": value["sha256"]}
+            for name, value in sorted(files.items())
+        ]
+        canonical = json.dumps(
+            descriptors, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        if sha256_bytes(canonical.encode()) != manifest["content_digest"]:
+            raise ArchiveError("invalid_manifest")
     return listed, git_sha, migration_head
 
 
@@ -309,7 +357,7 @@ def _inspect_open(
     git_sha: str | None = None
     migration_head: str | None = None
     if kind == KIND_RELEASE:
-        if fmt != RELEASE_FORMAT_VERSION:
+        if fmt not in {2, RELEASE_FORMAT_VERSION}:
             raise ArchiveError("unsupported_format")
         listed, git_sha, migration_head = _validate_release_manifest(manifest)
         if MANIFEST_SIGNATURE_NAME not in names:

@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "stable_support_months": 6,
+  "lts_support_months": 24,
+  "channels": ["stable", "rc", "manual"],
+  "lts_lines": ["1.0"]
+}

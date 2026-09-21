@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
-UTC = timezone.utc  # noqa: UP017 -- host Python 3.10 compatibility
+UTC = timezone.utc
 
 MAX_ARCHIVE = 512 * 1024 * 1024
 MAX_EXPANDED = 2 * 1024 * 1024 * 1024
@@ -32,6 +32,15 @@ MANIFEST_KEYS = {
     "created_at",
     "update_notes",
     "files",
+}
+MANIFEST_V3_KEYS = (MANIFEST_KEYS - {"created_at"}) | {
+    "built_at",
+    "eligible_channels",
+    "support_class",
+    "support_months",
+    "build_id",
+    "content_digest",
+    "upgrade_policy",
 }
 
 
@@ -180,15 +189,15 @@ def verify_manifest(raw, signature, public_key):
     # The signature members remain in the format for compatibility with older
     # installations, but local OTA admission deliberately ignores their value.
     _ = signature, public_key
-    if not isinstance(manifest, dict) or set(manifest) not in (
-        MANIFEST_KEYS,
-        MANIFEST_KEYS | {"signing_key_rotation"},
-    ):
+    if not isinstance(manifest, dict):
+        raise ReleaseError("invalid_manifest")
+    expected_keys = MANIFEST_KEYS if manifest.get("format") == 2 else MANIFEST_V3_KEYS
+    if set(manifest) not in (expected_keys, expected_keys | {"signing_key_rotation"}):
         raise ReleaseError("invalid_manifest")
     if (
         manifest["kind"] != "release"
         or type(manifest["format"]) is not int
-        or manifest["format"] != 2
+        or manifest["format"] not in {2, 3}
     ):
         raise ReleaseError("unsupported_format")
     try:
@@ -228,7 +237,8 @@ def verify_manifest(raw, signature, public_key):
     ):
         raise ReleaseError("invalid_manifest")
     try:
-        if (timestamp(manifest["created_at"]) - datetime.now(UTC)).total_seconds() > 300:
+        timestamp_key = "created_at" if manifest["format"] == 2 else "built_at"
+        if (timestamp(manifest[timestamp_key]) - datetime.now(UTC)).total_seconds() > 300:
             raise ValueError()
     except (ValueError, TypeError, OverflowError) as exc:
         raise ReleaseError("invalid_manifest") from exc
@@ -253,6 +263,14 @@ def verify_manifest(raw, signature, public_key):
         total += descriptor["size"]
     if total > MAX_EXPANDED:
         raise ReleaseError("archive_too_large")
+    if manifest["format"] == 3:
+        entries = [
+            {"path": name, "size": value["size"], "sha256": value["sha256"]}
+            for name, value in sorted(files.items())
+        ]
+        canonical = json.dumps(entries, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if hashlib.sha256(canonical.encode()).hexdigest() != manifest["content_digest"]:
+            raise ReleaseError("invalid_manifest")
     return manifest
 
 
@@ -390,7 +408,7 @@ def validate_policy_metadata(manifest):
     """Strict signed policy fields; empty compatibility remains valid for old releases."""
     migration = manifest["migration_compatibility"]
     if not isinstance(migration, dict):
-        raise ValueError("invalid_release_policy")
+        raise TypeError("invalid_release_policy")
     if migration:
         if (
             set(migration) != {"from_heads", "reversible"}
@@ -406,6 +424,23 @@ def validate_policy_metadata(manifest):
                 for head in heads
             )
             or len(set(heads)) != len(heads)
+        ):
+            raise ValueError("invalid_release_policy")
+    if manifest.get("format") == 3:
+        channels = manifest.get("eligible_channels")
+        prerelease = "-" in manifest.get("app_version", "")
+        if (
+            not isinstance(channels, list)
+            or not channels
+            or len(channels) != len(set(channels))
+            or not set(channels) <= {"stable", "rc", "manual"}
+            or prerelease and channels != ["rc"]
+            or not prerelease and "stable" in channels and "rc" not in channels
+            or manifest.get("support_class") not in {"candidate", "standard", "lts"}
+            or type(manifest.get("support_months")) is not int
+            or not re.fullmatch(r"[a-f0-9]{20}", manifest.get("build_id", ""))
+            or not re.fullmatch(r"[a-f0-9]{64}", manifest.get("content_digest", ""))
+            or manifest.get("upgrade_policy") != {"mode": "graph"}
         ):
             raise ValueError("invalid_release_policy")
     if "signing_key_rotation" in manifest:

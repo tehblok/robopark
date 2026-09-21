@@ -164,7 +164,7 @@ def test_signed_release_roundtrip(tmp_path: Path, ed25519_keys: tuple[bytes, byt
 
     meta = inspect_archive(archive, expected_kind=KIND_RELEASE, public_key=public_key)
 
-    assert meta.format == 2
+    assert meta.format == 3
     assert meta.app_version == "1.2.3"
     assert meta.git_sha == "a" * 40
 
@@ -502,6 +502,9 @@ def test_pack_extracted_release_resolves_sha_without_git(
     (root / "apps/web").mkdir(parents=True)
     (root / "apps/web/package.json").write_text("{}")
     (root / "deploy").mkdir()
+    shutil.copyfile(
+        repository / "deploy/support-policy.json", root / "deploy/support-policy.json"
+    )
     metadata_tree(root, "initial")
     (root / "apps/api/data").mkdir()
     (root / "apps/api/data/emergency_sections.json").write_text("{}")

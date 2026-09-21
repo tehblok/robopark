@@ -67,6 +67,24 @@ def validate_policy_metadata(manifest):
             or len(set(heads)) != len(heads)
         ):
             raise ValueError("invalid_release_policy")
+    if manifest.get("format") == 3:
+        channels = manifest.get("eligible_channels")
+        version = manifest.get("app_version", "")
+        prerelease = "-" in version
+        if (
+            not isinstance(channels, list)
+            or not channels
+            or len(channels) != len(set(channels))
+            or not set(channels) <= {"stable", "rc", "manual"}
+            or prerelease and channels != ["rc"]
+            or not prerelease and "stable" in channels and "rc" not in channels
+            or manifest.get("support_class") not in {"candidate", "standard", "lts"}
+            or type(manifest.get("support_months")) is not int
+            or not re.fullmatch(r"[a-f0-9]{20}", manifest.get("build_id", ""))
+            or not re.fullmatch(r"[a-f0-9]{64}", manifest.get("content_digest", ""))
+            or manifest.get("upgrade_policy") != {"mode": "graph"}
+        ):
+            raise ValueError("invalid_release_policy")
     if "signing_key_rotation" in manifest:
         rotation = manifest["signing_key_rotation"]
         if not isinstance(rotation, dict) or set(rotation) != {
