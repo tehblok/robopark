@@ -76,7 +76,7 @@ export function SyncCenter({
             ? <Button onClick={() => (activateUpdate ?? (() => activateServiceWorkerWhenSafe(undefined, state)))()} size="compact" variant="secondary">Установить обновление</Button>
             : <p>Обновление будет доступно после отправки очереди.</p>
             : null}
-          <Button onClick={() => void sync.syncNow('manual')} size="compact">Повторить отправку</Button>
+          <p>Отправка выполняется автоматически.</p>
         </section>
       ) : null}
     </div>

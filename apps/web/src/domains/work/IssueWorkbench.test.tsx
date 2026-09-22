@@ -389,6 +389,20 @@ it('keeps the task route identity visible in A when workflow metadata is absent'
   expect(within(detail).getAllByRole('heading', { name: issue.summary })).toHaveLength(1)
 })
 
+it('keeps robot context out of A and repair steps out of chat', async () => {
+  const mechanic: User = { ...user, username: 'mech', role: 'mechanic' }
+  renderWorkbench({ presentationMode: 'task-first', currentUser: mechanic,
+    client: apiClient({ trackerIssue: vi.fn(async () => ({ ...queuedWorkflowIssue,
+      workflow: { ...queuedWorkflowIssue.workflow!, owner: { login: mechanic.username, display: mechanic.username } },
+    })) }) })
+
+  await screen.findByRole('heading', { name: issue.summary })
+  expect(screen.queryByText('Контекст задачи')).not.toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: 'Проверить робота → Запчасти → Что было сделано' })).toBeVisible()
+  fireEvent.click(screen.getByRole('tab', { name: 'Чат' }))
+  expect(screen.queryByRole('heading', { name: 'Проверить робота → Запчасти → Что было сделано' })).not.toBeInTheDocument()
+})
+
 function Harness({ children }: { children: ReactNode }) {
   return <MemoryRouter>{children}</MemoryRouter>
 }

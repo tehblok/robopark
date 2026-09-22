@@ -15,7 +15,6 @@ import {
   ApiError,
   type Park,
   type Paged,
-  type EmergencySnapshot,
   type TrackerIssue,
   type TaskTimelineItem,
   type TrackerIssueDetail,
@@ -168,42 +167,6 @@ function TaskIssueSummary({ issue, now, onOpenRobotCheck, robotReadOnly }: { iss
     <RepairSla deadline={issue.sla_deadline} now={now} source={issue.sla_source} />
     {description.trim() ? <section className="issue-section"><h3>Описание</h3><IssueRichText text={description} /></section> : null}
   </article>
-}
-
-function TaskContextRail({ issue, snapshot, canCheck, onCheck, onChat }: {
-  issue: TrackerIssueDetail
-  snapshot: EmergencySnapshot | null
-  canCheck: boolean
-  onCheck(): void
-  onChat(): void
-}) {
-  const robot = normalizedRobotNumber(issue.robot)
-  const events = snapshot?.diagnostic_events ?? []
-  const observed = snapshot?.observed_at ? new Date(snapshot.observed_at) : null
-  const observedLabel = observed && !Number.isNaN(observed.getTime())
-    ? new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(observed)
-    : 'Нет данных'
-  const battery = (connected: boolean | null | undefined, percent: number | null | undefined) => connected === false
-    ? 'не подключена'
-    : percent == null ? 'нет данных' : `${percent} %`
-  return <div className="a-task-context-rail">
-    <section aria-labelledby="a-task-robot-now">
-      <h3 id="a-task-robot-now">Робот сейчас</h3>
-      <strong>{robot ? `Робот ${robot}` : 'Робот не указан'}</strong>
-      {snapshot ? <dl className="a-task-context-values">
-        <div><dt>Ошибки</dt><dd>{snapshot.error_banner ?? (events.length ? `${events.length} активн.` : snapshot.wheels_fault.length ? `${snapshot.wheels_fault.length} по колёсам` : 'Нет')}</dd></div>
-        <div><dt>LTE</dt><dd>{snapshot.lte_label ?? 'Нет данных'} · {snapshot.connection === 'lte' ? 'мобильное' : snapshot.connection === 'wire' ? 'проводное' : 'тип неизвестен'}</dd></div>
-        <div><dt>SIM 1 / SIM 2</dt><dd>{snapshot.sim_signals?.[0] ?? '—'} / {snapshot.sim_signals?.[1] ?? '—'}</dd></div>
-        <div><dt>АКБ 1 / АКБ 2</dt><dd>{battery(snapshot.battery1_connected, snapshot.battery1_percent)} / {battery(snapshot.battery2_connected, snapshot.battery2_percent)}</dd></div>
-        <div><dt>Последняя проверка</dt><dd><time dateTime={snapshot.observed_at}>{observedLabel}</time></dd></div>
-      </dl> : <p>Загружаем актуальные показания робота…</p>}
-      {canCheck ? <Button onClick={onCheck} variant="secondary">Все показания</Button> : null}
-    </section>
-    <section aria-labelledby="a-task-operator">
-      <h3 id="a-task-operator">Оператор</h3>
-      <Button onClick={onChat} variant="secondary">Открыть чат</Button>
-    </section>
-  </div>
 }
 
 function TaskRepairSequence({ canCheck, onCheck, onParts }: { canCheck: boolean; onCheck(): void; onParts(): void }) {
@@ -530,7 +493,6 @@ export function TaskController({
   const [partsFocusRequest, setPartsFocusRequest] = useState(0)
   const partsRef = useRef<HTMLDivElement>(null)
   const [taskActionHost, setTaskActionHost] = useState<HTMLElement | null>(null)
-  const [robotSnapshot, setRobotSnapshot] = useState<EmergencySnapshot | null>(null)
   const [hideReason, setHideReason] = useState('')
   const [taskControlBusy, setTaskControlBusy] = useState(false)
   const [taskControlMessage, setTaskControlMessage] = useState('')
@@ -943,12 +905,9 @@ export function TaskController({
                       <TaskIssueSummary issue={detail.data} now={now} robotReadOnly={!mechanicCanWork}
                         onOpenRobotCheck={mechanicCanWork ? () => changeTab('check') : undefined} />
                       {detail.data.workflow ? <TaskSyncStatus state={detail.data.workflow.sync_state} errorCode={detail.data.workflow.sync_error_code} /> : null}
-                    </> : null} context={detail.data ? <TaskContextRail
-                      issue={detail.data} snapshot={robotSnapshot} canCheck={mechanicCanWork}
-                      onCheck={() => changeTab('check')}
-                      onChat={() => { setTaskFocus('chat'); changeTab('task') }} /> : null}>
+                    </> : null}>
                     {detail.data?.workflow ? <>
-                      {taskFirst ? <TaskRepairSequence canCheck={mechanicCanWork} onCheck={() => changeTab('check')} onParts={() => {
+                      {taskFirst && taskFocus === 'repair' ? <TaskRepairSequence canCheck={mechanicCanWork} onCheck={() => changeTab('check')} onParts={() => {
                         setPartsOpen(true)
                         setPartsFocusRequest(value => value + 1)
                       }} /> : null}
@@ -1125,7 +1084,6 @@ export function TaskController({
                     {mechanicCanWork ? <TabPanel id="work-panel-check" labelledBy="tab-check" active={activeTab === 'check'}>
                       {detail.data ? robotNumber ? <WorkRobotCheck
                         key={relatedPrefix} robot={robotNumber} user={user} activeTab={state.checkTab}
-                        onSnapshot={setRobotSnapshot}
                         onAuthorizationFailure={failure => {
                           if (failure.kind === 'unauthorized') observeAuthorizationFailure(new ApiError(401, null, failure.requestId))
                         }}

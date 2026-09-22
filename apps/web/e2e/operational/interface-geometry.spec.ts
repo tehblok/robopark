@@ -16,6 +16,48 @@ for (const mode of ['Классический', 'Новый А'] as const) test(
   expect(panel!.y - (metrics!.y + metrics!.height)).toBeGreaterThanOrEqual(16)
 })
 
+for (const mode of ['Классический', 'Новый А'] as const) test(`${mode} keeps park selection compact and centers automatic sync status`, async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await openRouteFixture(page, 'admin', userForRole('royal'))
+  await selectInterface(page, mode)
+  await settlePage(page)
+
+  const park = await page.locator('.rp-shell__topbar .rp-shell__park-brand').boundingBox()
+  const indicator = await page.locator('.rp-sync-center__trigger').boundingBox()
+  const dot = await page.locator('.rp-sync-center__dot').boundingBox()
+  expect(park).not.toBeNull()
+  expect(indicator).not.toBeNull()
+  expect(dot).not.toBeNull()
+  expect(park!.width).toBeLessThan(220)
+  expect(Math.abs(dot!.x + dot!.width / 2 - (indicator!.x + indicator!.width / 2))).toBeLessThanOrEqual(2)
+})
+
+for (const mode of ['Классический', 'Новый А'] as const) test(`${mode} separates task and related-work navigation on narrow screens`, async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await openRouteFixture(page, 'work-issue', userForRole('mechanic'))
+  await selectInterface(page, mode)
+  await settlePage(page)
+  const mainTabs = await page.getByRole('tablist', { name: 'Разделы задачи' }).boundingBox()
+  const relatedTabs = await page.getByRole('tablist', { name: 'Другие задачи робота' }).boundingBox()
+  expect(mainTabs).not.toBeNull()
+  expect(relatedTabs).not.toBeNull()
+  expect(relatedTabs!.y - (mainTabs!.y + mainTabs!.height)).toBeGreaterThanOrEqual(12)
+})
+
+for (const mode of ['Классический', 'Новый А'] as const) test(`${mode} keeps the task-management action compact on desktop`, async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openRouteFixture(page, 'work-issue', userForRole('royal'))
+  await selectInterface(page, mode)
+  await settlePage(page)
+  const control = page.getByRole('button', { name: 'Скрыть задачу' })
+  await expect(control).toBeVisible()
+  const button = await control.boundingBox()
+  const section = await page.getByRole('region', { name: 'Управление задачей' }).boundingBox()
+  expect(button).not.toBeNull()
+  expect(section).not.toBeNull()
+  expect(button!.width).toBeLessThan(section!.width / 2)
+})
+
 test('Новый А shows roles across the workspace until a role is selected', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await openRouteFixture(page, 'admin', userForRole('royal'))

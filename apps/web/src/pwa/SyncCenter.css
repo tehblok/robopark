@@ -10,5 +10,9 @@
 .rp-sync-center__panel ul { display: grid; gap: var(--rp-space-2); list-style: none; margin: 0; padding: 0; }
 .rp-sync-center__panel p { color: var(--rp-text-muted); margin: 0; }
 @keyframes rp-sync-pulse { 50% { opacity: .4; } }
-@media (max-width: 899px) { .rp-sync-center__trigger > span:not(.rp-sync-center__dot) { display: none; } .rp-sync-center__panel { position: fixed; right: var(--rp-space-3); top: calc(var(--rp-header-height, 4rem) + var(--rp-space-2)); } }
+@media (max-width: 899px) {
+  .rp-sync-center__trigger { justify-content: center; min-width: var(--rp-control-min-size); padding-inline: var(--rp-space-2); }
+  .rp-sync-center__trigger > span:not(.rp-sync-center__dot) { display: none; }
+  .rp-sync-center__panel { position: fixed; right: var(--rp-space-3); top: calc(var(--rp-header-height, 4rem) + var(--rp-space-2)); }
+}
 @media (prefers-reduced-motion: reduce) { .rp-sync-center__dot.is-syncing { animation: none; } }

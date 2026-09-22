@@ -362,9 +362,9 @@ button.rp-shell__more-link {
   .rp-shell__topbar { flex-wrap: nowrap; min-width: 0; }
 
   .rp-shell__park-brand {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     margin-right: auto;
-    max-width: 18rem;
+    max-width: min(52vw, 18rem);
   }
 
   .rp-shell__park-brand-name,

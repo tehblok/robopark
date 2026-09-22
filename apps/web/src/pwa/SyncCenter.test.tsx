@@ -27,8 +27,8 @@ describe('SyncCenter', () => {
     expect(screen.getByText('Комментарий к SDCFLEETOPS-1')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByText('На устройстве: 2,0 МБ из 10,0 МБ')).toBeInTheDocument())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Повторить отправку' }))
-    expect(value.syncNow).toHaveBeenCalledWith('manual')
+    expect(screen.getByText('Отправка выполняется автоматически.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Повторить отправку' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Отменить «Комментарий к SDCFLEETOPS-1»' }))
     expect(value.cancelAction).toHaveBeenCalledWith('comment-1')
   })

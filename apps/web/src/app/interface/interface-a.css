@@ -59,8 +59,8 @@
   .rp-work-detail-pane .issue-attach-group { border-top: 1px solid var(--rp-border); padding-top: 12px; }
   .rp-work-detail-pane .issue-comment-form textarea { min-height: 100px; }
   .a-work-chat { min-width: 0; padding: var(--rp-card-padding); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-card); background: var(--rp-surface); }
-  .a-task-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; align-items: start; }
-  .a-task-header, .a-task-workflow { grid-column: 1; display: grid; gap: 0; min-width: 0; }
+  .a-task-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--rp-section-gap); align-items: start; }
+  .a-task-header, .a-task-workflow { grid-column: 1; display: grid; gap: var(--rp-form-gap); min-width: 0; }
   .a-task-title { margin: 0 0 12px; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
   .a-domain-composition { display:grid; grid-template-columns:minmax(0,1fr); gap:var(--rp-section-gap); align-items:start; }
   .a-domain-composition > [data-a-zone='intro'] { min-width:0; }
@@ -71,17 +71,6 @@
   .a-task-workflow > .issue-detail { border: 0; border-radius: 0; border-bottom: 1px solid var(--rp-border); padding: 16px 0 24px; background: transparent; }
   .a-task-workflow > .issue-actions { border: 0; border-radius: 0; border-top: 1px solid var(--rp-border); padding: 24px 0; background: transparent; }
   .a-task-workflow > .rp-responsive-disclosure-group { border-top: 1px solid var(--rp-border); padding-block: 8px 20px; }
-  .a-task-context__disclosure { display: block; grid-column: 1; border-block: 1px solid var(--rp-border); margin-block: var(--rp-form-gap); }
-  .a-task-context__disclosure > summary { display: flex; align-items: center; min-height: 48px; cursor: pointer; font-weight: 700; }
-  .a-task-context__body { padding: var(--rp-form-gap) 0; }
-  .a-task-context-rail { display: grid; gap: 24px; }
-  .a-task-context-rail section { display: grid; justify-items: start; gap: 12px; padding-bottom: 24px; border-bottom: 1px solid var(--rp-border); }
-  .a-task-context-rail :where(h3, p) { margin: 0; }
-  .a-task-context-rail p { color: var(--rp-text-muted); line-height: 1.5; }
-  .a-task-context-values { display: grid; gap: 10px; margin: 0; width: 100%; }
-  .a-task-context-values > div { display: grid; gap: 2px; }
-  .a-task-context-values dt { color: var(--rp-text-muted); font-size: 14px; }
-  .a-task-context-values dd { margin: 0; overflow-wrap: anywhere; }
   .a-task-sequence { padding: 16px 0 24px; border-bottom: 1px solid var(--rp-border); }
   .a-task-sequence h3 { margin: 0 0 12px; font-size: 16px; }
   .a-task-sequence ol { display: grid; grid-template-columns: minmax(0, 1fr); margin: 0; padding: 0; list-style: none; counter-reset: repair-step; }
@@ -287,9 +276,9 @@
     .report-composition--task-first > [data-a-zone='report-actions'] { flex-wrap:wrap; }
     .rp-reports .actions { flex-wrap:wrap; }
     .rp-reports .btn-filter { flex:1 1 140px; min-width:0; }
-    .rp-work-sections { display: grid; gap: var(--rp-space-2); }
+    .rp-work-sections { display: grid; gap: var(--rp-section-gap); }
     .rp-work-sections > .rp-tabs { display: grid; grid-template-columns: repeat(var(--rp-tab-count), minmax(0, 1fr)); }
-    .a-work-related { border-top: 1px solid var(--rp-border); }
+    .a-work-related { border-top: 1px solid var(--rp-border); padding-top: var(--rp-form-gap); }
     .a-work-related button { font-size: 14px; }
     .rp-work-detail-pane .issue-detail { display: flex; flex-direction: column; padding: var(--rp-card-padding); gap: var(--rp-form-gap); }
     .rp-work-detail-pane .issue-detail-summary { font-size: 20px; }
@@ -310,7 +299,7 @@
     .rp-check-block-photo-frame { inline-size: min(100%, 180px); }
     .rp-shell__context { display: none; }
     .rp-shell__topbar { min-height: 60px; padding: 8px 12px; gap: 8px; }
-    .rp-shell__park-brand { flex: 1; max-width: none; padding: 8px; min-height: 44px; }
+    .rp-shell__park-brand { flex: 0 1 auto; max-width: min(52vw, 18rem); padding: 8px; min-height: 44px; }
     .rp-shell__content { padding: var(--rp-card-padding) var(--rp-page-gutter) calc(var(--rp-shell-mobile-nav-height) + var(--rp-space-4) + env(safe-area-inset-bottom)); scroll-padding-bottom: calc(var(--rp-shell-mobile-nav-height) + var(--rp-space-4) + env(safe-area-inset-bottom)); }
     .rp-shell__user { font-size: 14px; }
     .rp-shell__user > span { font-size: 14px; }
