@@ -2,6 +2,25 @@ import { describe, expect, it, vi } from 'vitest'
 import { ClientTelemetry, type ClientMetric } from './clientTelemetry'
 
 describe('ClientTelemetry', () => {
+  it('starts and disposes with browser timers that require the window receiver', () => {
+    let canceled = false
+    vi.stubGlobal('setTimeout', function (this: unknown) {
+      if (this !== globalThis) throw new TypeError('Illegal invocation')
+      return 42 as never
+    })
+    vi.stubGlobal('clearTimeout', function (this: unknown, timer: number) {
+      if (this !== globalThis) throw new TypeError('Illegal invocation')
+      canceled = timer === 42
+    })
+    try {
+      const telemetry = new ClientTelemetry()
+      telemetry.dispose()
+      expect(canceled).toBe(true)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('samples ordinary metrics, bounds batches and never accepts arbitrary payloads', async () => {
     const send = vi.fn(async (_batch: { metrics: ClientMetric[] }) => undefined)
     const telemetry = new ClientTelemetry({ send, random: () => 0, sampleRate: 1, schedule: () => 0 as never, cancel: vi.fn() })

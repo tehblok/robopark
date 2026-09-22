@@ -37,8 +37,8 @@ export class ClientTelemetry {
     this.send = options.send ?? defaultSend
     this.random = options.random ?? Math.random
     this.sampleRate = options.sampleRate ?? 0.1
-    this.schedule = options.schedule ?? setTimeout
-    this.cancel = options.cancel ?? clearTimeout
+    this.schedule = options.schedule ?? ((callback, delayMs) => globalThis.setTimeout(callback, delayMs))
+    this.cancel = options.cancel ?? (timer => globalThis.clearTimeout(timer))
     this.intervalMs = options.intervalMs ?? 30_000
     this.timer = null
     this.arm()
