@@ -590,6 +590,27 @@ def test_system_runner_cleanup_failure_does_not_replace_real_failure_log(
     assert log.read_text() == "real build failure\n"
 
 
+def test_readiness_probe_does_not_hide_the_failing_update_command(
+    host_paths, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("ROBOPARK_TESTING", "1")
+    monkeypatch.setenv("ROBOPARK_ROOT", str(host_paths.root))
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker = fake_bin / "docker"
+    docker.write_text("#!/bin/sh\necho 'temporary connection refused' >&2\nexit 1\n")
+    docker.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin) + os.pathsep + os.environ["PATH"])
+    log = host_paths.root / "var/log/robopark/ota-update.log"
+    runner = SystemRunner(log)
+
+    assert not runner.wait_ready(project="candidate", config=tmp_path / "compose.json", timeout=1.1)
+    assert not log.exists()
+    with pytest.raises(ReleaseError):
+        runner.run([sys.executable, "-c", "import sys; print('fatal migration'); sys.exit(1)"], timeout=5)
+    assert "fatal migration" in log.read_text()
+
+
 def test_retention_keeps_three_successes_after_third_update(host):
     apply_release(host.request(), host.paths, host.runner)
     reconcile_after_exit(host.paths, host.runner)
@@ -902,6 +923,17 @@ def test_candidate_and_rendered_configs_pass_real_compose_validation(host, tmp_p
             capture_output=True,
             text=True,
         )
+
+    production = json.loads(
+        subprocess.run(
+            [
+                "docker", "compose", "-p", "robopark", "-f", str(production_path),
+                "config", "--no-env-resolution", "--format", "json",
+            ],
+            check=True, capture_output=True, text=True,
+        ).stdout
+    )
+    assert production["networks"]["default"]["name"] == "robopark_default"
 
 
 def test_success_restarts_application_under_new_unit_before_opening_writes(host):

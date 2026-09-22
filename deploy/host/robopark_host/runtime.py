@@ -232,6 +232,11 @@ def production_config(document, paths, release, image_tag):
     """One container privilege/configuration contract for installation and OTA."""
     document = copy.deepcopy(document)
     document["name"] = "robopark"
+    # Compose config was rendered under a candidate project. Its generated
+    # default network name must not follow the release into production: the
+    # running database remains attached to robopark_default during migration.
+    if "default" in document.get("networks", {}):
+        document["networks"]["default"]["name"] = "robopark_default"
     document["x-robopark-release"] = str(release)
     document["services"].setdefault(
         "db",

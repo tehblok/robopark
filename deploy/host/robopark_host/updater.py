@@ -301,7 +301,7 @@ class SystemRunner:
                 process.stderr.close()
 
     def run_cleanup(self, argv, *, timeout) -> bool:
-        """Run best-effort cleanup without replacing the real failure log."""
+        """Run best-effort cleanup or readiness probes without claiming the failure log."""
 
         failure_log = self.failure_log
         self.failure_log = None
@@ -317,50 +317,21 @@ class SystemRunner:
         deadline = time.monotonic() + timeout
         prefix = compose(project, config)
         while time.monotonic() < deadline:
-            try:
-                self.run(
-                    prefix
-                    + [
-                        "exec",
-                        "-T",
-                        "api",
-                        "python",
-                        "-c",
-                        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=4)",
-                    ],
+            probes = (
+                ["exec", "-T", "api", "python", "-c",
+                 "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=4)"],
+                ["exec", "-T", "web", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"],
+                ["exec", "-T", "web", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/login"],
+            )
+            if all(
+                self.run_cleanup(
+                    prefix + probe,
                     timeout=min(10, max(0.1, deadline - time.monotonic())),
                 )
-                self.run(
-                    prefix
-                    + [
-                        "exec",
-                        "-T",
-                        "web",
-                        "wget",
-                        "-q",
-                        "-O",
-                        "/dev/null",
-                        "http://127.0.0.1/",
-                    ],
-                    timeout=min(10, max(0.1, deadline - time.monotonic())),
-                )
-                self.run(
-                    prefix
-                    + [
-                        "exec",
-                        "-T",
-                        "web",
-                        "wget",
-                        "-q",
-                        "-O",
-                        "/dev/null",
-                        "http://127.0.0.1/login",
-                    ],
-                    timeout=min(10, max(0.1, deadline - time.monotonic())),
-                )
+                for probe in probes
+            ):
                 return True
-            except (ReleaseError, OSError):
-                time.sleep(min(1, max(0, deadline - time.monotonic())))
+            time.sleep(min(1, max(0, deadline - time.monotonic())))
         return False
 
 
