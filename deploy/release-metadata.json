@@ -4,5 +4,5 @@
     "from_heads": ["0022_tracker_collaboration", "0024_inventory", "0025_local_task_claims", "0026_global_inventory_workflows", "0027_emergency_readings", "0028_reliable_task_workflow", "0029_campaign_snapshot", "0030_user_activity", "0031_postgresql_runtime", "0032_operator_inv_readonly", "0033_offline_sync_receipts", "0034_resumable_media_uploads", "0035_schedules_and_push"],
     "reversible": true
   },
-  "update_notes": "Кандидат 0.2.0-rc.4: убрана отдельная колонка контекста в новом интерфейсе, исправлены пустые панели и отступы. Обновление поверх 0.2.0-rc.3 сохраняет данные."
+  "update_notes": "Кандидат 0.2.0-rc.5: исправлены отступы и расположение действий в обоих интерфейсах, компактный выбор парка и индикатор автоматической синхронизации. Обновление поверх 0.2.0-rc.4 сохраняет данные."
 }
