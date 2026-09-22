@@ -23,11 +23,32 @@ Robopark: простой установщик и обслуживание
   ./START.sh diagnose     алиас команды repair
   ./START.sh remove       удалить приложение, сохранив данные
   ./START.sh remove --purge-data  удалить приложение и локальные данные
+  ./START.sh clean-install полностью удалить локальные данные и установить заново
 EOF
 }
 
 ACTION=${1:-}
 [ "$ACTION" != --help ] && [ "$ACTION" != -h ] || { usage; exit 0; }
+
+if [ -z "$ACTION" ] && [ -t 0 ]; then
+    printf '%s\n' 'Выберите действие:'
+    printf '%s\n' \
+        '  1 — установить или обновить' \
+        '  2 — переустановить без удаления данных' \
+        '  3 — восстановить' \
+        '  4 — удалить приложение, сохранив данные' \
+        '  5 — показать состояние' \
+        '  6 — удалить ВСЁ и установить заново (данные не восстановить)' \
+        '  0 — выход'
+    printf 'Номер: '
+    IFS= read -r answer || exit 1
+    case "$answer" in
+        1) ACTION=install ;; 2) ACTION=reinstall ;; 3) ACTION=repair ;;
+        4) ACTION=remove ;; 5) ACTION=status ;; 6) ACTION=clean-install ;;
+        0) exit 0 ;;
+        *) printf '%s\n' 'Неизвестное действие.' >&2; exit 2 ;;
+    esac
+fi
 
 if [ "$(id -u)" != 0 ]; then
     command -v sudo >/dev/null 2>&1 || { printf '%s\n' 'Не найден sudo.' >&2; exit 1; }
@@ -94,7 +115,9 @@ refuse_downgrade() {
     exit 1
 }
 
-detect_lifecycle
+if [ "$ACTION" != clean-install ]; then
+    detect_lifecycle
+fi
 
 if [ "$ACTION" = status ]; then
     print_status
@@ -115,12 +138,6 @@ if [ -z "$ACTION" ]; then
         ACTION=install
     elif [ "$STATE" = damaged ]; then
         ACTION=repair
-    elif [ -t 0 ]; then
-        printf '%s\n' 'Robopark уже установлен. Выберите действие:'
-        printf '%s\n' '  1 — локальное обновление из этого архива' '  2 — переустановка без удаления данных' '  3 — диагностика и исправление' '  4 — удаление' '  5 — показать состояние' '  0 — выход'
-        printf 'Номер: '
-        read -r answer
-        case "$answer" in 1) ACTION=update ;; 2) ACTION=reinstall ;; 3) ACTION=repair ;; 4) ACTION=remove ;; 5) exit 0 ;; 0) exit 0 ;; *) printf '%s\n' 'Неизвестное действие.' >&2; exit 2 ;; esac
     else
         case "$RELATION" in older) ACTION=update ;; same) ACTION=repair ;; newer) refuse_downgrade ;; *) ACTION=repair ;; esac
     fi
@@ -302,7 +319,11 @@ remove_app() {
     if [ "$purge" = 1 ]; then
         printf 'Данные и резервные материалы будут удалены. Введите УДАЛИТЬ ДАННЫЕ: '
         read -r confirmation
-        [ "$confirmation" = 'УДАЛИТЬ ДАННЫЕ' ] || { printf '%s\n' 'Данные сохранены.'; return; }
+        [ "$confirmation" = 'УДАЛИТЬ ДАННЫЕ' ] || {
+            printf '%s\n' 'Данные сохранены.'
+            [ "$ACTION" != clean-install ] || exit 1
+            return
+        }
         if docker volume inspect robopark_robopark_postgres >/dev/null 2>&1; then
             docker volume rm robopark_robopark_postgres >/dev/null 2>&1 || {
                 printf '%s\n' 'Код: database_volume_removal_failed' >&2
@@ -321,6 +342,15 @@ remove_app() {
 }
 
 case "$ACTION" in
+    clean-install)
+        python3 -I "$INSTALLER_DIR/lib/verify-bundle.py" "$INSTALLER_DIR" || {
+            printf '%s\n' 'Код: release_verification_failed. Удаление не начато.' >&2
+            exit 1
+        }
+        remove_app 1
+        exec 6>&- 7>&- 8>&- 9>&-
+        ACTION=install
+        run_install ;;
     install)
         [ "$RELATION" != newer ] || refuse_downgrade
         case "$STATE:$RELATION" in

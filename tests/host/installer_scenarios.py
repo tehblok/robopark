@@ -208,6 +208,64 @@ class InstallerScenarios(unittest.TestCase):
         self.assertIn('Совпадает с архивом', result.stdout)
         self.assertEqual(len(self.commands()), before + 1)  # root check (`id`) only
 
+    def test_interactive_menu_opens_before_broken_lifecycle_probe(self):
+        (self.bundle / 'lib/lifecycle.py').write_text('raise RuntimeError("broken probe")\n')
+
+        output = self.run_start_tty([], ['0'])
+
+        self.assertIn('Выберите действие', output)
+        self.assertNotIn('broken probe', output)
+        self.assertFalse((self.root / 'var/lib/robopark').exists())
+
+    def test_menu_clean_reinstall_removes_old_data_and_installs_fresh(self):
+        self.run_installer()
+        old_data = self.root / 'var/lib/robopark/data/operator-state.txt'
+        old_data.write_text('must-disappear')
+        preset = self.bundle / '.robopark-preset.env'
+        preset.write_text(
+            'TUNA_TOKEN=tt_fixture_secret\nTUNA_SUBDOMAIN=park\n'
+            'SEED_USERNAME=royal\nSEED_PASSWORD=Strong!Fixture123\n'
+        )
+        preset.chmod(0o600)
+        (self.bundle / 'lib/lifecycle.py').write_text('raise RuntimeError("broken probe")\n')
+
+        output = self.run_start_tty(
+            [], ['6', 'УДАЛИТЬ', 'УДАЛИТЬ ДАННЫЕ', ''],
+        )
+
+        self.assertIn('локальные данные удалены', output.lower())
+        self.assertIn('Установка завершена', output)
+        self.assertFalse(old_data.exists())
+        self.assertTrue((self.root / 'opt/robopark/current/VERSION').is_file())
+
+    def test_clean_reinstall_does_not_delete_data_for_invalid_payload(self):
+        self.run_installer()
+        old_data = self.root / 'var/lib/robopark/data/operator-state.txt'
+        old_data.write_text('keep-me')
+        self.payload.write_bytes(b'broken archive')
+        before = len(self.commands())
+
+        output = self.run_start_tty([], ['6'], success=False)
+
+        self.assertIn('release_verification_failed', output)
+        self.assertEqual(old_data.read_text(), 'keep-me')
+        self.assertTrue((self.root / 'opt/robopark/current/VERSION').is_file())
+        self.assertFalse([
+            call for call in self.commands()[before:]
+            if call['name'] == 'docker' and call['args'][:2] == ['volume', 'rm']
+        ])
+
+    def test_clean_reinstall_stops_when_data_confirmation_is_declined(self):
+        self.run_installer()
+        old_data = self.root / 'var/lib/robopark/data/operator-state.txt'
+        old_data.write_text('keep-me')
+
+        output = self.run_start_tty([], ['6', 'УДАЛИТЬ', 'НЕТ'], success=False)
+
+        self.assertIn('Данные сохранены', output)
+        self.assertEqual(old_data.read_text(), 'keep-me')
+        self.assertFalse((self.root / 'opt/robopark/current').exists())
+
     def test_explicit_install_over_older_release_routes_through_updater(self):
         self.run_installer()
         (self.source / 'VERSION').write_text('1.0.1\n')
