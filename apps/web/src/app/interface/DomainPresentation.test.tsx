@@ -34,3 +34,15 @@ it('keeps the owned subtree mounted while presentation attributes change', () =>
   expect(screen.getByRole('dialog')).toHaveTextContent('Несохранённый пользователь')
   expect(input.closest('[data-a-zone="workflow"]')).not.toBeNull()
 })
+
+it('places context above the workflow without a separate column in interface A', () => {
+  const view = render(
+    <PresentationModeContext.Provider value="task-first">
+      <DomainPresentation route="admin-roles" context={<nav aria-label="Разделы управления">Навигация</nav>}><Draft /></DomainPresentation>
+    </PresentationModeContext.Provider>,
+  )
+  const composition = view.container.querySelector('[data-a-route="admin-roles"]')!
+  expect(composition.querySelector('[data-a-zone="context"]')).not.toBeInTheDocument()
+  expect(Array.from(composition.children).map(node => node.getAttribute('data-a-zone'))).toEqual(['intro', 'workflow'])
+  expect(composition.querySelector('[data-a-zone="intro"]')).toContainElement(screen.getByRole('navigation', { name: 'Разделы управления' }))
+})

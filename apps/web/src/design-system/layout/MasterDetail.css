@@ -5,6 +5,10 @@
   min-block-size: 0;
 }
 
+.rp-master-detail[data-detail-empty='true'] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .rp-master-detail__list,
 .rp-master-detail__detail,
 .rp-metric-card,

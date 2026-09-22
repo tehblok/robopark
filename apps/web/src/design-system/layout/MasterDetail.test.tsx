@@ -32,6 +32,16 @@ describe('MasterDetail', () => {
     fireEvent.click(backButton)
     expect(onBack).toHaveBeenCalledOnce()
   })
+
+  it('does not reserve a desktop detail column when no detail exists', () => {
+    const { container } = render(
+      <MasterDetail detail={null} detailOpen={false} list={<p>Роли</p>} onBack={vi.fn()} />,
+    )
+
+    expect(container.querySelector('.rp-master-detail')).toHaveAttribute('data-detail-empty', 'true')
+    expect(screen.getByRole('region', { name: 'Список' })).toHaveTextContent('Роли')
+    expect(screen.queryByRole('region', { name: 'Детали' })).not.toBeInTheDocument()
+  })
 })
 
 it('uses a two-column desktop layout and one visible pane below 900 px', () => {
@@ -40,4 +50,5 @@ it('uses a two-column desktop layout and one visible pane below 900 px', () => {
   expect(source).toMatch(/\.rp-master-detail\s*\{[\s\S]*grid-template-columns:/)
   expect(source).toMatch(/@media \(max-width: 899px\)[\s\S]*data-detail-open='true'[\s\S]*\.rp-master-detail__list[\s\S]*display: none/)
   expect(source).toMatch(/@media \(max-width: 899px\)[\s\S]*data-detail-open='false'[\s\S]*\.rp-master-detail__detail[\s\S]*display: none/)
+  expect(source).toMatch(/data-detail-empty='true'[\s\S]*grid-template-columns: minmax\(0, 1fr\)/)
 })

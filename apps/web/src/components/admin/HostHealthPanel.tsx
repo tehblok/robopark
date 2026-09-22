@@ -4,6 +4,7 @@ import { Alert, Panel } from '../PageShell'
 import { SkeletonList } from '../ui/Feedback'
 import { adminAccessFailure, adminResourceKey } from './adminResources'
 import { hostHealthApi } from './hostHealthApi'
+import './HostHealthPanel.css'
 
 function bytes(value: number | null) {
   if (value == null) return 'Нет данных'
@@ -24,7 +25,7 @@ export function HostHealthPanel() {
   const memoryLow = data.memory.available_bytes != null && data.memory.total_bytes != null && data.memory.available_bytes / data.memory.total_bytes < 0.1
   const containerHigh = data.memory.container_limit_bytes != null && data.memory.container_used_bytes != null && data.memory.container_used_bytes / data.memory.container_limit_bytes > 0.9
   const requests = Object.entries(data.requests)
-  return <div className="stack">
+  return <div className="stack rp-host-health">
     <p className="muted">Состояние на {stamp(data.sampled_at)}. Данные обновляются автоматически.</p>
     {Boolean(resource.error) && <Alert tone="error">Сейчас нет свежего ответа. Показано последнее полученное состояние.</Alert>}
     {diskLow && <Alert tone="error">Мало свободного места: менее 2 ГБ или 10% диска. Освободите место для данных и резервных копий.</Alert>}

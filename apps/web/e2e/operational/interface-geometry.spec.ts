@@ -1,0 +1,101 @@
+import { expect, test } from '@playwright/test'
+import { assertResponsiveContracts, openRouteFixture } from './routeFixtures'
+import { userForRole, settlePage } from './fixtures'
+import { selectInterface } from '../support/interfaceMode'
+
+for (const mode of ['Классический', 'Новый А'] as const) test(`${mode} separates management summary from the next panel`, async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openRouteFixture(page, 'admin', userForRole('royal'))
+  await selectInterface(page, mode)
+  await settlePage(page)
+
+  const metrics = await page.locator('.rp-management-metrics').boundingBox()
+  const panel = await page.locator('.rp-management-metrics + .panel').boundingBox()
+  expect(metrics).not.toBeNull()
+  expect(panel).not.toBeNull()
+  expect(panel!.y - (metrics!.y + metrics!.height)).toBeGreaterThanOrEqual(16)
+})
+
+test('Новый А shows roles across the workspace until a role is selected', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openRouteFixture(page, 'admin', userForRole('royal'))
+  await page.goto('/admin/roles?park=7')
+  await selectInterface(page, 'Новый А')
+  await settlePage(page)
+  const layout = page.locator('.admin-roles .rp-master-detail')
+  await expect(layout).toHaveAttribute('data-detail-empty', 'true')
+  await expect(layout.locator('.rp-master-detail__detail')).toHaveCount(0)
+  const list = await layout.locator('.rp-master-detail__list').boundingBox()
+  expect(list!.width).toBeGreaterThan(900)
+  await page.getByRole('button', { name: /Открыть роль/ }).first().click()
+  await expect(layout).toHaveAttribute('data-detail-empty', 'false')
+  await expect(layout.locator('.rp-master-detail__detail')).toBeVisible()
+})
+
+for (const mode of ['Классический', 'Новый А'] as const) test(`${mode} separates server health panels`, async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openRouteFixture(page, 'admin-settings', userForRole('royal'), { routes: [{
+    method: 'GET', path: '/api/admin/health', handler: () => ({ json: {
+      sampled_at: 1789980000, database: 'ok', window_seconds: 300,
+      disk: { total_bytes: 10000000000, free_bytes: 7000000000 },
+      memory: { total_bytes: 8000000000, available_bytes: 5000000000, container_limit_bytes: 2000000000, container_used_bytes: 300000000 },
+      backup: { verified_at: null, overdue: false, last_attempt_failed: false }, requests: {},
+    } }),
+  }] })
+  await selectInterface(page, mode)
+  await page.goto('/admin/settings?park=7&tab=health')
+  const first = await page.locator('.stack > .panel').nth(0).boundingBox()
+  const second = await page.locator('.stack > .panel').nth(1).boundingBox()
+  expect(first).not.toBeNull()
+  expect(second).not.toBeNull()
+  expect(second!.y - (first!.y + first!.height)).toBeGreaterThanOrEqual(16)
+})
+
+test('appearance choices use compact radio circles with full-size clickable rows', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openRouteFixture(page, 'admin', userForRole('royal'))
+  await page.getByRole('button', { name: 'Ещё', exact: true }).click()
+  const input = await page.locator('.rp-shell__preference-group input[type="radio"]').first().boundingBox()
+  const row = await page.locator('.rp-shell__preference-group label').first().boundingBox()
+  expect(input).not.toBeNull()
+  expect(row).not.toBeNull()
+  expect(input!.width).toBeLessThanOrEqual(24)
+  expect(row!.height).toBeGreaterThanOrEqual(44)
+})
+
+for (const mode of ['Классический', 'Новый А'] as const) test(`${mode} separates robot-check search and result card`, async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openRouteFixture(page, 'admin-robot-check', userForRole('royal'))
+  await selectInterface(page, mode)
+  await settlePage(page)
+  const search = await page.getByRole('searchbox', { name: 'Поиск разделов' }).boundingBox()
+  const list = await page.locator('.card-list').first().boundingBox()
+  expect(search).not.toBeNull()
+  expect(list).not.toBeNull()
+  expect(list!.y - (search!.y + search!.height)).toBeGreaterThanOrEqual(12)
+})
+
+for (const route of ['admin', 'admin-roles', 'admin-robot-check', 'reports', 'campaigns', 'work-issue'] as const) {
+  for (const mode of ['Классический', 'Новый А'] as const) test(`${mode} ${route} keeps a usable desktop width`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.addInitScript(() => localStorage.setItem('robopark-theme', 'dark'))
+    await openRouteFixture(page, route, userForRole(route === 'work-issue' ? 'mechanic' : 'royal'))
+    await selectInterface(page, mode)
+    await settlePage(page)
+    await assertResponsiveContracts(page, 1440)
+    if (mode === 'Новый А') {
+      await expect(page.locator('[data-a-zone="context"], [data-a-zone="report-context"], [data-a-zone="campaign-context"], [data-task-zone="context"]')).toHaveCount(0)
+    }
+  })
+}
+
+for (const route of ['admin-roles', 'admin-robot-check', 'reports', 'work-issue'] as const) {
+  for (const mode of ['Классический', 'Новый А'] as const) test(`${mode} ${route} fits a narrow light viewport`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.addInitScript(() => localStorage.setItem('robopark-theme', 'light'))
+    await openRouteFixture(page, route, userForRole(route === 'work-issue' ? 'mechanic' : 'royal'))
+    await selectInterface(page, mode)
+    await settlePage(page)
+    await assertResponsiveContracts(page, 390)
+  })
+}

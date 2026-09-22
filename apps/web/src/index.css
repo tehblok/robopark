@@ -316,6 +316,13 @@ textarea {
   box-shadow: none;
 }
 
+.panel-body {
+  display: grid;
+  gap: var(--rp-form-gap);
+  min-width: 0;
+  align-content: start;
+}
+
 .panel-head {
   display: flex;
   align-items: flex-start;

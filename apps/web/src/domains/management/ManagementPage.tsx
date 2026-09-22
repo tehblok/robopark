@@ -3,7 +3,6 @@ import { useAuth } from '../../auth-context'
 import { PageShell, Panel } from '../../components/PageShell'
 import { EntityRow } from '../../design-system/data/EntityRow'
 import { MetricCard } from '../../design-system/data/MetricCard'
-import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { ManagementNavigation } from './ManagementNavigation'
 import { managementHref, managementSections } from './managementSections'
 import './management.css'
@@ -29,7 +28,6 @@ export function ManagementPage() {
       <div className="management-grid">
         {visibleLinks.map((item) => (
           <EntityRow key={item.title} title={item.title} meta={item.description}
-            status={<StatusBadge tone="success">Доступен</StatusBadge>}
             actions={<Link className="btn btn-secondary" to={managementHref(item.path, params, item.tab)}>Открыть</Link>} />
         ))}
       </div>

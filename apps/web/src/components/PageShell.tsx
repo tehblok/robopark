@@ -132,7 +132,7 @@ export function Panel({
           </div>}
         </div>
       )}
-      {!collapsed && <div id={contentId}>{children}</div>}
+      {!collapsed && <div className="panel-body" id={contentId}>{children}</div>}
     </section>
   )
 }

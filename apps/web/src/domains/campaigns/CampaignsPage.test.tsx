@@ -219,23 +219,24 @@ it('serializes a failed ticket completion and exposes a retryable error', async 
   expect(within(openPanel).getByRole('button', { name: 'Отправить оператору' })).toBeEnabled()
 })
 
-it('uses distinct task-first context and workflow zones without changing the controller', async () => {
+it('keeps campaign metrics in the main flow without a context column', async () => {
   renderPage({ ...api, campaign: vi.fn(async () => detail) }, user, 'task-first')
   await screen.findByRole('heading', { name: 'СК Альфа' })
   expect(document.querySelector('[data-a-route="campaign-detail"]')).not.toBeNull()
-  expect(document.querySelector('[data-a-zone="campaign-context"]')).not.toBeNull()
+  expect(document.querySelector('[data-a-zone="campaign-context"]')).toBeNull()
+  expect(document.querySelector('[data-a-zone="campaign-overview"]')).toHaveTextContent('Метрики')
   expect(document.querySelector('[data-a-zone="campaign-workflow"]')).not.toBeNull()
 })
 
-it('composes the task-first campaign list as context, workflow and manager action zones', async () => {
+it('composes the task-first campaign list as workflow and manager actions', async () => {
   renderList({ ...api, campaigns: vi.fn(async () => [detail]) }, { ...user, role: 'royal' }, 'task-first')
   await screen.findByRole('heading', { name: 'СК Альфа' })
   const composition = document.querySelector<HTMLElement>('[data-a-route="campaigns"]')!
-  expect(within(composition).getByRole('complementary')).toHaveTextContent('Север')
+  expect(composition.querySelector('[data-a-zone="campaign-context"]')).toBeNull()
   expect(composition.querySelector('[data-a-zone="campaign-workflow"]')).toHaveTextContent('СК Альфа')
   expect(composition.querySelector('[data-a-zone="campaign-actions"]')).toHaveTextContent('Новая кампания')
   expect(Array.from(composition.children).map(node => node.getAttribute('data-a-zone'))).toEqual([
-    'campaign-context', 'campaign-workflow', 'campaign-actions',
+    'campaign-workflow', 'campaign-actions',
   ])
 })
 

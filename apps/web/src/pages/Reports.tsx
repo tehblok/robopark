@@ -202,7 +202,6 @@ function ReportsOwner({
           <h1 className="dashboard-title">Создать репорт</h1>
         </div>
         <div className={taskFirst ? 'report-composition report-composition--task-first' : 'report-composition'}>
-        <aside data-a-zone={taskFirst ? 'report-context' : undefined} hidden={!taskFirst}><h2>Контекст репорта</h2><p>{selectedPark ? `Парк: ${selectedPark.name}` : 'Парк не выбран'}</p><p>Автор: {user.username}</p></aside>
         <section data-a-zone={taskFirst ? 'report-workflow' : undefined}>{!createEnabled ? (
           <EmptyBlock hint="Для этой роли создание репортов отключено." icon="✉" title="Нет доступа" />
         ) : parkId == null ? (
@@ -240,7 +239,6 @@ function ReportsOwner({
         <h1 className="dashboard-title" id="reports-title">{ru.nav.reports}</h1>
       </div>
       <div className={taskFirst ? 'report-composition report-composition--task-first' : 'report-composition'}>
-      <aside data-a-zone={taskFirst ? 'report-context' : undefined} hidden={!taskFirst}><h2>Контекст репортов</h2><p>{selectedPark ? `Парк: ${selectedPark.name}` : leader ? 'Все доступные парки' : 'Парк не выбран'}</p><p>{visiblePane === 'inbox' ? inboxTitle : 'Мои репорты'}</p></aside>
       <section data-a-zone={taskFirst ? 'report-workflow' : undefined}><MasterDetail detailOpen={detailRoute} onBack={closeDetail} list={<div data-a-zone={taskFirst ? 'report-list' : undefined}>
       {createEnabled && inboxEnabled && (
         <Tabs

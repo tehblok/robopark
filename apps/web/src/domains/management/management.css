@@ -3,6 +3,11 @@
   gap: var(--rp-section-gap);
 }
 
+.management-grid .rp-entity-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
 .rp-management :is(.page-body, .admin-users, .admin-roles),
 .rp-management .tab-panel {
   display: grid;

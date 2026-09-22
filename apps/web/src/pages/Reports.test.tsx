@@ -157,15 +157,15 @@ it.each([
   ['/reports', 'reports', 'Мои репорты'],
   ['/reports/new', 'reports-new', 'Данные репорта'],
   ['/reports/9', 'report-detail', 'Детали репорта'],
-] as const)('gives interface A meaningful context, workflow and action zones at %s', async (url, route, workflowText) => {
+] as const)('keeps interface A report work and actions without a context column at %s', async (url, route, workflowText) => {
   const item = report(9, 'Нужны подробности')
   render(tree(userA, client({ reportsMine: vi.fn(async () => [item]), report: vi.fn(async () => item) }), url, 'task-first'))
   const composition = await waitFor(() => document.querySelector(`[data-a-route="${route}"] .report-composition`))
-  expect(composition?.querySelector('[data-a-zone="report-context"]')).toHaveTextContent('Север')
+  expect(composition?.querySelector('[data-a-zone="report-context"]')).not.toBeInTheDocument()
   expect(composition?.querySelector('[data-a-zone="report-workflow"]')).toHaveTextContent(workflowText)
   expect(composition?.querySelector('[data-a-zone="report-actions"]')).toBeVisible()
   expect(Array.from(composition?.children ?? []).map(node => node.getAttribute('data-a-zone'))).toEqual([
-    'report-context', 'report-workflow', 'report-actions',
+    'report-workflow', 'report-actions',
   ])
   expect(composition?.querySelectorAll('[data-a-zone="report-workflow"]')).toHaveLength(1)
 })

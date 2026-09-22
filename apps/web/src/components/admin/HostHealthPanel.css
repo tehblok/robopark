@@ -1,0 +1,9 @@
+.rp-host-health {
+  display: grid;
+  gap: var(--rp-section-gap);
+  min-inline-size: 0;
+}
+
+.rp-host-health > .panel {
+  min-inline-size: 0;
+}

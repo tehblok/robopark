@@ -115,7 +115,6 @@ function CampaignList({ apiClient }: { apiClient: CampaignApi }) {
   const failure = error ? classifyApiError(error, 'Не удалось загрузить кампании.') : null
   return <PageLayout description="Прогресс сервисных компаний и оклейки по доступным паркам." title="СК и оклейка">
     <div className={taskFirst ? 'campaign-list-composition campaign-list-composition--task-first' : 'campaign-list-composition'} data-a-route={taskFirst ? 'campaigns' : undefined}>
-    <aside data-a-zone={taskFirst ? 'campaign-context' : undefined} hidden={!taskFirst}><h2>Контекст кампаний</h2><p>{selectedPark ? `Парк: ${selectedPark.name}` : 'Все доступные парки'}</p><p>{items ? `Кампаний: ${items.length}` : 'Получаем кампании'}</p></aside>
     <section data-a-zone={taskFirst ? 'campaign-workflow' : undefined}>{failure ? <ErrorState description={failure.description} onRetry={failure.retryable ? load : undefined} title={failure.title} />
       : !items ? <LoadingState label="Загружаем кампании" variant="page" />
         : !items.length ? <EmptyState description="Администратор ещё не добавил кампании для доступных парков." icon="work" title="Кампаний нет" />
@@ -254,8 +253,8 @@ function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; api
     {toggleError ? <p role="alert">{toggleError}</p> : null}
     {failure ? <p role="status">Показаны последние полученные данные. Обновление не удалось: {failure.description}</p> : null}
     <div className={taskFirst ? 'campaign-detail-composition campaign-detail-composition--task-first' : 'campaign-detail-composition'} data-a-route={taskFirst ? 'campaign-detail' : undefined}>
-    <aside data-a-zone={taskFirst ? 'campaign-context' : undefined}><ResponsiveDisclosureGroup label="Разделы кампании"><ResponsiveDisclosure id="metrics" summary={`${data.percent_complete}% · ${data.completed_count} из ${data.total_count}`} title="Метрики"><CampaignMetrics campaign={data} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>
-    {manager ? <CampaignCreateForm apiClient={apiClient} campaign={data} onCreated={load} /> : null}</aside>
+    <section data-a-zone={taskFirst ? 'campaign-overview' : undefined}><ResponsiveDisclosureGroup label="Разделы кампании"><ResponsiveDisclosure id="metrics" summary={`${data.percent_complete}% · ${data.completed_count} из ${data.total_count}`} title="Метрики"><CampaignMetrics campaign={data} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>
+    {manager ? <CampaignCreateForm apiClient={apiClient} campaign={data} onCreated={load} /> : null}</section>
     <div className="campaign-columns" data-a-zone={taskFirst ? 'campaign-workflow' : undefined}>
       <Panel density="dense" title={`Открытые · ${data.open_tickets.length}`}><label className="field campaign-search"><span>Поиск по роботу</span><input onChange={event => setQuery(event.target.value)} placeholder="Номер робота или тикет" value={query} /></label>
         <div className="campaign-tickets">{open.map(ticket => <TicketCard apiClient={apiClient} campaign={data} editing={editingTicketKey === ticket.key} key={ticket.key} onEditingChange={editing => setEditingTicketKey(editing ? ticket.key : null)} reload={load} ticket={ticket} />)}{!open.length ? <p>Открытые тикеты не найдены.</p> : null}</div>

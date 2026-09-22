@@ -264,6 +264,14 @@ button.rp-shell__more-link {
 
 .rp-shell__content > .rp-page-layout { padding: 0; }
 
+.rp-domain-composition,
+.rp-domain-workflow {
+  display: grid;
+  gap: var(--rp-section-gap);
+  min-inline-size: 0;
+  align-content: start;
+}
+
 .rp-shell__scope-alert {
   align-items: center;
   background: var(--rp-warning-surface);
@@ -304,8 +312,12 @@ button.rp-shell__more-link {
 }
 
 .rp-shell__preference-group input {
-  min-height: var(--rp-control-min-size);
-  min-width: var(--rp-control-min-size);
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  min-width: 20px;
+  margin: 0;
 }
 
 .rp-shell__preference-group p { color: var(--rp-text-muted); margin: 0; }

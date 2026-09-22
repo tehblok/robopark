@@ -15,17 +15,18 @@ export function MasterDetail({
   detailOpen,
   onBack,
 }: MasterDetailProps): ReactElement {
+  const detailEmpty = detail == null
   return (
-    <div className="rp-master-detail" data-detail-open={detailOpen}>
+    <div className="rp-master-detail" data-detail-empty={detailEmpty} data-detail-open={detailOpen}>
       <section aria-label="Список" className="rp-master-detail__list">{list}</section>
-      <section aria-label="Детали" className="rp-master-detail__detail">
+      {!detailEmpty && <section aria-label="Детали" className="rp-master-detail__detail">
         <div className="rp-master-detail__detail-actions">
           <Button className="rp-master-detail__back" onClick={onBack} type="button" variant="ghost">
             Назад к списку
           </Button>
         </div>
         {detail}
-      </section>
+      </section>}
     </div>
   )
 }
