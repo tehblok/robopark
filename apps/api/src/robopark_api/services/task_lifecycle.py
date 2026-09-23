@@ -457,6 +457,15 @@ def _claim_locked(
             ReliableAction.idempotency_key == idempotency_key,
         )
     )
+    existing_start = db.scalar(
+        select(ReliableAction).where(
+            ReliableAction.actor_user_id == actor.id,
+            ReliableAction.resource_type == "tracker_issue",
+            ReliableAction.resource_id == issue_key,
+            ReliableAction.action == "start",
+            ReliableAction.idempotency_key == idempotency_key,
+        )
+    )
     previous = get_claim(db, issue_key)
     if previous is not None and previous.state == "pending" and existing_assign is None:
         raise HTTPException(409, "tracker_issue_claim_pending")
@@ -505,9 +514,16 @@ def _claim_locked(
     payload = {
         "owner_user_id": actor.id,
         "park_id": park.id,
-        "components_prepared": True,
         "depends_on_action_ids": [component.row.id],
     }
+    if existing_assign is not None and existing_start is not None:
+        try:
+            saved_payload = json.loads(existing_start.payload_json)
+        except (TypeError, ValueError):
+            raise HTTPException(409, "reliable_action_payload_conflict") from None
+        if not isinstance(saved_payload, dict):
+            raise HTTPException(409, "reliable_action_payload_conflict")
+        payload = saved_payload
     begun = _action(
         db,
         actor=actor,

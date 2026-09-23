@@ -213,6 +213,7 @@ def _deliver_transition(
     *,
     token: str,
     issue: dict,
+    components_prepared: bool = False,
 ) -> dict[str, str | bool]:
     purpose: TransitionPurpose = action.action  # type: ignore[assignment]
     payload = json.loads(action.payload_json)
@@ -222,7 +223,7 @@ def _deliver_transition(
         tracker_issue_is_closed(issue) or target_status_reached(issue, "close")
     ):
         raise DeliveryError("task_already_closed")
-    if purpose == "start" and not payload.get("components_prepared") and not issue.get("components"):
+    if purpose == "start" and not components_prepared and not issue.get("components"):
         _set_issue_field(
             token=token,
             key=action.resource_id,
@@ -345,7 +346,30 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
         )
         return {"components": value}
     if action.action in _TRANSITION_ACTIONS:
-        return _deliver_transition(action, token=token, issue=issue)
+        components_prepared = False
+        if action.action == "start":
+            dependency_ids = payload.get("depends_on_action_ids", [])
+            if not isinstance(dependency_ids, list) or not all(
+                isinstance(item, str) and item for item in dependency_ids
+            ):
+                raise DeliveryError("invalid_payload")
+            components_prepared = (
+                db.scalar(
+                    select(ReliableAction.id).where(
+                        ReliableAction.id.in_(dependency_ids),
+                        ReliableAction.resource_type == action.resource_type,
+                        ReliableAction.resource_id == action.resource_id,
+                        ReliableAction.action == "ensure_components",
+                    )
+                )
+                is not None
+            )
+        return _deliver_transition(
+            action,
+            token=token,
+            issue=issue,
+            components_prepared=components_prepared,
+        )
     if action.action == "set_field":
         field = str(payload.get("field") or "")
         field_id = _ALLOWED_TRACKER_FIELDS.get(field)

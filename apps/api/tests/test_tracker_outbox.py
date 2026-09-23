@@ -504,19 +504,32 @@ def test_start_does_not_transition_if_default_component_write_fails(
         )
 
 
-def test_chained_start_does_not_repeat_durable_component_mutation(
+def test_unmarked_persisted_chained_start_does_not_repeat_component_mutation(
     db_session, seed_mechanic, monkeypatch
 ):
     from robopark_api.services import tracker_outbox
 
+    component = _action(
+        db_session,
+        seed_mechanic,
+        action="ensure_components",
+        payload={"value": ["ROBOT_SUSPENSION"]},
+    )
+    component.state = "succeeded"
+    db_session.commit()
     action = _action(
         db_session,
         seed_mechanic,
         action="start",
-        payload={
-            "components_prepared": True,
-            "depends_on_action_ids": ["ensure-components-action"],
-        },
+        payload={"depends_on_action_ids": [component.id]},
+    )
+    reads = []
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **kwargs: reads.append(kwargs)
+        or {"key": "ROBOPARK-1", "status": "В очереди", "components": []},
     )
     monkeypatch.setattr(
         tracker_outbox,
@@ -535,13 +548,10 @@ def test_chained_start_does_not_repeat_durable_component_mutation(
         lambda **kwargs: transitions.append(kwargs),
     )
 
-    tracker_outbox._deliver_transition(
-        action,
-        token="bot-token",
-        issue={"key": "ROBOPARK-1", "status": "В очереди", "components": []},
-    )
+    tracker_outbox._deliver_action(db_session, action)
 
     assert len(transitions) == 1
+    assert len(reads) == 1
 
 
 def test_worker_recognizes_return_transition_target_status_after_restart(

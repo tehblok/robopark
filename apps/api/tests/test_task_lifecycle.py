@@ -268,7 +268,7 @@ def test_claim_is_atomic_idempotent_and_never_calls_tracker_mutations(
     assert json.loads(actions[2].payload_json)["depends_on_action_ids"] == [actions[1].id]
     start_payload = json.loads(actions[3].payload_json)
     assert start_payload["depends_on_action_ids"] == [actions[2].id]
-    assert start_payload["components_prepared"] is True
+    assert "components_prepared" not in start_payload
     claim = db_session.get(TrackerClaim, ISSUE_KEY)
     assert claim.state == "pending"
     assert claim.start_action_id == actions[3].id
@@ -287,6 +287,25 @@ def test_claim_rejects_before_mutation_when_park_has_no_operator(
     assert response.json()["detail"] == "task_claim_operator_unavailable"
     assert db_session.query(TrackerClaim).count() == 0
     assert db_session.query(ReliableAction).count() == 0
+
+
+def test_claim_replays_persisted_unmarked_start_payload_without_conflict(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services.reliable_actions import canonical_payload
+
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+    start = db_session.scalar(select(ReliableAction).where(ReliableAction.action == "start"))
+    payload = json.loads(start.payload_json)
+    payload.pop("components_prepared", None)
+    start.payload_json, start.payload_hash = canonical_payload(payload)
+    db_session.commit()
+
+    replay = _claim(client, seed_mechanic)
+
+    assert replay.status_code == 200
+    assert db_session.query(ReliableAction).count() == 4
 
 
 def test_second_mechanic_cannot_replace_pending_claim_reservation(
@@ -354,8 +373,6 @@ def test_concurrent_claims_serialize_at_issue_boundary(
                 )
             except HTTPException as exc:
                 return ("conflict", exc.status_code, exc.detail)
-            except Exception as exc:  # noqa: BLE001 - regression captures escaping DB errors.
-                return ("error", type(exc).__name__, str(exc))
             return ("claimed", 200, None)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -368,7 +385,7 @@ def test_concurrent_claims_serialize_at_issue_boundary(
         outcomes = [first.result(timeout=3), second.result(timeout=3)]
 
     assert maximum_active == 1
-    assert sorted(outcome[0] for outcome in outcomes) == ["claimed", "conflict"]
+    assert sorted(outcome[0] for outcome in outcomes) == ["claimed", "conflict"], outcomes
     assert next(outcome for outcome in outcomes if outcome[0] == "conflict") == (
         "conflict",
         409,
