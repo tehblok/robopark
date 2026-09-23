@@ -504,6 +504,46 @@ def test_start_does_not_transition_if_default_component_write_fails(
         )
 
 
+def test_chained_start_does_not_repeat_durable_component_mutation(
+    db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    action = _action(
+        db_session,
+        seed_mechanic,
+        action="start",
+        payload={
+            "components_prepared": True,
+            "depends_on_action_ids": ["ensure-components-action"],
+        },
+    )
+    monkeypatch.setattr(
+        tracker_outbox,
+        "_set_issue_field",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("component mutation repeated")),
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_transitions",
+        lambda **_kwargs: [{"id": "start", "display": "В работу"}],
+    )
+    transitions = []
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "transition_issue",
+        lambda **kwargs: transitions.append(kwargs),
+    )
+
+    tracker_outbox._deliver_transition(
+        action,
+        token="bot-token",
+        issue={"key": "ROBOPARK-1", "status": "В очереди", "components": []},
+    )
+
+    assert len(transitions) == 1
+
+
 def test_worker_recognizes_return_transition_target_status_after_restart(
     db_engine, db_session, seed_mechanic, monkeypatch
 ):

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from robopark_api.models import AuditLog, Park, User, UserPark
 from robopark_api.services import rbac, schedules, tracker_client, tracker_signatures
+from robopark_api.services.database_locks import database_idempotency_lock
 from robopark_api.services.defect_codes import validate_defect_code
 from robopark_api.services.reliable_actions import (
     BeginResult,
@@ -415,6 +416,24 @@ def claim(
     park: Park,
     idempotency_key: str | None,
 ) -> dict:
+    with database_idempotency_lock(db, f"tracker-claim:{issue_key.strip()}"):
+        return _claim_locked(
+            db,
+            actor=actor,
+            issue_key=issue_key,
+            park=park,
+            idempotency_key=idempotency_key,
+        )
+
+
+def _claim_locked(
+    db: Session,
+    *,
+    actor: User,
+    issue_key: str,
+    park: Park,
+    idempotency_key: str | None,
+) -> dict:
     if _role(actor) != rbac.RoleSlug.MECHANIC:
         raise HTTPException(403, "task_claim_mechanic_required")
     pending_close = db.scalar(
@@ -486,6 +505,7 @@ def claim(
     payload = {
         "owner_user_id": actor.id,
         "park_id": park.id,
+        "components_prepared": True,
         "depends_on_action_ids": [component.row.id],
     }
     begun = _action(

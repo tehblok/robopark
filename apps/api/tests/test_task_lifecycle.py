@@ -1,4 +1,6 @@
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from itertools import pairwise
 
 import pytest
@@ -264,7 +266,9 @@ def test_claim_is_atomic_idempotent_and_never_calls_tracker_mutations(
     assert json.loads(actions[0].payload_json)["login"] == "operator.tracker"
     assert json.loads(actions[1].payload_json)["depends_on_action_ids"] == [actions[0].id]
     assert json.loads(actions[2].payload_json)["depends_on_action_ids"] == [actions[1].id]
-    assert json.loads(actions[3].payload_json)["depends_on_action_ids"] == [actions[2].id]
+    start_payload = json.loads(actions[3].payload_json)
+    assert start_payload["depends_on_action_ids"] == [actions[2].id]
+    assert start_payload["components_prepared"] is True
     claim = db_session.get(TrackerClaim, ISSUE_KEY)
     assert claim.state == "pending"
     assert claim.start_action_id == actions[3].id
@@ -302,6 +306,74 @@ def test_second_mechanic_cannot_replace_pending_claim_reservation(
     assert response.json()["detail"] == "tracker_issue_claim_pending"
     assert db_session.get(TrackerClaim, ISSUE_KEY).owner_user_id == seed_mechanic.id
     assert db_session.query(ReliableAction).count() == 4
+
+
+def test_concurrent_claims_serialize_at_issue_boundary(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import schedules, task_lifecycle
+
+    _operator(db_session, seed_park_with_tracker)
+    other = _mechanic(db_session, seed_park_with_tracker, username="racing-mechanic")
+    real_resolve = schedules.resolve_active_operator
+    start = threading.Barrier(3)
+    release = threading.Event()
+    first_entered = threading.Event()
+    both_entered = threading.Event()
+    counter_lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+
+    def controlled_resolve(db, *, park_id, at=None):
+        nonlocal active, maximum_active
+        with counter_lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+            first_entered.set()
+            if active == 2:
+                both_entered.set()
+        assert release.wait(timeout=2)
+        try:
+            return real_resolve(db, park_id=park_id, at=at)
+        finally:
+            with counter_lock:
+                active -= 1
+
+    monkeypatch.setattr(schedules, "resolve_active_operator", controlled_resolve)
+
+    def run_claim(user_id, idempotency_key):
+        start.wait(timeout=2)
+        with Session(db_engine) as db:
+            try:
+                task_lifecycle.claim(
+                    db,
+                    actor=db.get(User, user_id),
+                    issue_key=ISSUE_KEY,
+                    park=db.get(Park, seed_park_with_tracker.id),
+                    idempotency_key=idempotency_key,
+                )
+            except HTTPException as exc:
+                return ("conflict", exc.status_code, exc.detail)
+            except Exception as exc:  # noqa: BLE001 - regression captures escaping DB errors.
+                return ("error", type(exc).__name__, str(exc))
+            return ("claimed", 200, None)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(run_claim, seed_mechanic.id, "race-claim-one")
+        second = executor.submit(run_claim, other.id, "race-claim-two")
+        start.wait(timeout=2)
+        assert first_entered.wait(timeout=2)
+        both_entered.wait(timeout=0.25)
+        release.set()
+        outcomes = [first.result(timeout=3), second.result(timeout=3)]
+
+    assert maximum_active == 1
+    assert sorted(outcome[0] for outcome in outcomes) == ["claimed", "conflict"]
+    assert next(outcome for outcome in outcomes if outcome[0] == "conflict") == (
+        "conflict",
+        409,
+        "tracker_issue_claim_pending",
+    )
 
 
 def test_claim_takeover_changes_owner_once_and_names_both_mechanics(

@@ -215,13 +215,14 @@ def _deliver_transition(
     issue: dict,
 ) -> dict[str, str | bool]:
     purpose: TransitionPurpose = action.action  # type: ignore[assignment]
+    payload = json.loads(action.payload_json)
     if target_status_reached(issue, purpose):
         return {"already_applied": True}
     if purpose != "close" and (
         tracker_issue_is_closed(issue) or target_status_reached(issue, "close")
     ):
         raise DeliveryError("task_already_closed")
-    if purpose == "start" and not issue.get("components"):
+    if purpose == "start" and not payload.get("components_prepared") and not issue.get("components"):
         _set_issue_field(
             token=token,
             key=action.resource_id,
@@ -232,7 +233,6 @@ def _deliver_transition(
     transition_id = resolve_transition(transitions, purpose)
     if transition_id is None:
         raise DeliveryError("tracker_transition_missing")
-    payload = json.loads(action.payload_json)
     tracker_client.transition_issue(
         token=token,
         key=action.resource_id,
