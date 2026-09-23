@@ -167,14 +167,15 @@ function TaskIssueSummary({ issue, now, onOpenRobotCheck, robotReadOnly }: { iss
   </article>
 }
 
-type WorkSection = 'task' | 'open' | 'closed' | 'check'
+type WorkSection = 'task' | 'open' | 'closed' | 'check' | 'chat'
 
-function WorkbenchTabs({ activeTab, canCheck, onChange }: {
-  activeTab: WorkSection; canCheck: boolean; onChange(tab: WorkSection): void
+function WorkbenchTabs({ activeTab, canCheck, canChat, onChange }: {
+  activeTab: WorkSection; canCheck: boolean; canChat: boolean; onChange(tab: WorkSection): void
 }) {
   const workflowItems = [
     { id: 'task', label: 'Задача' },
     ...(canCheck ? [{ id: 'check', label: 'Проверка' }] : []),
+    ...(canChat ? [{ id: 'chat', label: 'Чат' }] : []),
   ]
   const relatedItems = [
     { id: 'open', label: 'Открытые задачи' },
@@ -718,8 +719,9 @@ export function TaskController({
   )
   const claimParkId = detail.data?.claim?.park_id ?? null
   const taskParkId = user.parks.some(park => park.id === claimParkId) ? claimParkId : null
-  const activeTab = requestedTab === 'check' && !mechanicCanWork ? 'task' : requestedTab
-  const changeTab = (detailTab: 'task' | 'open' | 'closed' | 'check') => onStateChange({ ...state, detailTab }, { replace: false })
+  const canChat = Boolean(detail.data?.workflow && !hiddenDetail)
+  const activeTab = requestedTab === 'check' && !mechanicCanWork || requestedTab === 'chat' && !canChat ? 'task' : requestedTab
+  const changeTab = (detailTab: WorkSection) => onStateChange({ ...state, detailTab }, { replace: false })
   const rootIssue = state.rootIssue ?? issueKey
   const rootHref = rootIssue ? workIssueHref(rootIssue, { ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, selectedPark.id) : ''
   const listDataAvailable = list.data !== undefined
@@ -959,7 +961,7 @@ export function TaskController({
                         <Link to={rootHref}>К главному блокеру {rootIssue}</Link>
                       </nav>
                       ) : null}
-                      <WorkbenchTabs activeTab={activeTab as WorkSection} canCheck={mechanicCanWork} onChange={changeTab} />
+                      <WorkbenchTabs activeTab={activeTab as WorkSection} canCheck={mechanicCanWork} canChat={canChat} onChange={changeTab} />
                     </> : null}
                     <TabPanel id="work-panel-task" labelledBy="tab-task" active={activeTab === 'task'} key={issueKey}>
                     <ClassicTaskLayout header={detail.data?.workflow ? <>
@@ -994,7 +996,6 @@ export function TaskController({
                         {taskControlMessage ? <p role="status">{taskControlMessage}</p> : null}
                         {taskControlError ? <p role="alert">{taskControlError}</p> : null}
                       </section> : null}
-                      {!hiddenDetail ? <div className="a-work-chat"><TaskTimeline items={taskComments} /></div> : null}
                     </> : <IssueDetailPanel
                       currentUser={user.tracker_login ?? user.username} accountKey={user.username}
                       commentsLoading={comments.isLoading && !comments.data}
@@ -1023,6 +1024,7 @@ export function TaskController({
                         issueKey={detail.data.key}
                         role={detail.data.workflow ? user.role : undefined}
                         reviewState={detail.data.workflow?.review_state}
+                        showCollaboration={false}
                         onAssign={(assignee) => mutate(
                           (assertCurrent) => runTrackerSubmission(user.username, detail.data!, 'assign', { assignee }, headers => apiClient.trackerAssign(detail.data!.key, assignee, headers), assertCurrent),
                         )}
@@ -1106,7 +1108,7 @@ export function TaskController({
                         }
                         setReviewOpen(false)
                       }} /> : null}
-                    {detail.data?.workflow ? <div aria-label="Дополнительные разделы задачи" className="rp-action-bar rp-responsive-disclosure-group rp-task-disclosure-actions" role="group">
+                    {detail.data?.workflow ? <div aria-label="Дополнительные разделы задачи" className="rp-action-bar rp-task-disclosure-actions" role="group">
                       {user.role === 'mechanic' && mechanicCanWork ? <>
                         <ClosedDisclosure title="Списать запчасть" open={partsOpen} onOpenChange={open => {
                           if (open) setPartsReceipt('')
@@ -1140,6 +1142,43 @@ export function TaskController({
                     </ResponsiveDisclosureGroup>{partsReceipt ? <p role="status">{partsReceipt}</p> : null}</> : null}
                     </ClassicTaskLayout>
                     </TabPanel>
+                    {canChat ? <TabPanel id="work-panel-chat" labelledBy="tab-chat" active={activeTab === 'chat'}>
+                      <div className="a-work-chat"><TaskTimeline items={taskComments} /></div>
+                      {canRenderDetailActions && detail.data?.workflow ? <IssueActionsPanel
+                        actionHost={null}
+                        capabilities={{
+                          comment: detail.data.capabilities.comment,
+                          attach: detail.data.capabilities.attach,
+                          assign: false,
+                          unassign: false,
+                          transition: false,
+                          close: false,
+                        }}
+                        draftOwner={user.username}
+                        currentUser={user.tracker_login ?? user.username}
+                        issueKey={detail.data.key}
+                        role={user.role}
+                        reviewState={detail.data.workflow.review_state}
+                        showLifecycleActions={false}
+                        onAssign={async () => undefined}
+                        onAttach={apiClient.taskPhoto ? (file) => mutate(async assertCurrent => {
+                          const identity = JSON.stringify([detail.data!.key, user.id, await attachmentIdentity(file)])
+                          assertCurrent()
+                          await lifecycleMutation('photo', identity, key => apiClient.taskPhoto!(detail.data!.key, file, key))
+                        }) : undefined}
+                        onClose={async () => undefined}
+                        onComment={(text) => sync && taskParkId != null
+                          ? enqueueComment(text).then(() => undefined)
+                          : mutate(
+                            (assertCurrent) => apiClient.taskMessage
+                              ? lifecycleMutation('message', text, key => apiClient.taskMessage!(detail.data!.key, text, key))
+                              : runTrackerSubmission(user.username, detail.data!, 'comment', { text }, headers => apiClient.trackerComment(detail.data!.key, text, headers), assertCurrent),
+                          )}
+                        onTransition={async () => undefined}
+                        onUnassign={async () => undefined}
+                        transitions={[]}
+                      /> : null}
+                    </TabPanel> : null}
                     {(['open', 'closed'] as const).map(kind => <TabPanel key={kind} id={`work-panel-${kind}`} labelledBy={`tab-${kind}`} active={activeTab === kind}>
                       {activeTab === kind && detail.data ? robotNumber && relatedPrefix && relatedQueue ? <RelatedTasksPanel
                         apiClient={apiClient} issueKey={issueKey ?? ''} kind={kind}

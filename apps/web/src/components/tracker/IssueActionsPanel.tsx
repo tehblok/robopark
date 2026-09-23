@@ -150,6 +150,8 @@ function IssueActionsPanelContent({
   onReturnReview,
   onApproveReview,
   actionHost,
+  showLifecycleActions = true,
+  showCollaboration = true,
 }: {
   canWrite?: boolean
   capabilities?: TrackerIssueCapabilities
@@ -170,6 +172,8 @@ function IssueActionsPanelContent({
   onReturnReview?: () => Promise<void>
   onApproveReview?: () => Promise<void>
   actionHost?: HTMLElement | null
+  showLifecycleActions?: boolean
+  showCollaboration?: boolean
 }) {
   const issueUrl = safeHttpUrl(issueUrlRaw) ?? undefined
   const effectiveCapabilities: TrackerIssueCapabilities = capabilities ?? {
@@ -277,10 +281,11 @@ function IssueActionsPanelContent({
     if (await run('assign', () => onAssign(login))) setAssignee('')
   }
 
-  const hasLifecycleAction = role === 'mechanic' && reviewState !== 'pending' && Boolean(onSubmitReview)
-    || role === 'operator' && reviewState === 'pending' && Boolean(onReturnReview || onApproveReview)
-  const hasActions = Object.values(effectiveCapabilities).some(Boolean) || hasLifecycleAction
+  const hasLifecycleAction = showLifecycleActions && (role === 'mechanic' && reviewState !== 'pending' && Boolean(onSubmitReview)
+    || role === 'operator' && reviewState === 'pending' && Boolean(onReturnReview || onApproveReview))
+  const hasActions = showCollaboration && Object.values(effectiveCapabilities).some(Boolean) || hasLifecycleAction
   if (!hasActions) {
+    if (!showCollaboration) return null
     return (
       <section className="issue-actions">
         <p className="issue-muted">{ru.tracker.actionsDisabled}</p>
@@ -293,11 +298,11 @@ function IssueActionsPanelContent({
     )
   }
 
-  const lifecycleActions = role === 'mechanic' && reviewState !== 'pending' && onSubmitReview ? (
+  const lifecycleActions = showLifecycleActions && role === 'mechanic' && reviewState !== 'pending' && onSubmitReview ? (
     <Button busy={busy === 'review'} disabled={Boolean(busy)} onClick={() => void run('review', onSubmitReview)} type="button">
       Передать на проверку
     </Button>
-  ) : role === 'operator' && reviewState === 'pending' ? <div className="issue-action-row">
+  ) : showLifecycleActions && role === 'operator' && reviewState === 'pending' ? <div className="issue-action-row">
     {onReturnReview ? <Button busy={busy === 'return'} disabled={Boolean(busy)} onClick={() => void run('return', onReturnReview)} type="button" variant="secondary">Вернуть в работу</Button> : null}
     {onApproveReview ? <Button busy={busy === 'approve'} disabled={Boolean(busy)} onClick={() => void run('approve', onApproveReview)} type="button">Принять и закрыть</Button> : null}
   </div> : null
@@ -312,7 +317,7 @@ function IssueActionsPanelContent({
       {error && <p className="alert alert-error" role="alert">{error}</p>}
       {success && <p aria-live="polite">{success}</p>}
 
-      <div className="issue-action-primary" id="comment">
+      {showCollaboration ? <div className="issue-action-primary" id="comment">
         {effectiveCapabilities.attach && onAttach && (
           <AttachmentActions
             busy={busy}
@@ -346,7 +351,7 @@ function IssueActionsPanelContent({
             </div>
           </form>
         )}
-      </div>
+      </div> : null}
 
       {actionHost && projectedLifecycleActions ? createPortal(projectedLifecycleActions, actionHost) : projectedLifecycleActions}
 

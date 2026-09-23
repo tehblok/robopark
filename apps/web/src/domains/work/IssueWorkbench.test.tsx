@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { Profiler, type ReactNode, useLayoutEffect, useState } from 'react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -713,6 +714,10 @@ function renderWorkbench({
   }
 }
 
+async function openTaskChat() {
+  fireEvent.click(await screen.findByRole('tab', { name: 'Чат' }))
+}
+
 function listKey(currentUser = user, currentPark = park, currentState = state) {
   return `${accessPrefix(currentUser, currentPark)}list:${currentPark.id}:${JSON.stringify(currentState)}`
 }
@@ -833,6 +838,7 @@ describe('IssueWorkbench', () => {
     const trackerAttach = vi.fn(async () => actionResult('attach'))
     renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskMessage, taskPhoto, trackerAttach } as Partial<IssueWorkbenchApiClient>) })
 
+    await openTaskChat()
     expect(await screen.findByText(ru.tracker.attachPhoto)).toBeVisible()
     const photo = new File(['image'], 'robot.jpg', { type: 'image/jpeg' })
     fireEvent.change(document.querySelector('.issue-attach-group input[type="file"]')!, { target: { files: [photo] } })
@@ -851,6 +857,7 @@ describe('IssueWorkbench', () => {
     const taskPhoto = vi.fn().mockRejectedValueOnce(new Error('network lost')).mockResolvedValueOnce({ id: 'photo-1' })
     renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskMessage, taskPhoto } as Partial<IssueWorkbenchApiClient>) })
 
+    await openTaskChat()
     await screen.findByText(ru.tracker.attachPhoto)
     fireEvent.change(document.querySelector('.issue-attach-group input[type="file"]')!, { target: { files: [new File(['image'], 'robot.jpg', { type: 'image/jpeg' })] } })
     fireEvent.click(screen.getByRole('button', { name: ru.tracker.attachPhotoSubmit }))
@@ -867,6 +874,7 @@ describe('IssueWorkbench', () => {
     const workflowIssue: TrackerIssueDetail = { ...issue, claim: { park_id: park.id }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'pending', has_current_cycle_comment: false } }
     const taskMessage = vi.fn().mockRejectedValueOnce(new Error('response lost')).mockResolvedValueOnce({})
     renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskMessage }) })
+    await openTaskChat()
     const composer = await screen.findByRole('textbox', { name: ru.tracker.comments })
     fireEvent.change(composer, { target: { value: 'Заменил датчик' } })
     fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
@@ -892,6 +900,7 @@ describe('IssueWorkbench', () => {
       subscribeAction: vi.fn(() => () => undefined),
     } satisfies SyncContextValue
     renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskMessage }), sync })
+    await openTaskChat()
     const composer = await screen.findByRole('textbox', { name: ru.tracker.comments })
     fireEvent.change(composer, { target: { value: 'Заменил датчик офлайн' } })
     fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
@@ -963,10 +972,58 @@ describe('IssueWorkbench', () => {
     expect(primaryTabs).toHaveClass('rp-tabs--primary')
     expect(within(primaryTabs).getByRole('tab', { name: 'Задача' })).toBeVisible()
     expect(within(primaryTabs).getByRole('tab', { name: 'Проверка' })).toBeVisible()
+    expect(within(primaryTabs).getByRole('tab', { name: 'Чат' })).toBeVisible()
     expect(screen.getByRole('tablist', { name: 'Другие задачи робота' })).toHaveClass('rp-tabs--secondary')
     expect(screen.getByRole('button', { name: 'Списать запчасть' })).toHaveClass('rp-disclosure-action')
     expect(screen.getByRole('button', { name: 'Передать смену' })).toHaveClass('rp-disclosure-action')
-    expect(screen.getByRole('group', { name: 'Дополнительные разделы задачи' })).toHaveClass('rp-action-bar')
+    const disclosures = screen.getByRole('group', { name: 'Дополнительные разделы задачи' })
+    expect(disclosures).not.toHaveClass('rp-responsive-disclosure-group')
+    const style = document.createElement('style')
+    style.textContent = readFileSync('src/components/tracker/task-card.css', 'utf8')
+    document.head.append(style)
+    expect(getComputedStyle(disclosures).display).toBe('flex')
+    expect(getComputedStyle(disclosures).flexWrap).toBe('wrap')
+    const phoneRules = Array.from(style.sheet!.cssRules)
+      .filter((rule): rule is CSSMediaRule => 'conditionText' in rule && rule.conditionText === '(max-width: 599px)')
+      .flatMap(rule => Array.from(rule.cssRules))
+    const phoneDisclosure = Array.from(phoneRules).find(
+      (rule): rule is CSSStyleRule => 'selectorText' in rule && rule.selectorText === '.rp-task-disclosure-actions',
+    )
+    expect(phoneDisclosure?.style.display).toBe('grid')
+    expect(phoneDisclosure?.style.gap).toBe('12px')
+    expect(phoneDisclosure?.style.gridTemplateColumns).toBe('minmax(0, 1fr)')
+    style.remove()
+  })
+  it('moves chat into its tab and preserves task and composer state while switching', async () => {
+    const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
+    renderWorkbench({ currentUser: mechanic, client: apiClient({
+      trackerIssue: vi.fn(async () => ({
+        ...issue, assignee: { display: 'mech', login: 'mech' }, claim: { park_id: park.id },
+        workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress' as const, sync_state: 'saved' as const, has_current_cycle_comment: false },
+      })),
+      taskTimeline: vi.fn(async () => [taskMessageResult('Проверил привод')]),
+    }) })
+
+    const parts = await screen.findByRole('button', { name: 'Списать запчасть' })
+    expect(screen.getByRole('button', { name: 'Передать на проверку' })).toBeVisible()
+    fireEvent.click(parts)
+    expect(parts).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Проверил привод')).not.toBeVisible()
+    expect(screen.queryByRole('textbox', { name: ru.tracker.comments })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Чат' }))
+    expect(await screen.findByText('Проверил привод')).toBeVisible()
+    const composer = screen.getByRole('textbox', { name: ru.tracker.comments })
+    fireEvent.change(composer, { target: { value: 'Черновик ответа' } })
+    expect(screen.queryByRole('button', { name: 'Списать запчасть' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Передать на проверку' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Задача' }))
+    expect(screen.getByRole('button', { name: 'Списать запчасть' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: 'Передать на проверку' })).toBeVisible()
+    expect(screen.queryByRole('textbox', { name: ru.tracker.comments })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Чат' }))
+    expect(screen.getByRole('textbox', { name: ru.tracker.comments })).toHaveValue('Черновик ответа')
   })
   it('keeps related task tabs in the Classic semantic styling wrapper', async () => {
     renderWorkbench()
@@ -1045,7 +1102,7 @@ describe('IssueWorkbench', () => {
     expect(emergencyResolve).not.toHaveBeenCalled()
   })
 
-  it('keeps the phone task summary, owner, latest comment and composer before secondary disclosures', async () => {
+  it('keeps phone workflow actions on task and timeline in the dedicated chat tab', async () => {
     vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
       matches: true,
       addEventListener: vi.fn(),
@@ -1070,13 +1127,18 @@ describe('IssueWorkbench', () => {
     expect(await screen.findByRole('heading', { name: currentIssue.summary })).toBeVisible()
     expect(screen.getAllByText('В очереди').some(element => element.closest('.issue-detail'))).toBe(true)
     expect(screen.getByText('Operator')).toBeVisible()
-    expect(screen.getByText('Последняя важная деталь')).toBeVisible()
-    expect(screen.getByText('Старый комментарий')).toBeVisible()
-    expect(screen.getByRole('textbox', { name: ru.tracker.comments })).toBeVisible()
+    expect(screen.getByText('Последняя важная деталь')).not.toBeVisible()
+    expect(screen.getByText('Старый комментарий')).not.toBeVisible()
+    expect(screen.queryByRole('textbox', { name: ru.tracker.comments })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: ru.tracker.history })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Статус задачи' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Исполнитель' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Передать смену' })).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(screen.getByRole('tab', { name: 'Чат' }))
+    expect(screen.getByText('Последняя важная деталь')).toBeVisible()
+    expect(screen.getByText('Старый комментарий')).toBeVisible()
+    expect(screen.getByRole('textbox', { name: ru.tracker.comments })).toBeVisible()
+    fireEvent.click(screen.getByRole('tab', { name: 'Задача' }))
     expect(document.querySelector('.issue-collaboration')).not.toBeInTheDocument()
     expect(screen.queryByText('Загружаем передачу смены…')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Передать смену' }))
@@ -1553,6 +1615,7 @@ describe('IssueWorkbench', () => {
     renderWorkbench({ client })
 
     await screen.findByRole('heading', { name: issue.summary })
+    await openTaskChat()
     fireEvent.change(screen.getByLabelText(ru.tracker.comments), {
       target: { value: 'Новая деталь' },
     })
@@ -1677,6 +1740,7 @@ describe('IssueWorkbench', () => {
     renderWorkbench({ client, onAuthorizationFailure })
 
     await screen.findByRole('heading', { name: issue.summary })
+    await openTaskChat()
     fireEvent.change(screen.getByLabelText(ru.tracker.comments), {
       target: { value: 'Проверьте маршрут' },
     })
@@ -1974,12 +2038,12 @@ it('does not publish a lifecycle message result after the principal changes', as
   const pending = deferred<TaskTimelineItem>()
   const client = apiClient({ trackerIssue: vi.fn(async () => queuedWorkflowIssue), taskMessage: vi.fn(() => pending.promise) })
   const tree = (nextUser = user) => <Harness><IssueWorkbench apiClient={client}
-    user={nextUser} selectedPark={park} issueKey={issue.key} state={state}
+    user={nextUser} selectedPark={park} issueKey={issue.key} state={{ ...state, detailTab: 'chat' }}
     onCloseIssue={vi.fn()} onAuthorizationFailure={vi.fn(async () => undefined)}
     onOpenIssue={vi.fn()} onStateChange={vi.fn()} /></Harness>
   const view = render(tree())
-  await screen.findByRole('heading', { name: issue.summary })
-  fireEvent.change(screen.getByRole('textbox', { name: ru.tracker.comments }), { target: { value: 'Работа начата' } })
+  const composer = await screen.findByRole('textbox', { name: ru.tracker.comments })
+  fireEvent.change(composer, { target: { value: 'Работа начата' } })
   fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
   await waitFor(() => expect(client.taskMessage).toHaveBeenCalledOnce())
   vi.mocked(client.trackerIssue).mockImplementation(() => new Promise(() => undefined))
@@ -1993,6 +2057,7 @@ it('refreshes a conflicting workflow immediately and preserves the message draft
   const client = apiClient({ trackerIssue: vi.fn(async () => queuedWorkflowIssue), taskMessage: vi.fn(async () => { throw new ApiError(409, 'tracker_state_conflict') }) })
   renderWorkbench({ client })
   await screen.findByRole('heading', { name: issue.summary })
+  await openTaskChat()
   vi.mocked(client.trackerIssue).mockResolvedValue(reviewWorkflowIssue)
   fireEvent.change(screen.getByRole('textbox', { name: ru.tracker.comments }), { target: { value: 'Не потерять этот черновик' } })
   fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))

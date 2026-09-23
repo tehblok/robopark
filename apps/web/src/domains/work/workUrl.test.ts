@@ -248,6 +248,12 @@ describe('work URL state', () => {
 })
 
 describe('work task navigation context', () => {
+  it('round-trips the dedicated chat tab', () => {
+    const state = parseWorkUrl(new URLSearchParams('park=7&status=queued&view=chat'), defaults)
+    expect(state.detailTab).toBe('chat')
+    expect(workIssueHref('RP-3', state, 7)).toContain('view=chat')
+  })
+
   it('retains the original blocker through additional tasks and check tabs', () => {
     const state = parseWorkUrl(new URLSearchParams('park=7&status=queued&blocker=RP-1&view=check&check_tab=scheme'), defaults)
     expect(state).toMatchObject({ rootIssue: 'RP-1', detailTab: 'check', checkTab: 'scheme' })
