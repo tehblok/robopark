@@ -1,6 +1,6 @@
 import json
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -74,7 +74,19 @@ def part_out(row: InventoryCatalogPart) -> dict:
 
 def _catalog_photo_row(db: Session, kind: str, row_id: int):
     model = InventoryCatalogComponent if kind == "component" else InventoryCatalogPart
-    row = db.get(model, row_id)
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(
+            update(model)
+            .where(model.id == row_id)
+            .values(photo_storage_key=model.photo_storage_key)
+            .execution_options(synchronize_session=False)
+        )
+    row = db.scalar(
+        select(model)
+        .where(model.id == row_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if row is None:
         raise LookupError(f"inventory_{kind}_not_found")
     return row
@@ -110,6 +122,7 @@ def set_catalog_photo(
         raise ValueError("inventory_photo_invalid_type")
     old_key = row.photo_storage_key
     new_key = None
+    bind = db.get_bind()
     try:
         new_key, safe_name, stored_type = inventory.save_photo(filename, content, resolved_type)
         row.photo_storage_key = new_key
@@ -120,7 +133,8 @@ def set_catalog_photo(
         db.commit()
     except Exception:
         db.rollback()
-        inventory._remove_photo(new_key)
+        if new_key:
+            inventory_photo_cleanup.recover_ambiguous_blob(bind, new_key)
         raise
     cleanup_pending = inventory_photo_cleanup.cleanup_pending(
         db, {old_key} if old_key else set()

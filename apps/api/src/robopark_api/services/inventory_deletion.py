@@ -25,6 +25,27 @@ def _require_royal(user: User) -> None:
         raise PermissionError("forbidden")
 
 
+def _lock_catalog_rows(db: Session, model, row_ids: set[int]):
+    if not row_ids:
+        return []
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(
+            update(model)
+            .where(model.id.in_(row_ids))
+            .values(photo_storage_key=model.photo_storage_key)
+            .execution_options(synchronize_session=False)
+        )
+    return list(
+        db.scalars(
+            select(model)
+            .where(model.id.in_(row_ids))
+            .order_by(model.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
+
+
 def _part_graph_ids(db: Session, part_id: int) -> set[int]:
     if db.get(InventoryCatalogPart, part_id) is None:
         raise LookupError("inventory_part_not_found")
@@ -188,6 +209,7 @@ def delete_part(
 ) -> dict:
     _require_royal(user)
     part_ids = _part_graph_ids(db, part_id)
+    _lock_catalog_rows(db, InventoryCatalogPart, part_ids)
     summary = _delete_summary(db, part_ids, query=query, mode=mode)
     try:
         storage_keys = _delete_part_rows(db, part_ids)
@@ -204,9 +226,10 @@ def delete_component(
     db: Session, user: User, component_id: int, *, query: str | None = None, mode: str = "active"
 ) -> dict:
     _require_royal(user)
-    component = db.get(InventoryCatalogComponent, component_id)
-    if component is None:
+    components = _lock_catalog_rows(db, InventoryCatalogComponent, {component_id})
+    if not components:
         raise LookupError("inventory_component_not_found")
+    component = components[0]
     part_ids = set(
         db.scalars(
             select(InventoryCatalogPart.id).where(
@@ -217,6 +240,7 @@ def delete_component(
     graph_ids: set[int] = set()
     for part_id in part_ids:
         graph_ids.update(_part_graph_ids(db, part_id))
+    _lock_catalog_rows(db, InventoryCatalogPart, graph_ids)
     summary = _delete_summary(db, graph_ids, query=query, mode=mode)
     try:
         storage_keys = _delete_part_rows(db, graph_ids) if graph_ids else set()

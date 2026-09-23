@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.dml import Update
 
 from conftest import login_as, role_id_for
 from robopark_api.models import (
@@ -215,6 +216,111 @@ def test_catalog_photo_replace_persists_retryable_cleanup_after_unlink_failure(
     assert inventory.photo_path(current_key).is_file()
 
 
+def test_catalog_photo_replace_keeps_committed_blob_when_commit_ack_is_ambiguous(
+    client, db_engine, db_session, seed_royal, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        inventory,
+        "get_settings",
+        lambda: SimpleNamespace(inventory_photos_dir=str(tmp_path / "inventory-photos")),
+    )
+    _component, part = _catalog(db_session, seed_royal, article="PHOTO-COMMIT-AMBIGUOUS")
+    old_key, filename, content_type = inventory.save_photo("old.jpg", _JPEG, "image/jpeg")
+    part.photo_storage_key = old_key
+    part.photo_filename = filename
+    part.photo_content_type = content_type
+    db_session.commit()
+    login_as(client, seed_royal.username, "secret")
+    real_commit = db_session.commit
+
+    def commit_then_raise():
+        real_commit()
+        raise RuntimeError("commit_ack_lost")
+
+    monkeypatch.setattr(db_session, "commit", commit_then_raise)
+
+    response = client.put(
+        f"/inventory/catalog/parts/{part.id}/photo",
+        files={"photo": ("new.png", _PNG, "image/png")},
+    )
+
+    assert response.status_code == 502
+    from robopark_api.models import InventoryPhotoCleanup
+    from robopark_api.services import inventory_photo_cleanup
+
+    with Session(db_engine) as restarted:
+        stored = restarted.get(InventoryCatalogPart, part.id)
+        assert stored is not None and stored.photo_storage_key != old_key
+        assert inventory.photo_path(stored.photo_storage_key).is_file()
+        assert restarted.get(InventoryPhotoCleanup, stored.photo_storage_key) is None
+        assert restarted.get(InventoryPhotoCleanup, old_key) is not None
+        assert inventory_photo_cleanup.process_pending(restarted) == 1
+    assert not (tmp_path / "inventory-photos" / old_key).exists()
+
+
+def test_catalog_photo_replace_true_commit_failure_cleans_unreferenced_new_blob(
+    client, db_engine, db_session, seed_royal, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        inventory,
+        "get_settings",
+        lambda: SimpleNamespace(inventory_photos_dir=str(tmp_path / "inventory-photos")),
+    )
+    _component, part = _catalog(db_session, seed_royal, article="PHOTO-COMMIT-FAILED")
+    old_key, filename, content_type = inventory.save_photo("old.jpg", _JPEG, "image/jpeg")
+    part.photo_storage_key = old_key
+    part.photo_filename = filename
+    part.photo_content_type = content_type
+    db_session.commit()
+    login_as(client, seed_royal.username, "secret")
+    monkeypatch.setattr(
+        inventory,
+        "_remove_photo",
+        lambda _key: (_ for _ in ()).throw(AssertionError("direct unlink is unsafe")),
+    )
+    monkeypatch.setattr(
+        db_session,
+        "commit",
+        lambda: (_ for _ in ()).throw(RuntimeError("commit_failed")),
+    )
+
+    response = client.put(
+        f"/inventory/catalog/parts/{part.id}/photo",
+        files={"photo": ("new.png", _PNG, "image/png")},
+    )
+
+    assert response.status_code == 502
+    from robopark_api.models import InventoryPhotoCleanup
+
+    with Session(db_engine) as restarted:
+        stored = restarted.get(InventoryCatalogPart, part.id)
+        assert stored is not None and stored.photo_storage_key == old_key
+        assert restarted.query(InventoryPhotoCleanup).count() == 0
+    assert _photos_in(tmp_path) == {tmp_path / "inventory-photos" / old_key}
+
+
+def test_catalog_photo_row_is_selected_for_update_before_mutation():
+    captured = []
+    expected = object()
+
+    class StubSession:
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+        def get(self, _model, _row_id):
+            return expected
+
+        def scalar(self, statement):
+            captured.append(statement)
+            return expected
+
+    row = inventory_catalog._catalog_photo_row(StubSession(), "part", 7)
+
+    assert row is expected
+    assert captured
+    assert captured[0]._for_update_arg is not None
+
+
 def test_permanent_delete_persists_retryable_photo_cleanup_after_unlink_failure(
     client, db_engine, db_session, seed_royal, tmp_path, monkeypatch
 ):
@@ -255,6 +361,37 @@ def test_permanent_delete_persists_retryable_photo_cleanup_after_unlink_failure(
         assert inventory_photo_cleanup.process_pending(restarted) == 0
         assert restarted.get(InventoryPhotoCleanup, key) is None
     assert not (tmp_path / "inventory-photos" / key).exists()
+
+
+@pytest.mark.parametrize("kind", ["parts", "components"])
+def test_permanent_catalog_delete_locks_photo_rows_before_snapshot(
+    client, db_session, seed_royal, monkeypatch, kind
+):
+    component, part = _catalog(
+        db_session, seed_royal, article=f"DELETE-LOCK-{kind.upper()}"
+    )
+    login_as(client, seed_royal.username, "secret")
+    statements = []
+    real_execute = db_session.execute
+
+    def recording_execute(statement, *args, **kwargs):
+        statements.append(statement)
+        return real_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "execute", recording_execute)
+    row_id = part.id if kind == "parts" else component.id
+
+    response = client.delete(
+        f"/inventory/catalog/{kind}/{row_id}", params={"permanent": "true"}
+    )
+
+    assert response.status_code == 200, response.text
+    locked_tables = {
+        statement.table.name for statement in statements if isinstance(statement, Update)
+    }
+    assert "inventory_catalog_parts" in locked_tables
+    if kind == "components":
+        assert "inventory_catalog_components" in locked_tables
 
 
 def test_catalog_photo_keeps_committed_new_file_when_refresh_fails(

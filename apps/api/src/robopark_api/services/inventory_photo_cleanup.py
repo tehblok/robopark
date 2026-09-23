@@ -83,3 +83,11 @@ def cleanup_pending(db: Session, storage_keys: set[str]) -> bool:
     except Exception:  # The business commit already succeeded; keep the durable marker.
         db.rollback()
         return True
+
+
+def recover_ambiguous_blob(bind, storage_key: str) -> bool:
+    """Persist cleanup separately, then keep or unlink based on committed references."""
+    with Session(bind=bind) as recovery:
+        enqueue(recovery, {storage_key})
+        recovery.commit()
+        return cleanup_pending(recovery, {storage_key})
