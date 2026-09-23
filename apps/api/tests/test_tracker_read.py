@@ -292,17 +292,25 @@ def test_operator_owned_by_me_reconciles_external_closure_and_removes_review(
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     from robopark_api.services import tracker_client
 
-    monkeypatch.setattr(tracker_client, "search_issues", lambda **_kwargs: [{
+    closed = {
         **_scoped_issue("ROBOPARK-CLOSED", "2026-01-01T00:00:00Z"),
         "status": "Закрыта",
         "status_key": "closed",
-    }])
+    }
+    filters = []
+
+    def fake_search(**kwargs):
+        filters.append(kwargs["filter_open"])
+        return [] if kwargs["filter_open"] else [closed]
+
+    monkeypatch.setattr(tracker_client, "search_issues", fake_search)
     login_as(client, operator.username, "secret")
 
     response = client.get("/tracker/issues?owned_by_me=true")
 
     assert response.status_code == 200
     assert response.json()["items"] == []
+    assert filters == [False, True]
     db_session.refresh(review)
     assert review.state == "closed"
 

@@ -16,7 +16,6 @@ from robopark_api.services import platform_settings
 from robopark_api.services.rbac import RoleSlug
 from robopark_api.task_workflow_models import TaskReview
 
-
 PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
     "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
@@ -48,10 +47,20 @@ def _operator(db, park_id: int) -> User:
     return user
 
 
-def test_submit_review_targets_only_selected_operator(
+def test_submit_review_replay_keeps_persisted_reviewer_after_shift_change(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
-    operator = _operator(db_session, seed_park_with_tracker.id)
+    first_operator = _operator(db_session, seed_park_with_tracker.id)
+    second_operator = User(
+        username="operator-next-shift",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, RoleSlug.OPERATOR),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(second_operator)
+    db_session.flush()
+    db_session.add(UserPark(user_id=second_operator.id, park_id=seed_park_with_tracker.id))
     db_session.add(
         TrackerClaim(
             issue_key="ROBOPARK-51",
@@ -66,12 +75,12 @@ def test_submit_review_targets_only_selected_operator(
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     from robopark_api.services import schedules, tracker_client
 
-    real_resolve = schedules.resolve_active_operator
     resolved_parks = []
+    reviewers = iter((first_operator, second_operator))
 
     def resolve_once(db, *, park_id, at=None):
         resolved_parks.append(park_id)
-        return real_resolve(db, park_id=park_id, at=at)
+        return next(reviewers)
 
     monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: {
         "key": "ROBOPARK-51", "summary": "blocker [447]", "status": "В работе",
@@ -88,11 +97,21 @@ def test_submit_review_targets_only_selected_operator(
         data={"defect_code": "BD-01", "comment": "Исправлено"},
         files=[("photo", ("robot.png", PNG, "image/png"))],
     )
+    replay = client.post(
+        "/tracker/issues/ROBOPARK-51/submit-review",
+        headers={"Idempotency-Key": "targeted-review"},
+        data={"defect_code": "BD-01", "comment": "Исправлено"},
+        files=[("photo", ("robot.png", PNG, "image/png"))],
+    )
 
-    assert response.status_code == 200
-    assert resolved_parks == [seed_park_with_tracker.id]
-    assert db_session.query(TaskReview).one().reviewer_user_id == operator.id
-    assert emitted[-1]["target_user_ids"] == {operator.id}
+    assert response.status_code == replay.status_code == 200
+    assert response.json() == replay.json()
+    assert resolved_parks == [seed_park_with_tracker.id, seed_park_with_tracker.id]
+    assert db_session.query(TaskReview).one().reviewer_user_id == first_operator.id
+    assert [event["target_user_ids"] for event in emitted] == [
+        {first_operator.id},
+        {first_operator.id},
+    ]
 
 
 def test_push_subscription_and_internal_inbox_do_not_expose_task_text(client, seed_mechanic):

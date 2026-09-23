@@ -756,13 +756,18 @@ def submit_review(
         payload=payload,
     )
     if not primary.created:
-        return _result(
+        result = _result(
             db,
             issue_key=issue_key,
             actor=actor,
             command="submit_review",
             performed_at=primary.row.created_at,
         )
+        persisted_review = _latest_review(db, issue_key)
+        result["reviewer_user_id"] = (
+            persisted_review.reviewer_user_id if persisted_review is not None else reviewer.id
+        )
+        return result
     if not clean_comment and not _valid_current_comment(
         db,
         issue_key=issue_key,
@@ -861,13 +866,15 @@ def submit_review(
             with suppress(OSError):
                 path.unlink()
         raise
-    return _result(
+    result = _result(
         db,
         issue_key=issue_key,
         actor=actor,
         command="submit_review",
         performed_at=primary.row.created_at,
     )
+    result["reviewer_user_id"] = reviewer.id
+    return result
 
 
 def return_review(

@@ -474,7 +474,32 @@ def list_issues(
         query_text = tracker_client.join_query(
             query_text, f'Resolved: >= "{query_since:%Y-%m-%d %H:%M:%S}"'
         )
+    operator_owned = owned_by_me and rbac.role_slug(user) == RoleSlug.OPERATOR
+    pending_review_keys = (
+        set(
+            db.scalars(
+                select(TaskReview.issue_key).where(
+                    TaskReview.reviewer_user_id == user.id,
+                    TaskReview.state == "pending",
+                )
+            ).all()
+        )
+        if operator_owned
+        else set()
+    )
     try:
+        if pending_review_keys:
+            review_query = "(" + " OR ".join(
+                f"Key: {tracker_client.ql_token(key)}" for key in sorted(pending_review_keys)
+            ) + ")"
+            review_issues = tracker_cache.search_issues(
+                token=token,
+                query=review_query,
+                filter_open=False,
+                order=["createdAt"],
+            )
+            for review_issue in review_issues:
+                task_lifecycle.reconcile_external_closure(db, review_issue)
         items = tracker_cache.search_issues(
             token=token,
             query=query_text,
@@ -503,9 +528,7 @@ def list_issues(
     owned_parks = (
         None if rbac.is_admin_or_royal(user) else {park.id for park in get_user_parks(db, user)}
     )
-    if owned_by_me and rbac.role_slug(user) == RoleSlug.OPERATOR:
-        for issue in ordered:
-            task_lifecycle.reconcile_external_closure(db, issue)
+    if operator_owned:
         owned_keys = set(
             db.scalars(
                 select(TaskReview.issue_key).where(

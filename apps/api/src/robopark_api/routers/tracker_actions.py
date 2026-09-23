@@ -321,12 +321,13 @@ def submit_task_review(
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+    effective_reviewer_id = int(result.pop("reviewer_user_id", None) or reviewer.id)
     background_tasks.add_task(
         request.app.state.push_service.emit,
         event_type="review_task",
         park_id=park.id,
         protected_text=f"Задача {key} ожидает проверки",
-        target_user_ids={reviewer.id},
+        target_user_ids={effective_reviewer_id},
         event_key=f"review:{key}:{idempotency_key or result['performed_at']}",
     )
     return TrackerActionOut(**result)
