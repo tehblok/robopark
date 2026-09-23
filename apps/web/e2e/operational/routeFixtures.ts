@@ -1,5 +1,6 @@
 import { expect, type Page } from '@playwright/test'
 import type { AdminRole, AdminUser, Campaign, CampaignDetail, ParkRequest, PermissionCatalogItem, Report, User } from '../../src/api'
+import { canAccessRoute } from '../../src/app/routing/accessPolicy'
 import { ROUTE_MANIFEST, type AppRouteId, type RouteManifestItem } from '../../src/app/routing/routeManifest'
 import { analyticsFixture } from '../../src/domains/analytics/analytics.test-support'
 import type { MockRoute } from '../support/mockApi'
@@ -27,6 +28,12 @@ const routeRequests: ParkRequest[] = [{ id: 5, user_id: 101, park_id: 8, status:
 const routeRoles: AdminRole[] = [{ id: 1, slug: 'mechanic', name: 'Механик', description: 'Работа с задачами', is_system: true, is_active: true, permissions: ['nav.inventory'], user_count: 1 }]
 const routeCatalog: PermissionCatalogItem[] = [{ key: 'nav.inventory', category: 'nav', label: 'Склад', sort_order: 75 }]
 const routeUsers: AdminUser[] = [{ id: 101, username: 'route-admin', role: 'admin', role_id: 1, access_status: 'approved', is_active: true, tracker_login: 'admin.test', must_change_password: false, parks: [parkNorth], permissions: ['nav.admin'], role_permissions: ['nav.admin'] }]
+
+export function geometryRouteIdsFor(user: User): AppRouteId[] {
+  return ROUTE_MANIFEST
+    .filter(route => route.surface === 'shell' && route.redirectTo == null && canAccessRoute(user, route.id))
+    .map(route => route.id)
+}
 function routeMockRoutes(): MockRoute[] {
   return [
     { method: 'GET', path: '/api/analytics', handler: request => {
@@ -179,7 +186,9 @@ function routeReadyMarker(page: Page, routeId: AppRouteId) {
   }
 }
 
-export async function assertResponsiveContracts(page: Page, width: number): Promise<void> {
+export async function assertResponsiveContracts(page: Page, _width: number): Promise<void> {
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true)
+  expect(await page.locator('[data-interface="task-first"]').count()).toBe(0)
   const overflow = await page.evaluate(() => ({
     amount: document.documentElement.scrollWidth - document.documentElement.clientWidth,
     offenders: Array.from(document.querySelectorAll('body *'))
@@ -196,11 +205,12 @@ export async function assertResponsiveContracts(page: Page, width: number): Prom
       }),
   }))
   expect(overflow.amount, `horizontal overflow: ${overflow.offenders.join(', ')}; layout: ${overflow.layout.join('; ')}`).toBeLessThanOrEqual(0)
-  const violations = await page.evaluate(width => {
+  const violations = await page.evaluate(() => {
     const failures: string[] = []
     const visible = (element: Element) => {
       const style = getComputedStyle(element)
-      return element.getClientRects().length > 0 && style.visibility !== 'hidden' && style.display !== 'none'
+      const box = element.getBoundingClientRect()
+      return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none'
     }
     const name = (element: Element) => `${element.tagName.toLowerCase()}#${element.id}.${element.className} ${(element.getAttribute('aria-label') || element.textContent || '').trim().slice(0, 70)}`
     for (const element of document.querySelectorAll('body *')) {
@@ -211,9 +221,9 @@ export async function assertResponsiveContracts(page: Page, width: number): Prom
       const minimum = element.closest('[data-supplementary="true"]') ? 12 : 14
       const fontSize = parseFloat(getComputedStyle(element).fontSize)
       if (fontSize < minimum) failures.push(`font ${fontSize}<${minimum}: ${name(element)}`)
-      if (width <= 899 && element.matches('input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),select,textarea') && fontSize < 16) failures.push(`input font ${fontSize}<16: ${name(element)}`)
+      if (window.innerWidth <= 899 && element.matches('input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),select,textarea') && fontSize < 16) failures.push(`input font ${fontSize}<16: ${name(element)}`)
     }
-    if (width <= 899) {
+    if (window.innerWidth <= 899) {
       const navigation = document.querySelector('.rp-shell__bottom-nav')
       if (!navigation) failures.push('mobile bottom navigation is missing')
       else for (const label of navigation.querySelectorAll('.rp-shell__nav-label')) {
@@ -229,17 +239,57 @@ export async function assertResponsiveContracts(page: Page, width: number): Prom
       const managementLinks = document.querySelector('.rp-management-nav')
       if (managementSelect && managementLinks && visible(managementSelect) && visible(managementLinks)) failures.push('management navigation is duplicated')
     }
-    if (width === 320 || width === 390) {
-      for (const element of document.querySelectorAll('button,a,input,select,textarea')) {
-        if (!visible(element)) continue
-        const target = element.matches('input[type="checkbox"],input[type="radio"]')
-          ? (element as HTMLInputElement).labels?.[0] : element
-        if (!target) { failures.push(`missing associated label: ${name(element)}`); continue }
-        const box = target.getBoundingClientRect()
-        if (box.width < 43.99 || box.height < 43.99) failures.push(`target ${box.width}x${box.height}: ${name(element)}`)
+    const controls = Array.from(document.querySelectorAll<HTMLElement>('button,a,input,select,textarea,[role="button"],[role="tab"]'))
+      .filter(element => visible(element) && !element.closest('[aria-hidden="true"]'))
+      .filter(element => !element.matches('a') || getComputedStyle(element).display !== 'inline')
+      .map(element => element.matches('input[type="checkbox"],input[type="radio"]')
+        ? (element as HTMLInputElement).labels?.[0] ?? element
+        : element)
+      .filter((element, index, all) => all.indexOf(element) === index)
+    for (const control of controls) {
+      const box = control.getBoundingClientRect()
+      if (box.width < 43.99 || box.height < 43.99) failures.push(`target ${box.width}x${box.height}: ${name(control)}`)
+    }
+
+    for (const container of document.querySelectorAll<HTMLElement>('section,article,li,fieldset,div')) {
+      if (!visible(container)) continue
+      const style = getComputedStyle(container)
+      if ([style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth]
+        .every(value => parseFloat(value) === 0)) continue
+      if (style.display.startsWith('inline') || ['absolute', 'fixed'].includes(style.position)) continue
+      const box = container.getBoundingClientRect()
+      for (const node of Array.from(container.childNodes)) {
+        if (node.nodeType !== Node.TEXT_NODE || !node.textContent?.trim()) continue
+        const range = document.createRange()
+        range.selectNodeContents(node)
+        for (const textBox of Array.from(range.getClientRects())) {
+          const inset = Math.min(textBox.left - box.left, box.right - textBox.right, textBox.top - box.top, box.bottom - textBox.bottom)
+          if (inset < 7.99) failures.push(`text inset ${inset}: ${name(container)}`)
+        }
+      }
+    }
+
+    for (let left = 0; left < controls.length; left += 1) {
+      const first = controls[left]
+      const firstBox = first.getBoundingClientRect()
+      for (let right = left + 1; right < controls.length; right += 1) {
+        const second = controls[right]
+        if (first.contains(second) || second.contains(first)) continue
+        const inOverlayLayer = (element: Element) => {
+          for (let current: Element | null = element; current; current = current.parentElement) {
+            if (['fixed', 'sticky'].includes(getComputedStyle(current).position)) return true
+          }
+          return false
+        }
+        if ([first, second].some(inOverlayLayer)) continue
+        if (first.closest('.password-field') != null && first.closest('.password-field') === second.closest('.password-field')) continue
+        const secondBox = second.getBoundingClientRect()
+        const overlapWidth = Math.min(firstBox.right, secondBox.right) - Math.max(firstBox.left, secondBox.left)
+        const overlapHeight = Math.min(firstBox.bottom, secondBox.bottom) - Math.max(firstBox.top, secondBox.top)
+        if (overlapWidth > 1 && overlapHeight > 1) failures.push(`overlap ${name(first)} <> ${name(second)}`)
       }
     }
     return failures
-  }, width)
+  })
   expect(violations).toEqual([])
 }

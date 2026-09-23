@@ -1,6 +1,30 @@
 import { expect, test } from '@playwright/test'
-import { assertResponsiveContracts, openRouteFixture } from './routeFixtures'
+import { assertResponsiveContracts, assertRouteSemanticContracts, geometryRouteIdsFor, openRouteFixture } from './routeFixtures'
 import { userForRole, settlePage } from './fixtures'
+
+const geometryRoles = ['mechanic', 'operator', 'admin', 'royal'] as const
+const geometryThemes = ['light', 'dark'] as const
+const geometryViewports = [
+  { name: 'phone', width: 390, height: 844 },
+  { name: 'desktop', width: 1440, height: 1000 },
+] as const
+
+for (const role of geometryRoles) {
+  const user = userForRole(role)
+  for (const theme of geometryThemes) for (const viewport of geometryViewports) {
+    test(`${role} routes satisfy ${theme} ${viewport.name} geometry`, async ({ page }) => {
+      for (const route of geometryRouteIdsFor(user)) await test.step(route, async () => {
+        await page.setViewportSize(viewport)
+        await page.addInitScript(themeName => localStorage.setItem('robopark-theme', themeName), theme)
+        await openRouteFixture(page, route, user)
+        await settlePage(page)
+        await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+        await assertRouteSemanticContracts(page, route)
+        await assertResponsiveContracts(page, viewport.width)
+      })
+    })
+  }
+}
 
 for (const mode of ['Классический'] as const) test(`${mode} separates management summary from the next panel`, async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
