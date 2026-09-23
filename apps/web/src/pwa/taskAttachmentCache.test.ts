@@ -170,3 +170,20 @@ it('evicts an expired cache entry before loading a fresh blob', async () => {
   expect(authorize).not.toHaveBeenCalled()
   expect(fetcher).toHaveBeenCalledTimes(2)
 })
+
+it('does not expose a cache hit when logout races its reauthorization', async () => {
+  await activateTaskAttachmentCache(7)
+  const fetcher = vi.fn(async () => new Blob(['photo'], { type: 'image/jpeg' }))
+  releaseTaskAttachment(await loadTaskAttachment(attachment(1), fetcher, authorize))
+  let finishAuthorization!: () => void
+  const waitingAuthorization = new Promise<void>(resolve => { finishAuthorization = resolve })
+  authorize.mockImplementationOnce(() => waitingAuthorization.then(() => undefined))
+  const loading = loadTaskAttachment(attachment(1), fetcher, authorize)
+  await vi.waitFor(() => expect(authorize).toHaveBeenCalledOnce())
+
+  await clearTaskAttachmentCache()
+  finishAuthorization()
+
+  await expect(loading).rejects.toThrow('task_attachment_session_changed')
+  expect(URL.createObjectURL).toHaveBeenCalledTimes(1)
+})

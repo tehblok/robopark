@@ -6,6 +6,7 @@ import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { classifyApiError } from '../../shared/api/classifyApiError'
 import { inventoryInt64Compare, isPositiveInventoryQuantity } from './inventoryTypes'
 import type { OfflineActionInput } from '../../pwa/syncEngine'
+import type { OfflineAction } from '../../pwa/offlineTypes'
 import { buildInventoryWriteoffAction } from '../work/offlineTaskActions'
 import './inventory.css'
 
@@ -19,13 +20,15 @@ type TaskPartsProps = {
   apiClient?: TaskPartsApi
   onWritten?: (receipt: string) => void
   enqueueAction?: (input: OfflineActionInput) => Promise<unknown>
+  queuedAction?: OfflineAction | null
+  onQueued?: (action: OfflineAction) => void
 }
 
 export function TaskPartsPanel(props: TaskPartsProps) {
   return <TaskPartsContent key={`${props.parkId}:${props.issueKey}`} {...props} />
 }
 
-function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueueAction }: TaskPartsProps) {
+function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueueAction, queuedAction, onQueued }: TaskPartsProps) {
   const [data, setData] = useState<InventoryOverview | null>(null)
   const [componentId, setComponentId] = useState(0)
   const [partId, setPartId] = useState(0)
@@ -33,7 +36,7 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
   const [error, setError] = useState<unknown>(null)
   const [loadFailed, setLoadFailed] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [pending, setPending] = useState(false)
+  const [localQueuedAction, setLocalQueuedAction] = useState<OfflineAction | null>(null)
   const [receipt, setReceipt] = useState('')
   const [searchDraft, setSearchDraft] = useState('')
   const [query, setQuery] = useState('')
@@ -46,6 +49,9 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
   const [loadingMore, setLoadingMore] = useState(false)
   const loadGeneration = useRef(0)
   const idempotencyKey = useRef<string | null>(null)
+  const activeQueuedAction = queuedAction ?? localQueuedAction
+  const pending = Boolean(activeQueuedAction && ['local', 'ready', 'sending'].includes(activeQueuedAction.state))
+  const queueFailed = Boolean(activeQueuedAction && ['conflict', 'attention'].includes(activeQueuedAction.state))
   const load = useCallback(async (offset = 0, append = false) => {
     if (parkId == null) return false
     const generation = ++loadGeneration.current
@@ -110,6 +116,22 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
     }
     if (isPositiveInventoryQuantity(quantity) && inventoryInt64Compare(quantity, refreshedPart.quantity) > 0) setQuantity('1')
   }, [componentId, currentData, partId, quantity])
+  useEffect(() => {
+    if (!activeQueuedAction) return
+    idempotencyKey.current = activeQueuedAction.idempotencyKey
+    const payload = activeQueuedAction.payload as { part_id?: unknown, quantity?: unknown }
+    const queuedPartId = Math.abs(Number(payload.part_id))
+    if (!currentData || !Number.isSafeInteger(queuedPartId)) return
+    const queuedComponent = currentData.components.find(item => item.parts.some(candidate => candidate.id === queuedPartId))
+    if (!queuedComponent) return
+    setComponentId(queuedComponent.id)
+    setPartId(queuedPartId)
+    if (typeof payload.quantity === 'string') setQuantity(payload.quantity)
+  }, [activeQueuedAction, currentData])
+  useEffect(() => {
+    if (pending) setReceipt('Списание ожидает синхронизации')
+    else if (queueFailed) setReceipt('')
+  }, [pending, queueFailed])
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (parkId == null || submitting.current || pending || !part || !isPositiveInventoryQuantity(quantity) || inventoryInt64Compare(quantity, part.quantity) > 0) return
@@ -119,19 +141,24 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
       idempotencyKey.current ??= globalThis.crypto.randomUUID()
       const adapterPartId = globalCatalog ? -part.id : part.id
       if (enqueueAction) {
-        await enqueueAction(buildInventoryWriteoffAction({
+        const input = buildInventoryWriteoffAction({
           issueKey,
           parkId,
           id: idempotencyKey.current,
           partId: adapterPartId,
           quantity,
-        }))
+        })
+        const result = await enqueueAction(input)
+        const action: OfflineAction = result && typeof result === 'object' && 'state' in result
+          ? result as OfflineAction
+          : { ...input, state: 'ready', attempts: 0, createdAt: Date.now(), updatedAt: Date.now() }
+        setLocalQueuedAction(action)
+        onQueued?.(action)
       } else {
         await apiClient.writeoffInventoryForTask(issueKey, adapterPartId, quantity, idempotencyKey.current)
       }
       if (!mounted.current) return
       if (enqueueAction) {
-        setPending(true)
         setReceipt('Списание ожидает синхронизации')
         return
       }
@@ -152,6 +179,7 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
   return <div className="task-parts"><p>Выберите компоненту и запчасть. Остаток на складе уменьшится сразу. В чате появится сообщение для оператора. Оператор оформит расход в большой системе учёта.</p>
     {receipt ? <p role="status">{receipt}</p> : null}
     {failure ? <ErrorState description={failure.description} title={failure.title} /> : null}
+    {queueFailed ? <ErrorState description="Проверьте остаток и повторите с теми же данными." title="Не удалось синхронизировать списание" /> : null}
     {failure ? <Button disabled={busy} onClick={() => void load()} type="button" variant="secondary">Обновить остатки</Button> : null}
     <fieldset disabled={busy || pending} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
     {globalCatalog ? <form className="issue-action-row" onSubmit={event => { event.preventDefault(); setQuery(searchDraft.trim()) }}>

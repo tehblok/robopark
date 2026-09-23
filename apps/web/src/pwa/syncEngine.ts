@@ -60,6 +60,7 @@ export class SyncEngine {
   private readonly scheduleRetry: NonNullable<EngineOptions['scheduleRetry']>
   private readonly cancelRetry: NonNullable<EngineOptions['cancelRetry']>
   private readonly subscribers = new Set<() => void>()
+  private readonly actionSubscribers = new Map<string, Set<(action: OfflineAction | undefined) => void>>()
   private state: SyncState = { status: 'idle', pending: 0, conflicts: 0 }
   private started = false
   private disposed = false
@@ -87,6 +88,36 @@ export class SyncEngine {
   subscribe(listener: () => void): () => void {
     this.subscribers.add(listener)
     return () => this.subscribers.delete(listener)
+  }
+
+  subscribeAction(id: string, listener: (action: OfflineAction | undefined) => void): () => void {
+    const listeners = this.actionSubscribers.get(id) ?? new Set()
+    let active = true
+    let notified = false
+    const deliver = (action: OfflineAction | undefined) => {
+      if (!active) return
+      notified = true
+      listener(action)
+    }
+    listeners.add(deliver)
+    this.actionSubscribers.set(id, listeners)
+    void this.db.getAction(id).then(action => {
+      if (active && !notified) listener(action)
+    }).catch(() => {
+      if (active && !notified) listener(undefined)
+    })
+    return () => {
+      active = false
+      listeners.delete(deliver)
+      if (!listeners.size) this.actionSubscribers.delete(id)
+    }
+  }
+
+  async findAction(resourceId: string, action: string): Promise<OfflineAction | undefined> {
+    return (await this.db.listActions())
+      .filter(item => item.resourceId === resourceId && item.action === action
+        && !['confirmed', 'cancelled'].includes(item.state))
+      .sort((left, right) => right.updatedAt - left.updatedAt)[0]
   }
 
   start(): void {
@@ -156,6 +187,7 @@ export class SyncEngine {
     this.abortController?.abort()
     this.abortController = null
     this.subscribers.clear()
+    this.actionSubscribers.clear()
     this.db.close()
   }
 
@@ -263,6 +295,10 @@ export class SyncEngine {
     const pending = actions.filter(item => !['confirmed', 'cancelled'].includes(item.state)).length
       + media.filter(item => item.state !== 'confirmed').length
     this.setState({ status: conflicts ? 'attention' : pending ? this.state.status === 'offline' ? 'offline' : 'idle' : 'idle', pending, conflicts })
+    for (const [id, listeners] of this.actionSubscribers) {
+      const action = actions.find(item => item.id === id)
+      listeners.forEach(listener => listener(action))
+    }
   }
 
   private setState(state: SyncState): void {

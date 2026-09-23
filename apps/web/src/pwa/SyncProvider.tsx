@@ -6,6 +6,7 @@ import { offlineScopeForUser } from '../lib/deviceResourceCache'
 import { estimateOfflineBudget, OfflineStorageFullError, openOfflineDb, purgeOfflineScope } from './offlineDb'
 import { SyncCoordinator } from './syncCoordinator'
 import { SyncEngine, type OfflineActionInput, type OfflineMediaInput, type SyncState } from './syncEngine'
+import type { OfflineAction } from './offlineTypes'
 import { uploadMedia } from './resumableUpload'
 import { ClientTelemetry } from './clientTelemetry'
 
@@ -19,6 +20,8 @@ export type SyncEngineLike = {
   syncNow?(reason: string): Promise<boolean>
   cancelAction?(id: string): Promise<void>
   resolveConflict?(id: string, baseRevision: string | null): Promise<void>
+  findAction?(resourceId: string, action: string): Promise<OfflineAction | undefined>
+  subscribeAction?(id: string, listener: (action: OfflineAction | undefined) => void): () => void
 }
 export type SyncEngineFactory = (options: { accountId: number, park: string, user: ReturnType<typeof useAuth>['user'] }) => Promise<SyncEngineLike>
 
@@ -29,6 +32,8 @@ export type SyncContextValue = {
   syncNow(reason?: string): Promise<boolean>
   cancelAction(id: string): Promise<void>
   resolveConflict(id: string, baseRevision: string | null): Promise<void>
+  findAction(resourceId: string, action: string): Promise<OfflineAction | undefined>
+  subscribeAction(id: string, listener: (action: OfflineAction | undefined) => void): () => void
 }
 
 const DEFAULT_STATE: SyncState = { status: 'idle', pending: 0, conflicts: 0 }
@@ -125,6 +130,8 @@ export function SyncProvider({ children, engineFactory = defaultEngineFactory }:
     syncNow: reason => engine?.syncNow?.(reason ?? 'manual') ?? Promise.resolve(false),
     cancelAction: id => engine?.cancelAction?.(id) ?? Promise.resolve(),
     resolveConflict: (id, revision) => engine?.resolveConflict?.(id, revision) ?? Promise.resolve(),
+    findAction: (resourceId, action) => engine?.findAction?.(resourceId, action) ?? Promise.resolve(undefined),
+    subscribeAction: (id, listener) => engine?.subscribeAction?.(id, listener) ?? (() => undefined),
   }), [engine, state])
   return <SyncContext.Provider value={value}>{children}</SyncContext.Provider>
 }

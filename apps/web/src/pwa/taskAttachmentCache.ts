@@ -193,6 +193,10 @@ export async function loadTaskAttachment(
         throw new Error('task_attachment_session_changed')
       }
       await touchBlob(key).catch(() => undefined)
+      if (requestGeneration !== generation || namespace !== activeNamespace) {
+        await deleteBlob(key).catch(() => undefined)
+        throw new Error('task_attachment_session_changed')
+      }
       return URL.createObjectURL(cached.blob)
     }
   }

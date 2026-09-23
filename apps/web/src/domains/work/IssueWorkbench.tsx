@@ -59,6 +59,7 @@ import { TaskTimeline } from './TaskTimeline'
 import { StableMutationKey } from './stableMutationKey'
 import { loadWorkPage, oldestFirst } from './workData'
 import { buildCommentAction, buildHandoffAction, buildSubmitReviewAction } from './offlineTaskActions'
+import type { OfflineAction } from '../../pwa/offlineTypes'
 import { useOptionalSync } from '../../pwa/SyncProvider'
 import { prepareImage } from '../../pwa/mediaPipeline'
 import {
@@ -491,6 +492,7 @@ export function TaskController({
   const [hideOpen, setHideOpen] = useState(false)
   const [partsOpen, setPartsOpen] = useState(false)
   const [partsReceipt, setPartsReceipt] = useState('')
+  const [partsAction, setPartsAction] = useState<OfflineAction | null>(null)
   const [partsFocusRequest, setPartsFocusRequest] = useState(0)
   const partsRef = useRef<HTMLDivElement>(null)
   const [taskActionHost, setTaskActionHost] = useState<HTMLElement | null>(null)
@@ -498,7 +500,27 @@ export function TaskController({
   const [taskControlBusy, setTaskControlBusy] = useState(false)
   const [taskControlMessage, setTaskControlMessage] = useState('')
   const [taskControlError, setTaskControlError] = useState('')
-  useEffect(() => { setPartsOpen(false); setPartsReceipt(''); setPartsFocusRequest(0) }, [issueKey])
+  useEffect(() => { setPartsOpen(false); setPartsReceipt(''); setPartsAction(null); setPartsFocusRequest(0) }, [issueKey])
+  useEffect(() => {
+    if (!sync || !issueKey) return
+    let active = true
+    void (sync.findAction?.(issueKey, 'inventory_writeoff') ?? Promise.resolve(undefined)).then(action => {
+      if (active && action) setPartsAction(action)
+    })
+    return () => { active = false }
+  }, [issueKey, sync])
+  const partsActionId = partsAction?.id
+  useEffect(() => {
+    if (!sync || !partsActionId) return
+    return sync.subscribeAction?.(partsActionId, action => {
+      if (!action || action.resourceId !== issueKey || action.action !== 'inventory_writeoff') return
+      setPartsAction(action)
+      if (action.state === 'confirmed') {
+        setPartsReceipt('Запчасть списана')
+        setPartsOpen(false)
+      }
+    })
+  }, [issueKey, partsActionId, sync])
   useLayoutEffect(() => {
     if (!partsOpen || partsFocusRequest === 0 || !partsRef.current) return
     partsRef.current.focus({ preventScroll: true })
@@ -1056,7 +1078,7 @@ export function TaskController({
                           setPartsOpen(open)
                         }}>
                           <div id="parts" ref={partsRef} tabIndex={-1}>
-                            <TaskPartsPanel apiClient={apiClient} enqueueAction={sync?.enqueueAction} issueKey={detail.data.key} onWritten={receipt => {
+                            <TaskPartsPanel apiClient={apiClient} enqueueAction={sync?.enqueueAction} issueKey={detail.data.key} onQueued={setPartsAction} queuedAction={partsAction} onWritten={receipt => {
                               setPartsReceipt(receipt)
                               setPartsOpen(false)
                               if (!sync) void comments.refresh()

@@ -24,7 +24,8 @@ import { collaborationClient } from '../../components/tracker/collaborationClien
 import { resetCoalescingForTests, resourceStore } from '../../lib/resource'
 import { IssueWorkbench, type IssueWorkbenchApiClient } from './IssueWorkbench'
 import { WorkPage } from './WorkPage'
-import { SyncContextProvider, type SyncContextValue } from '../../pwa/SyncProvider'
+import { SyncContextProvider, SyncProvider, type SyncContextValue, type SyncEngineLike } from '../../pwa/SyncProvider'
+import type { OfflineAction } from '../../pwa/offlineTypes'
 import {
   buildWorkSearch,
   readWorkScroll,
@@ -418,6 +419,7 @@ it('keeps an offline write-off visible as pending when sync later needs attentio
   const sync: SyncContextValue = {
     state: { status: 'attention', pending: 1, conflicts: 1 }, enqueueAction,
     enqueueMedia: vi.fn(), syncNow: vi.fn(), cancelAction: vi.fn(), resolveConflict: vi.fn(),
+    findAction: vi.fn(async () => undefined), subscribeAction: vi.fn(() => () => undefined),
   }
   renderWorkbench({
     client: apiClient({
@@ -435,6 +437,69 @@ it('keeps an offline write-off visible as pending when sync later needs attentio
   expect(await screen.findByText('Списание ожидает синхронизации', { selector: '[role="status"]' })).toBeVisible()
   expect(screen.queryByText('Запчасть списана', { selector: '[role="status"]' })).not.toBeInTheDocument()
   expect(screen.getByRole('form', { name: 'Списание запчасти' })).toBeVisible()
+})
+
+it('keeps one queued write-off across close and reopen, then collapses only after confirmation', async () => {
+  const mechanic: User = { ...user, username: 'mech', role: 'mechanic', parks: [park] }
+  const claimedIssue = { ...issue, claim: { park_id: park.id }, assignee: { display: 'mech', login: 'mech' }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress' as const, sync_state: 'saved' as const, has_current_cycle_comment: false } }
+  const part: InventoryCatalogSearchItem = { id: 91, component_id: 21, component_name: 'Колёса', name: 'Шина', article: 'WH-91', is_active: true, has_photo: false, quantity: '3', minimum_quantity: '1', location: 'Склад', stock_is_active: true }
+  let current: OfflineAction | undefined
+  let listener: ((action: OfflineAction | undefined) => void) | undefined
+  const enqueueAction = vi.fn(async input => {
+    current = { ...input, state: 'ready', attempts: 0, createdAt: 1, updatedAt: 1 }
+    listener?.(current)
+    return current
+  })
+  const syncEngine: SyncEngineLike = {
+    start: vi.fn(), dispose: vi.fn(), subscribe: vi.fn(() => () => undefined),
+    getState: () => ({ status: 'idle', pending: current && current.state !== 'confirmed' ? 1 : 0, conflicts: 0 }),
+    enqueueAction,
+    findAction: vi.fn(async () => current),
+    subscribeAction: vi.fn((_id, next) => { listener = next; if (current) next(current); return () => { listener = undefined } }),
+  }
+  renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, syncEngine })
+  fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
+  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
+  await screen.findByText('Списание ожидает синхронизации')
+
+  fireEvent.click(screen.getByRole('button', { name: 'Списать запчасть' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Списать запчасть' }))
+  expect(await screen.findByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
+  expect(enqueueAction).toHaveBeenCalledOnce()
+
+  current = { ...current!, state: 'confirmed', updatedAt: 2 }
+  act(() => listener?.(current))
+  expect(await screen.findByText('Запчасть списана', { selector: '[role="status"]' })).toBeVisible()
+  expect(screen.queryByRole('form', { name: 'Списание запчасти' })).not.toBeInTheDocument()
+})
+
+it('shows a queued write-off conflict without success and retries the same idempotency identity', async () => {
+  const mechanic: User = { ...user, username: 'mech', role: 'mechanic', parks: [park] }
+  const claimedIssue = { ...issue, claim: { park_id: park.id }, assignee: { display: 'mech', login: 'mech' }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress' as const, sync_state: 'saved' as const, has_current_cycle_comment: false } }
+  const part: InventoryCatalogSearchItem = { id: 91, component_id: 21, component_name: 'Колёса', name: 'Шина', article: 'WH-91', is_active: true, has_photo: false, quantity: '3', minimum_quantity: '1', location: 'Склад', stock_is_active: true }
+  let current: OfflineAction | undefined
+  let listener: ((action: OfflineAction | undefined) => void) | undefined
+  const enqueueAction = vi.fn(async input => (current = { ...input, state: 'ready', attempts: 0, createdAt: 1, updatedAt: Date.now() }))
+  const sync: SyncContextValue = { state: { status: 'idle', pending: 0, conflicts: 0 }, enqueueAction, enqueueMedia: vi.fn(), syncNow: vi.fn(), cancelAction: vi.fn(), resolveConflict: vi.fn(), findAction: vi.fn(async () => current), subscribeAction: vi.fn((_id, next) => { listener = next; return () => undefined }) }
+  renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
+  fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
+  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
+  await waitFor(() => expect(enqueueAction).toHaveBeenCalledOnce())
+  await waitFor(() => expect(sync.subscribeAction).toHaveBeenCalled())
+  const firstId = enqueueAction.mock.calls[0][0].id
+  current = { ...current!, state: 'conflict', updatedAt: 2 }
+  act(() => listener?.(current))
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось синхронизировать списание')
+  expect(screen.queryByText('Запчасть списана')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
+  await waitFor(() => expect(enqueueAction).toHaveBeenCalledTimes(2))
+  expect(enqueueAction.mock.calls[1][0].id).toBe(firstId)
+  expect(enqueueAction.mock.calls[1][0].idempotencyKey).toBe(firstId)
 })
 
 it('disables task parts when the backend claim is missing', async () => {
@@ -515,6 +580,7 @@ function renderWorkbench({
   initialPath = '/',
   presentationMode = 'classic',
   sync,
+  syncEngine,
 }: {
   client?: IssueWorkbenchApiClient
   selectedIssue?: string
@@ -526,6 +592,7 @@ function renderWorkbench({
   initialPath?: string
   presentationMode?: 'classic' | 'task-first'
   sync?: SyncContextValue
+  syncEngine?: SyncEngineLike
 } = {}) {
   const modeStore = createInterfaceModeStore(() => ({
     getItem: () => presentationMode,
@@ -541,9 +608,13 @@ function renderWorkbench({
       onStateChange={(next, options) => { onStateChange(next, options); setValue(next) }}
       selectedPark={selectedPark} state={value} user={currentUser} />
   }
-  const content = sync
-    ? <SyncContextProvider value={sync}><ControlledWorkbench /></SyncContextProvider>
-    : <ControlledWorkbench />
+  const auth = { user: currentUser, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }
+  const parkContext = { parkId: selectedPark.id, selectedPark, parks: currentUser.parks, loading: false, locked: false, setParkId: vi.fn(), refreshParks: vi.fn() }
+  const content = syncEngine
+    ? <AuthContext.Provider value={auth}><ParkScopeContext.Provider value={parkContext}><SyncProvider engineFactory={async () => syncEngine}><ControlledWorkbench /></SyncProvider></ParkScopeContext.Provider></AuthContext.Provider>
+    : sync
+      ? <SyncContextProvider value={sync}><ControlledWorkbench /></SyncContextProvider>
+      : <ControlledWorkbench />
   const view = render(content, {
     wrapper: ({ children }) => <InterfaceModeProvider accountId={currentUser.id} store={modeStore}><MemoryRouter initialEntries={[initialPath]}>{children}</MemoryRouter></InterfaceModeProvider>,
     reactStrictMode: strictMode,
@@ -644,6 +715,8 @@ describe('IssueWorkbench', () => {
       syncNow: vi.fn(async () => false),
       cancelAction: vi.fn(async () => undefined),
       resolveConflict: vi.fn(async () => undefined),
+      findAction: vi.fn(async () => undefined),
+      subscribeAction: vi.fn(() => () => undefined),
     } satisfies SyncContextValue
     const taskSubmitReview = vi.fn()
     renderWorkbench({
@@ -730,6 +803,8 @@ describe('IssueWorkbench', () => {
       syncNow: vi.fn(async () => false),
       cancelAction: vi.fn(async () => undefined),
       resolveConflict: vi.fn(async () => undefined),
+      findAction: vi.fn(async () => undefined),
+      subscribeAction: vi.fn(() => () => undefined),
     } satisfies SyncContextValue
     renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskMessage }), sync })
     const composer = await screen.findByRole('textbox', { name: ru.tracker.comments })

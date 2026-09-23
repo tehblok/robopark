@@ -4,6 +4,7 @@ import { openOfflineDb, purgeOfflineScope } from './offlineDb'
 import { SyncCoordinator } from './syncCoordinator'
 import { SyncEngine } from './syncEngine'
 import type { OfflineAction, OfflineScope } from './offlineTypes'
+import type { SyncBatchRequest } from '../api'
 
 const scope: OfflineScope = { account: '1', role: 'mechanic', permissions: 'tracker.read', park: '1', schema: 1 }
 const input = (id: string, dependencies: string[] = []): Omit<OfflineAction, 'state' | 'attempts' | 'createdAt' | 'updatedAt'> => ({
@@ -123,6 +124,44 @@ describe('SyncEngine', () => {
 
     expect(await db.getAction('conflict')).toMatchObject({ state: 'conflict' })
     expect(revoked).toHaveBeenCalledWith(['work:park:1'])
+  })
+
+  it('exposes durable action state changes and finds an unresolved resource action', async () => {
+    const sendBatch = vi.fn(async (batch: SyncBatchRequest) => ({
+      results: [{ client_action_id: batch.actions[0].client_action_id, state: 'confirmed' as const, code: null, result: null }],
+      deltas: {}, revisions: {}, revoked_scopes: [],
+    }))
+    const db = await openOfflineDb(scope)
+    const engine = new SyncEngine({ db, coordinator: coordinator(db), deviceId: 'phone', sendBatch })
+    const observed: string[] = []
+    const stop = engine.subscribeAction('writeoff', action => { if (action) observed.push(action.state) })
+    await engine.enqueueAction({ ...input('writeoff'), action: 'inventory_writeoff' })
+
+    expect(await engine.findAction('TASK-1', 'inventory_writeoff')).toMatchObject({ id: 'writeoff', state: 'ready' })
+    await engine.syncNow('test')
+
+    expect(observed).toContain('ready')
+    expect(observed.at(-1)).toBe('confirmed')
+    expect(await engine.findAction('TASK-1', 'inventory_writeoff')).toBeUndefined()
+    stop()
+  })
+
+  it('does not deliver a stale initial action read after a newer state notification', async () => {
+    const db = await openOfflineDb(scope)
+    let finishInitialRead!: (action: OfflineAction | undefined) => void
+    vi.spyOn(db, 'getAction').mockReturnValueOnce(new Promise(resolve => { finishInitialRead = resolve }))
+    const engine = new SyncEngine({
+      db, coordinator: coordinator(db), deviceId: 'phone',
+      sendBatch: async () => ({ results: [], deltas: {}, revisions: {}, revoked_scopes: [] }),
+    })
+    const observed: Array<string | undefined> = []
+    engine.subscribeAction('writeoff', action => observed.push(action?.state))
+    await engine.enqueueAction({ ...input('writeoff'), action: 'inventory_writeoff' })
+
+    finishInitialRead(undefined)
+    await Promise.resolve()
+
+    expect(observed).toEqual(['ready'])
   })
 
   it('wakes on online and focus and removes every listener on dispose', async () => {

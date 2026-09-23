@@ -8,7 +8,8 @@ function syncValue(overrides: Partial<SyncContextValue> = {}): SyncContextValue 
     state: { status: 'attention', pending: 2, conflicts: 1 },
     enqueueAction: vi.fn(), enqueueMedia: vi.fn(),
     syncNow: vi.fn(async () => true), cancelAction: vi.fn(async () => undefined),
-    resolveConflict: vi.fn(async () => undefined), ...overrides,
+    resolveConflict: vi.fn(async () => undefined), findAction: vi.fn(async () => undefined),
+    subscribeAction: vi.fn(() => () => undefined), ...overrides,
   }
 }
 

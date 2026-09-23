@@ -500,6 +500,36 @@ def test_local_attachment_has_authorized_content_url_and_safe_image_headers(
     assert wrong_issue.status_code == 404
 
 
+def test_attachment_head_rejects_closed_issue(
+    client, db_session, seed_royal, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_cache
+
+    monkeypatch.setattr(tracker_cache, "get_issue", lambda **kwargs: {**ISSUE, "status": "Closed", "status_key": "closed"})
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.head("/tracker/issues/ROBOPARK-1/attachments/missing/content")
+
+    assert response.status_code == 409
+
+
+def test_attachment_head_rejects_inactive_park(
+    client, db_session, seed_royal, seed_park_with_tracker, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_cache
+
+    seed_park_with_tracker.is_active = False
+    db_session.commit()
+    monkeypatch.setattr(tracker_cache, "get_issue", lambda **kwargs: ISSUE)
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.head("/tracker/issues/ROBOPARK-1/attachments/missing/content")
+
+    assert response.status_code == 403
+
+
 def test_attachment_content_rejects_traversal_from_corrupt_metadata(
     client, db_session, seed_royal, monkeypatch, tmp_path
 ):
