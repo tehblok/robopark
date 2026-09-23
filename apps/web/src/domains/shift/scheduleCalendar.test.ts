@@ -57,7 +57,21 @@ describe('scheduleCalendar', () => {
 
     const projected = projectSchedule([overnight, endingAtMidnight], days).get(7)
 
-    expect(projected?.get('2026-09-30')).toEqual([overnight, endingAtMidnight])
+    expect(projected?.get('2026-09-30')).toEqual([endingAtMidnight, overnight])
     expect(projected?.get('2026-10-01')).toEqual([overnight])
+  })
+
+  it('sorts each bucket by start and string id without mutating reversed input', () => {
+    const days = visibleRange(new Date('2026-09-30T12:00:00+03:00'), 'week').days
+    const first = entry({ id: 'entry-a', start_at: '2026-09-30T09:00:00+03:00', end_at: '2026-09-30T10:00:00+03:00' })
+    const sameStart = entry({ id: 'entry-b', start_at: first.start_at, end_at: '2026-09-30T11:00:00+03:00' })
+    const later = entry({ id: 'entry-c', start_at: '2026-09-30T12:00:00+03:00', end_at: '2026-09-30T13:00:00+03:00' })
+    const items = [later, sameStart, first]
+    const originalOrder = [...items]
+
+    const projected = projectSchedule(items, days).get(7)?.get('2026-09-30')
+
+    expect(projected).toEqual([first, sameStart, later])
+    expect(items).toEqual(originalOrder)
   })
 })

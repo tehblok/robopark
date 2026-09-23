@@ -67,6 +67,12 @@ function nextDay(date: Date): Date {
   return dateFromCoordinate(coordinate)
 }
 
+function compareScheduleEntries(left: ScheduleEntry, right: ScheduleEntry): number {
+  const startDifference = new Date(left.start_at).getTime() - new Date(right.start_at).getTime()
+  if (startDifference !== 0) return startDifference
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0
+}
+
 export function formatDayKey(date: Date): string {
   const { year, month, day } = calendarDate(date)
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
@@ -117,6 +123,12 @@ export function projectSchedule(items: ScheduleEntry[], days: Date[]): Map<numbe
       const key = formatDayKey(dayStart)
       ownerDays.set(key, [...(ownerDays.get(key) ?? []), item])
       result.set(item.owner_user_id, ownerDays)
+    }
+  }
+
+  for (const ownerDays of result.values()) {
+    for (const [key, entries] of ownerDays) {
+      ownerDays.set(key, [...entries].sort(compareScheduleEntries))
     }
   }
 
