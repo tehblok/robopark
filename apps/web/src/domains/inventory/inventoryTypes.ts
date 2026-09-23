@@ -45,6 +45,8 @@ export type InventoryCatalogPart = {
 
 export type InventoryCatalogDeleteSummary = {
   deleted_part_count: number
+  deleted_part_ids: number[]
+  matched_deleted_count: number
   deleted_parts: Array<Pick<InventoryCatalogPart, 'id' | 'name' | 'article' | 'is_active'> & {
     component_is_active: boolean
     merged_into_part_id: number | null

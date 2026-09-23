@@ -102,6 +102,7 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
   const generation = useRef(0)
   const operationGeneration = useRef(0)
   const activeParkId = useRef(parkId)
+  const loadedCatalogCriteria = useRef<{ q?: string; mode: 'active' | 'archived' | 'all' }>({ mode: 'active' })
   const isSelectionControlled = selectedCatalogPartId !== undefined
   const selectedId = selectedCatalogPartId === undefined ? internalSelectedId : selectedCatalogPartId
   const canCreate = role === 'mechanic' || role === 'admin' || role === 'royal'
@@ -114,13 +115,15 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
   }, [isSelectionControlled, onSelectedCatalogPartIdChange])
   const load = useCallback(async () => {
     const requestId = ++generation.current
+    const query = catalogQuery.trim() || undefined
     setLoading(true)
     setError('')
     try {
-      const value = await apiClient.searchInventory({ parkId, query: catalogQuery.trim() || undefined, mode: catalogMode, limit: 25, offset: catalogOffset })
+      const value = await apiClient.searchInventory({ parkId, query, mode: catalogMode, limit: 25, offset: catalogOffset })
       if (requestId !== generation.current) return
       setItems(value.items)
       setCatalogTotal(value.total)
+      loadedCatalogCriteria.current = { q: query, mode: catalogMode }
       setSelectedPart(current => value.items.find(item => item.id === current?.id) ?? current)
       setLoading(false)
     } catch (reason) {
@@ -137,6 +140,7 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
     setSelectedPart(null)
     setCatalogOffset(0)
     setCatalogMode('active')
+    loadedCatalogCriteria.current = { mode: 'active' }
     select(null)
     operationGeneration.current += 1
     setBusy(false)
@@ -245,25 +249,15 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
     setPreview(file ? URL.createObjectURL(file) : '')
   }
   const applyCatalogDeletion = (summary: InventoryCatalogDeleteSummary) => {
-    const deletedIds = new Set(summary.deleted_parts.map(part => part.id))
-    const normalizedQuery = catalogQuery.trim().toLocaleLowerCase('ru').replace(/\s+/g, ' ')
-    const deletedMatching = summary.deleted_parts.filter(part => {
-      const matchesMode = catalogMode === 'active'
-        ? part.is_active && part.component_is_active
-        : catalogMode === 'archived'
-          ? !part.is_active && part.merged_into_part_id === null
-          : part.merged_into_part_id === null
-      const matchesQuery = !normalizedQuery || [part.name, part.article].some(value => value.toLocaleLowerCase('ru').replace(/\s+/g, ' ').includes(normalizedQuery))
-      return matchesMode && matchesQuery
-    }).length
+    const deletedIds = new Set(summary.deleted_part_ids)
     setItems(current => current.filter(item => !deletedIds.has(item.id)))
-    setCatalogTotal(current => Math.max(0, current - deletedMatching))
+    setCatalogTotal(current => Math.max(0, current - summary.matched_deleted_count))
   }
   const permanentlyDeletePart = async () => {
     if (!deletePart) return
     setBusy(true); setError('')
     try {
-      const summary = await apiClient.permanentlyDeleteInventoryCatalogPart(deletePart.id)
+      const summary = await apiClient.permanentlyDeleteInventoryCatalogPart(deletePart.id, loadedCatalogCriteria.current)
       applyCatalogDeletion(summary)
       select(null); setSelectedPart(null); setWorkflow(null); setDeletePart(null)
       setNotice(`Позиция «${deletePart.name}» удалена навсегда.`)
@@ -275,7 +269,7 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
     if (!component) return
     setBusy(true); setError('')
     try {
-      const summary = await apiClient.permanentlyDeleteInventoryCatalogComponent(component.id)
+      const summary = await apiClient.permanentlyDeleteInventoryCatalogComponent(component.id, loadedCatalogCriteria.current)
       setComponents(current => current.filter(item => item.id !== component.id))
       applyCatalogDeletion(summary)
       if (selected?.component_id === component.id) { select(null); setSelectedPart(null) }

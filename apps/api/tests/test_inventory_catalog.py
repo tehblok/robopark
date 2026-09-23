@@ -396,6 +396,8 @@ def test_royal_permanently_deletes_component_graph(client, db_session, seed_park
     assert response.status_code == 200, response.text
     assert response.json() == {
         "deleted_part_count": 1,
+        "deleted_part_ids": [part.id],
+        "matched_deleted_count": 1,
         "deleted_parts": [
             {
                 "id": part.id,
@@ -409,6 +411,34 @@ def test_royal_permanently_deletes_component_graph(client, db_session, seed_park
     }
     assert db_session.get(InventoryCatalogComponent, component.id) is None
     assert db_session.get(InventoryCatalogPart, part.id) is None
+
+
+def test_component_delete_counts_sql_like_wildcard_matches_before_deleting(
+    client, db_session, seed_royal
+):
+    component, first = _catalog(db_session, seed_royal, name="A", article="WILDCARD-A")
+    second = InventoryCatalogPart(
+        component_id=component.id,
+        name="B",
+        normalized_name="b",
+        article="WILDCARD-B",
+        normalized_article="wildcard-b",
+        created_by=seed_royal.id,
+        updated_by=seed_royal.id,
+    )
+    db_session.add(second)
+    db_session.commit()
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.delete(
+        f"/inventory/catalog/components/{component.id}",
+        params={"permanent": "true", "q": "_", "mode": "active"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["deleted_part_count"] == 2
+    assert response.json()["matched_deleted_count"] == 2
+    assert response.json()["deleted_part_ids"] == [first.id, second.id]
 
 
 def test_permanent_delete_rolls_back_database_and_keeps_photo_on_failure(

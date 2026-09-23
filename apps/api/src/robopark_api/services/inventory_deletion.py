@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from robopark_api.models import (
@@ -121,7 +121,9 @@ def _delete_part_rows(db: Session, part_ids: set[int]) -> set[str]:
     return storage_keys
 
 
-def _delete_summary(db: Session, part_ids: set[int]) -> dict:
+def _delete_summary(db: Session, part_ids: set[int], *, query: str | None, mode: str) -> dict:
+    if mode not in {"active", "archived", "all"}:
+        raise ValueError("inventory_catalog_mode_invalid")
     deleted_parts = [
         {
             "id": part.id,
@@ -141,13 +143,51 @@ def _delete_summary(db: Session, part_ids: set[int]) -> dict:
             .order_by(InventoryCatalogPart.id)
         )
     ]
-    return {"deleted_part_count": len(deleted_parts), "deleted_parts": deleted_parts}
+    matches = (
+        select(InventoryCatalogPart.id)
+        .join(
+            InventoryCatalogComponent,
+            InventoryCatalogComponent.id == InventoryCatalogPart.component_id,
+        )
+        .where(InventoryCatalogPart.id.in_(part_ids))
+    )
+    if mode == "active":
+        matches = matches.where(
+            InventoryCatalogPart.is_active.is_(True),
+            InventoryCatalogComponent.is_active.is_(True),
+        )
+    elif mode == "archived":
+        matches = matches.where(
+            InventoryCatalogPart.is_active.is_(False),
+            InventoryCatalogPart.merged_into_part_id.is_(None),
+        )
+    else:
+        matches = matches.where(InventoryCatalogPart.merged_into_part_id.is_(None))
+    if query:
+        from robopark_api.services.inventory_catalog import normalize_key
+
+        pattern = f"%{normalize_key(query)}%"
+        matches = matches.where(
+            or_(
+                InventoryCatalogPart.normalized_name.like(pattern),
+                InventoryCatalogPart.normalized_article.like(pattern),
+            )
+        )
+    matched_deleted_count = db.scalar(select(func.count()).select_from(matches.subquery())) or 0
+    return {
+        "deleted_part_count": len(deleted_parts),
+        "deleted_part_ids": [part["id"] for part in deleted_parts],
+        "matched_deleted_count": matched_deleted_count,
+        "deleted_parts": deleted_parts,
+    }
 
 
-def delete_part(db: Session, user: User, part_id: int) -> dict:
+def delete_part(
+    db: Session, user: User, part_id: int, *, query: str | None = None, mode: str = "active"
+) -> dict:
     _require_royal(user)
     part_ids = _part_graph_ids(db, part_id)
-    summary = _delete_summary(db, part_ids)
+    summary = _delete_summary(db, part_ids, query=query, mode=mode)
     try:
         storage_keys = _delete_part_rows(db, part_ids)
         db.commit()
@@ -159,7 +199,9 @@ def delete_part(db: Session, user: User, part_id: int) -> dict:
     return summary
 
 
-def delete_component(db: Session, user: User, component_id: int) -> dict:
+def delete_component(
+    db: Session, user: User, component_id: int, *, query: str | None = None, mode: str = "active"
+) -> dict:
     _require_royal(user)
     component = db.get(InventoryCatalogComponent, component_id)
     if component is None:
@@ -174,7 +216,7 @@ def delete_component(db: Session, user: User, component_id: int) -> dict:
     graph_ids: set[int] = set()
     for part_id in part_ids:
         graph_ids.update(_part_graph_ids(db, part_id))
-    summary = _delete_summary(db, graph_ids)
+    summary = _delete_summary(db, graph_ids, query=query, mode=mode)
     try:
         storage_keys = _delete_part_rows(db, graph_ids) if graph_ids else set()
         if component.photo_storage_key:

@@ -139,6 +139,8 @@ class InventoryCatalogDeletedPartOut(BaseModel):
 
 class InventoryCatalogDeleteSummaryOut(BaseModel):
     deleted_part_count: int
+    deleted_part_ids: list[int]
+    matched_deleted_count: int
     deleted_parts: list[InventoryCatalogDeletedPartOut]
 
 

@@ -1828,8 +1828,11 @@ export const api = {
   },
   removeInventoryCatalogComponentPhoto: (id: number) =>
     inventoryRequest<void>(`/inventory/catalog/components/${id}/photo`, { method: 'DELETE' }),
-  permanentlyDeleteInventoryCatalogComponent: (id: number) =>
-    inventoryRequest<InventoryCatalogDeleteSummary>(`/inventory/catalog/components/${id}?permanent=true`, { method: 'DELETE' }),
+  permanentlyDeleteInventoryCatalogComponent: (id: number, params: { q?: string; mode: 'active' | 'archived' | 'all' }) => {
+    const query = new URLSearchParams({ permanent: 'true', mode: params.mode })
+    if (params.q) query.set('q', params.q)
+    return inventoryRequest<InventoryCatalogDeleteSummary>(`/inventory/catalog/components/${id}?${query.toString()}`, { method: 'DELETE' })
+  },
   createInventoryCatalogPart: (payload: { park_id: number; component_id: number; name: string; article: string }) =>
     inventoryRequest<InventoryCatalogPart>('/inventory/catalog/parts', { method: 'POST', body: inventoryStringify(payload) }),
   updateInventoryCatalogPart: (id: number, payload: Partial<Pick<InventoryCatalogPart, 'component_id' | 'name' | 'article' | 'is_active'>>) =>
@@ -1840,8 +1843,11 @@ export const api = {
   },
   removeInventoryCatalogPartPhoto: (id: number) =>
     inventoryRequest<void>(`/inventory/catalog/parts/${id}/photo`, { method: 'DELETE' }),
-  permanentlyDeleteInventoryCatalogPart: (id: number) =>
-    inventoryRequest<InventoryCatalogDeleteSummary>(`/inventory/catalog/parts/${id}?permanent=true`, { method: 'DELETE' }),
+  permanentlyDeleteInventoryCatalogPart: (id: number, params: { q?: string; mode: 'active' | 'archived' | 'all' }) => {
+    const query = new URLSearchParams({ permanent: 'true', mode: params.mode })
+    if (params.q) query.set('q', params.q)
+    return inventoryRequest<InventoryCatalogDeleteSummary>(`/inventory/catalog/parts/${id}?${query.toString()}`, { method: 'DELETE' })
+  },
   mergeInventoryCatalogPart: (id: number, targetPartId: number) =>
     inventoryRequest<InventoryCatalogPart>(`/inventory/catalog/parts/${id}/merge`, { method: 'POST', body: inventoryStringify({ target_part_id: targetPartId }) }),
   updateInventoryStock: (parkId: number, partId: number, payload: Pick<InventoryStockView, 'minimum_quantity' | 'location' | 'is_active'>) =>

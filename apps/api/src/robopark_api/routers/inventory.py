@@ -464,12 +464,18 @@ def remove_catalog_component_photo(
 def permanently_delete_catalog_component(
     component_id: int,
     permanent: bool = False,
+    q: str | None = None,
+    mode: str = "active",
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
     if not permanent:
         raise HTTPException(400, "inventory_permanent_delete_required")
-    return _run(lambda: inventory_deletion.delete_component(db, user, component_id))
+    return _run(
+        lambda: inventory_deletion.delete_component(
+            db, user, component_id, query=q, mode=mode
+        )
+    )
 
 
 @router.post(
@@ -549,12 +555,16 @@ def remove_catalog_part_photo(
 def permanently_delete_catalog_part(
     part_id: int,
     permanent: bool = False,
+    q: str | None = None,
+    mode: str = "active",
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
     if not permanent:
         raise HTTPException(400, "inventory_permanent_delete_required")
-    return _run(lambda: inventory_deletion.delete_part(db, user, part_id))
+    return _run(
+        lambda: inventory_deletion.delete_part(db, user, part_id, query=q, mode=mode)
+    )
 
 
 @router.get("/catalog/parts/{part_id}", response_model=InventoryCatalogSearchItem)
