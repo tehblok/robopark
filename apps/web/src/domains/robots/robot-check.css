@@ -68,6 +68,7 @@
 .rp-check-backlinks { display: flex; flex-wrap: wrap; gap: var(--rp-space-2); margin-block-end: 0; }
 .rp-check-backlinks a { display: inline-flex; align-items: center; min-height: 44px; color: var(--rp-info); }
 .rp-check-field-lines { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--rp-font-mono); margin: 0; }
+.rp-check-event-raw { white-space: pre-wrap; overflow-wrap: anywhere; max-inline-size: 100%; max-block-size: 20rem; overflow: auto; }
 .rp-check-field { padding-block: var(--rp-space-3); border-bottom: 1px solid var(--rp-divider); }
 .rp-check-field h3 { font-size: var(--rp-font-size-control); }
 .rp-check-telemetry { display: grid; gap: var(--rp-space-3); margin: 0; }

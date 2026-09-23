@@ -127,11 +127,11 @@ export function UnknownDiagnosticInbox({ cachePrefix, active, onAccess, onRuleCr
       <h2>Неизвестные ошибки</h2>
       {resource.data?.items.length === 0 ? <EmptyState title="Ошибок в этой группе нет" description="Новые неизвестные значения появятся здесь автоматически." /> : null}
       <ol className="rp-diagnostic-list">{resource.data?.items.map(item => <li key={item.id}>
-        <button type="button" className="rp-diagnostic-select" aria-pressed={selectedId === item.id} onClick={() => { if (selectedId !== item.id) { setSelected(item); setEditing(null); setError('') } }}>
+        <Button type="button" variant="ghost" className="rp-diagnostic-select" aria-pressed={selectedId === item.id} onClick={() => { if (selectedId !== item.id) { setSelected(item); setEditing(null); setError('') } }}>
           <strong className="rp-diagnostic-unknown-pattern">{item.pattern}</strong><span>{item.source_path}</span>
           <span>Наблюдений: {item.observations} · Последний робот: {item.last_robot}</span>
           <span>Впервые: {date(item.first_seen_at)} · Последний раз: {date(item.last_seen_at)}</span>
-        </button>
+        </Button>
       </li>)}</ol>
       {resource.data ? <nav className="rp-diagnostic-pagination" aria-label="Страницы неизвестных ошибок">
         <Button variant="secondary" disabled={offset === 0 || resource.isRevalidating} onClick={() => setOffset(Math.max(0, offset - 50))}>Назад</Button>

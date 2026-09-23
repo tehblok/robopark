@@ -8,6 +8,6 @@ export function DiagnosticEventDetails({ event }: { event: DiagnosticEvent }) {
     <StatusBadge tone={event.severity}>{DIAGNOSTIC_SEVERITIES[event.severity]}</StatusBadge>
     <p>{event.description}</p>
     <p>{isLocalizedEvent(event) ? `Часть робота: ${event.part}` : 'Без локализации'}</p>
-    <div><span className="rp-check-event-raw-label">Сигнал Emergency</span><pre className="rp-check-field-lines">{typeof event.raw_value === 'string' ? event.raw_value : JSON.stringify(event.raw_value, null, 2)}</pre></div>
+    <div><span className="rp-check-event-raw-label">Сигнал Emergency</span><pre className="rp-check-field-lines rp-check-event-raw">{typeof event.raw_value === 'string' ? event.raw_value : JSON.stringify(event.raw_value, null, 2)}</pre></div>
   </>
 }

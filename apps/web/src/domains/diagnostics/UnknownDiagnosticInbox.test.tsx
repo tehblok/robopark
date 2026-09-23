@@ -1,4 +1,6 @@
 import { StrictMode } from 'react'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -192,6 +194,23 @@ it('allows a short regex for a long unknown value while keeping its source evide
   fireEvent.change(inbox().getByLabelText('Код или шаблон'), { target: { value: '^E+$' } })
   expect(inbox().queryByText(/Значение длиннее 512 символов/)).not.toBeInTheDocument()
   expect(inbox().getByLabelText('Пример входного значения')).toHaveValue(JSON.stringify('E'.repeat(700)))
+})
+
+it('marks long raw diagnostics as bounded content and uses the shared selection action', async () => {
+  const longValue = `FrequencyBelow:${'7'.repeat(70)}`
+  items = [{ ...unknown, source_path: `telemetry.${'nested.'.repeat(10)}frequency`, pattern: longValue, raw_value: { signal: longValue } }]
+  render(tree()); await openInbox()
+
+  expect(inbox().getByRole('button', { name: /Наблюдений: 19/ })).toHaveClass('rp-button')
+  expect(inbox().getByText(/FrequencyBelow/, { selector: 'pre' })).toHaveClass('rp-diagnostic-raw')
+})
+
+it('constrains the diagnostic master-detail columns and raw payloads', () => {
+  const source = readFileSync(resolve('src/domains/diagnostics/diagnostics.css'), 'utf8')
+
+  expect(source).toMatch(/grid-template-columns:\s*minmax\(16rem,\s*28rem\)\s+minmax\(0,\s*1fr\)/)
+  expect(source).toMatch(/@media \(max-width:\s*899px\)[\s\S]*\.rp-diagnostic-editor \.rp-master-detail\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)/)
+  expect(source).toMatch(/\.rp-diagnostic-raw\s*\{[^}]*white-space:\s*pre-wrap[^}]*overflow-wrap:\s*anywhere[^}]*max-inline-size:\s*100%[^}]*overflow:\s*auto/)
 })
 
 it('recovers an already classified error without losing the draft or repeating POST', async () => {
