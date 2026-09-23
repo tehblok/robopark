@@ -1,3 +1,7 @@
+/// <reference types="node" />
+
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { TabPanel, Tabs } from './Tabs'
@@ -9,6 +13,49 @@ const items = [
 ] as const
 
 describe('Tabs', () => {
+  it('exposes primary and secondary variants without changing the horizontal keyboard contract', () => {
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <Tabs
+        ariaLabel="Основные разделы"
+        items={items}
+        onChange={onChange}
+        panelIdFor={(id) => `panel-${id}`}
+        value="overview"
+        variant="primary"
+      />,
+    )
+
+    const first = screen.getByRole('tab', { name: 'Обзор' })
+    fireEvent.keyDown(first, { key: 'End' })
+    expect(onChange).toHaveBeenLastCalledWith('settings')
+    expect(screen.getByRole('tablist')).toHaveClass('rp-tabs--primary')
+    expect(screen.getByRole('tablist')).toHaveAttribute('aria-orientation', 'horizontal')
+
+    rerender(
+      <Tabs
+        ariaLabel="Фильтр"
+        items={items}
+        onChange={onChange}
+        panelIdFor={(id) => `panel-${id}`}
+        value="overview"
+        variant="secondary"
+      />,
+    )
+    expect(screen.getByRole('tablist')).toHaveClass('rp-tabs--secondary')
+  })
+
+  it('contains primary scrolling and secondary wrapping inside the tabs box', () => {
+    const css = readFileSync(resolve('src/design-system/navigation/Tabs.css'), 'utf8')
+
+    expect(css).toMatch(/\.rp-tabs\s*\{[^}]*max-inline-size:\s*100%[^}]*min-inline-size:\s*0/s)
+    expect(css).toMatch(/\.rp-tabs--primary\s*\{[^}]*border:\s*1px solid var\(--rp-border\)[^}]*border-radius:\s*var\(--rp-radius-control\)[^}]*overflow-x:\s*auto/s)
+    expect(css).toMatch(/\.rp-tabs--secondary\s*\{[^}]*flex-wrap:\s*wrap[^}]*overflow-x:\s*hidden/s)
+    expect(css).toMatch(/\.rp-tabs--secondary \.rp-tabs__tab\s*\{[^}]*max-inline-size:\s*100%[^}]*overflow-wrap:\s*anywhere/s)
+    expect(css).toMatch(/\.rp-tabs__count\s*\{[^}]*border-radius:\s*var\(--rp-radius-chip\)/s)
+    expect(css).not.toMatch(/margin:\s*-\d/)
+  })
+
   it('keeps a keyboard entry when selection belongs to a related section', () => {
     render(<Tabs ariaLabel="Разделы" items={items} value="related" onChange={vi.fn()} panelIdFor={id => `panel-${id}`} />)
     expect(screen.getByRole('tab', { name: 'Обзор' })).toHaveAttribute('tabindex', '0')

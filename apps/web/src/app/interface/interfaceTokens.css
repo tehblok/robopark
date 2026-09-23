@@ -3,18 +3,30 @@
   --rp-section-gap: 24px;
   --rp-card-padding: 20px;
   --rp-form-gap: 16px;
-  --rp-radius-control: 8px;
-  --rp-radius-card: 12px;
+  --rp-control-gap: 8px;
+  --rp-action-gap: 12px;
+  --rp-compact-row-padding: 12px;
+  --rp-control-min-size: 44px;
+  --rp-touch-primary-min-size: 48px;
+  --rp-radius-control: 12px;
+  --rp-radius-card: 16px;
+  --rp-radius-chip: 999px;
   --rp-radius-panel: var(--rp-radius-card);
   --rp-radius-sheet: 16px;
   --rp-shell-mobile-nav-height: 72px;
 }
 
-@media (max-width: 599px) {
+@media (max-width: 899px) {
   :root {
-    --rp-page-gutter: 12px;
-    --rp-section-gap: 20px;
+    --rp-section-gap: 16px;
     --rp-card-padding: 16px;
-    --rp-form-gap: 12px;
   }
+}
+
+@media (min-width: 600px) and (max-width: 899px) {
+  :root { --rp-page-gutter: 16px; }
+}
+
+@media (max-width: 599px) {
+  :root { --rp-page-gutter: 12px; }
 }

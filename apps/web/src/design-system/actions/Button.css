@@ -7,7 +7,7 @@
   font-family: var(--rp-font-sans);
   font-size: var(--rp-font-size-body);
   font-weight: var(--rp-font-weight-medium);
-  gap: var(--rp-space-2);
+  gap: var(--rp-control-gap);
   justify-content: center;
   line-height: var(--rp-line-height-compact);
   min-height: var(--rp-control-min-size);
@@ -17,7 +17,7 @@
 }
 
 .rp-button--compact {
-  padding-inline: var(--rp-space-3);
+  padding-inline: var(--rp-compact-row-padding);
 }
 
 .rp-button--primary {
@@ -74,4 +74,23 @@
 .rp-icon-button > span {
   align-items: center;
   display: inline-flex;
+}
+
+.rp-action-bar {
+  align-items: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rp-action-gap);
+  min-inline-size: 0;
+}
+
+.rp-action-bar > .rp-button {
+  min-height: var(--rp-control-min-size);
+}
+
+@media (max-width: 599px) {
+  .rp-action-bar--mobile-primary > .rp-button--primary {
+    min-height: var(--rp-touch-primary-min-size);
+    width: 100%;
+  }
 }

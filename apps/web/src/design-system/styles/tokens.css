@@ -17,23 +17,27 @@
   --rp-space-4: 16px;
   --rp-space-6: 24px;
   --rp-space-8: 32px;
-  --rp-radius-control: 8px;
-  --rp-radius-panel: 12px;
-  --rp-radius-card: 12px;
+  --rp-control-gap: 8px;
+  --rp-action-gap: 12px;
+  --rp-compact-row-padding: 12px;
+  --rp-control-min-size: 44px;
+  --rp-touch-primary-min-size: 48px;
+  --rp-radius-control: 12px;
+  --rp-radius-panel: 16px;
+  --rp-radius-card: 16px;
+  --rp-radius-chip: 999px;
   --rp-radius-sheet: 16px;
   --rp-motion-fast: 120ms;
   --rp-motion-normal: 180ms;
 }
 
 :root[data-density='comfortable'] {
-  --rp-control-min-size: 44px;
   --rp-row-min-size: 48px;
   --rp-density-gap: 12px;
   --rp-density-panel-padding: 16px;
 }
 
 :root[data-density='compact'] {
-  --rp-control-min-size: 44px;
   --rp-row-min-size: 44px;
   --rp-density-gap: 8px;
   --rp-density-panel-padding: 12px;
@@ -41,7 +45,6 @@
 
 @media (max-width: 899px) {
   :root {
-    --rp-control-min-size: 44px;
     --rp-row-min-size: 48px;
     --rp-density-gap: 12px;
     --rp-density-panel-padding: 16px;

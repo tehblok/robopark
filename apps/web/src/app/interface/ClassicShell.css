@@ -3,6 +3,11 @@
 .rp-classic-shell {
   --rp-shell-gutter: var(--rp-page-gutter);
   grid-template-columns: 17rem minmax(0, 1fr);
+  min-inline-size: 0;
+}
+
+.rp-classic-shell > * {
+  min-inline-size: 0;
 }
 
 @media (min-width: 900px) and (max-width: 1199px) {

@@ -9,12 +9,14 @@ export function Tabs({
   onChange,
   ariaLabel,
   panelIdFor,
+  variant = 'primary',
 }: {
   items: readonly TabItem[]
   value: string
   onChange: (id: string) => void
   ariaLabel: string
   panelIdFor: (id: string) => string
+  variant?: 'primary' | 'secondary'
 }) {
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
   const hasSelection = items.some(item => item.id === value)
@@ -43,7 +45,8 @@ export function Tabs({
   return (
     <div
       aria-label={ariaLabel}
-      className="rp-tabs"
+      aria-orientation="horizontal"
+      className={`rp-tabs rp-tabs--${variant}`}
       role="tablist"
       style={{ '--rp-tab-count': items.length } as CSSProperties}
     >

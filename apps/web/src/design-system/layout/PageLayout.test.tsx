@@ -59,6 +59,44 @@ it('leaves horizontal page gutters to the selected presentation shell', () => {
   expect(source).not.toMatch(/\.rp-page-layout\s*\{[^}]*\bpadding-inline\s*:/s)
 })
 
+it('uses the exact Classic geometry tokens at desktop, tablet, and phone widths', () => {
+  const interfaceTokens = readFileSync(
+    resolve('src/app/interface/interfaceTokens.css'),
+    'utf8',
+  )
+  const designTokens = readFileSync(resolve('src/design-system/styles/tokens.css'), 'utf8')
+
+  expect(interfaceTokens).toMatch(/:root\s*\{[^}]*--rp-page-gutter:\s*24px/s)
+  expect(interfaceTokens).toMatch(/:root\s*\{[^}]*--rp-section-gap:\s*24px/s)
+  expect(interfaceTokens).toMatch(/:root\s*\{[^}]*--rp-card-padding:\s*20px/s)
+  expect(interfaceTokens).toMatch(/@media \(min-width:\s*600px\) and \(max-width:\s*899px\)\s*\{[^}]*:root\s*\{[^}]*--rp-page-gutter:\s*16px/s)
+  expect(interfaceTokens).toMatch(/@media \(max-width:\s*599px\)\s*\{[^}]*:root\s*\{[^}]*--rp-page-gutter:\s*12px/s)
+  expect(interfaceTokens).toMatch(/@media \(max-width:\s*899px\)\s*\{[^}]*:root\s*\{[^}]*--rp-section-gap:\s*16px/s)
+  expect(interfaceTokens).toMatch(/@media \(max-width:\s*899px\)\s*\{[^}]*:root\s*\{[^}]*--rp-card-padding:\s*16px/s)
+  expect(designTokens).toMatch(/--rp-control-min-size:\s*44px/)
+  expect(designTokens).toMatch(/--rp-touch-primary-min-size:\s*48px/)
+  expect(designTokens).toMatch(/--rp-control-gap:\s*8px/)
+  expect(designTokens).toMatch(/--rp-action-gap:\s*12px/)
+  expect(designTokens).toMatch(/--rp-compact-row-padding:\s*12px/)
+  expect(designTokens).toMatch(/--rp-radius-card:\s*16px/)
+  expect(designTokens).toMatch(/--rp-radius-control:\s*12px/)
+  expect(designTokens).toMatch(/--rp-radius-chip:\s*999px/)
+})
+
+it('contains flexible children and separates nested panel surfaces without negative margins', () => {
+  const css = readFileSync(resolve('src/design-system/layout/PageLayout.css'), 'utf8')
+  const shellCss = readFileSync(resolve('src/app/interface/ClassicShell.css'), 'utf8')
+
+  expect(css).toMatch(/\.rp-panel\s*\{[^}]*gap:\s*var\(--rp-form-gap\)/s)
+  expect(css).toMatch(/\.rp-page-layout[^\{]*\{[^}]*min-inline-size:\s*0/s)
+  expect(css).toMatch(/\.rp-page-layout__content > \*,[^\{]*\.rp-panel__content > \*\s*\{[^}]*min-inline-size:\s*0/s)
+  expect(css).toMatch(/\.rp-panel__content:has\(> \.rp-panel\)\s*\{[^}]*gap:\s*var\(--rp-form-gap\)/s)
+  expect(css).toMatch(/\.rp-panel \.rp-panel\s*\{[^}]*background:\s*var\(--rp-surface-elevated\)/s)
+  expect(css).not.toMatch(/margin:\s*-\d/)
+  expect(shellCss).toMatch(/\.rp-classic-shell > \*\s*\{[^}]*min-inline-size:\s*0/s)
+  expect(shellCss).not.toMatch(/margin:\s*-\d/)
+})
+
 describe('Panel', () => {
   it('uses the saved fallback when no collapse preference exists', () => {
     render(
