@@ -148,7 +148,7 @@ function ClosedDisclosure({ title, children, open: controlledOpen, onOpenChange 
     onOpenChange?.(next)
   }
   return <section className="rp-responsive-disclosure"><header className="rp-responsive-disclosure__header">
-    <button aria-expanded={open} className="rp-responsive-disclosure__trigger" onClick={toggle} type="button">{title}</button>
+    <Button aria-expanded={open} className="rp-disclosure-action" onClick={toggle} type="button" variant="secondary">{title}</Button>
   </header>{open ? <div className="rp-responsive-disclosure__content">{children}</div> : null}</section>
 }
 
@@ -174,18 +174,18 @@ function WorkbenchTabs({ activeTab, canCheck, onChange }: {
 }) {
   const workflowItems = [
     { id: 'task', label: 'Задача' },
-    ...(canCheck ? [{ id: 'check', label: 'Проверка робота' }] : []),
+    ...(canCheck ? [{ id: 'check', label: 'Проверка' }] : []),
   ]
   const relatedItems = [
     { id: 'open', label: 'Открытые задачи' },
     { id: 'closed', label: 'Закрытые задачи' },
   ]
   return <div className="rp-work-sections">
-    <Tabs ariaLabel="Разделы задачи" value={activeTab} items={workflowItems}
+    <Tabs ariaLabel="Раздел задачи" value={activeTab} items={workflowItems}
       onChange={tab => onChange(tab as WorkSection)} panelIdFor={tab => `work-panel-${tab}`} />
     <div className="rp-work-related">
       <Tabs ariaLabel="Другие задачи робота" value={activeTab} items={relatedItems}
-        onChange={tab => onChange(tab as WorkSection)} panelIdFor={tab => `work-panel-${tab}`} />
+        onChange={tab => onChange(tab as WorkSection)} panelIdFor={tab => `work-panel-${tab}`} variant="secondary" />
     </div>
   </div>
 }
@@ -1106,7 +1106,7 @@ export function TaskController({
                         }
                         setReviewOpen(false)
                       }} /> : null}
-                    {detail.data?.workflow ? <div aria-label="Дополнительные разделы задачи" className="rp-responsive-disclosure-group" role="group">
+                    {detail.data?.workflow ? <div aria-label="Дополнительные разделы задачи" className="rp-action-bar rp-responsive-disclosure-group rp-task-disclosure-actions" role="group">
                       {user.role === 'mechanic' && mechanicCanWork ? <>
                         <ClosedDisclosure title="Списать запчасть" open={partsOpen} onOpenChange={open => {
                           if (open) setPartsReceipt('')

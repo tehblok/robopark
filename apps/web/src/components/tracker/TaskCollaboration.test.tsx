@@ -21,6 +21,12 @@ it('uses the lifecycle handoff form instead of saving legacy notes', async () =>
   expect(save).not.toHaveBeenCalled()
 })
 
+it('uses the shared primary action inside the open handoff disclosure', () => {
+  render(<TaskCollaboration issueKey="RP-1" owner="alice" active canWrite lifecycle onHandoff={async () => undefined} />)
+
+  expect(screen.getByRole('button', { name: 'Передать смену' })).toHaveClass('rp-disclosure-primary-action')
+})
+
 it('loads handoff only when opened and preserves edited text while showing a conflicting revision', async () => {
   const get = vi.spyOn(collaborationClient, 'handoff').mockResolvedValue(saved)
   vi.spyOn(collaborationClient, 'save').mockRejectedValue(new ApiError(409, 'tracker_handoff_conflict'))

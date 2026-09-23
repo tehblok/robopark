@@ -44,7 +44,7 @@ function LifecycleHandoffForm({ canWrite, onHandoff }: { canWrite: boolean; onHa
       {['Сделано', 'Осталось', 'Препятствия'][index]}
       <textarea disabled={!canWrite} maxLength={4000} rows={2} value={value[field]} onChange={event => setValue({ ...value, [field]: event.target.value })} />
     </label>)}
-    {canWrite ? <Button busy={busy} disabled={!value.assignee.trim() || !value.reason.trim()} onClick={() => void submit()} type="button">Передать смену</Button> : null}
+    {canWrite ? <Button busy={busy} className="rp-disclosure-primary-action" disabled={!value.assignee.trim() || !value.reason.trim()} onClick={() => void submit()} type="button">Передать смену</Button> : null}
   </section>
 }
 

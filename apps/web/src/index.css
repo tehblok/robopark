@@ -1881,6 +1881,25 @@ textarea {
   border-top: 1px solid var(--border);
 }
 
+.rp-task-disclosure-actions {
+  align-items: flex-start;
+}
+
+.rp-task-disclosure-actions > .rp-responsive-disclosure {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.rp-task-disclosure-actions .rp-disclosure-action {
+  width: 100%;
+}
+
+.rp-task-disclosure-actions .rp-responsive-disclosure__content {
+  display: grid;
+  gap: var(--rp-space-3);
+  padding-top: var(--rp-space-3);
+}
+
 .btn-danger {
   background: var(--danger);
   color: var(--rp-critical-on);
@@ -3078,6 +3097,19 @@ textarea {
 
   .page-header-actions .btn {
     flex: 1;
+  }
+}
+
+@media (max-width: 599px) {
+  .rp-task-disclosure-actions {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+  }
+
+  .rp-task-disclosure-actions > .rp-responsive-disclosure {
+    width: 100%;
   }
 }
 

@@ -951,6 +951,23 @@ describe('IssueWorkbench', () => {
     expect(screen.queryByRole('button', { name: 'Статус задачи' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: ru.tracker.actions.openInTracker })).not.toBeInTheDocument()
   })
+  it('uses one tab system and aligned disclosure actions', async () => {
+    const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
+    renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => ({
+      ...issue, assignee: { display: 'mech', login: 'mech' }, claim: { park_id: park.id },
+      workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress' as const, sync_state: 'saved' as const, has_current_cycle_comment: false },
+    })) }) })
+
+    const primaryTabs = await screen.findByRole('tablist', { name: 'Раздел задачи' })
+    expect(primaryTabs).toBeVisible()
+    expect(primaryTabs).toHaveClass('rp-tabs--primary')
+    expect(within(primaryTabs).getByRole('tab', { name: 'Задача' })).toBeVisible()
+    expect(within(primaryTabs).getByRole('tab', { name: 'Проверка' })).toBeVisible()
+    expect(screen.getByRole('tablist', { name: 'Другие задачи робота' })).toHaveClass('rp-tabs--secondary')
+    expect(screen.getByRole('button', { name: 'Списать запчасть' })).toHaveClass('rp-disclosure-action')
+    expect(screen.getByRole('button', { name: 'Передать смену' })).toHaveClass('rp-disclosure-action')
+    expect(screen.getByRole('group', { name: 'Дополнительные разделы задачи' })).toHaveClass('rp-action-bar')
+  })
   it('keeps related task tabs in the Classic semantic styling wrapper', async () => {
     renderWorkbench()
 
@@ -987,7 +1004,7 @@ describe('IssueWorkbench', () => {
 
     expect(await screen.findByRole('heading', { name: claimedByShiftmate.summary })).toBeInTheDocument()
     expect(screen.getByText(/Для изменений возьмите задачу вместо сменщика/)).toBeInTheDocument()
-    expect(screen.queryByRole('tab', { name: 'Проверка робота' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'Проверка' })).not.toBeInTheDocument()
     const robotField = screen.getByText(ru.tracker.fields.robot, { selector: 'dt' }).parentElement
     expect(robotField).toHaveTextContent('447')
     expect(within(robotField!).queryByRole('button')).not.toBeInTheDocument()
@@ -1024,7 +1041,7 @@ describe('IssueWorkbench', () => {
 
     expect(await screen.findByRole('heading', { name: claimedByShiftmate.summary })).toBeVisible()
     expect(screen.getByRole('tabpanel', { name: 'Задача' })).toBeVisible()
-    expect(screen.queryByRole('tabpanel', { name: 'Проверка робота' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tabpanel', { name: 'Проверка' })).not.toBeInTheDocument()
     expect(emergencyResolve).not.toHaveBeenCalled()
   })
 
