@@ -1232,6 +1232,24 @@ def assign_issue(*, token: str, key: str, assignee: str) -> None:
     _run_mutation(_run)
 
 
+def set_issue_tags(*, token: str, key: str, tags: list[str]) -> None:
+    client = _client(token)
+
+    def _run() -> None:
+        client.issues[key].update(tags=tags)
+
+    _run_mutation(_run)
+
+
+def set_issue_components(*, token: str, key: str, components: list[str]) -> None:
+    client = _client(token)
+
+    def _run() -> None:
+        client.issues[key].update(components=components)
+
+    _run_mutation(_run)
+
+
 def unassign_issue(*, token: str, key: str) -> None:
     client = _client(token)
 

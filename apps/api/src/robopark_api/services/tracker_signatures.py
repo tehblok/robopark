@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from robopark_api.models import AccessStatus, Park, Role, User, UserPark
+from robopark_api.models import Park, Role, User, UserPark
 from robopark_api.services.rbac import RoleSlug
 from robopark_api.services.tracker_policy import issue_tags
 
@@ -26,6 +26,17 @@ PLATFORM_COMMENT_LEGACY_RE = re.compile(
 LEGACY_PLATFORM_FOOTER = "\n\n—\nРобопарк:"
 PLATFORM_ACCOUNTABILITY_FOOTER = "\n\n—\nВремя: "
 MISSING = "—"
+
+
+def tracker_identity(user: User) -> str:
+    return str(user.tracker_login or user.username).strip()
+
+
+def tracker_identity_from_issue(issue: dict) -> str:
+    assignee = issue.get("assignee")
+    if not isinstance(assignee, dict):
+        return ""
+    return str(assignee.get("login") or "").strip()
 
 
 @dataclass(frozen=True)
@@ -77,7 +88,7 @@ def resolve_mechanic_login(db: Session, issue: dict, user: User) -> str:
 
 def resolve_operator_login(db: Session, park: Park | None, user: User) -> str:
     if park is None:
-        return user.username if user.role == RoleSlug.OPERATOR else MISSING
+        return tracker_identity(user) if user.role == RoleSlug.OPERATOR else MISSING
 
     if user.role == RoleSlug.OPERATOR:
         assigned = db.scalar(
@@ -87,23 +98,13 @@ def resolve_operator_login(db: Session, park: Park | None, user: User) -> str:
             )
         )
         if assigned is not None:
-            return user.username
+            return tracker_identity(user)
 
-    operator = db.scalar(
-        select(User)
-        .join(UserPark, UserPark.user_id == User.id)
-        .join(Role)
-        .where(
-            UserPark.park_id == park.id,
-            Role.slug == RoleSlug.OPERATOR,
-            User.access_status == AccessStatus.approved.value,
-            User.is_active.is_(True),
-        )
-        .order_by(User.username)
-        .limit(1)
-    )
+    from robopark_api.services.schedules import resolve_active_operator
+
+    operator = resolve_active_operator(db, park_id=park.id)
     if operator is not None:
-        return operator.username
+        return tracker_identity(operator)
 
     return MISSING
 

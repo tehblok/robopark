@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import CampaignSubmission, Report, User
 from robopark_api.services import audit, tracker_cache, tracker_client, tracker_signatures
 from robopark_api.services import platform_settings as settings_svc
@@ -314,6 +315,35 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
         return _deliver_attachment(db, action, token=token, issue=issue, actor=actor)
     if action.action == "campaign_review":
         return _deliver_campaign_review(action, token=token, issue=issue)
+    if action.action == "assign_operator":
+        login = str(payload.get("login") or "").strip()
+        if not login:
+            raise DeliveryError("invalid_payload")
+        if tracker_signatures.tracker_identity_from_issue(issue) == login:
+            return {"already_applied": True}
+        tracker_client.assign_issue(token=token, key=action.resource_id, assignee=login)
+        return {"assignee": login}
+    if action.action == "ensure_tag":
+        tag = str(payload.get("tag") or "").strip()
+        if not tag:
+            raise DeliveryError("invalid_payload")
+        tags = [str(value).strip() for value in issue.get("tags") or [] if str(value).strip()]
+        if tag in tags:
+            return {"already_applied": True}
+        tracker_client.set_issue_tags(token=token, key=action.resource_id, tags=[*tags, tag])
+        return {"tag": tag}
+    if action.action == "ensure_components":
+        value = payload.get("value")
+        if not isinstance(value, list) or not value or not all(isinstance(item, str) for item in value):
+            raise DeliveryError("invalid_payload")
+        if issue.get("components"):
+            return {"already_applied": True}
+        tracker_client.set_issue_components(
+            token=token,
+            key=action.resource_id,
+            components=value,
+        )
+        return {"components": value}
     if action.action in _TRANSITION_ACTIONS:
         return _deliver_transition(action, token=token, issue=issue)
     if action.action == "set_field":
@@ -467,6 +497,24 @@ def _audit_campaign_action(db: Session, action: ReliableAction) -> None:
     )
 
 
+def _sync_claim(db: Session, action: ReliableAction) -> None:
+    if action.action != "start" or action.state not in {"succeeded", "needs_attention"}:
+        return
+    claim = db.scalar(
+        select(TrackerClaim).where(
+            TrackerClaim.start_action_id == action.id,
+            TrackerClaim.state == "pending",
+        )
+    )
+    if claim is None:
+        return
+    if action.state == "succeeded":
+        claim.state = "active"
+        claim.updated_at = action.updated_at
+    else:
+        db.delete(claim)
+
+
 def _process_batch(session_factory) -> int:
     with session_factory() as db:
         actions = claim_due_batch(db)
@@ -475,6 +523,7 @@ def _process_batch(session_factory) -> int:
                 dependency_state = _dependency_state(db, action)
                 if dependency_state == "failed":
                     mark_needs_attention(db, action, error_code="prerequisite_failed")
+                    _sync_claim(db, action)
                     db.commit()
                     continue
                 if dependency_state == "waiting":
@@ -488,6 +537,7 @@ def _process_batch(session_factory) -> int:
                 complete_action(db, action, result)
                 _sync_message(db, action)
                 _sync_campaign_submission(db, action)
+                _sync_claim(db, action)
                 db.commit()
                 _audit_campaign_action(db, action)
                 tracker_cache.invalidate_issue(action.resource_id)
@@ -495,12 +545,14 @@ def _process_batch(session_factory) -> int:
                 mark_needs_attention(db, action, error_code=exc.code)
                 _sync_message(db, action)
                 _sync_campaign_submission(db, action)
+                _sync_claim(db, action)
                 db.commit()
                 _audit_campaign_action(db, action)
             except tracker_client.TrackerError as exc:
                 schedule_retry(db, action, error_code=_tracker_error_code(exc))
                 _sync_message(db, action)
                 _sync_campaign_submission(db, action)
+                _sync_claim(db, action)
                 db.commit()
                 _audit_campaign_action(db, action)
             except Exception:  # noqa: BLE001

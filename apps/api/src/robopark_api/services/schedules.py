@@ -4,7 +4,7 @@ from uuid import uuid4
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from robopark_api.models import Park, User, UserPark
+from robopark_api.models import AccessStatus, Park, Role, User, UserPark
 from robopark_api.schedule_models import ScheduleEntry
 from robopark_api.schedule_schemas import (
     ScheduleBulkCreate,
@@ -14,6 +14,36 @@ from robopark_api.schedule_schemas import (
 )
 
 SCHEDULE_RETENTION_DAYS = 400
+
+
+def resolve_active_operator(
+    db: Session, *, park_id: int, at: datetime | None = None
+) -> User | None:
+    """Choose an approved park operator, preferring a shift covering ``at``."""
+    moment = at or datetime.now(UTC)
+    eligible = (
+        select(User)
+        .join(UserPark, UserPark.user_id == User.id)
+        .join(Role, Role.id == User.role_id)
+        .where(
+            UserPark.park_id == park_id,
+            Role.slug == "operator",
+            User.access_status == AccessStatus.approved.value,
+            User.is_active.is_(True),
+        )
+        .order_by(User.username, User.id)
+    )
+    scheduled = db.scalar(
+        eligible.join(ScheduleEntry, ScheduleEntry.owner_user_id == User.id)
+        .where(
+            ScheduleEntry.park_id == park_id,
+            ScheduleEntry.kind == "shift",
+            ScheduleEntry.start_at <= moment,
+            ScheduleEntry.end_at > moment,
+        )
+        .limit(1)
+    )
+    return scheduled or db.scalar(eligible.limit(1))
 
 
 def _park_access(db: Session, actor: User, park_id: int) -> bool:

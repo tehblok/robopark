@@ -15,7 +15,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from robopark_api.models import AuditLog, Park, User, UserPark
-from robopark_api.services import rbac, tracker_client, tracker_signatures
+from robopark_api.services import rbac, schedules, tracker_client, tracker_signatures
 from robopark_api.services.defect_codes import validate_defect_code
 from robopark_api.services.reliable_actions import (
     BeginResult,
@@ -429,8 +429,66 @@ def claim(
     )
     if pending_close is not None:
         raise HTTPException(409, "task_closing_pending")
-    payload = {"owner_user_id": actor.id, "park_id": park.id}
-    begun = _transition_action(
+    existing_assign = db.scalar(
+        select(ReliableAction).where(
+            ReliableAction.actor_user_id == actor.id,
+            ReliableAction.resource_type == "tracker_issue",
+            ReliableAction.resource_id == issue_key,
+            ReliableAction.action == "assign_operator",
+            ReliableAction.idempotency_key == idempotency_key,
+        )
+    )
+    previous = get_claim(db, issue_key)
+    if previous is not None and previous.state == "pending" and existing_assign is None:
+        raise HTTPException(409, "tracker_issue_claim_pending")
+    operator = None
+    if existing_assign is not None:
+        try:
+            operator_id = json.loads(existing_assign.payload_json)["operator_user_id"]
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(409, "reliable_action_payload_conflict") from None
+        operator = db.get(User, operator_id)
+    if operator is None:
+        operator = schedules.resolve_active_operator(db, park_id=park.id)
+    if operator is None:
+        raise HTTPException(409, "task_claim_operator_unavailable")
+
+    assign = _action(
+        db,
+        actor=actor,
+        issue_key=issue_key,
+        action="assign_operator",
+        idempotency_key=idempotency_key,
+        payload={
+            "operator_user_id": operator.id,
+            "login": tracker_signatures.tracker_identity(operator),
+        },
+    )
+    tag = _action(
+        db,
+        actor=actor,
+        issue_key=issue_key,
+        action="ensure_tag",
+        idempotency_key=idempotency_key,
+        payload={"tag": "diag_complete", "depends_on_action_ids": [assign.row.id]},
+    )
+    component = _action(
+        db,
+        actor=actor,
+        issue_key=issue_key,
+        action="ensure_components",
+        idempotency_key=idempotency_key,
+        payload={
+            "value": ["ROBOT_SUSPENSION"],
+            "depends_on_action_ids": [tag.row.id],
+        },
+    )
+    payload = {
+        "owner_user_id": actor.id,
+        "park_id": park.id,
+        "depends_on_action_ids": [component.row.id],
+    }
+    begun = _action(
         db,
         actor=actor,
         issue_key=issue_key,
@@ -439,16 +497,21 @@ def claim(
         payload=payload,
     )
     if begun.created:
-        previous = get_claim(db, issue_key)
         previous_owner = db.get(User, previous.owner_user_id) if previous is not None else None
-        claim_issue(
-            db,
-            actor=actor,
-            owner=actor,
-            issue_key=issue_key,
-            park_id=park.id,
-            replace=True,
-        )
+        try:
+            claim_issue(
+                db,
+                actor=actor,
+                owner=actor,
+                issue_key=issue_key,
+                park_id=park.id,
+                replace=True,
+                state="pending",
+                start_action_id=begun.row.id,
+                operator_user_id=operator.id,
+            )
+        except PermissionError as exc:
+            raise HTTPException(409, str(exc)) from exc
         text = f"Задача взята в работу: {actor.username}"
         if previous_owner is not None and previous_owner.id != actor.id:
             text = f"Передача смены: {previous_owner.username} → {actor.username}"

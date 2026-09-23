@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from conftest import login_as, role_id_for
 from robopark_api.collaboration_models import TrackerClaim
-from robopark_api.models import AccessStatus, AuditLog, User, UserPark
+from robopark_api.models import AccessStatus, AuditLog, Park, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings, rbac
 from robopark_api.task_workflow_models import (
@@ -38,14 +38,21 @@ def _issue():
     }
 
 
-def _prepare_tracker(db_session, monkeypatch):
+def _prepare_tracker(db_session, monkeypatch, *, with_operator=True):
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     from robopark_api.services import tracker_client
 
     monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: _issue())
+    if with_operator:
+        park = db_session.scalar(select(UserPark.park_id).where(UserPark.user_id.is_not(None)))
+        assert park is not None
+        _operator(db_session, db_session.get(Park, park))
 
 
 def _operator(db_session, park):
+    current = db_session.scalar(select(User).where(User.username == "operator51"))
+    if current is not None:
+        return current
     user = User(
         username="operator51",
         password_hash=hash_password("secret"),
@@ -229,6 +236,10 @@ def test_claim_is_atomic_idempotent_and_never_calls_tracker_mutations(
     _prepare_tracker(db_session, monkeypatch)
     from robopark_api.services import tracker_client
 
+    operator = db_session.scalar(select(User).where(User.username == "operator51"))
+    operator.tracker_login = "operator.tracker"
+    db_session.commit()
+
     monkeypatch.setattr(
         tracker_client,
         "transition_issue",
@@ -243,9 +254,54 @@ def test_claim_is_atomic_idempotent_and_never_calls_tracker_mutations(
     assert first.json()["sync_state"] == "pending"
     assert db_session.query(TrackerClaim).count() == 1
     assert db_session.query(TaskMessage).count() == 1
-    assert db_session.query(ReliableAction).count() == 1
-    assert db_session.query(ReliableAction).one().action == "start"
+    actions = list(db_session.scalars(select(ReliableAction).order_by(ReliableAction.created_at)))
+    assert [row.action for row in actions] == [
+        "assign_operator",
+        "ensure_tag",
+        "ensure_components",
+        "start",
+    ]
+    assert json.loads(actions[0].payload_json)["login"] == "operator.tracker"
+    assert json.loads(actions[1].payload_json)["depends_on_action_ids"] == [actions[0].id]
+    assert json.loads(actions[2].payload_json)["depends_on_action_ids"] == [actions[1].id]
+    assert json.loads(actions[3].payload_json)["depends_on_action_ids"] == [actions[2].id]
+    claim = db_session.get(TrackerClaim, ISSUE_KEY)
+    assert claim.state == "pending"
+    assert claim.start_action_id == actions[3].id
+    assert claim.operator_user_id is not None
     assert "Задача взята в работу" in db_session.query(TaskMessage).one().text
+
+
+def test_claim_rejects_before_mutation_when_park_has_no_operator(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch, with_operator=False)
+
+    response = _claim(client, seed_mechanic)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "task_claim_operator_unavailable"
+    assert db_session.query(TrackerClaim).count() == 0
+    assert db_session.query(ReliableAction).count() == 0
+
+
+def test_second_mechanic_cannot_replace_pending_claim_reservation(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    other = _mechanic(db_session, seed_park_with_tracker, username="competing-mechanic")
+    assert _claim(client, seed_mechanic).status_code == 200
+
+    login_as(client, other.username, "secret")
+    response = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/claim",
+        headers={"Idempotency-Key": "competing-claim"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "tracker_issue_claim_pending"
+    assert db_session.get(TrackerClaim, ISSUE_KEY).owner_user_id == seed_mechanic.id
+    assert db_session.query(ReliableAction).count() == 4
 
 
 def test_claim_takeover_changes_owner_once_and_names_both_mechanics(

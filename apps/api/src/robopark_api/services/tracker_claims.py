@@ -46,17 +46,32 @@ def claim_issue(
     issue_key: str,
     park_id: int,
     replace: bool = False,
+    state: str | None = None,
+    start_action_id: str | None = None,
+    operator_user_id: int | None = None,
 ) -> TrackerClaim:
     key = issue_key.strip()
     current = get_claim(db, key)
     if current is not None:
         if current.owner_user_id == owner.id:
+            if state is not None:
+                current.state = state
+            if start_action_id is not None:
+                current.start_action_id = start_action_id
+            if operator_user_id is not None:
+                current.operator_user_id = operator_user_id
+            db.flush()
             return current
+        if current.state == "pending":
+            raise PermissionError("tracker_issue_claim_pending")
         if not replace:
             raise PermissionError("tracker_issue_already_claimed")
         current.owner_user_id = owner.id
         current.updated_by_user_id = actor.id
         current.park_id = park_id
+        current.state = state or "active"
+        current.start_action_id = start_action_id
+        current.operator_user_id = operator_user_id
         current.updated_at = time.time()
         db.flush()
         return current
@@ -65,6 +80,9 @@ def claim_issue(
         park_id=park_id,
         owner_user_id=owner.id,
         updated_by_user_id=actor.id,
+        state=state or "active",
+        start_action_id=start_action_id,
+        operator_user_id=operator_user_id,
         updated_at=time.time(),
     )
     db.add(current)

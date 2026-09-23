@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import Campaign, CampaignSubmission, Report
 from robopark_api.task_workflow_models import ReliableAction, TaskAttachment, TaskMessage
 
@@ -649,6 +650,240 @@ def test_failed_review_prerequisite_blocks_transition_and_needs_attention(
     with Session(db_engine) as db:
         saved = db.get(ReliableAction, review_id)
         assert (saved.state, saved.error_code) == ("needs_attention", "prerequisite_failed")
+
+
+def test_start_success_activates_linked_pending_claim(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    start = _action(db_session, seed_mechanic, action="start")
+    claim = TrackerClaim(
+        issue_key=start.resource_id,
+        park_id=seed_park_with_tracker.id,
+        owner_user_id=seed_mechanic.id,
+        updated_by_user_id=seed_mechanic.id,
+        state="pending",
+        start_action_id=start.id,
+        updated_at=1.0,
+    )
+    db_session.add(claim)
+    db_session.commit()
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **_kwargs: {"key": start.resource_id, "status_key": "inProgress"},
+    )
+
+    tracker_outbox._process_batch(sessionmaker(bind=db_engine, future=True))
+
+    with Session(db_engine) as db:
+        saved = db.get(TrackerClaim, start.resource_id)
+        assert saved is not None
+        assert saved.state == "active"
+
+
+def test_terminal_start_failure_releases_linked_pending_claim(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    failed = _action(db_session, seed_mechanic, action="ensure_components")
+    failed.state = "needs_attention"
+    start = _action(
+        db_session,
+        seed_mechanic,
+        action="start",
+        payload={"depends_on_action_ids": [failed.id]},
+    )
+    claim = TrackerClaim(
+        issue_key=start.resource_id,
+        park_id=seed_park_with_tracker.id,
+        owner_user_id=seed_mechanic.id,
+        updated_by_user_id=seed_mechanic.id,
+        state="pending",
+        start_action_id=start.id,
+        updated_at=1.0,
+    )
+    db_session.add(claim)
+    db_session.commit()
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "transition_issue",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("transition delivered")),
+    )
+
+    tracker_outbox._process_batch(sessionmaker(bind=db_engine, future=True))
+
+    with Session(db_engine) as db:
+        assert db.get(TrackerClaim, start.resource_id) is None
+
+
+def test_claim_preparation_actions_use_fresh_state_and_skip_satisfied_mutations(
+    db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    actions = [
+        _action(
+            db_session,
+            seed_mechanic,
+            action="assign_operator",
+            payload={"operator_user_id": 42, "login": "operator-login"},
+        ),
+        _action(
+            db_session,
+            seed_mechanic,
+            action="ensure_tag",
+            payload={"tag": "diag_complete"},
+        ),
+        _action(
+            db_session,
+            seed_mechanic,
+            action="ensure_components",
+            payload={"value": ["ROBOT_SUSPENSION"]},
+        ),
+    ]
+    reads = []
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **kwargs: reads.append(kwargs)
+        or {
+            "key": "ROBOPARK-1",
+            "assignee": {"login": "operator-login"},
+            "tags": ["existing", "diag_complete"],
+            "components": ["WHEELS"],
+        },
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "assign_issue",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("assignment repeated")),
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "set_issue_tags",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("tags overwritten")),
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "set_issue_components",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("components overwritten")),
+    )
+
+    results = [tracker_outbox._deliver_action(db_session, action) for action in actions]
+
+    assert results == [{"already_applied": True}] * 3
+    assert len(reads) == 3
+
+
+def test_claim_chain_retries_failed_step_without_repeating_successful_assignment(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    assign = _action(
+        db_session,
+        seed_mechanic,
+        action="assign_operator",
+        payload={"operator_user_id": 42, "login": "operator-login"},
+    )
+    tag = _action(
+        db_session,
+        seed_mechanic,
+        action="ensure_tag",
+        payload={"tag": "diag_complete", "depends_on_action_ids": [assign.id]},
+    )
+    component = _action(
+        db_session,
+        seed_mechanic,
+        action="ensure_components",
+        payload={"value": ["ROBOT_SUSPENSION"], "depends_on_action_ids": [tag.id]},
+    )
+    start = _action(
+        db_session,
+        seed_mechanic,
+        action="start",
+        payload={"depends_on_action_ids": [component.id]},
+    )
+    claim = TrackerClaim(
+        issue_key=start.resource_id,
+        park_id=seed_park_with_tracker.id,
+        owner_user_id=seed_mechanic.id,
+        updated_by_user_id=seed_mechanic.id,
+        state="pending",
+        start_action_id=start.id,
+        updated_at=1.0,
+    )
+    db_session.add(claim)
+    db_session.commit()
+
+    remote = {
+        "key": start.resource_id,
+        "status_key": "queued",
+        "assignee": None,
+        "tags": ["existing"],
+        "components": [],
+    }
+    operations = []
+    tag_attempts = 0
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(tracker_outbox.tracker_client, "get_issue", lambda **_kwargs: dict(remote))
+
+    def assign_issue(*, assignee, **_kwargs):
+        operations.append("assign")
+        remote["assignee"] = {"login": assignee}
+
+    def set_issue_tags(*, tags, **_kwargs):
+        nonlocal tag_attempts
+        tag_attempts += 1
+        if tag_attempts == 1:
+            raise tracker_outbox.tracker_client.TrackerError("request timeout")
+        operations.append("tag")
+        remote["tags"] = tags
+
+    def set_issue_components(*, components, **_kwargs):
+        operations.append("components")
+        remote["components"] = components
+
+    def transition_issue(**_kwargs):
+        operations.append("start")
+        remote["status_key"] = "inProgress"
+
+    monkeypatch.setattr(tracker_outbox.tracker_client, "assign_issue", assign_issue)
+    monkeypatch.setattr(tracker_outbox.tracker_client, "set_issue_tags", set_issue_tags)
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client, "set_issue_components", set_issue_components
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_transitions",
+        lambda **_kwargs: [{"id": "start", "display": "В работу"}],
+    )
+    monkeypatch.setattr(tracker_outbox.tracker_client, "transition_issue", transition_issue)
+    factory = sessionmaker(bind=db_engine, future=True)
+
+    for _ in range(8):
+        tracker_outbox._process_batch(factory)
+        with Session(db_engine) as db:
+            rows = list(db.scalars(select(ReliableAction)))
+            for row in rows:
+                if row.state == "retry_wait":
+                    row.next_attempt_at = 0
+            db.commit()
+            if db.get(ReliableAction, start.id).state == "succeeded":
+                break
+
+    with Session(db_engine) as db:
+        assert db.get(TrackerClaim, start.resource_id).state == "active"
+        assert all(row.state == "succeeded" for row in db.scalars(select(ReliableAction)))
+    assert operations == ["assign", "tag", "components", "start"]
+    assert tag_attempts == 2
+    assert remote["tags"] == ["existing", "diag_complete"]
+    assert remote["components"] == ["ROBOT_SUSPENSION"]
 
 
 def test_transition_chain_survives_retry_and_restart_without_stale_final_status(
