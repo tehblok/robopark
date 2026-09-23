@@ -146,7 +146,7 @@ def list_entries(
             raise PermissionError
         statement = statement.where(ScheduleEntry.owner_user_id == owner_user_id)
     statement = statement.where(
-        ScheduleEntry.end_at >= window_start, ScheduleEntry.start_at <= window_end
+        ScheduleEntry.end_at > window_start, ScheduleEntry.start_at < window_end
     ).limit(2000)
     rows = list(db.scalars(statement))
     overlaps: set[str] = set()
@@ -158,6 +158,27 @@ def list_entries(
         if prior is None or row.end_at > prior[0]:
             latest[row.owner_user_id] = (row.end_at, row.id)
     return [shell(db, row, warnings=["overlap"] if row.id in overlaps else []) for row in rows]
+
+
+def list_participants(db: Session, actor: User, *, park_id: int) -> list[dict]:
+    if actor.role not in {"admin", "royal"} or not _park_access(db, actor, park_id):
+        raise PermissionError
+    rows = db.execute(
+        select(User.id, User.username, Role.slug)
+        .join(UserPark, UserPark.user_id == User.id)
+        .join(Role, Role.id == User.role_id)
+        .where(
+            UserPark.park_id == park_id,
+            User.is_active.is_(True),
+            User.access_status == AccessStatus.approved.value,
+            Role.slug.in_(("mechanic", "operator")),
+        )
+        .order_by(User.username, User.id)
+    ).all()
+    return [
+        {"id": user_id, "display_name": username, "role": role}
+        for user_id, username, role in rows
+    ]
 
 
 def create_entry(db: Session, actor: User, payload: ScheduleCreate) -> dict:

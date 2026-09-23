@@ -11,6 +11,7 @@ from robopark_api.schedule_schemas import (
     ScheduleCopy,
     ScheduleCreate,
     ScheduleOut,
+    ScheduleParticipantOut,
     ScheduleUpdate,
 )
 from robopark_api.services import schedules
@@ -48,6 +49,15 @@ def list_schedules(
             end_at=end_at,
         )
     )
+
+
+@router.get("/participants", response_model=list[ScheduleParticipantOut])
+def list_schedule_participants(
+    park_id: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    return _run(lambda: schedules.list_participants(db, user, park_id=park_id))
 
 
 @router.post("", response_model=ScheduleOut, status_code=status.HTTP_201_CREATED)

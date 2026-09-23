@@ -222,6 +222,92 @@ def test_list_schedule_range_is_bounded_and_ordered(
     assert payload[-1]["start_at"] == "2026-09-02T09:19:00"
 
 
+def test_list_schedule_range_uses_half_open_intersection(
+    client, db_session, seed_admin, seed_mechanic, seed_park_with_tracker
+):
+    from robopark_api.schedule_models import ScheduleEntry
+
+    db_session.add(UserPark(user_id=seed_admin.id, park_id=seed_park_with_tracker.id))
+    window_start = datetime.fromisoformat("2026-09-01T00:00:00+03:00")
+    window_end = datetime.fromisoformat("2026-10-01T00:00:00+03:00")
+    ending_at_start = ScheduleEntry(
+        owner_user_id=seed_mechanic.id, park_id=seed_park_with_tracker.id, kind="shift",
+        start_at=window_start - timedelta(hours=1), end_at=window_start,
+        created_by_user_id=seed_mechanic.id, updated_by_user_id=seed_mechanic.id,
+    )
+    crossing_start = ScheduleEntry(
+        owner_user_id=seed_mechanic.id, park_id=seed_park_with_tracker.id, kind="shift",
+        start_at=window_start - timedelta(minutes=1), end_at=window_start + timedelta(minutes=1),
+        created_by_user_id=seed_mechanic.id, updated_by_user_id=seed_mechanic.id,
+    )
+    starting_at_end = ScheduleEntry(
+        owner_user_id=seed_mechanic.id, park_id=seed_park_with_tracker.id, kind="shift",
+        start_at=window_end, end_at=window_end + timedelta(hours=1),
+        created_by_user_id=seed_mechanic.id, updated_by_user_id=seed_mechanic.id,
+    )
+    db_session.add_all([ending_at_start, crossing_start, starting_at_end])
+    db_session.commit()
+    login_as(client, seed_admin.username, "secret")
+
+    response = client.get(
+        f"/schedules?park_id={seed_park_with_tracker.id}"
+        "&start_at=2026-09-01T00:00:00%2B03:00"
+        "&end_at=2026-10-01T00:00:00%2B03:00"
+    )
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()] == [crossing_start.id]
+
+
+def test_schedule_participants_are_minimal_park_scoped_and_privileged(
+    client, db_session, seed_admin, seed_royal, seed_mechanic, seed_park_with_tracker
+):
+    second = Park(name="Participant foreign", tag="PART-FOREIGN", is_active=True)
+    db_session.add(second)
+    db_session.flush()
+    db_session.add(UserPark(user_id=seed_admin.id, park_id=seed_park_with_tracker.id))
+    operator = _add_user(
+        db_session, username="participant-operator", role=RoleSlug.OPERATOR,
+        park_id=seed_park_with_tracker.id,
+    )
+    operator.tracker_login = "sensitive-tracker"
+    operator.last_ip = "192.0.2.1"
+    inactive = _add_user(
+        db_session, username="participant-inactive", role=RoleSlug.MECHANIC,
+        park_id=seed_park_with_tracker.id,
+    )
+    inactive.is_active = False
+    pending = _add_user(
+        db_session, username="participant-pending", role=RoleSlug.MECHANIC,
+        park_id=seed_park_with_tracker.id,
+    )
+    pending.access_status = AccessStatus.pending.value
+    foreign = _add_user(
+        db_session, username="participant-foreign", role=RoleSlug.OPERATOR, park_id=second.id,
+    )
+    db_session.commit()
+
+    login_as(client, seed_admin.username, "secret")
+    response = client.get(f"/schedules/participants?park_id={seed_park_with_tracker.id}")
+    assert response.status_code == 200
+    payload = response.json()
+    assert operator.id in {row["id"] for row in payload}
+    assert seed_mechanic.id in {row["id"] for row in payload}
+    assert inactive.id not in {row["id"] for row in payload}
+    assert pending.id not in {row["id"] for row in payload}
+    assert foreign.id not in {row["id"] for row in payload}
+    assert all(set(row) == {"id", "display_name", "role"} for row in payload)
+    assert client.get(f"/schedules/participants?park_id={second.id}").status_code == 403
+
+    login_as(client, seed_mechanic.username, "secret")
+    assert client.get(f"/schedules/participants?park_id={seed_park_with_tracker.id}").status_code == 403
+
+    login_as(client, seed_royal.username, "secret")
+    royal_response = client.get(f"/schedules/participants?park_id={second.id}")
+    assert royal_response.status_code == 200
+    assert [row["id"] for row in royal_response.json()] == [foreign.id]
+
+
 def test_active_operator_prefers_current_shift_then_username(
     db_session, seed_park_with_tracker
 ):

@@ -59,6 +59,12 @@ class ScheduleOut(BaseModel):
     warnings: list[str] = []
 
 
+class ScheduleParticipantOut(BaseModel):
+    id: int
+    display_name: str
+    role: Literal["mechanic", "operator"]
+
+
 class PushSubscriptionIn(BaseModel):
     endpoint: str = Field(min_length=8, max_length=4096)
     p256dh: str = Field(min_length=1, max_length=1024)
