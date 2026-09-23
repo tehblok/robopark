@@ -5,7 +5,6 @@ import type { User } from '../../src/api'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 import { parkNorth, roles, userForRole } from './fixtures'
 import { assertResponsiveContracts, assertRouteSemanticContracts, openRouteFixture } from './routeFixtures'
-import { selectInterface } from '../support/interfaceMode'
 
 const widths = [320, 390, 412, 899, 1440] as const
 test.describe.configure({ mode: 'parallel' })
@@ -21,35 +20,32 @@ const restrictedUser: User = {
   parks: [parkNorth],
 }
 
-for (const mode of ['Классический', 'Новый А'] as const) for (const role of roles) for (const route of ROUTE_MANIFEST.filter(item => item.surface === 'shell')) for (const width of widths) {
+for (const mode of ['Классический'] as const) for (const role of roles) for (const route of ROUTE_MANIFEST.filter(item => item.surface === 'shell')) for (const width of widths) {
   test(`${mode} ${role}: ${route.id} at ${width}px`, async ({ page }) => {
     const user = userForRole(role)
     test.skip(!canAccessRoute(user, route.id), 'route denied by access policy')
     await page.setViewportSize({ width, height: 900 })
     await openRouteFixture(page, route.id, user)
-    await selectInterface(page, mode)
     await assertResponsiveContracts(page, width)
     await assertRouteSemanticContracts(page, route.id)
     await assertNoSeriousA11yViolations(page)
   })
 }
 
-for (const mode of ['Классический', 'Новый А'] as const) for (const route of ROUTE_MANIFEST.filter(item => item.surface === 'shell')) for (const width of [390, 1440] as const) {
+for (const mode of ['Классический'] as const) for (const route of ROUTE_MANIFEST.filter(item => item.surface === 'shell')) for (const width of [390, 1440] as const) {
   test(`${mode} restricted: ${route.id} at ${width}px`, async ({ page }) => {
     test.skip(!canAccessRoute(restrictedUser, route.id), 'route denied by access policy')
     await page.setViewportSize({ width, height: 900 })
     await openRouteFixture(page, route.id, restrictedUser)
-    await selectInterface(page, mode)
     await assertResponsiveContracts(page, width)
     await assertRouteSemanticContracts(page, route.id)
     await assertNoSeriousA11yViolations(page)
   })
 }
 
-for (const mode of ['Классический', 'Новый А'] as const) {
+for (const mode of ['Классический'] as const) {
   test(`${mode} restricted role cannot retain protected administration`, async ({ page }) => {
     await openRouteFixture(page, 'overview', restrictedUser)
-    await selectInterface(page, mode)
     await page.goto('/admin/users?park=7')
     await expect(page).not.toHaveURL(/\/admin\/users/)
     await expect(page.getByRole('button', { name: /Открыть аккаунт/ })).toHaveCount(0)
@@ -136,17 +132,4 @@ test('inventory is loaded for every production-authorized role and denied to dri
   await page.goto('/inventory?park=7')
   await expect(page).toHaveURL(/\/overview(?:\?|$)/)
   await expect(page.getByRole('heading', { name: 'Склад', exact: true })).toHaveCount(0)
-})
-
-test('canonical rebuilt domains expose A zones and keep Classic free of them', async ({ page }) => {
-  const routes = ['operator-parks', 'reports', 'reports-new', 'report-detail', 'campaign-detail', 'admin', 'admin-settings', 'admin-users', 'admin-roles', 'admin-robot-check'] as const
-  for (const routeId of routes) {
-    const user = userForRole(routeId === 'operator-parks' ? 'operator' : 'royal')
-    await openRouteFixture(page, routeId, user)
-    await selectInterface(page, 'Классический')
-    await expect(page.locator('[data-a-route]')).toHaveCount(0)
-    await selectInterface(page, 'Новый А')
-    await expect(page.locator(`[data-a-route="${routeId}"]`)).toBeVisible()
-    await expect(page.locator('[data-a-zone="workflow"], [data-a-zone="report-list"], [data-a-zone="report-compose"], [data-a-zone="report-workflow"], [data-a-zone="campaign-workflow"]').first()).toBeVisible()
-  }
 })

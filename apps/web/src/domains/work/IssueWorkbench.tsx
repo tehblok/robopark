@@ -183,7 +183,7 @@ function WorkbenchTabs({ activeTab, canCheck, onChange }: {
   return <div className="rp-work-sections">
     <Tabs ariaLabel="Разделы задачи" value={activeTab} items={workflowItems}
       onChange={tab => onChange(tab as WorkSection)} panelIdFor={tab => `work-panel-${tab}`} />
-    <div>
+    <div className="rp-work-related">
       <Tabs ariaLabel="Другие задачи робота" value={activeTab} items={relatedItems}
         onChange={tab => onChange(tab as WorkSection)} panelIdFor={tab => `work-panel-${tab}`} />
     </div>

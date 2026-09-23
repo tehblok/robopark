@@ -2,22 +2,18 @@ import { expect, test, type Page } from '@playwright/test'
 import type { DiagnosticRule } from '../../src/api'
 import { installOperational, settlePage } from './fixtures'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
-import { selectInterface } from '../support/interfaceMode'
 
 test.use({ trace: 'off', hasTouch: true })
 const rule: DiagnosticRule = { id: 1, title: 'Неисправность переднего лидара', description: 'Проверьте питание и соединение переднего лидара.', part: 'Передний лидар', source_path: 'errors', match_kind: 'exact', pattern: 'LIDAR_OFFLINE', example: 'LIDAR_OFFLINE', severity: 'critical', preferred_view: 'front', x: .25, y: .6, indicator: 'point', is_enabled: true, sort_order: 0 }
 
-for (const width of [390, 1440]) test(`interface A preserves diagnostic draft and writes once ${width}`, async ({ page }, info) => {
+for (const width of [390, 1440]) test(`Classic preserves diagnostic draft and writes once ${width}`, async ({ page }, info) => {
   await page.setViewportSize({ width, height: 900 })
   await installEditor(page)
   let saves = 0
   page.on('request', request => { if (request.method() === 'PATCH' && request.url().includes('/diagnostic-rules/1')) saves++ })
   await page.goto('/admin/emergency/config?park=7&tab=indication&rule=1')
-  await selectInterface(page, 'Новый А')
   await page.getByLabel('Название ошибки', { exact: true }).fill('Проверить передний лидар')
   await page.getByLabel('Координата X').fill('0.4')
-  await selectInterface(page, 'Классический')
-  await selectInterface(page, 'Новый А')
   await expect(page.getByLabel('Название ошибки', { exact: true })).toHaveValue('Проверить передний лидар')
   await expect(page.getByLabel('Координата X')).toHaveValue('0.4')
   await expect(page.locator('.rp-diagnostic-form')).toHaveCSS('padding', width < 900 ? '14px' : '20px')
@@ -26,7 +22,7 @@ for (const width of [390, 1440]) test(`interface A preserves diagnostic draft an
   await expect(page.getByRole('button', { name: 'Открыть правило Проверить передний лидар', includeHidden: true })).toHaveCount(1)
   await assertNoSeriousA11yViolations(page)
   await page.evaluate(() => { (document.activeElement as HTMLElement)?.blur(); window.scrollTo(0, 0) })
-  await page.screenshot({ path: info.outputPath('diagnostic-a.png'), fullPage: true })
+  await page.screenshot({ path: info.outputPath('diagnostic-classic.png'), fullPage: true })
 })
 async function installEditor(page: Page, pending: { create?: () => Promise<void>; preview?: () => Promise<void> } = {}) {
   let rules = [rule, { ...rule, id: 2, title: 'Перегрев батареи', part: 'Батарея', pattern: 'BATTERY_HOT', severity: 'warning' as const, preferred_view: 'rear' as const, is_enabled: false, sort_order: 1 }]

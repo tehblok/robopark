@@ -2,12 +2,10 @@ import { expect, test, type Page, type Route } from '@playwright/test'
 import { ROUTE_MANIFEST } from '../../src/app/routing/routeManifest'
 import { ROUTE_STATE_EVIDENCE, type RouteStateEvidence } from '../../src/app/routing/routeStateEvidence'
 import { installMockApi } from '../support/mockApi'
-import { selectInterface } from '../support/interfaceMode'
 import { installOperational, issue, parkNorth, userForRole } from './fixtures'
 import { fixturePath, openRouteFixture } from './routeFixtures'
 
 const owners = ROUTE_STATE_EVIDENCE.filter(item => item.fixture === 'owner-test')
-const modes = ['Классический', 'Новый А'] as const
 async function installOwnerTransition(page: Page, method: string, targetPath: string, handler: (route: Route) => Promise<void>) {
   await page.route('**/api/**', async route => {
     const request = route.request()
@@ -139,7 +137,6 @@ async function openSimpleOwner(page: Page, owner: RouteStateEvidence) {
 async function exerciseOwnerBehavior(
   page: Page,
   owner: RouteStateEvidence,
-  mode: typeof modes[number],
   apiRequests: string[],
 ) {
   const route = ROUTE_MANIFEST.find(item => item.id === owner.routeId)!
@@ -151,14 +148,12 @@ async function exerciseOwnerBehavior(
     } else {
       await openRouteFixture(page, owner.routeId, userForRole(owner.actorRole))
     }
-    await selectInterface(page, mode)
   } else {
     await openSimpleOwner(page, owner)
   }
 
   const configuredDriver = owner.ownerDriver!
-  const modeDriver = mode === '\u041a\u043b\u0430\u0441\u0441\u0438\u0447\u0435\u0441\u043a\u0438\u0439' ? configuredDriver.classic : configuredDriver.nextA
-  const driver = { ...configuredDriver, ...modeDriver }
+  const driver = configuredDriver
   expect(new URL(page.url()).pathname, `${owner.caseId}: owner resolved a concrete application route`).toMatch(/^\//)
 
   if (driver.routeSearch) {
@@ -255,18 +250,18 @@ async function exerciseOwnerBehavior(
 
 test.describe.configure({ mode: 'parallel' })
 
-for (const owner of owners) for (const mode of modes) {
-  test(`${owner.caseId} [${mode}]`, async ({ page }) => {
+for (const owner of owners) {
+  test(`${owner.caseId} [Классический]`, async ({ page }) => {
     const apiRequests: string[] = []
     page.on('request', request => {
       const url = new URL(request.url())
       if (url.pathname.startsWith('/api/')) apiRequests.push(`${request.method()} ${url.pathname}`)
     })
-    await exerciseOwnerBehavior(page, owner, mode, apiRequests)
+    await exerciseOwnerBehavior(page, owner, apiRequests)
   })
 }
 
-test('owner collector resolves every delegated state to one exact Classic and A node id', () => {
+test('owner collector resolves every delegated state to one exact Classic node id', () => {
   expect(new Set(owners.map(owner => owner.caseId)).size).toBe(owners.length)
   for (const owner of owners) {
     expect(owner.ownerTest?.title).toBe(`${owner.caseId} [Классический]`)

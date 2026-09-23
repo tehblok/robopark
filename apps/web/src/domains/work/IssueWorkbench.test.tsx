@@ -951,6 +951,13 @@ describe('IssueWorkbench', () => {
     expect(screen.queryByRole('button', { name: 'Статус задачи' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: ru.tracker.actions.openInTracker })).not.toBeInTheDocument()
   })
+  it('keeps related task tabs in the Classic semantic styling wrapper', async () => {
+    renderWorkbench()
+
+    await screen.findByRole('heading', { name: issue.summary })
+
+    expect(screen.getByRole('tablist', { name: 'Другие задачи робота' }).closest('.rp-work-related')).not.toBeNull()
+  })
   it('shows the write-off control in the main tab only to the mechanic assigned to the task', async () => {
     const mechanic: User = { ...user, role: 'mechanic', username: 'mech', tracker_login: 'Mech.Login' }
     const owned = { ...issue, assignee: { display: 'Mechanic', login: 'mech' } }

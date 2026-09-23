@@ -2,10 +2,9 @@ import { expect, test } from '@playwright/test'
 import { installMockApi } from '../support/mockApi'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 import { userForRole } from './fixtures'
-import { selectInterface } from '../support/interfaceMode'
 
-for (const mode of ['Классический', 'Новый А'] as const) for (const width of [320, 1440]) for (const theme of ['light', 'dark']) {
-  test(`Royal system health ${mode} ${width} ${theme}: accessible responsive approval`, async ({ page }) => {
+for (const width of [320, 1440]) for (const theme of ['light', 'dark']) {
+  test(`Royal system health Classic ${width} ${theme}: accessible responsive approval`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await page.addInitScript(theme => localStorage.setItem('robopark-theme', theme), theme)
@@ -22,7 +21,6 @@ for (const mode of ['Классический', 'Новый А'] as const) for (
       { method: 'GET', path: '/api/admin/ops/available-update', handler: () => ({ json: { state: 'available', checked_at: new Date().toISOString(), release: { release_id: 42, version: '1.3.0', git_sha: 'b'.repeat(40), sha256: 'c'.repeat(64), size: 10485760 } } }) },
     ] })
     await page.goto('/admin/settings?tab=ops')
-    await selectInterface(page, mode)
     await expect(page.getByRole('heading', { name: 'Здоровье системы' })).toBeVisible()
     await expect(page.getByText('Сервис Tuna', { exact: true })).toBeVisible()
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)

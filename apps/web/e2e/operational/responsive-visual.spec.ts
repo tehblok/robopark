@@ -1,7 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import type { EmergencyReading, EmergencySnapshot, TrackerIssueDetail } from '../../src/api'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
-import { selectInterface } from '../support/interfaceMode'
 import { installOperational, issue, settlePage, snapshot } from './fixtures'
 import { assertResponsiveContracts } from './routeFixtures'
 
@@ -186,12 +185,11 @@ async function assertRobotCheckGeometry(page: Page, width: number) {
   }
 }
 
-for (const mode of ['Классический', 'Новый А'] as const) for (const width of [320, 390, 768, 1440] as const) {
+for (const mode of ['Классический'] as const) for (const width of [320, 390, 768, 1440] as const) {
   test(`robot-check geometry stays aligned in ${mode} at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
     await installOperational(page, { role: 'mechanic', snapshot: measuredSnapshot })
     await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=scheme`)
-    if (mode === 'Новый А') await selectInterface(page, mode)
     await expect(page.getByRole('button', { name: 'Показание: Ток колеса, 4,2 А' })).toBeVisible()
     await assertRobotCheckGeometry(page, width)
     await assertRobotReadingGeometry(page)

@@ -120,49 +120,10 @@ export async function openRouteFixture(page: Page, routeId: AppRouteId, user: Us
 }
 
 export async function assertRouteSemanticContracts(page: Page, routeId: AppRouteId): Promise<void> {
-  const duplicateZones = await page.locator('[data-a-zone] [data-a-zone]').evaluateAll(nodes => nodes
-    .filter(node => node.getAttribute('data-a-zone') === node.parentElement?.closest('[data-a-zone]')?.getAttribute('data-a-zone'))
-    .map(node => node.getAttribute('data-a-zone')))
-  expect(duplicateZones, `nested duplicate Interface A zones on ${routeId}`).toEqual([])
-
-  const viewportWidth = page.viewportSize()?.width ?? 0
-  if (viewportWidth >= 900 && viewportWidth < 1200 && await page.locator('.rp-task-first-shell').count()) {
-    const crampedCompositions = await page.locator([
-      '.a-domain-composition',
-      '.report-composition--task-first',
-      '.campaign-list-composition--task-first',
-      '.campaign-detail-composition--task-first',
-    ].join(',')).evaluateAll(compositions => compositions.flatMap(composition => {
-      const context = composition.querySelector<HTMLElement>(':scope > [data-a-zone$="context"], :scope > [data-a-zone="context"]')
-      const workflow = composition.querySelector<HTMLElement>(':scope > [data-a-zone$="workflow"], :scope > [data-a-zone="workflow"]')
-      if (!context || !workflow || context.hidden) return []
-      const contextBox = context.getBoundingClientRect()
-      const workflowBox = workflow.getBoundingClientRect()
-      return Math.abs(contextBox.x - workflowBox.x) <= 1 && workflowBox.top >= contextBox.bottom
-        ? [] : [composition.className]
-    }))
-    expect(crampedCompositions, 'tablet context must stack above its workflow').toEqual([])
-  }
-
   if (routeId === 'work-issue') {
     const detail = page.locator('.rp-work-detail-pane')
     await expect(detail.getByText('ROBOPARK-42', { exact: true })).toHaveCount(1)
     await expect(detail.getByRole('heading', { name: 'Проверить переднее левое колесо робота 447', exact: true })).toHaveCount(1)
-    if (viewportWidth <= 899 && await page.locator('.rp-task-first-shell').count()) {
-      await expect(page.locator('.a-task-action')).toHaveCSS('position', 'static')
-    }
-  }
-
-  if (routeId === 'overview' && viewportWidth >= 900 && await page.locator('.rp-task-first-shell').count()) {
-    const overviewGeometry = await page.locator('.rp-overview').evaluate(element => {
-      const attention = element.querySelector<HTMLElement>('.a-overview-attention-panel')!.getBoundingClientRect()
-      const statuses = element.querySelector<HTMLElement>('.a-overview-status-panel')!.getBoundingClientRect()
-      const alerts = element.querySelector<HTMLElement>('.rp-overview-alerts')!.getBoundingClientRect()
-      return { attention, statuses, alerts }
-    })
-    expect(overviewGeometry.statuses.x).toBeGreaterThan(overviewGeometry.attention.x)
-    expect(Math.abs(overviewGeometry.alerts.x - overviewGeometry.attention.x)).toBeLessThanOrEqual(1)
-    expect(overviewGeometry.alerts.top).toBeGreaterThanOrEqual(overviewGeometry.attention.bottom)
   }
 
   if (routeId === 'campaigns') {
@@ -176,14 +137,6 @@ export async function assertRouteSemanticContracts(page: Page, routeId: AppRoute
         .map(element => element.className)
     }))
     expect(escapedMetrics, 'campaign content escapes its card').toEqual([])
-    const campaignCards = page.locator('.campaign-list--task-first .campaign-card')
-    if (viewportWidth >= 1200 && await campaignCards.count() === 1) {
-      const [card, workflow] = await Promise.all([
-        campaignCards.first().boundingBox(),
-        page.locator('[data-a-zone="campaign-workflow"]').boundingBox(),
-      ])
-      expect(card && workflow && card.width / workflow.width, 'single campaign should use the available workflow width').toBeGreaterThanOrEqual(0.7)
-    }
   }
 
   const masterDetail = page.locator('.rp-master-detail[data-detail-open="true"] .rp-master-detail__detail')

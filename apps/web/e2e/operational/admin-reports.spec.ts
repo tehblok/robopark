@@ -2,7 +2,6 @@ import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import type { AdminRole, AdminUser, Report } from '../../src/api'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 import { installOperational, parkNorth, parkSouth, settlePage } from './fixtures'
-import { selectInterface } from '../support/interfaceMode'
 
 const catalog = [
   { key: 'nav.tasks', label: 'Работа', category: 'nav', sort_order: 1 },
@@ -27,7 +26,7 @@ const report: Report = {
   created_at: '2026-09-02T08:00:00Z', updated_at: '2026-09-02T09:00:00Z', resolved_at: null,
 }
 
-test('role permissions draft survives A classic switching without duplicate save', async ({ page }, info) => {
+test('role permissions draft saves once in Classic', async ({ page }, info) => {
   let saves = 0
   await page.setViewportSize({ width: 390, height: 900 })
   await installOperational(page, { role: 'royal', routes: [
@@ -36,18 +35,15 @@ test('role permissions draft survives A classic switching without duplicate save
     { method: 'PATCH', path: '/api/admin/roles/2', handler: async request => { saves++; return { json: { ...roles[1], ...await request.json() } } } },
   ] })
   await page.goto('/admin/roles?park=7')
-  await selectInterface(page, 'Новый А')
   await page.getByRole('button', { name: /Старший смены/ }).click()
   const detail = page.getByRole('region', { name: 'Детали' })
   await detail.getByLabel('Работа', { exact: true }).uncheck()
   await detail.getByLabel('Создавать репорты', { exact: true }).check()
-  await selectInterface(page, 'Классический')
-  await selectInterface(page, 'Новый А')
   await expect(detail.getByLabel('Работа', { exact: true })).not.toBeChecked()
   await expect(detail.getByLabel('Создавать репорты', { exact: true })).toBeChecked()
   await detail.getByRole('button', { name: 'Сохранить', exact: true }).click()
   await expect.poll(() => saves).toBe(1)
-  await evidence(page, info, 'roles-a-390')
+  await evidence(page, info, 'roles-classic-390')
 })
 
 async function evidence(page: Page, info: TestInfo, name: string) {

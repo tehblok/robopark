@@ -1,7 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { readdirSync, writeFileSync } from 'node:fs'
 import { installOperational, settlePage, snapshot, userForRole } from './fixtures'
-import { selectInterface } from '../support/interfaceMode'
 
 type SoakCounters = {
   timers: number
@@ -10,7 +9,7 @@ type SoakCounters = {
   mediaTracks: number
 }
 
-test('repeatable UI soak sample covers navigation, modes, task, robot, photo, camera, cache and background work', async ({ page }) => {
+test('repeatable UI soak sample covers navigation, task, robot, photo, camera, cache and background work', async ({ page }) => {
   const durationInput = process.env.ROBOPARK_SOAK_DURATION_SECONDS
   const durationSeconds = Number(durationInput)
   const output = process.env.ROBOPARK_SOAK_OUTPUT
@@ -91,7 +90,6 @@ test('repeatable UI soak sample covers navigation, modes, task, robot, photo, ca
   while (Date.now() < deadline) {
     await page.goto('/overview?park=7')
     await settlePage(page)
-    await selectInterface(page, cycles % 2 === 0 ? 'Новый А' : 'Классический')
     await page.goto('/work/ROBOPARK-42?park=7')
     await settlePage(page)
     const file = page.getByLabel('Файл', { exact: true })
@@ -137,7 +135,7 @@ test('repeatable UI soak sample covers navigation, modes, task, robot, photo, ca
     storage_bytes: browser.storageBytes,
     db_pool_checked_out: 0,
     errors: 0,
-    operations: ['navigation', 'mode_switch', 'task', 'robot', 'photo', 'camera', 'cache', 'background'],
+    operations: ['navigation', 'task', 'robot', 'photo', 'camera', 'cache', 'background'],
     cycles,
     background_requests: backgroundRequests,
   }

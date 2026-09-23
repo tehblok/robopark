@@ -1,6 +1,5 @@
 import { expect, test } from '@playwright/test'
 import { FIXED_TIME, installOperational, issue, snapshot } from './fixtures'
-import { selectInterface } from '../support/interfaceMode'
 
 const repair = { ...issue, claim: { park_id: 7 }, workflow: {
   owner: { login: 'mechanic-e2e', display: 'Механик смены' }, review_state: null,
@@ -12,7 +11,7 @@ async function expectTaskGeometry(page: import('@playwright/test').Page, width: 
   const header = await page.locator('.rp-work-detail-pane [data-task-header]').boundingBox()
   const body = await page.locator('.rp-work-detail-pane [data-task-body]').boundingBox()
   const workflow = await page.locator('.rp-work-sections > .rp-tabs').boundingBox()
-  const related = await page.locator('.rp-work-sections > .a-work-related').boundingBox()
+  const related = await page.locator('.rp-work-sections > .rp-work-related').boundingBox()
   expect(header && body && workflow && related).toBeTruthy()
   expect(Math.abs(header!.x - body!.x)).toBeLessThanOrEqual(1)
   expect(Math.abs(header!.x + header!.width - body!.x - body!.width)).toBeLessThanOrEqual(1)
@@ -21,7 +20,7 @@ async function expectTaskGeometry(page: import('@playwright/test').Page, width: 
 }
 
 for (const width of [390, 1440]) {
-  test(`repair chat check preserve draft and photo across interfaces ${width}`, async ({ page }, testInfo) => {
+  test(`Classic repair and robot check preserve draft and photo ${width}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 })
     let snapshotRequests = 0
     page.on('request', request => { if (new URL(request.url()).pathname.includes('/snapshot')) snapshotRequests++ })
@@ -29,81 +28,39 @@ for (const width of [390, 1440]) {
       { method: 'GET', path: '/api/tracker/issues/ROBOPARK-42/timeline', handler: () => ({ json: [{ id: 'm1', kind: 'tracker', author: 'Оператор', text: 'Проверить колесо перед выдачей', created_at: FIXED_TIME, sync_state: 'synced', attachments: [] }] }) },
     ] })
     await page.goto('/work/ROBOPARK-42?park=7')
-    await selectInterface(page, 'Новый А')
-    await expect(page.getByRole('tab', { name: 'Ремонт', exact: true })).toBeVisible()
+    await expect(page.getByRole('tab', { name: 'Задача', exact: true })).toBeVisible()
     await expectTaskGeometry(page, width)
     await expect.poll(() => snapshotRequests).toBe(1)
-    const taskLoaded = snapshotRequests
-    await selectInterface(page, 'Классический')
-    await expect(page.locator('.a-task-sequence')).toHaveCount(0)
-    await expectTaskGeometry(page, width)
-    await selectInterface(page, 'Новый А')
-    expect(snapshotRequests).toBe(taskLoaded)
     const comment = page.getByRole('textbox', { name: 'Комментарии', exact: true })
     await comment.fill('Колесо заменено, крепление проверено')
     await page.getByLabel('Выбрать фото', { exact: true }).setInputFiles(photo)
-    await page.getByRole('tab', { name: 'Чат', exact: true }).click()
     await expect(page.getByText('Проверить колесо перед выдачей', { exact: true })).toBeVisible()
     await expect(comment).toHaveValue('Колесо заменено, крепление проверено')
-    await selectInterface(page, 'Классический')
-    await expect(comment).toHaveValue('Колесо заменено, крепление проверено')
     expect(await page.getByLabel('Выбрать фото', { exact: true }).evaluate((input: HTMLInputElement) => input.files?.[0]?.name)).toBe('repair.png')
-    await selectInterface(page, 'Новый А')
-    await page.getByRole('tab', { name: 'Проверка', exact: true }).click()
+    await page.getByRole('tab', { name: 'Проверка робота', exact: true }).click()
     await expect(page.getByRole('region', { name: 'Состояние робота' })).toBeVisible()
     const loaded = snapshotRequests
     expect(loaded).toBeGreaterThan(0)
-    await selectInterface(page, 'Классический')
-    await selectInterface(page, 'Новый А')
-    expect(snapshotRequests).toBe(loaded)
-    await page.getByRole('tab', { name: 'Ремонт', exact: true }).click()
+    await page.getByRole('tab', { name: 'Задача', exact: true }).click()
     await expect(comment).toHaveValue('Колесо заменено, крепление проверено')
+    expect(snapshotRequests).toBe(loaded)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-    await page.screenshot({ path: testInfo.outputPath('repair-a.png'), fullPage: true })
+    await page.screenshot({ path: testInfo.outputPath('repair-classic.png'), fullPage: true })
   })
 }
 
-test('robot check uses one snapshot owner in both interfaces', async ({ page }) => {
+test('Classic robot check uses one snapshot owner', async ({ page }) => {
   let snapshots = 0
   page.on('request', request => { if (new URL(request.url()).pathname.includes('/snapshot')) snapshots++ })
   await installOperational(page, { role: 'royal' })
   await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=scheme`)
   await expect(page.locator('.rp-check-summary')).toBeVisible()
   const loaded = snapshots
-  await selectInterface(page, 'Новый А')
-  await expect(page.locator('.a-robot-layout')).toBeVisible()
-  await selectInterface(page, 'Классический')
+  await expect(page.locator('.classic-robot-layout')).toBeVisible()
   expect(snapshots).toBe(loaded)
 })
 
-test('A workflow tabs use the visible item count', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 })
-  await installOperational(page, { issue: repair })
-  await page.goto('/work/ROBOPARK-42?park=7')
-  await selectInterface(page, 'Новый А')
-
-  const tabs = page.locator('.rp-work-sections > .rp-tabs').first()
-  await tabs.evaluate(element => {
-    element.setAttribute('style', '--rp-tab-count: 2')
-    element.replaceChildren(...['Ремонт', 'Чат'].map(label => {
-      const button = document.createElement('button')
-      button.setAttribute('role', 'tab')
-      button.textContent = label
-      return button
-    }))
-  })
-  const widths = await tabs.getByRole('tab').evaluateAll(elements =>
-    elements.map(element => element.getBoundingClientRect().width),
-  )
-  const { rowWidth, columnGap } = await tabs.evaluate(element => ({
-    rowWidth: element.getBoundingClientRect().width,
-    columnGap: Number.parseFloat(getComputedStyle(element).columnGap) || 0,
-  }))
-  expect(Math.abs(widths[0] - widths[1])).toBeLessThanOrEqual(1)
-  expect(Math.abs(widths[0] + widths[1] + columnGap - rowWidth)).toBeLessThanOrEqual(2)
-})
-
-test('A footer approval locks synchronously, reports 503 and recovers without an unhandled rejection', async ({ page }) => {
+test('Classic approval locks synchronously, reports 503 and recovers without an unhandled rejection', async ({ page }) => {
   const workflow = { owner: { display: 'Механик смены', login: 'mechanic-e2e' }, review_state: 'pending' as const,
     display_status: 'review' as const, sync_state: 'saved' as const, has_current_cycle_comment: true }
   let approvals = 0
@@ -117,7 +74,6 @@ test('A footer approval locks synchronously, reports 503 and recovers without an
     } },
   ] })
   await page.goto('/work/ROBOPARK-42?park=7')
-  await selectInterface(page, 'Новый А')
   const action = page.getByTestId('task-action-zone').getByRole('button', { name: 'Принять и закрыть' })
   await action.evaluate(button => { button.click(); button.click() })
   await expect.poll(() => approvals).toBe(1)
@@ -128,41 +84,28 @@ test('A footer approval locks synchronously, reports 503 and recovers without an
   await expect(page).toHaveURL(/\/work\?park=7/)
 })
 
-test('A parts step focuses and reveals existing content when the disclosure is closed or already open', async ({ page }) => {
+test('Classic parts disclosure reveals and hides its existing content', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await installOperational(page, { issue: repair })
   await page.goto('/work/ROBOPARK-42?park=7')
-  await selectInterface(page, 'Новый А')
   const disclosure = page.getByRole('button', { name: 'Списать запчасть' })
   await expect(disclosure).toHaveAttribute('aria-expanded', 'false')
-  await page.getByRole('button', { name: 'Списать или заказать' }).click()
+  await disclosure.click()
   await expect(disclosure).toHaveAttribute('aria-expanded', 'true')
   await expect(page.locator('#parts')).toBeVisible()
-  await expect(page.locator('#parts')).toBeFocused()
-
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
-  const partsStep = page.getByRole('button', { name: 'Списать или заказать' })
-  await partsStep.click()
-  await expect(page.locator('#parts')).toBeFocused()
-  await expect.poll(() => page.locator('#parts').evaluate(element => {
-    const rect = element.getBoundingClientRect()
-    return rect.top < innerHeight && rect.bottom > 0
-  })).toBe(true)
+  await disclosure.click()
+  await expect(disclosure).toHaveAttribute('aria-expanded', 'false')
 })
 
-test('denied robot check does not reveal readings after changing interface', async ({ page }) => {
+test('denied robot check does not reveal readings in Classic', async ({ page }) => {
   await installOperational(page, { role: 'royal', routes: [
     { method: 'GET', path: /^\/api\/emergency\/[^/]+\/snapshot$/, handler: () => ({ status: 403, json: { detail: 'forbidden' } }) },
   ] })
   await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=scheme`)
   await expect(page.locator('.rp-check-summary')).toHaveCount(0)
-  await selectInterface(page, 'Новый А')
-  await expect(page.locator('.rp-check-summary')).toHaveCount(0)
-  await selectInterface(page, 'Классический')
-  await expect(page.locator('.rp-check-summary')).toHaveCount(0)
 })
 
-test('review keeps defect code and one photo after failure and defers interface change', async ({ page }) => {
+test('review keeps defect code and one photo after failure', async ({ page }) => {
   let release!: () => void
   let requests = 0
   let submitted = ''
@@ -178,23 +121,16 @@ test('review keeps defect code and one photo after failure and defers interface 
     } },
   ] })
   await page.goto('/work/ROBOPARK-42?park=7')
-  await selectInterface(page, 'Новый А')
   await page.getByRole('button', { name: 'Передать на проверку', exact: true }).click()
   const form = page.locator('form').filter({ has: page.getByLabel('Код дефекта') })
   await form.getByLabel('Код дефекта').fill('BD-01')
   await form.getByLabel('Выбрать файл').setInputFiles(photo)
-  await selectInterface(page, 'Классический')
   await expect(form.getByLabel('Код дефекта')).toHaveValue('BD-01')
   await expect(form.getByRole('img', { name: 'Предпросмотр repair.png' })).toBeVisible()
   await form.getByRole('button', { name: 'Передать на проверку', exact: true }).click()
   await expect.poll(() => requests).toBe(1)
-  await page.locator('.rp-shell__bottom-nav').getByRole('button', { name: 'Меню', exact: true }).click()
-  await page.getByRole('radio', { name: 'Новый А', exact: true }).check()
-  await expect(page.locator('html')).toHaveAttribute('data-interface', 'classic')
-  await expect(page.getByText('Переключим после завершения операции')).toBeVisible()
   release()
-  await expect(page.locator('html')).toHaveAttribute('data-interface', 'task-first')
-  await page.keyboard.press('Escape')
+  await expect(page.getByRole('alert')).toBeVisible()
   await expect(form.getByLabel('Код дефекта')).toHaveValue('BD-01')
   await expect(form.getByRole('img', { name: 'Предпросмотр repair.png' })).toBeVisible()
   expect(requests).toBe(1)

@@ -1,6 +1,5 @@
 import { expect, test } from '@playwright/test'
 import { installOperational } from './fixtures'
-import { selectInterface } from '../support/interfaceMode'
 import { assertResponsiveContracts } from './routeFixtures'
 
 async function openInventoryParts(page: import('@playwright/test').Page) {
@@ -10,11 +9,9 @@ async function openInventoryParts(page: import('@playwright/test').Page) {
 }
 
 for (const role of ['mechanic', 'operator', 'admin', 'royal'] as const) {
-  test(`${role} inventory capabilities survive interface changes`, async ({ page }) => {
+  test(`${role} inventory capabilities remain available in Classic`, async ({ page }) => {
     await installOperational(page, { role })
     await page.goto('/inventory?park=7')
-    for (const mode of ['Новый А', 'Классический'] as const) {
-      await selectInterface(page, mode)
       await page.getByRole('searchbox', { name: 'Найти запчасть' }).fill('ABC-1')
       await expect(page.getByText('Полка A-1', { exact: true })).toBeVisible()
       if (role === 'operator') {
@@ -33,28 +30,24 @@ for (const role of ['mechanic', 'operator', 'admin', 'royal'] as const) {
         await expect(page.getByRole('status')).toContainText('Файл CSV скачан')
         await page.getByRole('tab', { name: 'Запчасти' }).click()
       }
-    }
   })
 }
 
-for (const width of [390, 1440]) test(`inventory A receipt draft, posting and geometry ${width}`, async ({ page }, testInfo) => {
+for (const width of [390, 1440]) test(`Classic inventory receipt draft, posting and geometry ${width}`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 900 })
   await installOperational(page)
   await page.goto('/inventory?park=7&view=receipts')
-  await selectInterface(page, 'Новый А')
   await page.getByRole('button', { name: 'Новая поставка' }).click()
   await page.getByRole('textbox', { name: 'Поставщик или завод' }).fill('Поставка со склада')
   await page.getByRole('searchbox', { name: 'Найти запчасть для поставки' }).fill('ABC-1')
   await page.getByRole('button', { name: 'Добавить ABC-1' }).click()
   await page.getByRole('textbox', { name: 'Количество ABC-1' }).fill('7')
-  await selectInterface(page, 'Классический')
   await expect(page.getByRole('textbox', { name: 'Количество ABC-1' })).toHaveValue('7')
-  await selectInterface(page, 'Новый А')
   await expect(page.getByRole('textbox', { name: 'Поставщик или завод' })).toHaveValue('Поставка со склада')
   await expect(page.locator('.inventory-document-editor')).toHaveCSS('border-radius', '12px')
   await assertResponsiveContracts(page, width)
   await page.evaluate(() => { (document.activeElement as HTMLElement)?.blur(); window.scrollTo(0, 0) })
-  await page.screenshot({ path: testInfo.outputPath('receipt-a.png'), fullPage: true })
+  await page.screenshot({ path: testInfo.outputPath('receipt-classic.png'), fullPage: true })
   await page.getByRole('button', { name: 'Провести поставку' }).click()
   await page.getByRole('button', { name: 'Подтвердить проведение' }).click()
   await expect(page.getByRole('status')).toContainText('Поставка проведена')
@@ -62,18 +55,15 @@ for (const width of [390, 1440]) test(`inventory A receipt draft, posting and ge
   await expect(page.getByText('7 шт.', { exact: true })).toBeVisible()
 })
 
-test('inventory A count draft survives switching and updates stock once', async ({ page }) => {
+test('Classic inventory count draft updates stock once', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 })
   await installOperational(page)
   await page.goto('/inventory?park=7&view=counts')
-  await selectInterface(page, 'Новый А')
   await page.getByRole('button', { name: 'Новая инвентаризация' }).click()
   await page.getByRole('textbox', { name: 'Название акта' }).fill('Пересчёт смены')
   await page.getByRole('button', { name: 'Создать акт' }).click()
   await page.getByRole('textbox', { name: 'Фактически ABC-1' }).fill('4')
-  await selectInterface(page, 'Классический')
   await expect(page.getByRole('textbox', { name: 'Фактически ABC-1' })).toHaveValue('4')
-  await selectInterface(page, 'Новый А')
   await page.getByRole('button', { name: 'Провести акт' }).click()
   await page.getByRole('button', { name: 'Подтвердить проведение' }).click()
   await expect(page.getByRole('status')).toContainText('Акт проведён')
@@ -81,7 +71,7 @@ test('inventory A count draft survives switching and updates stock once', async 
   await expect(page.getByText('4 шт.', { exact: true })).toBeVisible()
 })
 
-test('a failed receipt post is not duplicated by switching design', async ({ page }) => {
+test('a failed receipt post is not duplicated', async ({ page }) => {
   let release!: () => void
   const pending = new Promise<void>(resolve => { release = resolve })
   let posts = 0
@@ -101,7 +91,6 @@ test('a failed receipt post is not duplicated by switching design', async ({ pag
   await expect(confirm).toBeDisabled()
   release()
   await expect(page.getByRole('alertdialog')).toHaveCount(0)
-  await selectInterface(page, 'Новый А')
   await expect(page.getByText(/Поставка изменена другим пользователем/)).toBeVisible()
   expect(posts).toBe(1)
   await expect(page.getByText('Поставка проведена', { exact: true })).toHaveCount(0)

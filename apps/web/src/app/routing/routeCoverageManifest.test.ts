@@ -57,11 +57,19 @@ describe('executable route coverage manifest', () => {
       const source = readFileSync(resolve(repoRoot, item.ownerTest!.path), 'utf8')
       expect(item.ownerTest?.path, item.caseId).toBe('apps/web/e2e/operational/route-owner-contracts.spec.ts')
       expect(item.ownerTest?.title, item.caseId).toBe(`${item.caseId} [Классический]`)
-      expect(source, `${item.caseId}: dynamically collected exact node ids`).toContain('test(`${owner.caseId} [${mode}]`')
-      expect(source, `${item.caseId}: real owner behavior assertion`).toContain('exerciseOwnerBehavior(page, owner, mode')
+      expect(source, `${item.caseId}: dynamically collected exact node ids`).toContain('test(`${owner.caseId} [Классический]`')
+      expect(source, `${item.caseId}: real owner behavior assertion`).toContain('exerciseOwnerBehavior(page, owner, apiRequests')
       expect(source, `${item.caseId}: mounted owner assertion cannot be removed`).toContain('real route owner is mounted`).toBeVisible()')
       expect(source, `${item.caseId}: domain request assertion cannot be removed`).toContain('loaded owner issued a domain API request`).toBeTruthy()')
       expect(source, `${item.caseId}: async transition assertion cannot be removed`).toContain('transitioned owner exposes inspectable DOM`).toBeVisible()')
+    }
+  })
+
+  it('keeps owner-state drivers presentation-neutral', () => {
+    const legacyOverride = ['next', 'A'].join('')
+    for (const item of ROUTE_STATE_EVIDENCE.filter(item => item.ownerDriver)) {
+      expect(Object.keys(item.ownerDriver!), item.caseId).not.toContain(legacyOverride)
+      expect(Object.keys(item.ownerDriver!), item.caseId).not.toContain('classic')
     }
   })
 
