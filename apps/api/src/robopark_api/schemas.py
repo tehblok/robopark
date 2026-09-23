@@ -142,7 +142,7 @@ class TrackerAttachmentOut(BaseModel):
         ):
             raise ValueError("tracker_attachment_url_invalid")
         parsed = urlsplit(value)
-        if parsed.scheme in {"http", "https"} and parsed.netloc:
+        if parsed.scheme in {"http", "https"} and parsed.hostname:
             return value
         if not parsed.scheme and not parsed.netloc and value.startswith("/api/"):
             return value

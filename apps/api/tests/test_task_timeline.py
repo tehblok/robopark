@@ -50,6 +50,9 @@ def test_tracker_attachment_url_accepts_tracker_and_authenticated_local_urls(url
         "//evil.example/photo.png",
         "/tracker/issues/ROBOPARK-1/photo",
         "https:///missing-host",
+        "https://@/photo",
+        "https://user@/photo",
+        "https://:password@/photo",
     ],
 )
 def test_tracker_attachment_url_rejects_untrusted_schemes_and_paths(url):
