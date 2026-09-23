@@ -62,6 +62,19 @@ describe('resourceStore', () => {
     expect(resourceStore.get('work:7:access-a:list')).toBeUndefined()
   })
 
+  it('keeps settled data on route exit but makes the next owner revalidate it', async () => {
+    const key = 'work:7:access-a:list'
+    const loader = vi.fn(async () => ({ value: 'fresh' }))
+    resourceStore.set(key, { value: 'settled' }, false)
+
+    resourceStore.cancelPending(key)
+    const next = renderHook(() => useCachedResource(key, loader))
+
+    expect(next.result.current.data).toEqual({ value: 'settled' })
+    await waitFor(() => expect(loader).toHaveBeenCalledOnce())
+    await waitFor(() => expect(next.result.current.data).toEqual({ value: 'fresh' }))
+  })
+
   it('releases old ticket responses during a long browser session', () => {
     for (let index = 0; index < 129; index += 1) {
       resourceStore.set(`tracker:issue:${index}`, { index }, false)
@@ -272,6 +285,24 @@ describe('in-flight invalidation', () => {
 
     expect(resourceStore.get(key)).toBeUndefined()
     expect(window.localStorage.getItem(`robopark:res:${key}`)).toBeNull()
+  })
+
+  it('does not let an old principal repopulate cache after a scope switch', async () => {
+    const oldKey = 'work:7:principal-old:list'
+    const newKey = 'work:7:principal-new:list'
+    const oldRequest = deferred<TestPayload>()
+    resourceStore.activateScope('work', 'work:7:principal-old:')
+    const oldOwner = renderHook(() => useCachedResource(oldKey, () => oldRequest.promise))
+    await waitFor(() => expect(oldOwner.result.current.isLoading).toBe(true))
+
+    resourceStore.activateScope('work', 'work:7:principal-new:')
+    oldOwner.unmount()
+    const newOwner = renderHook(() => useCachedResource(newKey, async () => ({ value: 'new principal' })))
+    await waitFor(() => expect(newOwner.result.current.data).toEqual({ value: 'new principal' }))
+    await resolveAndFlush(oldRequest, { value: 'old principal' })
+
+    expect(resourceStore.get(oldKey)).toBeUndefined()
+    expect(resourceStore.get(newKey)).toEqual({ value: 'new principal' })
   })
 })
 

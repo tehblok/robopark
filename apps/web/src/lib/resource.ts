@@ -121,6 +121,7 @@ function invalidateAllPendingLoads(): void {
 
 class ResourceStore {
   private mem = new Map<string, StoredEntry>()
+  private stale = new Set<string>()
   private subs = new Map<string, Set<() => void>>()
   private refreshSubs = new Map<string, Set<() => void>>()
   private activeScopes = new Map<string, string>()
@@ -132,6 +133,7 @@ class ResourceStore {
       const oldest = this.mem.keys().next().value
       if (oldest === undefined) break
       this.mem.delete(oldest)
+      this.stale.delete(oldest)
     }
   }
 
@@ -143,6 +145,7 @@ class ResourceStore {
         return hit.data as T
       }
       this.mem.delete(key)
+      this.stale.delete(key)
       removeFromStorage(key)
     }
     if (!allowStorage) {
@@ -160,7 +163,7 @@ class ResourceStore {
 
   isStale(key: string, staleTimeMs: number, allowStorage = false): boolean {
     if (this.get(key, allowStorage) === undefined) return true
-    return Date.now() - (this.mem.get(key)?.updatedAt ?? 0) >= staleTimeMs
+    return this.stale.has(key) || Date.now() - (this.mem.get(key)?.updatedAt ?? 0) >= staleTimeMs
   }
 
   updatedAt(key: string, allowStorage = false): number | null {
@@ -171,6 +174,7 @@ class ResourceStore {
   set(key: string, data: unknown, persist: boolean, updatedAt = Date.now()): void {
     bumpResourceVersion(key)
     const entry: StoredEntry = { v: LS_VERSION, updatedAt, data }
+    this.stale.delete(key)
     this.remember(key, entry)
     if (persist) writeToStorage(key, entry)
     else removeFromStorage(key)
@@ -201,6 +205,7 @@ class ResourceStore {
   evict(key: string): void {
     bumpResourceVersion(key)
     this.mem.delete(key)
+    this.stale.delete(key)
     removeFromStorage(key)
     void currentDeviceResourceCache()?.delete(key)
     this.notify(key)
@@ -216,6 +221,7 @@ class ResourceStore {
       for (const k of Array.from(this.mem.keys())) {
         if (k.startsWith(keyOrPrefix)) {
           this.mem.delete(k)
+          this.stale.delete(k)
           notified.add(k)
         }
       }
@@ -227,6 +233,7 @@ class ResourceStore {
     } else {
       bumpResourceVersion(keyOrPrefix)
       this.mem.delete(keyOrPrefix)
+      this.stale.delete(keyOrPrefix)
       notified.add(keyOrPrefix)
       removeFromStorage(keyOrPrefix)
       void currentDeviceResourceCache()?.delete(keyOrPrefix)
@@ -237,6 +244,13 @@ class ResourceStore {
   /** Retire unfinished requests on route exit but keep settled in-memory data. */
   cancelPending(keyOrPrefix: string, { prefix = false }: { prefix?: boolean } = {}): void {
     invalidatePendingLoads(keyOrPrefix, prefix)
+    if (prefix) {
+      for (const key of this.mem.keys()) {
+        if (key.startsWith(keyOrPrefix)) this.stale.add(key)
+      }
+    } else if (this.mem.has(keyOrPrefix)) {
+      this.stale.add(keyOrPrefix)
+    }
   }
 
   /** Switching an authorization scope invalidates its previously cached data. */
@@ -262,6 +276,7 @@ class ResourceStore {
     this.activeScopes.clear()
     const keys = Array.from(this.subs.keys())
     this.mem.clear()
+    this.stale.clear()
     removeFromStorageByPrefix('')
     for (const key of keys) this.notify(key)
   }

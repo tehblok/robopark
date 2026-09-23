@@ -64,6 +64,22 @@ it('coalesces 200 simultaneous viewers into one fresh GET', async () => {
   expect(loader).toHaveBeenCalledTimes(1)
 })
 
+it('removes refresh subscribers and timers after repeated route exits', async () => {
+  const loader = vi.fn(async () => 'fresh')
+  resourceStore.set('route-cleanup', 'settled', false)
+  for (let index = 0; index < 3; index += 1) {
+    const view = renderHook(() => useCachedResource('route-cleanup', loader, { refreshOnMount: false }))
+    view.unmount()
+  }
+
+  resourceStore.revalidate('route-cleanup')
+  await act(async () => {})
+  await act(() => vi.advanceTimersByTimeAsync(60_000))
+
+  expect(loader).not.toHaveBeenCalled()
+  expect(vi.getTimerCount()).toBe(0)
+})
+
 it('does not let robot reconnect bypass a proxy Retry-After deadline', async () => {
   const task = vi.fn().mockRejectedValueOnce({ status: 429, retryAfterMs: 120_000 }).mockResolvedValue(undefined)
   const view = renderHook(({ online }) => useVisibilityPolling({ enabled: true, online, task }), { initialProps: { online: true } })

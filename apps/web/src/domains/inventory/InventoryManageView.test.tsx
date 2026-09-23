@@ -138,6 +138,8 @@ describe('InventoryManageView', () => {
   })
 
   it('creates a missing global item and initializes mechanic park stock', async () => {
+    const reload = vi.fn()
+    vi.stubGlobal('location', { ...window.location, reload })
     const apiClient = client()
     render(<InventoryManageView apiClient={apiClient} parkId={1} role="mechanic" />)
     await screen.findByRole('option', { name: 'Тяга · ABC-01' })
@@ -153,6 +155,7 @@ describe('InventoryManageView', () => {
 
     await waitFor(() => expect(apiClient.createInventoryCatalogPart).toHaveBeenCalledWith({ park_id: 1, component_id: 4, name: 'Новая тяга', article: 'NEW-01' }))
     expect(apiClient.updateInventoryStock).toHaveBeenCalledWith(1, 32, { minimum_quantity: '9007199254740993', location: 'Полка B-2', is_active: true })
+    expect(reload).not.toHaveBeenCalled()
   })
 
   it('shows the created component as selected in the sorted cache without reloading the catalog', async () => {

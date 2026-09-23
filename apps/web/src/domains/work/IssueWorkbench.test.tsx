@@ -821,7 +821,7 @@ describe('IssueWorkbench', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Передать на проверку' }).at(-1)!)
     fireEvent.change(screen.getByLabelText('Код дефекта'), { target: { value: 'BD-01' } })
     const photo = new File(['photo'], 'robot.jpg', { type: 'image/jpeg' })
-    fireEvent.change(screen.getByLabelText('Выбрать файл'), { target: { files: [photo] } })
+    fireEvent.change(screen.getByLabelText('Сделать фото или выбрать файл'), { target: { files: [photo] } })
     fireEvent.click(screen.getAllByRole('button', { name: 'Передать на проверку' }).at(-1)!)
 
     await waitFor(() => expect(enqueueMedia).toHaveBeenCalledOnce())
@@ -1159,6 +1159,18 @@ describe('IssueWorkbench', () => {
     first.unmount()
     renderWorkbench({ client })
     expect(screen.getByRole('heading', { name: issue.summary })).toBeInTheDocument()
+  })
+
+  it('keeps settled work data across route remount while revalidating once', async () => {
+    const client = apiClient()
+    const first = renderWorkbench({ client, selectedIssue: '' })
+    await screen.findByRole('button', { name: `Открыть задачу ${issue.key}: ${issue.summary}` })
+    first.unmount()
+
+    renderWorkbench({ client, selectedIssue: '' })
+
+    expect(screen.getByRole('button', { name: `Открыть задачу ${issue.key}: ${issue.summary}` })).toBeVisible()
+    await waitFor(() => expect(client.trackerIssues).toHaveBeenCalledTimes(2))
   })
 
   it.each(['pending', 'cached'] as const)('releases %s first-A detail across A unmount, B unmount, A', async (mode) => {
