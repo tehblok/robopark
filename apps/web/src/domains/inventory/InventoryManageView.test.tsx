@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, type InventoryCatalogSearchItem } from '../../api'
+import { ApiError, type InventoryCatalogSearchItem, type InventoryStockView } from '../../api'
 import { InventoryManageView } from './InventoryManageView'
 
 const inventoryCss = readFileSync('src/domains/inventory/inventory.css', 'utf8')
@@ -140,7 +140,8 @@ describe('InventoryManageView', () => {
   it('creates a missing global item and initializes mechanic park stock', async () => {
     const reload = vi.fn()
     vi.stubGlobal('location', { ...window.location, reload })
-    const apiClient = client()
+    const savedStock = deferred<InventoryStockView>()
+    const apiClient = client({ updateInventoryStock: vi.fn(() => savedStock.promise) })
     render(<InventoryManageView apiClient={apiClient} parkId={1} role="mechanic" />)
     await screen.findByRole('option', { name: 'Тяга · ABC-01' })
     await userEvent.click(screen.getByRole('button', { name: 'Добавить позицию' }))
@@ -155,6 +156,13 @@ describe('InventoryManageView', () => {
 
     await waitFor(() => expect(apiClient.createInventoryCatalogPart).toHaveBeenCalledWith({ park_id: 1, component_id: 4, name: 'Новая тяга', article: 'NEW-01' }))
     expect(apiClient.updateInventoryStock).toHaveBeenCalledWith(1, 32, { minimum_quantity: '9007199254740993', location: 'Полка B-2', is_active: true })
+    expect(reload).not.toHaveBeenCalled()
+    await act(async () => savedStock.resolve({
+      park_id: 1, catalog_part_id: 32, quantity: '0', minimum_quantity: '9007199254740993',
+      location: 'Полка B-2', is_active: true, version: '1',
+    }))
+    expect(await screen.findByRole('form', { name: 'Настройки остатка' })).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent('Позиция создана и добавлена в склад парка.')
     expect(reload).not.toHaveBeenCalled()
   })
 

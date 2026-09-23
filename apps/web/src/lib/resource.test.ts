@@ -6,6 +6,7 @@ import {
   coalesceLoader,
   inFlight,
   resetCoalescingForTests,
+  resourceDebugStateForTests,
   resourceStore,
   useCachedResource,
 } from './resource'
@@ -82,6 +83,19 @@ describe('resourceStore', () => {
 
     expect(resourceStore.get('tracker:issue:0')).toBeUndefined()
     expect(resourceStore.get('tracker:issue:128')).toEqual({ index: 128 })
+  })
+
+  it('releases generation metadata after more than 128 unique loads settle', async () => {
+    const views = Array.from({ length: 129 }, (_, index) => renderHook(() => useCachedResource(
+      `bounded-generation:${index}`,
+      async () => ({ value: String(index) }),
+      { refreshIntervalMs: 0 },
+    )))
+
+    await waitFor(() => expect(views.every(view => view.result.current.data !== undefined)).toBe(true))
+    views.forEach(view => view.unmount())
+
+    expect(resourceDebugStateForTests().loadGenerationEntries).toBe(0)
   })
 
   it('notifies mounted screens when an evicted key is invalidated', () => {

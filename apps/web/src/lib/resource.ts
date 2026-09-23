@@ -33,13 +33,19 @@ type StoredEntry = {
   data: unknown
 }
 
-type LoadGeneration = {
+type ResourceGeneration = {
   all: symbol
   key: symbol
 }
 
+type PendingLoadGenerationEntry = { owners: number }
+type PendingLoadGeneration = {
+  all: symbol
+  key: PendingLoadGenerationEntry
+}
+
 const inflightLoaders = new Map<string, Promise<unknown>>()
-const loadGenerations = new Map<string, symbol>()
+const loadGenerations = new Map<string, PendingLoadGenerationEntry>()
 let allLoadsGeneration = Symbol('all-resource-loads')
 const resourceVersions = new Map<string, symbol>()
 let allResourcesVersion = Symbol('all-resources')
@@ -52,7 +58,7 @@ function pruneResourceVersions(): void {
   }
 }
 
-function captureResourceVersion(key: string): LoadGeneration {
+function captureResourceVersion(key: string): ResourceGeneration {
   let version = resourceVersions.get(key)
   if (!version) version = Symbol(key)
   resourceVersions.delete(key)
@@ -67,30 +73,44 @@ function bumpResourceVersion(key: string): void {
   pruneResourceVersions()
 }
 
-function isResourceVersionCurrent(key: string, version: LoadGeneration): boolean {
+function isResourceVersionCurrent(key: string, version: ResourceGeneration): boolean {
   return version.all === allResourcesVersion && resourceVersions.get(key) === version.key
 }
 
-function currentKeyGeneration(key: string): symbol {
+function currentKeyGeneration(key: string): PendingLoadGenerationEntry {
   const current = loadGenerations.get(key)
   if (current) return current
-  const initial = Symbol(key)
+  const initial = { owners: 0 }
   loadGenerations.set(key, initial)
   return initial
 }
 
-function captureLoadGeneration(key: string): LoadGeneration {
+function captureLoadGeneration(key: string): PendingLoadGeneration {
+  const generation = currentKeyGeneration(key)
+  generation.owners += 1
   return {
     all: allLoadsGeneration,
-    key: currentKeyGeneration(key),
+    key: generation,
   }
 }
 
-function isLoadGenerationCurrent(key: string, generation: LoadGeneration): boolean {
+function isLoadGenerationCurrent(key: string, generation: PendingLoadGeneration): boolean {
   return (
     generation.all === allLoadsGeneration &&
-    generation.key === currentKeyGeneration(key)
+    generation.key === loadGenerations.get(key)
   )
+}
+
+function releaseLoadGeneration(key: string, generation: PendingLoadGeneration): void {
+  generation.key.owners = Math.max(0, generation.key.owners - 1)
+  if (
+    generation.all === allLoadsGeneration &&
+    generation.key === loadGenerations.get(key) &&
+    generation.key.owners === 0 &&
+    !inflightLoaders.has(key)
+  ) {
+    loadGenerations.delete(key)
+  }
 }
 
 function invalidatePendingLoads(
@@ -98,10 +118,8 @@ function invalidatePendingLoads(
   prefix: boolean,
 ): void {
   if (prefix) {
-    for (const key of loadGenerations.keys()) {
-      if (key.startsWith(keyOrPrefix)) {
-        loadGenerations.set(key, Symbol(key))
-      }
+    for (const key of Array.from(loadGenerations.keys())) {
+      if (key.startsWith(keyOrPrefix)) loadGenerations.delete(key)
     }
     for (const key of inflightLoaders.keys()) {
       if (key.startsWith(keyOrPrefix)) inflightLoaders.delete(key)
@@ -109,7 +127,7 @@ function invalidatePendingLoads(
     return
   }
 
-  loadGenerations.set(keyOrPrefix, Symbol(keyOrPrefix))
+  loadGenerations.delete(keyOrPrefix)
   inflightLoaders.delete(keyOrPrefix)
 }
 
@@ -134,6 +152,7 @@ class ResourceStore {
       if (oldest === undefined) break
       this.mem.delete(oldest)
       this.stale.delete(oldest)
+      invalidatePendingLoads(oldest, false)
     }
   }
 
@@ -425,6 +444,11 @@ export function resetCoalescingForTests(): void {
   inflightLoaders.clear()
 }
 
+/** Count-only test seam; never exposes cache keys or cached payloads. */
+export function resourceDebugStateForTests(): { loadGenerationEntries: number } {
+  return { loadGenerationEntries: loadGenerations.size }
+}
+
 export function useIsRevalidating(): boolean {
   return useSyncExternalStore(
     (fn) => inFlight.subscribe(fn),
@@ -565,6 +589,7 @@ export function useCachedResource<T>(
         setIsRevalidating(false)
       }
       if (showProgress) inFlight.end()
+      releaseLoadGeneration(key, loadGeneration)
     }
   }, [enabled, key, persist, trackProgress, refreshIntervalMs])
 
