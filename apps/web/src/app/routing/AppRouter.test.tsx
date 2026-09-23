@@ -39,7 +39,7 @@ describe('AppRouter', () => {
     expect(await screen.findByRole('heading', { name: 'Работа' })).toBeVisible()
   })
 
-  it('keeps the fresh shell resource across a real route and interface-mode transition', async () => {
+  it('keeps the fresh shell resource across a real route transition', async () => {
     const user = userEvent.setup()
     const badge = vi.spyOn(api, 'reportsBadge').mockResolvedValue({ count: 3 })
     vi.spyOn(api, 'robotRegistry').mockResolvedValue({
@@ -56,9 +56,7 @@ describe('AppRouter', () => {
     await screen.findByRole('heading', { name: 'Роботы' })
     expect(badge).toHaveBeenCalledTimes(1)
     await user.click(screen.getByRole('button', { name: 'Ещё' }))
-    await user.click(screen.getByRole('radio', { name: 'Новый А' }))
-    await waitFor(() => expect(document.documentElement).toHaveAttribute('data-interface', 'task-first'))
-    expect(localStorage.getItem('robopark:interface:v1:1')).toBe('task-first')
+    expect(screen.queryByRole('radiogroup', { name: 'Интерфейс' })).not.toBeInTheDocument()
 
     expect(badge).toHaveBeenCalledTimes(1)
   })

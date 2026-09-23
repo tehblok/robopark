@@ -55,7 +55,7 @@ function LocationProbe() {
   return <output aria-label="URL">{location.pathname}{location.search}</output>
 }
 
-function tree(user: User, apiClient: ReportsApiClient, url = '/reports', mode: 'classic' | 'task-first' = 'classic') {
+function tree(user: User, apiClient: ReportsApiClient, url = '/reports', mode: 'classic' = 'classic') {
   return (
     <PresentationModeContext.Provider value={mode}><MemoryRouter initialEntries={[url]}>
       <AuthContext.Provider value={{
@@ -151,23 +151,6 @@ it('offers a collapse control for the report list without changing its initial v
 
   expect(await screen.findByRole('button', { name: 'Свернуть: Мои репорты' })).toBeVisible()
   expect(await screen.findByText('Вы ещё не создавали репортов.', undefined, { timeout: 3_000 })).toBeVisible()
-})
-
-it.each([
-  ['/reports', 'reports', 'Мои репорты'],
-  ['/reports/new', 'reports-new', 'Данные репорта'],
-  ['/reports/9', 'report-detail', 'Детали репорта'],
-] as const)('keeps interface A report work and actions without a context column at %s', async (url, route, workflowText) => {
-  const item = report(9, 'Нужны подробности')
-  render(tree(userA, client({ reportsMine: vi.fn(async () => [item]), report: vi.fn(async () => item) }), url, 'task-first'))
-  const composition = await waitFor(() => document.querySelector(`[data-a-route="${route}"] .report-composition`))
-  expect(composition?.querySelector('[data-a-zone="report-context"]')).not.toBeInTheDocument()
-  expect(composition?.querySelector('[data-a-zone="report-workflow"]')).toHaveTextContent(workflowText)
-  expect(composition?.querySelector('[data-a-zone="report-actions"]')).toBeVisible()
-  expect(Array.from(composition?.children ?? []).map(node => node.getAttribute('data-a-zone'))).toEqual([
-    'report-workflow', 'report-actions',
-  ])
-  expect(composition?.querySelectorAll('[data-a-zone="report-workflow"]')).toHaveLength(1)
 })
 
 it('clears a draft synchronously when effective access changes at the same principal and park', async () => {

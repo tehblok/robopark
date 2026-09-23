@@ -652,35 +652,6 @@ it('renders a duplicate upstream task key only once', async () => {
   })).toHaveLength(1)
 })
 
-it('keeps the task route identity visible in A when workflow metadata is absent', async () => {
-  renderWorkbench({ presentationMode: 'task-first' })
-
-  const taskHeader = await waitFor(() => {
-    const header = document.querySelector<HTMLElement>('[data-task-zone="header"]')
-    expect(header).not.toBeNull()
-    return header!
-  })
-  expect(within(taskHeader).getByRole('heading', { name: `Задача ${issue.key}` })).toBeVisible()
-  expect(within(taskHeader).getByRole('heading', { name: issue.summary })).toBeVisible()
-  const detail = document.querySelector<HTMLElement>('.rp-work-detail-pane')!
-  expect(within(detail).getAllByText(issue.key, { exact: true })).toHaveLength(1)
-  expect(within(detail).getAllByRole('heading', { name: issue.summary })).toHaveLength(1)
-})
-
-it('keeps robot context out of A and repair steps out of chat', async () => {
-  const mechanic: User = { ...user, username: 'mech', role: 'mechanic' }
-  renderWorkbench({ presentationMode: 'task-first', currentUser: mechanic,
-    client: apiClient({ trackerIssue: vi.fn(async () => ({ ...queuedWorkflowIssue,
-      workflow: { ...queuedWorkflowIssue.workflow!, owner: { login: mechanic.username, display: mechanic.username } },
-    })) }) })
-
-  await screen.findByRole('heading', { name: issue.summary })
-  expect(screen.queryByText('Контекст задачи')).not.toBeInTheDocument()
-  expect(screen.getByRole('heading', { name: 'Проверить робота → Запчасти → Что было сделано' })).toBeVisible()
-  fireEvent.click(screen.getByRole('tab', { name: 'Чат' }))
-  expect(screen.queryByRole('heading', { name: 'Проверить робота → Запчасти → Что было сделано' })).not.toBeInTheDocument()
-})
-
 function Harness({ children }: { children: ReactNode }) {
   return <MemoryRouter>{children}</MemoryRouter>
 }
@@ -694,7 +665,6 @@ function renderWorkbench({
   onAuthorizationFailure = vi.fn(async () => undefined),
   strictMode = false,
   initialPath = '/',
-  presentationMode = 'classic',
   sync,
   syncEngine,
 }: {
@@ -706,13 +676,12 @@ function renderWorkbench({
   onAuthorizationFailure?: () => Promise<unknown>
   strictMode?: boolean
   initialPath?: string
-  presentationMode?: 'classic' | 'task-first'
   sync?: SyncContextValue
   syncEngine?: SyncEngineLike
 } = {}) {
   const modeStore = createInterfaceModeStore(() => ({
-    getItem: () => presentationMode,
-    setItem: () => undefined,
+    getItem: () => null,
+    removeItem: () => undefined,
   }))
   const onStateChange = vi.fn()
   const onOpenIssue = vi.fn()

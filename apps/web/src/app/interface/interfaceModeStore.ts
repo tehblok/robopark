@@ -1,4 +1,4 @@
-export type InterfaceMode = 'classic' | 'task-first'
+export type InterfaceMode = 'classic'
 export type InterfaceModeSnapshot = {
   accountId: number | null
   mode: InterfaceMode
@@ -12,7 +12,7 @@ export interface InterfaceModeStore {
   requestMode(mode: InterfaceMode): void
   beginMutation(): () => void
 }
-export type InterfaceStorage = Pick<Storage, 'getItem' | 'setItem'>
+export type InterfaceStorage = Pick<Storage, 'getItem' | 'removeItem'>
 
 export function createInterfaceModeStore(storage: () => InterfaceStorage): InterfaceModeStore {
   let accountId: number | null = null
@@ -25,12 +25,6 @@ export function createInterfaceModeStore(storage: () => InterfaceStorage): Inter
     snapshot = next
     for (const listener of listeners) listener()
   }
-  const apply = (mode: InterfaceMode) => {
-    if (accountId !== null) {
-      try { storage().setItem(`robopark:interface:v1:${accountId}`, mode) } catch { /* Memory-only when storage is unavailable. */ }
-    }
-    publish({ ...snapshot, accountId, mode, pendingMode: null })
-  }
   return {
     getSnapshot: () => snapshot,
     subscribe: listener => { listeners.add(listener); return () => { listeners.delete(listener) } },
@@ -38,19 +32,15 @@ export function createInterfaceModeStore(storage: () => InterfaceStorage): Inter
       if (nextAccount === accountId) return
       accountId = nextAccount
       generation++
-      let mode: InterfaceMode = 'classic'
       if (accountId !== null) {
         try {
-          if (storage().getItem(`robopark:interface:v1:${accountId}`) === 'task-first') mode = 'task-first'
+          const key = `robopark:interface:v1:${accountId}`
+          if (storage().getItem(key) !== null) storage().removeItem(key)
         } catch { /* No preference may block login. */ }
       }
-      publish({ accountId, mode, pendingMode: null, mutationCount: 0 })
+      publish({ accountId, mode: 'classic', pendingMode: null, mutationCount: 0 })
     },
-    requestMode(mode) {
-      if (snapshot.mutationCount > 0) {
-        publish({ ...snapshot, pendingMode: mode === snapshot.mode ? null : mode })
-      } else apply(mode)
-    },
+    requestMode() {},
     beginMutation() {
       const startedGeneration = generation
       let released = false
@@ -59,9 +49,7 @@ export function createInterfaceModeStore(storage: () => InterfaceStorage): Inter
         if (released || startedGeneration !== generation) return
         released = true
         const mutationCount = snapshot.mutationCount - 1
-        const pending = snapshot.pendingMode
         publish({ ...snapshot, mutationCount })
-        if (mutationCount === 0 && pending) apply(pending)
       }
     },
   }

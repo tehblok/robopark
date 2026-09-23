@@ -21,11 +21,11 @@ const detail: CampaignDetail = {
   ],
 }
 
-function renderPage(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>, currentUser: User = user, mode: 'classic' | 'task-first' = 'classic') {
+function renderPage(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>, currentUser: User = user, mode: 'classic' = 'classic') {
   return render(<PresentationModeContext.Provider value={mode}><MemoryRouter initialEntries={['/campaigns/4']}><AuthContext.Provider value={{ user: currentUser, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={apiClient} />} path="/campaigns/:campaignId" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter></PresentationModeContext.Provider>)
 }
 
-function renderList(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>, currentUser: User = user, mode: 'classic' | 'task-first' = 'classic') {
+function renderList(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>, currentUser: User = user, mode: 'classic' = 'classic') {
   return render(<PresentationModeContext.Provider value={mode}><MemoryRouter initialEntries={['/campaigns']}><AuthContext.Provider value={{ user: currentUser, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={apiClient} />} path="/campaigns" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter></PresentationModeContext.Provider>)
 }
 
@@ -45,34 +45,34 @@ function useViewport(matches: boolean) {
 beforeEach(() => useViewport(false))
 afterEach(() => vi.unstubAllGlobals())
 
-it.each(['classic', 'task-first'] as const)('renders the campaign loading contract in %s mode', mode => {
+it.each(['classic'] as const)('renders the campaign loading contract in %s mode', mode => {
   renderList({ ...api, campaigns: vi.fn(() => new Promise<never>(() => {})) }, user, mode)
   expect(screen.getByText('Загружаем кампании')).toBeVisible()
 })
 
-it.each(['classic', 'task-first'] as const)('renders the campaign empty contract in %s mode', async mode => {
+it.each(['classic'] as const)('renders the campaign empty contract in %s mode', async mode => {
   renderList({ ...api, campaigns: vi.fn(async () => []) }, user, mode)
   expect(await screen.findByRole('heading', { name: 'Кампаний нет' })).toBeVisible()
 })
 
-it.each(['classic', 'task-first'] as const)('renders a retryable campaign list error in %s mode', async mode => {
+it.each(['classic'] as const)('renders a retryable campaign list error in %s mode', async mode => {
   renderList({ ...api, campaigns: vi.fn(async () => { throw new ApiError(503, 'offline') }) }, user, mode)
   expect(await screen.findByRole('alert')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Повторить' })).toBeVisible()
 })
 
-it.each(['classic', 'task-first'] as const)('fails closed for a denied campaign list in %s mode', async mode => {
+it.each(['classic'] as const)('fails closed for a denied campaign list in %s mode', async mode => {
   renderList({ ...api, campaigns: vi.fn(async () => { throw new ApiError(403, 'forbidden') }) }, user, mode)
   expect(await screen.findByRole('alert')).toBeVisible()
   expect(screen.queryByText('СК Альфа')).not.toBeInTheDocument()
 })
 
-it.each(['classic', 'task-first'] as const)('renders the manager campaign create form in %s mode', async mode => {
+it.each(['classic'] as const)('renders the manager campaign create form in %s mode', async mode => {
   renderList({ ...api, campaigns: vi.fn(async () => []) }, { ...user, role: 'royal' }, mode)
   expect(await screen.findByRole('button', { name: 'Новая кампания' })).toBeVisible()
 })
 
-it.each(['classic', 'task-first'] as const)('removes protected campaign data when a refresh loses access in %s mode', async mode => {
+it.each(['classic'] as const)('removes protected campaign data when a refresh loses access in %s mode', async mode => {
   const campaign = vi.fn().mockResolvedValueOnce(detail).mockRejectedValue(new ApiError(403, 'forbidden'))
   renderPage({ ...api, campaign, refreshCampaign: vi.fn(async () => ({ snapshot_state: 'ready', snapshot_at: null })) }, user, mode)
   await screen.findByText('A101')
@@ -139,7 +139,7 @@ it('explains that a locally completed ticket is still waiting for Tracker', asyn
   expect(screen.getByRole('button', { name: 'Обновить из Tracker' })).toBeVisible()
 })
 
-it.each(['classic', 'task-first'] as const)('keeps the previous campaign visible when a refresh fails in %s mode', async mode => {
+it.each(['classic'] as const)('keeps the previous campaign visible when a refresh fails in %s mode', async mode => {
   const campaign = vi.fn().mockResolvedValueOnce(detail).mockRejectedValueOnce(new Error('Tracker offline'))
   renderPage({ ...api, campaign, refreshCampaign: vi.fn(async () => ({ snapshot_state: 'pending', snapshot_at: null })) }, user, mode)
   expect(await screen.findByRole('heading', { name: 'СК Альфа' })).toBeVisible()
@@ -217,27 +217,6 @@ it('serializes a failed ticket completion and exposes a retryable error', async 
   reject(new ApiError(503, 'offline', 'campaign-request'))
   expect(await within(openPanel).findByRole('alert')).toBeVisible()
   expect(within(openPanel).getByRole('button', { name: 'Отправить оператору' })).toBeEnabled()
-})
-
-it('keeps campaign metrics in the main flow without a context column', async () => {
-  renderPage({ ...api, campaign: vi.fn(async () => detail) }, user, 'task-first')
-  await screen.findByRole('heading', { name: 'СК Альфа' })
-  expect(document.querySelector('[data-a-route="campaign-detail"]')).not.toBeNull()
-  expect(document.querySelector('[data-a-zone="campaign-context"]')).toBeNull()
-  expect(document.querySelector('[data-a-zone="campaign-overview"]')).toHaveTextContent('Метрики')
-  expect(document.querySelector('[data-a-zone="campaign-workflow"]')).not.toBeNull()
-})
-
-it('composes the task-first campaign list as workflow and manager actions', async () => {
-  renderList({ ...api, campaigns: vi.fn(async () => [detail]) }, { ...user, role: 'royal' }, 'task-first')
-  await screen.findByRole('heading', { name: 'СК Альфа' })
-  const composition = document.querySelector<HTMLElement>('[data-a-route="campaigns"]')!
-  expect(composition.querySelector('[data-a-zone="campaign-context"]')).toBeNull()
-  expect(composition.querySelector('[data-a-zone="campaign-workflow"]')).toHaveTextContent('СК Альфа')
-  expect(composition.querySelector('[data-a-zone="campaign-actions"]')).toHaveTextContent('Новая кампания')
-  expect(Array.from(composition.children).map(node => node.getAttribute('data-a-zone'))).toEqual([
-    'campaign-workflow', 'campaign-actions',
-  ])
 })
 
 it('keeps only one ticket completion form open on a phone', async () => {

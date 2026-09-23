@@ -1,7 +1,6 @@
 import { useId, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { ru } from '../i18n/ru'
-import { InterfaceChoice } from '../app/interface/InterfaceChoice'
 
 type PageShellProps = {
   title: string
@@ -41,7 +40,6 @@ export function PageShell({
             {subtitle && <p className="page-subtitle">{subtitle}</p>}
           </div>
           <div className="page-header-actions">
-            {standalone ? <details className="rp-interface-menu"><summary>Вид интерфейса</summary><InterfaceChoice /></details> : null}
             {actions}
             {onLogout && (
               <button className="btn btn-secondary" onClick={onLogout} type="button">

@@ -23,7 +23,6 @@ import { buildOverviewModel } from './overviewModel'
 import { CampaignOverviewSection } from '../campaigns/CampaignsPage'
 import { limitOperationsRequest } from './operationsRequestLimit'
 import './overview.css'
-import { OverviewQuickActions } from './OverviewQuickActions'
 
 const retainable = new Set<DomainError['kind']>(['offline', 'timeout', 'server'])
 
@@ -158,7 +157,6 @@ function OverviewSessionPage({ apiClient, user }: { apiClient: OperationsApiClie
 
 
   return <PageLayout description={allParks ? "Что происходит сейчас во всех доступных парках. Задачи, SLA и история показаны отдельно по каждому парку." : "Что происходит сейчас и где требуется вмешательство в выбранном парке."} title="Смена / Обзор">
-    {!contextFailure ? <OverviewQuickActions parkId={selectedPark?.id} user={user} /> : null}
     {contextFailure ? <ErrorState description={contextFailure.description} requestId={contextFailure.requestId} title={contextFailure.title} />
       : loading ? <LoadingState label="Загружаем область парка" variant="page" />
         : !canReadOperations(user, 'overview') ? <ErrorState description="Для этого раздела нужны доступ к Tracker и разрешение на обзор смены." title="Нет доступа" />

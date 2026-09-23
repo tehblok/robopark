@@ -76,7 +76,7 @@ describe('IssueActionsPanel', () => {
     expect(screen.queryByRole('button', { name: 'Статус задачи' })).not.toBeInTheDocument()
   })
 
-  it('projects the task-first primary action through the same locked error-handling runner', async () => {
+  it('projects the primary action through the same locked error-handling runner', async () => {
     const host = document.createElement('footer')
     document.body.append(host)
     let release: (() => void) | undefined

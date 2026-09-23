@@ -2,7 +2,6 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
 import { expect, it } from 'vitest'
 import { DomainPresentation } from './DomainPresentation'
-import { PresentationModeContext } from './presentationModeContext'
 
 function Draft() {
   const [open, setOpen] = useState(false)
@@ -13,36 +12,16 @@ function Draft() {
   </>
 }
 
-it('keeps the owned subtree mounted while presentation attributes change', () => {
-  const view = render(
-    <PresentationModeContext.Provider value="classic">
-      <DomainPresentation route="admin-roles" context={<p>Контекст</p>}><Draft /></DomainPresentation>
-    </PresentationModeContext.Provider>,
-  )
+it('keeps the owned subtree mounted across classic rerenders', () => {
+  const view = render(<DomainPresentation route="admin-roles" context={<p>Контекст</p>}><Draft /></DomainPresentation>)
   const input = screen.getByRole('textbox', { name: 'Название роли' })
   fireEvent.change(input, { target: { value: 'Несохранённая роль' } })
   fireEvent.click(screen.getByRole('button', { name: 'Открыть диалог' }))
 
-  view.rerender(
-    <PresentationModeContext.Provider value="task-first">
-      <DomainPresentation route="admin-roles" context={<p>Контекст</p>}><Draft /></DomainPresentation>
-    </PresentationModeContext.Provider>,
-  )
+  view.rerender(<DomainPresentation route="admin-roles" context={<p>Контекст</p>}><Draft /></DomainPresentation>)
 
   expect(screen.getByRole('textbox', { name: 'Название роли' })).toBe(input)
   expect(input).toHaveValue('Несохранённая роль')
   expect(screen.getByRole('dialog')).toHaveTextContent('Несохранённый пользователь')
-  expect(input.closest('[data-a-zone="workflow"]')).not.toBeNull()
-})
-
-it('places context above the workflow without a separate column in interface A', () => {
-  const view = render(
-    <PresentationModeContext.Provider value="task-first">
-      <DomainPresentation route="admin-roles" context={<nav aria-label="Разделы управления">Навигация</nav>}><Draft /></DomainPresentation>
-    </PresentationModeContext.Provider>,
-  )
-  const composition = view.container.querySelector('[data-a-route="admin-roles"]')!
-  expect(composition.querySelector('[data-a-zone="context"]')).not.toBeInTheDocument()
-  expect(Array.from(composition.children).map(node => node.getAttribute('data-a-zone'))).toEqual(['intro', 'workflow'])
-  expect(composition.querySelector('[data-a-zone="intro"]')).toContainElement(screen.getByRole('navigation', { name: 'Разделы управления' }))
+  expect(screen.getByText('Контекст').closest('aside')).not.toBeNull()
 })

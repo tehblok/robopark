@@ -3,64 +3,54 @@ import { createInterfaceModeStore, trackInterfaceMutation, type InterfaceStorage
 
 function setup() {
   const values = new Map<string, string>()
-  const storage: InterfaceStorage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value) } }
+  const storage: InterfaceStorage = {
+    getItem: key => values.get(key) ?? null,
+    removeItem: key => { values.delete(key) },
+  }
   return { values, store: createInterfaceModeStore(() => storage) }
 }
 
-describe('interface selection lifecycle', () => {
-  it('defaults to classic and persists only the authenticated account choice', () => {
+describe('classic interface lifecycle', () => {
+  it('removes a stored legacy preference and resolves the account to classic', () => {
     const { store, values } = setup()
+    values.set('robopark:interface:v1:810', ['task', 'first'].join('-'))
+
+    store.setAccount(810)
+
     expect(store.getSnapshot().mode).toBe('classic')
-    store.requestMode('task-first')
+    expect(values.has('robopark:interface:v1:810')).toBe(false)
+  })
+
+  it('does not persist a mode preference for authenticated accounts', () => {
+    const { store, values } = setup()
+    store.setAccount(101)
+    store.requestMode('classic')
     expect(values.size).toBe(0)
-    store.setAccount(101)
     expect(store.getSnapshot().mode).toBe('classic')
-    store.requestMode('task-first')
-    expect(values.get('robopark:interface:v1:101')).toBe('task-first')
-    store.setAccount(202)
-    expect(store.getSnapshot().mode).toBe('classic')
-    store.setAccount(101)
-    expect(store.getSnapshot().mode).toBe('task-first')
   })
 
   it('survives unavailable browser storage', () => {
     const store = createInterfaceModeStore(() => { throw new Error('denied') })
     store.setAccount(1)
-    store.requestMode('task-first')
-    expect(store.getSnapshot().mode).toBe('task-first')
-    store.setAccount(1)
-    expect(store.getSnapshot().mode).toBe('task-first')
+    expect(store.getSnapshot().mode).toBe('classic')
   })
 
-  it('waits for all writes and ignores duplicate release', () => {
+  it('tracks all writes and ignores duplicate release', () => {
     const { store } = setup()
     store.setAccount(101)
     const first = store.beginMutation()
     const second = store.beginMutation()
-    store.requestMode('task-first')
-    expect(store.getSnapshot()).toEqual({ accountId: 101, mode: 'classic', pendingMode: 'task-first', mutationCount: 2 })
+    expect(store.getSnapshot().mutationCount).toBe(2)
     first(); first()
-    expect(store.getSnapshot().mode).toBe('classic')
     expect(store.getSnapshot().mutationCount).toBe(1)
     second()
-    expect(store.getSnapshot()).toEqual({ accountId: 101, mode: 'task-first', pendingMode: null, mutationCount: 0 })
+    expect(store.getSnapshot().mutationCount).toBe(0)
   })
 
-  it('cancels a deferred choice when the current mode is selected again', () => {
-    const { store } = setup()
-    const release = store.beginMutation()
-    store.requestMode('task-first')
-    store.requestMode('classic')
-    release()
-    expect(store.getSnapshot().mode).toBe('classic')
-    expect(store.getSnapshot().pendingMode).toBeNull()
-  })
-
-  it('does not release another account writes or apply the old pending choice', () => {
+  it('does not release another account writes', () => {
     const { store } = setup()
     store.setAccount(1)
     const oldRelease = store.beginMutation()
-    store.requestMode('task-first')
     store.setAccount(2)
     const newRelease = store.beginMutation()
     oldRelease()
@@ -69,39 +59,22 @@ describe('interface selection lifecycle', () => {
     expect(store.getSnapshot().mutationCount).toBe(0)
   })
 
-  it('notifies only changes and unsubscribes', () => {
-    const { store } = setup()
-    const before = store.getSnapshot()
-    let updates = 0
-    const unsubscribe = store.subscribe(() => updates++)
-    store.requestMode('classic')
-    expect(store.getSnapshot()).toBe(before)
-    expect(updates).toBe(0)
-    store.requestMode('task-first')
-    expect(updates).toBe(1)
-    unsubscribe()
-    store.requestMode('classic')
-    expect(updates).toBe(1)
-  })
-
   it('keeps a write pending until consumption completes and releases failures', async () => {
     const { store } = setup()
     let finish!: () => void
     const operation = trackInterfaceMutation(store, 'post', () => new Promise<void>(resolve => { finish = resolve }))
-    store.requestMode('task-first')
-    expect(store.getSnapshot().mode).toBe('classic')
+    expect(store.getSnapshot().mutationCount).toBe(1)
     finish()
     await operation
-    expect(store.getSnapshot().mode).toBe('task-first')
+    expect(store.getSnapshot().mutationCount).toBe(0)
     await expect(trackInterfaceMutation(store, 'DELETE', async () => { throw new Error('offline') })).rejects.toThrow('offline')
     expect(store.getSnapshot().mutationCount).toBe(0)
   })
 
-  it.each(['GET', 'HEAD', 'OPTIONS'])('does not defer a choice for %s reads', async method => {
+  it.each(['GET', 'HEAD', 'OPTIONS'])('does not track %s reads', async method => {
     const { store } = setup()
     await trackInterfaceMutation(store, method, async () => {
-      store.requestMode('task-first')
-      expect(store.getSnapshot().mode).toBe('task-first')
+      expect(store.getSnapshot().mutationCount).toBe(0)
     })
   })
 })

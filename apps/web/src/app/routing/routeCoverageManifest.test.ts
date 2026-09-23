@@ -11,18 +11,9 @@ describe('executable route coverage manifest', () => {
     expect(new Set(ROUTE_COVERAGE_MANIFEST.map(item => item.routeId)).size).toBe(ROUTE_MANIFEST.length)
   })
 
-  it('does not allow an unreviewed interface A fallback', () => {
-    const incomplete = ROUTE_COVERAGE_MANIFEST
-      .filter(item => ROUTE_MANIFEST.find(route => route.id === item.routeId)?.surface === 'shell')
-      .filter(item => !item.interfaceAReviewed)
-      .map(item => item.routeId)
-    expect(incomplete).toEqual([])
-  })
-
   it('names executable evidence for every nested state', () => {
     for (const route of ROUTE_COVERAGE_MANIFEST) {
-      const shell = ROUTE_MANIFEST.find(item => item.id === route.routeId)?.surface === 'shell'
-      if (shell) expect(route.classicComponent, route.routeId).not.toBe(route.interfaceAComponent)
+      expect(route.classicComponent, route.routeId).toMatch(/\S/)
       for (const state of route.states) expect(state.testId, `${route.routeId}:${state.id}`).toMatch(/\S/)
     }
   })

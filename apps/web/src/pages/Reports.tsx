@@ -21,7 +21,6 @@ import { ru } from '../i18n/ru'
 import { useCachedResource, resourceStore, RESOURCE_REFRESH_MS } from '../lib/resource'
 import { useParkContext } from '../park-context'
 import { refreshReportsBadge } from '../reports-badge'
-import { usePresentationMode } from '../app/interface/presentationModeContext'
 
 type ReportsPane = 'mine' | 'inbox'
 type ReportsStatus = 'all' | 'open' | 'returned' | 'done'
@@ -60,7 +59,6 @@ function ReportsOwner({
   restoreDraft: boolean
   user: User
 }) {
-  const taskFirst = usePresentationMode() === 'task-first'
   const location = useLocation()
   const active = useRef(true)
   const navigation = useRef({ identity, key: location.key })
@@ -197,12 +195,12 @@ function ReportsOwner({
 
   if (createRoute) {
     return (
-      <div className="dashboard-page rp-reports animate-in" data-a-route={taskFirst ? 'reports-new' : undefined}>
+      <div className="dashboard-page rp-reports animate-in">
         <div className="dashboard-toolbar">
           <h1 className="dashboard-title">Создать репорт</h1>
         </div>
-        <div className={taskFirst ? 'report-composition report-composition--task-first' : 'report-composition'}>
-        <section data-a-zone={taskFirst ? 'report-workflow' : undefined}>{!createEnabled ? (
+        <div className="report-composition">
+        <section>{!createEnabled ? (
           <EmptyBlock hint="Для этой роли создание репортов отключено." icon="✉" title="Нет доступа" />
         ) : parkId == null ? (
           <EmptyBlock
@@ -211,7 +209,7 @@ function ReportsOwner({
             title="Парк не назначен"
           />
         ) : (
-          <div data-a-zone={taskFirst ? 'report-compose' : undefined}><Panel
+          <div><Panel
             collapsible
             hint={`Парк: ${selectedPark?.name ?? parkId}. Репорт уходит оператору парка.`}
             storageKey="reports-create"
@@ -227,19 +225,19 @@ function ReportsOwner({
             />
           </Panel></div>
         )}</section>
-        <div data-a-zone={taskFirst ? 'report-actions' : undefined}><Link className="btn btn-secondary" to={{ pathname: '/reports', search: currentSearch }}>К репортам</Link></div>
+        <div><Link className="btn btn-secondary" to={{ pathname: '/reports', search: currentSearch }}>К репортам</Link></div>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="dashboard-page rp-reports animate-in" data-a-route={taskFirst ? (detailRoute ? 'report-detail' : 'reports') : undefined}>
+    <div className="dashboard-page rp-reports animate-in">
       <div className="dashboard-toolbar">
         <h1 className="dashboard-title" id="reports-title">{ru.nav.reports}</h1>
       </div>
-      <div className={taskFirst ? 'report-composition report-composition--task-first' : 'report-composition'}>
-      <section data-a-zone={taskFirst ? 'report-workflow' : undefined}><MasterDetail detailOpen={detailRoute} onBack={closeDetail} list={<div data-a-zone={taskFirst ? 'report-list' : undefined}>
+      <div className="report-composition">
+      <section><MasterDetail detailOpen={detailRoute} onBack={closeDetail} list={<div>
       {createEnabled && inboxEnabled && (
         <Tabs
           ariaLabel="Режим репортов"
@@ -350,7 +348,7 @@ function ReportsOwner({
           )}
         </Panel></div>
       } /></section>
-      <div data-a-zone={taskFirst ? 'report-actions' : undefined}>{createEnabled ? <Link className="btn" to={{ pathname: '/reports/new', search: currentSearch }}>Создать репорт</Link> : <span>Действия недоступны</span>}</div>
+      <div>{createEnabled ? <Link className="btn" to={{ pathname: '/reports/new', search: currentSearch }}>Создать репорт</Link> : <span>Действия недоступны</span>}</div>
       </div>
     </div>
   )

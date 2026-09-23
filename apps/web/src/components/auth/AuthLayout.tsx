@@ -2,7 +2,6 @@ import type { PropsWithChildren } from 'react'
 import robotImage from '../../assets/robots/isometric.webp'
 import { useTheme, type ThemePreference } from '../../design-system/theme/ThemeProvider'
 import './auth.css'
-import { InterfaceChoice } from '../../app/interface/InterfaceChoice'
 
 const THEME_OPTIONS: readonly { value: ThemePreference; label: string; shortLabel: string }[] = [
   { value: 'system', label: 'Системная тема', shortLabel: 'Авто' },
@@ -35,7 +34,6 @@ export function AuthLayout({ children }: PropsWithChildren) {
   return (
     <main className="rp-auth">
       <header className="rp-auth__topbar">
-        <details className="rp-interface-menu"><summary>Вид интерфейса</summary><InterfaceChoice /></details>
         <AuthThemePicker />
       </header>
 

@@ -17,8 +17,6 @@ import { ROBOT_POLL_MS } from './polling'
 import { formatRobotMode } from './robotDetailModel'
 import { useVisibilityPolling } from './useVisibilityPolling'
 import './robot-check.css'
-import { TaskFirstRobotLayout } from './TaskFirstRobotLayout'
-import { useInterfaceMode } from '../../app/interface/InterfaceModeProvider'
 
 export type RobotCheckApiClient = Pick<typeof api, 'emergencySnapshot' | 'emergencySection'>
 export type RobotCheckWorkspaceProps = {
@@ -34,7 +32,6 @@ export function CheckError({ failure, user, onRetry }: { failure: DomainError; u
     {failure.kind === 'configuration' && canAccessRoute(user, 'admin-robot-check') ? <Link to="/admin/emergency/config">Открыть настройки</Link> : null}</>
 }
 export function RobotCheckController({ vin, user, sections, activeTab, onTabChange, apiClient = api, onAuthorizationFailure, onSnapshot, renderSummary, renderTasks }: RobotCheckWorkspaceProps) {
-  const { mode } = useInterfaceMode()
   const online = useOnlineStatus()
   const [snapshot, setSnapshot] = useState<EmergencySnapshot | null>(null)
   useEffect(() => { onSnapshot?.(snapshot) }, [onSnapshot, snapshot])
@@ -181,7 +178,10 @@ export function RobotCheckController({ vin, user, sections, activeTab, onTabChan
       </section>
     </div>
   return <div className="rp-check-workspace" data-unified={Boolean(renderSummary)}>
-    <TaskFirstRobotLayout identity={identity} detail={detail} taskFirst={mode === 'task-first'} />
+    <div className="rp-check-layout classic-robot-layout" data-testid="robot-check-layout">
+      <div className="rp-check-layout__overview" data-robot-overview>{identity}</div>
+      <div className="rp-check-layout__details" data-robot-details>{detail}</div>
+    </div>
   </div>
 }
 export function RobotCheckWorkspace(props: RobotCheckWorkspaceProps) {

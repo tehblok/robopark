@@ -28,10 +28,7 @@ const shellCss = [
 ].join('\n')
 const sharedShellCss = existsSync('src/app/interface/ShellPrimitives.css')
   ? readFileSync('src/app/interface/ShellPrimitives.css', 'utf8') : ''
-const modeShellCss = [
-  readFileSync('src/app/interface/ClassicShell.css', 'utf8'),
-  readFileSync('src/app/interface/TaskFirstShell.css', 'utf8'),
-]
+const modeShellCss = [readFileSync('src/app/interface/ClassicShell.css', 'utf8')]
 const overviewCss = readFileSync('src/domains/shift/overview.css', 'utf8')
 const workCss = readFileSync('src/domains/work/work.css', 'utf8')
 

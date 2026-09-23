@@ -44,10 +44,7 @@ import {
   type DomainError,
 } from '../../shared/api/classifyApiError'
 import { resourceStore, useCachedResource } from '../../lib/resource'
-import { TabPanel } from '../../design-system/navigation/Tabs'
-import { useInterfaceMode } from '../../app/interface/InterfaceModeProvider'
-import { TaskFirstWorkbench, type WorkSection } from './TaskFirstWorkbench'
-import { TaskFirstTaskLayout } from './TaskFirstTaskLayout'
+import { TabPanel, Tabs } from '../../design-system/navigation/Tabs'
 import { WorkRobotCheck } from './WorkRobotCheck'
 import { TaskPartsPanel } from '../inventory/TaskPartsPanel'
 import { WorkFilters } from './WorkFilters'
@@ -170,16 +167,34 @@ function TaskIssueSummary({ issue, now, onOpenRobotCheck, robotReadOnly }: { iss
   </article>
 }
 
-function TaskRepairSequence({ canCheck, onCheck, onParts }: { canCheck: boolean; onCheck(): void; onParts(): void }) {
-  const reveal = (id: string) => document.getElementById(id)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
-  return <section aria-label="Последовательность ремонта" className="a-task-sequence">
-    <h3>Проверить робота → Запчасти → Что было сделано</h3>
-    <ol>
-      <li><strong>Проверить робота</strong>{canCheck ? <Button onClick={onCheck} variant="secondary">Открыть проверку</Button> : null}</li>
-      <li><strong>Запчасти</strong><Button onClick={onParts} variant="secondary">Списать или заказать</Button></li>
-      <li><strong>Что было сделано</strong><Button onClick={() => reveal('comment')} variant="secondary">Добавить комментарий</Button></li>
-    </ol>
-  </section>
+type WorkSection = 'task' | 'open' | 'closed' | 'check'
+
+function WorkbenchTabs({ activeTab, canCheck, onChange }: {
+  activeTab: WorkSection; canCheck: boolean; onChange(tab: WorkSection): void
+}) {
+  const workflowItems = [
+    { id: 'task', label: 'Задача' },
+    ...(canCheck ? [{ id: 'check', label: 'Проверка робота' }] : []),
+  ]
+  const relatedItems = [
+    { id: 'open', label: 'Открытые задачи' },
+    { id: 'closed', label: 'Закрытые задачи' },
+  ]
+  return <div className="rp-work-sections">
+    <Tabs ariaLabel="Разделы задачи" value={activeTab} items={workflowItems}
+      onChange={tab => onChange(tab as WorkSection)} panelIdFor={tab => `work-panel-${tab}`} />
+    <div>
+      <Tabs ariaLabel="Другие задачи робота" value={activeTab} items={relatedItems}
+        onChange={tab => onChange(tab as WorkSection)} panelIdFor={tab => `work-panel-${tab}`} />
+    </div>
+  </div>
+}
+
+function ClassicTaskLayout({ header, children }: { header?: ReactNode; children: ReactNode }) {
+  return <div className="classic-task-layout">
+    <div className="classic-task-header" data-task-header>{header}</div>
+    <section className="classic-task-workflow" data-task-body>{children}</section>
+  </div>
 }
 
 function taskWorkflowStatus(value: string | undefined): { label: string; tone: StatusTone } {
@@ -461,9 +476,6 @@ export function TaskController({
 }) {
   const sync = useOptionalSync()
   const cachePrefix = `work:${user.id}:`
-  const { mode } = useInterfaceMode()
-  const taskFirst = mode === 'task-first'
-  const [taskFocus, setTaskFocus] = useState<'repair' | 'chat'>('repair')
   const accessPrefix = `${cachePrefix}${accessKey}:`
   const allowUntagged = user.role === 'operator'
     || user.role === 'admin'
@@ -503,7 +515,6 @@ export function TaskController({
   const [legacyDisclosureOpenId, setLegacyDisclosureOpenId] = useState<string | undefined>()
   const [partsFocusRequest, setPartsFocusRequest] = useState(0)
   const partsRef = useRef<HTMLDivElement>(null)
-  const [taskActionHost, setTaskActionHost] = useState<HTMLElement | null>(null)
   const [hideReason, setHideReason] = useState('')
   const [taskControlBusy, setTaskControlBusy] = useState(false)
   const [taskControlMessage, setTaskControlMessage] = useState('')
@@ -920,7 +931,7 @@ export function TaskController({
         data-has-detail={Boolean(issueKey)}
       >
         <MasterDetail
-          detail={<div className="rp-work-detail-pane" data-task-view={taskFirst ? taskFocus : 'all'}>
+          detail={<div className="rp-work-detail-pane" data-task-view="all">
             <Panel collapsible density="work" storageKey="work-detail" title={issueKey ? `Задача ${issueKey}` : 'Детали задачи'}>
             {!issueKey ? (
               <EmptyState
@@ -948,16 +959,10 @@ export function TaskController({
                         <Link to={rootHref}>К главному блокеру {rootIssue}</Link>
                       </nav>
                       ) : null}
-                      <TaskFirstWorkbench enabled={taskFirst} activeTab={activeTab as WorkSection}
-                        focus={taskFocus} canCheck={mechanicCanWork}
-                        onChange={tab => {
-                          setTaskFocus(tab === 'chat' ? 'chat' : 'repair')
-                          changeTab(tab === 'chat' ? 'task' : tab)
-                        }} />
+                      <WorkbenchTabs activeTab={activeTab as WorkSection} canCheck={mechanicCanWork} onChange={changeTab} />
                     </> : null}
-                    <TabPanel id="work-panel-task" labelledBy={taskFirst && taskFocus === 'chat' ? 'tab-chat' : 'tab-task'} active={activeTab === 'task'} key={issueKey}>
-                    <TaskFirstTaskLayout enabled={taskFirst} onActionHost={setTaskActionHost} header={detail.data && (taskFirst || detail.data.workflow) ? <>
-                      {taskFirst ? <h1 className="a-task-title">Задача {detail.data.key}</h1> : null}
+                    <TabPanel id="work-panel-task" labelledBy="tab-task" active={activeTab === 'task'} key={issueKey}>
+                    <ClassicTaskLayout header={detail.data?.workflow ? <>
                       <SyncStatus updatedAt={hiddenDetail ? detail.updatedAt : detail.updatedAt !== null && comments.updatedAt !== null ? Math.min(detail.updatedAt, comments.updatedAt) : null}
                         isRevalidating={detail.isRevalidating || (!hiddenDetail && comments.isRevalidating)}
                         error={detail.error || (!hiddenDetail ? comments.error : null)} />
@@ -966,10 +971,6 @@ export function TaskController({
                       {detail.data.workflow ? <TaskSyncStatus state={detail.data.workflow.sync_state} errorCode={detail.data.workflow.sync_error_code} /> : null}
                     </> : null}>
                     {detail.data?.workflow ? <>
-                      {taskFirst && taskFocus === 'repair' ? <TaskRepairSequence canCheck={mechanicCanWork} onCheck={() => changeTab('check')} onParts={() => {
-                        setPartsOpen(true)
-                        setPartsFocusRequest(value => value + 1)
-                      }} /> : null}
                       {manager ? <section aria-label="Управление задачей" className="issue-section">
                         {detail.data.workflow.hidden ? <>
                           <p>Причина скрытия: {detail.data.workflow.hidden.reason}</p>
@@ -994,7 +995,7 @@ export function TaskController({
                         {taskControlError ? <p role="alert">{taskControlError}</p> : null}
                       </section> : null}
                       {!hiddenDetail ? <div className="a-work-chat"><TaskTimeline items={taskComments} /></div> : null}
-                    </> : taskFirst ? <div className="a-work-chat"><TaskTimeline items={taskComments} /></div> : <IssueDetailPanel
+                    </> : <IssueDetailPanel
                       currentUser={user.tracker_login ?? user.username} accountKey={user.username}
                       commentsLoading={comments.isLoading && !comments.data}
                       comments={taskComments.map(item => ({
@@ -1015,7 +1016,7 @@ export function TaskController({
                     ) : null}
                     {canRenderDetailActions && detail.data?.workflow ? (
                       <IssueActionsPanel
-                        actionHost={taskFirst ? taskActionHost : null}
+                        actionHost={null}
                         capabilities={detail.data.capabilities}
                         draftOwner={user.username}
                         currentUser={user.tracker_login ?? user.username}
@@ -1137,7 +1138,7 @@ export function TaskController({
                       {user.role === 'mechanic' && mechanicCanWork ? <ResponsiveDisclosure id="parts" onOpenChange={open => { if (open) setPartsReceipt('') }} title="Использовать запчасть"><TaskPartsPanel actionHydrationError={partsHydrationError} apiClient={apiClient} cancelQueuedAction={sync?.cancelAction} enqueueAction={sync?.enqueueAction} hydratingAction={!partsHydrated} issueKey={detail.data.key} onQueued={setPartsAction} onRetryActionHydration={retryPartsHydration} queuedAction={partsAction} onWritten={receipt => { setPartsReceipt(receipt); setLegacyDisclosureOpenId(undefined); if (!sync) void comments.refresh() }} parkId={taskParkId} /></ResponsiveDisclosure> : null}
                       <ResponsiveDisclosure id="handoff" title="Передача смены"><EmbeddedTaskCollaboration issueKey={detail.data.key} owner={user.username} active={activeTab === 'task' && mechanicCanWork} canWrite={detail.data.capabilities.comment && mechanicCanWork} onAuthorizationFailure={observeAuthorizationFailure} /></ResponsiveDisclosure>
                     </ResponsiveDisclosureGroup>{partsReceipt ? <p role="status">{partsReceipt}</p> : null}</> : null}
-                    </TaskFirstTaskLayout>
+                    </ClassicTaskLayout>
                     </TabPanel>
                     {(['open', 'closed'] as const).map(kind => <TabPanel key={kind} id={`work-panel-${kind}`} labelledBy={`tab-${kind}`} active={activeTab === kind}>
                       {activeTab === kind && detail.data ? robotNumber && relatedPrefix && relatedQueue ? <RelatedTasksPanel
