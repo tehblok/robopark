@@ -30,16 +30,20 @@
 
 .rp-schedule-team__matrix-scroll { max-block-size: min(70vh, 48rem); max-inline-size: 100%; overflow: auto; }
 .rp-schedule-team__matrix { display: grid; grid-template-columns: minmax(12rem, 18rem) repeat(var(--day-count), minmax(7rem, 1fr)); min-inline-size: max-content; position: relative; }
+.rp-schedule-team__header-group,
+.rp-schedule-team__body,
+.rp-schedule-team__header-row,
+.rp-schedule-team__row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; }
+.rp-schedule-team__header-group { inset-block-start: 0; position: sticky; z-index: 2; }
 .rp-schedule-team__corner,
 .rp-schedule-team__date,
 .rp-schedule-team__employee,
 .rp-schedule-team__cell { background: var(--rp-surface); border-block-end: 1px solid var(--rp-border); border-inline-end: 1px solid var(--rp-border); min-inline-size: 0; padding: var(--rp-space-2); }
 .rp-schedule-team__corner,
-.rp-schedule-team__date { inset-block-start: 0; min-block-size: var(--rp-control-min-size); position: sticky; z-index: 2; }
+.rp-schedule-team__date { min-block-size: var(--rp-control-min-size); }
 .rp-schedule-team__corner,
 .rp-schedule-team__employee { inset-inline-start: 0; position: sticky; z-index: 1; }
 .rp-schedule-team__corner { z-index: 3; }
-.rp-schedule-team__row { display: contents; }
 .rp-schedule-team__employee { display: grid; gap: var(--rp-space-1); }
 .rp-schedule-team__cell { display: grid; gap: var(--rp-space-2); min-block-size: 6rem; }
 .rp-schedule-team__cell .rp-schedule-entry { padding: var(--rp-space-2); }

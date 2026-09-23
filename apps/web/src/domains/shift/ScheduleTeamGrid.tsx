@@ -57,12 +57,18 @@ export function ScheduleTeamGrid({
   return <div className="rp-schedule-team">
     <div className="rp-schedule-team__matrix-scroll">
       <div className="rp-schedule-team__matrix" data-testid="schedule-team-grid" role="table" style={{ '--day-count': days.length } as CSSProperties}>
-        <div className="rp-schedule-team__corner" role="columnheader">Сотрудник</div>
-        {days.map(day => <div aria-label={dayLabel.format(day)} className="rp-schedule-team__date" key={formatDayKey(day)} role="columnheader">{compactDayLabel.format(day)}</div>)}
-        {rows.map(employee => <div className="rp-schedule-team__row" key={employee.id} role="row">
-          <div aria-label={`${employee.display_name} · ${roleLabel[employee.role] ?? employee.role}`} className="rp-schedule-team__employee" role="rowheader"><strong>{employee.display_name}</strong><span>{roleLabel[employee.role] ?? employee.role}</span></div>
-          {days.map(day => <div className="rp-schedule-team__cell" key={formatDayKey(day)} role="cell">{(projected.get(employee.id)?.get(formatDayKey(day)) ?? []).map(item => <Entry item={item} key={item.id} onDelete={onDelete} onEdit={onEdit} />)}</div>)}
-        </div>)}
+        <div className="rp-schedule-team__header-group" role="rowgroup">
+          <div className="rp-schedule-team__header-row" role="row">
+            <div className="rp-schedule-team__corner" role="columnheader">Сотрудник</div>
+            {days.map(day => <div aria-label={dayLabel.format(day)} className="rp-schedule-team__date" key={formatDayKey(day)} role="columnheader">{compactDayLabel.format(day)}</div>)}
+          </div>
+        </div>
+        <div className="rp-schedule-team__body" role="rowgroup">
+          {rows.map(employee => <div className="rp-schedule-team__row" key={employee.id} role="row">
+            <div aria-label={`${employee.display_name} · ${roleLabel[employee.role] ?? employee.role}`} className="rp-schedule-team__employee" role="rowheader"><strong>{employee.display_name}</strong><span>{roleLabel[employee.role] ?? employee.role}</span></div>
+            {days.map(day => <div className="rp-schedule-team__cell" key={formatDayKey(day)} role="cell">{(projected.get(employee.id)?.get(formatDayKey(day)) ?? []).map(item => <Entry item={item} key={item.id} onDelete={onDelete} onEdit={onEdit} />)}</div>)}
+          </div>)}
+        </div>
       </div>
     </div>
     <div className="rp-schedule-team__mobile">

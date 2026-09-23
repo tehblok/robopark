@@ -27,6 +27,22 @@ describe('ScheduleTeamGrid', () => {
     expect(within(matrix).getByText('Смена')).toBeInTheDocument()
   })
 
+  it('nests headers and cells inside explicit accessible row groups and rows', () => {
+    const days = visibleRange(new Date('2026-09-21T12:00:00+03:00'), 'week').days
+    render(<ScheduleTeamGrid days={days} employees={employees} items={items} selectedDate={days[0]} />)
+
+    const table = screen.getByRole('table')
+    const groups = within(table).getAllByRole('rowgroup')
+    const headerRow = within(groups[0]).getByRole('row')
+    const bodyRows = within(groups[1]).getAllByRole('row')
+
+    expect(within(headerRow).getAllByRole('columnheader')).toHaveLength(8)
+    expect(within(bodyRows[0]).getByRole('rowheader', { name: 'Анна · Механик' })).toBeInTheDocument()
+    expect(within(bodyRows[0]).getAllByRole('cell')).toHaveLength(7)
+    expect(within(bodyRows[1]).getByRole('rowheader', { name: 'Олег · Оператор' })).toBeInTheDocument()
+    expect(within(bodyRows[1]).getAllByRole('cell')).toHaveLength(7)
+  })
+
   it('groups selected-day mobile cards by employee', () => {
     const days = visibleRange(new Date('2026-09-21T12:00:00+03:00'), 'week').days
     render(<ScheduleTeamGrid days={days} employees={employees} items={items} selectedDate={days[0]} />)
