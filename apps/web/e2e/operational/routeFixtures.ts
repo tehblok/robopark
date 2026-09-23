@@ -1,5 +1,5 @@
 import { expect, type Page } from '@playwright/test'
-import type { AdminRole, AdminUser, Campaign, CampaignDetail, ParkRequest, PermissionCatalogItem, Report, User } from '../../src/api'
+import type { AdminRole, AdminUser, Campaign, CampaignDetail, ParkRequest, PermissionCatalogItem, Report, ScheduleEntry, User } from '../../src/api'
 import { canAccessRoute } from '../../src/app/routing/accessPolicy'
 import { ROUTE_MANIFEST, type AppRouteId, type RouteManifestItem } from '../../src/app/routing/routeManifest'
 import { analyticsFixture } from '../../src/domains/analytics/analytics.test-support'
@@ -28,6 +28,12 @@ const routeRequests: ParkRequest[] = [{ id: 5, user_id: 101, park_id: 8, status:
 const routeRoles: AdminRole[] = [{ id: 1, slug: 'mechanic', name: 'Механик', description: 'Работа с задачами', is_system: true, is_active: true, permissions: ['nav.inventory'], user_count: 1 }]
 const routeCatalog: PermissionCatalogItem[] = [{ key: 'nav.inventory', category: 'nav', label: 'Склад', sort_order: 75 }]
 const routeUsers: AdminUser[] = [{ id: 101, username: 'route-admin', role: 'admin', role_id: 1, access_status: 'approved', is_active: true, tracker_login: 'admin.test', must_change_password: false, parks: [parkNorth], permissions: ['nav.admin'], role_permissions: ['nav.admin'] }]
+const routeSchedule: ScheduleEntry = {
+  id: 'route-shift', owner_user_id: 100, park_id: parkNorth.id, kind: 'shift',
+  start_at: '2026-09-23T09:00:00+03:00', end_at: '2026-09-23T21:00:00+03:00',
+  source: 'route-fixture', series_id: null, created_by_user_id: 104, updated_by_user_id: 104,
+  created_at: '2026-09-22T10:00:00Z', updated_at: '2026-09-22T10:00:00Z', warnings: [],
+}
 
 export function geometryRouteIdsFor(user: User): AppRouteId[] {
   return ROUTE_MANIFEST
@@ -43,6 +49,7 @@ function routeMockRoutes(): MockRoute[] {
     { method: 'GET', path: '/api/operator/parks', handler: () => ({ json: [parkNorth] }) },
     { method: 'GET', path: '/api/operator/available-parks', handler: () => ({ json: [parkSouth] }) },
     { method: 'GET', path: '/api/operator/park-requests', handler: () => ({ json: routeRequests }) },
+    { method: 'GET', path: '/api/schedules', handler: () => ({ json: [routeSchedule] }) },
     { method: 'GET', path: '/api/campaigns', handler: () => ({ json: [routeCampaign] }) },
     { method: 'GET', path: '/api/campaigns/4', handler: () => ({ json: routeCampaignDetail }) },
     { method: 'GET', path: '/api/reports/mine', handler: () => ({ json: [routeReport] }) },
@@ -175,6 +182,7 @@ function routeReadyMarker(page: Page, routeId: AppRouteId) {
     case 'reports': return page.getByRole('button', { name: `Открыть репорт ${routeReport.title}`, exact: true })
     case 'reports-new': return page.getByRole('textbox', { name: 'Заголовок *', exact: true })
     case 'report-detail': return page.getByText(routeReport.body, { exact: true })
+    case 'schedule': return page.locator('.rp-schedule__list[data-view="week"]')
     case 'analytics': return page.locator('.rp-analytics-park .rp-analytics-value').filter({ hasText: '2 задач' }).first()
     case 'admin': return page.getByRole('heading', { name: 'Управление', exact: true, level: 1 })
     case 'admin-settings': return page.getByText('Tracker OAuth', { exact: true })
@@ -210,7 +218,7 @@ export async function assertResponsiveContracts(page: Page, _width: number): Pro
     const visible = (element: Element) => {
       const style = getComputedStyle(element)
       const box = element.getBoundingClientRect()
-      return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none'
+      return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0'
     }
     const name = (element: Element) => `${element.tagName.toLowerCase()}#${element.id}.${element.className} ${(element.getAttribute('aria-label') || element.textContent || '').trim().slice(0, 70)}`
     for (const element of document.querySelectorAll('body *')) {
@@ -239,33 +247,63 @@ export async function assertResponsiveContracts(page: Page, _width: number): Pro
       const managementLinks = document.querySelector('.rp-management-nav')
       if (managementSelect && managementLinks && visible(managementSelect) && visible(managementLinks)) failures.push('management navigation is duplicated')
     }
-    const controls = Array.from(document.querySelectorAll<HTMLElement>('button,a,input,select,textarea,[role="button"],[role="tab"]'))
-      .filter(element => visible(element) && !element.closest('[aria-hidden="true"]'))
-      .filter(element => !element.matches('a') || getComputedStyle(element).display !== 'inline')
+    const controls = Array.from(document.querySelectorAll<HTMLElement>('button,a,input,select,textarea,summary,[role="button"],[role="tab"]'))
+      .filter(element => visible(element)
+        && !element.matches(':disabled,[aria-disabled="true"]')
+        && !element.closest('[aria-hidden="true"],[hidden],[inert]')
+        && getComputedStyle(element).pointerEvents !== 'none')
       .map(element => element.matches('input[type="checkbox"],input[type="radio"]')
         ? (element as HTMLInputElement).labels?.[0] ?? element
         : element)
       .filter((element, index, all) => all.indexOf(element) === index)
     for (const control of controls) {
-      const box = control.getBoundingClientRect()
-      if (box.width < 43.99 || box.height < 43.99) failures.push(`target ${box.width}x${box.height}: ${name(control)}`)
+      const hitAreas = Array.from(control.getClientRects()).filter(box => box.width > 0 && box.height > 0)
+      if (!hitAreas.length || hitAreas.some(box => box.width < 43.99 || box.height < 43.99)) {
+        const sizes = hitAreas.map(box => `${box.width}x${box.height}`).join(', ') || 'none'
+        failures.push(`target ${sizes}: ${name(control)}`)
+      }
     }
 
-    for (const container of document.querySelectorAll<HTMLElement>('section,article,li,fieldset,div')) {
-      if (!visible(container)) continue
-      const style = getComputedStyle(container)
-      if ([style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth]
-        .every(value => parseFloat(value) === 0)) continue
-      if (style.display.startsWith('inline') || ['absolute', 'fixed'].includes(style.position)) continue
-      const box = container.getBoundingClientRect()
-      for (const node of Array.from(container.childNodes)) {
-        if (node.nodeType !== Node.TEXT_NODE || !node.textContent?.trim()) continue
-        const range = document.createRange()
-        range.selectNodeContents(node)
-        for (const textBox of Array.from(range.getClientRects())) {
-          const inset = Math.min(textBox.left - box.left, box.right - textBox.right, textBox.top - box.top, box.bottom - textBox.bottom)
-          if (inset < 7.99) failures.push(`text inset ${inset}: ${name(container)}`)
+    const structuralContainer = (element: Element) => element.matches('section,article,li,fieldset,div')
+    const hasBorder = (element: Element) => {
+      const style = getComputedStyle(element)
+      return [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth]
+        .some(value => parseFloat(value) > 0)
+    }
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!node.textContent?.trim()) continue
+      const parent = node.parentElement
+      if (!parent || !visible(parent) || parent.closest('[aria-hidden="true"],[hidden],[inert],svg,script,style,option')) continue
+      let nearestBorder: Element | null = null
+      for (let current: Element | null = parent; current && current !== document.body; current = current.parentElement) {
+        if (visible(current) && hasBorder(current)) { nearestBorder = current; break }
+      }
+      if (!nearestBorder || !structuralContainer(nearestBorder)) continue
+      const containerBox = nearestBorder.getBoundingClientRect()
+      const range = document.createRange()
+      range.selectNodeContents(node)
+      for (const textBox of Array.from(range.getClientRects())) {
+        if (textBox.width <= 0 || textBox.height <= 0) continue
+        let left = textBox.left
+        let right = textBox.right
+        let top = textBox.top
+        let bottom = textBox.bottom
+        for (let current: Element | null = parent; current && current !== nearestBorder; current = current.parentElement) {
+          const style = getComputedStyle(current)
+          const clip = current.getBoundingClientRect()
+          if (['auto', 'clip', 'hidden', 'scroll'].includes(style.overflowX)) {
+            left = Math.max(left, clip.left)
+            right = Math.min(right, clip.right)
+          }
+          if (['auto', 'clip', 'hidden', 'scroll'].includes(style.overflowY)) {
+            top = Math.max(top, clip.top)
+            bottom = Math.min(bottom, clip.bottom)
+          }
         }
+        if (right <= left || bottom <= top) continue
+        const inset = Math.min(left - containerBox.left, containerBox.right - right, top - containerBox.top, containerBox.bottom - bottom)
+        if (inset < 7.99) failures.push(`text inset ${inset}: ${name(nearestBorder)} text=${node.textContent.trim().slice(0, 70)}`)
       }
     }
 
@@ -275,13 +313,6 @@ export async function assertResponsiveContracts(page: Page, _width: number): Pro
       for (let right = left + 1; right < controls.length; right += 1) {
         const second = controls[right]
         if (first.contains(second) || second.contains(first)) continue
-        const inOverlayLayer = (element: Element) => {
-          for (let current: Element | null = element; current; current = current.parentElement) {
-            if (['fixed', 'sticky'].includes(getComputedStyle(current).position)) return true
-          }
-          return false
-        }
-        if ([first, second].some(inOverlayLayer)) continue
         if (first.closest('.password-field') != null && first.closest('.password-field') === second.closest('.password-field')) continue
         const secondBox = second.getBoundingClientRect()
         const overlapWidth = Math.min(firstBox.right, secondBox.right) - Math.max(firstBox.left, secondBox.left)

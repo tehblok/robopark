@@ -51,6 +51,13 @@
   box-sizing: border-box;
 }
 
+main a,
+main summary {
+  align-items: center;
+  display: inline-flex;
+  min-block-size: var(--rp-control-min-size);
+}
+
 /* ==========================================================================
    Motion primitives
    ========================================================================== */

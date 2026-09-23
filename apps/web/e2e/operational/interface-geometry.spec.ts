@@ -9,6 +9,48 @@ const geometryViewports = [
   { name: 'desktop', width: 1440, height: 1000 },
 ] as const
 
+test('schedule route fixture reaches the successful schedule workspace', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await openRouteFixture(page, 'schedule', userForRole('mechanic'))
+  await expect(page.locator('.rp-schedule__list[data-view="week"]')).toBeVisible()
+  await expect(page.getByText('Не удалось загрузить график', { exact: true })).toHaveCount(0)
+  await assertResponsiveContracts(page, 390)
+})
+
+test('geometry helper audits descendant text against its nearest bordered container', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 800 })
+  await page.setContent(`
+    <style>* { box-sizing: border-box; font: 16px sans-serif } .outer { border: 1px solid; padding: 0 } .own { border: 1px solid; display: inline-flex; padding: 8px }</style>
+    <div class="outer"><span>Too close</span></div>
+    <div class="outer"><span class="own">Own border is padded</span></div>
+  `)
+  let failure = ''
+  try { await assertResponsiveContracts(page, 1000) } catch (error) { failure = String(error) }
+  expect(failure).toMatch(/text inset .*Too close/)
+  expect(failure).not.toContain('Own border is padded')
+})
+
+test('geometry helper checks overlay controls against flow controls', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 800 })
+  await page.setContent(`
+    <style>* { box-sizing: border-box; font: 16px sans-serif } button { min-width: 80px; min-height: 44px } .overlay { position: fixed; inset: 0 auto auto 0 }</style>
+    <button>Flow action</button><button class="overlay">Overlay action</button>
+  `)
+  await expect(assertResponsiveContracts(page, 1000)).rejects.toThrow(/overlap .*Flow action.*Overlay action|overlap .*Overlay action.*Flow action/)
+})
+
+test('geometry helper includes summary and inline link hit areas', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 800 })
+  await page.setContent(`
+    <style>* { box-sizing: border-box; font: 16px sans-serif } details { margin-bottom: 20px } summary, a { font-size: 16px }</style>
+    <details><summary>Compact disclosure</summary><p>Content</p></details>
+    <p><a href="#target">Compact inline link</a></p>
+  `)
+  await expect(assertResponsiveContracts(page, 1000)).rejects.toThrow(/target .*Compact disclosure/)
+  await page.locator('summary').evaluate(element => { element.style.minHeight = '44px'; element.style.display = 'flex' })
+  await expect(assertResponsiveContracts(page, 1000)).rejects.toThrow(/target .*Compact inline link/)
+})
+
 for (const role of geometryRoles) {
   const user = userForRole(role)
   for (const theme of geometryThemes) for (const viewport of geometryViewports) {
