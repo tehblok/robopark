@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -10,10 +11,12 @@ from robopark_api.schedule_schemas import (
     ScheduleBulkCreate,
     ScheduleCopy,
     ScheduleCreate,
+    SchedulePatternCreate,
     ScheduleUpdate,
 )
 
 SCHEDULE_RETENTION_DAYS = 400
+MOSCOW = ZoneInfo("Europe/Moscow")
 
 
 def resolve_active_operator(
@@ -226,6 +229,55 @@ def create_bulk(db: Session, actor: User, payload: ScheduleBulkCreate) -> list[d
                 kind=payload.kind,
                 start_at=payload.start_at + delta,
                 end_at=payload.end_at + delta,
+                source="royal",
+                series_id=series_id,
+                created_by_user_id=actor.id,
+                updated_by_user_id=actor.id,
+            )
+            db.add(row)
+            rows.append(row)
+    db.commit()
+    return [shell(db, row) for row in rows]
+
+
+def create_pattern(db: Session, actor: User, payload: SchedulePatternCreate) -> list[dict]:
+    if actor.role != "royal":
+        raise PermissionError
+    if db.get(Park, payload.park_id) is None:
+        raise LookupError("park_not_found")
+    for owner_id in payload.owner_user_ids:
+        _owner_in_park(db, owner_id, payload.park_id)
+
+    on_days, cycle_days = {
+        "none": (1, None),
+        "5/2": (5, 7),
+        "2/2": (2, 4),
+        "4/4": (4, 8),
+    }[payload.pattern]
+    day_count = (payload.end_date - payload.start_date).days + 1
+    active_dates = [
+        payload.start_date + timedelta(days=offset)
+        for offset in range(day_count)
+        if cycle_days is None and offset == 0
+        or cycle_days is not None and offset % cycle_days < on_days
+    ]
+    if len(active_dates) * len(payload.owner_user_ids) > 5000:
+        raise ValueError("too_many_entries")
+
+    series_id = str(uuid4())
+    rows: list[ScheduleEntry] = []
+    for owner_id in payload.owner_user_ids:
+        for work_date in active_dates:
+            start_at = datetime.combine(work_date, payload.start_time, tzinfo=MOSCOW)
+            end_at = datetime.combine(work_date, payload.end_time, tzinfo=MOSCOW)
+            if end_at <= start_at:
+                end_at += timedelta(days=1)
+            row = ScheduleEntry(
+                owner_user_id=owner_id,
+                park_id=payload.park_id,
+                kind=payload.kind,
+                start_at=start_at,
+                end_at=end_at,
                 source="royal",
                 series_id=series_id,
                 created_by_user_id=actor.id,

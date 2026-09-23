@@ -12,6 +12,7 @@ from robopark_api.schedule_schemas import (
     ScheduleCreate,
     ScheduleOut,
     ScheduleParticipantOut,
+    SchedulePatternCreate,
     ScheduleUpdate,
 )
 from robopark_api.services import schedules
@@ -79,6 +80,15 @@ def copy_schedule(
     payload: ScheduleCopy, user: User = Depends(require_user), db: Session = Depends(get_db)
 ):
     return _run(lambda: schedules.copy_period(db, user, payload))
+
+
+@router.post("/pattern", response_model=list[ScheduleOut], status_code=status.HTTP_201_CREATED)
+def create_schedule_pattern(
+    payload: SchedulePatternCreate,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    return _run(lambda: schedules.create_pattern(db, user, payload))
 
 
 @router.delete("/series/{series_id}")

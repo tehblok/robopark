@@ -15,7 +15,7 @@ function deferred<T>() {
 }
 
 function client(overrides: Partial<ScheduleApiClient> = {}): ScheduleApiClient {
-  return { schedules: vi.fn(async () => [entry]), scheduleCreate: vi.fn(async () => entry), scheduleUpdate: vi.fn(async () => entry), scheduleDelete: vi.fn(async () => undefined), scheduleParticipants: vi.fn(async () => []), ...overrides }
+  return { schedules: vi.fn(async () => [entry]), scheduleCreate: vi.fn(async () => entry), scheduleUpdate: vi.fn(async () => entry), scheduleDelete: vi.fn(async () => undefined), schedulePattern: vi.fn(async () => []), scheduleCopy: vi.fn(async () => []), scheduleParticipants: vi.fn(async () => []), ...overrides }
 }
 
 describe('ScheduleWorkspace', () => {
@@ -98,7 +98,6 @@ describe('ScheduleWorkspace', () => {
       expect(scheduleParticipants).toHaveBeenCalledWith(1)
     })
     fireEvent.click(screen.getByRole('tab', { name: 'Планирование' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Добавить период' }))
     expect(screen.getByRole('checkbox', { name: 'Анна · Механик' })).toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: 'Олег · Оператор' })).toBeInTheDocument()
   })
@@ -139,22 +138,24 @@ describe('ScheduleWorkspace', () => {
     expect(screen.getByLabelText('Начало')).toHaveValue('2026-09-21T09:00')
   })
 
-  it('lets royal assign a bounded repeated schedule to several employees', async () => {
-    const scheduleBulk = vi.fn(async () => [{ ...entry, id: 'bulk-created' }])
+  it('shows the bounded planner to royal users', async () => {
+    const schedulePattern = vi.fn(async () => [{ ...entry, id: 'pattern-created' }])
+    const scheduleCopy = vi.fn(async () => [])
     const scheduleParticipants = vi.fn(async () => [
       { id: 7, display_name: 'Анна', role: 'mechanic' },
       { id: 8, display_name: 'Олег', role: 'operator' },
     ])
-    render(<ScheduleWorkspace apiClient={client({ scheduleBulk, scheduleParticipants })} selectedParkId={1} user={{ ...mechanic, role: 'royal' }} />)
+    render(<ScheduleWorkspace apiClient={client({ schedulePattern, scheduleCopy, scheduleParticipants })} selectedParkId={1} user={{ ...mechanic, role: 'royal' }} />)
     await screen.findByRole('heading', { level: 1, name: 'График команды' })
     fireEvent.click(screen.getByRole('tab', { name: 'Планирование' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Добавить период' }))
     fireEvent.click(await screen.findByRole('checkbox', { name: 'Анна · Механик' }))
     fireEvent.click(screen.getByRole('checkbox', { name: 'Олег · Оператор' }))
-    fireEvent.change(screen.getByLabelText('Повторов'), { target: { value: '2' } })
-    fireEvent.change(screen.getByLabelText('Начало'), { target: { value: '2026-09-22T09:00' } })
-    fireEvent.change(screen.getByLabelText('Конец'), { target: { value: '2026-09-22T21:00' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
-    await waitFor(() => expect(scheduleBulk).toHaveBeenCalledWith(expect.objectContaining({ owner_user_ids: [7, 8], repeat_count: 2 })))
+    fireEvent.change(screen.getByLabelText('Шаблон'), { target: { value: '2/2' } })
+    fireEvent.change(screen.getByLabelText('Дата начала'), { target: { value: '2026-09-22' } })
+    fireEvent.change(screen.getByLabelText('Дата окончания'), { target: { value: '2026-09-30' } })
+    fireEvent.change(screen.getByLabelText('Время начала'), { target: { value: '09:00' } })
+    fireEvent.change(screen.getByLabelText('Время окончания'), { target: { value: '21:00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Создать смены' }))
+    await waitFor(() => expect(schedulePattern).toHaveBeenCalledWith(expect.objectContaining({ owner_user_ids: [7, 8], pattern: '2/2' })))
   })
 })

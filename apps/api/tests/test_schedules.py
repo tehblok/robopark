@@ -32,6 +32,131 @@ def _interval(kind: str = "shift") -> dict:
     }
 
 
+def _pattern_payload(park_id: int, owner_ids: list[int], **overrides) -> dict:
+    payload = {
+        "park_id": park_id,
+        "owner_user_ids": owner_ids,
+        "kind": "shift",
+        "start_date": "2026-09-03",
+        "end_date": "2026-09-14",
+        "start_time": "09:00:00",
+        "end_time": "21:00:00",
+        "pattern": "4/4",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_four_on_four_off_pattern_dates(
+    client, db_session, seed_royal, seed_park_with_tracker
+):
+    mechanic = _add_user(
+        db_session,
+        username="pattern-mech",
+        role=RoleSlug.MECHANIC,
+        park_id=seed_park_with_tracker.id,
+    )
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(seed_park_with_tracker.id, [mechanic.id]),
+    )
+
+    assert response.status_code == 201
+    rows = response.json()
+    assert [row["start_at"][:10] for row in rows] == [
+        "2026-09-03",
+        "2026-09-04",
+        "2026-09-05",
+        "2026-09-06",
+        "2026-09-11",
+        "2026-09-12",
+        "2026-09-13",
+        "2026-09-14",
+    ]
+    assert len({row["series_id"] for row in rows}) == 1
+    assert rows[0]["series_id"] is not None
+
+
+def test_pattern_is_royal_only_and_rejects_invalid_owner_or_range(
+    client, db_session, seed_mechanic, seed_royal, seed_park_with_tracker
+):
+    owner = _add_user(
+        db_session,
+        username="pattern-owner",
+        role=RoleSlug.OPERATOR,
+        park_id=seed_park_with_tracker.id,
+    )
+    foreign_park = Park(name="Pattern foreign", tag="PATTERN-FOREIGN", is_active=True)
+    db_session.add(foreign_park)
+    db_session.flush()
+    foreign_owner = _add_user(
+        db_session,
+        username="pattern-foreign",
+        role=RoleSlug.MECHANIC,
+        park_id=foreign_park.id,
+    )
+
+    login_as(client, seed_mechanic.username, "secret")
+    assert client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(seed_park_with_tracker.id, [owner.id]),
+    ).status_code == 403
+
+    login_as(client, seed_royal.username, "secret")
+    assert client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(seed_park_with_tracker.id, [owner.id, owner.id]),
+    ).status_code == 422
+    assert client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(
+            seed_park_with_tracker.id,
+            [owner.id],
+            start_date="2026-09-15",
+            end_date="2026-09-14",
+        ),
+    ).status_code == 422
+    assert client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(
+            seed_park_with_tracker.id,
+            [owner.id],
+            start_date="2026-01-01",
+            end_date="2027-01-02",
+        ),
+    ).status_code == 422
+    assert client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(seed_park_with_tracker.id, [foreign_owner.id]),
+    ).status_code == 403
+
+
+def test_pattern_rejects_owner_and_generated_entry_limits_before_insert(
+    client, db_session, seed_royal, seed_park_with_tracker
+):
+    login_as(client, seed_royal.username, "secret")
+    too_many_owners = list(range(1, 52))
+    assert client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(seed_park_with_tracker.id, too_many_owners),
+    ).status_code == 422
+    assert client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(
+            seed_park_with_tracker.id,
+            list(range(10_000, 10_050)),
+            start_date="2026-01-01",
+            end_date="2026-12-31",
+        ),
+    ).status_code == 422
+
+    from robopark_api.schedule_models import ScheduleEntry
+
+    assert db_session.query(ScheduleEntry).count() == 0
+
+
 def test_employee_manages_own_schedule_and_gets_overlap_warning(
     client, db_session, seed_mechanic, seed_park_with_tracker
 ):

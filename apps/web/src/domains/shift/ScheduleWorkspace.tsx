@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { api, type ScheduleCreate, type ScheduleEntry, type ScheduleListParams, type ScheduleParticipant, type User } from '../../api'
+import { api, type ScheduleCopyCreate, type ScheduleCreate, type ScheduleEntry, type ScheduleListParams, type ScheduleParticipant, type SchedulePatternCreate, type User } from '../../api'
 import { useAuth } from '../../auth-context'
 import { useParkScope } from '../../app/park/parkScope'
 import { Button } from '../../design-system/actions/Button'
@@ -9,6 +9,7 @@ import { TabPanel, Tabs } from '../../design-system/navigation/Tabs'
 import { NotificationCenter } from '../../pwa/NotificationCenter'
 import { visibleRange } from './scheduleCalendar'
 import { ScheduleCalendar, ScheduleViewControls, type ScheduleView } from './PersonalScheduleCalendar'
+import { SchedulePlanner } from './SchedulePlanner'
 import { ScheduleTeamGrid } from './ScheduleTeamGrid'
 import './ScheduleWorkspace.css'
 
@@ -18,10 +19,11 @@ export type ScheduleApiClient = {
   scheduleUpdate: (id: string, payload: Pick<ScheduleCreate, 'kind' | 'start_at' | 'end_at'>) => Promise<ScheduleEntry>
   scheduleDelete: (id: string) => Promise<void>
   scheduleBulk?: (payload: ScheduleCreate & { owner_user_ids: number[]; repeat_count: number; repeat_every_days: number }) => Promise<ScheduleEntry[]>
+  schedulePattern: (payload: SchedulePatternCreate) => Promise<ScheduleEntry[]>
+  scheduleCopy: (payload: ScheduleCopyCreate) => Promise<ScheduleEntry[]>
   scheduleParticipants: (parkId: number) => Promise<ScheduleParticipant[]>
 }
 
-const roleLabel: Record<string, string> = { mechanic: 'Механик', operator: 'Оператор' }
 const moscowIso = (value: string) => `${value}:00+03:00`
 const moscowParts = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
 const toMoscowInput = (value: string) => moscowParts.format(new Date(value)).replace(' ', 'T')
@@ -36,8 +38,6 @@ export function ScheduleWorkspace({ apiClient = api, initialAnchor, user, select
   const [startAt, setStartAt] = useState('')
   const [endAt, setEndAt] = useState('')
   const [participantState, setParticipantState] = useState<{ key: string; items: ScheduleParticipant[] } | null>(null)
-  const [employeeIds, setEmployeeIds] = useState<number[]>([])
-  const [repeatCount, setRepeatCount] = useState(1)
   const [editing, setEditing] = useState<ScheduleEntry | null>(null)
   const [view, setView] = useState<ScheduleView>('week')
   const [anchor, setAnchor] = useState(() => initialAnchor ?? new Date())
@@ -97,19 +97,17 @@ export function ScheduleWorkspace({ apiClient = api, initialAnchor, user, select
     if (editing) {
       const updated = await apiClient.scheduleUpdate(editing.id, base)
       setScheduleState(current => current?.key === requestKey ? { ...current, items: current.items.map(item => item.id === updated.id ? updated : item) } : current)
-    } else if (royal && employeeIds.length && apiClient.scheduleBulk) {
-      const created = await apiClient.scheduleBulk({ ...base, owner_user_ids: employeeIds, repeat_count: repeatCount, repeat_every_days: 7 })
-      setScheduleState(current => current?.key === requestKey ? { ...current, items: [...current.items, ...created] } : current)
     } else {
       const created = await apiClient.scheduleCreate(base)
       setScheduleState(current => current?.key === requestKey ? { ...current, items: [...current.items, created] } : current)
     }
     setEditor(false); setEditing(null)
   }
-  const openCreate = () => { setEditing(null); setKind('shift'); setStartAt(''); setEndAt(''); setEmployeeIds([]); setEditor(true) }
+  const openCreate = () => { setEditing(null); setKind('shift'); setStartAt(''); setEndAt(''); setEditor(true) }
   const openEdit = (item: ScheduleEntry) => { setEditing(item); setKind(item.kind); setStartAt(toMoscowInput(item.start_at)); setEndAt(toMoscowInput(item.end_at)); setEditor(true) }
   const remove = async (id: string) => { await apiClient.scheduleDelete(id); setScheduleState(current => current?.key === requestKey ? { ...current, items: current.items.filter(item => item.id !== id) } : current) }
-  const editorPanel = editor ? <Panel title={editing ? 'Изменить период' : 'Новый период'}><form className="rp-schedule__editor" onSubmit={submit}>{royal && !editing && selectedSection === 'planning' ? <><fieldset className="rp-schedule__employees"><legend>Сотрудники</legend>{employees.length ? employees.map(employee => <label key={employee.id}><input checked={employeeIds.includes(employee.id)} onChange={event => setEmployeeIds(current => event.target.checked ? [...current, employee.id] : current.filter(id => id !== employee.id))} type="checkbox" />{employee.display_name} · {roleLabel[employee.role] ?? employee.role}</label>) : <span>Нет доступных сотрудников</span>}</fieldset><label>Повторов<input aria-label="Повторов" max="52" min="1" onChange={event => setRepeatCount(Number(event.target.value))} type="number" value={repeatCount} /></label></> : null}<label>Тип<select aria-label="Тип" onChange={event => setKind(event.target.value as ScheduleCreate['kind'])} value={kind}><option value="shift">Смена</option><option value="vacation">Отпуск</option><option value="sick">Болезнь</option></select></label><label>Начало<input aria-label="Начало" onChange={event => setStartAt(event.target.value)} required type="datetime-local" value={startAt} /></label><label>Конец<input aria-label="Конец" onChange={event => setEndAt(event.target.value)} required type="datetime-local" value={endAt} /></label><div><Button disabled={royal && !editing && selectedSection === 'planning' && employeeIds.length === 0} type="submit">Сохранить</Button><Button onClick={() => setEditor(false)} type="button" variant="ghost">Отмена</Button></div></form></Panel> : null
+  const editorPanel = editor ? <Panel title={editing ? 'Изменить период' : 'Новый период'}><form className="rp-schedule__editor" onSubmit={submit}><label>Тип<select aria-label="Тип" onChange={event => setKind(event.target.value as ScheduleCreate['kind'])} value={kind}><option value="shift">Смена</option><option value="vacation">Отпуск</option><option value="sick">Болезнь</option></select></label><label>Начало<input aria-label="Начало" onChange={event => setStartAt(event.target.value)} required type="datetime-local" value={startAt} /></label><label>Конец<input aria-label="Конец" onChange={event => setEndAt(event.target.value)} required type="datetime-local" value={endAt} /></label><div><Button type="submit">Сохранить</Button><Button onClick={() => setEditor(false)} type="button" variant="ghost">Отмена</Button></div></form></Panel> : null
+  const addPlanned = (created: ScheduleEntry[]) => setScheduleState(current => current?.key === requestKey ? { ...current, items: [...current.items, ...created] } : current)
   const moveRange = (direction: -1 | 1) => setAnchor(direction < 0 ? new Date(range.start.getTime() - 12 * 60 * 60 * 1000) : range.end)
   return <PageLayout className="rp-schedule" title={admin || royal ? 'График команды' : 'Мой график'} description="Смены, отпуск и болезнь. Время указано по Москве." actions={<div className="rp-schedule__range"><Button aria-label="Предыдущий период" onClick={() => moveRange(-1)} size="compact" variant="secondary">Назад</Button><Button onClick={() => setAnchor(new Date())} size="compact" variant="ghost">Сегодня</Button><Button aria-label="Следующий период" onClick={() => moveRange(1)} size="compact" variant="secondary">Вперёд</Button></div>}>
     <Tabs ariaLabel="Разделы графика" items={tabs} onChange={id => { setEditor(false); setSection(id as ScheduleSection) }} panelIdFor={id => `schedule-panel-${id}`} value={selectedSection} />
@@ -124,8 +122,7 @@ export function ScheduleWorkspace({ apiClient = api, initialAnchor, user, select
       </Panel>{editorPanel}</> : null}
     </TabPanel> : null}
     {royal ? <TabPanel active={selectedSection === 'planning'} id="schedule-panel-planning" labelledBy="tab-planning">
-      <Panel actions={<Button onClick={openCreate}>Добавить период</Button>} description="Создайте один или несколько периодов для сотрудников парка." title="Планирование"><p className="rp-schedule__planning-note">Выберите сотрудников и настройте период.</p></Panel>
-      {selectedSection === 'planning' ? editorPanel : null}
+      {selectedSection === 'planning' ? <Panel description="Создайте смены по шаблону или скопируйте существующий период." title="Планирование"><SchedulePlanner apiClient={apiClient} employees={employees} onCreated={addPlanned} parkId={parkId} /></Panel> : null}
     </TabPanel> : null}
     <NotificationCenter />
   </PageLayout>

@@ -103,6 +103,14 @@ export type ScheduleEntry = {
 export type ScheduleCreate = { park_id: number; kind: ScheduleEntry['kind']; start_at: string; end_at: string; owner_user_id?: number }
 export type ScheduleListParams = { parkId: number; ownerUserId?: number; startAt: string; endAt: string }
 export type ScheduleParticipant = { id: number; display_name: string; role: 'mechanic' | 'operator' }
+export type SchedulePattern = 'none' | '5/2' | '2/2' | '4/4'
+export type SchedulePatternCreate = {
+  park_id: number; owner_user_ids: number[]; kind: ScheduleEntry['kind']; pattern: SchedulePattern
+  start_date: string; end_date: string; start_time: string; end_time: string
+}
+export type ScheduleCopyCreate = {
+  park_id: number; owner_user_ids: number[]; source_start: string; source_end: string; target_start: string
+}
 export type NotificationEvent = { id: string; event_type: string; park_id: number | null; protected_text: string; read_at: string | null; created_at: string }
 
 export type RobotRegistryRow = {
@@ -1331,6 +1339,8 @@ export const api = {
   scheduleUpdate: (id: string, body: Pick<ScheduleCreate, 'kind' | 'start_at' | 'end_at'>) => request<ScheduleEntry>(`/schedules/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   scheduleDelete: (id: string) => request<void>(`/schedules/${id}`, { method: 'DELETE' }),
   scheduleBulk: (body: ScheduleCreate & { owner_user_ids: number[]; repeat_count: number; repeat_every_days: number }) => request<ScheduleEntry[]>('/schedules/bulk', { method: 'POST', body: JSON.stringify(body) }),
+  schedulePattern: (body: SchedulePatternCreate) => request<ScheduleEntry[]>('/schedules/pattern', { method: 'POST', body: JSON.stringify(body) }),
+  scheduleCopy: (body: ScheduleCopyCreate) => request<ScheduleEntry[]>('/schedules/copy', { method: 'POST', body: JSON.stringify(body) }),
   notificationInbox: () => request<NotificationEvent[]>('/push/inbox'),
   notificationRead: (id: string) => request<{ ok: boolean }>(`/push/inbox/${id}/read`, { method: 'POST' }),
   pushConfig: () => request<{ public_key: string }>('/push/config'),
