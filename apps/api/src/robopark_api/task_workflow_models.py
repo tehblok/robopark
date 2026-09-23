@@ -17,7 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, synonym, validates
 
-from robopark_api.models import Base
+from robopark_api.models import Base, TaskMessageVisibility
 
 
 class ReliableAction(Base):
@@ -124,6 +124,10 @@ class TaskMessage(Base):
             "sync_state IN ('saved', 'pending', 'synced', 'needs_attention')",
             name="ck_task_messages_sync_state",
         ),
+        CheckConstraint(
+            "visibility IN ('participants', 'staff')",
+            name="ck_task_messages_visibility",
+        ),
         Index("ix_task_messages_issue_created", "issue_key", "created_at", "id"),
     )
 
@@ -140,6 +144,9 @@ class TaskMessage(Base):
         ForeignKey("reliable_actions.id", ondelete="SET NULL"), nullable=True
     )
     sync_state: Mapped[str] = mapped_column(String(32), default="saved", server_default="saved")
+    visibility: Mapped[TaskMessageVisibility] = mapped_column(
+        String(16), default="participants", server_default="participants"
+    )
     created_at: Mapped[float] = mapped_column(Float)
     updated_at: Mapped[float] = mapped_column(Float)
 

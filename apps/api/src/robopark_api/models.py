@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import StrEnum
+from typing import Literal
 
 from sqlalchemy import (
     BigInteger,
@@ -30,6 +31,9 @@ class Base(DeclarativeBase):
 
 INVENTORY_INT64_MIN = -(2**63)
 INVENTORY_INT64_MAX = 2**63 - 1
+
+ClaimState = Literal["pending", "active"]
+TaskMessageVisibility = Literal["participants", "staff"]
 
 
 class AccessStatus(StrEnum):

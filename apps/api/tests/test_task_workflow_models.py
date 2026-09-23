@@ -1,7 +1,8 @@
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from robopark_api.models import Role, User
+from robopark_api.collaboration_models import TrackerClaim
+from robopark_api.models import Park, Role, User
 from robopark_api.task_workflow_models import (
     HiddenTask,
     ReliableAction,
@@ -157,6 +158,73 @@ def test_task_message_rejects_unknown_kind(db_session):
             updated_at=1.0,
         )
     )
+
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+
+
+def test_claim_and_message_visibility_defaults(db_session):
+    user = _seed_user(db_session)
+    park = Park(name="Workflow Park", tag="workflow-park", is_active=True)
+    db_session.add(park)
+    db_session.flush()
+    claim = TrackerClaim(
+        issue_key="SDCFLEETOPS-1",
+        park_id=park.id,
+        owner_user_id=user.id,
+        updated_by_user_id=user.id,
+        updated_at=1.0,
+    )
+    message = TaskMessage(
+        id="message-1",
+        issue_key="SDCFLEETOPS-1",
+        kind="system",
+        author_name="Robopark",
+        text="Claim reserved",
+        sync_state="saved",
+        created_at=1.0,
+        updated_at=1.0,
+    )
+    db_session.add_all([claim, message])
+    db_session.flush()
+
+    assert claim.state == "pending"
+    assert claim.start_action_id is None
+    assert claim.operator_user_id is None
+    assert message.visibility == "participants"
+
+
+@pytest.mark.parametrize(
+    ("model", "invalid_value"),
+    [(TrackerClaim, "finished"), (TaskMessage, "public")],
+)
+def test_claim_and_message_reject_unknown_visibility_states(db_session, model, invalid_value):
+    user = _seed_user(db_session)
+    if model is TrackerClaim:
+        park = Park(name="Workflow Park", tag="workflow-park", is_active=True)
+        db_session.add(park)
+        db_session.flush()
+        row = TrackerClaim(
+            issue_key="SDCFLEETOPS-1",
+            park_id=park.id,
+            owner_user_id=user.id,
+            updated_by_user_id=user.id,
+            updated_at=1.0,
+            state=invalid_value,
+        )
+    else:
+        row = TaskMessage(
+            id="message-1",
+            issue_key="SDCFLEETOPS-1",
+            kind="system",
+            author_name="Robopark",
+            text="Claim reserved",
+            sync_state="saved",
+            visibility=invalid_value,
+            created_at=1.0,
+            updated_at=1.0,
+        )
+    db_session.add(row)
 
     with pytest.raises(IntegrityError):
         db_session.commit()

@@ -118,10 +118,70 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_is_audit_remediation_state():
+def test_alembic_head_is_claim_workflow_visibility():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0036_audit_remediation_state"]
+    assert script.get_heads() == ["0037_claim_workflow_visibility"]
+
+
+def test_claim_and_message_visibility_columns(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0036_audit_remediation_state")
+    engine = create_engine(sqlite_database_url, future=True)
+
+    with engine.begin() as connection:
+        role_id = connection.execute(text("SELECT id FROM roles ORDER BY id LIMIT 1")).scalar_one()
+        connection.execute(
+            text(
+                "INSERT INTO users (id, username, password_hash, role_id, access_status, "
+                "must_change_password, is_active) "
+                "VALUES (1, 'workflow_user', 'hash', :role_id, 'approved', 0, 1)"
+            ),
+            {"role_id": role_id},
+        )
+        connection.execute(
+            text("INSERT INTO parks (id, name, tag, is_active) VALUES (1, 'Park', 'park', 1)")
+        )
+        connection.execute(
+            text(
+                "INSERT INTO tracker_claims "
+                "(issue_key, park_id, owner_user_id, updated_by_user_id, updated_at) "
+                "VALUES ('SDCFLEETOPS-1', 1, 1, 1, 1.0)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO task_messages "
+                "(id, issue_key, kind, author_name, text, sync_state, created_at, updated_at) "
+                "VALUES ('message-1', 'SDCFLEETOPS-1', 'system', 'Robopark', "
+                "'Claimed', 'saved', 1.0, 1.0)"
+            )
+        )
+
+    command.upgrade(config, "head")
+    inspector = inspect(engine)
+    claim = {column["name"] for column in inspector.get_columns("tracker_claims")}
+    message = {column["name"] for column in inspector.get_columns("task_messages")}
+    assert {"state", "start_action_id", "operator_user_id"} <= claim
+    assert "visibility" in message
+
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT state FROM tracker_claims WHERE issue_key = 'SDCFLEETOPS-1'")
+        ).scalar_one() == "active"
+        assert connection.execute(
+            text("SELECT visibility FROM task_messages WHERE id = 'message-1'")
+        ).scalar_one() == "participants"
+
+    claim_foreign_keys = {
+        tuple(foreign_key["constrained_columns"]): foreign_key
+        for foreign_key in inspector.get_foreign_keys("tracker_claims")
+    }
+    assert claim_foreign_keys[("start_action_id",)]["referred_table"] == "reliable_actions"
+    assert claim_foreign_keys[("start_action_id",)]["options"]["ondelete"] == "SET NULL"
+    assert claim_foreign_keys[("operator_user_id",)]["referred_table"] == "users"
+    assert claim_foreign_keys[("operator_user_id",)]["options"]["ondelete"] == "SET NULL"
 
 
 def test_audit_remediation_models_support_atomic_claims_and_bounded_cleanup():
