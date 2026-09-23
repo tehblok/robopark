@@ -271,6 +271,8 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
       if (selected?.component_id === component.id) { select(null); setSelectedPart(null) }
       setDeleteComponentId(''); setDeleteComponentOpen(false); setWorkflow(null)
       setNotice(`Компонента «${component.name}» удалена навсегда.`)
+      if (removedVisible === items.length && catalogOffset > 0) setCatalogOffset(value => Math.max(0, value - 25))
+      else await load()
     } catch (reason) { setError(classifyApiError(reason, 'Не удалось удалить компоненту.').description) }
     finally { setBusy(false) }
   }

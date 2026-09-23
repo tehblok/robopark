@@ -338,7 +338,11 @@ describe('InventoryManageView', () => {
   })
 
   it('permanently deletes a named component only for royal', async () => {
-    const apiClient = client({ searchInventory: vi.fn(async () => ({ items: [part], limit: 25, offset: 0, total: 26 })) })
+    let deleted = false
+    const apiClient = client({
+      searchInventory: vi.fn(async () => ({ items: deleted ? [] : [part], limit: 25, offset: 0, total: deleted ? 25 : 26 })),
+      permanentlyDeleteInventoryCatalogComponent: vi.fn(async () => { deleted = true }),
+    })
     render(<InventoryManageView apiClient={apiClient} parkId={1} role="royal" />)
     await userEvent.click(await screen.findByRole('button', { name: 'Удалить компоненту' }))
     await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Компонента для удаления' }), '4')
