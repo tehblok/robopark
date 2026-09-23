@@ -4,6 +4,7 @@ const DATABASE = 'robopark-task-attachment-cache'
 const STORE = 'attachments'
 const MAX_BYTES = 32 * 1024 * 1024
 const MAX_ENTRIES = 64
+const MAX_AGE_MS = 5 * 60 * 1000
 
 type CacheEntry = {
   key: string
@@ -11,9 +12,11 @@ type CacheEntry = {
   blob: Blob
   bytes: number
   accessedAt: number
+  storedAt: number
 }
 
 type AttachmentFetcher = (url: string) => Promise<Blob>
+type AttachmentAuthorizer = (url: string) => Promise<void>
 
 let activeNamespace: string | null = null
 let generation = 0
@@ -64,7 +67,16 @@ function cacheKey(namespace: string, attachment: TrackerAttachment, url: string)
   return `${namespace}\0${attachment.id}\0${url}`
 }
 
-async function readBlob(key: string): Promise<Blob | undefined> {
+async function readEntry(key: string): Promise<CacheEntry | undefined> {
+  const db = await openDatabase()
+  const transaction = db.transaction(STORE, 'readonly')
+  const store = transaction.objectStore(STORE)
+  const entry = await requestResult(store.get(key)) as CacheEntry | undefined
+  await transactionDone(transaction)
+  return entry
+}
+
+async function touchBlob(key: string): Promise<void> {
   const db = await openDatabase()
   const transaction = db.transaction(STORE, 'readwrite')
   const store = transaction.objectStore(STORE)
@@ -74,7 +86,6 @@ async function readBlob(key: string): Promise<Blob | undefined> {
     store.put(entry)
   }
   await transactionDone(transaction)
-  return entry?.blob
 }
 
 async function storeBlob(entry: CacheEntry): Promise<void> {
@@ -151,6 +162,7 @@ export async function clearTaskAttachmentCache(): Promise<void> {
 export async function loadTaskAttachment(
   attachment: TrackerAttachment,
   fetcher: AttachmentFetcher,
+  authorize: AttachmentAuthorizer,
 ): Promise<string> {
   const url = attachment.url
   if (!url) throw new Error('task_attachment_url_missing')
@@ -160,13 +172,28 @@ export async function loadTaskAttachment(
   const key = cacheKey(namespace, attachment, url)
 
   if (key && typeof indexedDB !== 'undefined') {
+    let cached: CacheEntry | undefined
     try {
-      const cached = await readBlob(key)
-      if (cached && requestGeneration === generation && namespace === activeNamespace) {
-        return URL.createObjectURL(cached)
-      }
+      cached = await readEntry(key)
     } catch {
       // IndexedDB is an optional optimization; authenticated loading still works.
+    }
+    if (cached && (!cached.storedAt || Date.now() - cached.storedAt >= MAX_AGE_MS)) {
+      await deleteBlob(key).catch(() => undefined)
+      cached = undefined
+    }
+    if (cached && requestGeneration === generation && namespace === activeNamespace) {
+      try {
+        await authorize(url)
+      } catch (error) {
+        await deleteBlob(key).catch(() => undefined)
+        throw error
+      }
+      if (requestGeneration !== generation || namespace !== activeNamespace) {
+        throw new Error('task_attachment_session_changed')
+      }
+      await touchBlob(key).catch(() => undefined)
+      return URL.createObjectURL(cached.blob)
     }
   }
 
@@ -191,6 +218,7 @@ export async function loadTaskAttachment(
         blob,
         bytes: blob.size,
         accessedAt: nextAccessedAt(),
+        storedAt: Date.now(),
       })
       if (requestGeneration !== generation || namespace !== activeNamespace) {
         await deleteBlob(key)

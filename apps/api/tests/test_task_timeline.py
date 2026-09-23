@@ -478,6 +478,9 @@ def test_local_attachment_has_authorized_content_url_and_safe_image_headers(
     content = client.get(
         f"/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content"
     )
+    authorization = client.head(
+        f"/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content"
+    )
     wrong_issue = client.get(
         f"/tracker/issues/ROBOPARK-2/attachments/{attachment.id}/content"
     )
@@ -487,6 +490,8 @@ def test_local_attachment_has_authorized_content_url_and_safe_image_headers(
         f"/api/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content"
     )
     assert content.status_code == 200
+    assert authorization.status_code == 204
+    assert authorization.content == b""
     assert content.content == PNG
     assert content.headers["content-type"] == "image/png"
     assert content.headers["x-content-type-options"] == "nosniff"

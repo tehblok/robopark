@@ -12,6 +12,7 @@ from fastapi import (
     Header,
     HTTPException,
     Request,
+    Response,
     UploadFile,
     status,
 )
@@ -132,6 +133,28 @@ def get_attachment_content(
             "Content-Disposition": disposition,
             "X-Content-Type-Options": "nosniff",
         },
+    )
+
+
+@router.head(
+    "/issues/{key}/attachments/{attachment_id}/content",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def authorize_attachment_content(
+    key: str,
+    attachment_id: str,
+    request: Request,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    _issue(db, user, key, None, request)
+    try:
+        attachment_content(db, issue_key=key, attachment_id=attachment_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task_attachment_not_found") from exc
+    return Response(
+        status_code=status.HTTP_204_NO_CONTENT,
+        headers={"Cache-Control": "private, no-store"},
     )
 
 

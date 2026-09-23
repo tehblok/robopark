@@ -1119,16 +1119,7 @@ async function requestBlob(path: string): Promise<Blob> {
 }
 
 async function requestTaskAttachmentBlob(rawUrl: string): Promise<Blob> {
-  let url: string
-  if (rawUrl.startsWith('/api/')) {
-    url = rawUrl
-  } else {
-    const parsed = new URL(rawUrl)
-    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) {
-      throw new Error('task_attachment_url_invalid')
-    }
-    url = parsed.href
-  }
+  const url = taskAttachmentRequestUrl(rawUrl)
   return fetchWithTimeout(
     url,
     { credentials: 'include' },
@@ -1139,6 +1130,32 @@ async function requestTaskAttachmentBlob(rawUrl: string): Promise<Blob> {
         throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
       }
       return response.blob()
+    },
+  )
+}
+
+function taskAttachmentRequestUrl(rawUrl: string): string {
+  if (rawUrl.startsWith('/api/')) {
+    return rawUrl
+  }
+  const parsed = new URL(rawUrl)
+  if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) {
+    throw new Error('task_attachment_url_invalid')
+  }
+  return parsed.href
+}
+
+async function authorizeTaskAttachment(rawUrl: string): Promise<void> {
+  const url = taskAttachmentRequestUrl(rawUrl)
+  return fetchWithTimeout(
+    url,
+    { credentials: 'include', method: 'HEAD' },
+    JSON_TIMEOUT_MS,
+    async (response) => {
+      if (!response.ok) {
+        const detail = await readErrorDetail(response)
+        throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
+      }
     },
   )
 }
@@ -1686,6 +1703,7 @@ export const api = {
   taskTimeline: (key: string) =>
     request<TaskTimelineItem[]>(`/tracker/issues/${encodeURIComponent(key)}/timeline`),
   taskAttachmentContent: (url: string) => requestTaskAttachmentBlob(url),
+  taskAttachmentAuthorization: (url: string) => authorizeTaskAttachment(url),
   taskDefectCodes: () => request<DefectCode[]>('/tracker/defect-codes'),
   createMediaUpload: (value: { media_id: string, issue_key: string, name: string, mime_type: string, size_bytes: number, sha256: string }) =>
     request<MediaUploadSession>('/media/uploads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) }),

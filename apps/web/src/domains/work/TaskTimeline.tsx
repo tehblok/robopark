@@ -21,7 +21,7 @@ function Attachment({ attachment }: { attachment: TrackerAttachment }) {
     if (!url || !isImageAttachment(attachment)) return
     let mounted = true
     let ownedUrl: string | null = null
-    void loadTaskAttachment(attachment, api.taskAttachmentContent)
+    void loadTaskAttachment(attachment, api.taskAttachmentContent, api.taskAttachmentAuthorization)
       .then(nextUrl => {
         if (!mounted) {
           releaseTaskAttachment(nextUrl)

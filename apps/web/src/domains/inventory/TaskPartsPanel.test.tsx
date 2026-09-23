@@ -50,7 +50,7 @@ it('uses the issue-park global catalog result and writes off through its negativ
   await waitFor(() => expect(writeoff).toHaveBeenCalledWith('RP-77', -issueParkPart.id, '9007199254740993', expect.any(String)))
 })
 
-it('saves a writeoff locally without waiting for the network and reserves the visible stock', async () => {
+it('keeps an offline writeoff pending without announcing completion or allowing a duplicate', async () => {
   const enqueueAction = vi.fn(async (_input: OfflineActionInput) => undefined)
   const writeoff = vi.fn()
   const onWritten = vi.fn()
@@ -72,8 +72,11 @@ it('saves a writeoff locally without waiting for the network and reserves the vi
     payload: { part_id: -issueParkPart.id, quantity: '1', park_id: 77 },
   })
   expect(writeoff).not.toHaveBeenCalled()
-  expect(onWritten).toHaveBeenCalledWith('Запчасть списана')
-  expect(screen.getByRole('status')).toHaveTextContent('Сохранено на устройстве: Шина · 1 шт.')
+  expect(onWritten).not.toHaveBeenCalled()
+  expect(screen.getByRole('status')).toHaveTextContent('Списание ожидает синхронизации')
+  expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
+  fireEvent.submit(screen.getByRole('form', { name: 'Списание запчасти' }))
+  expect(enqueueAction).toHaveBeenCalledOnce()
 })
 
 it('reuses the same idempotency key when a writeoff response is retried', async () => {

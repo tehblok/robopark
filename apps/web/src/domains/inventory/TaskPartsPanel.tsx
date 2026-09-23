@@ -1,5 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, type InventoryInt64, type InventoryOverview } from '../../api'
+import { api, type InventoryOverview } from '../../api'
 import { Button } from '../../design-system/actions/Button'
 import { ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
@@ -33,6 +33,7 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
   const [error, setError] = useState<unknown>(null)
   const [loadFailed, setLoadFailed] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [pending, setPending] = useState(false)
   const [receipt, setReceipt] = useState('')
   const [searchDraft, setSearchDraft] = useState('')
   const [query, setQuery] = useState('')
@@ -111,7 +112,7 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
   }, [componentId, currentData, partId, quantity])
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (parkId == null || submitting.current || !part || !isPositiveInventoryQuantity(quantity) || inventoryInt64Compare(quantity, part.quantity) > 0) return
+    if (parkId == null || submitting.current || pending || !part || !isPositiveInventoryQuantity(quantity) || inventoryInt64Compare(quantity, part.quantity) > 0) return
     submitting.current = true
     setBusy(true); setError(null); setLoadFailed(false); setReceipt('')
     try {
@@ -129,22 +130,16 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
         await apiClient.writeoffInventoryForTask(issueKey, adapterPartId, quantity, idempotencyKey.current)
       }
       if (!mounted.current) return
-      idempotencyKey.current = null
-      setReceipt(`${enqueueAction ? 'Сохранено на устройстве' : 'Списано'}: ${part.name} · ${quantity} шт. Место: ${part.location}`)
       if (enqueueAction) {
-        setData(current => current ? {
-          ...current,
-          components: current.components.map(component => ({
-            ...component,
-            parts: component.parts.map(item => item.id === part.id
-              ? { ...item, quantity: (BigInt(item.quantity) - BigInt(quantity)).toString() as InventoryInt64 }
-              : item),
-          })),
-        } : current)
+        setPending(true)
+        setReceipt('Списание ожидает синхронизации')
+        return
       }
+      idempotencyKey.current = null
+      setReceipt(`Списано: ${part.name} · ${quantity} шт. Место: ${part.location}`)
       setPartId(0); setQuantity('1')
       onWritten?.('Запчасть списана')
-      if (!enqueueAction) await load(0, false)
+      await load(0, false)
     }
     catch (reason) { if (mounted.current) setError(reason) }
     finally { submitting.current = false; if (mounted.current) setBusy(false) }
@@ -158,7 +153,7 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
     {receipt ? <p role="status">{receipt}</p> : null}
     {failure ? <ErrorState description={failure.description} title={failure.title} /> : null}
     {failure ? <Button disabled={busy} onClick={() => void load()} type="button" variant="secondary">Обновить остатки</Button> : null}
-    <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+    <fieldset disabled={busy || pending} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
     {globalCatalog ? <form className="issue-action-row" onSubmit={event => { event.preventDefault(); setQuery(searchDraft.trim()) }}>
       <label className="field"><span>Название или артикул</span><input type="search" value={searchDraft} onChange={event => setSearchDraft(event.target.value)} /></label>
       <Button type="submit" variant="secondary">Найти</Button>
@@ -167,7 +162,7 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
       {component?.has_photo ? <img alt={component.name} className="task-parts__component-photo" src={apiClient.inventoryComponentPhotoUrl(component.id)} /> : null}
       {component ? <label className="field"><span>Запчасть</span><select required value={partId || ''} onChange={event => { idempotencyKey.current = null; setPartId(Number(event.target.value)) }}><option value="">Выберите</option>{component.parts.map(item => <option key={item.id} value={item.id}>{item.name} · {item.article} · {item.quantity} шт.</option>)}</select></label> : null}
       {part ? <article className="task-part-preview">{part.has_photo ? <img alt={part.name} src={apiClient.inventoryPartPhotoUrl(globalCatalog ? -part.id : part.id)} /> : null}<div><h3>{part.name}</h3><p>Артикул: {part.article}</p><p>Место: <strong>{part.location}</strong></p><StatusBadge tone={part.quantity !== '0' ? 'success' : 'critical'}>{part.quantity !== '0' ? `На складе: ${part.quantity}` : 'Нет на складе'}</StatusBadge></div></article> : null}
-      {part ? <label className="field"><span>Списать, шт.</span><input inputMode="numeric" onChange={event => { idempotencyKey.current = null; setQuantity(event.target.value) }} pattern="[0-9]*" value={quantity} /></label> : null}{globalCatalog && nextOffset < total ? <Button busy={loadingMore} onClick={() => void load(nextOffset, true)} type="button" variant="secondary">Загрузить ещё</Button> : null}<Button busy={busy} disabled={!part || part.quantity === '0' || !isPositiveInventoryQuantity(quantity) || inventoryInt64Compare(quantity, part.quantity) > 0} type="submit">Списать в задачу</Button></form> : null}
+      {part ? <label className="field"><span>Списать, шт.</span><input inputMode="numeric" onChange={event => { idempotencyKey.current = null; setQuantity(event.target.value) }} pattern="[0-9]*" value={quantity} /></label> : null}{globalCatalog && nextOffset < total ? <Button busy={loadingMore} onClick={() => void load(nextOffset, true)} type="button" variant="secondary">Загрузить ещё</Button> : null}<Button busy={busy} disabled={pending || !part || part.quantity === '0' || !isPositiveInventoryQuantity(quantity) || inventoryInt64Compare(quantity, part.quantity) > 0} type="submit">Списать в задачу</Button></form> : null}
     </fieldset>
   </div>
 }
