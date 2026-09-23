@@ -89,6 +89,11 @@
 }
 
 @media (max-width: 599px) {
+  .rp-action-bar {
+    flex-direction: column;
+    flex-wrap: nowrap;
+  }
+
   .rp-action-bar--mobile-primary > .rp-button--primary {
     min-height: var(--rp-touch-primary-min-size);
     width: 100%;

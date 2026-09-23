@@ -35,6 +35,24 @@ describe('Button', () => {
     expect(css).toMatch(/@media \(max-width:\s*599px\)[\s\S]*\.rp-action-bar--mobile-primary > \.rp-button--primary\s*\{[^}]*min-height:\s*var\(--rp-touch-primary-min-size\)[^}]*width:\s*100%/s)
     expect(css).not.toMatch(/^\.rp-button--primary\s*\{[^}]*width:\s*100%/ms)
   })
+
+  it('stacks two secondary actions on mobile while retaining desktop wrapping', () => {
+    const { container } = render(
+      <div className="rp-action-bar">
+        <Button variant="secondary">Отмена</Button>
+        <Button variant="secondary">Сохранить черновик</Button>
+      </div>,
+    )
+    const css = readFileSync(resolve('src/design-system/actions/Button.css'), 'utf8')
+    const actionBar = container.querySelector('.rp-action-bar')
+
+    expect(actionBar).toContainElement(screen.getByRole('button', { name: 'Отмена' }))
+    expect(actionBar).toContainElement(screen.getByRole('button', { name: 'Сохранить черновик' }))
+    expect(screen.getAllByRole('button')).toHaveLength(2)
+    expect(screen.getAllByRole('button').every(button => button.classList.contains('rp-button--secondary'))).toBe(true)
+    expect(css).toMatch(/\.rp-action-bar\s*\{[^}]*flex-wrap:\s*wrap/s)
+    expect(css).toMatch(/@media \(max-width:\s*599px\)\s*\{[^}]*\.rp-action-bar\s*\{[^}]*flex-direction:\s*column[^}]*flex-wrap:\s*nowrap/s)
+  })
 })
 
 describe('IconButton', () => {
