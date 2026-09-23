@@ -101,6 +101,7 @@ export type ScheduleEntry = {
   warnings: string[]
 }
 export type ScheduleCreate = { park_id: number; kind: ScheduleEntry['kind']; start_at: string; end_at: string; owner_user_id?: number }
+export type ScheduleListParams = { parkId?: number; ownerUserId?: number; startAt: string; endAt: string }
 export type NotificationEvent = { id: string; event_type: string; park_id: number | null; protected_text: string; read_at: string | null; created_at: string }
 
 export type RobotRegistryRow = {
@@ -1318,7 +1319,12 @@ async function conditionalChangeRevision(scope: string): Promise<{ revision: num
 }
 
 export const api = {
-  schedules: (parkId?: number) => request<ScheduleEntry[]>(parkId == null ? '/schedules' : `/schedules?park_id=${parkId}`),
+  schedules: ({ parkId, ownerUserId, startAt, endAt }: ScheduleListParams) => {
+    const query = new URLSearchParams({ start_at: startAt, end_at: endAt })
+    if (parkId != null) query.set('park_id', String(parkId))
+    if (ownerUserId != null) query.set('owner_user_id', String(ownerUserId))
+    return request<ScheduleEntry[]>(`/schedules?${query.toString()}`)
+  },
   scheduleCreate: (body: ScheduleCreate) => request<ScheduleEntry>('/schedules', { method: 'POST', body: JSON.stringify(body) }),
   scheduleUpdate: (id: string, body: Pick<ScheduleCreate, 'kind' | 'start_at' | 'end_at'>) => request<ScheduleEntry>(`/schedules/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   scheduleDelete: (id: string) => request<void>(`/schedules/${id}`, { method: 'DELETE' }),

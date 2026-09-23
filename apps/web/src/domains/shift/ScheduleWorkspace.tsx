@@ -1,15 +1,16 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import { api, type AdminUser, type ScheduleCreate, type ScheduleEntry, type User } from '../../api'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { api, type AdminUser, type ScheduleCreate, type ScheduleEntry, type ScheduleListParams, type User } from '../../api'
 import { useAuth } from '../../auth-context'
 import { useParkScope } from '../../app/park/parkScope'
 import { Button } from '../../design-system/actions/Button'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { PageLayout, Panel } from '../../design-system/layout/PageLayout'
 import { NotificationCenter } from '../../pwa/NotificationCenter'
+import { visibleRange } from './scheduleCalendar'
 import './ScheduleWorkspace.css'
 
 export type ScheduleApiClient = {
-  schedules: (parkId?: number) => Promise<ScheduleEntry[]>
+  schedules: (params: ScheduleListParams) => Promise<ScheduleEntry[]>
   scheduleCreate: (payload: ScheduleCreate) => Promise<ScheduleEntry>
   scheduleUpdate: (id: string, payload: Pick<ScheduleCreate, 'kind' | 'start_at' | 'end_at'>) => Promise<ScheduleEntry>
   scheduleDelete: (id: string) => Promise<void>
@@ -24,7 +25,7 @@ const moscowParts = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow'
 const toMoscowInput = (value: string) => moscowParts.format(new Date(value)).replace(' ', 'T')
 const formatMoscow = (value: string) => new Date(value).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })
 
-export function ScheduleWorkspace({ apiClient = api, user, selectedParkId }: { apiClient?: ScheduleApiClient; user: User; selectedParkId?: number | null }) {
+export function ScheduleWorkspace({ apiClient = api, initialAnchor, user, selectedParkId }: { apiClient?: ScheduleApiClient; initialAnchor?: Date; user: User; selectedParkId?: number | null }) {
   const [items, setItems] = useState<ScheduleEntry[] | null>(null)
   const [error, setError] = useState(false)
   const [editor, setEditor] = useState(false)
@@ -36,17 +37,37 @@ export function ScheduleWorkspace({ apiClient = api, user, selectedParkId }: { a
   const [repeatCount, setRepeatCount] = useState(1)
   const [editing, setEditing] = useState<ScheduleEntry | null>(null)
   const [view, setView] = useState<'week' | 'month'>('week')
+  const [anchor] = useState(() => initialAnchor ?? new Date())
+  const range = useMemo(() => visibleRange(anchor, view), [anchor, view])
+  const scheduleGeneration = useRef(0)
+  const employeeGeneration = useRef(0)
+  const hasItems = useRef(false)
   const parkId = selectedParkId ?? user?.parks[0]?.id
-  useEffect(() => { if (!user) return; let active = true; void apiClient.schedules(parkId).then(value => { if (active) setItems(value) }).catch(() => { if (active) setError(true) }); return () => { active = false } }, [apiClient, parkId, user])
+  const ownerUserId = ['admin', 'royal'].includes(user.role) ? undefined : user.id
   useEffect(() => {
-    if (!['admin', 'royal'].includes(user.role) || !apiClient.adminUsers) return
-    let active = true
+    const generation = ++scheduleGeneration.current
+    setError(false)
+    void apiClient.schedules({ parkId, ownerUserId, startAt: range.start.toISOString(), endAt: range.end.toISOString() }).then(value => {
+      if (generation !== scheduleGeneration.current) return
+      hasItems.current = true
+      setItems(value)
+    }).catch(() => {
+      if (generation === scheduleGeneration.current && !hasItems.current) setError(true)
+    })
+    return () => { scheduleGeneration.current += 1 }
+  }, [apiClient, ownerUserId, parkId, range.end, range.start, user.id, user.role])
+  useEffect(() => {
+    const generation = ++employeeGeneration.current
+    if (!['admin', 'royal'].includes(user.role) || !apiClient.adminUsers) {
+      setEmployees([])
+      return
+    }
     void apiClient.adminUsers().then(value => {
-      if (!active) return
+      if (generation !== employeeGeneration.current) return
       setEmployees(value.filter(item => item.is_active && item.access_status === 'approved' && ['mechanic', 'operator'].includes(item.role) && (!parkId || item.parks.some(park => park.id === parkId))))
     }).catch(() => undefined)
-    return () => { active = false }
-  }, [apiClient, parkId, user.role])
+    return () => { employeeGeneration.current += 1 }
+  }, [apiClient, parkId, user.id, user.role])
   if (error) return <PageLayout title="График"><ErrorState description="Повторите загрузку позже." title="Не удалось загрузить график" /></PageLayout>
   if (!items) return <PageLayout title="График"><LoadingState label="Загружаем график" variant="page" /></PageLayout>
   const admin = user.role === 'admin'
