@@ -22,6 +22,18 @@ function client(overrides = {}) {
 }
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
+it('keeps count status in the card flow and uses semantic mobile editor geometry', async () => {
+  render(<InventoryCountsView apiClient={client({ inventoryCounts: vi.fn(async () => ({ items: [count], limit: 25, offset: 0, total: 1 })) })} parkId={7} permissions={['inventory.stock.manage', 'inventory.documents.post']} />)
+  const card = await screen.findByRole('article', { name: 'Инвентаризация №71' })
+  expect(card.querySelector('.inventory-document-card__content')).toContainElement(within(card).getByText('Черновик'))
+  expect(within(card).getByRole('button', { name: 'Открыть' }).parentElement).toHaveClass('rp-action-bar')
+
+  await userEvent.click(within(card).getByRole('button', { name: 'Открыть' }))
+  const editor = screen.getByRole('heading', { name: 'Сентябрь' }).parentElement
+  expect(editor).toHaveClass('inventory-document-editor', 'rp-form-stack--mobile')
+  expect(editor).not.toHaveAttribute('style')
+})
+
 it('explicitly refreshes a stale snapshot and then sends exactly one new post', async () => {
   const stale = new ApiError(409, { code: 'inventory_count_stale', conflicts: [{ catalog_part_id: 31, expected_quantity: '5', current_quantity: '6', affected_lines: [{ count_line_id: 1, catalog_part_id: 31 }] }] })
   const refreshed = { ...count, lines: [{ ...count.lines[0], expected_quantity: '6' as const, actual_quantity: '9' as const, difference: '3' as const }] }

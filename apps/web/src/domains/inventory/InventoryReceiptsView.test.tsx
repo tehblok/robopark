@@ -53,6 +53,18 @@ it('uses a single mobile editor and returns to the document list', async () => {
   expect(await screen.findByRole('article', { name: 'Поставка №91' })).toBeVisible()
 })
 
+it('keeps receipt status in the card flow and uses semantic mobile editor geometry', async () => {
+  render(<InventoryReceiptsView apiClient={client({ inventoryReceipts: vi.fn(async () => ({ items: [receipt], limit: 25, offset: 0, total: 1 })) })} parkId={7} />)
+  const card = await screen.findByRole('article', { name: 'Поставка №91' })
+  expect(card.querySelector('.inventory-document-card__content')).toContainElement(within(card).getByText('Черновик'))
+  expect(within(card).getByRole('button', { name: 'Открыть' }).parentElement).toHaveClass('rp-action-bar')
+
+  await userEvent.click(within(card).getByRole('button', { name: 'Открыть' }))
+  const editor = screen.getByRole('heading', { name: 'Поставка №91' }).parentElement
+  expect(editor).toHaveClass('inventory-document-editor', 'rp-form-stack--mobile')
+  expect(editor).not.toHaveAttribute('style')
+})
+
 it('preserves server draft lines when another catalog part is added', async () => {
   const other = { ...part, id: 32, article: 'NEW-2', name: 'Новая' }
   render(<InventoryReceiptsView apiClient={client({ inventoryReceipts: vi.fn(async () => ({ items: [receipt], limit: 25, offset: 0, total: 1 })), searchInventory: vi.fn(async () => ({ items: [other], limit: 25, offset: 0, total: 1 })) })} parkId={7} />)

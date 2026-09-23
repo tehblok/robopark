@@ -507,3 +507,58 @@
 .rp-work-view-switch { display: flex; gap: .5rem; flex-wrap: wrap; margin: .5rem 0 .75rem; }
 .rp-work-view-switch button { min-height: 44px; padding: .55rem .85rem; border: 1px solid var(--border, #7776); border-radius: .7rem; background: transparent; color: inherit; font: inherit; cursor: pointer; }
 .rp-work-view-switch button[aria-pressed="true"] { background: var(--accent-soft, #6964db24); border-color: var(--accent, #6964db); font-weight: 700; }
+
+fieldset.rp-form-stack--mobile {
+  border: 0;
+  margin: 0;
+  min-inline-size: 0;
+  padding: 0;
+}
+
+.rp-form-stack--mobile,
+.rp-form-stack--mobile > * {
+  box-sizing: border-box;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+}
+
+.rp-form-stack--mobile :is(input, select, textarea) {
+  max-inline-size: 100%;
+  min-block-size: var(--rp-control-min-size);
+}
+
+.issue-detail-title-row.rp-form-stack--mobile {
+  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.issue-detail-identity {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.issue-detail-chips {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rp-space-2);
+}
+
+@media (max-width: 719px) {
+  .rp-form-stack--mobile:is(form, fieldset),
+  .issue-detail-title-row.rp-form-stack--mobile {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rp-form-stack--mobile .rp-action-bar {
+    align-items: stretch;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    inline-size: 100%;
+  }
+
+  .rp-form-stack--mobile .rp-action-bar > .rp-button {
+    inline-size: 100%;
+  }
+}

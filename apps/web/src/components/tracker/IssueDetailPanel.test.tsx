@@ -49,6 +49,21 @@ afterEach(() => {
 })
 
 describe('IssueDetailPanel', () => {
+  it('keeps long issue identity and status chips in the card flow', () => {
+    render(
+      <MemoryRouter>
+        <IssueDetailPanel comments={[]} issue={{ ...issue, key: 'ROBOPARK-VERY-LONG-MOBILE-ISSUE-KEY', priority: 'critical' }} />
+      </MemoryRouter>,
+    )
+
+    const header = screen.getByRole('heading', { name: issue.summary }).parentElement
+    expect(header).toHaveClass('issue-detail-head')
+    expect(header?.querySelector('.issue-detail-title-row')).toHaveClass('rp-form-stack--mobile')
+    expect(header?.querySelector('.issue-detail-identity')).toContainElement(screen.getByText('ROBOPARK-VERY-LONG-MOBILE-ISSUE-KEY'))
+    expect(header?.querySelector('.issue-detail-chips')).toContainElement(screen.getByText('Открыта'))
+    expect(header?.querySelector('.issue-detail-title-row')).not.toHaveAttribute('style')
+  })
+
   it('exposes its robot-check link by purpose with a 44px Work target', () => {
     vi.spyOn(api, 'emergencyResolve').mockReturnValue(new Promise(() => {}))
     render(

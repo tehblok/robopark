@@ -25,3 +25,29 @@
 @media(max-width:599px){.inventory-document-view{grid-template-columns:1fr}.inventory-document-pane--hidden{display:none}.inventory-document-back{display:inline-flex}.inventory-document-fields,.inventory-document-line{grid-template-columns:1fr}.inventory-document-actions .rp-button{flex:1 1 100%}}
 .inventory-document-title{grid-column:1/-1;margin:0}
 .inventory-secondary-actions{display:contents}.inventory-secondary-actions>summary{display:none}
+
+/* Shared responsive geometry for task completion and inventory workflows. */
+fieldset.rp-form-stack--mobile{border:0;margin:0;min-inline-size:0;padding:0}
+.rp-form-stack--mobile,.rp-form-stack--mobile>*{box-sizing:border-box;min-inline-size:0;max-inline-size:100%}
+.rp-form-stack--mobile :is(input,select,textarea){min-block-size:var(--rp-control-min-size);max-inline-size:100%}
+.issue-detail-title-row.rp-form-stack--mobile{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}
+.issue-detail-identity{min-inline-size:0;overflow-wrap:anywhere}
+.issue-detail-chips{display:flex;gap:var(--rp-space-2);align-items:center;flex-wrap:wrap}
+.inventory-document-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}
+.inventory-document-card__content{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--rp-space-2);align-items:center;min-inline-size:0}
+.inventory-document-card__content>p{grid-column:1/-1}
+.inventory-document-card__content :is(strong,p){min-inline-size:0;overflow-wrap:anywhere}
+
+@media(max-width:719px){
+  .rp-form-stack--mobile:is(form,fieldset),
+  .rp-form-stack--mobile .inventory-manage-form,
+  .rp-form-stack--mobile .inventory-document-fields,
+  .rp-form-stack--mobile .inventory-document-line,
+  .issue-detail-title-row.rp-form-stack--mobile,
+  .inventory-document-card,
+  .inventory-document-card__content{grid-template-columns:minmax(0,1fr)}
+  .inventory-document-card__content>p{grid-column:auto}
+  .inventory-document-editor{padding-inline:16px}
+  .rp-form-stack--mobile .rp-action-bar{align-items:stretch;flex-direction:column;flex-wrap:nowrap;inline-size:100%}
+  .rp-form-stack--mobile .rp-action-bar>.rp-button{inline-size:100%}
+}

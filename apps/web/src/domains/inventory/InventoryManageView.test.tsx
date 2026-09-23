@@ -32,6 +32,16 @@ function client(overrides = {}) {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('InventoryManageView', () => {
+  it('uses semantic mobile stacks and action bars without inline geometry', async () => {
+    render(<InventoryManageView apiClient={client()} parkId={1} role="mechanic" />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Добавить позицию' }))
+
+    const form = screen.getByRole('form', { name: 'Новая позиция' })
+    expect(form.closest('.inventory-manage-view')).toHaveClass('rp-form-stack--mobile')
+    expect(form).not.toHaveAttribute('style')
+    expect(screen.getByRole('button', { name: 'Добавить позицию' }).parentElement).toHaveClass('rp-action-bar')
+  })
+
   it.each(['mechanic', 'operator'] as const)('never exposes global destructive controls to %s', async role => {
     render(<InventoryManageView apiClient={client()} parkId={1} role={role} />)
     await screen.findByRole('option', { name: 'Тяга · ABC-01' })
@@ -257,7 +267,8 @@ describe('InventoryManageView', () => {
     await userEvent.type(within(form).getByRole('textbox', { name: 'Название' }), 'Новая тяга')
     await userEvent.type(within(form).getByRole('textbox', { name: 'Артикул' }), 'NEW-01')
     const photo = new File([new Uint8Array([0xff, 0xd8, 0xff])], 'part.jpg', { type: 'image/jpeg' })
-    await userEvent.upload(within(form).getByLabelText('Фото'), photo)
+    expect(within(form).getByRole('button', { name: 'Сделать фото или выбрать файл' })).toHaveClass('rp-button--secondary')
+    await userEvent.upload(within(form).getByLabelText('Сделать фото или выбрать файл'), photo)
     expect(within(form).getByRole('img', { name: 'Предпросмотр фото позиции' })).toHaveAttribute('src', 'blob:part-preview')
     await userEvent.click(within(form).getByRole('button', { name: 'Создать' }))
 
@@ -276,11 +287,14 @@ describe('InventoryManageView', () => {
     const form = screen.getByRole('form', { name: 'Глобальная позиция' })
     expect(within(form).getByRole('img', { name: 'Фото позиции «Тяга»' })).toHaveAttribute('src', '/api/inventory/parts/-31/photo')
     const replacement = new File([new Uint8Array([0x89, 0x50])], 'part.png', { type: 'image/png' })
-    await userEvent.upload(within(form).getByLabelText('Заменить фото'), replacement)
+    expect(within(form).getByRole('button', { name: 'Заменить' })).toHaveClass('rp-button--secondary')
+    await userEvent.upload(within(form).getByLabelText('Заменить'), replacement)
     expect(within(form).getByRole('img', { name: 'Предпросмотр нового фото' })).toHaveAttribute('src', 'blob:replacement')
     await userEvent.click(within(form).getByRole('button', { name: 'Сохранить' }))
     await waitFor(() => expect(apiClient.replaceInventoryCatalogPartPhoto).toHaveBeenCalledWith(31, replacement))
-    await userEvent.click(within(form).getByRole('button', { name: 'Удалить фото' }))
+    const deletePhoto = within(form).getByRole('button', { name: 'Удалить' })
+    expect(deletePhoto).toHaveClass('rp-button--ghost')
+    await userEvent.click(deletePhoto)
     await waitFor(() => expect(apiClient.removeInventoryCatalogPartPhoto).toHaveBeenCalledWith(31))
   })
 
@@ -293,11 +307,14 @@ describe('InventoryManageView', () => {
     await userEvent.selectOptions(within(form).getByRole('combobox', { name: 'Компонента' }), '4')
     expect(within(form).getByRole('img', { name: 'Фото компоненты «Подвязка»' })).toHaveAttribute('src', '/api/inventory/components/4/photo')
     const replacement = new File([new Uint8Array([0x89, 0x50])], 'component.png', { type: 'image/png' })
-    await userEvent.upload(within(form).getByLabelText('Заменить фото'), replacement)
+    expect(within(form).getByRole('button', { name: 'Заменить' })).toHaveClass('rp-button--secondary')
+    await userEvent.upload(within(form).getByLabelText('Заменить'), replacement)
     expect(within(form).getByRole('img', { name: 'Предпросмотр нового фото компоненты' })).toHaveAttribute('src', 'blob:component-replacement')
     await userEvent.click(within(form).getByRole('button', { name: 'Сохранить фото' }))
     await waitFor(() => expect(apiClient.replaceInventoryCatalogComponentPhoto).toHaveBeenCalledWith(4, replacement))
-    await userEvent.click(within(form).getByRole('button', { name: 'Удалить фото' }))
+    const deletePhoto = within(form).getByRole('button', { name: 'Удалить' })
+    expect(deletePhoto).toHaveClass('rp-button--ghost')
+    await userEvent.click(deletePhoto)
     await waitFor(() => expect(apiClient.removeInventoryCatalogComponentPhoto).toHaveBeenCalledWith(4))
     expect(apiClient.searchInventory).toHaveBeenCalledTimes(1)
   })

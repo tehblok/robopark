@@ -191,8 +191,9 @@ function IssueDetailPanelContent({
   return (
     <article className="issue-detail" ref={articleRef}>
       <header className="issue-detail-head">
-        <div className="issue-detail-title-row">
-          {issueUrl ? (
+        <div className="issue-detail-title-row rp-form-stack--mobile">
+          <div className="issue-detail-identity">
+            {issueUrl ? (
             <a
               className="issue-detail-key"
               href={issueUrl}
@@ -202,15 +203,18 @@ function IssueDetailPanelContent({
             >
               {issue.key}
             </a>
-          ) : (
-            <span className="issue-detail-key">{issue.key}</span>
-          )}
-          <span className={`issue-status tone-${statusTone(issue)}`}>{trackerStatusLabel(issue.status, issue.status_key)}</span>
-          {priority && (
-            <span className={`issue-badge tone-${priorityTone(issue.priority)}`}>
-              {priority}
-            </span>
-          )}
+            ) : (
+              <span className="issue-detail-key">{issue.key}</span>
+            )}
+          </div>
+          <div className="issue-detail-chips">
+            <span className={`issue-status tone-${statusTone(issue)}`}>{trackerStatusLabel(issue.status, issue.status_key)}</span>
+            {priority && (
+              <span className={`issue-badge tone-${priorityTone(issue.priority)}`}>
+                {priority}
+              </span>
+            )}
+          </div>
         </div>
         <h2 className="issue-detail-summary">{issue.summary}</h2>
       </header>

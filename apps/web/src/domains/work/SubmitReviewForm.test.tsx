@@ -17,7 +17,7 @@ it('blocks duplicate submissions and preserves the form after a rejected action'
   render(<SubmitReviewForm defectCodes={codes} hasQualifyingComment onSubmit={onSubmit} />)
   const code = screen.getByRole('combobox', { name: 'Код дефекта' })
   fireEvent.change(code, { target: { value: 'BD-01' } })
-  fireEvent.change(screen.getByLabelText('Выбрать файл'), { target: { files: [new File(['image'], 'fixed.jpg', { type: 'image/jpeg' })] } })
+  fireEvent.change(screen.getByLabelText('Сделать фото или выбрать файл'), { target: { files: [new File(['image'], 'fixed.jpg', { type: 'image/jpeg' })] } })
   const form = code.closest('form')!
   fireEvent.submit(form)
   fireEvent.submit(form)
@@ -41,7 +41,7 @@ it('uses one replaceable photo state and omits an empty optional comment', async
   const onSubmit = vi.fn(async () => undefined)
   render(<SubmitReviewForm defectCodes={codes} hasQualifyingComment onSubmit={onSubmit} />)
   fireEvent.change(screen.getByRole('combobox', { name: 'Код дефекта' }), { target: { value: 'BD-01' } })
-  const input = screen.getByLabelText('Выбрать файл') as HTMLInputElement
+  const input = screen.getByLabelText('Сделать фото или выбрать файл') as HTMLInputElement
   const photo = new File(['image'], 'fixed.jpg', { type: 'image/jpeg' })
   fireEvent.change(input, { target: { files: [photo] } })
   expect(screen.getByRole('img', { name: 'Предпросмотр fixed.jpg' })).toBeVisible()
@@ -50,13 +50,19 @@ it('uses one replaceable photo state and omits an empty optional comment', async
   await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ defectCode: 'BD-01', photo, comment: undefined }))
 })
 
-it('offers separate phone camera and file controls without capturing on render', () => {
+it('uses the mobile form stack and Button file actions with stable labels', () => {
   vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
   render(<SubmitReviewForm defectCodes={codes} hasQualifyingComment onSubmit={vi.fn()} />)
-  const camera = screen.getByLabelText('Сделать фото')
-  const file = screen.getByLabelText('Выбрать файл')
-  expect(camera).toHaveAttribute('accept', 'image/*')
-  expect(camera).toHaveAttribute('capture', 'environment')
-  expect(file).toHaveAttribute('accept', 'image/jpeg,image/png,image/webp')
-  expect(file).not.toHaveAttribute('capture')
+  const fieldset = screen.getByRole('group')
+  expect(fieldset).toHaveClass('rp-form-stack--mobile')
+  expect(fieldset).not.toHaveAttribute('style')
+
+  const fileInput = screen.getByLabelText('Сделать фото или выбрать файл')
+  expect(fileInput).toHaveAttribute('accept', 'image/jpeg,image/png,image/webp')
+  expect(screen.getByRole('button', { name: 'Сделать фото или выбрать файл' })).toHaveClass('rp-button--secondary')
+  expect(screen.getByRole('button', { name: 'Сделать фото или выбрать файл' }).parentElement).toHaveClass('rp-action-bar')
+
+  fireEvent.change(fileInput, { target: { files: [new File(['image'], 'fixed.jpg', { type: 'image/jpeg' })] } })
+  expect(screen.getByRole('button', { name: 'Заменить' })).toHaveClass('rp-button--secondary')
+  expect(screen.getByRole('button', { name: 'Удалить' })).toHaveClass('rp-button--ghost')
 })

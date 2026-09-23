@@ -5,7 +5,6 @@ import { mapApiError } from '../../i18n/errors'
 
 const ACCEPTED = 'image/jpeg,image/png,image/webp'
 const MAX_BYTES = 15 * 1024 * 1024
-const PHONE_QUERY = '(max-width: 899px)'
 
 export type SubmitReviewValue = { defectCode: string; photo: File; comment?: string }
 
@@ -15,7 +14,6 @@ export function SubmitReviewForm({ defectCodes, hasQualifyingComment, onSubmit, 
   onSubmit: (value: SubmitReviewValue) => Promise<void>
   onCancel?: () => void
 }) {
-  const [isPhone, setIsPhone] = useState(() => window.matchMedia(PHONE_QUERY).matches)
   const [code, setCode] = useState('')
   const [comment, setComment] = useState('')
   const [photo, setPhoto] = useState<File | null>(null)
@@ -23,16 +21,8 @@ export function SubmitReviewForm({ defectCodes, hasQualifyingComment, onSubmit, 
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const submitting = useRef(false)
-  const cameraRef = useRef<HTMLInputElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => {
-    const media = window.matchMedia(PHONE_QUERY)
-    const change = (event: MediaQueryListEvent) => setIsPhone(event.matches)
-    setIsPhone(media.matches)
-    media.addEventListener('change', change)
-    return () => media.removeEventListener('change', change)
-  }, [])
   useEffect(() => {
     if (!photo) { setPreview(''); return }
     const url = URL.createObjectURL(photo)
@@ -42,7 +32,6 @@ export function SubmitReviewForm({ defectCodes, hasQualifyingComment, onSubmit, 
 
   const clear = () => {
     setPhoto(null)
-    if (cameraRef.current) cameraRef.current.value = ''
     if (fileRef.current) fileRef.current.value = ''
   }
   const choose = (event: ChangeEvent<HTMLInputElement>) => {
@@ -68,16 +57,16 @@ export function SubmitReviewForm({ defectCodes, hasQualifyingComment, onSubmit, 
   }
   const commentLabel = hasQualifyingComment ? 'Добавить уточнение' : 'Комментарий о выполненной работе'
   return <form onSubmit={submit} aria-busy={busy}>
-    <fieldset className="form-grid" disabled={busy} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+    <fieldset className="form-grid rp-form-stack--mobile" disabled={busy}>
     {!hasQualifyingComment ? <p>Напишите, что было сделано перед передачей на проверку</p> : null}
     <label className="field"><span>Код дефекта</span><input aria-label="Код дефекта" list="task-defect-codes" onChange={event => setCode(event.target.value.trim().toUpperCase())} required type="search" value={code} /></label>
     <datalist id="task-defect-codes">{defectCodes.map(item => <option key={item.code} value={item.code}>{item.label}</option>)}</datalist>
     {code && !defectCodes.some(item => item.code === code) ? <p role="alert">Выберите один код из списка.</p> : null}
     <label className="field"><span>{commentLabel}</span><textarea aria-label={commentLabel} onChange={event => setComment(event.target.value)} required={!hasQualifyingComment} rows={3} value={comment} /></label>
-    <div className="issue-action-row">
-      {isPhone ? <label className="btn btn-secondary">Сделать фото<input accept="image/*" aria-label="Сделать фото" capture="environment" className="issue-attach-input" onChange={choose} ref={cameraRef} type="file" /></label> : null}
-      <label className="btn btn-secondary">{photo ? 'Заменить фото' : 'Выбрать файл'}<input accept={ACCEPTED} aria-label="Выбрать файл" className="issue-attach-input" onChange={choose} ref={fileRef} type="file" /></label>
-      {photo ? <Button onClick={clear} type="button" variant="ghost">Удалить фото</Button> : null}
+    <div className="issue-action-row rp-action-bar">
+      <Button onClick={() => fileRef.current?.click()} type="button" variant="secondary">{photo ? 'Заменить' : 'Сделать фото или выбрать файл'}</Button>
+      <input accept={ACCEPTED} aria-label="Сделать фото или выбрать файл" className="issue-attach-input" onChange={choose} ref={fileRef} type="file" />
+      {photo ? <Button onClick={clear} type="button" variant="ghost">Удалить</Button> : null}
     </div>
     {preview && photo ? <img alt={`Предпросмотр ${photo.name}`} className="issue-attach-preview" src={preview} /> : null}
     {error ? <p role="alert">{error}</p> : null}
