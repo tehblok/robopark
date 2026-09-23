@@ -473,6 +473,63 @@ it('keeps one queued write-off across close and reopen, then collapses only afte
   act(() => listener?.(current))
   expect(await screen.findByText('Запчасть списана', { selector: '[role="status"]' })).toBeVisible()
   expect(screen.queryByRole('form', { name: 'Списание запчасти' })).not.toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Списать запчасть' }))
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
+  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
+
+  await waitFor(() => expect(enqueueAction).toHaveBeenCalledTimes(2))
+  expect(enqueueAction.mock.calls[1][0].id).not.toBe(enqueueAction.mock.calls[0][0].id)
+})
+
+it('blocks an early write-off until durable pending-action hydration completes', async () => {
+  const mechanic: User = { ...user, username: 'mech', role: 'mechanic', parks: [park] }
+  const claimedIssue = { ...issue, claim: { park_id: park.id }, assignee: { display: 'mech', login: 'mech' }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress' as const, sync_state: 'saved' as const, has_current_cycle_comment: false } }
+  const part: InventoryCatalogSearchItem = { id: 91, component_id: 21, component_name: 'Колёса', name: 'Шина', article: 'WH-91', is_active: true, has_photo: false, quantity: '3', minimum_quantity: '1', location: 'Склад', stock_is_active: true }
+  const existing: OfflineAction = { id: 'existing-writeoff', deviceId: 'phone', resourceType: 'tracker_issue', resourceId: issue.key, action: 'inventory_writeoff', idempotencyKey: 'existing-writeoff', baseRevision: null, dependencies: [], payload: { part_id: -91, quantity: '1', park_id: park.id }, state: 'ready', attempts: 0, createdAt: 1, updatedAt: 1 }
+  let finishHydration!: (action: OfflineAction | undefined) => void
+  const findAction = vi.fn(() => new Promise<OfflineAction | undefined>(resolve => { finishHydration = resolve }))
+  const enqueueAction = vi.fn()
+  const sync: SyncContextValue = { state: { status: 'idle', pending: 1, conflicts: 0 }, enqueueAction, enqueueMedia: vi.fn(), syncNow: vi.fn(), cancelAction: vi.fn(), resolveConflict: vi.fn(), findAction, subscribeAction: vi.fn(() => () => undefined) }
+  renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
+  fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
+  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+
+  expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
+  fireEvent.submit(screen.getByRole('form', { name: 'Списание запчасти' }))
+  expect(enqueueAction).not.toHaveBeenCalled()
+
+  act(() => finishHydration(existing))
+  expect(await screen.findByText('Списание ожидает синхронизации')).toBeVisible()
+  expect(enqueueAction).not.toHaveBeenCalled()
+})
+
+it('keeps legacy phone write-off durable across close and confirms through the shared contract', async () => {
+  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
+  const mechanic: User = { ...user, username: 'mech', role: 'mechanic', parks: [park] }
+  const legacyIssue = { ...issue, claim: { park_id: park.id }, assignee: { display: 'mech', login: 'mech' }, workflow: undefined }
+  const part: InventoryCatalogSearchItem = { id: 91, component_id: 21, component_name: 'Колёса', name: 'Шина', article: 'WH-91', is_active: true, has_photo: false, quantity: '3', minimum_quantity: '1', location: 'Склад', stock_is_active: true }
+  let current: OfflineAction | undefined
+  let listener: ((action: OfflineAction | undefined) => void) | undefined
+  const enqueueAction = vi.fn(async input => (current = { ...input, state: 'ready', attempts: 0, createdAt: 1, updatedAt: 1 }))
+  const sync: SyncContextValue = { state: { status: 'idle', pending: 0, conflicts: 0 }, enqueueAction, enqueueMedia: vi.fn(), syncNow: vi.fn(), cancelAction: vi.fn(), resolveConflict: vi.fn(), findAction: vi.fn(async () => current), subscribeAction: vi.fn((_id, next) => { listener = next; return () => undefined }) }
+  renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => legacyIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
+  fireEvent.click(await screen.findByRole('button', { name: 'Использовать запчасть' }))
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
+  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
+  await waitFor(() => expect(sync.subscribeAction).toHaveBeenCalled())
+  fireEvent.click(screen.getByRole('button', { name: 'Использовать запчасть' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Использовать запчасть' }))
+  expect(await screen.findByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
+  expect(enqueueAction).toHaveBeenCalledOnce()
+
+  current = { ...current!, state: 'confirmed', updatedAt: 2 }
+  act(() => listener?.(current))
+  expect(await screen.findByText('Запчасть списана', { selector: '[role="status"]' })).toBeVisible()
+  expect(screen.queryByRole('form', { name: 'Списание запчасти' })).not.toBeInTheDocument()
 })
 
 it('shows a queued write-off conflict without success and retries the same idempotency identity', async () => {

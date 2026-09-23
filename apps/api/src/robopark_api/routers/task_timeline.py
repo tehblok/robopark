@@ -17,12 +17,11 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
 from robopark_api.deps import require_user
-from robopark_api.models import Park, User
+from robopark_api.models import User
 from robopark_api.routers.tracker_actions import _authorize
 from robopark_api.schemas import (
     DefectCodeOut,
@@ -36,7 +35,7 @@ from robopark_api.services import (
     task_lifecycle,
     tracker_cache,
     tracker_client,
-    tracker_policy,
+    tracker_signatures,
 )
 from robopark_api.services.defect_codes import DEFECT_CODES
 from robopark_api.services.task_timeline import (
@@ -157,9 +156,8 @@ def authorize_attachment_content(
     issue = _issue(db, user, key, None, request)
     if task_lifecycle.tracker_issue_is_closed(issue):
         raise HTTPException(status_code=409, detail="task_already_closed")
-    issue_tags = tracker_policy.issue_tags(issue)
-    issue_parks = list(db.scalars(select(Park).where(Park.tag.in_(issue_tags))))
-    if issue_parks and not any(park.is_active for park in issue_parks):
+    issue_park = tracker_signatures.resolve_park(db, issue)
+    if issue_park is not None and not issue_park.is_active:
         raise HTTPException(status_code=403, detail="task_park_inactive")
     try:
         attachment_content(db, issue_key=key, attachment_id=attachment_id)

@@ -530,6 +530,22 @@ def test_attachment_head_rejects_inactive_park(
     assert response.status_code == 403
 
 
+def test_attachment_head_rejects_untagged_issue_resolved_to_inactive_park_by_queue(
+    client, db_session, seed_royal, seed_park_with_tracker, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_cache
+
+    seed_park_with_tracker.is_active = False
+    db_session.commit()
+    monkeypatch.setattr(tracker_cache, "get_issue", lambda **kwargs: {**ISSUE, "tags": []})
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.head("/tracker/issues/ROBOPARK-1/attachments/missing/content")
+
+    assert response.status_code == 403
+
+
 def test_attachment_content_rejects_traversal_from_corrupt_metadata(
     client, db_session, seed_royal, monkeypatch, tmp_path
 ):

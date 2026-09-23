@@ -27,6 +27,7 @@ export type SyncEngineFactory = (options: { accountId: number, park: string, use
 
 export type SyncContextValue = {
   state: SyncState
+  actionTrackingReady?: boolean
   enqueueAction(input: OfflineActionInput): Promise<unknown>
   enqueueMedia(input: OfflineMediaInput): Promise<unknown>
   syncNow(reason?: string): Promise<boolean>
@@ -125,6 +126,7 @@ export function SyncProvider({ children, engineFactory = defaultEngineFactory }:
 
   const value = useMemo<SyncContextValue>(() => ({
     state,
+    actionTrackingReady: engine !== null,
     enqueueAction: input => engine?.enqueueAction?.(input) ?? Promise.reject(new Error('sync_not_ready')),
     enqueueMedia: input => engine?.enqueueMedia?.(input) ?? Promise.reject(new Error('sync_not_ready')),
     syncNow: reason => engine?.syncNow?.(reason ?? 'manual') ?? Promise.resolve(false),
