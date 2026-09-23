@@ -427,16 +427,19 @@ def update_catalog_component(
 )
 async def replace_catalog_component_photo(
     component_id: int,
+    response: Response,
     photo: UploadFile = File(...),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
     photo_data = await _photo(photo)
-    row = _run(
+    row, cleanup_pending = _run(
         lambda: inventory_catalog.set_catalog_photo(
             db, user, kind="component", row_id=component_id, photo=photo_data
         )
     )
+    if cleanup_pending:
+        response.status_code = status.HTTP_202_ACCEPTED
     return inventory_catalog.component_out(row)
 
 
@@ -449,12 +452,14 @@ def remove_catalog_component_photo(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
-    _run(
+    cleanup_pending = _run(
         lambda: inventory_catalog.remove_catalog_photo(
             db, user, kind="component", row_id=component_id
         )
     )
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return Response(
+        status_code=(status.HTTP_202_ACCEPTED if cleanup_pending else status.HTTP_204_NO_CONTENT)
+    )
 
 
 @router.delete(
@@ -463,6 +468,7 @@ def remove_catalog_component_photo(
 )
 def permanently_delete_catalog_component(
     component_id: int,
+    response: Response,
     permanent: bool = False,
     q: str | None = None,
     mode: str = "active",
@@ -471,11 +477,14 @@ def permanently_delete_catalog_component(
 ):
     if not permanent:
         raise HTTPException(400, "inventory_permanent_delete_required")
-    return _run(
+    result = _run(
         lambda: inventory_deletion.delete_component(
             db, user, component_id, query=q, mode=mode
         )
     )
+    if result.pop("_cleanup_pending", False):
+        response.status_code = status.HTTP_202_ACCEPTED
+    return result
 
 
 @router.post(
@@ -522,16 +531,19 @@ def update_catalog_part(
 )
 async def replace_catalog_part_photo(
     part_id: int,
+    response: Response,
     photo: UploadFile = File(...),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
     photo_data = await _photo(photo)
-    row = _run(
+    row, cleanup_pending = _run(
         lambda: inventory_catalog.set_catalog_photo(
             db, user, kind="part", row_id=part_id, photo=photo_data
         )
     )
+    if cleanup_pending:
+        response.status_code = status.HTTP_202_ACCEPTED
     return inventory_catalog.part_out(row)
 
 
@@ -544,8 +556,12 @@ def remove_catalog_part_photo(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
-    _run(lambda: inventory_catalog.remove_catalog_photo(db, user, kind="part", row_id=part_id))
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    cleanup_pending = _run(
+        lambda: inventory_catalog.remove_catalog_photo(db, user, kind="part", row_id=part_id)
+    )
+    return Response(
+        status_code=(status.HTTP_202_ACCEPTED if cleanup_pending else status.HTTP_204_NO_CONTENT)
+    )
 
 
 @router.delete(
@@ -554,6 +570,7 @@ def remove_catalog_part_photo(
 )
 def permanently_delete_catalog_part(
     part_id: int,
+    response: Response,
     permanent: bool = False,
     q: str | None = None,
     mode: str = "active",
@@ -562,9 +579,12 @@ def permanently_delete_catalog_part(
 ):
     if not permanent:
         raise HTTPException(400, "inventory_permanent_delete_required")
-    return _run(
+    result = _run(
         lambda: inventory_deletion.delete_part(db, user, part_id, query=q, mode=mode)
     )
+    if result.pop("_cleanup_pending", False):
+        response.status_code = status.HTTP_202_ACCEPTED
+    return result
 
 
 @router.get("/catalog/parts/{part_id}", response_model=InventoryCatalogSearchItem)

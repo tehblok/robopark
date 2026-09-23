@@ -96,7 +96,7 @@ def set_catalog_photo(
     row_id: int,
     photo: tuple[str | None, bytes, str | None],
 ):
-    from robopark_api.services import inventory
+    from robopark_api.services import inventory, inventory_photo_cleanup
 
     _require_catalog_photo_manage(db, user)
     row = _catalog_photo_row(db, kind, row_id)
@@ -116,18 +116,21 @@ def set_catalog_photo(
         row.photo_filename = safe_name
         row.photo_content_type = stored_type
         row.updated_by = user.id
+        inventory_photo_cleanup.enqueue(db, {old_key} if old_key else set())
         db.commit()
     except Exception:
         db.rollback()
         inventory._remove_photo(new_key)
         raise
-    inventory._remove_photo(old_key)
+    cleanup_pending = inventory_photo_cleanup.cleanup_pending(
+        db, {old_key} if old_key else set()
+    )
     db.refresh(row)
-    return row
+    return row, cleanup_pending
 
 
-def remove_catalog_photo(db: Session, user: User, *, kind: str, row_id: int) -> None:
-    from robopark_api.services import inventory
+def remove_catalog_photo(db: Session, user: User, *, kind: str, row_id: int) -> bool:
+    from robopark_api.services import inventory_photo_cleanup
 
     _require_catalog_photo_manage(db, user)
     row = _catalog_photo_row(db, kind, row_id)
@@ -137,11 +140,12 @@ def remove_catalog_photo(db: Session, user: User, *, kind: str, row_id: int) -> 
         row.photo_filename = None
         row.photo_content_type = None
         row.updated_by = user.id
+        inventory_photo_cleanup.enqueue(db, {old_key} if old_key else set())
         db.commit()
     except Exception:
         db.rollback()
         raise
-    inventory._remove_photo(old_key)
+    return inventory_photo_cleanup.cleanup_pending(db, {old_key} if old_key else set())
 
 
 def _audit_detail(fields) -> str:

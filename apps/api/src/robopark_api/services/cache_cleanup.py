@@ -22,7 +22,13 @@ from robopark_api.db import SessionLocal
 from robopark_api.models import AuthThrottleState
 from robopark_api.routers import push
 from robopark_api.schedule_models import SystemIncidentOccurrence
-from robopark_api.services import emergency_cache, media_uploads, schedules, tracker_cache
+from robopark_api.services import (
+    emergency_cache,
+    inventory_photo_cleanup,
+    media_uploads,
+    schedules,
+    tracker_cache,
+)
 from robopark_api.services.diagnostic_unknowns import prune_diagnostic_unknowns
 from robopark_api.services.live_merge import get_live_merge_store
 from robopark_api.services.ops.context import resolved_ops_dir
@@ -436,6 +442,7 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
         schedules_removed = schedules.prune_old_entries(db, now=current)
         actions_removed, attachments_removed = prune_tracker_outbox(db, now=current.timestamp())
         pending_reports_removed = reconcile_pending_report_deletions(db)
+        inventory_photos_removed = inventory_photo_cleanup.process_pending(db)
     deleted_report_files = prune_deleted_report_files(now=current.timestamp())
     cleanup_storage_pressure(now=current.timestamp())
     if files_removed or unknowns_removed:
@@ -466,6 +473,8 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
         logger.info("Pruned %s deleted-report quarantine file(s)", deleted_report_files)
     if pending_reports_removed:
         logger.info("Completed %s pending report deletion(s)", pending_reports_removed)
+    if inventory_photos_removed:
+        logger.info("Completed %s pending inventory photo cleanup(s)", inventory_photos_removed)
     return files_removed, unknowns_removed
 
 

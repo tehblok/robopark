@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from robopark_api.models import (
@@ -16,7 +16,8 @@ from robopark_api.models import (
     User,
     UserPark,
 )
-from robopark_api.services import inventory
+from robopark_api.services import inventory_photo_cleanup, inventory_stock
+from robopark_api.services.inventory_identity import resolve_catalog_part
 
 
 def _require_royal(user: User) -> None:
@@ -190,12 +191,12 @@ def delete_part(
     summary = _delete_summary(db, part_ids, query=query, mode=mode)
     try:
         storage_keys = _delete_part_rows(db, part_ids)
+        inventory_photo_cleanup.enqueue(db, storage_keys)
         db.commit()
     except Exception:
         db.rollback()
         raise
-    for storage_key in storage_keys:
-        inventory._remove_photo(storage_key)
+    summary["_cleanup_pending"] = inventory_photo_cleanup.cleanup_pending(db, storage_keys)
     return summary
 
 
@@ -221,18 +222,30 @@ def delete_component(
         storage_keys = _delete_part_rows(db, graph_ids) if graph_ids else set()
         if component.photo_storage_key:
             storage_keys.add(component.photo_storage_key)
+        inventory_photo_cleanup.enqueue(db, storage_keys)
         db.delete(component)
         db.commit()
     except Exception:
         db.rollback()
         raise
-    for storage_key in storage_keys:
-        inventory._remove_photo(storage_key)
+    summary["_cleanup_pending"] = inventory_photo_cleanup.cleanup_pending(db, storage_keys)
     return summary
 
 
 def delete_count(db: Session, user: User, count_id: int) -> None:
-    count = db.get(InventoryCount, count_id)
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(
+            update(InventoryCount)
+            .where(InventoryCount.id == count_id)
+            .values(status=InventoryCount.status)
+            .execution_options(synchronize_session=False)
+        )
+    count = db.scalar(
+        select(InventoryCount)
+        .where(InventoryCount.id == count_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if count is None:
         raise LookupError("inventory_count_not_found")
     if user.role == "admin":
@@ -247,13 +260,48 @@ def delete_count(db: Session, user: User, count_id: int) -> None:
     elif user.role != "royal":
         raise PermissionError("forbidden")
     try:
-        db.execute(delete(InventoryCountLine).where(InventoryCountLine.count_id == count.id))
-        db.execute(
-            delete(InventoryMovement).where(
-                InventoryMovement.source_kind == "count",
-                InventoryMovement.source_id.like(f"{count.id}:%"),
+        movements = list(
+            db.scalars(
+                select(InventoryMovement).where(
+                    InventoryMovement.park_id == count.park_id,
+                    InventoryMovement.source_kind == "count",
+                    InventoryMovement.source_id.like(f"{count.id}:%"),
+                ).with_for_update()
             )
         )
+        reverse_by_part: dict[int, int] = {}
+        for movement in movements:
+            if movement.catalog_part_id is None:
+                raise inventory_stock.InventoryConflict("inventory_count_adjustment_invalid")
+            canonical = resolve_catalog_part(
+                db, movement.catalog_part_id, allow_archived=True, lock=True
+            )
+            reverse_by_part[canonical.id] = reverse_by_part.get(canonical.id, 0) - int(
+                movement.delta
+            )
+        for catalog_part_id, reverse_delta in reverse_by_part.items():
+            stock = inventory_stock.ensure_stock(
+                db,
+                park_id=count.park_id,
+                catalog_part_id=catalog_part_id,
+                allow_archived=True,
+            )
+            restored = inventory_stock.require_int64(int(stock.quantity) + reverse_delta)
+            if restored < 0:
+                raise inventory_stock.InventoryConflict(
+                    "inventory_count_delete_stock_conflict",
+                    current_quantity=int(stock.quantity),
+                )
+            stock.quantity = restored
+            inventory_stock.increment_stock_version(stock)
+            stock.updated_by = user.id
+        db.execute(delete(InventoryCountLine).where(InventoryCountLine.count_id == count.id))
+        if movements:
+            db.execute(
+                delete(InventoryMovement).where(
+                    InventoryMovement.id.in_([movement.id for movement in movements])
+                )
+            )
         db.delete(count)
         db.commit()
     except Exception:

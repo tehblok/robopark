@@ -161,6 +161,102 @@ def test_catalog_photo_replace_and_remove_clean_up_managed_files(
     )
 
 
+def test_catalog_photo_replace_persists_retryable_cleanup_after_unlink_failure(
+    client, db_engine, db_session, seed_royal, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        inventory,
+        "get_settings",
+        lambda: SimpleNamespace(inventory_photos_dir=str(tmp_path / "inventory-photos")),
+    )
+    _component, part = _catalog(db_session, seed_royal, article="PHOTO-CLEANUP-RETRY")
+    old_key, filename, content_type = inventory.save_photo("old.jpg", _JPEG, "image/jpeg")
+    part.photo_storage_key = old_key
+    part.photo_filename = filename
+    part.photo_content_type = content_type
+    db_session.commit()
+    login_as(client, seed_royal.username, "secret")
+    from robopark_api.services import inventory_photo_cleanup
+
+    real_unlink = inventory_photo_cleanup._unlink_storage_key
+    monkeypatch.setattr(
+        inventory_photo_cleanup,
+        "_unlink_storage_key",
+        lambda _key: (_ for _ in ()).throw(OSError("unlink failed")),
+    )
+
+    response = client.put(
+        f"/inventory/catalog/parts/{part.id}/photo",
+        files={"photo": ("new.png", _PNG, "image/png")},
+    )
+
+    assert response.status_code == 202, response.text
+    db_session.expire_all()
+    stored = db_session.get(InventoryCatalogPart, part.id)
+    assert stored is not None and stored.photo_storage_key != old_key
+    current_key = stored.photo_storage_key
+    assert inventory.photo_path(current_key).is_file()
+    assert (tmp_path / "inventory-photos" / old_key).is_file()
+
+    from robopark_api.models import InventoryPhotoCleanup
+
+    assert db_session.get(InventoryPhotoCleanup, old_key) is not None
+    monkeypatch.setattr(inventory_photo_cleanup, "_unlink_storage_key", real_unlink)
+    with Session(db_engine) as restarted:
+        assert inventory_photo_cleanup.process_pending(restarted) == 1
+        assert inventory_photo_cleanup.process_pending(restarted) == 0
+        assert restarted.get(InventoryPhotoCleanup, old_key) is None
+    assert not (tmp_path / "inventory-photos" / old_key).exists()
+    with Session(db_engine) as restarted:
+        inventory_photo_cleanup.enqueue(restarted, {current_key})
+        restarted.commit()
+        assert inventory_photo_cleanup.process_pending(restarted) == 1
+        assert restarted.get(InventoryPhotoCleanup, current_key) is None
+    assert inventory.photo_path(current_key).is_file()
+
+
+def test_permanent_delete_persists_retryable_photo_cleanup_after_unlink_failure(
+    client, db_engine, db_session, seed_royal, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        inventory,
+        "get_settings",
+        lambda: SimpleNamespace(inventory_photos_dir=str(tmp_path / "inventory-photos")),
+    )
+    _component, part = _catalog(db_session, seed_royal, article="DELETE-CLEANUP-RETRY")
+    key, filename, content_type = inventory.save_photo("delete.jpg", _JPEG, "image/jpeg")
+    part.photo_storage_key = key
+    part.photo_filename = filename
+    part.photo_content_type = content_type
+    db_session.commit()
+    login_as(client, seed_royal.username, "secret")
+    from robopark_api.services import inventory_photo_cleanup
+
+    real_unlink = inventory_photo_cleanup._unlink_storage_key
+    monkeypatch.setattr(
+        inventory_photo_cleanup,
+        "_unlink_storage_key",
+        lambda _key: (_ for _ in ()).throw(OSError("unlink failed")),
+    )
+
+    response = client.delete(
+        f"/inventory/catalog/parts/{part.id}", params={"permanent": "true"}
+    )
+
+    assert response.status_code == 202, response.text
+    assert db_session.get(InventoryCatalogPart, part.id) is None
+    assert (tmp_path / "inventory-photos" / key).is_file()
+    from robopark_api.models import InventoryPhotoCleanup
+
+    assert db_session.get(InventoryPhotoCleanup, key) is not None
+    monkeypatch.setattr(inventory_photo_cleanup, "_unlink_storage_key", real_unlink)
+    with Session(db_engine) as restarted:
+        assert inventory_photo_cleanup.process_pending(restarted) == 1
+        assert inventory_photo_cleanup.process_pending(restarted) == 0
+        assert restarted.get(InventoryPhotoCleanup, key) is None
+    assert not (tmp_path / "inventory-photos" / key).exists()
+
+
 def test_catalog_photo_keeps_committed_new_file_when_refresh_fails(
     client, db_session, seed_royal, tmp_path, monkeypatch
 ):

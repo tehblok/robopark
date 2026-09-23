@@ -7,8 +7,10 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from conftest import login_as
 from robopark_api.collaboration_models import TrackerClaim
-from robopark_api.models import Campaign, CampaignSubmission, Report
+from robopark_api.models import Campaign, CampaignSubmission, Report, User, UserPark
+from robopark_api.security import hash_password
 from robopark_api.task_workflow_models import ReliableAction, TaskAttachment, TaskMessage
 
 TINY_PNG = bytes.fromhex(
@@ -734,12 +736,23 @@ def test_start_success_activates_linked_pending_claim(
         assert saved.state == "active"
 
 
-def test_terminal_start_failure_releases_linked_pending_claim(
-    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+def test_terminal_start_failure_remains_reserved_and_admin_retry_activates_original_owner(
+    client,
+    db_engine,
+    db_session,
+    seed_mechanic,
+    seed_admin,
+    seed_park_with_tracker,
+    monkeypatch,
 ):
-    from robopark_api.services import tracker_outbox
+    from robopark_api.services import platform_settings, tracker_outbox
 
-    failed = _action(db_session, seed_mechanic, action="ensure_components")
+    failed = _action(
+        db_session,
+        seed_mechanic,
+        action="ensure_components",
+        payload={"value": ["ROBOT_SUSPENSION"]},
+    )
     failed.state = "needs_attention"
     start = _action(
         db_session,
@@ -767,7 +780,56 @@ def test_terminal_start_failure_releases_linked_pending_claim(
     tracker_outbox._process_batch(sessionmaker(bind=db_engine, future=True))
 
     with Session(db_engine) as db:
-        assert db.get(TrackerClaim, start.resource_id) is None
+        saved = db.get(TrackerClaim, start.resource_id)
+        assert saved is not None
+        assert (saved.owner_user_id, saved.state) == (seed_mechanic.id, "pending")
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **_kwargs: {
+            "key": start.resource_id,
+            "queue": "ROBOPARK",
+            "tags": [seed_park_with_tracker.tag],
+            "components": ["ROBOT_SUSPENSION"],
+            "status_key": "inProgress",
+        },
+    )
+    competing = User(
+        username="retry-competing-mechanic",
+        password_hash=hash_password("secret"),
+        role_id=seed_mechanic.role_id,
+        access_status="approved",
+        is_active=True,
+    )
+    db_session.add(competing)
+    db_session.flush()
+    db_session.add(UserPark(user_id=competing.id, park_id=seed_park_with_tracker.id))
+    db_session.commit()
+    login_as(client, competing.username, "secret")
+    stolen = client.post(
+        f"/tracker/issues/{start.resource_id}/claim",
+        headers={"Idempotency-Key": "competing-start-chain"},
+    )
+    assert stolen.status_code == 409
+    assert stolen.json()["detail"] == "tracker_issue_claim_pending"
+
+    db_session.add(UserPark(user_id=seed_admin.id, park_id=seed_park_with_tracker.id))
+    db_session.commit()
+    login_as(client, seed_admin.username, "secret")
+    retried = client.post(
+        f"/tracker/issues/{start.resource_id}/retry-now",
+        headers={"Idempotency-Key": "admin-retry-start-chain"},
+    )
+    assert retried.status_code == 200, retried.text
+
+    tracker_outbox._process_batch(sessionmaker(bind=db_engine, future=True))
+    tracker_outbox._process_batch(sessionmaker(bind=db_engine, future=True))
+
+    with Session(db_engine) as db:
+        saved = db.get(TrackerClaim, start.resource_id)
+        assert saved is not None
+        assert (saved.owner_user_id, saved.state) == (seed_mechanic.id, "active")
 
 
 def test_claim_preparation_actions_use_fresh_state_and_skip_satisfied_mutations(

@@ -733,6 +733,8 @@ def submit_review(
     claim_row = get_claim(db, issue_key)
     if claim_row is None or claim_row.owner_user_id != actor.id:
         raise HTTPException(409, "tracker_issue_claim_required")
+    if claim_row.state != "active":
+        raise HTTPException(409, "tracker_issue_claim_not_active")
     if reviewer is None:
         reviewer = schedules.resolve_active_operator(db, park_id=claim_row.park_id)
     if reviewer is None:

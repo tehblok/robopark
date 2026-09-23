@@ -543,6 +543,8 @@ def task_writeoff(
     claim = get_claim(db, issue_key)
     if claim is None or claim.owner_user_id != user.id:
         raise PermissionError("inventory_issue_not_owned")
+    if claim.state != "active":
+        raise inventory_stock.InventoryConflict("tracker_issue_claim_not_active")
     if park_id is not None and park_id != claim.park_id:
         raise inventory_stock.InventoryConflict("inventory_park_part_mismatch")
     part, stock, legacy_part_id = _part_and_stock(

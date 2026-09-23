@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from conftest import login_as, role_id_for
 from robopark_api.collaboration_models import TrackerClaim
+from robopark_api.db import get_db
 from robopark_api.models import AccessStatus, AuditLog, Park, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings, rbac
@@ -92,7 +93,32 @@ def _claim(client, user):
     )
 
 
-def _submit(client, *, key="review-task-51", comment=None, code="BD-01", files=None):
+def _activate_claim(db_session):
+    claim = db_session.get(TrackerClaim, ISSUE_KEY)
+    assert claim is not None
+    claim.state = "active"
+    db_session.commit()
+
+
+def _submit(
+    client,
+    *,
+    key="review-task-51",
+    comment=None,
+    code="BD-01",
+    files=None,
+    activate_claim=True,
+):
+    if activate_claim:
+        # Most lifecycle tests model an already delivered start transition.
+        dependency = client.app.dependency_overrides[get_db]
+        session_generator = dependency()
+        db = next(session_generator)
+        claim = db.get(TrackerClaim, ISSUE_KEY)
+        if claim is not None and claim.state == "pending":
+            claim.state = "active"
+            db.commit()
+        session_generator.close()
     data = {"defect_code": code}
     if comment is not None:
         data["comment"] = comment
@@ -334,6 +360,7 @@ def test_concurrent_claims_serialize_at_issue_boundary(
 
     _operator(db_session, seed_park_with_tracker)
     other = _mechanic(db_session, seed_park_with_tracker, username="racing-mechanic")
+    park_id = seed_park_with_tracker.id
     real_resolve = schedules.resolve_active_operator
     start = threading.Barrier(3)
     release = threading.Event()
@@ -365,10 +392,10 @@ def test_concurrent_claims_serialize_at_issue_boundary(
         with Session(db_engine) as db:
             try:
                 task_lifecycle.claim(
-                    db,
-                    actor=db.get(User, user_id),
-                    issue_key=ISSUE_KEY,
-                    park=db.get(Park, seed_park_with_tracker.id),
+                        db,
+                        actor=db.get(User, user_id),
+                        issue_key=ISSUE_KEY,
+                        park=db.get(Park, park_id),
                     idempotency_key=idempotency_key,
                 )
             except HTTPException as exc:
@@ -435,6 +462,7 @@ def test_handoff_replay_changes_owner_and_writes_one_message(
     next_mechanic = _mechanic(db_session, seed_park_with_tracker)
     _prepare_tracker(db_session, monkeypatch)
     assert _claim(client, seed_mechanic).status_code == 200
+    _activate_claim(db_session)
     before = db_session.query(TaskMessage).count()
 
     first = client.post(
@@ -474,6 +502,7 @@ def test_workflow_exposes_current_cycle_comment_eligibility(
 ):
     _prepare_tracker(db_session, monkeypatch)
     assert _claim(client, seed_mechanic).status_code == 200
+    _activate_claim(db_session)
     before = client.get(f"/tracker/issues/{ISSUE_KEY}")
     assert before.status_code == 200
     assert before.json()["workflow"]["has_current_cycle_comment"] is False
@@ -544,6 +573,38 @@ def test_submit_review_requires_current_cycle_comment_one_known_code_and_one_val
     assert fake_png.status_code == 400
     assert fake_png.json()["detail"] == "task_attachment_invalid_type"
     assert db_session.query(TaskReview).count() == 0
+
+
+def test_submit_review_requires_active_claim_before_persisting_review_effects(
+    client, db_session, seed_mechanic, seed_park_with_tracker, tmp_path, monkeypatch
+):
+    from robopark_api.services import task_timeline
+
+    monkeypatch.setattr(task_timeline, "staged_attachments_root", lambda: tmp_path)
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+    claim = db_session.get(TrackerClaim, ISSUE_KEY)
+    assert claim is not None and claim.state == "pending"
+    before_actions = db_session.query(ReliableAction).count()
+
+    pending = _submit(
+        client,
+        key="review-pending-claim",
+        comment="Заменил деталь",
+        activate_claim=False,
+    )
+
+    assert pending.status_code == 409
+    assert pending.json()["detail"] == "tracker_issue_claim_not_active"
+    assert db_session.query(TaskReview).count() == 0
+    assert db_session.query(TaskAttachment).count() == 0
+    assert db_session.query(ReliableAction).count() == before_actions
+
+    claim.state = "active"
+    db_session.commit()
+    active = _submit(client, key="review-active-claim", comment="Заменил деталь")
+    assert active.status_code == 200, active.text
+    assert db_session.query(TaskReview).count() == 1
 
 
 def test_submit_review_stages_one_photo_and_all_bot_actions_once(

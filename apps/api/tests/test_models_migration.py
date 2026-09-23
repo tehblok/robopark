@@ -72,6 +72,7 @@ def test_metadata_has_required_tables():
         "inventory_catalog_components",
         "inventory_catalog_parts",
         "inventory_park_stocks",
+        "inventory_photo_cleanup",
         "inventory_receipts",
         "inventory_receipt_lines",
         "inventory_counts",
@@ -118,10 +119,26 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_is_claim_workflow_visibility():
+def test_alembic_head_is_inventory_photo_cleanup():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0037_claim_workflow_visibility"]
+    assert script.get_heads() == ["0038_inventory_photo_cleanup"]
+
+
+def test_inventory_photo_cleanup_migration_is_additive(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0037_claim_workflow_visibility")
+    command.upgrade(config, "head")
+    inspector = inspect(create_engine(sqlite_database_url, future=True))
+
+    assert {
+        "storage_key",
+        "attempts",
+        "last_error",
+        "created_at",
+        "updated_at",
+    } == {column["name"] for column in inspector.get_columns("inventory_photo_cleanup")}
 
 
 def test_claim_and_message_visibility_columns(sqlite_database_url, monkeypatch):

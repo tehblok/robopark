@@ -270,6 +270,53 @@ def test_task_writeoff_requires_owner_and_writes_technical_tracker_comment(
     assert db_session.scalar(select(InventoryParkStock.quantity)) == 3
 
 
+def test_task_writeoff_requires_active_claim_before_persisting_stock_effects(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    mechanic = _user(db_session, "mechanic", "pending-writeoff", [seed_park_with_tracker])
+    login_as(client, mechanic.username, "secret")
+    _, part = _seed_part(client, seed_park_with_tracker.id)
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim = claim_issue(
+        db_session,
+        actor=mechanic,
+        owner=mechanic,
+        issue_key="RP-PENDING-WRITEOFF",
+        park_id=seed_park_with_tracker.id,
+        state="pending",
+    )
+    db_session.commit()
+    monkeypatch.setattr(inventory_svc.platform_settings, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        inventory_svc.tracker_cache,
+        "get_issue",
+        lambda **kwargs: {
+            "key": "RP-PENDING-WRITEOFF",
+            "tags": [seed_park_with_tracker.tag],
+        },
+    )
+    comments = []
+    monkeypatch.setattr(
+        inventory_svc.tracker_client, "add_comment", lambda **kwargs: comments.append(kwargs)
+    )
+    payload = {"part_id": part["id"], "quantity": 2, "idempotency_key": "pending-writeoff"}
+
+    pending = client.post("/inventory/tasks/RP-PENDING-WRITEOFF/writeoff", json=payload)
+
+    assert pending.status_code == 409
+    assert pending.json()["detail"]["code"] == "tracker_issue_claim_not_active"
+    assert db_session.scalar(select(InventoryParkStock.quantity)) == 5
+    assert db_session.query(InventoryMovement).filter_by(kind="task_writeoff").count() == 0
+    assert comments == []
+
+    claim.state = "active"
+    db_session.commit()
+    active = client.post("/inventory/tasks/RP-PENDING-WRITEOFF/writeoff", json=payload)
+    assert active.status_code == 201, active.text
+    assert active.json()["balance_after"] == 3
+
+
 def test_task_writeoff_idempotency_key_has_one_movement_decrement_comment_and_audit(
     client, db_session, seed_park_with_tracker, monkeypatch
 ):

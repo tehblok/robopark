@@ -535,8 +535,6 @@ def _sync_claim(db: Session, action: ReliableAction) -> None:
     if action.state == "succeeded":
         claim.state = "active"
         claim.updated_at = action.updated_at
-    else:
-        db.delete(claim)
 
 
 def _process_batch(session_factory) -> int:
