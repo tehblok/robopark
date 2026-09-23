@@ -14,6 +14,11 @@ from robopark_api.models import (
 from robopark_api.services import audit, inventory_access, inventory_stock
 from robopark_api.services.inventory_identity import lock_catalog_parts, resolve_catalog_part
 from robopark_api.services.inventory_stock import InventoryConflict
+from robopark_api.services.rbac import (
+    PERMISSION_INVENTORY_CATALOG_MANAGE,
+    PERMISSION_INVENTORY_STOCK_MANAGE,
+    has_permission,
+)
 
 # One transaction-scoped PostgreSQL reader/writer lock protects the alias graph:
 # receipts share it while resolving aliases and merges hold it exclusively while
@@ -65,6 +70,78 @@ def part_out(row: InventoryCatalogPart) -> dict:
         "is_active": row.is_active,
         "has_photo": bool(row.photo_storage_key),
     }
+
+
+def _catalog_photo_row(db: Session, kind: str, row_id: int):
+    model = InventoryCatalogComponent if kind == "component" else InventoryCatalogPart
+    row = db.get(model, row_id)
+    if row is None:
+        raise LookupError(f"inventory_{kind}_not_found")
+    return row
+
+
+def _require_catalog_photo_manage(db: Session, user: User) -> None:
+    if not inventory_access.can_view_inventory(db, user) or not (
+        has_permission(db, user, PERMISSION_INVENTORY_CATALOG_MANAGE)
+        or has_permission(db, user, PERMISSION_INVENTORY_STOCK_MANAGE)
+    ):
+        raise PermissionError("forbidden")
+
+
+def set_catalog_photo(
+    db: Session,
+    user: User,
+    *,
+    kind: str,
+    row_id: int,
+    photo: tuple[str | None, bytes, str | None],
+):
+    from robopark_api.services import inventory
+
+    _require_catalog_photo_manage(db, user)
+    row = _catalog_photo_row(db, kind, row_id)
+    filename, content, content_type = photo
+    resolved_type = inventory.normalize_attachment_content_type(
+        filename=filename or "photo",
+        content=content,
+        content_type=content_type,
+    )
+    if resolved_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise ValueError("inventory_photo_invalid_type")
+    old_key = row.photo_storage_key
+    new_key = None
+    try:
+        new_key, safe_name, stored_type = inventory.save_photo(filename, content, resolved_type)
+        row.photo_storage_key = new_key
+        row.photo_filename = safe_name
+        row.photo_content_type = stored_type
+        row.updated_by = user.id
+        db.commit()
+        db.refresh(row)
+    except Exception:
+        db.rollback()
+        inventory._remove_photo(new_key)
+        raise
+    inventory._remove_photo(old_key)
+    return row
+
+
+def remove_catalog_photo(db: Session, user: User, *, kind: str, row_id: int) -> None:
+    from robopark_api.services import inventory
+
+    _require_catalog_photo_manage(db, user)
+    row = _catalog_photo_row(db, kind, row_id)
+    old_key = row.photo_storage_key
+    try:
+        row.photo_storage_key = None
+        row.photo_filename = None
+        row.photo_content_type = None
+        row.updated_by = user.id
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    inventory._remove_photo(old_key)
 
 
 def _audit_detail(fields) -> str:

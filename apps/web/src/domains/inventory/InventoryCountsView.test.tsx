@@ -16,6 +16,7 @@ function client(overrides = {}) {
     refreshInventoryCount: vi.fn(async () => ({ ...count, lines: [{ ...count.lines[0], expected_quantity: '6' as const, actual_quantity: '8' as const, difference: '2' as const }] })),
     postInventoryCount: vi.fn(async () => ({ ...count, status: 'posted' as const })),
     cancelInventoryCount: vi.fn(async () => ({ ...count, status: 'cancelled' as const })),
+    permanentlyDeleteInventoryCount: vi.fn(async () => undefined),
     ...overrides,
   }
 }
@@ -196,4 +197,20 @@ it('saves only filled changed count lines and reloads that server draft after Ba
   await userEvent.click(within(await screen.findByRole('article', { name: 'Инвентаризация №71' })).getByRole('button', { name: 'Открыть' }))
   expect(screen.getByRole('textbox', { name: 'Фактически ABC-1' })).toHaveValue('8')
   expect(screen.getByRole('textbox', { name: 'Фактически DEF-2' })).toHaveValue('')
+})
+
+it('requires the count name and removes a permanently deleted count locally', async () => {
+  const apiClient = client({ inventoryCounts: vi.fn(async () => ({ items: [count], limit: 25, offset: 0, total: 1 })) })
+  render(<InventoryCountsView apiClient={apiClient} parkId={7} permissions={['inventory.catalog.manage']} role="admin" />)
+  const card = await screen.findByRole('article', { name: 'Инвентаризация №71' })
+  await userEvent.click(within(card).getByRole('button', { name: 'Удалить навсегда' }))
+  const dialog = screen.getByRole('alertdialog', { name: 'Удалить акт «Сентябрь» навсегда?' })
+  const confirm = within(dialog).getByRole('button', { name: 'Удалить навсегда' })
+  expect(confirm).toBeDisabled()
+  await userEvent.type(within(dialog).getByRole('textbox'), 'Сентябрь')
+  await userEvent.click(confirm)
+
+  await waitFor(() => expect(apiClient.permanentlyDeleteInventoryCount).toHaveBeenCalledWith(71))
+  expect(screen.queryByRole('article', { name: 'Инвентаризация №71' })).not.toBeInTheDocument()
+  expect(apiClient.inventoryCounts).toHaveBeenCalledTimes(1)
 })

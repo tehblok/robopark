@@ -1,5 +1,7 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -11,8 +13,12 @@ from robopark_api.models import (
     AuditLog,
     InventoryCatalogComponent,
     InventoryCatalogPart,
+    InventoryCount,
+    InventoryCountLine,
     InventoryMovement,
     InventoryParkStock,
+    InventoryReceipt,
+    InventoryReceiptLine,
     Park,
     Permission,
     Role,
@@ -20,7 +26,7 @@ from robopark_api.models import (
     UserPark,
 )
 from robopark_api.security import hash_password
-from robopark_api.services import inventory_catalog, inventory_stock
+from robopark_api.services import inventory, inventory_catalog, inventory_stock
 from robopark_api.services.rbac import has_permission
 
 
@@ -61,6 +67,229 @@ def _catalog(db, actor, *, name="Тяга", article="ABC-01"):
     db.add(part)
     db.commit()
     return component, part
+
+
+_JPEG = b"\xff\xd8\xff\xe0catalog-photo"
+_PNG = b"\x89PNG\r\n\x1a\ncatalog-photo"
+_WEBP = b"RIFF\x08\x00\x00\x00WEBPcatalog-photo"
+
+
+def _photos_in(tmp_path):
+    root = tmp_path / "inventory-photos"
+    return set(root.iterdir()) if root.exists() else set()
+
+
+@pytest.mark.parametrize(
+    ("kind", "payload", "filename", "content_type"),
+    [
+        ("components", _JPEG, "photo.jpg", "image/jpeg"),
+        ("parts", _PNG, "photo.png", "image/png"),
+        ("parts", _WEBP, "photo.webp", "image/webp"),
+    ],
+)
+def test_catalog_photo_accepts_only_supported_images(
+    client,
+    db_session,
+    seed_park_with_tracker,
+    seed_royal,
+    tmp_path,
+    monkeypatch,
+    kind,
+    payload,
+    filename,
+    content_type,
+):
+    monkeypatch.setattr(
+        inventory,
+        "get_settings",
+        lambda: SimpleNamespace(inventory_photos_dir=str(tmp_path / "inventory-photos")),
+    )
+    component, part = _catalog(db_session, seed_royal, article=f"PHOTO-{kind}")
+    row_id = component.id if kind == "components" else part.id
+    login_as(client, seed_royal.username, "secret")
+
+    uploaded = client.put(
+        f"/inventory/catalog/{kind}/{row_id}/photo",
+        files={"photo": (filename, payload, content_type)},
+    )
+    rejected = client.put(
+        f"/inventory/catalog/{kind}/{row_id}/photo",
+        files={"photo": ("photo.heic", b"heic", "image/heic")},
+    )
+
+    assert uploaded.status_code == 200, uploaded.text
+    assert uploaded.json()["has_photo"] is True
+    assert rejected.status_code == 400
+    assert rejected.json()["detail"] == "inventory_photo_invalid_type"
+    assert len(_photos_in(tmp_path)) == 1
+
+
+def test_catalog_photo_replace_and_remove_clean_up_managed_files(
+    client, db_session, seed_royal, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        inventory,
+        "get_settings",
+        lambda: SimpleNamespace(inventory_photos_dir=str(tmp_path / "inventory-photos")),
+    )
+    _component, part = _catalog(db_session, seed_royal, article="PHOTO-REPLACE")
+    login_as(client, seed_royal.username, "secret")
+
+    assert client.put(
+        f"/inventory/catalog/parts/{part.id}/photo",
+        files={"photo": ("first.jpg", _JPEG, "image/jpeg")},
+    ).status_code == 200
+    first_files = _photos_in(tmp_path)
+    assert len(first_files) == 1
+    assert client.put(
+        f"/inventory/catalog/parts/{part.id}/photo",
+        files={"photo": ("second.png", _PNG, "image/png")},
+    ).status_code == 200
+    second_files = _photos_in(tmp_path)
+    assert len(second_files) == 1
+    assert first_files.isdisjoint(second_files)
+
+    removed = client.delete(f"/inventory/catalog/parts/{part.id}/photo")
+
+    assert removed.status_code == 204
+    assert _photos_in(tmp_path) == set()
+    db_session.refresh(part)
+    assert (part.photo_storage_key, part.photo_filename, part.photo_content_type) == (
+        None,
+        None,
+        None,
+    )
+
+
+def test_mechanic_can_attach_photo_to_new_catalog_part(
+    client, db_session, seed_park_with_tracker, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        inventory,
+        "get_settings",
+        lambda: SimpleNamespace(inventory_photos_dir=str(tmp_path / "inventory-photos")),
+    )
+    mechanic = _user(db_session, "mechanic", "photo-create-mechanic", [seed_park_with_tracker])
+    _component, part = _catalog(db_session, mechanic, article="PHOTO-MECHANIC")
+    login_as(client, mechanic.username, "secret")
+
+    response = client.put(
+        f"/inventory/catalog/parts/{part.id}/photo",
+        files={"photo": ("part.jpg", _JPEG, "image/jpeg")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["has_photo"] is True
+
+
+def test_only_royal_can_permanently_delete_global_part_graph(
+    client, db_session, seed_park_with_tracker, seed_royal
+):
+    admin = _user(db_session, "admin", "part-delete-admin", [seed_park_with_tracker])
+    component, part = _catalog(db_session, seed_royal, article="DELETE-PART")
+    stock = InventoryParkStock(
+        park_id=seed_park_with_tracker.id,
+        catalog_part_id=part.id,
+        quantity=1,
+        updated_by=seed_royal.id,
+    )
+    receipt = InventoryReceipt(
+        park_id=seed_park_with_tracker.id,
+        receipt_date=date.today(),
+        created_by=seed_royal.id,
+    )
+    count = InventoryCount(
+        park_id=seed_park_with_tracker.id,
+        name="Delete graph",
+        created_by=seed_royal.id,
+    )
+    db_session.add_all([stock, receipt, count])
+    db_session.flush()
+    db_session.add_all(
+        [
+            InventoryReceiptLine(receipt_id=receipt.id, catalog_part_id=part.id, quantity=1),
+            InventoryCountLine(count_id=count.id, catalog_part_id=part.id, expected_quantity=1),
+            InventoryMovement(
+                catalog_part_id=part.id,
+                park_id=seed_park_with_tracker.id,
+                actor_user_id=seed_royal.id,
+                kind="receipt",
+                delta=1,
+                balance_after=1,
+            ),
+        ]
+    )
+    db_session.commit()
+    stock_id, receipt_id, count_id = stock.id, receipt.id, count.id
+
+    login_as(client, admin.username, "secret")
+    assert client.delete(
+        f"/inventory/catalog/parts/{part.id}", params={"permanent": "true"}
+    ).status_code == 403
+    login_as(client, seed_royal.username, "secret")
+    response = client.delete(
+        f"/inventory/catalog/parts/{part.id}", params={"permanent": "true"}
+    )
+
+    assert response.status_code == 204, response.text
+    assert db_session.get(InventoryCatalogPart, part.id) is None
+    assert db_session.get(InventoryParkStock, stock_id) is None
+    assert db_session.get(InventoryReceipt, receipt_id) is None
+    assert db_session.get(InventoryCount, count_id) is None
+    assert db_session.get(InventoryCatalogComponent, component.id) is not None
+
+
+def test_royal_permanently_deletes_component_graph(client, db_session, seed_park_with_tracker, seed_royal):
+    component, part = _catalog(db_session, seed_royal, article="DELETE-COMPONENT")
+    db_session.add(
+        InventoryParkStock(
+            park_id=seed_park_with_tracker.id,
+            catalog_part_id=part.id,
+            quantity=0,
+            updated_by=seed_royal.id,
+        )
+    )
+    db_session.commit()
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.delete(
+        f"/inventory/catalog/components/{component.id}", params={"permanent": "true"}
+    )
+
+    assert response.status_code == 204, response.text
+    assert db_session.get(InventoryCatalogComponent, component.id) is None
+    assert db_session.get(InventoryCatalogPart, part.id) is None
+
+
+def test_permanent_delete_rolls_back_database_and_keeps_photo_on_failure(
+    client, db_session, seed_royal, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        inventory,
+        "get_settings",
+        lambda: SimpleNamespace(inventory_photos_dir=str(tmp_path / "inventory-photos")),
+    )
+    _component, part = _catalog(db_session, seed_royal, article="DELETE-ROLLBACK")
+    key, filename, content_type = inventory.save_photo("kept.jpg", _JPEG, "image/jpeg")
+    part.photo_storage_key = key
+    part.photo_filename = filename
+    part.photo_content_type = content_type
+    db_session.commit()
+    login_as(client, seed_royal.username, "secret")
+    original_commit = type(db_session).commit
+    monkeypatch.setattr(
+        type(db_session),
+        "commit",
+        lambda _session: (_ for _ in ()).throw(RuntimeError("delete_step_failed")),
+    )
+    response = client.delete(
+        f"/inventory/catalog/parts/{part.id}", params={"permanent": "true"}
+    )
+
+    assert response.status_code == 502
+    monkeypatch.setattr(type(db_session), "commit", original_commit)
+    assert db_session.get(InventoryCatalogPart, part.id) is not None
+    assert inventory.photo_path(key).is_file()
 
 
 _INVENTORY_ACTION_PERMISSION = {

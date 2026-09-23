@@ -15,7 +15,7 @@ import { InventoryTabs } from './InventoryTabs'
 import { INVENTORY_REVISION_CHANGED } from './inventoryRevision'
 import './inventory.css'
 
-type InventoryApi = Pick<typeof api, 'inventory' | 'inventoryPartPhotoUrl' | 'searchInventory' | 'inventoryCatalogComponents' | 'getInventoryCatalogPart' | 'createInventoryCatalogComponent' | 'createInventoryCatalogPart' | 'updateInventoryCatalogPart' | 'mergeInventoryCatalogPart' | 'updateInventoryStock' | 'inventoryReceipts' | 'createInventoryReceipt' | 'updateInventoryReceipt' | 'postInventoryReceipt' | 'cancelInventoryReceipt' | 'reverseInventoryReceipt' | 'inventoryCounts' | 'createInventoryCount' | 'updateInventoryCount' | 'refreshInventoryCount' | 'postInventoryCount' | 'cancelInventoryCount' | 'downloadInventoryExport'>
+type InventoryApi = Pick<typeof api, 'inventory' | 'inventoryPartPhotoUrl' | 'searchInventory' | 'inventoryCatalogComponents' | 'getInventoryCatalogPart' | 'createInventoryCatalogComponent' | 'createInventoryCatalogPart' | 'updateInventoryCatalogPart' | 'replaceInventoryCatalogComponentPhoto' | 'removeInventoryCatalogComponentPhoto' | 'replaceInventoryCatalogPartPhoto' | 'removeInventoryCatalogPartPhoto' | 'permanentlyDeleteInventoryCatalogComponent' | 'permanentlyDeleteInventoryCatalogPart' | 'mergeInventoryCatalogPart' | 'updateInventoryStock' | 'inventoryReceipts' | 'createInventoryReceipt' | 'updateInventoryReceipt' | 'postInventoryReceipt' | 'cancelInventoryReceipt' | 'reverseInventoryReceipt' | 'inventoryCounts' | 'createInventoryCount' | 'updateInventoryCount' | 'refreshInventoryCount' | 'postInventoryCount' | 'cancelInventoryCount' | 'permanentlyDeleteInventoryCount' | 'downloadInventoryExport'>
 
 export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi }) {
   const { selectedPark, parks, loading } = useParkScope()
@@ -64,7 +64,7 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
       : view === 'receipts'
         ? <InventoryReceiptsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} permissions={permissions} refreshVersion={refreshVersion} />
         : view === 'counts'
-          ? <InventoryCountsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} permissions={permissions} refreshVersion={refreshVersion} />
+          ? <InventoryCountsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} permissions={permissions} refreshVersion={refreshVersion} role={role} />
       : view === 'manage'
         ? <InventoryManageView apiClient={apiClient} parkId={selectedPark.id} role={role} refreshVersion={refreshVersion} />
         : <InventoryExportView apiClient={apiClient} parks={parks} permissions={permissions} role={role} selectedPark={selectedPark} />} />

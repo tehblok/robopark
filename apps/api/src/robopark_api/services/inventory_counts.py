@@ -30,6 +30,12 @@ class InventoryCountConflict(inventory_stock.InventoryConflict):
         return {"code": self.code, "conflicts": self.conflicts}
 
 
+def permanently_delete_count(db: Session, user: User, count_id: int) -> None:
+    from robopark_api.services import inventory_deletion
+
+    inventory_deletion.delete_count(db, user, count_id)
+
+
 def _clean_text(value: str | None) -> str | None:
     return (value or "").strip() or None
 

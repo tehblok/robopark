@@ -1026,10 +1026,10 @@ async function inventoryRequest<T>(path: string, init?: RequestInit): Promise<T>
   )
 }
 
-async function inventoryFormRequest<T>(path: string, formData: FormData): Promise<T> {
+async function inventoryFormRequest<T>(path: string, formData: FormData, method = 'POST'): Promise<T> {
   return fetchWithTimeout(
     `/api${path}`,
-    { credentials: 'include', method: 'POST', body: formData },
+    { credentials: 'include', method, body: formData },
     FORM_TIMEOUT_MS,
     async (response) => {
       const text = await response.text()
@@ -1820,10 +1820,26 @@ export const api = {
     inventoryRequest<InventoryCatalogComponent>('/inventory/catalog/components', { method: 'POST', body: inventoryStringify(payload) }),
   updateInventoryCatalogComponent: (id: number, payload: Partial<Pick<InventoryCatalogComponent, 'name' | 'is_active'>>) =>
     inventoryRequest<InventoryCatalogComponent>(`/inventory/catalog/components/${id}`, { method: 'PATCH', body: inventoryStringify(payload) }),
+  replaceInventoryCatalogComponentPhoto: (id: number, photo: File) => {
+    const form = new FormData(); form.append('photo', photo, photo.name)
+    return inventoryFormRequest<InventoryCatalogComponent>(`/inventory/catalog/components/${id}/photo`, form, 'PUT')
+  },
+  removeInventoryCatalogComponentPhoto: (id: number) =>
+    inventoryRequest<void>(`/inventory/catalog/components/${id}/photo`, { method: 'DELETE' }),
+  permanentlyDeleteInventoryCatalogComponent: (id: number) =>
+    inventoryRequest<void>(`/inventory/catalog/components/${id}?permanent=true`, { method: 'DELETE' }),
   createInventoryCatalogPart: (payload: { park_id: number; component_id: number; name: string; article: string }) =>
     inventoryRequest<InventoryCatalogPart>('/inventory/catalog/parts', { method: 'POST', body: inventoryStringify(payload) }),
   updateInventoryCatalogPart: (id: number, payload: Partial<Pick<InventoryCatalogPart, 'component_id' | 'name' | 'article' | 'is_active'>>) =>
     inventoryRequest<InventoryCatalogPart>(`/inventory/catalog/parts/${id}`, { method: 'PATCH', body: inventoryStringify(payload) }),
+  replaceInventoryCatalogPartPhoto: (id: number, photo: File) => {
+    const form = new FormData(); form.append('photo', photo, photo.name)
+    return inventoryFormRequest<InventoryCatalogPart>(`/inventory/catalog/parts/${id}/photo`, form, 'PUT')
+  },
+  removeInventoryCatalogPartPhoto: (id: number) =>
+    inventoryRequest<void>(`/inventory/catalog/parts/${id}/photo`, { method: 'DELETE' }),
+  permanentlyDeleteInventoryCatalogPart: (id: number) =>
+    inventoryRequest<void>(`/inventory/catalog/parts/${id}?permanent=true`, { method: 'DELETE' }),
   mergeInventoryCatalogPart: (id: number, targetPartId: number) =>
     inventoryRequest<InventoryCatalogPart>(`/inventory/catalog/parts/${id}/merge`, { method: 'POST', body: inventoryStringify({ target_part_id: targetPartId }) }),
   updateInventoryStock: (parkId: number, partId: number, payload: Pick<InventoryStockView, 'minimum_quantity' | 'location' | 'is_active'>) =>
@@ -1852,6 +1868,8 @@ export const api = {
     inventoryRequest<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}/refresh`, { method: 'POST' }),
   cancelInventoryCount: (parkId: number, countId: number) =>
     inventoryRequest<InventoryCount>(`/inventory/parks/${parkId}/counts/${countId}/cancel`, { method: 'POST' }),
+  permanentlyDeleteInventoryCount: (countId: number) =>
+    inventoryRequest<void>(`/inventory/counts/${countId}?permanent=true`, { method: 'DELETE' }),
   downloadInventoryExport,
   inventoryMovements: (parkId: number) => inventoryRequest<InventoryMovement[]>(`/inventory/movements?park_id=${parkId}`),
   inventoryComponentPhotoUrl: (id: number) => `/api/inventory/components/${id}/photo`,

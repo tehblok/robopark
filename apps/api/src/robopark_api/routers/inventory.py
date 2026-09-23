@@ -2,7 +2,17 @@ from collections.abc import Callable
 from typing import Literal, TypeVar
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -45,6 +55,7 @@ from robopark_api.services import (
     inventory_access,
     inventory_catalog,
     inventory_counts,
+    inventory_deletion,
     inventory_exports,
     inventory_receipts,
     inventory_stock,
@@ -201,6 +212,19 @@ def cancel_inventory_count(
 ):
     row = _run(lambda: inventory_counts.cancel_count(db, user, park_id=park_id, count_id=count_id))
     return inventory_counts.count_out(db, row)
+
+
+@router.delete("/counts/{count_id}", status_code=status.HTTP_204_NO_CONTENT)
+def permanently_delete_inventory_count(
+    count_id: int,
+    permanent: bool = False,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    if not permanent:
+        raise HTTPException(400, "inventory_permanent_delete_required")
+    _run(lambda: inventory_counts.permanently_delete_count(db, user, count_id))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/parks/{park_id}/receipts", response_model=InventoryReceiptListOut)
@@ -396,6 +420,58 @@ def update_catalog_component(
     return inventory_catalog.component_out(row)
 
 
+@router.put(
+    "/catalog/components/{component_id}/photo",
+    response_model=InventoryCatalogComponentOut,
+)
+async def replace_catalog_component_photo(
+    component_id: int,
+    photo: UploadFile = File(...),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    photo_data = await _photo(photo)
+    row = _run(
+        lambda: inventory_catalog.set_catalog_photo(
+            db, user, kind="component", row_id=component_id, photo=photo_data
+        )
+    )
+    return inventory_catalog.component_out(row)
+
+
+@router.delete(
+    "/catalog/components/{component_id}/photo",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def remove_catalog_component_photo(
+    component_id: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    _run(
+        lambda: inventory_catalog.remove_catalog_photo(
+            db, user, kind="component", row_id=component_id
+        )
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/catalog/components/{component_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def permanently_delete_catalog_component(
+    component_id: int,
+    permanent: bool = False,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    if not permanent:
+        raise HTTPException(400, "inventory_permanent_delete_required")
+    _run(lambda: inventory_deletion.delete_component(db, user, component_id))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post(
     "/catalog/parts",
     response_model=InventoryCatalogPartOut,
@@ -432,6 +508,54 @@ def update_catalog_part(
         )
     )
     return inventory_catalog.part_out(row)
+
+
+@router.put(
+    "/catalog/parts/{part_id}/photo",
+    response_model=InventoryCatalogPartOut,
+)
+async def replace_catalog_part_photo(
+    part_id: int,
+    photo: UploadFile = File(...),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    photo_data = await _photo(photo)
+    row = _run(
+        lambda: inventory_catalog.set_catalog_photo(
+            db, user, kind="part", row_id=part_id, photo=photo_data
+        )
+    )
+    return inventory_catalog.part_out(row)
+
+
+@router.delete(
+    "/catalog/parts/{part_id}/photo",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def remove_catalog_part_photo(
+    part_id: int,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    _run(lambda: inventory_catalog.remove_catalog_photo(db, user, kind="part", row_id=part_id))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/catalog/parts/{part_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def permanently_delete_catalog_part(
+    part_id: int,
+    permanent: bool = False,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    if not permanent:
+        raise HTTPException(400, "inventory_permanent_delete_required")
+    _run(lambda: inventory_deletion.delete_part(db, user, part_id))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/catalog/parts/{part_id}", response_model=InventoryCatalogSearchItem)

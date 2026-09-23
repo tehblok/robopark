@@ -89,6 +89,64 @@ def _create_count(client, park, *, name="Сентябрь", scope=None):
     )
 
 
+def test_admin_permanently_deletes_only_count_in_assigned_park(
+    client, db_session, seed_park_with_tracker
+):
+    foreign = Park(name="Count delete foreign", tag="Count-delete-foreign", is_active=True)
+    db_session.add(foreign)
+    db_session.commit()
+    admin = _user(db_session, "admin", "count-delete-admin", [seed_park_with_tracker])
+    own = InventoryCount(
+        park_id=seed_park_with_tracker.id,
+        name="Own count",
+        created_by=admin.id,
+    )
+    foreign_count = InventoryCount(
+        park_id=foreign.id,
+        name="Foreign count",
+        created_by=admin.id,
+    )
+    db_session.add_all([own, foreign_count])
+    db_session.flush()
+    db_session.add_all(
+        [
+            InventoryCountLine(count_id=own.id, catalog_part_id=_part(db_session, admin, _component(db_session, admin), article="DELETE-OWN").id, expected_quantity=0),
+            InventoryCountLine(count_id=foreign_count.id, catalog_part_id=_part(db_session, admin, _component(db_session, admin, "Foreign delete component"), article="DELETE-FOREIGN").id, expected_quantity=0),
+        ]
+    )
+    db_session.commit()
+    login_as(client, admin.username, "secret")
+
+    denied = client.delete(
+        f"/inventory/counts/{foreign_count.id}", params={"permanent": "true"}
+    )
+    deleted = client.delete(f"/inventory/counts/{own.id}", params={"permanent": "true"})
+
+    assert denied.status_code == 403
+    assert db_session.get(InventoryCount, foreign_count.id) is not None
+    assert deleted.status_code == 204, deleted.text
+    assert db_session.get(InventoryCount, own.id) is None
+
+
+def test_non_admin_cannot_permanently_delete_count(
+    client, db_session, seed_park_with_tracker
+):
+    mechanic = _user(db_session, "mechanic", "count-delete-mechanic", [seed_park_with_tracker])
+    count = InventoryCount(
+        park_id=seed_park_with_tracker.id,
+        name="Protected count",
+        created_by=mechanic.id,
+    )
+    db_session.add(count)
+    db_session.commit()
+    login_as(client, mechanic.username, "secret")
+
+    response = client.delete(f"/inventory/counts/{count.id}", params={"permanent": "true"})
+
+    assert response.status_code == 403
+    assert db_session.get(InventoryCount, count.id) is not None
+
+
 def test_count_component_snapshot_posts_signed_deltas_and_is_idempotent(
     client, db_session, seed_park_with_tracker
 ):

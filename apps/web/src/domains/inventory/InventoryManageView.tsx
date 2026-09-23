@@ -16,10 +16,16 @@ type InventoryManageApi = Pick<typeof api,
   | 'createInventoryCatalogComponent'
   | 'createInventoryCatalogPart'
   | 'updateInventoryCatalogPart'
+  | 'replaceInventoryCatalogComponentPhoto'
+  | 'removeInventoryCatalogComponentPhoto'
+  | 'replaceInventoryCatalogPartPhoto'
+  | 'removeInventoryCatalogPartPhoto'
+  | 'permanentlyDeleteInventoryCatalogComponent'
+  | 'permanentlyDeleteInventoryCatalogPart'
   | 'mergeInventoryCatalogPart'
   | 'updateInventoryStock'
 >
-type ManageWorkflow = 'create' | 'component' | 'stock' | 'global-edit' | 'merge' | null
+type ManageWorkflow = 'create' | 'component' | 'component-delete' | 'stock' | 'global-edit' | 'merge' | null
 type Draft = { componentId: string; name: string; article: string; minimum: string; location: string }
 
 export type InventoryManageViewProps = {
@@ -80,6 +86,13 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
   const [workflow, setWorkflow] = useState<ManageWorkflow>(null)
   const [draft, setDraft] = useState<Draft>(emptyDraft)
   const [componentName, setComponentName] = useState('')
+  const [componentPhoto, setComponentPhoto] = useState<File | null>(null)
+  const [componentPreview, setComponentPreview] = useState('')
+  const [partPhoto, setPartPhoto] = useState<File | null>(null)
+  const [partPreview, setPartPreview] = useState('')
+  const [deletePart, setDeletePart] = useState<InventoryCatalogSearchItem | null>(null)
+  const [deleteComponentId, setDeleteComponentId] = useState('')
+  const [deleteComponentOpen, setDeleteComponentOpen] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const [componentError, setComponentError] = useState('')
@@ -92,6 +105,7 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
   const selectedId = selectedCatalogPartId === undefined ? internalSelectedId : selectedCatalogPartId
   const canCreate = role === 'mechanic' || role === 'admin' || role === 'royal'
   const canManageGlobal = role === 'admin' || role === 'royal'
+  const canDeleteGlobal = role === 'royal'
   const selected = selectedPart?.id === selectedId ? selectedPart : items.find(item => item.id === selectedId) ?? null
   const select = useCallback((id: number | null) => {
     if (!isSelectionControlled) setInternalSelectedId(id)
@@ -126,11 +140,15 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
     operationGeneration.current += 1
     setBusy(false)
     setComponentError('')
+    setComponentPhoto(null); setComponentPreview(''); setPartPhoto(null); setPartPreview(''); setDeletePart(null); setDeleteComponentId(''); setDeleteComponentOpen(false)
     loadInventoryComponents(apiClient, parkId).then(value => {
       if (activeParkId.current === parkId) setComponents(value.map(item => ({ id: item.id, name: item.name })))
     }).catch(() => { if (activeParkId.current === parkId) setComponentError(INVENTORY_COMPONENTS_INCOMPLETE) })
     return () => { generation.current += 1 }
   }, [apiClient, parkId, select])
+
+  useEffect(() => () => { if (componentPreview) URL.revokeObjectURL(componentPreview) }, [componentPreview])
+  useEffect(() => () => { if (partPreview) URL.revokeObjectURL(partPreview) }, [partPreview])
 
   useEffect(() => {
     const timer = globalThis.setTimeout(() => { void load() }, catalogQuery ? 200 : 0)
@@ -154,12 +172,14 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
     setBusy(true)
     setError('')
     try {
-      const created = await apiClient.createInventoryCatalogComponent({ park_id: requestedParkId, name: componentName })
+      let created = await apiClient.createInventoryCatalogComponent({ park_id: requestedParkId, name: componentName })
+      if (componentPhoto) created = await apiClient.replaceInventoryCatalogComponentPhoto(created.id, componentPhoto)
       if (activeParkId.current !== requestedParkId || operationGeneration.current !== requestGeneration) return
       setComponents(current => [...current.filter(component => component.id !== created.id), { id: created.id, name: created.name }]
         .sort((left, right) => left.name.localeCompare(right.name, 'ru') || left.id - right.id))
       setDraft(current => ({ ...current, componentId: String(created.id) }))
       setComponentName('')
+      setComponentPhoto(null); setComponentPreview('')
       setWorkflow('create')
     } catch (reason) {
       if (activeParkId.current === requestedParkId && operationGeneration.current === requestGeneration) setError(classifyApiError(reason, 'Не удалось создать компоненту.').description)
@@ -177,13 +197,15 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
     const requestedParkId = parkId
     const requestGeneration = operationGeneration.current
     try {
-      const created = await apiClient.createInventoryCatalogPart({ park_id: requestedParkId, component_id: componentId, name: draft.name, article: draft.article })
+      let created = await apiClient.createInventoryCatalogPart({ park_id: requestedParkId, component_id: componentId, name: draft.name, article: draft.article })
+      if (partPhoto) created = await apiClient.replaceInventoryCatalogPartPhoto(created.id, partPhoto)
       const stock = await apiClient.updateInventoryStock(requestedParkId, created.id, { minimum_quantity: draft.minimum, location: draft.location, is_active: true })
       if (activeParkId.current !== requestedParkId || operationGeneration.current !== requestGeneration || stock.park_id !== requestedParkId) return
       const component = components.find(item => item.id === componentId)
       setItems(current => [...current.filter(item => item.id !== created.id), { ...created, component_name: component?.name ?? '', quantity: stock.quantity, minimum_quantity: stock.minimum_quantity, location: stock.location, stock_is_active: stock.is_active }])
       select(created.id)
       setDraft(emptyDraft)
+      setPartPhoto(null); setPartPreview('')
       setWorkflow('stock')
       setNotice('Позиция создана и добавлена в склад парка.')
     } catch (reason) {
@@ -211,6 +233,42 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
       setBusy(false)
     }
   }
+  const selectPhoto = (
+    file: File | undefined,
+    setFile: (value: File | null) => void,
+    preview: string,
+    setPreview: (value: string) => void,
+  ) => {
+    if (preview) URL.revokeObjectURL(preview)
+    setFile(file ?? null)
+    setPreview(file ? URL.createObjectURL(file) : '')
+  }
+  const permanentlyDeletePart = async () => {
+    if (!deletePart) return
+    setBusy(true); setError('')
+    try {
+      await apiClient.permanentlyDeleteInventoryCatalogPart(deletePart.id)
+      setItems(current => current.filter(item => item.id !== deletePart.id))
+      setCatalogTotal(current => Math.max(0, current - 1))
+      select(null); setSelectedPart(null); setWorkflow(null); setDeletePart(null)
+      setNotice(`Позиция «${deletePart.name}» удалена навсегда.`)
+    } catch (reason) { setError(classifyApiError(reason, 'Не удалось удалить позицию.').description) }
+    finally { setBusy(false) }
+  }
+  const permanentlyDeleteComponent = async () => {
+    const component = components.find(item => item.id === Number(deleteComponentId))
+    if (!component) return
+    setBusy(true); setError('')
+    try {
+      await apiClient.permanentlyDeleteInventoryCatalogComponent(component.id)
+      setComponents(current => current.filter(item => item.id !== component.id))
+      setItems(current => current.filter(item => item.component_id !== component.id))
+      if (selected?.component_id === component.id) { select(null); setSelectedPart(null) }
+      setDeleteComponentId(''); setDeleteComponentOpen(false); setWorkflow(null)
+      setNotice(`Компонента «${component.name}» удалена навсегда.`)
+    } catch (reason) { setError(classifyApiError(reason, 'Не удалось удалить компоненту.').description) }
+    finally { setBusy(false) }
+  }
 
   return <section className="inventory-manage-view">
     <header className="inventory-manage-heading"><h2>{canManageGlobal ? 'Глобальный каталог' : 'Настройки склада парка'}</h2><p>{canManageGlobal ? 'Глобальные позиции и настройки склада выбранного парка.' : 'Параметры остатков выбранного парка.'}</p></header>
@@ -219,9 +277,9 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
       {canManageGlobal ? <FormField id="inventory-manage-mode" label="Состояние каталога"><select value={catalogMode} onChange={event => { setCatalogMode(event.target.value as 'active' | 'archived' | 'all'); setCatalogOffset(0); select(null); setSelectedPart(null); setWorkflow(null) }}><option value="active">Активные</option><option value="archived">Архивные</option><option value="all">Все</option></select></FormField> : null}
       <FormField id="inventory-manage-part" label="Позиция каталога"><select value={selectedId ?? ''} onChange={event => { const id = event.target.value ? Number(event.target.value) : null; select(id); setSelectedPart(items.find(item => item.id === id) ?? null); setWorkflow(null) }}><option value="">Выберите</option>{selected && !items.some(item => item.id === selected.id) ? <option value={selected.id}>{selected.name} · {selected.article}</option> : null}{items.map(item => <option key={item.id} value={item.id}>{item.name} · {item.article}</option>)}</select></FormField>
       <div className="inventory-card-actions">
-        {canCreate ? <><Button onClick={() => chooseWorkflow('create')} size="compact">Добавить позицию</Button><Button onClick={() => chooseWorkflow('component')} size="compact" variant="secondary">Добавить компоненту</Button></> : null}
+        {canCreate ? <><Button onClick={() => chooseWorkflow('create')} size="compact">Добавить позицию</Button><Button onClick={() => chooseWorkflow('component')} size="compact" variant="secondary">Добавить компоненту</Button>{canDeleteGlobal ? <Button onClick={() => chooseWorkflow('component-delete')} size="compact" variant="danger">Удалить компоненту</Button> : null}</> : null}
         {selected ? <Button onClick={() => chooseWorkflow('stock')} size="compact" variant="secondary">Настроить остаток</Button> : null}
-        {canManageGlobal && selected ? <ResponsiveDisclosureGroup label="Глобальные действия"><ResponsiveDisclosure id="inventory-global-actions" title="Глобальные действия"><div className="inventory-global-actions"><Button onClick={() => chooseWorkflow('global-edit')} size="compact" variant="secondary">Редактировать глобально</Button>{selected.is_active ? <><Button onClick={() => setArchiveOpen(true)} size="compact" variant="danger">Архивировать глобально</Button><Button onClick={() => chooseWorkflow('merge')} size="compact" variant="danger">Объединить глобально</Button></> : <Button onClick={async () => { setBusy(true); setError(''); try { await apiClient.updateInventoryCatalogPart(selected.id, { is_active: true }); select(null); setSelectedPart(null); setNotice('Позиция восстановлена.'); await load() } catch (reason) { setError(classifyApiError(reason, 'Не удалось восстановить позицию.').description) } finally { setBusy(false) } }} size="compact" variant="secondary">Восстановить глобально</Button>}</div></ResponsiveDisclosure></ResponsiveDisclosureGroup> : null}
+        {canManageGlobal && selected ? <ResponsiveDisclosureGroup label="Глобальные действия"><ResponsiveDisclosure id="inventory-global-actions" title="Глобальные действия"><div className="inventory-global-actions"><Button onClick={() => chooseWorkflow('global-edit')} size="compact" variant="secondary">Редактировать глобально</Button>{selected.is_active ? <><Button onClick={() => setArchiveOpen(true)} size="compact" variant="danger">Архивировать глобально</Button><Button onClick={() => chooseWorkflow('merge')} size="compact" variant="danger">Объединить глобально</Button></> : <Button onClick={async () => { setBusy(true); setError(''); try { await apiClient.updateInventoryCatalogPart(selected.id, { is_active: true }); select(null); setSelectedPart(null); setNotice('Позиция восстановлена.'); await load() } catch (reason) { setError(classifyApiError(reason, 'Не удалось восстановить позицию.').description) } finally { setBusy(false) } }} size="compact" variant="secondary">Восстановить глобально</Button>}{canDeleteGlobal ? <Button onClick={() => setDeletePart(selected)} size="compact" variant="danger">Удалить навсегда</Button> : null}</div></ResponsiveDisclosure></ResponsiveDisclosureGroup> : null}
       </div>
     </div>
     {loading ? <LoadingState label="Загружаем каталог" /> : null}
@@ -229,21 +287,28 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
     {notice ? <p className="inventory-notice" role="status">{notice}</p> : null}
     {componentError ? <p className="form-error" role="alert">{componentError}</p> : null}
     {error ? <p className="form-error" role="alert">{error}</p> : null}
-    {workflow === 'component' ? <form aria-label="Новая компонента" className="inventory-manage-form" onSubmit={createComponent}><h3>Новая компонента</h3><FormField id="inventory-new-component" label="Название" required><input value={componentName} onChange={event => setComponentName(event.target.value)} /></FormField><Button busy={busy} disabled={!componentName.trim()} type="submit">Создать</Button></form> : null}
-    {workflow === 'create' ? <form aria-label="Новая позиция" className="inventory-manage-form" onSubmit={createPart}><h3>Новая позиция</h3><FormField id="inventory-new-part-component" label="Компонента" required><select value={draft.componentId} onChange={event => setDraft(current => ({ ...current, componentId: event.target.value }))}><option value="">Выберите</option>{components.map(component => <option key={component.id} value={component.id}>{component.name}</option>)}</select></FormField><FormField id="inventory-new-part-name" label="Название" required><input value={draft.name} onChange={event => setDraft(current => ({ ...current, name: event.target.value }))} /></FormField><FormField id="inventory-new-part-article" label="Артикул" required><input value={draft.article} onChange={event => setDraft(current => ({ ...current, article: event.target.value }))} /></FormField><FormField id="inventory-new-part-location" label="Место"><input value={draft.location} onChange={event => setDraft(current => ({ ...current, location: event.target.value }))} /></FormField><FormField error={inventoryQuantityError(draft.minimum)} id="inventory-new-part-minimum" label="Минимум"><input inputMode="numeric" pattern="[0-9]*" value={draft.minimum} onChange={event => setDraft(current => ({ ...current, minimum: event.target.value }))} /></FormField><Button busy={busy} disabled={!draft.componentId || !draft.name.trim() || !draft.article.trim() || !isInventoryQuantity(draft.minimum)} type="submit">Создать</Button></form> : null}
+    {workflow === 'component' ? <form aria-label="Новая компонента" className="inventory-manage-form" onSubmit={createComponent}><h3>Новая компонента</h3><FormField id="inventory-new-component" label="Название" required><input value={componentName} onChange={event => setComponentName(event.target.value)} /></FormField><FormField id="inventory-new-component-photo" label="Фото"><input accept="image/jpeg,image/png,image/webp" capture="environment" type="file" onChange={event => selectPhoto(event.target.files?.[0], setComponentPhoto, componentPreview, setComponentPreview)} /></FormField>{componentPreview ? <img alt="Предпросмотр фото компоненты" src={componentPreview} /> : null}<Button busy={busy} disabled={!componentName.trim()} type="submit">Создать</Button></form> : null}
+    {workflow === 'component-delete' ? <div className="inventory-manage-form"><h3>Удалить компоненту</h3><FormField id="inventory-delete-component" label="Компонента для удаления"><select value={deleteComponentId} onChange={event => setDeleteComponentId(event.target.value)}><option value="">Выберите</option>{components.map(component => <option key={component.id} value={component.id}>{component.name}</option>)}</select></FormField><Button disabled={!deleteComponentId} onClick={() => setDeleteComponentOpen(true)} variant="danger">Удалить компоненту навсегда</Button></div> : null}
+    {workflow === 'create' ? <form aria-label="Новая позиция" className="inventory-manage-form" onSubmit={createPart}><h3>Новая позиция</h3><FormField id="inventory-new-part-component" label="Компонента" required><select value={draft.componentId} onChange={event => setDraft(current => ({ ...current, componentId: event.target.value }))}><option value="">Выберите</option>{components.map(component => <option key={component.id} value={component.id}>{component.name}</option>)}</select></FormField><FormField id="inventory-new-part-name" label="Название" required><input value={draft.name} onChange={event => setDraft(current => ({ ...current, name: event.target.value }))} /></FormField><FormField id="inventory-new-part-article" label="Артикул" required><input value={draft.article} onChange={event => setDraft(current => ({ ...current, article: event.target.value }))} /></FormField><FormField id="inventory-new-part-location" label="Место"><input value={draft.location} onChange={event => setDraft(current => ({ ...current, location: event.target.value }))} /></FormField><FormField error={inventoryQuantityError(draft.minimum)} id="inventory-new-part-minimum" label="Минимум"><input inputMode="numeric" pattern="[0-9]*" value={draft.minimum} onChange={event => setDraft(current => ({ ...current, minimum: event.target.value }))} /></FormField><FormField id="inventory-new-part-photo" label="Фото"><input accept="image/jpeg,image/png,image/webp" capture="environment" type="file" onChange={event => selectPhoto(event.target.files?.[0], setPartPhoto, partPreview, setPartPreview)} /></FormField>{partPreview ? <img alt="Предпросмотр фото позиции" src={partPreview} /> : null}<Button busy={busy} disabled={!draft.componentId || !draft.name.trim() || !draft.article.trim() || !isInventoryQuantity(draft.minimum)} type="submit">Создать</Button></form> : null}
     {workflow === 'stock' && selected ? <ParkStockForm apiClient={apiClient} onSaved={updateStockItem} parkId={parkId} part={selected} /> : null}
-    {workflow === 'global-edit' && selected && canManageGlobal ? <GlobalPartForm apiClient={apiClient} onSaved={async () => { await load(); setWorkflow(null) }} part={selected} /> : null}
+    {workflow === 'global-edit' && selected && canManageGlobal ? <GlobalPartForm apiClient={apiClient} onSaved={updated => { setItems(current => current.map(item => item.id === updated.id ? { ...item, ...updated } : item)); setSelectedPart(current => current?.id === updated.id ? { ...current, ...updated } : current) }} part={selected} /> : null}
     {workflow === 'merge' && selected && canManageGlobal ? <MergePartForm apiClient={apiClient} onSaved={async targetId => { select(targetId); await load(); setWorkflow(null) }} parkId={parkId} source={selected} /> : null}
     <ConfirmDialog confirmLabel="Подтвердить архивирование" description={selected ? `Позиция «${selected.name}» исчезнет из активного каталога.` : ''} onConfirm={async () => { if (!selected) return; setBusy(true); setError(''); try { await apiClient.updateInventoryCatalogPart(selected.id, { is_active: false }); setArchiveOpen(false); select(null); setSelectedPart(null); await load() } catch (reason) { setError(classifyApiError(reason, 'Не удалось архивировать позицию.').description) } finally { setBusy(false) } }} onOpenChange={setArchiveOpen} open={archiveOpen} pending={busy} title="Архивировать глобальную позицию?" tone="danger" />
+    <ConfirmDialog confirmationPhrase={deletePart?.name} confirmLabel="Удалить навсегда" description="Будут удалены позиция, остатки, локальные акты и фото. История во внешнем Tracker не удаляется." onConfirm={permanentlyDeletePart} onOpenChange={open => { if (!open && !busy) setDeletePart(null) }} open={deletePart !== null} pending={busy} title={deletePart ? `Удалить позицию «${deletePart.name}» навсегда?` : ''} tone="danger" />
+    <ConfirmDialog confirmationPhrase={components.find(item => item.id === Number(deleteComponentId))?.name} confirmLabel="Удалить навсегда" description="Будут удалены компонента, все её позиции, остатки, локальные акты и фото." onConfirm={permanentlyDeleteComponent} onOpenChange={setDeleteComponentOpen} open={deleteComponentOpen} pending={busy} title={deleteComponentId ? `Удалить компоненту «${components.find(item => item.id === Number(deleteComponentId))?.name}» навсегда?` : ''} tone="danger" />
   </section>
 }
 
-function GlobalPartForm({ apiClient, onSaved, part }: { apiClient: InventoryManageApi; onSaved: () => void | Promise<void>; part: InventoryCatalogSearchItem }) {
+function GlobalPartForm({ apiClient, onSaved, part }: { apiClient: InventoryManageApi; onSaved: (part: InventoryCatalogSearchItem) => void | Promise<void>; part: InventoryCatalogSearchItem }) {
   const [name, setName] = useState(part.name)
   const [article, setArticle] = useState(part.article)
+  const [hasPhoto, setHasPhoto] = useState(part.has_photo)
+  const [photo, setPhoto] = useState<File | null>(null)
+  const [preview, setPreview] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  return <form aria-label="Глобальная позиция" className="inventory-manage-form" onSubmit={async event => { event.preventDefault(); setBusy(true); setError(''); try { await apiClient.updateInventoryCatalogPart(part.id, { name, article }); await onSaved() } catch (reason) { setError(classifyApiError(reason, 'Не удалось изменить глобальную позицию.').description) } finally { setBusy(false) } }}><h3>Глобальная позиция</h3><FormField id={`global-name-${part.id}`} label="Название" required><input value={name} onChange={event => setName(event.target.value)} /></FormField><FormField id={`global-article-${part.id}`} label="Артикул" required><input value={article} onChange={event => setArticle(event.target.value)} /></FormField><Button busy={busy} type="submit">Сохранить</Button>{error ? <p className="form-error" role="alert">{error}</p> : null}</form>
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview) }, [preview])
+  return <form aria-label="Глобальная позиция" className="inventory-manage-form" onSubmit={async event => { event.preventDefault(); setBusy(true); setError(''); try { let updated = await apiClient.updateInventoryCatalogPart(part.id, { name, article }); if (photo) { updated = await apiClient.replaceInventoryCatalogPartPhoto(part.id, photo); setPhoto(null); setPreview(''); setHasPhoto(true) } await onSaved({ ...part, ...updated }) } catch (reason) { setError(classifyApiError(reason, 'Не удалось изменить глобальную позицию.').description) } finally { setBusy(false) } }}><h3>Глобальная позиция</h3><FormField id={`global-name-${part.id}`} label="Название" required><input value={name} onChange={event => setName(event.target.value)} /></FormField><FormField id={`global-article-${part.id}`} label="Артикул" required><input value={article} onChange={event => setArticle(event.target.value)} /></FormField>{preview ? <img alt="Предпросмотр нового фото" src={preview} /> : hasPhoto ? <img alt={`Фото позиции «${part.name}»`} src={`/api/inventory/parts/${part.id}/photo`} /> : null}<FormField id={`global-photo-${part.id}`} label={hasPhoto ? 'Заменить фото' : 'Добавить фото'}><input accept="image/jpeg,image/png,image/webp" capture="environment" type="file" onChange={event => { const next = event.target.files?.[0]; if (preview) URL.revokeObjectURL(preview); setPhoto(next ?? null); setPreview(next ? URL.createObjectURL(next) : '') }} /></FormField><div className="inventory-card-actions"><Button busy={busy} type="submit">Сохранить</Button>{hasPhoto ? <Button disabled={busy} onClick={async () => { setBusy(true); setError(''); try { await apiClient.removeInventoryCatalogPartPhoto(part.id); setHasPhoto(false); setPhoto(null); setPreview(''); await onSaved({ ...part, has_photo: false }) } catch (reason) { setError(classifyApiError(reason, 'Не удалось удалить фото.').description) } finally { setBusy(false) } }} type="button" variant="danger">Удалить фото</Button> : null}</div>{error ? <p className="form-error" role="alert">{error}</p> : null}</form>
 }
 
 function MergePartForm({ apiClient, onSaved, parkId, source }: { apiClient: InventoryManageApi; onSaved: (targetId: number) => void | Promise<void>; parkId: number; source: InventoryCatalogSearchItem }) {
