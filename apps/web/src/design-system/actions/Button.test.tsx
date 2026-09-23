@@ -50,8 +50,10 @@ describe('Button', () => {
     expect(actionBar).toContainElement(screen.getByRole('button', { name: 'Сохранить черновик' }))
     expect(screen.getAllByRole('button')).toHaveLength(2)
     expect(screen.getAllByRole('button').every(button => button.classList.contains('rp-button--secondary'))).toBe(true)
+    expect(actionBar).not.toHaveClass('rp-action-bar--mobile-primary')
     expect(css).toMatch(/\.rp-action-bar\s*\{[^}]*flex-wrap:\s*wrap/s)
-    expect(css).toMatch(/@media \(max-width:\s*599px\)\s*\{[^}]*\.rp-action-bar\s*\{[^}]*flex-direction:\s*column[^}]*flex-wrap:\s*nowrap/s)
+    expect(css).toMatch(/@media \(max-width:\s*599px\)\s*\{[^}]*\.rp-action-bar\s*\{[^}]*align-items:\s*flex-start[^}]*flex-direction:\s*column[^}]*flex-wrap:\s*nowrap/s)
+    expect(css).not.toMatch(/@media \(max-width:\s*599px\)[\s\S]*\.rp-action-bar(?:\s|>)[^{]*\{[^}]*width:\s*100%/s)
   })
 })
 

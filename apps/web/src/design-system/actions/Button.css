@@ -90,6 +90,7 @@
 
 @media (max-width: 599px) {
   .rp-action-bar {
+    align-items: flex-start;
     flex-direction: column;
     flex-wrap: nowrap;
   }
