@@ -1,8 +1,9 @@
 import math
 from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 
 class LoginRequest(BaseModel):
@@ -123,8 +124,29 @@ class TrackerAttachmentOut(BaseModel):
     id: str
     name: str
     size: int | None = None
-    url: str | None = None
+    url: str | None = Field(
+        default=None,
+        description="Absolute http(s) Tracker URL or authenticated same-origin /api/ URL",
+    )
     mimetype: str | None = None
+
+    @field_validator("url")
+    @classmethod
+    def validate_attachment_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if (
+            value != value.strip()
+            or "\\" in value
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        ):
+            raise ValueError("tracker_attachment_url_invalid")
+        parsed = urlsplit(value)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return value
+        if not parsed.scheme and not parsed.netloc and value.startswith("/api/"):
+            return value
+        raise ValueError("tracker_attachment_url_invalid")
 
 
 class BlockerOut(BaseModel):

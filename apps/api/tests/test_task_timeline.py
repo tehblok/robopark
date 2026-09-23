@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
@@ -25,6 +26,37 @@ PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
     "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
 )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://tracker.example/attachments/photo",
+        "http://tracker.example/attachments/photo",
+        "/api/tracker/issues/ROBOPARK-1/attachments/photo/content",
+    ],
+)
+def test_tracker_attachment_url_accepts_tracker_and_authenticated_local_urls(url):
+    from robopark_api.schemas import TrackerAttachmentOut
+
+    assert TrackerAttachmentOut(id="photo", name="photo.png", url=url).url == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "javascript:alert(1)",
+        "data:image/png;base64,AAAA",
+        "//evil.example/photo.png",
+        "/tracker/issues/ROBOPARK-1/photo",
+        "https:///missing-host",
+    ],
+)
+def test_tracker_attachment_url_rejects_untrusted_schemes_and_paths(url):
+    from robopark_api.schemas import TrackerAttachmentOut
+
+    with pytest.raises(ValueError, match="tracker_attachment_url_invalid"):
+        TrackerAttachmentOut(id="photo", name="photo.png", url=url)
 
 
 def test_timeline_orders_merges_deduplicates_and_hides_action_secrets(
@@ -502,6 +534,52 @@ def test_attachment_content_rejects_traversal_from_corrupt_metadata(
     )
     db_session.commit()
     db_session.expire_all()
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.get(
+        f"/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content"
+    )
+
+    assert response.status_code == 404
+    assert response.content != PNG
+
+
+def test_attachment_content_rejects_symlink_escape(
+    client, db_session, seed_royal, monkeypatch, tmp_path
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import task_timeline, tracker_cache
+
+    monkeypatch.setattr(tracker_cache, "get_issue", lambda **kwargs: {**ISSUE, "key": kwargs["key"]})
+    root = tmp_path / "task-attachments"
+    root.mkdir()
+    monkeypatch.setattr(task_timeline, "staged_attachments_root", lambda: root)
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(PNG)
+    (root / "linked-photo.png").symlink_to(outside)
+    message = TaskMessage(
+        id="symlink-photo-message",
+        issue_key="ROBOPARK-1",
+        kind="user",
+        author_user_id=seed_royal.id,
+        author_name=seed_royal.username,
+        text="Фото",
+        sync_state="pending",
+        created_at=1,
+        updated_at=1,
+    )
+    attachment = TaskAttachment(
+        id=str(uuid4()),
+        message_id=message.id,
+        blob_name="linked-photo.png",
+        original_name="robot.png",
+        mime_type="image/png",
+        size_bytes=len(PNG),
+        sha256="a" * 64,
+        created_at=1,
+    )
+    db_session.add_all([message, attachment])
+    db_session.commit()
     login_as(client, seed_royal.username, "secret")
 
     response = client.get(
