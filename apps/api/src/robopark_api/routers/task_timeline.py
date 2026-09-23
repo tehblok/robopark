@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from functools import partial
+from urllib.parse import quote
 
 from fastapi import (
     APIRouter,
@@ -14,6 +15,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
@@ -31,6 +33,7 @@ from robopark_api.services import rbac, task_lifecycle, tracker_cache, tracker_c
 from robopark_api.services.defect_codes import DEFECT_CODES
 from robopark_api.services.task_timeline import (
     append_user_message,
+    attachment_content,
     merge_timeline,
     stage_attachment,
 )
@@ -100,8 +103,36 @@ def get_timeline(
             issue_key=key,
             comments=comments,
             tracker_visibility_filter=visibility_filter,
+            include_staff_messages=rbac.role_slug(user) != rbac.RoleSlug.MECHANIC,
         )
     ]
+
+
+@router.get("/issues/{key}/attachments/{attachment_id}/content")
+def get_attachment_content(
+    key: str,
+    attachment_id: str,
+    request: Request,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    _issue(db, user, key, None, request)
+    try:
+        path, media_type, filename = attachment_content(
+            db, issue_key=key, attachment_id=attachment_id
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task_attachment_not_found") from exc
+    disposition = f"inline; filename*=UTF-8''{quote(filename)}"
+    return FileResponse(
+        path,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": disposition,
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.post(

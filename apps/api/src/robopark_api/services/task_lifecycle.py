@@ -145,6 +145,7 @@ def _message(
         text=text,
         action_id=action.id,
         sync_state="pending",
+        visibility="participants",
         created_at=action.created_at,
         updated_at=action.created_at,
     )
@@ -277,6 +278,7 @@ def reconcile_external_closure(db: Session, issue: dict) -> None:
             text="Задача закрыта в Трекере; работа в системе завершена.",
             external_id="tracker-external-close",
             sync_state="synced",
+            visibility="participants",
             created_at=now,
             updated_at=now,
         )

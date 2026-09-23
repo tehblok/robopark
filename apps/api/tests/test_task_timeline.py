@@ -1,9 +1,10 @@
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from conftest import login_as, role_id_for
@@ -365,6 +366,150 @@ def test_mechanic_timeline_keeps_existing_comment_visibility_policy(
         "ok\nAlpha / mech1 / operator1",
         "local system event",
     ]
+
+
+def test_mechanic_timeline_excludes_staff_messages_but_staff_can_read_them(
+    client, db_session, seed_mechanic, seed_royal, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_cache
+    from robopark_api.services.task_timeline import append_system_message
+
+    monkeypatch.setattr(tracker_cache, "get_issue", lambda **_kwargs: dict(ISSUE))
+    monkeypatch.setattr(tracker_cache, "list_comments", lambda **_kwargs: [])
+    participant = append_system_message(
+        db_session,
+        issue_key="ROBOPARK-1",
+        actor=seed_mechanic,
+        text="Задача взята в работу",
+    )
+    diagnostic = append_system_message(
+        db_session,
+        issue_key="ROBOPARK-1",
+        actor="outbox",
+        text="raw payload retry diagnostics",
+        visibility="staff",
+    )
+    db_session.commit()
+
+    login_as(client, seed_mechanic.username, "secret")
+    mechanic_ids = {item["id"] for item in client.get("/tracker/issues/ROBOPARK-1/timeline").json()}
+    login_as(client, seed_royal.username, "secret")
+    staff_ids = {item["id"] for item in client.get("/tracker/issues/ROBOPARK-1/timeline").json()}
+
+    assert participant.id in mechanic_ids
+    assert diagnostic.id not in mechanic_ids
+    assert {participant.id, diagnostic.id} <= staff_ids
+
+
+def test_local_attachment_has_authorized_content_url_and_safe_image_headers(
+    client, db_session, seed_royal, monkeypatch, tmp_path
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import task_timeline, tracker_cache
+
+    monkeypatch.setattr(tracker_cache, "get_issue", lambda **kwargs: {**ISSUE, "key": kwargs["key"]})
+    monkeypatch.setattr(tracker_cache, "list_comments", lambda **_kwargs: [])
+    root = tmp_path / "task-attachments"
+    monkeypatch.setattr(task_timeline, "staged_attachments_root", lambda: root)
+    message = TaskMessage(
+        id="local-photo-message",
+        issue_key="ROBOPARK-1",
+        kind="user",
+        author_user_id=seed_royal.id,
+        author_name=seed_royal.username,
+        text="Фото",
+        sync_state="pending",
+        created_at=1,
+        updated_at=1,
+    )
+    attachment = TaskAttachment(
+        id=str(uuid4()),
+        message_id=message.id,
+        blob_name="local-photo.png",
+        original_name="robot photo.png",
+        mime_type="image/png",
+        size_bytes=len(PNG),
+        sha256="a" * 64,
+        created_at=1,
+    )
+    db_session.add_all([message, attachment])
+    db_session.commit()
+    root.mkdir(parents=True, exist_ok=True)
+    (root / attachment.blob_name).write_bytes(PNG)
+    login_as(client, seed_royal.username, "secret")
+
+    timeline = client.get("/tracker/issues/ROBOPARK-1/timeline")
+    content = client.get(
+        f"/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content"
+    )
+    wrong_issue = client.get(
+        f"/tracker/issues/ROBOPARK-2/attachments/{attachment.id}/content"
+    )
+
+    assert timeline.status_code == 200
+    assert timeline.json()[0]["attachments"][0]["url"] == (
+        f"/api/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content"
+    )
+    assert content.status_code == 200
+    assert content.content == PNG
+    assert content.headers["content-type"] == "image/png"
+    assert content.headers["x-content-type-options"] == "nosniff"
+    assert content.headers["cache-control"] == "private, no-store"
+    assert content.headers["content-disposition"].startswith("inline;")
+    assert wrong_issue.status_code == 404
+
+
+def test_attachment_content_rejects_traversal_from_corrupt_metadata(
+    client, db_session, seed_royal, monkeypatch, tmp_path
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import task_timeline, tracker_cache
+
+    monkeypatch.setattr(tracker_cache, "get_issue", lambda **kwargs: {**ISSUE, "key": kwargs["key"]})
+    root = tmp_path / "task-attachments"
+    root.mkdir()
+    monkeypatch.setattr(task_timeline, "staged_attachments_root", lambda: root)
+    message = TaskMessage(
+        id="corrupt-photo-message",
+        issue_key="ROBOPARK-1",
+        kind="user",
+        author_user_id=seed_royal.id,
+        author_name=seed_royal.username,
+        text="Фото",
+        sync_state="pending",
+        created_at=1,
+        updated_at=1,
+    )
+    attachment = TaskAttachment(
+        id=str(uuid4()),
+        message_id=message.id,
+        blob_name="valid-before-corruption.png",
+        original_name="robot.png",
+        mime_type="image/png",
+        size_bytes=len(PNG),
+        sha256="a" * 64,
+        created_at=1,
+    )
+    db_session.add_all([message, attachment])
+    db_session.commit()
+    outside = Path(tmp_path) / "outside.png"
+    outside.write_bytes(PNG)
+    db_session.execute(text("PRAGMA ignore_check_constraints = ON"))
+    db_session.execute(
+        text("UPDATE task_attachments SET blob_name = '../outside.png' WHERE id = :id"),
+        {"id": attachment.id},
+    )
+    db_session.commit()
+    db_session.expire_all()
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.get(
+        f"/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content"
+    )
+
+    assert response.status_code == 404
+    assert response.content != PNG
 
 
 def test_concurrent_tracker_import_is_conflict_safe_and_rereads_winner(db_engine):

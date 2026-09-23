@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
-from robopark_api.models import User
+from robopark_api.models import TaskMessageVisibility, User
 from robopark_api.services.reliable_actions import begin_action, canonical_payload
 from robopark_api.services.tracker_client import (
     ALLOWED_ATTACHMENT_MIMES,
@@ -115,6 +115,7 @@ def append_system_message(
     actor: User | str,
     text: str,
     action_id: str | None = None,
+    visibility: TaskMessageVisibility = "participants",
 ) -> TaskMessage:
     now = time.time()
     actor_id = actor.id if isinstance(actor, User) else None
@@ -128,6 +129,7 @@ def append_system_message(
         text=text,
         action_id=action_id,
         sync_state="pending" if action_id else "saved",
+        visibility=visibility,
         created_at=now,
         updated_at=now,
     )
@@ -327,6 +329,40 @@ def _sync_state(row: TaskMessage, action: ReliableAction | None) -> str:
     return "pending"
 
 
+def _staged_attachment_path(blob_name: str) -> Path:
+    if (
+        not blob_name
+        or blob_name != Path(blob_name).name
+        or "/" in blob_name
+        or "\\" in blob_name
+        or ".." in blob_name
+        or "\x00" in blob_name
+    ):
+        raise LookupError("task_attachment_not_found")
+    root = staged_attachments_root().resolve()
+    try:
+        path = (root / blob_name).resolve(strict=True)
+        path.relative_to(root)
+    except (OSError, ValueError):
+        raise LookupError("task_attachment_not_found") from None
+    if not path.is_file():
+        raise LookupError("task_attachment_not_found")
+    return path
+
+
+def attachment_content(
+    db: Session, *, issue_key: str, attachment_id: str
+) -> tuple[Path, str, str]:
+    row = db.scalar(
+        select(TaskAttachment)
+        .join(TaskMessage, TaskMessage.id == TaskAttachment.message_id)
+        .where(TaskAttachment.id == attachment_id, TaskMessage.issue_key == issue_key)
+    )
+    if row is None:
+        raise LookupError("task_attachment_not_found")
+    return _staged_attachment_path(row.blob_name), row.mime_type, row.original_name
+
+
 def _insert_tracker_message(db: Session, values: dict) -> None:
     dialect = db.get_bind().dialect.name
     if dialect == "sqlite":
@@ -354,6 +390,7 @@ def merge_timeline(
     issue_key: str,
     comments: list[dict],
     tracker_visibility_filter: Callable[[list[dict]], list[dict]] | None = None,
+    include_staff_messages: bool = True,
 ) -> list[dict]:
     if tracker_visibility_filter is not None:
         comments = tracker_visibility_filter(comments)
@@ -364,6 +401,8 @@ def merge_timeline(
             .order_by(TaskMessage.created_at, TaskMessage.id)
         ).all()
     )
+    if not include_staff_messages:
+        local_rows = [row for row in local_rows if row.visibility == "participants"]
     seen_external = {row.external_id for row in local_rows if row.external_id}
     external_attachments: dict[str, list[dict]] = {}
     marker_ids = {
@@ -438,6 +477,8 @@ def merge_timeline(
             .order_by(TaskMessage.created_at, TaskMessage.id)
         ).all()
     )
+    if not include_staff_messages:
+        local_rows = [row for row in local_rows if row.visibility == "participants"]
     if tracker_visibility_filter is not None:
         persisted = [
             {"id": row.id, "text": row.text, "author_login": row.author_name}
@@ -460,12 +501,20 @@ def merge_timeline(
     )
     local_attachments: dict[str, list[dict]] = {}
     for attachment in attachments:
+        try:
+            _staged_attachment_path(attachment.blob_name)
+        except LookupError:
+            local_url = None
+        else:
+            local_url = (
+                f"/api/tracker/issues/{issue_key}/attachments/{attachment.id}/content"
+            )
         local_attachments.setdefault(attachment.message_id, []).append(
             {
                 "id": attachment.id,
                 "name": attachment.original_name,
                 "size": attachment.size_bytes,
-                "url": None,
+                "url": local_url,
                 "mimetype": attachment.mime_type,
             }
         )
