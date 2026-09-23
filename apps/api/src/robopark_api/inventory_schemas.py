@@ -128,6 +128,20 @@ class InventoryCatalogPartOut(BaseModel):
     has_photo: bool
 
 
+class InventoryCatalogDeletedPartOut(BaseModel):
+    id: int
+    name: str
+    article: str
+    is_active: bool
+    component_is_active: bool
+    merged_into_part_id: int | None
+
+
+class InventoryCatalogDeleteSummaryOut(BaseModel):
+    deleted_part_count: int
+    deleted_parts: list[InventoryCatalogDeletedPartOut]
+
+
 class InventoryCatalogPartMergeIn(BaseModel):
     target_part_id: int
 

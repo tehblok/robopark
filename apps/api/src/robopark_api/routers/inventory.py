@@ -23,6 +23,7 @@ from robopark_api.inventory_schemas import (
     InventoryCatalogComponentListOut,
     InventoryCatalogComponentOut,
     InventoryCatalogComponentUpdateIn,
+    InventoryCatalogDeleteSummaryOut,
     InventoryCatalogPartCreateIn,
     InventoryCatalogPartMergeIn,
     InventoryCatalogPartOut,
@@ -458,7 +459,7 @@ def remove_catalog_component_photo(
 
 @router.delete(
     "/catalog/components/{component_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=InventoryCatalogDeleteSummaryOut,
 )
 def permanently_delete_catalog_component(
     component_id: int,
@@ -468,8 +469,7 @@ def permanently_delete_catalog_component(
 ):
     if not permanent:
         raise HTTPException(400, "inventory_permanent_delete_required")
-    _run(lambda: inventory_deletion.delete_component(db, user, component_id))
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return _run(lambda: inventory_deletion.delete_component(db, user, component_id))
 
 
 @router.post(
@@ -544,7 +544,7 @@ def remove_catalog_part_photo(
 
 @router.delete(
     "/catalog/parts/{part_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=InventoryCatalogDeleteSummaryOut,
 )
 def permanently_delete_catalog_part(
     part_id: int,
@@ -554,8 +554,7 @@ def permanently_delete_catalog_part(
 ):
     if not permanent:
         raise HTTPException(400, "inventory_permanent_delete_required")
-    _run(lambda: inventory_deletion.delete_part(db, user, part_id))
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return _run(lambda: inventory_deletion.delete_part(db, user, part_id))
 
 
 @router.get("/catalog/parts/{part_id}", response_model=InventoryCatalogSearchItem)

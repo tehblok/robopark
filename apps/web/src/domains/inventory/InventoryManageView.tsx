@@ -1,5 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react'
-import { api, inventoryErrorDetail, isInventoryDuplicateErrorDetail, type InventoryCatalogSearchItem, type InventoryStockView } from '../../api'
+import { api, inventoryErrorDetail, isInventoryDuplicateErrorDetail, type InventoryCatalogDeleteSummary, type InventoryCatalogSearchItem, type InventoryStockView } from '../../api'
 import { Button } from '../../design-system/actions/Button'
 import { LoadingState } from '../../design-system/feedback/AsyncState'
 import { FormField } from '../../design-system/forms/FormField'
@@ -244,15 +244,27 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
     setFile(file ?? null)
     setPreview(file ? URL.createObjectURL(file) : '')
   }
+  const applyCatalogDeletion = (summary: InventoryCatalogDeleteSummary) => {
+    const deletedIds = new Set(summary.deleted_parts.map(part => part.id))
+    const normalizedQuery = catalogQuery.trim().toLocaleLowerCase('ru').replace(/\s+/g, ' ')
+    const deletedMatching = summary.deleted_parts.filter(part => {
+      const matchesMode = catalogMode === 'active'
+        ? part.is_active && part.component_is_active
+        : catalogMode === 'archived'
+          ? !part.is_active && part.merged_into_part_id === null
+          : part.merged_into_part_id === null
+      const matchesQuery = !normalizedQuery || [part.name, part.article].some(value => value.toLocaleLowerCase('ru').replace(/\s+/g, ' ').includes(normalizedQuery))
+      return matchesMode && matchesQuery
+    }).length
+    setItems(current => current.filter(item => !deletedIds.has(item.id)))
+    setCatalogTotal(current => Math.max(0, current - deletedMatching))
+  }
   const permanentlyDeletePart = async () => {
     if (!deletePart) return
     setBusy(true); setError('')
     try {
-      await apiClient.permanentlyDeleteInventoryCatalogPart(deletePart.id)
-      const deletingLastItem = items.length === 1 && catalogOffset > 0
-      setItems(current => current.filter(item => item.id !== deletePart.id))
-      setCatalogTotal(current => Math.max(0, current - 1))
-      if (deletingLastItem) setCatalogOffset(value => Math.max(0, value - 25))
+      const summary = await apiClient.permanentlyDeleteInventoryCatalogPart(deletePart.id)
+      applyCatalogDeletion(summary)
       select(null); setSelectedPart(null); setWorkflow(null); setDeletePart(null)
       setNotice(`Позиция «${deletePart.name}» удалена навсегда.`)
     } catch (reason) { setError(classifyApiError(reason, 'Не удалось удалить позицию.').description) }
@@ -263,16 +275,12 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
     if (!component) return
     setBusy(true); setError('')
     try {
-      await apiClient.permanentlyDeleteInventoryCatalogComponent(component.id)
-      const removedVisible = items.filter(item => item.component_id === component.id).length
+      const summary = await apiClient.permanentlyDeleteInventoryCatalogComponent(component.id)
       setComponents(current => current.filter(item => item.id !== component.id))
-      setItems(current => current.filter(item => item.component_id !== component.id))
-      setCatalogTotal(current => Math.max(0, current - removedVisible))
+      applyCatalogDeletion(summary)
       if (selected?.component_id === component.id) { select(null); setSelectedPart(null) }
       setDeleteComponentId(''); setDeleteComponentOpen(false); setWorkflow(null)
       setNotice(`Компонента «${component.name}» удалена навсегда.`)
-      if (removedVisible === items.length && catalogOffset > 0) setCatalogOffset(value => Math.max(0, value - 25))
-      else await load()
     } catch (reason) { setError(classifyApiError(reason, 'Не удалось удалить компоненту.').description) }
     finally { setBusy(false) }
   }
@@ -290,7 +298,7 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
       </div>
     </div>
     {loading ? <LoadingState label="Загружаем каталог" /> : null}
-    {catalogTotal > 25 ? <nav aria-label="Страницы каталога" className="inventory-pagination"><Button disabled={catalogOffset === 0} onClick={() => setCatalogOffset(value => Math.max(0, value - 25))} size="compact" variant="secondary">Предыдущая страница каталога</Button><Button disabled={catalogOffset + 25 >= catalogTotal} onClick={() => setCatalogOffset(value => value + 25)} size="compact" variant="secondary">Следующая страница каталога</Button></nav> : null}
+    {catalogTotal > 25 || catalogOffset > 0 ? <nav aria-label="Страницы каталога" className="inventory-pagination"><Button disabled={catalogOffset === 0} onClick={() => setCatalogOffset(value => Math.max(0, value - 25))} size="compact" variant="secondary">Предыдущая страница каталога</Button><span>{items.length ? `${catalogOffset + 1}–${Math.min(catalogOffset + 25, catalogTotal)} из ${catalogTotal}` : `0 из ${catalogTotal}`}</span><Button disabled={catalogOffset + 25 >= catalogTotal} onClick={() => setCatalogOffset(value => value + 25)} size="compact" variant="secondary">Следующая страница каталога</Button></nav> : null}
     {notice ? <p className="inventory-notice" role="status">{notice}</p> : null}
     {componentError ? <p className="form-error" role="alert">{componentError}</p> : null}
     {error ? <p className="form-error" role="alert">{error}</p> : null}

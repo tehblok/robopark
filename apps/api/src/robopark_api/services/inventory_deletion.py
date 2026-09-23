@@ -121,19 +121,45 @@ def _delete_part_rows(db: Session, part_ids: set[int]) -> set[str]:
     return storage_keys
 
 
-def delete_part(db: Session, user: User, part_id: int) -> None:
+def _delete_summary(db: Session, part_ids: set[int]) -> dict:
+    deleted_parts = [
+        {
+            "id": part.id,
+            "name": part.name,
+            "article": part.article,
+            "is_active": part.is_active,
+            "component_is_active": component_is_active,
+            "merged_into_part_id": part.merged_into_part_id,
+        }
+        for part, component_is_active in db.execute(
+            select(InventoryCatalogPart, InventoryCatalogComponent.is_active)
+            .join(
+                InventoryCatalogComponent,
+                InventoryCatalogComponent.id == InventoryCatalogPart.component_id,
+            )
+            .where(InventoryCatalogPart.id.in_(part_ids))
+            .order_by(InventoryCatalogPart.id)
+        )
+    ]
+    return {"deleted_part_count": len(deleted_parts), "deleted_parts": deleted_parts}
+
+
+def delete_part(db: Session, user: User, part_id: int) -> dict:
     _require_royal(user)
+    part_ids = _part_graph_ids(db, part_id)
+    summary = _delete_summary(db, part_ids)
     try:
-        storage_keys = _delete_part_rows(db, _part_graph_ids(db, part_id))
+        storage_keys = _delete_part_rows(db, part_ids)
         db.commit()
     except Exception:
         db.rollback()
         raise
     for storage_key in storage_keys:
         inventory._remove_photo(storage_key)
+    return summary
 
 
-def delete_component(db: Session, user: User, component_id: int) -> None:
+def delete_component(db: Session, user: User, component_id: int) -> dict:
     _require_royal(user)
     component = db.get(InventoryCatalogComponent, component_id)
     if component is None:
@@ -148,6 +174,7 @@ def delete_component(db: Session, user: User, component_id: int) -> None:
     graph_ids: set[int] = set()
     for part_id in part_ids:
         graph_ids.update(_part_graph_ids(db, part_id))
+    summary = _delete_summary(db, graph_ids)
     try:
         storage_keys = _delete_part_rows(db, graph_ids) if graph_ids else set()
         if component.photo_storage_key:
@@ -159,6 +186,7 @@ def delete_component(db: Session, user: User, component_id: int) -> None:
         raise
     for storage_key in storage_keys:
         inventory._remove_photo(storage_key)
+    return summary
 
 
 def delete_count(db: Session, user: User, count_id: int) -> None:

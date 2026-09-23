@@ -43,6 +43,14 @@ export type InventoryCatalogPart = {
   has_photo: boolean
 }
 
+export type InventoryCatalogDeleteSummary = {
+  deleted_part_count: number
+  deleted_parts: Array<Pick<InventoryCatalogPart, 'id' | 'name' | 'article' | 'is_active'> & {
+    component_is_active: boolean
+    merged_into_part_id: number | null
+  }>
+}
+
 export type InventoryCatalogSearchItem = InventoryCatalogPart & {
   component_name: string
   quantity: InventoryInt64

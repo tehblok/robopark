@@ -21,8 +21,8 @@ function client(overrides = {}) {
     removeInventoryCatalogComponentPhoto: vi.fn(async () => undefined),
     replaceInventoryCatalogPartPhoto: vi.fn(async () => ({ id: 31, component_id: 4, name: 'Тяга', article: 'ABC-01', is_active: true, has_photo: true })),
     removeInventoryCatalogPartPhoto: vi.fn(async () => undefined),
-    permanentlyDeleteInventoryCatalogComponent: vi.fn(async () => undefined),
-    permanentlyDeleteInventoryCatalogPart: vi.fn(async () => undefined),
+    permanentlyDeleteInventoryCatalogComponent: vi.fn(async () => ({ deleted_part_count: 1, deleted_parts: [{ id: 31, name: 'Тяга', article: 'ABC-01', is_active: true, component_is_active: true, merged_into_part_id: null }] })),
+    permanentlyDeleteInventoryCatalogPart: vi.fn(async (id: number) => ({ deleted_part_count: 1, deleted_parts: [{ id, name: id === 99 ? 'Последняя' : 'Тяга', article: id === 99 ? 'LAST-99' : 'ABC-01', is_active: true, component_is_active: true, merged_into_part_id: null }] })),
     mergeInventoryCatalogPart: vi.fn(async () => ({ id: 32, component_id: 4, name: 'Новая тяга', article: 'NEW-01', is_active: true, has_photo: false })),
     updateInventoryStock: vi.fn(async (_parkId: number, catalogPartId: number) => ({ park_id: 1, catalog_part_id: catalogPartId, quantity: '0' as const, minimum_quantity: '0' as const, location: null, is_active: true, version: '1' as const })),
     ...overrides,
@@ -316,7 +316,14 @@ describe('InventoryManageView', () => {
     await userEvent.type(within(dialog).getByRole('textbox'), 'Последняя')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Удалить навсегда' }))
 
-    await waitFor(() => expect(searchInventory).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 })))
+    await waitFor(() => expect(apiClient.permanentlyDeleteInventoryCatalogPart).toHaveBeenCalledWith(99))
+    expect(searchInventory).toHaveBeenCalledTimes(2)
+    expect(screen.getByRole('button', { name: 'Предыдущая страница каталога' })).toBeEnabled()
+    expect(screen.getByText('0 из 25')).toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'Позиция каталога' })).toHaveValue('')
+    await userEvent.click(screen.getByRole('button', { name: 'Предыдущая страница каталога' }))
+    await waitFor(() => expect(searchInventory).toHaveBeenCalledTimes(3))
+    expect(searchInventory).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 }))
     expect(await screen.findByRole('option', { name: 'Тяга · ABC-01' })).toBeVisible()
   })
 
@@ -338,10 +345,9 @@ describe('InventoryManageView', () => {
   })
 
   it('permanently deletes a named component only for royal', async () => {
-    let deleted = false
     const apiClient = client({
-      searchInventory: vi.fn(async () => ({ items: deleted ? [] : [part], limit: 25, offset: 0, total: deleted ? 25 : 26 })),
-      permanentlyDeleteInventoryCatalogComponent: vi.fn(async () => { deleted = true }),
+      searchInventory: vi.fn(async () => ({ items: [part], limit: 25, offset: 0, total: 26 })),
+      permanentlyDeleteInventoryCatalogComponent: vi.fn(async () => ({ deleted_part_count: 1, deleted_parts: [{ id: 31, name: 'Тяга', article: 'ABC-01', is_active: true, component_is_active: true, merged_into_part_id: null }] })),
     })
     render(<InventoryManageView apiClient={apiClient} parkId={1} role="royal" />)
     await userEvent.click(await screen.findByRole('button', { name: 'Удалить компоненту' }))
@@ -354,6 +360,7 @@ describe('InventoryManageView', () => {
     await waitFor(() => expect(apiClient.permanentlyDeleteInventoryCatalogComponent).toHaveBeenCalledWith(4))
     expect(screen.queryByRole('option', { name: 'Подвязка' })).not.toBeInTheDocument()
     expect(screen.queryByRole('navigation', { name: 'Страницы каталога' })).not.toBeInTheDocument()
+    expect(apiClient.searchInventory).toHaveBeenCalledTimes(1)
   })
 
   it('ignores stale merge targets after the source query changes', async () => {

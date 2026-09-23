@@ -224,6 +224,17 @@ def test_only_royal_can_permanently_delete_global_part_graph(
 ):
     admin = _user(db_session, "admin", "part-delete-admin", [seed_park_with_tracker])
     component, part = _catalog(db_session, seed_royal, article="DELETE-PART")
+    alias = InventoryCatalogPart(
+        component_id=component.id,
+        name="Delete alias",
+        normalized_name="delete alias",
+        article="DELETE-PART-ALIAS",
+        normalized_article="delete-part-alias",
+        is_active=False,
+        merged_into_part_id=part.id,
+        created_by=seed_royal.id,
+        updated_by=seed_royal.id,
+    )
     stock = InventoryParkStock(
         park_id=seed_park_with_tracker.id,
         catalog_part_id=part.id,
@@ -240,7 +251,7 @@ def test_only_royal_can_permanently_delete_global_part_graph(
         name="Delete graph",
         created_by=seed_royal.id,
     )
-    db_session.add_all([stock, receipt, count])
+    db_session.add_all([alias, stock, receipt, count])
     db_session.flush()
     db_session.add_all(
         [
@@ -257,7 +268,7 @@ def test_only_royal_can_permanently_delete_global_part_graph(
         ]
     )
     db_session.commit()
-    stock_id, receipt_id, count_id = stock.id, receipt.id, count.id
+    alias_id, stock_id, receipt_id, count_id = alias.id, stock.id, receipt.id, count.id
 
     login_as(client, admin.username, "secret")
     assert client.delete(
@@ -268,8 +279,10 @@ def test_only_royal_can_permanently_delete_global_part_graph(
         f"/inventory/catalog/parts/{part.id}", params={"permanent": "true"}
     )
 
-    assert response.status_code == 204, response.text
+    assert response.status_code == 200, response.text
+    assert response.json()["deleted_part_count"] == 2
     assert db_session.get(InventoryCatalogPart, part.id) is None
+    assert db_session.get(InventoryCatalogPart, alias_id) is None
     assert db_session.get(InventoryParkStock, stock_id) is None
     assert db_session.get(InventoryReceipt, receipt_id) is None
     assert db_session.get(InventoryCount, count_id) is None
@@ -344,7 +357,8 @@ def test_part_delete_preserves_other_lines_and_movements_in_mixed_documents(
         f"/inventory/catalog/parts/{deleted_part.id}", params={"permanent": "true"}
     )
 
-    assert response.status_code == 204, response.text
+    assert response.status_code == 200, response.text
+    assert response.json()["deleted_part_count"] == 1
     db_session.expire_all()
     assert db_session.get(InventoryReceipt, receipt_id) is not None
     assert db_session.get(InventoryCount, count_id) is not None
@@ -379,7 +393,20 @@ def test_royal_permanently_deletes_component_graph(client, db_session, seed_park
         f"/inventory/catalog/components/{component.id}", params={"permanent": "true"}
     )
 
-    assert response.status_code == 204, response.text
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "deleted_part_count": 1,
+        "deleted_parts": [
+            {
+                "id": part.id,
+                "name": part.name,
+                "article": part.article,
+                "is_active": True,
+                "component_is_active": True,
+                "merged_into_part_id": None,
+            }
+        ]
+    }
     assert db_session.get(InventoryCatalogComponent, component.id) is None
     assert db_session.get(InventoryCatalogPart, part.id) is None
 
