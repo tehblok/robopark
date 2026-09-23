@@ -1,8 +1,11 @@
+import { readFileSync } from 'node:fs'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, type InventoryCatalogSearchItem } from '../../api'
 import { InventoryManageView } from './InventoryManageView'
+
+const inventoryCss = readFileSync('src/domains/inventory/inventory.css', 'utf8')
 
 const part: InventoryCatalogSearchItem = {
   id: 31, component_id: 4, component_name: 'Подвязка', name: 'Тяга', article: 'ABC-01', is_active: true, has_photo: false,
@@ -27,6 +30,32 @@ function client(overrides = {}) {
     updateInventoryStock: vi.fn(async (_parkId: number, catalogPartId: number) => ({ park_id: 1, catalog_part_id: catalogPartId, quantity: '0' as const, minimum_quantity: '0' as const, location: null, is_active: true, version: '1' as const })),
     ...overrides,
   }
+}
+
+function declaredStyles(element: Element): Record<string, string> {
+  const style = document.createElement('style')
+  style.textContent = inventoryCss
+  document.head.append(style)
+  const declarations: Record<string, string> = {}
+  for (const rule of Array.from((style.sheet as CSSStyleSheet).cssRules)) {
+    if (!('selectorText' in rule && 'style' in rule)) continue
+    const styleRule = rule as CSSStyleRule
+    if (!styleRule.selectorText) continue
+    if (!element.matches(styleRule.selectorText)) continue
+    for (const property of Array.from(styleRule.style)) declarations[property] = styleRule.style.getPropertyValue(property)
+  }
+  style.remove()
+  return declarations
+}
+
+function expectFluidInventoryPhoto(image: HTMLElement) {
+  expect(image).toHaveClass('inventory-manage-photo')
+  expect(declaredStyles(image)).toMatchObject({
+    'block-size': 'auto',
+    'max-inline-size': '100%',
+    'object-fit': 'contain',
+  })
+  expect(declaredStyles(image.parentElement!)).toMatchObject({ 'min-inline-size': '0px' })
 }
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
@@ -127,14 +156,18 @@ describe('InventoryManageView', () => {
   })
 
   it('shows the created component as selected in the sorted cache without reloading the catalog', async () => {
+    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:component-preview'), revokeObjectURL: vi.fn() })
     const apiClient = client({
       createInventoryCatalogComponent: vi.fn(async () => ({ id: 88, name: 'Амортизаторы', is_active: true, has_photo: false })),
+      replaceInventoryCatalogComponentPhoto: vi.fn(async () => ({ id: 88, name: 'Амортизаторы', is_active: true, has_photo: true })),
     })
     render(<InventoryManageView apiClient={apiClient} parkId={1} role="mechanic" />)
     await screen.findByRole('option', { name: 'Тяга · ABC-01' })
     await userEvent.click(screen.getByRole('button', { name: 'Добавить компоненту' }))
     const form = screen.getByRole('form', { name: 'Новая компонента' })
     await userEvent.type(within(form).getByRole('textbox', { name: 'Название' }), 'Амортизаторы')
+    await userEvent.upload(within(form).getByLabelText('Сделать фото или выбрать файл'), new File(['image'], 'component.jpg', { type: 'image/jpeg' }))
+    expectFluidInventoryPhoto(within(form).getByRole('img', { name: 'Предпросмотр фото компоненты' }))
     await userEvent.click(within(form).getByRole('button', { name: 'Создать' }))
 
     const select = within(await screen.findByRole('form', { name: 'Новая позиция' })).getByRole('combobox', { name: 'Компонента' })
@@ -269,7 +302,9 @@ describe('InventoryManageView', () => {
     const photo = new File([new Uint8Array([0xff, 0xd8, 0xff])], 'part.jpg', { type: 'image/jpeg' })
     expect(within(form).getByRole('button', { name: 'Сделать фото или выбрать файл' })).toHaveClass('rp-button--secondary')
     await userEvent.upload(within(form).getByLabelText('Сделать фото или выбрать файл'), photo)
-    expect(within(form).getByRole('img', { name: 'Предпросмотр фото позиции' })).toHaveAttribute('src', 'blob:part-preview')
+    const preview = within(form).getByRole('img', { name: 'Предпросмотр фото позиции' })
+    expect(preview).toHaveAttribute('src', 'blob:part-preview')
+    expectFluidInventoryPhoto(preview)
     await userEvent.click(within(form).getByRole('button', { name: 'Создать' }))
 
     await waitFor(() => expect(apiClient.replaceInventoryCatalogPartPhoto).toHaveBeenCalledWith(32, photo))
@@ -285,11 +320,15 @@ describe('InventoryManageView', () => {
     await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Позиция каталога' }), '31')
     await userEvent.click(screen.getByRole('button', { name: 'Редактировать глобально' }))
     const form = screen.getByRole('form', { name: 'Глобальная позиция' })
-    expect(within(form).getByRole('img', { name: 'Фото позиции «Тяга»' })).toHaveAttribute('src', '/api/inventory/parts/-31/photo')
+    const currentPhoto = within(form).getByRole('img', { name: 'Фото позиции «Тяга»' })
+    expect(currentPhoto).toHaveAttribute('src', '/api/inventory/parts/-31/photo')
+    expectFluidInventoryPhoto(currentPhoto)
     const replacement = new File([new Uint8Array([0x89, 0x50])], 'part.png', { type: 'image/png' })
     expect(within(form).getByRole('button', { name: 'Заменить' })).toHaveClass('rp-button--secondary')
     await userEvent.upload(within(form).getByLabelText('Заменить'), replacement)
-    expect(within(form).getByRole('img', { name: 'Предпросмотр нового фото' })).toHaveAttribute('src', 'blob:replacement')
+    const preview = within(form).getByRole('img', { name: 'Предпросмотр нового фото' })
+    expect(preview).toHaveAttribute('src', 'blob:replacement')
+    expectFluidInventoryPhoto(preview)
     await userEvent.click(within(form).getByRole('button', { name: 'Сохранить' }))
     await waitFor(() => expect(apiClient.replaceInventoryCatalogPartPhoto).toHaveBeenCalledWith(31, replacement))
     const deletePhoto = within(form).getByRole('button', { name: 'Удалить' })
@@ -305,11 +344,15 @@ describe('InventoryManageView', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Редактировать компоненту' }))
     const form = screen.getByRole('form', { name: 'Глобальная компонента' })
     await userEvent.selectOptions(within(form).getByRole('combobox', { name: 'Компонента' }), '4')
-    expect(within(form).getByRole('img', { name: 'Фото компоненты «Подвязка»' })).toHaveAttribute('src', '/api/inventory/components/4/photo')
+    const currentPhoto = within(form).getByRole('img', { name: 'Фото компоненты «Подвязка»' })
+    expect(currentPhoto).toHaveAttribute('src', '/api/inventory/components/4/photo')
+    expectFluidInventoryPhoto(currentPhoto)
     const replacement = new File([new Uint8Array([0x89, 0x50])], 'component.png', { type: 'image/png' })
     expect(within(form).getByRole('button', { name: 'Заменить' })).toHaveClass('rp-button--secondary')
     await userEvent.upload(within(form).getByLabelText('Заменить'), replacement)
-    expect(within(form).getByRole('img', { name: 'Предпросмотр нового фото компоненты' })).toHaveAttribute('src', 'blob:component-replacement')
+    const preview = within(form).getByRole('img', { name: 'Предпросмотр нового фото компоненты' })
+    expect(preview).toHaveAttribute('src', 'blob:component-replacement')
+    expectFluidInventoryPhoto(preview)
     await userEvent.click(within(form).getByRole('button', { name: 'Сохранить фото' }))
     await waitFor(() => expect(apiClient.replaceInventoryCatalogComponentPhoto).toHaveBeenCalledWith(4, replacement))
     const deletePhoto = within(form).getByRole('button', { name: 'Удалить' })
