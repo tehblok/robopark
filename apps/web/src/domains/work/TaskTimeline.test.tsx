@@ -1,6 +1,7 @@
 import { render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, it, expect, vi } from 'vitest'
 import type { TaskTimelineItem } from '../../api'
+import { activateTaskAttachmentCache, clearTaskAttachmentCache } from '../../pwa/taskAttachmentCache'
 import { TaskTimeline } from './TaskTimeline'
 
 const localImageMessage: TaskTimelineItem = {
@@ -12,14 +13,16 @@ const localImageMessage: TaskTimelineItem = {
   }],
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   class TestURL extends URL {}
   TestURL.createObjectURL = vi.fn(() => 'blob:repair-preview')
   TestURL.revokeObjectURL = vi.fn()
   vi.stubGlobal('URL', TestURL)
+  await activateTaskAttachmentCache(7)
 })
 
-afterEach(() => {
+afterEach(async () => {
+  await clearTaskAttachmentCache()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })

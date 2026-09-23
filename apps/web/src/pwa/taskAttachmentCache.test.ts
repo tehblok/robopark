@@ -64,6 +64,38 @@ it('clears the active user namespace on logout', async () => {
   expect(fetcher).toHaveBeenCalledTimes(2)
 })
 
+it('purges the previous namespace across a direct 7 to 8 to 7 user switch', async () => {
+  const fetcher = vi.fn(async () => new Blob(['photo'], { type: 'image/jpeg' }))
+  await activateTaskAttachmentCache(7)
+  releaseTaskAttachment(await loadTaskAttachment(attachment(1), fetcher))
+
+  await activateTaskAttachmentCache(8)
+  await activateTaskAttachmentCache(7)
+  releaseTaskAttachment(await loadTaskAttachment(attachment(1), fetcher))
+
+  expect(fetcher).toHaveBeenCalledTimes(2)
+})
+
+it('does not return or retain a blob when the user switches during persistence', async () => {
+  let resolve!: (blob: Blob) => void
+  const response = new Promise<Blob>(done => { resolve = done })
+  const fetcher = vi.fn(() => response)
+  await activateTaskAttachmentCache(7)
+  const loading = loadTaskAttachment(attachment(1), fetcher)
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1))
+  const rejected = expect(loading).rejects.toThrow('task_attachment_session_changed')
+
+  resolve(new Blob(['private'], { type: 'image/jpeg' }))
+  await Promise.resolve()
+  await Promise.resolve()
+  await activateTaskAttachmentCache(8)
+
+  await rejected
+  await activateTaskAttachmentCache(7)
+  releaseTaskAttachment(await loadTaskAttachment(attachment(1), async () => new Blob(['fresh'], { type: 'image/jpeg' })))
+  expect(URL.createObjectURL).toHaveBeenCalledTimes(1)
+})
+
 it('does not persist a successful response whose body is not an image', async () => {
   await activateTaskAttachmentCache(7)
   const fetcher = vi.fn(async () => new Blob(['html'], { type: 'text/html' }))

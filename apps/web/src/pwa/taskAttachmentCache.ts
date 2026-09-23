@@ -20,6 +20,9 @@ let generation = 0
 let database: Promise<IDBDatabase> | null = null
 let mutation = Promise.resolve()
 let accessClock = 0
+let hasActivatedNamespace = false
+let pendingNamespace: string | null = null
+let pendingActivation: Promise<void> | null = null
 
 function nextAccessedAt(): number {
   accessClock = Math.max(Date.now(), accessClock + 1)
@@ -92,6 +95,13 @@ async function storeBlob(entry: CacheEntry): Promise<void> {
   await transactionDone(transaction)
 }
 
+async function deleteBlob(key: string): Promise<void> {
+  const db = await openDatabase()
+  const transaction = db.transaction(STORE, 'readwrite')
+  transaction.objectStore(STORE).delete(key)
+  await transactionDone(transaction)
+}
+
 async function clearDatabase(): Promise<void> {
   if (typeof indexedDB === 'undefined') return
   const db = await openDatabase()
@@ -104,17 +114,38 @@ async function clearDatabase(): Promise<void> {
 
 export async function activateTaskAttachmentCache(userId: number | string): Promise<void> {
   const nextNamespace = String(userId)
-  if (activeNamespace === nextNamespace) return
-  generation += 1
-  activeNamespace = nextNamespace
+  if (activeNamespace === nextNamespace && pendingNamespace === null) return
+  if (pendingNamespace === nextNamespace && pendingActivation) return pendingActivation
+
+  const shouldPurge = hasActivatedNamespace
+  hasActivatedNamespace = true
+  const activationGeneration = ++generation
+  activeNamespace = null
+  pendingNamespace = nextNamespace
+  const prepare = shouldPurge
+    ? mutation.then(clearDatabase, clearDatabase)
+    : mutation.then(() => undefined, () => undefined)
+  mutation = prepare.catch(() => undefined)
+  const activation = prepare.catch(() => undefined).then(() => {
+    if (activationGeneration === generation) activeNamespace = nextNamespace
+    if (pendingNamespace === nextNamespace) {
+      pendingNamespace = null
+      pendingActivation = null
+    }
+  })
+  pendingActivation = activation
+  return activation
 }
 
 export async function clearTaskAttachmentCache(): Promise<void> {
-  generation += 1
+  const clearGeneration = ++generation
   activeNamespace = null
+  pendingNamespace = null
+  pendingActivation = null
   const clear = mutation.then(clearDatabase, clearDatabase)
   mutation = clear.catch(() => undefined)
   await clear.catch(() => undefined)
+  if (generation === clearGeneration) hasActivatedNamespace = false
 }
 
 export async function loadTaskAttachment(
@@ -125,7 +156,8 @@ export async function loadTaskAttachment(
   if (!url) throw new Error('task_attachment_url_missing')
   const namespace = activeNamespace
   const requestGeneration = generation
-  const key = namespace ? cacheKey(namespace, attachment, url) : null
+  if (namespace === null) throw new Error('task_attachment_session_changed')
+  const key = cacheKey(namespace, attachment, url)
 
   if (key && typeof indexedDB !== 'undefined') {
     try {
@@ -151,15 +183,25 @@ export async function loadTaskAttachment(
 
   if (key && namespace !== null && typeof indexedDB !== 'undefined'
     && requestGeneration === generation && namespace === activeNamespace) {
-    const write = mutation.then(() => storeBlob({
-      key,
-      namespace,
-      blob,
-      bytes: blob.size,
-      accessedAt: nextAccessedAt(),
-    }))
+    const write = mutation.then(async () => {
+      if (requestGeneration !== generation || namespace !== activeNamespace) return
+      await storeBlob({
+        key,
+        namespace,
+        blob,
+        bytes: blob.size,
+        accessedAt: nextAccessedAt(),
+      })
+      if (requestGeneration !== generation || namespace !== activeNamespace) {
+        await deleteBlob(key)
+      }
+    })
     mutation = write.catch(() => undefined)
     await write.catch(() => undefined)
+    if (requestGeneration !== generation || namespace !== activeNamespace) {
+      await mutation.catch(() => undefined)
+      throw new Error('task_attachment_session_changed')
+    }
   }
   return URL.createObjectURL(blob)
 }
