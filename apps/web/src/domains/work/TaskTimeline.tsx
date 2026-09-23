@@ -1,11 +1,49 @@
-import type { TaskTimelineItem, TrackerAttachment } from '../../api'
+import { useEffect, useState } from 'react'
+import { api, type TaskTimelineItem, type TrackerAttachment } from '../../api'
 import { IssueRichText } from '../../components/tracker/IssueRichText'
+import { isImageAttachment } from '../../components/tracker/commentChat'
 import { formatDateTime } from '../../components/tracker/issue-utils'
 import { safeHttpUrl } from '../../lib/safeUrl'
+import { loadTaskAttachment, releaseTaskAttachment } from '../../pwa/taskAttachmentCache'
 import { TaskSyncStatus } from './TaskSyncStatus'
 
+function attachmentUrl(raw: string | null | undefined): string | null {
+  if (raw?.startsWith('/api/')) return raw
+  return safeHttpUrl(raw)
+}
+
 function Attachment({ attachment }: { attachment: TrackerAttachment }) {
-  const url = safeHttpUrl(attachment.url)
+  const url = attachmentUrl(attachment.url)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    setPreviewUrl(null)
+    if (!url || !isImageAttachment(attachment)) return
+    let mounted = true
+    let ownedUrl: string | null = null
+    void loadTaskAttachment(attachment, api.taskAttachmentContent)
+      .then(nextUrl => {
+        if (!mounted) {
+          releaseTaskAttachment(nextUrl)
+          return
+        }
+        ownedUrl = nextUrl
+        setPreviewUrl(nextUrl)
+      })
+      .catch(() => {
+        if (mounted && /^https?:\/\//i.test(url)) setPreviewUrl(url)
+      })
+    return () => {
+      mounted = false
+      if (ownedUrl) releaseTaskAttachment(ownedUrl)
+    }
+  }, [attachment, url])
+
+  if (previewUrl) {
+    return <a className="issue-comment-image-link" href={previewUrl} rel="noreferrer" target="_blank" title={attachment.name}>
+      <img alt={attachment.name} className="issue-comment-image" loading="lazy" src={previewUrl} />
+    </a>
+  }
   return url
     ? <a href={url} rel="noreferrer" target="_blank">{attachment.name}</a>
     : <span>{attachment.name}</span>

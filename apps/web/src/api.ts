@@ -1,5 +1,6 @@
 import type { AnalyticsBucket, HistoricalAnalytics } from './domains/analytics/analyticsModel'
 import { interfaceModeStore, trackInterfaceMutation } from './app/interface/interfaceModeStore'
+import { activateTaskAttachmentCache, clearTaskAttachmentCache } from './pwa/taskAttachmentCache'
 import type {
   InventoryCatalogComponent,
   InventoryCatalogPart,
@@ -1115,6 +1116,31 @@ async function requestBlob(path: string): Promise<Blob> {
   )
 }
 
+async function requestTaskAttachmentBlob(rawUrl: string): Promise<Blob> {
+  let url: string
+  if (rawUrl.startsWith('/api/')) {
+    url = rawUrl
+  } else {
+    const parsed = new URL(rawUrl)
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) {
+      throw new Error('task_attachment_url_invalid')
+    }
+    url = parsed.href
+  }
+  return fetchWithTimeout(
+    url,
+    { credentials: 'include' },
+    BLOB_TIMEOUT_MS,
+    async (response) => {
+      if (!response.ok) {
+        const detail = await readErrorDetail(response)
+        throw new ApiError(response.status, detail, responseRequestId(response), responseRetryAfter(response))
+      }
+      return response.blob()
+    },
+  )
+}
+
 const INVENTORY_EXPORT_MEDIA_TYPES = {
   csv: 'text/csv',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -1334,13 +1360,30 @@ export const api = {
   },
   previewDiagnosticRule: async (rule: DiagnosticRuleCreate, payload?: Record<string, JsonValue>, signal?: AbortSignal) =>
     (await diagnosticRequest<DiagnosticPreview>('/preview', { method: 'POST', body: JSON.stringify({ rule, payload }), signal })).data,
-  me: () => request<User>('/auth/me'),
-  login: (username: string, password: string, rememberMe = false) =>
-    request<void>('/auth/login', {
+  me: async () => {
+    try {
+      const user = await request<User>('/auth/me')
+      await activateTaskAttachmentCache(user.id)
+      return user
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) await clearTaskAttachmentCache()
+      throw error
+    }
+  },
+  login: async (username: string, password: string, rememberMe = false) => {
+    await clearTaskAttachmentCache()
+    return request<void>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username, password, remember_me: rememberMe }),
-    }),
-  logout: () => request<void>('/auth/logout', { method: 'POST' }),
+    })
+  },
+  logout: async () => {
+    try {
+      await request<void>('/auth/logout', { method: 'POST' })
+    } finally {
+      await clearTaskAttachmentCache()
+    }
+  },
   changePassword: (current_password: string, new_password: string) =>
     request<void>('/auth/change-password', {
       method: 'POST',
@@ -1640,6 +1683,7 @@ export const api = {
     request<TrackerComment[]>(`/tracker/issues/${encodeURIComponent(key)}/comments`),
   taskTimeline: (key: string) =>
     request<TaskTimelineItem[]>(`/tracker/issues/${encodeURIComponent(key)}/timeline`),
+  taskAttachmentContent: (url: string) => requestTaskAttachmentBlob(url),
   taskDefectCodes: () => request<DefectCode[]>('/tracker/defect-codes'),
   createMediaUpload: (value: { media_id: string, issue_key: string, name: string, mime_type: string, size_bytes: number, sha256: string }) =>
     request<MediaUploadSession>('/media/uploads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) }),
