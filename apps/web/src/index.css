@@ -51,10 +51,14 @@
   box-sizing: border-box;
 }
 
-main a,
-main summary {
+main a {
   align-items: center;
   display: inline-flex;
+  min-block-size: var(--rp-control-min-size);
+}
+
+main summary {
+  display: list-item;
   min-block-size: var(--rp-control-min-size);
 }
 

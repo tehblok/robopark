@@ -51,6 +51,21 @@ test('geometry helper includes summary and inline link hit areas', async ({ page
   await expect(assertResponsiveContracts(page, 1000)).rejects.toThrow(/target .*Compact inline link/)
 })
 
+test('production disclosure keeps its native marker and 44px hit area', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await openRouteFixture(page, 'analytics', userForRole('operator'))
+  const summary = page.locator('.rp-analytics-card summary', { hasText: 'Значения по интервалам' }).first()
+  await expect(summary).toBeVisible()
+  const geometry = await summary.evaluate(element => {
+    const style = getComputedStyle(element)
+    const rect = element.getBoundingClientRect()
+    return { display: style.display, listStyleType: style.listStyleType, height: rect.height }
+  })
+  expect(geometry.display).toBe('list-item')
+  expect(geometry.listStyleType).not.toBe('none')
+  expect(geometry.height).toBeGreaterThanOrEqual(44)
+})
+
 for (const role of geometryRoles) {
   const user = userForRole(role)
   for (const theme of geometryThemes) for (const viewport of geometryViewports) {
