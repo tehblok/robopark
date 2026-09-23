@@ -80,18 +80,40 @@ def _delete_part_rows(db: Session, part_ids: set[int]) -> set[str]:
 
     if receipt_ids:
         db.execute(
-            delete(InventoryReceiptLine).where(InventoryReceiptLine.receipt_id.in_(receipt_ids))
+            delete(InventoryReceiptLine).where(
+                InventoryReceiptLine.receipt_id.in_(receipt_ids),
+                InventoryReceiptLine.catalog_part_id.in_(part_ids),
+            )
         )
     if count_ids:
-        db.execute(delete(InventoryCountLine).where(InventoryCountLine.count_id.in_(count_ids)))
+        db.execute(
+            delete(InventoryCountLine).where(
+                InventoryCountLine.count_id.in_(count_ids),
+                InventoryCountLine.catalog_part_id.in_(part_ids),
+            )
+        )
     movement_filter = InventoryMovement.catalog_part_id.in_(part_ids)
     if legacy_ids:
         movement_filter = movement_filter | InventoryMovement.part_id.in_(legacy_ids)
     db.execute(delete(InventoryMovement).where(movement_filter))
     if receipt_ids:
-        db.execute(delete(InventoryReceipt).where(InventoryReceipt.id.in_(receipt_ids)))
+        db.execute(
+            delete(InventoryReceipt).where(
+                InventoryReceipt.id.in_(receipt_ids),
+                ~select(InventoryReceiptLine.id)
+                .where(InventoryReceiptLine.receipt_id == InventoryReceipt.id)
+                .exists(),
+            )
+        )
     if count_ids:
-        db.execute(delete(InventoryCount).where(InventoryCount.id.in_(count_ids)))
+        db.execute(
+            delete(InventoryCount).where(
+                InventoryCount.id.in_(count_ids),
+                ~select(InventoryCountLine.id)
+                .where(InventoryCountLine.count_id == InventoryCount.id)
+                .exists(),
+            )
+        )
     db.execute(delete(InventoryParkStock).where(InventoryParkStock.catalog_part_id.in_(part_ids)))
     if legacy_ids:
         db.execute(delete(InventoryPart).where(InventoryPart.id.in_(legacy_ids)))

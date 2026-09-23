@@ -161,6 +161,43 @@ def test_catalog_photo_replace_and_remove_clean_up_managed_files(
     )
 
 
+def test_catalog_photo_keeps_committed_new_file_when_refresh_fails(
+    client, db_session, seed_royal, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        inventory,
+        "get_settings",
+        lambda: SimpleNamespace(inventory_photos_dir=str(tmp_path / "inventory-photos")),
+    )
+    _component, part = _catalog(db_session, seed_royal, article="PHOTO-REFRESH")
+    old_key, filename, content_type = inventory.save_photo("old.jpg", _JPEG, "image/jpeg")
+    part.photo_storage_key = old_key
+    part.photo_filename = filename
+    part.photo_content_type = content_type
+    db_session.commit()
+    login_as(client, seed_royal.username, "secret")
+    original_refresh = type(db_session).refresh
+    monkeypatch.setattr(
+        type(db_session),
+        "refresh",
+        lambda _session, _row: (_ for _ in ()).throw(RuntimeError("refresh_failed")),
+    )
+
+    response = client.put(
+        f"/inventory/catalog/parts/{part.id}/photo",
+        files={"photo": ("new.png", _PNG, "image/png")},
+    )
+
+    assert response.status_code == 502
+    monkeypatch.setattr(type(db_session), "refresh", original_refresh)
+    db_session.expire_all()
+    stored = db_session.get(InventoryCatalogPart, part.id)
+    assert stored is not None
+    assert stored.photo_storage_key != old_key
+    assert inventory.photo_path(stored.photo_storage_key).is_file()
+    assert not (tmp_path / "inventory-photos" / old_key).exists()
+
+
 def test_mechanic_can_attach_photo_to_new_catalog_part(
     client, db_session, seed_park_with_tracker, tmp_path, monkeypatch
 ):
@@ -237,6 +274,92 @@ def test_only_royal_can_permanently_delete_global_part_graph(
     assert db_session.get(InventoryReceipt, receipt_id) is None
     assert db_session.get(InventoryCount, count_id) is None
     assert db_session.get(InventoryCatalogComponent, component.id) is not None
+
+
+def test_part_delete_preserves_other_lines_and_movements_in_mixed_documents(
+    client, db_session, seed_park_with_tracker, seed_royal
+):
+    component, deleted_part = _catalog(db_session, seed_royal, article="DELETE-MIXED-A")
+    surviving_part = InventoryCatalogPart(
+        component_id=component.id,
+        name="Сохраняемая позиция",
+        normalized_name="сохраняемая позиция",
+        article="DELETE-MIXED-B",
+        normalized_article="delete-mixed-b",
+        created_by=seed_royal.id,
+        updated_by=seed_royal.id,
+    )
+    receipt = InventoryReceipt(
+        park_id=seed_park_with_tracker.id,
+        receipt_date=date.today(),
+        created_by=seed_royal.id,
+    )
+    count = InventoryCount(
+        park_id=seed_park_with_tracker.id,
+        name="Mixed delete graph",
+        created_by=seed_royal.id,
+    )
+    db_session.add_all([surviving_part, receipt, count])
+    db_session.flush()
+    deleted_movement = InventoryMovement(
+        catalog_part_id=deleted_part.id,
+        park_id=seed_park_with_tracker.id,
+        actor_user_id=seed_royal.id,
+        kind="receipt",
+        delta=1,
+        balance_after=1,
+    )
+    surviving_movement = InventoryMovement(
+        catalog_part_id=surviving_part.id,
+        park_id=seed_park_with_tracker.id,
+        actor_user_id=seed_royal.id,
+        kind="receipt",
+        delta=2,
+        balance_after=2,
+    )
+    db_session.add_all(
+        [
+            InventoryReceiptLine(
+                receipt_id=receipt.id, catalog_part_id=deleted_part.id, quantity=1
+            ),
+            InventoryReceiptLine(
+                receipt_id=receipt.id, catalog_part_id=surviving_part.id, quantity=2
+            ),
+            InventoryCountLine(
+                count_id=count.id, catalog_part_id=deleted_part.id, expected_quantity=1
+            ),
+            InventoryCountLine(
+                count_id=count.id, catalog_part_id=surviving_part.id, expected_quantity=2
+            ),
+            deleted_movement,
+            surviving_movement,
+        ]
+    )
+    db_session.commit()
+    receipt_id, count_id = receipt.id, count.id
+    deleted_movement_id, surviving_movement_id = deleted_movement.id, surviving_movement.id
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.delete(
+        f"/inventory/catalog/parts/{deleted_part.id}", params={"permanent": "true"}
+    )
+
+    assert response.status_code == 204, response.text
+    db_session.expire_all()
+    assert db_session.get(InventoryReceipt, receipt_id) is not None
+    assert db_session.get(InventoryCount, count_id) is not None
+    assert list(
+        db_session.scalars(
+            select(InventoryReceiptLine).where(InventoryReceiptLine.receipt_id == receipt_id)
+        )
+    )[0].catalog_part_id == surviving_part.id
+    assert list(
+        db_session.scalars(
+            select(InventoryCountLine).where(InventoryCountLine.count_id == count_id)
+        )
+    )[0].catalog_part_id == surviving_part.id
+    assert db_session.get(InventoryMovement, deleted_movement_id) is None
+    assert db_session.get(InventoryMovement, surviving_movement_id) is not None
 
 
 def test_royal_permanently_deletes_component_graph(client, db_session, seed_park_with_tracker, seed_royal):

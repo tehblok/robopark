@@ -274,7 +274,7 @@ describe('InventoryManageView', () => {
     await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Позиция каталога' }), '31')
     await userEvent.click(screen.getByRole('button', { name: 'Редактировать глобально' }))
     const form = screen.getByRole('form', { name: 'Глобальная позиция' })
-    expect(within(form).getByRole('img', { name: 'Фото позиции «Тяга»' })).toBeVisible()
+    expect(within(form).getByRole('img', { name: 'Фото позиции «Тяга»' })).toHaveAttribute('src', '/api/inventory/parts/-31/photo')
     const replacement = new File([new Uint8Array([0x89, 0x50])], 'part.png', { type: 'image/png' })
     await userEvent.upload(within(form).getByLabelText('Заменить фото'), replacement)
     expect(within(form).getByRole('img', { name: 'Предпросмотр нового фото' })).toHaveAttribute('src', 'blob:replacement')
@@ -282,6 +282,42 @@ describe('InventoryManageView', () => {
     await waitFor(() => expect(apiClient.replaceInventoryCatalogPartPhoto).toHaveBeenCalledWith(31, replacement))
     await userEvent.click(within(form).getByRole('button', { name: 'Удалить фото' }))
     await waitFor(() => expect(apiClient.removeInventoryCatalogPartPhoto).toHaveBeenCalledWith(31))
+  })
+
+  it('previews, replaces and removes a component photo without reloading', async () => {
+    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:component-replacement'), revokeObjectURL: vi.fn() })
+    const apiClient = client({ inventoryCatalogComponents: vi.fn(async () => ({ items: [{ id: 4, name: 'Подвязка', is_active: true, has_photo: true }], limit: 200, offset: 0, total: 1 })) })
+    render(<InventoryManageView apiClient={apiClient} parkId={1} role="admin" />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Редактировать компоненту' }))
+    const form = screen.getByRole('form', { name: 'Глобальная компонента' })
+    await userEvent.selectOptions(within(form).getByRole('combobox', { name: 'Компонента' }), '4')
+    expect(within(form).getByRole('img', { name: 'Фото компоненты «Подвязка»' })).toHaveAttribute('src', '/api/inventory/components/4/photo')
+    const replacement = new File([new Uint8Array([0x89, 0x50])], 'component.png', { type: 'image/png' })
+    await userEvent.upload(within(form).getByLabelText('Заменить фото'), replacement)
+    expect(within(form).getByRole('img', { name: 'Предпросмотр нового фото компоненты' })).toHaveAttribute('src', 'blob:component-replacement')
+    await userEvent.click(within(form).getByRole('button', { name: 'Сохранить фото' }))
+    await waitFor(() => expect(apiClient.replaceInventoryCatalogComponentPhoto).toHaveBeenCalledWith(4, replacement))
+    await userEvent.click(within(form).getByRole('button', { name: 'Удалить фото' }))
+    await waitFor(() => expect(apiClient.removeInventoryCatalogComponentPhoto).toHaveBeenCalledWith(4))
+    expect(apiClient.searchInventory).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns to the previous catalog page after deleting its last part', async () => {
+    const last = { ...part, id: 99, name: 'Последняя', article: 'LAST-99' }
+    const searchInventory = vi.fn(async ({ offset = 0 }: { offset?: number }) => offset === 25
+      ? { items: [last], limit: 25, offset: 25, total: 26 }
+      : { items: [part], limit: 25, offset: 0, total: 26 })
+    const apiClient = client({ searchInventory })
+    render(<InventoryManageView apiClient={apiClient} parkId={1} role="royal" />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Следующая страница каталога' }))
+    await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Позиция каталога' }), '99')
+    await userEvent.click(screen.getByRole('button', { name: 'Удалить навсегда' }))
+    const dialog = screen.getByRole('alertdialog', { name: 'Удалить позицию «Последняя» навсегда?' })
+    await userEvent.type(within(dialog).getByRole('textbox'), 'Последняя')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Удалить навсегда' }))
+
+    await waitFor(() => expect(searchInventory).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 })))
+    expect(await screen.findByRole('option', { name: 'Тяга · ABC-01' })).toBeVisible()
   })
 
   it('requires the royal user to type the part name before permanent deletion', async () => {
@@ -302,7 +338,7 @@ describe('InventoryManageView', () => {
   })
 
   it('permanently deletes a named component only for royal', async () => {
-    const apiClient = client()
+    const apiClient = client({ searchInventory: vi.fn(async () => ({ items: [part], limit: 25, offset: 0, total: 26 })) })
     render(<InventoryManageView apiClient={apiClient} parkId={1} role="royal" />)
     await userEvent.click(await screen.findByRole('button', { name: 'Удалить компоненту' }))
     await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Компонента для удаления' }), '4')
@@ -313,6 +349,7 @@ describe('InventoryManageView', () => {
 
     await waitFor(() => expect(apiClient.permanentlyDeleteInventoryCatalogComponent).toHaveBeenCalledWith(4))
     expect(screen.queryByRole('option', { name: 'Подвязка' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'Страницы каталога' })).not.toBeInTheDocument()
   })
 
   it('ignores stale merge targets after the source query changes', async () => {

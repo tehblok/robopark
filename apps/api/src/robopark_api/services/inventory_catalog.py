@@ -117,12 +117,12 @@ def set_catalog_photo(
         row.photo_content_type = stored_type
         row.updated_by = user.id
         db.commit()
-        db.refresh(row)
     except Exception:
         db.rollback()
         inventory._remove_photo(new_key)
         raise
     inventory._remove_photo(old_key)
+    db.refresh(row)
     return row
 
 

@@ -214,3 +214,21 @@ it('requires the count name and removes a permanently deleted count locally', as
   expect(screen.queryByRole('article', { name: 'Инвентаризация №71' })).not.toBeInTheDocument()
   expect(apiClient.inventoryCounts).toHaveBeenCalledTimes(1)
 })
+
+it('returns to the previous page after deleting its last count', async () => {
+  const last = { ...count, id: 99, name: 'Последний акт' }
+  const inventoryCounts = vi.fn(async (_park: number, { offset = 0 }: { offset?: number }) => offset === 25
+    ? { items: [last], limit: 25, offset: 25, total: 26 }
+    : { items: [count], limit: 25, offset: 0, total: 26 })
+  const apiClient = client({ inventoryCounts })
+  render(<InventoryCountsView apiClient={apiClient} parkId={7} permissions={['inventory.catalog.manage']} role="admin" />)
+  await userEvent.click(await screen.findByRole('button', { name: 'Следующая страница актов' }))
+  const card = await screen.findByRole('article', { name: 'Инвентаризация №99' })
+  await userEvent.click(within(card).getByRole('button', { name: 'Удалить навсегда' }))
+  const dialog = screen.getByRole('alertdialog', { name: 'Удалить акт «Последний акт» навсегда?' })
+  await userEvent.type(within(dialog).getByRole('textbox'), 'Последний акт')
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Удалить навсегда' }))
+
+  await waitFor(() => expect(inventoryCounts).toHaveBeenLastCalledWith(7, expect.objectContaining({ offset: 0 })))
+  expect(await screen.findByRole('article', { name: 'Инвентаризация №71' })).toBeVisible()
+})
