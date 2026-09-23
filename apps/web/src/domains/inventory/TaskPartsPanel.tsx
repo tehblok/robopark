@@ -23,13 +23,15 @@ type TaskPartsProps = {
   queuedAction?: OfflineAction | null
   onQueued?: (action: OfflineAction) => void
   hydratingAction?: boolean
+  actionHydrationError?: boolean
+  onRetryActionHydration?: () => void
 }
 
 export function TaskPartsPanel(props: TaskPartsProps) {
   return <TaskPartsContent key={`${props.parkId}:${props.issueKey}`} {...props} />
 }
 
-function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueueAction, queuedAction, onQueued, hydratingAction = false }: TaskPartsProps) {
+function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueueAction, queuedAction, onQueued, hydratingAction = false, actionHydrationError = false, onRetryActionHydration }: TaskPartsProps) {
   const [data, setData] = useState<InventoryOverview | null>(null)
   const [componentId, setComponentId] = useState(0)
   const [partId, setPartId] = useState(0)
@@ -50,7 +52,22 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
   const [loadingMore, setLoadingMore] = useState(false)
   const loadGeneration = useRef(0)
   const idempotencyKey = useRef<string | null>(null)
-  const activeQueuedAction = queuedAction ?? localQueuedAction
+  const controlledQueue = queuedAction !== undefined
+  const activeQueuedAction = controlledQueue ? queuedAction : localQueuedAction
+  const previousControlledActionId = useRef<string | null>(null)
+  useEffect(() => {
+    if (!controlledQueue) return
+    if (queuedAction) {
+      previousControlledActionId.current = queuedAction.id
+      return
+    }
+    if (previousControlledActionId.current) {
+      previousControlledActionId.current = null
+      idempotencyKey.current = null
+      setLocalQueuedAction(null)
+      setReceipt('')
+    }
+  }, [controlledQueue, queuedAction])
   const pending = Boolean(activeQueuedAction && ['local', 'ready', 'sending'].includes(activeQueuedAction.state))
   const queueFailed = Boolean(activeQueuedAction && ['conflict', 'attention'].includes(activeQueuedAction.state))
   const load = useCallback(async (offset = 0, append = false) => {
@@ -180,6 +197,7 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
   return <div className="task-parts"><p>Выберите компоненту и запчасть. Остаток на складе уменьшится сразу. В чате появится сообщение для оператора. Оператор оформит расход в большой системе учёта.</p>
     {receipt ? <p role="status">{receipt}</p> : null}
     {failure ? <ErrorState description={failure.description} title={failure.title} /> : null}
+    {actionHydrationError ? <ErrorState description="Повторите проверку очереди перед новым списанием." onRetry={onRetryActionHydration} title="Не удалось проверить ожидающее списание" /> : null}
     {queueFailed ? <ErrorState description="Проверьте остаток и повторите с теми же данными." title="Не удалось синхронизировать списание" /> : null}
     {failure ? <Button disabled={busy} onClick={() => void load()} type="button" variant="secondary">Обновить остатки</Button> : null}
     <fieldset disabled={busy || hydratingAction || pending} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>

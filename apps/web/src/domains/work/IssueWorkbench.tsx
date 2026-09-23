@@ -494,6 +494,8 @@ export function TaskController({
   const [partsReceipt, setPartsReceipt] = useState('')
   const [partsAction, setPartsAction] = useState<OfflineAction | null>(null)
   const [partsHydrated, setPartsHydrated] = useState(!sync)
+  const [partsHydrationError, setPartsHydrationError] = useState(false)
+  const [partsHydrationAttempt, setPartsHydrationAttempt] = useState(0)
   const partsHydrationKey = useRef('')
   const syncRef = useRef(sync)
   const hasSync = Boolean(sync)
@@ -509,7 +511,7 @@ export function TaskController({
   useEffect(() => { syncRef.current = sync }, [sync])
   useEffect(() => {
     setPartsOpen(false); setPartsReceipt(''); setPartsAction(null); setPartsFocusRequest(0)
-    setLegacyDisclosureOpenId(undefined); setPartsHydrated(!hasSync); partsHydrationKey.current = ''
+    setLegacyDisclosureOpenId(undefined); setPartsHydrated(!hasSync); setPartsHydrationError(false); setPartsHydrationAttempt(0); partsHydrationKey.current = ''
   }, [accessPrefix, hasSync, issueKey])
   useEffect(() => {
     const currentSync = syncRef.current
@@ -519,16 +521,26 @@ export function TaskController({
     if (partsHydrationKey.current === hydrationKey) { setPartsHydrated(true); return }
     let active = true
     setPartsHydrated(false)
+    setPartsHydrationError(false)
     void (currentSync.findAction?.(issueKey, 'inventory_writeoff') ?? Promise.resolve(undefined)).then(action => {
-      if (active && action) setPartsAction(action)
-    }).finally(() => {
       if (active) {
+        if (action) setPartsAction(action)
         partsHydrationKey.current = hydrationKey
         setPartsHydrated(true)
       }
+    }).catch(() => {
+      if (active) {
+        setPartsHydrationError(true)
+        setPartsHydrated(false)
+      }
     })
     return () => { active = false }
-  }, [accessPrefix, actionTrackingReady, hasSync, issueKey])
+  }, [accessPrefix, actionTrackingReady, hasSync, issueKey, partsHydrationAttempt])
+  const retryPartsHydration = () => {
+    partsHydrationKey.current = ''
+    setPartsHydrationError(false)
+    setPartsHydrationAttempt(value => value + 1)
+  }
   const partsActionId = partsAction?.id
   useEffect(() => {
     if (!sync || !partsActionId) return
@@ -1100,7 +1112,7 @@ export function TaskController({
                           setPartsOpen(open)
                         }}>
                           <div id="parts" ref={partsRef} tabIndex={-1}>
-                            <TaskPartsPanel apiClient={apiClient} enqueueAction={sync?.enqueueAction} hydratingAction={!partsHydrated} issueKey={detail.data.key} onQueued={setPartsAction} queuedAction={partsAction} onWritten={receipt => {
+                            <TaskPartsPanel actionHydrationError={partsHydrationError} apiClient={apiClient} enqueueAction={sync?.enqueueAction} hydratingAction={!partsHydrated} issueKey={detail.data.key} onQueued={setPartsAction} onRetryActionHydration={retryPartsHydration} queuedAction={partsAction} onWritten={receipt => {
                               setPartsReceipt(receipt)
                               setPartsOpen(false)
                               if (!sync) void comments.refresh()
@@ -1122,7 +1134,7 @@ export function TaskController({
                         </div>
                       </ClosedDisclosure>
                     </div> : detail.data ? <><ResponsiveDisclosureGroup controlledOpenId={legacyDisclosureOpenId ?? null} label="Дополнительные разделы задачи" onOpenIdChange={setLegacyDisclosureOpenId}>
-                      {user.role === 'mechanic' && mechanicCanWork ? <ResponsiveDisclosure id="parts" onOpenChange={open => { if (open) setPartsReceipt('') }} title="Использовать запчасть"><TaskPartsPanel apiClient={apiClient} enqueueAction={sync?.enqueueAction} hydratingAction={!partsHydrated} issueKey={detail.data.key} onQueued={setPartsAction} queuedAction={partsAction} onWritten={receipt => { setPartsReceipt(receipt); setLegacyDisclosureOpenId(undefined); if (!sync) void comments.refresh() }} parkId={taskParkId} /></ResponsiveDisclosure> : null}
+                      {user.role === 'mechanic' && mechanicCanWork ? <ResponsiveDisclosure id="parts" onOpenChange={open => { if (open) setPartsReceipt('') }} title="Использовать запчасть"><TaskPartsPanel actionHydrationError={partsHydrationError} apiClient={apiClient} enqueueAction={sync?.enqueueAction} hydratingAction={!partsHydrated} issueKey={detail.data.key} onQueued={setPartsAction} onRetryActionHydration={retryPartsHydration} queuedAction={partsAction} onWritten={receipt => { setPartsReceipt(receipt); setLegacyDisclosureOpenId(undefined); if (!sync) void comments.refresh() }} parkId={taskParkId} /></ResponsiveDisclosure> : null}
                       <ResponsiveDisclosure id="handoff" title="Передача смены"><EmbeddedTaskCollaboration issueKey={detail.data.key} owner={user.username} active={activeTab === 'task' && mechanicCanWork} canWrite={detail.data.capabilities.comment && mechanicCanWork} onAuthorizationFailure={observeAuthorizationFailure} /></ResponsiveDisclosure>
                     </ResponsiveDisclosureGroup>{partsReceipt ? <p role="status">{partsReceipt}</p> : null}</> : null}
                     </TaskFirstTaskLayout>
