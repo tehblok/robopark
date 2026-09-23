@@ -25,13 +25,14 @@ type TaskPartsProps = {
   hydratingAction?: boolean
   actionHydrationError?: boolean
   onRetryActionHydration?: () => void
+  cancelQueuedAction?: (id: string) => Promise<void>
 }
 
 export function TaskPartsPanel(props: TaskPartsProps) {
   return <TaskPartsContent key={`${props.parkId}:${props.issueKey}`} {...props} />
 }
 
-function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueueAction, queuedAction, onQueued, hydratingAction = false, actionHydrationError = false, onRetryActionHydration }: TaskPartsProps) {
+function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueueAction, queuedAction, onQueued, hydratingAction = false, actionHydrationError = false, onRetryActionHydration, cancelQueuedAction }: TaskPartsProps) {
   const [data, setData] = useState<InventoryOverview | null>(null)
   const [componentId, setComponentId] = useState(0)
   const [partId, setPartId] = useState(0)
@@ -159,6 +160,10 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
       idempotencyKey.current ??= globalThis.crypto.randomUUID()
       const adapterPartId = globalCatalog ? -part.id : part.id
       if (enqueueAction) {
+        if (queueFailed && activeQueuedAction) {
+          await cancelQueuedAction?.(activeQueuedAction.id)
+          idempotencyKey.current = globalThis.crypto.randomUUID()
+        }
         const input = buildInventoryWriteoffAction({
           issueKey,
           parkId,

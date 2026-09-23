@@ -546,6 +546,39 @@ def test_attachment_head_rejects_untagged_issue_resolved_to_inactive_park_by_que
     assert response.status_code == 403
 
 
+def test_attachment_get_rejects_closed_issue(client, db_session, seed_royal, monkeypatch):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_cache
+
+    monkeypatch.setattr(
+        tracker_cache,
+        "get_issue",
+        lambda **kwargs: {**ISSUE, "status": "Closed", "status_key": "closed"},
+    )
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.get("/tracker/issues/ROBOPARK-1/attachments/missing/content")
+
+    assert response.status_code == 409
+
+
+@pytest.mark.parametrize("tags", [["Alpha"], []])
+def test_attachment_get_rejects_inactive_park_resolved_by_tag_or_queue(
+    client, db_session, seed_royal, seed_park_with_tracker, monkeypatch, tags
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_cache
+
+    seed_park_with_tracker.is_active = False
+    db_session.commit()
+    monkeypatch.setattr(tracker_cache, "get_issue", lambda **kwargs: {**ISSUE, "tags": tags})
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.get("/tracker/issues/ROBOPARK-1/attachments/missing/content")
+
+    assert response.status_code == 403
+
+
 def test_attachment_content_rejects_traversal_from_corrupt_metadata(
     client, db_session, seed_royal, monkeypatch, tmp_path
 ):

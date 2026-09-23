@@ -582,14 +582,15 @@ it('keeps legacy phone write-off durable across close and confirms through the s
   expect(screen.queryByRole('form', { name: 'Списание запчасти' })).not.toBeInTheDocument()
 })
 
-it('shows a queued write-off conflict without success and retries the same idempotency identity', async () => {
+it('retires a terminal claim conflict and confirms an explicit retry with a fresh identity', async () => {
   const mechanic: User = { ...user, username: 'mech', role: 'mechanic', parks: [park] }
   const claimedIssue = { ...issue, claim: { park_id: park.id }, assignee: { display: 'mech', login: 'mech' }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress' as const, sync_state: 'saved' as const, has_current_cycle_comment: false } }
   const part: InventoryCatalogSearchItem = { id: 91, component_id: 21, component_name: 'Колёса', name: 'Шина', article: 'WH-91', is_active: true, has_photo: false, quantity: '3', minimum_quantity: '1', location: 'Склад', stock_is_active: true }
   let current: OfflineAction | undefined
   let listener: ((action: OfflineAction | undefined) => void) | undefined
   const enqueueAction = vi.fn(async input => (current = { ...input, state: 'ready', attempts: 0, createdAt: 1, updatedAt: Date.now() }))
-  const sync: SyncContextValue = { state: { status: 'idle', pending: 0, conflicts: 0 }, enqueueAction, enqueueMedia: vi.fn(), syncNow: vi.fn(), cancelAction: vi.fn(), resolveConflict: vi.fn(), findAction: vi.fn(async () => current), subscribeAction: vi.fn((_id, next) => { listener = next; return () => undefined }) }
+  const cancelAction = vi.fn(async () => undefined)
+  const sync: SyncContextValue = { state: { status: 'idle', pending: 0, conflicts: 0 }, enqueueAction, enqueueMedia: vi.fn(), syncNow: vi.fn(), cancelAction, resolveConflict: vi.fn(), findAction: vi.fn(async () => current), subscribeAction: vi.fn((_id, next) => { listener = next; return () => undefined }) }
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
   fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
@@ -603,10 +604,18 @@ it('shows a queued write-off conflict without success and retries the same idemp
 
   expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось синхронизировать списание')
   expect(screen.queryByText('Запчасть списана')).not.toBeInTheDocument()
+  expect(enqueueAction).toHaveBeenCalledOnce()
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
   await waitFor(() => expect(enqueueAction).toHaveBeenCalledTimes(2))
-  expect(enqueueAction.mock.calls[1][0].id).toBe(firstId)
-  expect(enqueueAction.mock.calls[1][0].idempotencyKey).toBe(firstId)
+  const retryId = enqueueAction.mock.calls[1][0].id
+  expect(cancelAction).toHaveBeenCalledWith(firstId)
+  expect(retryId).not.toBe(firstId)
+  expect(enqueueAction.mock.calls[1][0].idempotencyKey).toBe(retryId)
+
+  current = { ...current!, state: 'confirmed', updatedAt: 3 }
+  act(() => listener?.(current))
+  expect(await screen.findByText('Запчасть списана', { selector: '[role="status"]' })).toBeVisible()
+  expect(screen.queryByRole('form', { name: 'Списание запчасти' })).not.toBeInTheDocument()
 })
 
 it('disables task parts when the backend claim is missing', async () => {

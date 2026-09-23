@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from functools import partial
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import (
@@ -123,13 +124,9 @@ def get_attachment_content(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> FileResponse:
-    _issue(db, user, key, None, request)
-    try:
-        path, media_type, filename = attachment_content(
-            db, issue_key=key, attachment_id=attachment_id
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="task_attachment_not_found") from exc
+    path, media_type, filename = _validate_attachment_access(
+        db, user=user, key=key, attachment_id=attachment_id, request=request
+    )
     disposition = f"inline; filename*=UTF-8''{quote(filename)}"
     return FileResponse(
         path,
@@ -140,6 +137,21 @@ def get_attachment_content(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+def _validate_attachment_access(
+    db: Session, *, user: User, key: str, attachment_id: str, request: Request
+) -> tuple[Path, str, str]:
+    issue = _issue(db, user, key, None, request)
+    if task_lifecycle.tracker_issue_is_closed(issue):
+        raise HTTPException(status_code=409, detail="task_already_closed")
+    issue_park = tracker_signatures.resolve_park(db, issue)
+    if issue_park is not None and not issue_park.is_active:
+        raise HTTPException(status_code=403, detail="task_park_inactive")
+    try:
+        return attachment_content(db, issue_key=key, attachment_id=attachment_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task_attachment_not_found") from exc
 
 
 @router.head(
@@ -153,16 +165,9 @@ def authorize_attachment_content(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> Response:
-    issue = _issue(db, user, key, None, request)
-    if task_lifecycle.tracker_issue_is_closed(issue):
-        raise HTTPException(status_code=409, detail="task_already_closed")
-    issue_park = tracker_signatures.resolve_park(db, issue)
-    if issue_park is not None and not issue_park.is_active:
-        raise HTTPException(status_code=403, detail="task_park_inactive")
-    try:
-        attachment_content(db, issue_key=key, attachment_id=attachment_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="task_attachment_not_found") from exc
+    _validate_attachment_access(
+        db, user=user, key=key, attachment_id=attachment_id, request=request
+    )
     return Response(
         status_code=status.HTTP_204_NO_CONTENT,
         headers={"Cache-Control": "private, no-store"},

@@ -171,6 +171,22 @@ it('evicts an expired cache entry before loading a fresh blob', async () => {
   expect(fetcher).toHaveBeenCalledTimes(2)
 })
 
+it('does not recache or expose an expired attachment when the authorized GET is denied', async () => {
+  const now = vi.spyOn(Date, 'now').mockReturnValue(2_000_000_000_000)
+  await activateTaskAttachmentCache(7)
+  const fetcher = vi.fn(async () => new Blob(['photo'], { type: 'image/jpeg' }))
+  releaseTaskAttachment(await loadTaskAttachment(attachment(1), fetcher, authorize))
+  now.mockReturnValue(2_000_000_000_000 + 5 * 60 * 1000 + 1)
+  fetcher.mockRejectedValue(new Error('task_already_closed'))
+
+  await expect(loadTaskAttachment(attachment(1), fetcher, authorize)).rejects.toThrow('task_already_closed')
+  await expect(loadTaskAttachment(attachment(1), fetcher, authorize)).rejects.toThrow('task_already_closed')
+
+  expect(fetcher).toHaveBeenCalledTimes(3)
+  expect(URL.createObjectURL).toHaveBeenCalledTimes(1)
+  expect(authorize).not.toHaveBeenCalled()
+})
+
 it('does not expose a cache hit when logout races its reauthorization', async () => {
   await activateTaskAttachmentCache(7)
   const fetcher = vi.fn(async () => new Blob(['photo'], { type: 'image/jpeg' }))
