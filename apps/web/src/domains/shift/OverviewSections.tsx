@@ -24,7 +24,7 @@ export function OverviewAlerts({ alerts }: Pick<OperationalOverviewModel, 'alert
 }
 
 export function OverviewStatusMonitoring({ statusCards, statusHref, allHref, selectable }: Pick<OperationalOverviewModel, 'statusCards'> & { statusHref: (status: string) => string; allHref: string | null; selectable: boolean }) {
-  return <Panel className="a-overview-status-panel" density="summary" title="Статусы задач" description={selectable ? 'Выберите статус, чтобы сузить очередь внимания до разрешённых вашей роли задач.' : 'Текущий состав разрешённых вашей роли задач.'}>
+  return <Panel density="summary" title="Статусы задач" description={selectable ? 'Выберите статус, чтобы сузить очередь внимания до разрешённых вашей роли задач.' : 'Текущий состав разрешённых вашей роли задач.'}>
     <div className="rp-overview-statuses" data-testid="overview-statuses">
       {allHref ? <Link aria-label="Все разрешённые задачи" className="rp-overview-status rp-overview-status--all" to={allHref}>Все разрешённые задачи</Link> : null}
       {statusCards.map((card) => selectable
@@ -50,7 +50,7 @@ export function OverviewFlow({ flow }: Pick<OperationalOverviewModel, 'flow'>) {
 }
 
 export function OverviewAttentionQueue({ attentionQueue, attentionTruncated }: Pick<OperationalOverviewModel, 'attentionQueue' | 'attentionTruncated'>) {
-  return <Panel className="a-overview-attention-panel" title="Очередь внимания" description="Сначала просрочки SLA, затем задачи по возрасту. Это задачи Tracker, а не количество роботов.">
+  return <Panel title="Очередь внимания" description="Сначала просрочки SLA, затем задачи по возрасту. Это задачи Tracker, а не количество роботов.">
     {attentionQueue.length ? <div className="rp-overview-entities" data-testid="overview-attention-queue">
       {attentionQueue.map((item) => <EntityRow
         actions={<Link aria-label={`Открыть задачу ${item.key}`} to={item.href}>Открыть</Link>}

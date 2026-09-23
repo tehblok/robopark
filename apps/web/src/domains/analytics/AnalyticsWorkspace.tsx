@@ -11,7 +11,6 @@ import { classifyApiError, type DomainError } from '../../shared/api/classifyApi
 import { ANALYTICS_LABELS, analyticsDate, analyticsParks, analyticsRequestIdentity, analyticsSearch, analyticsValue, buildOperationalInsights, parseAnalyticsQuery, trendSegments, type AnalyticsApiClient, type AnalyticsCoverage, type AnalyticsMetric, type AnalyticsQuery, type AnalyticsSeries, type HistoricalAnalytics } from './analyticsModel'
 import { limitOperationsRequest } from '../shift/operationsRequestLimit'
 import './analytics.css'
-import { useInterfaceMode } from '../../app/interface/InterfaceModeProvider'
 
 function Coverage({ data }: { data: AnalyticsCoverage }) {
   return <span className="rp-analytics-note">Покрытие: {data.observed_buckets} / {data.expected_buckets} интервалов по 2 ч{data.complete ? ' · полное' : ' · неполное'}</span>
@@ -51,18 +50,17 @@ function MetricRows({ metrics, parkId, durations = false }: { metrics: Analytics
 }
 
 function ParkHistory({ data, park }: { data: HistoricalAnalytics; park: Park }) {
-  const { mode } = useInterfaceMode()
   const incomplete = Object.values(data.coverage).some(coverage => !coverage.complete)
   return <section className="rp-analytics-park" aria-label={`История парка ${park.name}`}>
     <header><h2>{park.name}</h2><p className="rp-analytics-note">{analyticsDate(data.period.start)} — {analyticsDate(data.period.end)} · МСК · завершённые интервалы</p></header>
     {incomplete ? <div className="rp-analytics-warning" role="status"><strong>Неполная история</strong><p>Показаны только измеренные значения. Пропуски остаются пустыми; суммы и средние относятся к доступной части периода.</p></div> : null}
     <div className="rp-analytics-coverage"><span>Поток: <Coverage data={data.coverage.flow} /></span><span>Снимки: <Coverage data={data.coverage.observations} /></span></div>
-    <details className="a-analytics-section" open={mode === 'classic' ? true : undefined}><summary><h3>Динамика процесса</h3></summary><p className="rp-analytics-note">Поступление и выбытие — сумма за доступные интервалы; незавершённые задачи — среднее по снимкам.</p><div className="rp-analytics-trends">{Object.values(data.series).map(series => <SeriesCard key={series.key} data={series} />)}</div></details>
-    <details className="a-analytics-section" open={mode === 'classic' ? true : undefined}><summary><h3>Возраст незавершённых задач</h3></summary><p className="rp-analytics-note">Среднее число задач в каждой возрастной группе по снимкам периода. Возраст считается с создания задачи.</p><div className="rp-analytics-age">{data.backlog_age_bands.map(band => <article className="rp-analytics-card" key={band.key}><h4>{ANALYTICS_LABELS[band.key]}</h4><strong className="rp-analytics-value">{analyticsValue(band)}</strong><Coverage data={band} /><TaskKeys keys={band.task_keys} parkId={park.id} label="Связанные задачи" /></article>)}</div></details>
-    <details className="a-analytics-section" open={mode === 'classic' ? true : undefined}><summary><h3>Динамика SLA</h3></summary><p className="rp-analytics-note">Доля просрочек среди наблюдений с известным возрастом и нормативом на момент снимка. Учитываются рабочие часы 09:00–21:00 МСК; одна задача может участвовать в нескольких снимках.</p>
+    <details className="rp-analytics-section" open><summary><h3>Динамика процесса</h3></summary><p className="rp-analytics-note">Поступление и выбытие — сумма за доступные интервалы; незавершённые задачи — среднее по снимкам.</p><div className="rp-analytics-trends">{Object.values(data.series).map(series => <SeriesCard key={series.key} data={series} />)}</div></details>
+    <details className="rp-analytics-section" open><summary><h3>Возраст незавершённых задач</h3></summary><p className="rp-analytics-note">Среднее число задач в каждой возрастной группе по снимкам периода. Возраст считается с создания задачи.</p><div className="rp-analytics-age">{data.backlog_age_bands.map(band => <article className="rp-analytics-card" key={band.key}><h4>{ANALYTICS_LABELS[band.key]}</h4><strong className="rp-analytics-value">{analyticsValue(band)}</strong><Coverage data={band} /><TaskKeys keys={band.task_keys} parkId={park.id} label="Связанные задачи" /></article>)}</div></details>
+    <details className="rp-analytics-section" open><summary><h3>Динамика SLA</h3></summary><p className="rp-analytics-note">Доля просрочек среди наблюдений с известным возрастом и нормативом на момент снимка. Учитываются рабочие часы 09:00–21:00 МСК; одна задача может участвовать в нескольких снимках.</p>
       {data.warnings.includes('sla_policy_or_age_unavailable') ? <p className="rp-analytics-warning">Для части периода нет норматива SLA или возраста задач. Доля без данных недоступна.</p> : null}<SeriesCard data={data.sla_trend} />
     </details>
-    <details className="a-analytics-details" open={mode === 'classic' ? true : undefined}><summary>Этапы работы и связанные задачи</summary>
+    <details className="rp-analytics-details" open><summary>Этапы работы и связанные задачи</summary>
     <div className="rp-analytics-columns"><section><h3>Наблюдаемая длительность этапов</h3><p className="rp-analytics-note">Среднее время от первого наблюдения статуса до замеченной смены статуса в этом периоде. Требуются минимум два наблюдения и смена статуса. Это оценка по снимкам, точное время перехода неизвестно.</p><MetricRows metrics={data.stage_durations} parkId={park.id} durations /></section>
       <section><h3>Нагрузка по этапам</h3><p className="rp-analytics-note">Среднее число незавершённых задач на этапе по снимкам периода.</p><MetricRows metrics={data.workload} parkId={park.id} /></section></div>
     {data.warnings.includes('flow_unavailable_for_status_scope') ? <p className="rp-analytics-warning">История потока недоступна для вашей области статусов.</p> : null}

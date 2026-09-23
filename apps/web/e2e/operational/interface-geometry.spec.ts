@@ -5,7 +5,8 @@ import { userForRole, settlePage } from './fixtures'
 const geometryRoles = ['mechanic', 'operator', 'admin', 'royal'] as const
 const geometryThemes = ['light', 'dark'] as const
 const geometryViewports = [
-  { name: 'phone', width: 390, height: 844 },
+  { name: 'phone-360', width: 360, height: 800 },
+  { name: 'phone-390', width: 390, height: 844 },
   { name: 'desktop', width: 1440, height: 1000 },
 ] as const
 

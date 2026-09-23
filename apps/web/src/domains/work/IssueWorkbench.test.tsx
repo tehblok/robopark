@@ -967,7 +967,7 @@ describe('IssueWorkbench', () => {
       workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress' as const, sync_state: 'saved' as const, has_current_cycle_comment: false },
     })) }) })
 
-    const primaryTabs = await screen.findByRole('tablist', { name: 'Раздел задачи' })
+    const primaryTabs = await screen.findByRole('tablist', { name: 'Разделы задачи' })
     expect(primaryTabs).toBeVisible()
     expect(primaryTabs).toHaveClass('rp-tabs--primary')
     expect(within(primaryTabs).getByRole('tab', { name: 'Задача' })).toBeVisible()

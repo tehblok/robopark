@@ -1,8 +1,6 @@
-import { createContext, useContext, useLayoutEffect, useSyncExternalStore, type PropsWithChildren } from 'react'
+import { useLayoutEffect, useSyncExternalStore, type PropsWithChildren } from 'react'
 import { interfaceModeStore, type InterfaceModeStore } from './interfaceModeStore'
 import { PresentationModeContext } from './presentationModeContext'
-
-const InterfaceStoreContext = createContext(interfaceModeStore)
 
 export function InterfaceModeProvider({ children, accountId, store = interfaceModeStore }: PropsWithChildren<{
   accountId: number | null
@@ -16,15 +14,7 @@ export function InterfaceModeProvider({ children, accountId, store = interfaceMo
     if (presentationMode) document.documentElement.dataset.interface = presentationMode
     else delete document.documentElement.dataset.interface
   }, [presentationMode])
-  return <InterfaceStoreContext.Provider value={store}>
-    <PresentationModeContext.Provider value={presentationMode}>
-      {children}
-    </PresentationModeContext.Provider>
-  </InterfaceStoreContext.Provider>
-}
-
-export function useInterfaceMode() {
-  const store = useContext(InterfaceStoreContext)
-  const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot)
-  return { ...snapshot, requestMode: store.requestMode }
+  return <PresentationModeContext.Provider value={presentationMode}>
+    {children}
+  </PresentationModeContext.Provider>
 }

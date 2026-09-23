@@ -182,7 +182,7 @@ function WorkbenchTabs({ activeTab, canCheck, canChat, onChange }: {
     { id: 'closed', label: 'Закрытые задачи' },
   ]
   return <div className="rp-work-sections">
-    <Tabs ariaLabel="Раздел задачи" value={activeTab} items={workflowItems}
+    <Tabs ariaLabel="Разделы задачи" value={activeTab} items={workflowItems}
       onChange={tab => onChange(tab as WorkSection)} panelIdFor={tab => `work-panel-${tab}`} />
     <div className="rp-work-related">
       <Tabs ariaLabel="Другие задачи робота" value={activeTab} items={relatedItems}
@@ -1143,7 +1143,7 @@ export function TaskController({
                     </ClassicTaskLayout>
                     </TabPanel>
                     {canChat ? <TabPanel id="work-panel-chat" labelledBy="tab-chat" active={activeTab === 'chat'}>
-                      <div className="a-work-chat"><TaskTimeline items={taskComments} /></div>
+                      <div><TaskTimeline items={taskComments} /></div>
                       {canRenderDetailActions && detail.data?.workflow ? <IssueActionsPanel
                         actionHost={null}
                         capabilities={{

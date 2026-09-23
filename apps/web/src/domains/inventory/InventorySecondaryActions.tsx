@@ -1,10 +1,8 @@
 import type { ReactNode } from 'react'
-import { useInterfaceMode } from '../../app/interface/InterfaceModeProvider'
 
-/** Stable parent: choosing a design does not remount document commands. */
+/** Stable parent keeps document commands mounted with the Classic action layout. */
 export function InventorySecondaryActions({ children }: { children: ReactNode }) {
-  const { mode } = useInterfaceMode()
-  return <details className="inventory-secondary-actions" open={mode === 'classic' ? true : undefined}>
+  return <details className="inventory-secondary-actions" open>
     <summary>Другие действия</summary>
     {children}
   </details>
