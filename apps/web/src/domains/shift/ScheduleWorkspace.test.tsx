@@ -19,6 +19,27 @@ function client(overrides: Partial<ScheduleApiClient> = {}): ScheduleApiClient {
 }
 
 describe('ScheduleWorkspace', () => {
+  it('shows personal calendar to mechanics and read-only team to admin', async () => {
+    const mechanicView = render(<ScheduleWorkspace apiClient={client()} initialAnchor={new Date('2026-09-21T12:00:00+03:00')} selectedParkId={1} user={mechanic} />)
+    expect(await screen.findByRole('tab', { name: 'Мой календарь' })).toBeVisible()
+    expect(screen.queryByRole('tab', { name: 'Команда' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Добавить период' })).toBeVisible()
+    mechanicView.unmount()
+
+    render(<ScheduleWorkspace apiClient={client()} initialAnchor={new Date('2026-09-21T12:00:00+03:00')} selectedParkId={1} user={{ ...mechanic, role: 'admin' }} />)
+    expect(await screen.findByRole('tab', { name: 'Команда' })).toBeVisible()
+    expect(screen.queryByRole('tab', { name: 'Мой календарь' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Добавить период' })).not.toBeInTheDocument()
+  })
+
+  it('gives royal access to personal, team and planning views', async () => {
+    render(<ScheduleWorkspace apiClient={client()} initialAnchor={new Date('2026-09-21T12:00:00+03:00')} selectedParkId={1} user={{ ...mechanic, role: 'royal' }} />)
+
+    expect(await screen.findByRole('tab', { name: 'Мой календарь' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Команда' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Планирование' })).toBeVisible()
+  })
+
   it('requests only the visible Moscow month for the selected park and employee', async () => {
     const schedules = vi.fn(async () => [entry])
     render(<ScheduleWorkspace apiClient={client({ schedules })} initialAnchor={new Date('2026-09-15T12:00:00+03:00')} selectedParkId={7} user={mechanic} />)
@@ -45,13 +66,13 @@ describe('ScheduleWorkspace', () => {
       .mockReturnValueOnce(sameScope.promise)
       .mockReturnValueOnce(changedScope.promise)
     const refreshedClient = client({ schedules: refreshedSchedules })
-    const view = render(<ScheduleWorkspace apiClient={initialClient} initialAnchor={new Date('2026-09-15T12:00:00+03:00')} selectedParkId={1} user={{ ...mechanic, permissions: ['schedule.read'] }} />)
+    const view = render(<ScheduleWorkspace apiClient={initialClient} initialAnchor={new Date('2026-09-21T12:00:00+03:00')} selectedParkId={1} user={{ ...mechanic, permissions: ['schedule.read'] }} />)
     expect(await screen.findByText('Моя смена')).toBeInTheDocument()
 
-    view.rerender(<ScheduleWorkspace apiClient={refreshedClient} initialAnchor={new Date('2026-09-15T12:00:00+03:00')} selectedParkId={1} user={{ ...mechanic, permissions: ['schedule.read'] }} />)
+    view.rerender(<ScheduleWorkspace apiClient={refreshedClient} initialAnchor={new Date('2026-09-21T12:00:00+03:00')} selectedParkId={1} user={{ ...mechanic, permissions: ['schedule.read'] }} />)
     expect(screen.getByText('Моя смена')).toBeInTheDocument()
 
-    view.rerender(<ScheduleWorkspace apiClient={refreshedClient} initialAnchor={new Date('2026-09-15T12:00:00+03:00')} selectedParkId={1} user={{ ...mechanic, permissions: ['schedule.read', 'schedule.write'] }} />)
+    view.rerender(<ScheduleWorkspace apiClient={refreshedClient} initialAnchor={new Date('2026-09-21T12:00:00+03:00')} selectedParkId={1} user={{ ...mechanic, permissions: ['schedule.read', 'schedule.write'] }} />)
     expect(screen.queryByText('Моя смена')).not.toBeInTheDocument()
     await act(async () => { changedScope.reject(new Error('denied')); await changedScope.promise.catch(() => undefined) })
     expect(await screen.findByText('Не удалось загрузить график')).toBeInTheDocument()
@@ -67,15 +88,16 @@ describe('ScheduleWorkspace', () => {
     ])
     const apiClient = client({ schedules, scheduleParticipants })
     const royal = { ...mechanic, id: 99, role: 'royal', permissions: ['schedule.read'] }
-    const view = render(<ScheduleWorkspace apiClient={apiClient} initialAnchor={new Date('2026-09-15T12:00:00+03:00')} selectedParkId={1} user={royal} />)
-    await screen.findByText('Смена · Анна')
+    const view = render(<ScheduleWorkspace apiClient={apiClient} initialAnchor={new Date('2026-09-21T12:00:00+03:00')} selectedParkId={1} user={royal} />)
+    await screen.findByRole('rowheader', { name: 'Анна · Механик' })
 
-    view.rerender(<ScheduleWorkspace apiClient={apiClient} initialAnchor={new Date('2026-09-15T12:00:00+03:00')} selectedParkId={1} user={{ ...royal, permissions: ['schedule.read'] }} />)
+    view.rerender(<ScheduleWorkspace apiClient={apiClient} initialAnchor={new Date('2026-09-21T12:00:00+03:00')} selectedParkId={1} user={{ ...royal, permissions: ['schedule.read'] }} />)
     await waitFor(() => {
       expect(schedules).toHaveBeenCalledTimes(1)
       expect(scheduleParticipants).toHaveBeenCalledTimes(1)
       expect(scheduleParticipants).toHaveBeenCalledWith(1)
     })
+    fireEvent.click(screen.getByRole('tab', { name: 'Планирование' }))
     fireEvent.click(screen.getByRole('button', { name: 'Добавить период' }))
     expect(screen.getByRole('checkbox', { name: 'Анна · Механик' })).toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: 'Олег · Оператор' })).toBeInTheDocument()
@@ -92,8 +114,8 @@ describe('ScheduleWorkspace', () => {
   })
 
   it('renders a compact phone list and lets an employee add their own period', async () => {
-    const scheduleCreate = vi.fn(async () => entry)
-    render(<ScheduleWorkspace apiClient={client({ scheduleCreate })} selectedParkId={1} user={mechanic} />)
+    const scheduleCreate = vi.fn(async () => ({ ...entry, id: 'created' }))
+    render(<ScheduleWorkspace apiClient={client({ scheduleCreate })} initialAnchor={new Date('2026-09-21T12:00:00+03:00')} selectedParkId={1} user={mechanic} />)
     expect(await screen.findByText('Моя смена')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Добавить период' }))
     fireEvent.change(screen.getByLabelText('Тип'), { target: { value: 'vacation' } })
@@ -111,20 +133,21 @@ describe('ScheduleWorkspace', () => {
 
   it('edits and displays server timestamps in Moscow time', async () => {
     const utcEntry = { ...entry, start_at: '2026-09-21T06:00:00Z', end_at: '2026-09-21T18:00:00Z' }
-    render(<ScheduleWorkspace apiClient={client({ schedules: vi.fn(async () => [utcEntry]) })} selectedParkId={1} user={mechanic} />)
+    render(<ScheduleWorkspace apiClient={client({ schedules: vi.fn(async () => [utcEntry]) })} initialAnchor={new Date('2026-09-21T12:00:00+03:00')} selectedParkId={1} user={mechanic} />)
     expect(await screen.findByText(/21\.09\.2026, 09:00/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Изменить' }))
     expect(screen.getByLabelText('Начало')).toHaveValue('2026-09-21T09:00')
   })
 
   it('lets royal assign a bounded repeated schedule to several employees', async () => {
-    const scheduleBulk = vi.fn(async () => [entry])
+    const scheduleBulk = vi.fn(async () => [{ ...entry, id: 'bulk-created' }])
     const scheduleParticipants = vi.fn(async () => [
       { id: 7, display_name: 'Анна', role: 'mechanic' },
       { id: 8, display_name: 'Олег', role: 'operator' },
     ])
     render(<ScheduleWorkspace apiClient={client({ scheduleBulk, scheduleParticipants })} selectedParkId={1} user={{ ...mechanic, role: 'royal' }} />)
     await screen.findByRole('heading', { level: 1, name: 'График команды' })
+    fireEvent.click(screen.getByRole('tab', { name: 'Планирование' }))
     fireEvent.click(screen.getByRole('button', { name: 'Добавить период' }))
     fireEvent.click(await screen.findByRole('checkbox', { name: 'Анна · Механик' }))
     fireEvent.click(screen.getByRole('checkbox', { name: 'Олег · Оператор' }))
