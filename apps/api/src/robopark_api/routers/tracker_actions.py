@@ -35,6 +35,7 @@ from robopark_api.services import (
     audit,
     rbac,
     reliable_actions,
+    schedules,
     task_lifecycle,
     tracker_cache,
     tracker_client,
@@ -297,11 +298,13 @@ def submit_task_review(
         db, user, key, request=request, actions=("comment", "attach", "transition")
     )
     park = task_lifecycle.issue_park(db, issue)
+    reviewer = schedules.resolve_active_operator(db, park_id=park.id)
+    if reviewer is None:
+        raise HTTPException(409, "task_review_operator_unavailable")
     if len(photo) != 1:
         raise HTTPException(400, "task_review_exactly_one_photo")
     upload = photo[0]
     content = upload.file.read(tracker_client.MAX_ATTACHMENT_BYTES + 1)
-    context = sig_svc.build_signature_context(db, user, issue)
     with submissions.task_mutation_lease(db, key):
         try:
             result = task_lifecycle.submit_review(
@@ -313,7 +316,7 @@ def submit_task_review(
                 content=content,
                 content_type=upload.content_type,
                 comment=comment,
-                operator_login=context.operator_login,
+                reviewer=reviewer,
                 idempotency_key=idempotency_key,
             )
         except ValueError as exc:
@@ -323,6 +326,7 @@ def submit_task_review(
         event_type="review_task",
         park_id=park.id,
         protected_text=f"Задача {key} ожидает проверки",
+        target_user_ids={reviewer.id},
         event_key=f"review:{key}:{idempotency_key or result['performed_at']}",
     )
     return TrackerActionOut(**result)

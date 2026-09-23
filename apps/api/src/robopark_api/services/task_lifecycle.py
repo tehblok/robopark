@@ -722,7 +722,8 @@ def submit_review(
     content: bytes,
     content_type: str | None,
     comment: str | None,
-    operator_login: str,
+    reviewer: User | None = None,
+    operator_login: str | None = None,
     idempotency_key: str | None,
 ) -> dict:
     if _role(actor) != rbac.RoleSlug.MECHANIC:
@@ -730,6 +731,11 @@ def submit_review(
     claim_row = get_claim(db, issue_key)
     if claim_row is None or claim_row.owner_user_id != actor.id:
         raise HTTPException(409, "tracker_issue_claim_required")
+    if reviewer is None:
+        reviewer = schedules.resolve_active_operator(db, park_id=claim_row.park_id)
+    if reviewer is None:
+        raise HTTPException(409, "task_review_operator_unavailable")
+    reviewer_login = tracker_signatures.tracker_identity(reviewer)
     code = validate_defect_code(defect_code)
     name, mime_type = _validate_photo(filename, content, content_type)
     clean_comment = (comment or "").strip()
@@ -802,7 +808,7 @@ def submit_review(
             db,
             issue_key=issue_key,
             actor=actor,
-            text=f"Передано на проверку\nКод дефекта: {code}\nОператор: @{operator_login}",
+            text=f"Передано на проверку\nКод дефекта: {code}\nОператор: @{reviewer_login}",
             action=attach.row,
         )
         blob_name = uuid4().hex
@@ -835,6 +841,7 @@ def submit_review(
                 issue_key=issue_key,
                 state="pending",
                 actor_user_id=actor.id,
+                reviewer_user_id=reviewer.id,
                 created_at=now,
                 updated_at=now,
             )
@@ -842,6 +849,7 @@ def submit_review(
         elif current_review.state == "returned":
             current_review.state = "pending"
             current_review.actor_user_id = actor.id
+            current_review.reviewer_user_id = reviewer.id
             current_review.return_reason = None
             current_review.updated_at = now
         else:

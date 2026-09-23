@@ -64,6 +64,7 @@ from robopark_api.services.tracker_policy import (
     is_issue_in_scope,
     load_issue_scope,
 )
+from robopark_api.task_workflow_models import TaskReview
 
 MAX_PAGE_SIZE = 200
 DEFAULT_PAGE_SIZE = 50
@@ -502,7 +503,19 @@ def list_issues(
     owned_parks = (
         None if rbac.is_admin_or_royal(user) else {park.id for park in get_user_parks(db, user)}
     )
-    owned_keys = owned_issue_keys(db, user, park_ids=owned_parks) if owned_by_me else set()
+    if owned_by_me and rbac.role_slug(user) == RoleSlug.OPERATOR:
+        for issue in ordered:
+            task_lifecycle.reconcile_external_closure(db, issue)
+        owned_keys = set(
+            db.scalars(
+                select(TaskReview.issue_key).where(
+                    TaskReview.reviewer_user_id == user.id,
+                    TaskReview.state == "pending",
+                )
+            ).all()
+        )
+    else:
+        owned_keys = owned_issue_keys(db, user, park_ids=owned_parks) if owned_by_me else set()
     # Raw upstream data is shared; authorization is loaded afresh for this
     # response after the upstream wait and reused only across its rows.
     scope = load_issue_scope(db, user)

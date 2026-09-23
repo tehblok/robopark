@@ -307,6 +307,25 @@ it('opens My Tasks directly from the mechanic navigation URL', async () => {
   expect(screen.queryByRole('button', { name: /Открыть задачу ROBOPARK-QUEUE/ })).not.toBeInTheDocument()
 })
 
+it('shows assigned pending reviews as operator my tasks', async () => {
+  const assignedReview = {
+    ...issue,
+    key: 'ROBOPARK-REVIEW',
+    summary: 'Ждёт проверки оператора',
+    workflow: { ...reviewWorkflowIssue.workflow!, review_state: 'pending' as const },
+  }
+  const trackerIssues = vi.fn(async query => page(query.owned_by_me ? [assignedReview] : [issue]))
+  renderWorkbench({
+    client: apiClient({ trackerIssues }), currentUser: user, selectedIssue: '',
+    initialPath: '/work?view=mine',
+  })
+
+  expect(await screen.findByRole('heading', { name: 'Ждут проверки' })).toBeVisible()
+  expect(screen.getByRole('button', { name: /Открыть задачу ROBOPARK-REVIEW/ })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Очередь' })).toBeVisible()
+  expect(trackerIssues).toHaveBeenCalledWith(expect.objectContaining({ owned_by_me: true }))
+})
+
 it('displays and writes task parts from the backend claim park despite tag and user-park order', async () => {
   const claimPark = { ...park, id: 7, name: 'A', tag: 'Alpha' }
   const otherPark = { ...park, id: 8, name: 'B', tag: 'Beta' }

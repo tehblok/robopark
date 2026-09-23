@@ -238,6 +238,75 @@ def test_tracker_owned_list_uses_local_claims_before_pagination_and_scope(
     assert captured["filter_open"] is True
 
 
+def test_operator_owned_by_me_returns_only_assigned_pending_reviews(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    operator = _seed_operator(db_session, seed_park_with_tracker)
+    other = User(
+        username="other-reviewer",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "operator"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(other)
+    db_session.flush()
+    db_session.add(UserPark(user_id=other.id, park_id=seed_park_with_tracker.id))
+    db_session.add_all([
+        TaskReview(id="mine", issue_key="ROBOPARK-MINE", state="pending", actor_user_id=seed_mechanic.id,
+                   reviewer_user_id=operator.id, created_at=1, updated_at=1),
+        TaskReview(id="other", issue_key="ROBOPARK-OTHER", state="pending", actor_user_id=seed_mechanic.id,
+                   reviewer_user_id=other.id, created_at=1, updated_at=1),
+    ])
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(tracker_client, "search_issues", lambda **_kwargs: [
+        _scoped_issue("ROBOPARK-OTHER", "2026-01-01T00:00:00Z"),
+        _scoped_issue("ROBOPARK-MINE", "2026-01-02T00:00:00Z"),
+    ])
+    login_as(client, operator.username, "secret")
+
+    response = client.get("/tracker/issues?owned_by_me=true")
+
+    assert response.status_code == 200
+    assert [item["key"] for item in response.json()["items"]] == ["ROBOPARK-MINE"]
+
+
+def test_operator_owned_by_me_reconciles_external_closure_and_removes_review(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    operator = _seed_operator(db_session, seed_park_with_tracker)
+    review = TaskReview(
+        id="externally-closed",
+        issue_key="ROBOPARK-CLOSED",
+        state="pending",
+        actor_user_id=seed_mechanic.id,
+        reviewer_user_id=operator.id,
+        created_at=1,
+        updated_at=1,
+    )
+    db_session.add(review)
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(tracker_client, "search_issues", lambda **_kwargs: [{
+        **_scoped_issue("ROBOPARK-CLOSED", "2026-01-01T00:00:00Z"),
+        "status": "Закрыта",
+        "status_key": "closed",
+    }])
+    login_as(client, operator.username, "secret")
+
+    response = client.get("/tracker/issues?owned_by_me=true")
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    db_session.refresh(review)
+    assert review.state == "closed"
+
+
 def test_tracker_list_prefers_queue_history_and_exposes_exact_five_hour_sla(
     client, db_session, seed_park_with_tracker, monkeypatch
 ):

@@ -549,7 +549,7 @@ def test_submit_review_requires_current_cycle_comment_one_known_code_and_one_val
 def test_submit_review_stages_one_photo_and_all_bot_actions_once(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
-    _operator(db_session, seed_park_with_tracker)
+    operator = _operator(db_session, seed_park_with_tracker)
     _prepare_tracker(db_session, monkeypatch)
     assert _claim(client, seed_mechanic).status_code == 200
 
@@ -558,13 +558,18 @@ def test_submit_review_stages_one_photo_and_all_bot_actions_once(
 
     assert response.status_code == replay.status_code == 200
     assert response.json() == replay.json()
-    assert db_session.query(TaskReview).one().state == "pending"
+    review = db_session.query(TaskReview).one()
+    assert review.state == "pending"
+    assert review.reviewer_user_id == operator.id
     assert db_session.query(TaskAttachment).count() == 1
     assert db_session.get(TrackerClaim, ISSUE_KEY).owner_user_id == seed_mechanic.id
     actions = db_session.query(ReliableAction).filter_by(resource_id=ISSUE_KEY).all()
     assert sorted(action.action for action in actions) == [
+        "assign_operator",
         "attach",
         "comment",
+        "ensure_components",
+        "ensure_tag",
         "review",
         "set_field",
         "start",

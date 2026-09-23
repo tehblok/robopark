@@ -7,11 +7,20 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
 from conftest import login_as, role_id_for
+from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import AccessStatus, User, UserPark
 from robopark_api.routers import push
 from robopark_api.schedule_models import NotificationEvent
 from robopark_api.security import hash_password
+from robopark_api.services import platform_settings
 from robopark_api.services.rbac import RoleSlug
+from robopark_api.task_workflow_models import TaskReview
+
+
+PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+)
 
 
 def _wait_until(predicate, *, timeout: float = 1.0) -> bool:
@@ -37,6 +46,53 @@ def _operator(db, park_id: int) -> User:
     db.commit()
     db.refresh(user)
     return user
+
+
+def test_submit_review_targets_only_selected_operator(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    operator = _operator(db_session, seed_park_with_tracker.id)
+    db_session.add(
+        TrackerClaim(
+            issue_key="ROBOPARK-51",
+            park_id=seed_park_with_tracker.id,
+            owner_user_id=seed_mechanic.id,
+            updated_by_user_id=seed_mechanic.id,
+            state="active",
+            updated_at=time.time(),
+        )
+    )
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import schedules, tracker_client
+
+    real_resolve = schedules.resolve_active_operator
+    resolved_parks = []
+
+    def resolve_once(db, *, park_id, at=None):
+        resolved_parks.append(park_id)
+        return real_resolve(db, park_id=park_id, at=at)
+
+    monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: {
+        "key": "ROBOPARK-51", "summary": "blocker [447]", "status": "В работе",
+        "status_key": "in_progress", "queue": "ROBOPARK", "tags": [seed_park_with_tracker.tag],
+    })
+    monkeypatch.setattr(schedules, "resolve_active_operator", resolve_once)
+    emitted = []
+    monkeypatch.setattr(client.app.state.push_service, "emit", lambda **kwargs: emitted.append(kwargs))
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.post(
+        "/tracker/issues/ROBOPARK-51/submit-review",
+        headers={"Idempotency-Key": "targeted-review"},
+        data={"defect_code": "BD-01", "comment": "Исправлено"},
+        files=[("photo", ("robot.png", PNG, "image/png"))],
+    )
+
+    assert response.status_code == 200
+    assert resolved_parks == [seed_park_with_tracker.id]
+    assert db_session.query(TaskReview).one().reviewer_user_id == operator.id
+    assert emitted[-1]["target_user_ids"] == {operator.id}
 
 
 def test_push_subscription_and_internal_inbox_do_not_expose_task_text(client, seed_mechanic):

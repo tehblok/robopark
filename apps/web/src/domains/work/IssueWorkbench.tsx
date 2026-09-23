@@ -504,11 +504,13 @@ export function TaskController({
     partsRef.current.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
   }, [partsFocusRequest, partsOpen])
   const location = useLocation()
+  const hasOwnedView = user.role === 'mechanic' || user.role === 'operator'
   const [taskView, setTaskView] = useState<'queue' | 'mine'>(() =>
-    user.role === 'mechanic' && new URLSearchParams(location.search).get('view') === 'mine' ? 'mine' : 'queue')
+    hasOwnedView && new URLSearchParams(location.search).get('view') === 'mine' ? 'mine' : 'queue')
   useEffect(() => {
-    setTaskView(user.role === 'mechanic' && new URLSearchParams(location.search).get('view') === 'mine' ? 'mine' : 'queue')
-  }, [location.search, user.role])
+    setTaskView(hasOwnedView && new URLSearchParams(location.search).get('view') === 'mine' ? 'mine' : 'queue')
+  }, [hasOwnedView, location.search])
+  const ownedEnabled = user.role === 'mechanic' || (user.role === 'operator' && taskView === 'mine')
   const mutationKeys = useRef(new StableMutationKey())
 
   useLayoutEffect(() => () => { ++ownerGeneration.current }, [])
@@ -560,7 +562,7 @@ export function TaskController({
       limit: 50,
       offset: 0,
     }).then(page => ({ ...page, items: oldestFirst(page.items) }))),
-    { enabled: user.role === 'mechanic' && Boolean(user.username.trim()) },
+    { enabled: ownedEnabled && Boolean(user.username.trim()) },
   )
   const detail = useCachedResource<TrackerIssueDetail>(
     detailKey,
@@ -617,7 +619,7 @@ export function TaskController({
     list.error,
     'Не удалось загрузить очередь задач.',
   )
-  const ownedItems = user.role === 'mechanic' ? oldestFirst(owned.data?.items ?? []) : []
+  const ownedItems = ownedEnabled ? oldestFirst(owned.data?.items ?? []) : []
   const ownedKeys = new Set(ownedItems.map(item => item.key))
   const detailFailure = failureFor(
     detail.error,
@@ -709,7 +711,7 @@ export function TaskController({
     setRelatedRefreshGeneration((generation) => generation + 1)
     void Promise.allSettled([
       list.refresh(),
-      ...(user.role === 'mechanic' ? [owned.refresh()] : []),
+      ...(ownedEnabled ? [owned.refresh()] : []),
       detail.refresh(),
       ...(refreshComments ? [comments.refresh()] : []),
       ...(transitionsEnabled ? [transitions.refresh()] : []),
@@ -727,7 +729,7 @@ export function TaskController({
     selectedPark.id,
     transitions,
     transitionsEnabled,
-    user.role,
+    ownedEnabled,
   ])
 
   const mutate = useCallback(async (action: (assertCurrent: () => void) => Promise<unknown>, onSuccess?: () => void, refreshComments = true) => {
@@ -1099,8 +1101,8 @@ export function TaskController({
           </div>}
           detailOpen={Boolean(issueKey)}
           list={<div className="rp-work-list-pane">
-            <h2>{taskView === 'mine' && user.role === 'mechanic' ? 'Мои задачи' : 'Очередь задач'}</h2>
-            {user.role === 'mechanic' ? <div aria-label="Раздел задач" className="rp-work-view-switch">
+            <h2>{taskView === 'mine' && hasOwnedView ? 'Мои задачи' : 'Очередь задач'}</h2>
+            {hasOwnedView ? <div aria-label="Раздел задач" className="rp-work-view-switch">
               <button aria-pressed={taskView === 'queue'} onClick={() => setTaskView('queue')} type="button">Очередь</button>
               <button aria-pressed={taskView === 'mine'} onClick={() => setTaskView('mine')} type="button">Мои задачи ({ownedItems.length})</button>
             </div> : null}
@@ -1112,10 +1114,10 @@ export function TaskController({
             >
               {list.isLoading && !list.data ? (
                 <LoadingState label="Загружаем очередь задач" />
-              ) : taskView === 'mine' && user.role === 'mechanic' ? (
+              ) : taskView === 'mine' && hasOwnedView ? (
                 owned.isLoading && !owned.data ? <LoadingState label="Загружаем мои задачи" /> :
                 ownedItems.length ? <div className="rp-work-list-scroll" ref={listScrollRef}>
-                  <h3>Мои задачи в работе</h3>
+                  <h3>{user.role === 'operator' ? 'Ждут проверки' : 'Мои задачи в работе'}</h3>
                   <WorkIssueRows apiClient={apiClient} items={ownedItems}
                     onClaimed={() => { void list.refresh(); void owned.refresh() }}
                     onOpen={saveAndOpenIssue} selected={issueKey} now={now} user={user} />
@@ -1130,7 +1132,7 @@ export function TaskController({
                 <div className="rp-work-list-scroll" ref={listScrollRef}>
                   <p className="rp-work-list-count">Показано {list.data.items.length}{list.data.total > list.data.items.length ? ` из ${list.data.total}` : ''}</p>
                   {ownedItems.length ? <>
-                    <h3>Мои задачи в работе</h3>
+                    <h3>{user.role === 'operator' ? 'Ждут проверки' : 'Мои задачи в работе'}</h3>
                     <WorkIssueRows
                       apiClient={apiClient}
                       items={ownedItems}
