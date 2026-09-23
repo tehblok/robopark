@@ -490,6 +490,7 @@ export function TaskController({
   const [returnReviewOpen, setReturnReviewOpen] = useState(false)
   const [hideOpen, setHideOpen] = useState(false)
   const [partsOpen, setPartsOpen] = useState(false)
+  const [partsReceipt, setPartsReceipt] = useState('')
   const [partsFocusRequest, setPartsFocusRequest] = useState(0)
   const partsRef = useRef<HTMLDivElement>(null)
   const [taskActionHost, setTaskActionHost] = useState<HTMLElement | null>(null)
@@ -497,7 +498,7 @@ export function TaskController({
   const [taskControlBusy, setTaskControlBusy] = useState(false)
   const [taskControlMessage, setTaskControlMessage] = useState('')
   const [taskControlError, setTaskControlError] = useState('')
-  useEffect(() => { setPartsOpen(false); setPartsFocusRequest(0) }, [issueKey])
+  useEffect(() => { setPartsOpen(false); setPartsReceipt(''); setPartsFocusRequest(0) }, [issueKey])
   useLayoutEffect(() => {
     if (!partsOpen || partsFocusRequest === 0 || !partsRef.current) return
     partsRef.current.focus({ preventScroll: true })
@@ -1049,13 +1050,21 @@ export function TaskController({
                         setReviewOpen(false)
                       }} /> : null}
                     {detail.data?.workflow ? <div aria-label="Дополнительные разделы задачи" className="rp-responsive-disclosure-group" role="group">
-                      {user.role === 'mechanic' && mechanicCanWork ? (
-                        <ClosedDisclosure title="Списать запчасть" open={partsOpen} onOpenChange={setPartsOpen}>
+                      {user.role === 'mechanic' && mechanicCanWork ? <>
+                        <ClosedDisclosure title="Списать запчасть" open={partsOpen} onOpenChange={open => {
+                          if (open) setPartsReceipt('')
+                          setPartsOpen(open)
+                        }}>
                           <div id="parts" ref={partsRef} tabIndex={-1}>
-                            <TaskPartsPanel apiClient={apiClient} enqueueAction={sync?.enqueueAction} issueKey={detail.data.key} onWritten={() => { if (!sync) void comments.refresh() }} parkId={taskParkId} />
+                            <TaskPartsPanel apiClient={apiClient} enqueueAction={sync?.enqueueAction} issueKey={detail.data.key} onWritten={receipt => {
+                              setPartsReceipt(receipt)
+                              setPartsOpen(false)
+                              if (!sync) void comments.refresh()
+                            }} parkId={taskParkId} />
                           </div>
                         </ClosedDisclosure>
-                      ) : null}
+                        {partsReceipt ? <p role="status">{partsReceipt}</p> : null}
+                      </> : null}
                       <ClosedDisclosure title="Передать смену">
                         <div id="handoff">
                           <EmbeddedTaskCollaboration issueKey={detail.data.key} owner={user.username}

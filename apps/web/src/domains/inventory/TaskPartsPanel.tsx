@@ -17,7 +17,7 @@ type TaskPartsProps = {
   parkId: number | null
   issueKey: string
   apiClient?: TaskPartsApi
-  onWritten?: () => void
+  onWritten?: (receipt: string) => void
   enqueueAction?: (input: OfflineActionInput) => Promise<unknown>
 }
 
@@ -143,7 +143,7 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
         } : current)
       }
       setPartId(0); setQuantity('1')
-      onWritten?.()
+      onWritten?.('Запчасть списана')
       if (!enqueueAction) await load(0, false)
     }
     catch (reason) { if (mounted.current) setError(reason) }
@@ -163,7 +163,7 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
       <label className="field"><span>Название или артикул</span><input type="search" value={searchDraft} onChange={event => setSearchDraft(event.target.value)} /></label>
       <Button type="submit" variant="secondary">Найти</Button>
     </form> : null}
-    {currentData ? <form className="form-grid" onSubmit={submit}><label className="field"><span>Компонента</span><select required value={componentId || ''} onChange={event => { idempotencyKey.current = null; setComponentId(Number(event.target.value)); setPartId(0) }}><option value="">Выберите</option>{currentData.components.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+    {currentData ? <form aria-label="Списание запчасти" className="form-grid" onSubmit={submit}><label className="field"><span>Компонента</span><select required value={componentId || ''} onChange={event => { idempotencyKey.current = null; setComponentId(Number(event.target.value)); setPartId(0) }}><option value="">Выберите</option>{currentData.components.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       {component?.has_photo ? <img alt={component.name} className="task-parts__component-photo" src={apiClient.inventoryComponentPhotoUrl(component.id)} /> : null}
       {component ? <label className="field"><span>Запчасть</span><select required value={partId || ''} onChange={event => { idempotencyKey.current = null; setPartId(Number(event.target.value)) }}><option value="">Выберите</option>{component.parts.map(item => <option key={item.id} value={item.id}>{item.name} · {item.article} · {item.quantity} шт.</option>)}</select></label> : null}
       {part ? <article className="task-part-preview">{part.has_photo ? <img alt={part.name} src={apiClient.inventoryPartPhotoUrl(globalCatalog ? -part.id : part.id)} /> : null}<div><h3>{part.name}</h3><p>Артикул: {part.article}</p><p>Место: <strong>{part.location}</strong></p><StatusBadge tone={part.quantity !== '0' ? 'success' : 'critical'}>{part.quantity !== '0' ? `На складе: ${part.quantity}` : 'Нет на складе'}</StatusBadge></div></article> : null}

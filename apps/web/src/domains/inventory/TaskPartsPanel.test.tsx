@@ -53,13 +53,14 @@ it('uses the issue-park global catalog result and writes off through its negativ
 it('saves a writeoff locally without waiting for the network and reserves the visible stock', async () => {
   const enqueueAction = vi.fn(async (_input: OfflineActionInput) => undefined)
   const writeoff = vi.fn()
+  const onWritten = vi.fn()
   render(<TaskPartsPanel apiClient={{
     inventory: vi.fn(),
     searchInventory: vi.fn(async () => ({ items: [{ ...issueParkPart, quantity: '2' as const }], limit: 200, offset: 0, total: 1 })),
     writeoffInventoryForTask: writeoff,
     inventoryComponentPhotoUrl: vi.fn(),
     inventoryPartPhotoUrl: vi.fn(),
-  }} enqueueAction={enqueueAction} issueKey="RP-OFFLINE" parkId={77} />)
+  }} enqueueAction={enqueueAction} issueKey="RP-OFFLINE" onWritten={onWritten} parkId={77} />)
   await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Компонента' }), '22')
   await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Запчасть' }), String(issueParkPart.id))
 
@@ -71,6 +72,7 @@ it('saves a writeoff locally without waiting for the network and reserves the vi
     payload: { part_id: -issueParkPart.id, quantity: '1', park_id: 77 },
   })
   expect(writeoff).not.toHaveBeenCalled()
+  expect(onWritten).toHaveBeenCalledWith('Запчасть списана')
   expect(screen.getByRole('status')).toHaveTextContent('Сохранено на устройстве: Шина · 1 шт.')
 })
 

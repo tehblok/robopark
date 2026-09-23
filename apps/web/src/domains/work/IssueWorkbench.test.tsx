@@ -359,6 +359,44 @@ it('displays and writes task parts from the backend claim park despite tag and u
   await waitFor(() => expect(writeoffInventoryForTask).toHaveBeenCalledWith(issue.key, -91, '1', expect.any(String)))
 })
 
+it('announces a write-off and collapses the form after success', async () => {
+  const mechanic: User = { ...user, username: 'mech', role: 'mechanic', parks: [park] }
+  const claimedIssue = {
+    ...issue,
+    claim: { park_id: park.id },
+    assignee: { display: 'mech', login: 'mech' },
+    workflow: {
+      owner: { display: 'mech', login: 'mech' },
+      review_state: null,
+      display_status: 'in_progress' as const,
+      sync_state: 'saved' as const,
+      has_current_cycle_comment: false,
+    },
+  }
+  const part: InventoryCatalogSearchItem = {
+    id: 91, component_id: 21, component_name: 'Колёса', name: 'Шина', article: 'WH-91',
+    is_active: true, has_photo: false, quantity: '3', minimum_quantity: '1',
+    location: 'Склад парка', stock_is_active: true,
+  }
+  const client = apiClient({
+    trackerIssue: vi.fn(async () => claimedIssue),
+    searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })),
+    writeoffInventoryForTask: vi.fn(async () => ({ id: 1 } as Awaited<ReturnType<typeof api.writeoffInventoryForTask>>)),
+  })
+
+  renderWorkbench({ client, currentUser: mechanic })
+  fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
+  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
+
+  expect(await screen.findByText('Запчасть списана', { selector: '[role="status"]' })).toBeVisible()
+  expect(screen.queryByRole('form', { name: 'Списание запчасти' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Списать запчасть' }))
+  expect(screen.queryByText('Запчасть списана', { selector: '[role="status"]' })).not.toBeInTheDocument()
+  expect(await screen.findByRole('form', { name: 'Списание запчасти' })).toBeVisible()
+})
+
 it('disables task parts when the backend claim is missing', async () => {
   const mechanic: User = { ...user, username: 'mech', role: 'mechanic', parks: [park] }
   const claimedIssue = { ...issue, tags: ['Alpha'], claim: null, assignee: { display: 'mech', login: 'mech' } }
