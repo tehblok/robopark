@@ -56,6 +56,34 @@ def test_release_migration_checker_rejects_declared_head_drift(tmp_path: Path):
     assert findings == ["actual=head metadata=old policy=head"]
 
 
+def test_release_migration_checker_rejects_synchronized_non_rc6_head(tmp_path: Path):
+    checker_path = ROOT / "scripts/check-release-migrations.py"
+    spec = importlib.util.spec_from_file_location("release_migrations", checker_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    api = tmp_path / "apps/api"
+    versions = api / "alembic/versions"
+    versions.mkdir(parents=True)
+    (api / "alembic.ini").write_text("[alembic]\nscript_location = alembic\n")
+    (versions / "head.py").write_text(
+        "revision = '0039_unplanned'\ndown_revision = None\n"
+    )
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    (deploy / "release-metadata.json").write_text(
+        json.dumps({"migration_head": "0039_unplanned"})
+    )
+    (deploy / "migration-policy.json").write_text(
+        json.dumps({"target_head": "0039_unplanned"})
+    )
+
+    assert module.check_release_migrations(tmp_path) == [
+        "actual=0039_unplanned metadata=0039_unplanned policy=0039_unplanned"
+    ]
+
+
 def test_release_migration_checker_rejects_multiple_heads(tmp_path: Path):
     checker_path = ROOT / "scripts/check-release-migrations.py"
     spec = importlib.util.spec_from_file_location("release_migrations", checker_path)
