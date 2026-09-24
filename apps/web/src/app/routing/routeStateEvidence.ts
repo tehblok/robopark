@@ -91,7 +91,6 @@ const EXECUTABLE: Partial<Record<AppRouteId, Record<string, ExecutableState>>> =
   },
   campaigns: { 'campaign-list': visible('h2:has-text("Осенняя сервисная кампания")', 'The campaign list fixture renders its campaign card.', { actorRole: 'mechanic' }) },
   'campaign-detail': { open: visible('text=ROBOPARK-42', 'The campaign detail fixture renders the open Tracker ticket.', { actorRole: 'mechanic' }) },
-  schedule: { week: visible('button:has-text("Неделя")', 'The schedule renders the week selector.', { actorRole: 'mechanic' }) },
   analytics: {
     summary: visible('.rp-analytics-park', 'The operator analytics fixture renders the park summary.', { actorRole: 'operator' }),
     'park-comparison': visible('[aria-label="Параметры аналитики"]', 'The analytics route renders deterministic comparison controls.', { actorRole: 'operator' }),
@@ -162,8 +161,8 @@ const ROUTE_ASYNC_CONTRACTS: Partial<Record<AppRouteId, RouteAsyncContract>> = {
 
 const TARGETS: Partial<Record<AppRouteId, Record<string, Omit<OwnerStateDriver, 'stateKey' | 'stateKind'>>>> = {
   schedule: {
-    week: { action: 'button', targetSelector: 'button:has-text("Неделя")', expectedSelector: '.rp-schedule__list[data-view="week"]' },
-    month: { action: 'button', targetSelector: 'button:has-text("Месяц")', expectedSelector: '.rp-schedule__list[data-view="month"]' },
+    week: { action: 'button', targetSelector: '[aria-label="Масштаб календаря"] button:has-text("Неделя")', expectedSelector: '.rp-schedule-calendar__days--week' },
+    month: { action: 'button', targetSelector: '[aria-label="Масштаб календаря"] button:has-text("Месяц")', expectedSelector: '.rp-schedule-calendar__days--month' },
     period: { action: 'form', targetSelector: 'button:has-text("Добавить период")', expectedSelector: '.rp-schedule__editor', triggerSelector: 'button:has-text("Добавить период")', fieldSelector: 'input[aria-label="Начало"]', fieldValue: '2026-09-21T09:00' },
     notifications: { action: 'assert', targetSelector: 'h2:has-text("Уведомления")', expectedSelector: 'h2:has-text("Уведомления")' },
   },

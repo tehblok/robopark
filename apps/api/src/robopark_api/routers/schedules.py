@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
@@ -33,23 +33,35 @@ def _run(fn):
 
 @router.get("", response_model=list[ScheduleOut])
 def list_schedules(
+    response: Response,
     park_id: int | None = None,
     owner_user_id: int | None = None,
     start_at: datetime | None = Query(default=None),
     end_at: datetime | None = Query(default=None),
+    limit: int = Query(default=schedules.SCHEDULE_PAGE_LIMIT, ge=1, le=schedules.SCHEDULE_PAGE_LIMIT),
+    after_start_at: datetime | None = Query(default=None),
+    after_id: str | None = Query(default=None, min_length=1, max_length=64),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
-    return _run(
-        lambda: schedules.list_entries(
+    page = _run(
+        lambda: schedules.list_entries_page(
             db,
             user,
             park_id=park_id,
             owner_user_id=owner_user_id,
             start_at=start_at,
             end_at=end_at,
+            limit=limit,
+            after_start_at=after_start_at,
+            after_id=after_id,
         )
     )
+    response.headers["X-Schedule-Has-More"] = str(page.next_id is not None).lower()
+    if page.next_start_at is not None and page.next_id is not None:
+        response.headers["X-Schedule-Next-Start-At"] = page.next_start_at.isoformat()
+        response.headers["X-Schedule-Next-Id"] = page.next_id
+    return page.items
 
 
 @router.get("/participants", response_model=list[ScheduleParticipantOut])

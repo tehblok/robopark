@@ -69,6 +69,63 @@ describe('API transport metadata', () => {
     vi.unstubAllGlobals()
   })
 
+  it('loads every keyset page for one exact schedule scope', async () => {
+    const schedule = (id: string, startAt: string) => ({
+      id,
+      owner_user_id: 7,
+      park_id: 11,
+      kind: 'shift' as const,
+      start_at: startAt,
+      end_at: '2026-09-01T12:00:00+03:00',
+      source: 'self',
+      series_id: null,
+      created_by_user_id: 7,
+      updated_by_user_id: 7,
+      created_at: '2026-09-01T00:00:00Z',
+      updated_at: '2026-09-01T00:00:00Z',
+      warnings: [],
+    })
+    const first = schedule('first', '2026-09-01T09:00:00+03:00')
+    const boundary = schedule('boundary', '2026-09-01T10:00:00+03:00')
+    const last = schedule('last', '2026-09-01T11:00:00+03:00')
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([first, boundary]), {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Schedule-Has-More': 'true',
+          'X-Schedule-Next-Start-At': boundary.start_at,
+          'X-Schedule-Next-Id': boundary.id,
+        },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([last]), {
+        headers: { 'Content-Type': 'application/json', 'X-Schedule-Has-More': 'false' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+
+    const rows = await api.schedules({
+      parkId: 11,
+      ownerUserId: 7,
+      startAt: '2026-09-01T00:00:00.000Z',
+      endAt: '2026-10-01T00:00:00.000Z',
+      signal: controller.signal,
+    })
+
+    expect(rows.map(row => row.id)).toEqual(['first', 'boundary', 'last'])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const secondUrl = new URL(fetchMock.mock.calls[1][0], 'https://robopark.invalid')
+    expect(Object.fromEntries(secondUrl.searchParams)).toEqual({
+      start_at: '2026-09-01T00:00:00.000Z',
+      end_at: '2026-10-01T00:00:00.000Z',
+      park_id: '11',
+      owner_user_id: '7',
+      limit: '2000',
+      after_start_at: boundary.start_at,
+      after_id: boundary.id,
+    })
+    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal)
+  })
+
   it('reuses the typed tracker payload on ETag 304', async () => {
     const payload = { items: [{ key: 'ROBOPARK-42' }], total: 1, limit: 50, offset: 0, has_more: false }
     const fetchMock = vi.fn()

@@ -101,7 +101,7 @@ export type ScheduleEntry = {
   warnings: string[]
 }
 export type ScheduleCreate = { park_id: number; kind: ScheduleEntry['kind']; start_at: string; end_at: string; owner_user_id?: number }
-export type ScheduleListParams = { parkId: number; ownerUserId?: number; startAt: string; endAt: string }
+export type ScheduleListParams = { parkId: number; ownerUserId?: number; startAt: string; endAt: string; signal?: AbortSignal }
 export type ScheduleParticipant = { id: number; display_name: string; role: 'mechanic' | 'operator' }
 export type SchedulePattern = 'none' | '5/2' | '2/2' | '4/4'
 export type SchedulePatternCreate = {
@@ -109,7 +109,7 @@ export type SchedulePatternCreate = {
   start_date: string; end_date: string; start_time: string; end_time: string
 }
 export type ScheduleCopyCreate = {
-  park_id: number; owner_user_ids: number[]; source_start: string; source_end: string; target_start: string
+  idempotency_key?: string; park_id: number; owner_user_ids: number[]; source_start: string; source_end: string; target_start: string
 }
 export type NotificationEvent = { id: string; event_type: string; park_id: number | null; protected_text: string; read_at: string | null; created_at: string }
 
@@ -1113,6 +1113,35 @@ export async function request<T>(path: string, init?: RequestInit, metadata?: Re
   )
 }
 
+async function requestSchedulePage(path: string, signal?: AbortSignal): Promise<{
+  items: ScheduleEntry[]
+  hasMore: boolean
+  nextStartAt: string | null
+  nextId: string | null
+}> {
+  return fetchWithTimeout(
+    `/api${path}`,
+    { credentials: 'include', signal },
+    JSON_TIMEOUT_MS,
+    async response => {
+      if (!response.ok) {
+        throw new ApiError(
+          response.status,
+          await readErrorDetail(response),
+          responseRequestId(response),
+          responseRetryAfter(response),
+        )
+      }
+      return {
+        items: await response.json() as ScheduleEntry[],
+        hasMore: response.headers.get('X-Schedule-Has-More') === 'true',
+        nextStartAt: response.headers.get('X-Schedule-Next-Start-At'),
+        nextId: response.headers.get('X-Schedule-Next-Id'),
+      }
+    },
+  )
+}
+
 async function requestBlob(path: string): Promise<Blob> {
   return fetchWithTimeout(
     `/api${path}`,
@@ -1328,11 +1357,35 @@ async function conditionalChangeRevision(scope: string): Promise<{ revision: num
 }
 
 export const api = {
-  schedules: ({ parkId, ownerUserId, startAt, endAt }: ScheduleListParams) => {
-    const query = new URLSearchParams({ start_at: startAt, end_at: endAt })
-    query.set('park_id', String(parkId))
-    if (ownerUserId != null) query.set('owner_user_id', String(ownerUserId))
-    return request<ScheduleEntry[]>(`/schedules?${query.toString()}`)
+  schedules: async ({ parkId, ownerUserId, startAt, endAt, signal }: ScheduleListParams) => {
+    const scope = new URLSearchParams({
+      start_at: startAt,
+      end_at: endAt,
+      park_id: String(parkId),
+      limit: '2000',
+    })
+    if (ownerUserId != null) scope.set('owner_user_id', String(ownerUserId))
+    const items: ScheduleEntry[] = []
+    let afterStartAt: string | null = null
+    let afterId: string | null = null
+    let hasMore = true
+    while (hasMore) {
+      const query = new URLSearchParams(scope)
+      if (afterStartAt !== null && afterId !== null) {
+        query.set('after_start_at', afterStartAt)
+        query.set('after_id', afterId)
+      }
+      const page = await requestSchedulePage(`/schedules?${query.toString()}`, signal)
+      items.push(...page.items)
+      hasMore = page.hasMore
+      if (!hasMore) break
+      if (!page.nextStartAt || !page.nextId || (page.nextStartAt === afterStartAt && page.nextId === afterId)) {
+        throw new ApiError(502, 'schedule_pagination_invalid')
+      }
+      afterStartAt = page.nextStartAt
+      afterId = page.nextId
+    }
+    return items
   },
   scheduleParticipants: (parkId: number) => request<ScheduleParticipant[]>(`/schedules/participants?park_id=${parkId}`),
   scheduleCreate: (body: ScheduleCreate) => request<ScheduleEntry>('/schedules', { method: 'POST', body: JSON.stringify(body) }),

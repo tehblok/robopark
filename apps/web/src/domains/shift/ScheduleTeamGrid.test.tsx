@@ -56,4 +56,15 @@ describe('ScheduleTeamGrid', () => {
 
     expect(within(cards).getByText('На выбранный день периодов нет')).toBeInTheDocument()
   })
+
+  it('does not synthesize a team row for an unknown schedule owner', () => {
+    const days = visibleRange(new Date('2026-09-21T12:00:00+03:00'), 'week').days
+    const unknown = { ...items[0], id: 'unknown-owner', owner_user_id: 999 }
+
+    render(<ScheduleTeamGrid days={days} employees={employees} items={[...items, unknown]} selectedDate={days[0]} />)
+
+    const matrix = screen.getByTestId('schedule-team-grid')
+    expect(within(matrix).queryByRole('rowheader', { name: /Сотрудник #999/ })).not.toBeInTheDocument()
+    expect(within(matrix).getAllByRole('row')).toHaveLength(3)
+  })
 })

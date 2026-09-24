@@ -82,4 +82,25 @@ describe('SchedulePlanner', () => {
     expect(firstKey).toEqual(expect.any(String))
     expect(schedulePattern.mock.calls[1][0].idempotency_key).toBe(firstKey)
   })
+
+  it('reuses one copy idempotency key when a failed copy is retried', async () => {
+    const scheduleCopy = vi.fn()
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValueOnce([created])
+    const apiClient = { schedulePattern: vi.fn(async () => []), scheduleCopy }
+    render(<SchedulePlanner apiClient={apiClient} employees={employees} parkId={7} />)
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Анна · Механик' }))
+    fireEvent.change(screen.getByLabelText('Копировать с'), { target: { value: '2026-09-01T00:00' } })
+    fireEvent.change(screen.getByLabelText('Копировать по'), { target: { value: '2026-09-08T00:00' } })
+    fireEvent.change(screen.getByLabelText('Начало копии'), { target: { value: '2026-10-01T00:00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Копировать период' }))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: 'Копировать период' }))
+
+    await waitFor(() => expect(scheduleCopy).toHaveBeenCalledTimes(2))
+    const firstKey = scheduleCopy.mock.calls[0][0].idempotency_key
+    expect(firstKey).toEqual(expect.any(String))
+    expect(scheduleCopy.mock.calls[1][0].idempotency_key).toBe(firstKey)
+  })
 })

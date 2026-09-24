@@ -281,3 +281,16 @@ test('owner collector resolves every delegated state to one exact Classic node i
   expect(exerciseOwnerBehavior).toBeDefined()
   expect(exerciseAsyncOwnerState).toBeDefined()
 })
+
+test('schedule week and month owner drivers target the current calendar surfaces', () => {
+  const scheduleOwners = owners.filter(owner => owner.routeId === 'schedule' && ['week', 'month'].includes(owner.stateId))
+
+  expect(scheduleOwners.map(owner => owner.caseId).sort()).toEqual([
+    'route-coverage:schedule:month',
+    'route-coverage:schedule:week',
+  ])
+  expect(scheduleOwners.map(owner => owner.ownerDriver?.expectedSelector).sort()).toEqual([
+    '.rp-schedule-calendar__days--month',
+    '.rp-schedule-calendar__days--week',
+  ])
+})

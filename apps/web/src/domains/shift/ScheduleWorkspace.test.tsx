@@ -48,12 +48,13 @@ describe('ScheduleWorkspace', () => {
 
     expect(screen.queryByText('Моя смена')).not.toBeInTheDocument()
 
-    await waitFor(() => expect(schedules).toHaveBeenLastCalledWith({
+    await waitFor(() => expect(schedules).toHaveBeenLastCalledWith(expect.objectContaining({
       parkId: 7,
       ownerUserId: 7,
       startAt: '2026-08-31T21:00:00.000Z',
       endAt: '2026-09-30T21:00:00.000Z',
-    }))
+      signal: expect.any(AbortSignal),
+    })))
   })
 
   it('keeps data only for a matching scope and range and rejects stale responses', async () => {
@@ -74,6 +75,8 @@ describe('ScheduleWorkspace', () => {
 
     view.rerender(<ScheduleWorkspace apiClient={refreshedClient} initialAnchor={new Date('2026-09-21T12:00:00+03:00')} selectedParkId={1} user={{ ...mechanic, permissions: ['schedule.read', 'schedule.write'] }} />)
     expect(screen.queryByText('Моя смена')).not.toBeInTheDocument()
+    expect(refreshedSchedules.mock.calls[0][0].signal).toBeInstanceOf(AbortSignal)
+    expect(refreshedSchedules.mock.calls[0][0].signal.aborted).toBe(true)
     await act(async () => { changedScope.reject(new Error('denied')); await changedScope.promise.catch(() => undefined) })
     expect(await screen.findByText('Не удалось загрузить график')).toBeInTheDocument()
     await act(async () => { sameScope.resolve([staleEntry]); await sameScope.promise })

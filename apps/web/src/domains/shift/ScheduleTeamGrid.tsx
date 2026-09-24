@@ -37,13 +37,12 @@ export function ScheduleTeamGrid({
   onDelete?: (item: ScheduleEntry) => void
 }) {
   const projected = useMemo(() => projectSchedule(items, days), [days, items])
-  const rows = useMemo(() => {
-    const known = new Map(employees.map(employee => [employee.id, employee]))
-    for (const item of items) {
-      if (!known.has(item.owner_user_id)) known.set(item.owner_user_id, { id: item.owner_user_id, display_name: `Сотрудник #${item.owner_user_id}`, role: 'mechanic' })
-    }
-    return [...known.values()].sort((left, right) => left.display_name.localeCompare(right.display_name, 'ru'))
-  }, [employees, items])
+  const rows = useMemo(
+    () => [...employees]
+      .filter(employee => employee.role === 'mechanic' || employee.role === 'operator')
+      .sort((left, right) => left.display_name.localeCompare(right.display_name, 'ru')),
+    [employees],
+  )
   const fallbackKey = formatDayKey(days[0] ?? selectedDate)
   const preferredKey = formatDayKey(selectedDate)
   const [selectedKey, setSelectedKey] = useState(() => days.some(day => formatDayKey(day) === preferredKey) ? preferredKey : fallbackKey)

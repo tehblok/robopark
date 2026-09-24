@@ -71,11 +71,23 @@ class ScheduleUpdate(BaseModel):
 
 
 class ScheduleCopy(BaseModel):
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
     park_id: int
     source_start: datetime
     source_end: datetime
     target_start: datetime
     owner_user_ids: list[int] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def valid_copy_range(self):
+        if any(
+            value.tzinfo is None
+            for value in (self.source_start, self.source_end, self.target_start)
+        ):
+            raise ValueError("timezone_required")
+        if self.source_end <= self.source_start:
+            raise ValueError("invalid_range")
+        return self
 
 
 class ScheduleOut(BaseModel):

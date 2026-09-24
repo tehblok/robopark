@@ -555,6 +555,87 @@ def test_admin_reads_only_accessible_parks_while_royal_bulk_assigns(
     datetime.fromisoformat(rows[0]["updated_at"])
 
 
+def test_copy_period_is_complete_ordered_and_idempotent(
+    client, db_session, seed_royal, seed_mechanic, seed_park_with_tracker
+):
+    from robopark_api.schedule_models import ScheduleEntry
+
+    source_start = datetime.fromisoformat("2026-09-01T00:00:00+03:00")
+    source_rows = [
+        ScheduleEntry(
+            id=f"source-{index:03d}",
+            owner_user_id=seed_mechanic.id,
+            park_id=seed_park_with_tracker.id,
+            kind="shift",
+            start_at=source_start + timedelta(minutes=index),
+            end_at=source_start + timedelta(minutes=index, seconds=30),
+            created_by_user_id=seed_royal.id,
+            updated_by_user_id=seed_royal.id,
+        )
+        for index in reversed(range(101))
+    ]
+    db_session.add_all(source_rows)
+    db_session.commit()
+    login_as(client, seed_royal.username, "secret")
+    payload = {
+        "idempotency_key": "copy-complete-0001",
+        "park_id": seed_park_with_tracker.id,
+        "source_start": "2026-09-01T00:00:00+03:00",
+        "source_end": "2026-09-02T00:00:00+03:00",
+        "target_start": "2026-10-01T00:00:00+03:00",
+        "owner_user_ids": [seed_mechanic.id],
+    }
+
+    first = client.post("/schedules/copy", json=payload)
+    replay = client.post("/schedules/copy", json=payload)
+
+    assert first.status_code == replay.status_code == 201
+    assert replay.json() == first.json()
+    copied = first.json()
+    assert len(copied) == 101
+    assert [row["start_at"] for row in copied] == sorted(row["start_at"] for row in copied)
+    assert copied[0]["start_at"] == "2026-10-01T00:00:00+03:00"
+    assert copied[-1]["start_at"] == "2026-10-01T01:40:00+03:00"
+    assert len({row["series_id"] for row in copied}) == 1
+    assert copied[0]["series_id"] is not None
+    assert db_session.query(ScheduleEntry).count() == 202
+
+
+def test_copy_period_rejects_more_than_5000_rows_before_insert(
+    client, db_session, seed_royal, seed_mechanic, seed_park_with_tracker
+):
+    from robopark_api.schedule_models import ScheduleEntry
+
+    source_start = datetime.fromisoformat("2026-09-01T00:00:00+03:00")
+    db_session.add_all([
+        ScheduleEntry(
+            owner_user_id=seed_mechanic.id,
+            park_id=seed_park_with_tracker.id,
+            kind="shift",
+            start_at=source_start + timedelta(seconds=index),
+            end_at=source_start + timedelta(seconds=index + 1),
+            created_by_user_id=seed_royal.id,
+            updated_by_user_id=seed_royal.id,
+        )
+        for index in range(5001)
+    ])
+    db_session.commit()
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.post("/schedules/copy", json={
+        "idempotency_key": "copy-over-limit-0001",
+        "park_id": seed_park_with_tracker.id,
+        "source_start": "2026-09-01T00:00:00+03:00",
+        "source_end": "2026-09-02T00:00:00+03:00",
+        "target_start": "2026-10-01T00:00:00+03:00",
+        "owner_user_ids": [seed_mechanic.id],
+    })
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "too_many_entries"
+    assert db_session.query(ScheduleEntry).count() == 5001
+
+
 def test_old_schedule_cleanup_is_bounded_and_keeps_current_entries(
     db_session, seed_mechanic, seed_park_with_tracker
 ):
@@ -591,7 +672,7 @@ def test_old_schedule_cleanup_is_bounded_and_keeps_current_entries(
     assert db_session.get(ScheduleEntry, current_id) is not None
 
 
-def test_list_schedule_range_is_bounded_and_ordered(
+def test_list_schedule_range_is_explicitly_paginated_without_gaps_or_duplicates(
     client, db_session, seed_admin, seed_mechanic, seed_park_with_tracker
 ):
     from robopark_api.schedule_models import ScheduleEntry
@@ -616,18 +697,33 @@ def test_list_schedule_range_is_bounded_and_ordered(
     db_session.commit()
     login_as(client, seed_admin.username, "secret")
 
-    response = client.get(
+    first = client.get(
         f"/schedules?park_id={seed_park_with_tracker.id}"
         "&start_at=2026-09-01T00:00:00%2B03:00"
-        "&end_at=2026-10-01T00:00:00%2B03:00"
+        "&end_at=2026-10-01T00:00:00%2B03:00&limit=2000"
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert len(payload) == 2000
+    assert first.status_code == 200
+    assert first.headers["x-schedule-has-more"] == "true"
+    assert first.headers["x-schedule-next-start-at"] == "2026-09-02T09:19:00+03:00"
+    assert first.headers["x-schedule-next-id"]
+    second = client.get("/schedules", params={
+        "park_id": seed_park_with_tracker.id,
+        "start_at": "2026-09-01T00:00:00+03:00",
+        "end_at": "2026-10-01T00:00:00+03:00",
+        "limit": 2000,
+        "after_start_at": first.headers["x-schedule-next-start-at"],
+        "after_id": first.headers["x-schedule-next-id"],
+    })
+
+    assert second.status_code == 200
+    assert second.headers["x-schedule-has-more"] == "false"
+    payload = [*first.json(), *second.json()]
+    assert len(payload) == 2005
+    assert len({row["id"] for row in payload}) == 2005
     assert [row["start_at"] for row in payload] == sorted(row["start_at"] for row in payload)
     assert payload[0]["start_at"] == "2026-09-01T00:00:00+03:00"
-    assert payload[-1]["start_at"] == "2026-09-02T09:19:00+03:00"
+    assert payload[-1]["start_at"] == "2026-09-02T09:24:00+03:00"
 
 
 def test_list_schedule_range_uses_half_open_intersection(

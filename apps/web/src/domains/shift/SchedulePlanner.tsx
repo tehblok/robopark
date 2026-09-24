@@ -37,6 +37,7 @@ export function SchedulePlanner({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(false)
   const patternAttempt = useRef<{ fingerprint: string; key: string } | null>(null)
+  const copyAttempt = useRef<{ fingerprint: string; key: string } | null>(null)
 
   const toggleOwner = (ownerId: number, checked: boolean) => {
     setOwnerIds(current => checked ? [...current, ownerId] : current.filter(id => id !== ownerId))
@@ -79,13 +80,21 @@ export function SchedulePlanner({
   const submitCopy = (event: FormEvent) => {
     event.preventDefault()
     if (!ownerIds.length) return
-    void run(() => apiClient.scheduleCopy({
+    const body = {
       park_id: parkId,
       owner_user_ids: ownerIds,
       source_start: moscowIso(sourceStart),
       source_end: moscowIso(sourceEnd),
       target_start: moscowIso(targetStart),
-    }))
+    }
+    const fingerprint = JSON.stringify(body)
+    const key = copyAttempt.current?.fingerprint === fingerprint
+      ? copyAttempt.current.key
+      : globalThis.crypto.randomUUID()
+    copyAttempt.current = { fingerprint, key }
+    void run(() => apiClient.scheduleCopy({ ...body, idempotency_key: key }), () => {
+      copyAttempt.current = null
+    })
   }
 
   return <div className="rp-schedule-planner">

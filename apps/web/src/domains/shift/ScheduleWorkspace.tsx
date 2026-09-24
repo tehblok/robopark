@@ -55,8 +55,9 @@ export function ScheduleWorkspace({ apiClient = api, initialAnchor, user, select
   useEffect(() => {
     const generation = ++scheduleGeneration.current
     if (parkId == null || requestKey == null) return
+    const controller = new AbortController()
     setErrorKey(null)
-    void apiClient.schedules({ parkId, ownerUserId, startAt: range.start.toISOString(), endAt: range.end.toISOString() }).then(value => {
+    void apiClient.schedules({ parkId, ownerUserId, startAt: range.start.toISOString(), endAt: range.end.toISOString(), signal: controller.signal }).then(value => {
       if (generation !== scheduleGeneration.current) return
       const next = { key: requestKey, items: value }
       scheduleStateRef.current = next
@@ -64,7 +65,7 @@ export function ScheduleWorkspace({ apiClient = api, initialAnchor, user, select
     }).catch(() => {
       if (generation === scheduleGeneration.current && scheduleStateRef.current?.key !== requestKey) setErrorKey(requestKey)
     })
-    return () => { scheduleGeneration.current += 1 }
+    return () => { controller.abort(); scheduleGeneration.current += 1 }
   }, [apiClient, ownerUserId, parkId, range.end, range.start, requestKey])
   useEffect(() => {
     const generation = ++employeeGeneration.current

@@ -1,8 +1,9 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 
 from robopark_api.models import AccessStatus, Park, Role, User, UserPark
@@ -19,7 +20,16 @@ from robopark_api.services import reliable_actions
 from robopark_api.services.database_locks import database_idempotency_lock
 
 SCHEDULE_RETENTION_DAYS = 400
+SCHEDULE_PAGE_LIMIT = 2000
+SCHEDULE_COPY_LIMIT = 5000
 MOSCOW = ZoneInfo("Europe/Moscow")
+
+
+@dataclass(frozen=True)
+class SchedulePage:
+    items: list[dict]
+    next_start_at: datetime | None = None
+    next_id: str | None = None
 
 
 def resolve_active_operator(
@@ -135,12 +145,44 @@ def list_entries(
     owner_user_id: int | None = None,
     start_at: datetime | None = None,
     end_at: datetime | None = None,
+    limit: int = SCHEDULE_PAGE_LIMIT,
+    after_start_at: datetime | None = None,
+    after_id: str | None = None,
 ) -> list[dict]:
+    return list_entries_page(
+        db,
+        actor,
+        park_id=park_id,
+        owner_user_id=owner_user_id,
+        start_at=start_at,
+        end_at=end_at,
+        limit=limit,
+        after_start_at=after_start_at,
+        after_id=after_id,
+    ).items
+
+
+def list_entries_page(
+    db: Session,
+    actor: User,
+    *,
+    park_id: int | None = None,
+    owner_user_id: int | None = None,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    limit: int = SCHEDULE_PAGE_LIMIT,
+    after_start_at: datetime | None = None,
+    after_id: str | None = None,
+) -> SchedulePage:
     current = datetime.now(UTC)
     window_start = start_at or current - timedelta(days=31)
     window_end = end_at or current + timedelta(days=93)
     if window_end <= window_start:
         raise ValueError("invalid_range")
+    if (after_start_at is None) != (after_id is None):
+        raise ValueError("invalid_cursor")
+    if after_start_at is not None and after_start_at.tzinfo is None:
+        raise ValueError("timezone_required")
     statement = select(ScheduleEntry).order_by(ScheduleEntry.start_at, ScheduleEntry.id)
     if actor.role == "royal":
         pass
@@ -159,8 +201,18 @@ def list_entries(
         statement = statement.where(ScheduleEntry.owner_user_id == owner_user_id)
     statement = statement.where(
         ScheduleEntry.end_at > window_start, ScheduleEntry.start_at < window_end
-    ).limit(2000)
+    )
+    if after_start_at is not None and after_id is not None:
+        statement = statement.where(
+            or_(
+                ScheduleEntry.start_at > after_start_at,
+                and_(ScheduleEntry.start_at == after_start_at, ScheduleEntry.id > after_id),
+            )
+        )
+    statement = statement.limit(limit + 1)
     rows = list(db.scalars(statement))
+    has_more = len(rows) > limit
+    rows = rows[:limit]
     overlaps: set[str] = set()
     latest: dict[int, tuple[datetime, str]] = {}
     for row in rows:
@@ -169,7 +221,14 @@ def list_entries(
             overlaps.update((prior[1], row.id))
         if prior is None or row.end_at > prior[0]:
             latest[row.owner_user_id] = (row.end_at, row.id)
-    return [shell(db, row, warnings=["overlap"] if row.id in overlaps else []) for row in rows]
+    items = [shell(db, row, warnings=["overlap"] if row.id in overlaps else []) for row in rows]
+    if not has_more or not rows:
+        return SchedulePage(items=items)
+    return SchedulePage(
+        items=items,
+        next_start_at=_moscow_datetime(rows[-1].start_at),
+        next_id=rows[-1].id,
+    )
 
 
 def list_participants(db: Session, actor: User, *, park_id: int) -> list[dict]:
@@ -382,10 +441,44 @@ def copy_period(db: Session, actor: User, payload: ScheduleCopy) -> list[dict]:
     owners = payload.owner_user_ids or [actor.id]
     if actor.role != "royal" and owners != [actor.id]:
         raise PermissionError
+    if payload.idempotency_key is None:
+        try:
+            result = _copy_period_once(db, actor, payload, owners)
+            db.commit()
+            return result
+        except Exception:
+            db.rollback()
+            raise
+
+    action_payload = payload.model_dump(mode="json", exclude={"idempotency_key"})
+    lock_key = f"schedule-copy:{actor.id}:{payload.park_id}:{payload.idempotency_key}"
+    with database_idempotency_lock(db, lock_key):
+        try:
+            begin = reliable_actions.begin_action(
+                db,
+                actor=actor,
+                resource_type="schedule_park",
+                resource_id=str(payload.park_id),
+                action="schedule_copy",
+                idempotency_key=payload.idempotency_key,
+                payload=action_payload,
+            )
+            if begin.result is not None:
+                return list(begin.result)
+            result = _copy_period_once(db, actor, payload, owners)
+            reliable_actions.complete_action(db, begin.row, result)
+            db.commit()
+            return result
+        except Exception:
+            db.rollback()
+            raise
+
+
+def _copy_period_once(
+    db: Session, actor: User, payload: ScheduleCopy, owners: list[int]
+) -> list[dict]:
     for owner_id in owners:
         _owner_in_park(db, owner_id, payload.park_id)
-    if payload.source_end <= payload.source_start:
-        raise ValueError("invalid_range")
     source = list(
         db.scalars(
             select(ScheduleEntry)
@@ -395,10 +488,12 @@ def copy_period(db: Session, actor: User, payload: ScheduleCopy) -> list[dict]:
                 ScheduleEntry.start_at >= payload.source_start,
                 ScheduleEntry.start_at < payload.source_end,
             )
-            .order_by(ScheduleEntry.start_at)
-            .limit(100)
+            .order_by(ScheduleEntry.start_at, ScheduleEntry.id)
+            .limit(SCHEDULE_COPY_LIMIT + 1)
         )
     )
+    if len(source) > SCHEDULE_COPY_LIMIT:
+        raise ValueError("too_many_entries")
     delta = payload.target_start - payload.source_start
     series_id = str(uuid4())
     rows = []
@@ -416,8 +511,12 @@ def copy_period(db: Session, actor: User, payload: ScheduleCopy) -> list[dict]:
         )
         db.add(row)
         rows.append(row)
-    db.commit()
-    return [shell(db, row) for row in rows]
+    db.flush()
+    result = [
+        ScheduleOut.model_validate(item).model_dump(mode="json")
+        for item in _pattern_results(db, [row.id for row in rows])
+    ]
+    return result
 
 
 def delete_series(db: Session, actor: User, series_id: str) -> int:
