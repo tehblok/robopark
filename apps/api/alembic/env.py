@@ -5,6 +5,7 @@ from sqlalchemy import engine_from_config, pool
 
 from robopark_api import (  # noqa: F401 — register migration metadata
     collaboration_models,
+    notification_delivery_models,
     schedule_models,
 )
 from robopark_api.config import Settings

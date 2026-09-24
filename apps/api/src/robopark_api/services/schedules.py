@@ -24,6 +24,92 @@ SCHEDULE_PAGE_LIMIT = 2000
 SCHEDULE_COPY_LIMIT = 5000
 MOSCOW = ZoneInfo("Europe/Moscow")
 
+NOTIFICATION_ROLES = {
+    "new_task": ({"mechanic", "driver"}, True),
+    "return": ({"mechanic", "driver"}, True),
+    "operator_comment": ({"mechanic", "driver"}, True),
+    "report": ({"operator", "admin", "royal"}, False),
+    "review_task": ({"operator"}, False),
+    "problem": ({"operator", "admin", "royal"}, False),
+    "anomaly": ({"operator", "admin", "royal"}, False),
+    "integration_down": ({"royal"}, False),
+    "disk_low": ({"royal"}, False),
+    "update_failure": ({"royal"}, False),
+    "server_problem": ({"royal"}, False),
+}
+CRITICAL_ROYAL_EVENTS = {"integration_down", "disk_low", "update_failure", "server_problem"}
+
+
+@dataclass(frozen=True)
+class RoutingEvent:
+    db: Session
+    event_type: str
+    park_id: int | None
+    target_user_ids: set[int] | None = None
+
+
+def eligible_recipients(event: RoutingEvent, at: datetime) -> list[User]:
+    """Route by role and park; leave wins over shift, except critical royal alerts."""
+    role_rule = NOTIFICATION_ROLES.get(event.event_type)
+    if role_rule is None:
+        raise ValueError("unknown_event_type")
+    roles, requires_shift = role_rule
+    db = event.db
+    users = list(
+        db.scalars(
+            select(User)
+            .join(Role)
+            .where(
+                Role.slug.in_(roles),
+                User.access_status == AccessStatus.approved.value,
+                User.is_active.is_(True),
+            )
+            .order_by(User.id)
+        )
+    )
+    if event.target_user_ids is not None:
+        users = [user for user in users if user.id in event.target_user_ids]
+    if not users:
+        return []
+    user_ids = [user.id for user in users]
+    park_users = (
+        set(
+            db.scalars(
+                select(UserPark.user_id).where(
+                    UserPark.park_id == event.park_id, UserPark.user_id.in_(user_ids)
+                )
+            )
+        )
+        if event.park_id is not None
+        else set()
+    )
+    schedule_rows = list(
+        db.scalars(
+            select(ScheduleEntry).where(
+                ScheduleEntry.owner_user_id.in_(user_ids),
+                ScheduleEntry.start_at <= at,
+                ScheduleEntry.end_at > at,
+            )
+        )
+    )
+    shifts = {
+        row.owner_user_id
+        for row in schedule_rows
+        if row.kind == "shift" and (event.park_id is None or row.park_id == event.park_id)
+    }
+    absent = {row.owner_user_id for row in schedule_rows if row.kind in {"vacation", "sick"}}
+    return [
+        user
+        for user in users
+        if (event.park_id is None or user.role == "royal" or user.id in park_users)
+        and (
+            user.role == "royal"
+            and event.event_type in CRITICAL_ROYAL_EVENTS
+            or user.id not in absent
+            and (not requires_shift or user.id in shifts)
+        )
+    ]
+
 
 @dataclass(frozen=True)
 class SchedulePage:
@@ -261,8 +347,7 @@ def list_participants(db: Session, actor: User, *, park_id: int) -> list[dict]:
         .order_by(User.username, User.id)
     ).all()
     return [
-        {"id": user_id, "display_name": username, "role": role}
-        for user_id, username, role in rows
+        {"id": user_id, "display_name": username, "role": role} for user_id, username, role in rows
     ]
 
 
@@ -335,8 +420,10 @@ def create_pattern(db: Session, actor: User, payload: SchedulePatternCreate) -> 
     active_dates = [
         payload.start_date + timedelta(days=offset)
         for offset in range(day_count)
-        if cycle_days is None and offset == 0
-        or cycle_days is not None and offset % cycle_days < on_days
+        if cycle_days is None
+        and offset == 0
+        or cycle_days is not None
+        and offset % cycle_days < on_days
     ]
     if len(active_dates) * len(payload.owner_user_ids) > 5000:
         raise ValueError("too_many_entries")
@@ -413,9 +500,7 @@ def create_pattern(db: Session, actor: User, payload: SchedulePatternCreate) -> 
 def _pattern_results(db: Session, result_ids: list[str]) -> list[dict]:
     if not result_ids:
         return []
-    target_rows = list(
-        db.scalars(select(ScheduleEntry).where(ScheduleEntry.id.in_(result_ids)))
-    )
+    target_rows = list(db.scalars(select(ScheduleEntry).where(ScheduleEntry.id.in_(result_ids))))
     targets_by_id = {row.id: row for row in target_rows}
     if len(targets_by_id) != len(result_ids):
         raise LookupError("schedule_pattern_result_not_found")

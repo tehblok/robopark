@@ -86,12 +86,12 @@ async def run_system_notification_loop(
                         )
                         await loop.run_in_executor(executor, operation)
                     except Exception:
-                        logger.exception("System notification delivery failed")
+                        logger.exception("System notification persistence failed")
                     else:
                         confirmed.add(incident_key)
                 # A failed first emission must remain eligible for the next poll.
-                # PushService's stable occurrence/event keys make that retry idempotent
-                # even when the failure happened after its database commit.
+                # Stable occurrence/event keys make that retry idempotent even
+                # when the event and its delivery rows were already committed.
                 active = confirmed
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)

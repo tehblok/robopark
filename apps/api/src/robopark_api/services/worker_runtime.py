@@ -17,6 +17,7 @@ from robopark_api.services.campaigns import run_refresh_loop as run_campaign_ref
 from robopark_api.services.database_locks import dispose_database_lock_engines
 from robopark_api.services.emergency_keepalive import run_keepalive_loop
 from robopark_api.services.live_merge import JobLease, default_live_merge_root
+from robopark_api.services.notification_delivery import run_notification_delivery_loop
 from robopark_api.services.ops.maintenance import host_maintenance_active
 from robopark_api.services.session_cleanup import run_session_cleanup_loop
 from robopark_api.services.sync_health import record_worker_heartbeat, release_worker_heartbeat
@@ -62,7 +63,7 @@ class WorkerRuntime:
         self.push_service = push_service
 
     async def start(self, stop: asyncio.Event) -> None:
-        """Run the eight jobs under one cross-process lease until shutdown."""
+        """Run background jobs under one cross-process lease until shutdown."""
         global _health
         lease = JobLease(default_live_merge_root(), "lifespan-jobs")
         tasks: list[asyncio.Task[None]] = []
@@ -95,6 +96,9 @@ class WorkerRuntime:
                     )
                 ),
                 asyncio.create_task(run_cache_cleanup_loop(stop)),
+                asyncio.create_task(
+                    run_notification_delivery_loop(self.session_factory, stop, owner_id=owner_id)
+                ),
                 asyncio.create_task(
                     run_system_notification_loop(
                         stop, settings=self.settings, emit=self.push_service.emit

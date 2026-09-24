@@ -12,7 +12,7 @@ from sqlalchemy import BigInteger, LargeBinary, create_engine, inspect, select, 
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
-from robopark_api import models, schedule_models
+from robopark_api import models, notification_delivery_models, schedule_models  # noqa: F401
 from robopark_api.models import (
     AuthSession,
     Base,
@@ -84,6 +84,7 @@ def test_metadata_has_required_tables():
         "push_subscriptions",
         "notification_preferences",
         "notification_events",
+        "notification_deliveries",
         "tracker_notification_cursors",
         "system_incident_occurrences",
         "auth_throttle_states",
@@ -119,10 +120,10 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_is_sync_closure_scan():
+def test_alembic_head_is_notification_delivery():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0039_sync_closure_scan"]
+    assert script.get_heads() == ["0040_notification_delivery"]
 
 
 def test_sync_closure_scan_migration_adds_review_index(sqlite_database_url, monkeypatch):
@@ -133,6 +134,22 @@ def test_sync_closure_scan_migration_adds_review_index(sqlite_database_url, monk
     inspector = inspect(create_engine(sqlite_database_url, future=True))
     indexes = {index["name"]: index["column_names"] for index in inspector.get_indexes("task_reviews")}
     assert indexes["ix_task_reviews_closure_scan"] == ["state", "closed_at", "issue_key"]
+
+
+def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0039_sync_closure_scan")
+    command.upgrade(config, "head")
+    engine = create_engine(sqlite_database_url, future=True)
+    inspector = inspect(engine)
+    assert "notification_deliveries" in inspector.get_table_names()
+    assert {column["name"] for column in inspector.get_columns("notification_deliveries")} >= {
+        "event_id", "channel", "state", "attempts", "next_attempt_at", "expires_at",
+        "idempotency_key", "lease_owner", "lease_until",
+    }
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0040_notification_delivery"
 
 
 def test_inventory_photo_cleanup_migration_is_additive(sqlite_database_url, monkeypatch):

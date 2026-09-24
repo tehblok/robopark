@@ -2,64 +2,35 @@ import base64
 import hashlib
 import json
 import logging
-import time
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from queue import Empty, Full, Queue
-from threading import Lock, Thread
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import APIRouter, Depends, HTTPException, status
-from pywebpush import WebPushException, webpush
 from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
-from robopark_api.crypto import decrypt_secret, encrypt_secret
+from robopark_api.crypto import encrypt_secret
 from robopark_api.db import get_db
 from robopark_api.deps import require_user
-from robopark_api.models import Role, User, UserPark
+from robopark_api.models import User
+from robopark_api.notification_delivery_models import NotificationDelivery
 from robopark_api.schedule_models import (
     NotificationEvent,
     NotificationPreference,
     PushSubscription,
-    ScheduleEntry,
     SystemIncidentOccurrence,
 )
 from robopark_api.schedule_schemas import PushPreferenceIn, PushSubscriptionIn
+from robopark_api.services.schedules import RoutingEvent, eligible_recipients
 
 router = APIRouter(prefix="/push", tags=["push"])
 logger = logging.getLogger(__name__)
 
 _P256_ORDER = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
-
-EVENT_ROLES = {
-    "new_task": ({"mechanic", "driver"}, True),
-    "return": ({"mechanic", "driver"}, True),
-    "operator_comment": ({"mechanic", "driver"}, True),
-    "report": ({"operator", "admin", "royal"}, False),
-    "review_task": ({"operator"}, False),
-    "problem": ({"operator", "admin", "royal"}, False),
-    "anomaly": ({"operator", "admin", "royal"}, False),
-    "integration_down": ({"royal"}, False),
-    "disk_low": ({"royal"}, False),
-    "update_failure": ({"royal"}, False),
-    "server_problem": ({"royal"}, False),
-}
-
-
-@dataclass(frozen=True)
-class _DeliveryJob:
-    event_id: str
-    recipient_ids: tuple[int, ...]
-    deadline: float
-
-
-_STOP_DELIVERY = object()
 
 
 def prune_expired_subscriptions(db: Session, *, now: datetime | None = None) -> int:
@@ -97,116 +68,11 @@ def prune_notification_data(
 
 
 class PushService:
-    def __init__(
-        self,
-        session_factory: Callable[[], Session],
-        *,
-        delivery_queue_size: int = 256,
-    ):
+    def __init__(self, session_factory: Callable[[], Session]):
         self._session_factory = session_factory
-        self._delivery_lock = Lock()
-        self._delivery_queue: Queue[_DeliveryJob | object] = Queue(maxsize=delivery_queue_size)
-        self._delivery_thread: Thread | None = None
-        self._delivery_executor: ThreadPoolExecutor | None = None
-        self._delivery_executor_workers: int | None = None
-        self._delivery_closed = False
 
     def close(self) -> None:
-        """Stop accepting delivery, drop queued work, and join active senders."""
-        with self._delivery_lock:
-            if self._delivery_closed:
-                return
-            self._delivery_closed = True
-            delivery_thread = self._delivery_thread
-            executor = self._delivery_executor
-            if delivery_thread is not None:
-                # Internal inbox rows were committed before enqueue. During
-                # shutdown, discard pending network-only work so draining is
-                # bounded by the one active batch deadline rather than queue size.
-                while True:
-                    try:
-                        self._delivery_queue.get_nowait()
-                    except Empty:
-                        break
-                    else:
-                        self._delivery_queue.task_done()
-                self._delivery_queue.put_nowait(_STOP_DELIVERY)
-        if delivery_thread is not None:
-            delivery_thread.join()
-        if executor is not None:
-            executor.shutdown(wait=True, cancel_futures=True)
-        with self._delivery_lock:
-            self._delivery_thread = None
-            self._delivery_executor = None
-
-    def _start_delivery_runtime(self, *, max_workers: int) -> None:
-        if self._delivery_executor is None:
-            self._delivery_executor = ThreadPoolExecutor(
-                max_workers=max_workers,
-                thread_name_prefix="robopark-webpush",
-            )
-            self._delivery_executor_workers = max_workers
-        elif self._delivery_executor_workers != max_workers:
-            raise RuntimeError("push_max_concurrency_changed")
-        if self._delivery_thread is None:
-            self._delivery_thread = Thread(
-                target=self._run_delivery_queue,
-                name="robopark-push-dispatch",
-                daemon=True,
-            )
-            self._delivery_thread.start()
-
-    def _enqueue_delivery(self, *, event_id: str, recipient_ids: list[int]) -> bool:
-        settings = get_settings()
-        job = _DeliveryJob(
-            event_id=event_id,
-            recipient_ids=tuple(recipient_ids),
-            deadline=time.monotonic() + settings.push_delivery_deadline_seconds,
-        )
-        with self._delivery_lock:
-            if self._delivery_closed:
-                return False
-            self._start_delivery_runtime(max_workers=settings.push_max_concurrency)
-            try:
-                self._delivery_queue.put_nowait(job)
-            except Full:
-                logger.warning(
-                    "Web Push queue full; network delivery dropped",
-                    extra={"event_id": event_id},
-                )
-                return False
-        return True
-
-    def _run_delivery_queue(self) -> None:
-        while True:
-            job = self._delivery_queue.get()
-            try:
-                if job is _STOP_DELIVERY:
-                    return
-                assert isinstance(job, _DeliveryJob)
-                self._deliver_job(job)
-            except Exception:
-                logger.exception("Web Push delivery worker failed")
-            finally:
-                self._delivery_queue.task_done()
-
-    def _submit_deliveries(
-        self,
-        deliveries: list[tuple[str, str, str, str]],
-        send: Callable[[tuple[str, str, str, str]], str | None],
-        *,
-        max_workers: int,
-    ) -> list[Future[str | None]]:
-        with self._delivery_lock:
-            if self._delivery_executor is None:
-                self._delivery_executor = ThreadPoolExecutor(
-                    max_workers=max_workers,
-                    thread_name_prefix="robopark-webpush",
-                )
-                self._delivery_executor_workers = max_workers
-            elif self._delivery_executor_workers != max_workers:
-                raise RuntimeError("push_max_concurrency_changed")
-            return [self._delivery_executor.submit(send, delivery) for delivery in deliveries]
+        """Delivery is owned by WorkerRuntime and has no request-local resources."""
 
     def emit(
         self,
@@ -219,39 +85,9 @@ class PushService:
         deliver: bool = True,
     ) -> dict:
         with self._session_factory() as db:
-            roles, on_shift = EVENT_ROLES.get(event_type, (set(), False))
-            if not roles:
-                raise ValueError("unknown_event_type")
-            users = list(db.scalars(select(User).join(Role).where(Role.slug.in_(roles))))
             now = datetime.now(UTC)
-            if target_user_ids is not None:
-                users = [user for user in users if user.id in target_user_ids]
+            users = eligible_recipients(RoutingEvent(db, event_type, park_id, target_user_ids), now)
             user_ids = {user.id for user in users}
-            park_user_ids = (
-                set(
-                    db.scalars(
-                        select(UserPark.user_id).where(
-                            UserPark.park_id == park_id, UserPark.user_id.in_(user_ids)
-                        )
-                    )
-                )
-                if park_id is not None and user_ids
-                else set()
-            )
-            on_shift_user_ids = (
-                set(
-                    db.scalars(
-                        select(ScheduleEntry.owner_user_id).where(
-                            ScheduleEntry.owner_user_id.in_(user_ids),
-                            ScheduleEntry.kind == "shift",
-                            ScheduleEntry.start_at <= now,
-                            ScheduleEntry.end_at >= now,
-                        )
-                    )
-                )
-                if on_shift and user_ids
-                else set()
-            )
             preferences = {
                 item.user_id: item
                 for item in db.scalars(
@@ -294,11 +130,15 @@ class PushService:
             event_id = hashlib.sha256(
                 (stable_event_key or f"{event_type}:{now.timestamp()}:{protected_text}").encode()
             ).hexdigest()[:24]
+            subscriptions = {}
+            if deliver and user_ids:
+                for row in db.scalars(
+                    select(PushSubscription)
+                    .where(PushSubscription.user_id.in_(user_ids))
+                    .order_by(PushSubscription.created_at, PushSubscription.id)
+                ):
+                    subscriptions.setdefault(row.user_id, []).append(row)
             for user in users:
-                if park_id is not None and user.role != "royal" and user.id not in park_user_ids:
-                    continue
-                if on_shift and user.id not in on_shift_user_ids:
-                    continue
                 notification_id = f"{event_id}-{user.id}"
                 if db.get(NotificationEvent, notification_id) is not None:
                     continue
@@ -311,6 +151,16 @@ class PushService:
                         protected_text=protected_text,
                     )
                 )
+                db.add(
+                    NotificationDelivery(
+                        event_id=notification_id,
+                        channel="in_app",
+                        state="delivered",
+                        next_attempt_at=now,
+                        expires_at=now + timedelta(hours=24),
+                        idempotency_key=f"{notification_id}:in_app",
+                    )
+                )
                 internal_recipients.append(user.id)
                 preference = preferences.get(user.id)
                 enabled = preference is None or (
@@ -319,12 +169,20 @@ class PushService:
                 )
                 if enabled:
                     recipients.append(user.id)
+                    if deliver:
+                        for subscription in subscriptions.get(user.id, []):
+                            db.add(
+                                NotificationDelivery(
+                                    event_id=notification_id,
+                                    channel="web_push",
+                                    state="pending",
+                                    next_attempt_at=now,
+                                    expires_at=now + timedelta(hours=24),
+                                    idempotency_key=f"{notification_id}:web_push:{subscription.endpoint_hash}",
+                                    endpoint_hash=subscription.endpoint_hash,
+                                )
+                            )
             db.commit()
-            if deliver and recipients:
-                try:
-                    self._enqueue_delivery(event_id=event_id, recipient_ids=recipients)
-                except Exception:
-                    logger.exception("Web Push enqueue failed after internal notification commit")
             return {
                 "event_id": event_id,
                 "recipient_ids": recipients,
@@ -353,97 +211,19 @@ class PushService:
                     occurrence.resolved_at = now
             db.commit()
 
-    def _deliver_job(self, job: _DeliveryJob) -> None:
-        settings = get_settings()
-        if not settings.secret_key:
-            logger.warning("Web Push skipped: SECRET_KEY is not configured")
-            return
-        private_key, _ = _vapid_key_pair(settings.secret_key)
-        with self._session_factory() as db:
-            rows = list(
-                db.scalars(
-                    select(PushSubscription)
-                    .where(PushSubscription.user_id.in_(job.recipient_ids))
-                    .order_by(PushSubscription.created_at, PushSubscription.id)
-                    .limit(settings.push_delivery_batch_size)
-                )
-            )
-        deliveries = [
-            (
-                row.endpoint_hash,
-                decrypt_secret(row.endpoint_encrypted, settings.secret_key),
-                decrypt_secret(row.p256dh_encrypted, settings.secret_key),
-                decrypt_secret(row.auth_encrypted, settings.secret_key),
-            )
-            for row in rows
-        ]
-
-        def send(delivery: tuple[str, str, str, str]) -> str | None:
-            endpoint_hash, endpoint, p256dh, auth = delivery
-            for attempt in range(2):
-                remaining = job.deadline - time.monotonic()
-                if remaining <= 0:
-                    return None
-                try:
-                    webpush(
-                        subscription_info={
-                            "endpoint": endpoint,
-                            "keys": {"p256dh": p256dh, "auth": auth},
-                        },
-                        data=json.dumps({"event_id": job.event_id}),
-                        vapid_private_key=private_key,
-                        vapid_claims={"sub": "mailto:robopark@localhost"},
-                        timeout=max(0.1, min(5.0, remaining)),
-                    )
-                    return None
-                except WebPushException as exc:
-                    response = getattr(exc, "response", None)
-                    if response is not None and response.status_code in {404, 410}:
-                        return endpoint_hash
-                    if attempt == 1:
-                        logger.warning("Web Push delivery failed", exc_info=exc)
-                except Exception:
-                    if attempt == 1:
-                        logger.exception("Web Push delivery failed")
-            return None
-
-        if not deliveries or time.monotonic() >= job.deadline:
-            return
-        futures = self._submit_deliveries(
-            deliveries,
-            send,
-            max_workers=settings.push_max_concurrency,
-        )
-        done, pending = wait(
-            futures,
-            timeout=max(0.0, job.deadline - time.monotonic()),
-        )
-        for future in pending:
-            future.cancel()
-        rejected_hashes = {endpoint_hash for future in done if (endpoint_hash := future.result())}
-        if rejected_hashes:
-            with self._session_factory() as db:
-                db.execute(
-                    delete(PushSubscription).where(
-                        PushSubscription.endpoint_hash.in_(rejected_hashes)
-                    )
-                )
-                db.commit()
-
 
 def _vapid_key_pair(secret_key: str) -> tuple[str, str]:
     scalar = int.from_bytes(hashlib.sha256(f"vapid:{secret_key}".encode()).digest(), "big")
-    private_key = ec.derive_private_key((scalar % (_P256_ORDER - 1)) + 1, ec.SECP256R1())
-    private_pem = private_key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    ).decode("ascii")
+    scalar = (scalar % (_P256_ORDER - 1)) + 1
+    private_key = ec.derive_private_key(scalar, ec.SECP256R1())
+    private_encoded = (
+        base64.urlsafe_b64encode(scalar.to_bytes(32, "big")).decode("ascii").rstrip("=")
+    )
     public_bytes = private_key.public_key().public_bytes(
         serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
     )
     public_key = base64.urlsafe_b64encode(public_bytes).decode("ascii").rstrip("=")
-    return private_pem, public_key
+    return private_encoded, public_key
 
 
 @router.get("/config")
