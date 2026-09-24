@@ -1,9 +1,11 @@
+import { useState } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api, type User } from '../api'
 import { AuthContext } from '../auth-context'
 import { ParkScopeContext } from '../app/park/parkScope'
 import { SyncProvider, useSync, type SyncEngineLike } from './SyncProvider'
+import { registerServiceWorker, setServiceWorkerAuthState, setServiceWorkerSyncState } from './registerServiceWorker'
 
 const user: User = { id: 1, username: 'mech', role: 'mechanic', access_status: 'approved', permissions: ['tracker.read'], parks: [] }
 
@@ -13,7 +15,39 @@ function Probe() {
 }
 
 describe('SyncProvider', () => {
-  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); setServiceWorkerAuthState(null); setServiceWorkerSyncState(null) })
+
+  it('keeps a newly clicked action out of the fallback queue while activation is prepared', async () => {
+    const listeners = new Map<string, (event: { data?: unknown, ports?: { postMessage: (value: unknown) => void, onmessage?: (event: { data?: unknown }) => void }[] }) => void>()
+    await registerServiceWorker({ production: true, secure: true, serviceWorker: {
+      register: vi.fn(async () => ({ update: vi.fn(async () => undefined) })),
+      addEventListener: (name, listener) => listeners.set(name, listener),
+    } })
+    setServiceWorkerAuthState({ loading: false, accountId: user.id })
+    const enqueueAction = vi.fn(async () => undefined)
+    const engine = { start: vi.fn(), dispose: vi.fn(), subscribe: vi.fn(() => () => undefined), getState: () => ({ status: 'idle' as const, pending: 0, conflicts: 0 }), enqueueAction } satisfies SyncEngineLike
+    const auth = { user, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }
+    const park = { parkId: 1, selectedPark: null, parks: [], loading: false, locked: false, setParkId: vi.fn(), refreshParks: vi.fn() }
+    function ActionProbe() {
+      const sync = useSync()
+      const [error, setError] = useState('')
+      return <><button disabled={!sync.actionTrackingReady} onClick={() => {
+        void sync.enqueueAction({ id: 'during-update', deviceId: 'phone', resourceType: 'tracker_issue', resourceId: 'TASK-1', action: 'comment', idempotencyKey: 'during-update', baseRevision: null, dependencies: [], payload: { text: 'keep this' } }).catch(reason => setError((reason as Error).message))
+      }}>Send</button><span>{error}</span></>
+    }
+    render(<AuthContext.Provider value={auth}><ParkScopeContext.Provider value={park}><SyncProvider engineFactory={async () => engine}><ActionProbe /></SyncProvider></ParkScopeContext.Provider></AuthContext.Provider>)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
+    const replies: unknown[] = []
+    const port = { postMessage: (value: unknown) => replies.push(value), onmessage: undefined as undefined | ((event: { data?: unknown }) => void) }
+    listeners.get('message')?.({ data: { type: 'PREPARE_ACTIVATION' }, ports: [port] })
+    expect(replies).toEqual([{ safe: true }])
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(await screen.findByText('pwa_update_in_progress')).toBeInTheDocument()
+    expect(enqueueAction).not.toHaveBeenCalled()
+    port.onmessage?.({ data: { type: 'RELEASE_ACTIVATION' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(enqueueAction).toHaveBeenCalledOnce())
+  })
 
   it('uses direct network delivery when IndexedDB is denied', async () => {
     vi.stubGlobal('indexedDB', undefined)

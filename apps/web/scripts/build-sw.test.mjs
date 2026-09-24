@@ -13,8 +13,8 @@ const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 class TestMessageChannel {
   constructor() {
-    this.port1 = { onmessage: null, close: () => {} }
-    this.port2 = { postMessage: data => queueMicrotask(() => this.port1.onmessage?.({ data })), close: () => {} }
+    this.port1 = { onmessage: null, postMessage: data => queueMicrotask(() => this.port2.onmessage?.({ data })), close: () => {} }
+    this.port2 = { onmessage: null, postMessage: data => queueMicrotask(() => this.port1.onmessage?.({ data })), close: () => {} }
   }
 }
 
@@ -117,7 +117,7 @@ test('worker serves the cached application shell immediately and never caches AP
     location: { origin: 'https://robopark.test' },
     clients: { claim: async () => {}, matchAll: async () => [{ postMessage: (message, ports) => {
       clientMessages.push(message)
-      if (message.type === 'CHECK_ACTIVATION_SAFETY') ports[0].postMessage({ safe: true })
+      if (message.type === 'PREPARE_ACTIVATION') ports[0].postMessage({ safe: true })
     } }] },
     skipWaiting: async () => { scope.skipped = true },
     skipped: false,
@@ -208,9 +208,12 @@ test('waiting worker keeps scoped records and old shell until every local action
   const handlers = new Map()
   let skipped = 0
   let clientSafe = false
+  let onChallenge = null
   const scope = {
     location: { origin: 'https://robopark.test' },
-    clients: { claim: async () => {}, matchAll: async () => [{ postMessage: (_message, ports) => ports[0].postMessage({ safe: clientSafe }) }] },
+    clients: { claim: async () => {}, matchAll: async () => [{ postMessage: (_message, ports) => {
+      void Promise.resolve(onChallenge?.()).then(() => ports[0].postMessage({ safe: clientSafe }))
+    } }] },
     skipWaiting: async () => { skipped += 1 },
     addEventListener: (name, handler) => handlers.set(name, handler),
   }
@@ -233,6 +236,11 @@ test('waiting worker keeps scoped records and old shell until every local action
   await message({ status: 'idle', pending: 0, conflicts: 0 })
   assert.equal(skipped, 0)
   clientSafe = true
+  onChallenge = () => write('actions', { dbId: 'scope-a\0action', scope: 'scope-a', state: 'ready' })
+  await message({ status: 'idle', pending: 0, conflicts: 0 })
+  assert.equal(skipped, 0, 'a durable action created during the handshake vetoes activation')
+  await write('actions', { dbId: 'scope-a\0action', scope: 'scope-a', state: 'confirmed' })
+  onChallenge = null
   await message({ status: 'idle', pending: 0, conflicts: 0 })
   assert.equal(skipped, 1)
   const waits = []
@@ -251,4 +259,30 @@ test('waiting worker keeps scoped records and old shell until every local action
   assert.deepEqual((await read('entities'))[0].data, { value: 'keep' })
   assert.equal(db.version, 2)
   db.close()
+})
+
+test('legacy state-less activation waits for the old client to close', async () => {
+  const source = await readFile(new URL('./sw-template.js', import.meta.url), 'utf8')
+    .then(value => value.replace("'__CACHE_VERSION__'", '"test"').replace("['__PRECACHE__']", '["/index.html"]'))
+  const handlers = new Map()
+  let legacyOpen = true
+  let skipped = 0
+  const scope = {
+    location: { origin: 'https://robopark.test' },
+    clients: { matchAll: async () => legacyOpen ? [{ postMessage: () => {} }] : [] },
+    skipWaiting: async () => { skipped += 1 },
+    addEventListener: (name, handler) => handlers.set(name, handler),
+  }
+  vm.runInNewContext(source, { self: scope, indexedDB: new IDBFactory(), MessageChannel: TestMessageChannel,
+    setTimeout: callback => queueMicrotask(callback), clearTimeout: () => {} })
+  const request = async () => {
+    const waits = []
+    handlers.get('message')({ data: { type: 'ACTIVATE_WHEN_SAFE' }, waitUntil: promise => waits.push(promise) })
+    await Promise.all(waits)
+  }
+  await request()
+  assert.equal(skipped, 0)
+  legacyOpen = false
+  await request()
+  assert.equal(skipped, 1)
 })

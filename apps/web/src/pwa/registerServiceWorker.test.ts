@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { activateServiceWorkerWhenSafe, registerServiceWorker, setServiceWorkerSyncState } from './registerServiceWorker'
+import { activateServiceWorkerWhenSafe, registerServiceWorker, runLocalWork, setServiceWorkerAuthState, setServiceWorkerSyncState } from './registerServiceWorker'
 
 describe('registerServiceWorker', () => {
   it('registers only in secure production and checks for updates when returning', async () => {
@@ -55,19 +55,58 @@ describe('registerServiceWorker', () => {
     expect(reload).toHaveBeenCalledTimes(1)
   })
 
-  it('reports the current fallback queue to a waiting worker checking all open clients', async () => {
+  it('keeps startup, delayed authentication, and a second tab unknown until each client reports a safe state', async () => {
     const listeners = new Map<string, (event: { data?: unknown, ports?: { postMessage: (value: unknown) => void }[] }) => void>()
     const replies: unknown[] = []
     await registerServiceWorker({
       production: true, secure: true,
       serviceWorker: { register: vi.fn(async () => ({ update: vi.fn(async () => undefined) })), addEventListener: (name, listener) => listeners.set(name, listener) },
     })
-    setServiceWorkerSyncState({ status: 'attention', pending: 0, conflicts: 1 })
-    listeners.get('message')?.({ data: { type: 'CHECK_ACTIVATION_SAFETY' }, ports: [{ postMessage: value => replies.push(value) }] })
-    expect(replies).toEqual([{ safe: false }])
-    setServiceWorkerSyncState({ status: 'idle', pending: 0, conflicts: 0 })
-    listeners.get('message')?.({ data: { type: 'CHECK_ACTIVATION_SAFETY' }, ports: [{ postMessage: value => replies.push(value) }] })
+    const ask = () => {
+      const port = { postMessage: (value: unknown) => replies.push(value), onmessage: undefined as undefined | ((event: { data?: unknown }) => void) }
+      listeners.get('message')?.({ data: { type: 'PREPARE_ACTIVATION' }, ports: [port] })
+      return port
+    }
+    setServiceWorkerAuthState({ loading: true, accountId: null })
+    ask()
+    expect(replies.at(-1)).toEqual({ safe: false })
+    setServiceWorkerAuthState({ loading: false, accountId: null })
+    const anonymous = ask()
     expect(replies.at(-1)).toEqual({ safe: true })
+    anonymous.onmessage?.({ data: { type: 'RELEASE_ACTIVATION' } })
+    setServiceWorkerAuthState({ loading: false, accountId: 7 })
+    ask()
+    expect(replies.at(-1)).toEqual({ safe: false })
+    setServiceWorkerSyncState({ status: 'attention', pending: 0, conflicts: 1 }, 7)
+    ask()
+    expect(replies.at(-1)).toEqual({ safe: false })
+    setServiceWorkerSyncState({ status: 'idle', pending: 0, conflicts: 0 }, 7)
+    const prepared = ask()
+    expect(replies.at(-1)).toEqual({ safe: true })
+    setServiceWorkerSyncState({ status: 'attention', pending: 0, conflicts: 1 }, 7)
+    expect(replies.at(-1)).toEqual({ type: 'VETO_ACTIVATION' })
+    prepared.onmessage?.({ data: { type: 'RELEASE_ACTIVATION' } })
+    setServiceWorkerAuthState({ loading: true, accountId: null })
+    setServiceWorkerSyncState(null)
+  })
+
+  it('blocks a fallback enqueue synchronously during the activation fence', async () => {
+    const listeners = new Map<string, (event: { data?: unknown, ports?: { postMessage: (value: unknown) => void, onmessage?: (event: { data?: unknown }) => void }[] }) => void>()
+    await registerServiceWorker({
+      production: true, secure: true,
+      serviceWorker: { register: vi.fn(async () => ({ update: vi.fn(async () => undefined) })), addEventListener: (name, listener) => listeners.set(name, listener) },
+    })
+    setServiceWorkerAuthState({ loading: false, accountId: 7 })
+    setServiceWorkerSyncState({ status: 'idle', pending: 0, conflicts: 0 }, 7)
+    const port = { postMessage: vi.fn(), onmessage: undefined as undefined | ((event: { data?: unknown }) => void) }
+    listeners.get('message')?.({ data: { type: 'PREPARE_ACTIVATION' }, ports: [port] })
+    expect(port.postMessage).toHaveBeenCalledWith({ safe: true })
+    const enqueue = vi.fn(async () => 'accepted')
+    await expect(runLocalWork(enqueue)).rejects.toThrow('pwa_update_in_progress')
+    expect(enqueue).not.toHaveBeenCalled()
+    port.onmessage?.({ data: { type: 'RELEASE_ACTIVATION' } })
+    await expect(runLocalWork(enqueue)).resolves.toBe('accepted')
+    setServiceWorkerAuthState({ loading: true, accountId: null })
     setServiceWorkerSyncState(null)
   })
 })

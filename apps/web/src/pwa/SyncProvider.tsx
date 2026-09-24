@@ -10,7 +10,7 @@ import { NetworkOnlySyncEngine, SyncEngine, type OfflineActionInput, type Offlin
 import type { OfflineAction, OfflineMedia } from './offlineTypes'
 import { uploadMedia } from './resumableUpload'
 import { ClientTelemetry } from './clientTelemetry'
-import { setServiceWorkerSyncState } from './registerServiceWorker'
+import { runLocalWork, setServiceWorkerSyncState } from './registerServiceWorker'
 
 export type SyncEngineLike = {
   start(): void
@@ -116,9 +116,9 @@ export function SyncProvider({ children, engineFactory = defaultEngineFactory }:
   }, [])
   useEffect(() => { telemetry.current?.record('queue_length', state.pending) }, [state.pending])
   useEffect(() => {
-    setServiceWorkerSyncState(user && !engine ? null : state)
+    setServiceWorkerSyncState(user && engine ? state : null, user?.id)
   }, [engine, state, user])
-  useEffect(() => () => setServiceWorkerSyncState(DEFAULT_STATE), [])
+  useEffect(() => () => setServiceWorkerSyncState(null), [])
 
   useEffect(() => {
     if (!user) { setEngine(null); setState(DEFAULT_STATE); return }
@@ -130,9 +130,13 @@ export function SyncProvider({ children, engineFactory = defaultEngineFactory }:
         if (!active) { created.dispose(); return }
         current = created
         setEngine(created)
+        setServiceWorkerSyncState(created.getState(), user.id)
         setState(created.getState())
         telemetry.current?.record('startup_ms', Math.max(0, (typeof performance === 'undefined' ? 0 : performance.now()) - startedAt.current))
-        unsubscribe = created.subscribe(() => setState(created.getState()))
+        unsubscribe = created.subscribe(() => {
+          setServiceWorkerSyncState(created.getState(), user.id)
+          setState(created.getState())
+        })
         created.start()
       })
       .catch(() => {
@@ -150,9 +154,9 @@ export function SyncProvider({ children, engineFactory = defaultEngineFactory }:
   const value = useMemo<SyncContextValue>(() => ({
     state,
     actionTrackingReady: engine !== null,
-    enqueueAction: input => engine?.enqueueAction?.(input) ?? Promise.reject(new Error('sync_not_ready')),
-    enqueueOptimistic: (input, projection) => engine?.enqueueOptimistic?.(input, projection) ?? Promise.reject(new Error('sync_not_ready')),
-    enqueueMedia: input => engine?.enqueueMedia?.(input) ?? Promise.reject(new Error('sync_not_ready')),
+    enqueueAction: input => runLocalWork(() => engine?.enqueueAction?.(input) ?? Promise.reject(new Error('sync_not_ready'))),
+    enqueueOptimistic: (input, projection) => runLocalWork(() => engine?.enqueueOptimistic?.(input, projection) ?? Promise.reject(new Error('sync_not_ready'))),
+    enqueueMedia: input => runLocalWork(() => engine?.enqueueMedia?.(input) ?? Promise.reject(new Error('sync_not_ready'))),
     syncNow: reason => engine?.syncNow?.(reason ?? 'manual') ?? Promise.resolve(false),
     cancelAction: id => engine?.cancelAction?.(id) ?? Promise.resolve(),
     resolveConflict: (id, revision) => engine?.resolveConflict?.(id, revision) ?? Promise.resolve(),

@@ -2,6 +2,7 @@ import {
   type PropsWithChildren,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react'
@@ -15,6 +16,7 @@ import { activateDeviceResourceCache, offlineScopeForUser, purgeDeviceResourceCa
 import { activeOfflineScope, purgeOfflineScope } from './pwa/offlineDb'
 import { storageRegistry } from './pwa/storageRegistry'
 import { clearShareTargetInbox } from './pwa/ShareTargetInbox'
+import { setServiceWorkerAuthState } from './pwa/registerServiceWorker'
 
 function activateDraftScopes(user: User): void {
   for (const park of ['all', ...user.parks.map(item => String(item.id))]) {
@@ -38,6 +40,11 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const sessionGeneration = useRef(0)
   const authorizedUser = useRef<User | null>(null)
   const advanceSessionGeneration = useCallback(() => ++sessionGeneration.current, [])
+
+  useLayoutEffect(() => {
+    setServiceWorkerAuthState({ loading, accountId: user?.id ?? null })
+    return () => setServiceWorkerAuthState(null)
+  }, [loading, user?.id])
 
   const clearSessionState = useCallback(() => {
     const generation = advanceSessionGeneration()

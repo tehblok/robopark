@@ -21,31 +21,52 @@ self.addEventListener('install', (event) => {
 self.addEventListener('message', (event) => {
   if (event.data?.type !== 'ACTIVATE_WHEN_SAFE') return
   const state = event.data.state
-  if (state?.status !== 'idle' || state.pending !== 0 || state.conflicts !== 0) return
+  if (state && (state.status !== 'idle' || state.pending !== 0 || state.conflicts !== 0)) return
   event.waitUntil((async () => {
+    let prepared = []
+    let committed = false
     try {
-      if (await localWorkSettled() && await openClientsSafe()) await self.skipWaiting()
+      if (!await localWorkSettled()) return
+      prepared = await prepareOpenClients()
+      if (!prepared || prepared.some(client => !client.safe || client.vetoed)) return
+      if (!await localWorkSettled()) return
+      const current = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+      if (current.some(client => !prepared.some(item => item.id === client.id)) || prepared.some(client => client.vetoed)) return
+      await self.skipWaiting()
+      committed = true
     } catch {
       // Keep the old shell when local work cannot be inspected.
+    } finally {
+      if (!committed) prepared?.forEach(client => client.release())
     }
   })())
 })
 
-async function openClientsSafe() {
+async function prepareOpenClients() {
   const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
-  return (await Promise.all(clients.map(client => new Promise(resolve => {
+  return Promise.all(clients.map(client => new Promise(resolve => {
     const channel = new MessageChannel()
+    let settled = false
+    const prepared = { id: client.id, safe: false, vetoed: false, release: () => {
+      channel.port1.postMessage({ type: 'RELEASE_ACTIVATION' })
+      channel.port1.close()
+    } }
     const timeout = setTimeout(() => finish(false), 2000)
     function finish(safe) {
+      if (settled) return
+      settled = true
       clearTimeout(timeout)
-      channel.port1.close()
       channel.port2.close()
-      resolve(safe)
+      prepared.safe = safe
+      resolve(prepared)
     }
-    channel.port1.onmessage = event => finish(event.data?.safe === true)
-    try { client.postMessage({ type: 'CHECK_ACTIVATION_SAFETY' }, [channel.port2]) }
+    channel.port1.onmessage = event => {
+      if (event.data?.type === 'VETO_ACTIVATION') { prepared.vetoed = true; return }
+      finish(event.data?.safe === true)
+    }
+    try { client.postMessage({ type: 'PREPARE_ACTIVATION' }, [channel.port2]) }
     catch { finish(false) }
-  })))).every(Boolean)
+  })))
 }
 
 function localWorkSettled() {
