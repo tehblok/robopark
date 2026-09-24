@@ -272,6 +272,12 @@ describe('ReportForms', () => {
     expect(screen.queryByLabelText('Вложения к репорту')).not.toBeInTheDocument()
   })
 
+  it('does not show an unscoped legacy text draft to a newly authorized scope', () => {
+    localStorage.setItem('robopark:report-draft:1:7', JSON.stringify({ title: 'Legacy secret', body: 'private' }))
+    render(form({ ownerKey: 'new-scope' }))
+    expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toHaveValue('')
+  })
+
   it('preserves the acknowledged report ID and saved photo when the post-create disk write fails', async () => {
     const actor = userEvent.setup()
     const apiClient = client({ createReport: vi.fn().mockResolvedValue(created) })

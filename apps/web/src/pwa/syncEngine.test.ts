@@ -2,7 +2,7 @@ import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { openOfflineDb, purgeOfflineScope } from './offlineDb'
 import { SyncCoordinator } from './syncCoordinator'
-import { SyncEngine } from './syncEngine'
+import { NetworkOnlySyncEngine, SyncEngine } from './syncEngine'
 import type { OfflineAction, OfflineScope } from './offlineTypes'
 import type { SyncBatchRequest } from '../api'
 
@@ -20,6 +20,83 @@ function coordinator(db: Awaited<ReturnType<typeof openOfflineDb>>) {
 }
 
 describe('SyncEngine', () => {
+  it('waits for server acknowledgement when IndexedDB is unavailable', async () => {
+    vi.stubGlobal('indexedDB', undefined)
+    const calls: string[][] = []
+    const network = new NetworkOnlySyncEngine({ deviceId: 'phone', sendBatch: async batch => {
+      calls.push(batch.actions.map(item => item.client_action_id))
+      return { results: batch.actions.map(item => ({ client_action_id: item.client_action_id, state: 'confirmed' as const, code: null, result: null })), deltas: {}, revisions: {}, revoked_scopes: [] }
+    } })
+    const first = network.enqueueOptimistic(input('one'), { text: 'one' })
+    const second = network.enqueueOptimistic(input('two'), { text: 'two' })
+    expect(network.getProjection('tracker_issue', 'TASK-1')).toEqual({ text: 'two' })
+    expect(calls).toEqual([])
+
+    await Promise.all([first, second])
+
+    expect(calls).toEqual([['one', 'two']])
+    expect(network.getProjection('tracker_issue', 'TASK-1')).toBeUndefined()
+    network.dispose()
+  })
+
+  it('rolls back a network-only projection when the send fails', async () => {
+    const network = new NetworkOnlySyncEngine({ deviceId: 'phone', sendBatch: async () => { throw new TypeError('offline') } })
+    const pending = network.enqueueOptimistic(input('one'), { text: 'draft' })
+    await expect(pending).rejects.toThrow('offline')
+    expect(network.getProjection('tracker_issue', 'TASK-1')).toBeUndefined()
+    expect(network.getState().status).toBe('attention')
+    network.dispose()
+  })
+
+  it('reports direct-send action states to subscribers', async () => {
+    const network = new NetworkOnlySyncEngine({ deviceId: 'phone', sendBatch: async batch => ({
+      results: batch.actions.map(item => ({ client_action_id: item.client_action_id, state: 'confirmed' as const, code: null, result: null })), deltas: {}, revisions: {}, revoked_scopes: [],
+    }) })
+    const observed: string[] = []
+    network.subscribeAction('one', action => { if (action) observed.push(action.state) })
+
+    await network.enqueueAction(input('one'))
+
+    expect(observed).toContain('ready')
+    expect(observed.at(-1)).toBe('confirmed')
+    network.dispose()
+  })
+  it('projects immediately, batches writes after 150 ms, and rolls back a conflict', async () => {
+    const db = await openOfflineDb(scope)
+    const sent: string[][] = []
+    const engine = new SyncEngine({ db, coordinator: coordinator(db), deviceId: 'phone', sendBatch: async batch => {
+      sent.push(batch.actions.map(item => item.client_action_id))
+      return { results: batch.actions.map(item => ({ client_action_id: item.client_action_id, state: 'conflict' as const, code: 'stale', result: null })), deltas: {}, revisions: {}, revoked_scopes: [] }
+    } })
+    engine.start()
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    const first = engine.enqueueOptimistic(input('first'), { text: 'draft 1' })
+    expect(engine.getProjection('tracker_issue', 'TASK-1')).toEqual({ text: 'draft 1' })
+    await first
+    await engine.enqueueOptimistic(input('second'), { text: 'draft 2' })
+    expect(engine.getProjection('tracker_issue', 'TASK-1')).toEqual({ text: 'draft 2' })
+    expect(sent).toEqual([])
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(sent).toEqual([])
+    await vi.waitFor(() => expect(sent).toEqual([['first', 'second']]))
+    await vi.waitFor(() => expect(engine.getProjection('tracker_issue', 'TASK-1')).toBeUndefined())
+    engine.dispose()
+  })
+
+  it('sends directly when durable storage rejects a new action', async () => {
+    const db = await openOfflineDb(scope)
+    vi.spyOn(db, 'putAction').mockRejectedValueOnce(new DOMException('full', 'QuotaExceededError'))
+    const engine = new SyncEngine({ db, coordinator: coordinator(db), deviceId: 'phone', sendBatch: async batch => ({
+      results: [{ client_action_id: batch.actions[0].client_action_id, state: 'confirmed', code: null, result: null }], deltas: {}, revisions: {}, revoked_scopes: [],
+    }) })
+
+    await engine.enqueueAction(input('direct'))
+
+    expect(await db.getAction('direct')).toBeUndefined()
+    expect(engine.getState()).toMatchObject({ status: 'idle', pending: 0 })
+  })
   it('persists and sends dependencies in causal order', async () => {
     const db = await openOfflineDb(scope)
     const sent: string[][] = []

@@ -14,6 +14,11 @@ function syncValue(overrides: Partial<SyncContextValue> = {}): SyncContextValue 
 }
 
 describe('SyncCenter', () => {
+  it('does not display a permanent success badge when the queue is empty', () => {
+    render(<SyncContextProvider value={syncValue({ state: { status: 'idle', pending: 0, conflicts: 0 } })}><SyncCenter /></SyncContextProvider>)
+    expect(screen.queryByText('Всё отправлено')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Открыть центр синхронизации' })).toHaveTextContent('Синхронизация')
+  })
   it('summarizes queue, conflicts and local storage without technical language', async () => {
     const value = syncValue()
     render(<SyncContextProvider value={value}><SyncCenter

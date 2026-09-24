@@ -47,7 +47,7 @@ export function SyncCenter({
   const label = state.status === 'offline' ? 'Без сети'
     : state.status === 'syncing' ? 'Отправляем'
       : state.conflicts > 0 ? 'Нужно внимание'
-        : state.pending > 0 ? 'В очереди' : 'Всё отправлено'
+        : state.pending > 0 ? 'Ожидает отправки' : 'Синхронизация'
   const safeToUpdate = state.status !== 'syncing' && state.pending === 0
 
   return (
@@ -59,7 +59,7 @@ export function SyncCenter({
         onClick={() => setOpen(value => !value)}
         type="button"
       >
-        <span aria-hidden="true" className={`rp-sync-center__dot is-${state.status}`} />
+        {(state.pending > 0 || state.status === 'attention') ? <span aria-hidden="true" className={`rp-sync-center__dot is-${state.status}`} /> : null}
         <span>{label}</span>
         {state.pending > 0 ? <strong>{state.pending}</strong> : null}
       </button>

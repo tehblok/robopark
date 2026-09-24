@@ -11,18 +11,40 @@ import { pruneLegacyResourceSnapshots, resourceStore } from './lib/resource'
 import { clearProtectedBrowserStorage } from './shared/auth/protectedBrowserStorage'
 import { InterfaceModeProvider } from './app/interface/InterfaceModeProvider'
 import { interfaceModeStore } from './app/interface/interfaceModeStore'
-import { activateDeviceResourceCache, purgeDeviceResourceCache } from './lib/deviceResourceCache'
-import { purgeOfflineScope } from './pwa/offlineDb'
+import { activateDeviceResourceCache, offlineScopeForUser, purgeDeviceResourceCache } from './lib/deviceResourceCache'
+import { activeOfflineScope, purgeOfflineScope } from './pwa/offlineDb'
+import { storageRegistry } from './pwa/storageRegistry'
 import { clearShareTargetInbox } from './pwa/ShareTargetInbox'
+
+function activateDraftScopes(user: User): void {
+  for (const park of ['all', ...user.parks.map(item => String(item.id))]) {
+    storageRegistry.activateScope(offlineScopeForUser(user, park))
+  }
+}
+
+function authorizationIdentity(user: User): string {
+  return JSON.stringify([user.id, user.username, user.role, [...(user.permissions ?? [])].sort(), user.parks.map(item => item.id).sort((a, b) => a - b)])
+}
+
+function retireDraftScopes(user: User): void {
+  for (const park of ['all', ...user.parks.map(item => String(item.id))]) {
+    void storageRegistry.purgeScope(offlineScopeForUser(user, park))
+  }
+}
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
   const sessionGeneration = useRef(0)
+  const authorizedUser = useRef<User | null>(null)
   const advanceSessionGeneration = useCallback(() => ++sessionGeneration.current, [])
 
   const clearSessionState = useCallback(() => {
     const generation = advanceSessionGeneration()
+    if (authorizedUser.current) retireDraftScopes(authorizedUser.current)
+    authorizedUser.current = null
+    const scope = activeOfflineScope()
+    if (scope) void storageRegistry.purgeScope(scope)
     resourceStore.clearAll()
     clearApiValidators()
     void purgeDeviceResourceCache()
@@ -41,7 +63,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
       .then(async (nextUser) => {
         await activateDeviceResourceCache(nextUser)
         if (generation === sessionGeneration.current) {
+          activateDraftScopes(nextUser)
           interfaceModeStore.setAccount(nextUser.id)
+          authorizedUser.current = nextUser
           setUser(nextUser)
         }
       })
@@ -74,7 +98,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
     if (generation !== sessionGeneration.current) throw new Error('session_changed')
     await activateDeviceResourceCache(authenticatedUser)
     if (generation !== sessionGeneration.current) throw new Error('session_changed')
+    activateDraftScopes(authenticatedUser)
     interfaceModeStore.setAccount(authenticatedUser.id)
+    authorizedUser.current = authenticatedUser
     setUser(authenticatedUser)
     return authenticatedUser
   }
@@ -84,10 +110,19 @@ export function AuthProvider({ children }: PropsWithChildren) {
     try {
       const authenticatedUser = await api.me()
       if (generation === sessionGeneration.current) {
+        if (authorizedUser.current && authorizationIdentity(authorizedUser.current) !== authorizationIdentity(authenticatedUser)) {
+          retireDraftScopes(authorizedUser.current)
+        }
+        const previousScope = activeOfflineScope()
+        if (previousScope && JSON.stringify(previousScope) !== JSON.stringify(offlineScopeForUser(authenticatedUser, previousScope.park))) {
+          await storageRegistry.purgeScope(previousScope)
+        }
         clearApiValidators()
         await activateDeviceResourceCache(authenticatedUser)
         if (generation === sessionGeneration.current) {
+          activateDraftScopes(authenticatedUser)
           interfaceModeStore.setAccount(authenticatedUser.id)
+          authorizedUser.current = authenticatedUser
           setUser(authenticatedUser)
         }
       }

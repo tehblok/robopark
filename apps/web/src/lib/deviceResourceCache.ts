@@ -20,6 +20,8 @@ function userFingerprint(user: User, park: string): string {
 export function offlineScopeForUser(user: User, park = 'all'): OfflineScope {
   return {
     account: String(user.id),
+    principal: user.username,
+    parkAccess: user.parks.map(park => park.id).sort((a, b) => a - b).join(','),
     role: user.role,
     permissions: [...(user.permissions ?? [])].sort().join(','),
     park,
@@ -48,7 +50,8 @@ export async function activateDeviceResourceCache(user: User, park = 'all'): Pro
   try {
     opened = await IndexedResourceStore.open({
       account: String(user.id),
-      permissions: `${user.role}:${[...(user.permissions ?? [])].sort().join(',')}`,
+      role: user.role,
+      permissions: [...(user.permissions ?? [])].sort().join(','),
       park,
       schema: DEVICE_CACHE_SCHEMA,
     })

@@ -1,5 +1,7 @@
 export type OfflineScope = {
   account: string
+  principal?: string
+  parkAccess?: string
   role: string
   permissions: string
   park: string

@@ -4,12 +4,17 @@ import { clearProtectedBrowserStorage } from './protectedBrowserStorage'
 describe('clearProtectedBrowserStorage', () => {
   afterEach(() => localStorage.clear())
 
-  it('removes every protected user and version namespace while preserving unrelated preferences', () => {
-    const protectedEntries = [
+  it('clears disposable snapshots while preserving unfinished drafts and preferences', () => {
+    const disposableEntries = [
       ['robopark.recentRobots.v2.3', 'old-recents'],
       ['robopark.recentRobots.v2.41', 'other-recents'],
+      ['robopark:res:old', 'cached'],
+    ] as const
+    const protectedEntries = [
       ['robopark:report-draft:v1:3:daily', 'old-draft'],
       ['robopark:report-draft:v2:41:blocker', 'other-draft'],
+      ['robopark:handoff:v1:3:task', 'handoff'],
+      ['robopark:comment-draft:v1:3:task', 'comment'],
     ] as const
     const preservedEntries = [
       ['robopark-theme', 'dark'],
@@ -17,13 +22,14 @@ describe('clearProtectedBrowserStorage', () => {
       ['robopark.recentRobots', '["447"]'],
       ['unrelated-key', 'keep-me'],
     ] as const
-    for (const [key, value] of [...protectedEntries, ...preservedEntries]) {
+    for (const [key, value] of [...disposableEntries, ...protectedEntries, ...preservedEntries]) {
       localStorage.setItem(key, value)
     }
 
     clearProtectedBrowserStorage(localStorage)
 
-    for (const [key] of protectedEntries) expect(localStorage.getItem(key)).toBeNull()
+    for (const [key] of disposableEntries) expect(localStorage.getItem(key)).toBeNull()
+    for (const [key, value] of protectedEntries) expect(localStorage.getItem(key)).toBe(value)
     for (const [key, value] of preservedEntries) expect(localStorage.getItem(key)).toBe(value)
   })
 
@@ -35,7 +41,7 @@ describe('clearProtectedBrowserStorage', () => {
     } as Storage
     const quotaLimitedStorage = {
       length: 1,
-      key: () => 'robopark:report-draft:v1:3:daily',
+      key: () => 'robopark.recentRobots.v2.3',
       removeItem: () => {
         throw new DOMException('Quota exceeded', 'QuotaExceededError')
       },

@@ -26,8 +26,10 @@ type RevisionRecord = ScopedRecord & { section: string, revision: string, update
 type MetaRecord = ScopedRecord & { key: string, value: unknown, updatedAt: number }
 
 let activeScope = ''
+let activeScopeValue: OfflineScope | null = null
 let activeGeneration = 0
 const handles = new Set<OfflineDb>()
+const retiredScopeKeys = new Set<string>()
 
 export async function estimateOfflineBudget(
   estimate: () => Promise<{ quota?: number, usage?: number }> = () => navigator.storage.estimate(),
@@ -274,7 +276,7 @@ export class OfflineDb {
   async cleanup(options: OfflineCleanupOptions): Promise<void> {
     const now = options.now ?? Date.now()
     const confirmedTtl = options.confirmedTtlMs ?? 7 * 24 * 60 * 60 * 1000
-    const entityTtl = options.entityTtlMs ?? 24 * 60 * 60 * 1000
+    const entityTtl = options.entityTtlMs ?? 14 * 24 * 60 * 60 * 1000
     const entities = await this.scopedRecords<EntityRecord>('entities')
     const actions = await this.scopedRecords<ActionRecord>('actions')
     const media = await this.scopedRecords<MediaRecord>('media')
@@ -347,12 +349,25 @@ export class OfflineDb {
   }
 }
 
-async function purgeOtherScopes(db: IDBDatabase, scope: string): Promise<void> {
+function scopeBase(scope: string): string { return scope.split('|').slice(0, 4).join('|') }
+
+async function migrateOlderSchema(db: IDBDatabase, scope: string): Promise<void> {
   for (const storeName of STORES) {
     const transaction = db.transaction(storeName, 'readwrite')
     const store = transaction.objectStore(storeName)
     const records = await requestResult(store.getAll()) as ScopedRecord[]
-    records.filter(record => record.scope !== scope).forEach(record => store.delete(record.dbId))
+    for (const record of records) {
+      if (record.scope === scope) continue
+      if (scopeBase(record.scope) === scopeBase(scope)) {
+        const oldSchema = Number(record.scope.split('|')[4])
+        const newSchema = Number(scope.split('|')[4])
+        if (oldSchema < newSchema) {
+          store.put({ ...record, scope, dbId: recordId(scope, record.dbId.slice(record.scope.length + 1)) })
+          store.delete(record.dbId)
+        }
+        // A downgrade cannot safely interpret newer records; retain them for a future upgrade.
+      }
+    }
     await transactionDone(transaction)
   }
 }
@@ -364,15 +379,29 @@ export async function openOfflineDb(scope: OfflineScope): Promise<OfflineDb> {
     activeGeneration += 1
   }
   const db = await openDatabase()
-  await purgeOtherScopes(db, nextScope)
+  await migrateOlderSchema(db, nextScope)
+  if (activeScope === nextScope) activeScopeValue = { ...scope }
+  retiredScopeKeys.delete(nextScope)
   return new OfflineDb(db, nextScope, activeGeneration)
 }
 
+export function activeOfflineScope(): OfflineScope | null { return activeScopeValue ? { ...activeScopeValue } : null }
+export function isOfflineScopeRetired(scope: OfflineScope): boolean { return retiredScopeKeys.has(scopeKey(scope)) }
+
 export async function purgeOfflineScope(): Promise<void> {
+  if (activeScope) retiredScopeKeys.add(activeScope)
   activeScope = ''
+  activeScopeValue = null
   activeGeneration += 1
   for (const handle of [...handles]) handle.close()
-  if (typeof indexedDB === 'undefined') return
-  const request = indexedDB.deleteDatabase(OFFLINE_DATABASE_NAME)
-  await requestResult(request).then(() => undefined)
+}
+
+export function retireOfflineScope(scope: OfflineScope): void {
+  const key = scopeKey(scope)
+  retiredScopeKeys.add(key)
+  if (key !== activeScope) return
+  activeScope = ''
+  activeScopeValue = null
+  activeGeneration += 1
+  for (const handle of [...handles]) handle.close()
 }

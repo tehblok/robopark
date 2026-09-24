@@ -5,6 +5,10 @@ import { ApiError, ApiTimeoutError, api, type User } from './api'
 import { AuthProvider } from './auth'
 import { type AuthContextValue, useAuth } from './auth-context'
 import { resourceStore } from './lib/resource'
+import { IDBFactory } from 'fake-indexeddb'
+import { openOfflineDb, purgeOfflineScope } from './pwa/offlineDb'
+import { offlineScopeForUser } from './lib/deviceResourceCache'
+import { openShareTargetInbox } from './pwa/ShareTargetInbox'
 
 const oldAccount: User = {
   id: 3,
@@ -67,8 +71,8 @@ function expectProtectedStateCleared(): void {
   expect(resourceStore.get(resourceKey)).toBeUndefined()
   expect(localStorage.getItem(recentKey)).toBeNull()
   expect(localStorage.getItem(otherRecentKey)).toBeNull()
-  expect(localStorage.getItem(reportKey)).toBeNull()
-  expect(localStorage.getItem(otherReportKey)).toBeNull()
+  expect(localStorage.getItem(reportKey)).toBe('old-draft')
+  expect(localStorage.getItem(otherReportKey)).toBe('other-draft')
   expect(localStorage.getItem(legacyRecentKey)).toBe('["447"]')
   expect(localStorage.getItem('robopark-theme')).toBe('dark')
   expect(localStorage.getItem('robopark-density')).toBe('compact')
@@ -84,11 +88,13 @@ function expectProtectedStateRetained(): void {
 }
 
 describe('AuthProvider session boundaries', () => {
-  afterEach(() => {
+  afterEach(async () => {
+    await purgeOfflineScope()
     currentAuth = null
     resourceStore.clearAll()
     localStorage.clear()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it('removes legacy private resource snapshots when an existing session resumes', async () => {
@@ -148,6 +154,54 @@ describe('AuthProvider session boundaries', () => {
     await act(async () => { pending.resolve(oldAccount); await refresh })
 
     expect(screen.getByText('anonymous')).toBeInTheDocument()
+  })
+
+  it('quarantines a scoped report draft on logout and restores it only after exact reauthorization', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    vi.spyOn(api, 'me').mockResolvedValue(oldAccount)
+    vi.spyOn(api, 'logout').mockResolvedValue(undefined)
+    vi.spyOn(api, 'login').mockResolvedValue(undefined)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    await openOfflineDb(offlineScopeForUser(oldAccount, 'all'))
+    localStorage.setItem('robopark:report-draft:3:all', 'unfinished')
+    const inbox = await openShareTargetInbox()
+    await inbox.save({ id: 'unclaimed', createdAt: Date.now(), name: 'photo.jpg', type: 'image/jpeg', blob: new Blob(['photo']), assignment: null })
+
+    await act(async () => { await currentAuth!.logout() })
+    expect(localStorage.getItem('robopark:report-draft:3:all')).toBeNull()
+    expect(await inbox.list()).toEqual([])
+    inbox.close?.()
+    await act(async () => { await currentAuth!.login('old-account', 'password') })
+    expect(localStorage.getItem('robopark:report-draft:3:all')).toBe('unfinished')
+  })
+
+  it('hides pending local work when an account loses its previous role', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    const manager = { ...oldAccount, role: 'manager', permissions: ['nav.overview', 'admin.users'] }
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockResolvedValueOnce(manager).mockResolvedValueOnce(oldAccount)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    await openOfflineDb(offlineScopeForUser(oldAccount, 'all'))
+    localStorage.setItem('robopark:report-draft:3:all', 'unfinished')
+
+    await act(async () => { await currentAuth!.refreshUser() })
+    expect(localStorage.getItem('robopark:report-draft:3:all')).toBeNull()
+    await act(async () => { await currentAuth!.refreshUser() })
+    expect(localStorage.getItem('robopark:report-draft:3:all')).toBe('unfinished')
+  })
+
+  it('quarantines drafts at logout even when offline IndexedDB was unavailable', async () => {
+    vi.stubGlobal('indexedDB', undefined)
+    vi.spyOn(api, 'me').mockResolvedValue(oldAccount)
+    vi.spyOn(api, 'logout').mockResolvedValue(undefined)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    localStorage.setItem('robopark:report-draft:3:all', 'unfinished')
+
+    await act(async () => { await currentAuth!.logout() })
+
+    expect(localStorage.getItem('robopark:report-draft:3:all')).toBeNull()
   })
 
   it.each(['bootstrap', 'login'] as const)('does not publish an old %s response over a replacement login', async (origin) => {
@@ -266,7 +320,7 @@ describe('AuthProvider session boundaries', () => {
     vi.spyOn(api, 'logout').mockResolvedValueOnce(undefined)
     const login = vi.spyOn(api, 'login').mockImplementationOnce(async () => {
       expect(localStorage.getItem(recentKey)).toBeNull()
-      expect(localStorage.getItem(reportKey)).toBeNull()
+      expect(localStorage.getItem(reportKey)).toBe('late-old-draft')
     })
     render(<AuthProvider><AuthProbe /></AuthProvider>)
     expect(await screen.findByText('old-account')).toBeInTheDocument()
@@ -285,7 +339,7 @@ describe('AuthProvider session boundaries', () => {
     expect(login).toHaveBeenCalledTimes(1)
     expect(screen.getByText('replacement-account')).toBeInTheDocument()
     expect(localStorage.getItem(recentKey)).toBeNull()
-    expect(localStorage.getItem(reportKey)).toBeNull()
+    expect(localStorage.getItem(reportKey)).toBe('late-old-draft')
   })
 
   it.each([

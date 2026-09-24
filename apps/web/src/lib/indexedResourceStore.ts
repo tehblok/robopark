@@ -6,6 +6,7 @@ const DB_VERSION = 1
 
 export type AccountScope = {
   account: string
+  role: string
   permissions: string
   park: string
   schema: number
@@ -38,7 +39,7 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
 }
 
 function scopeKey(scope: AccountScope): string {
-  return [scope.account, scope.permissions, scope.park, String(scope.schema)]
+  return [scope.account, scope.role, scope.permissions, scope.park, String(scope.schema)]
     .map(value => encodeURIComponent(value)).join('|')
 }
 

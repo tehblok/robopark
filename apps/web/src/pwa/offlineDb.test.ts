@@ -54,6 +54,34 @@ describe('offline database', () => {
     expect(db.indexNames('media')).toEqual(['action', 'scope', 'state'])
   })
 
+  it('preserves queued actions, media and entities when only the scope schema changes', async () => {
+    const previous = await openOfflineDb(scope())
+    await previous.transaction(writer => {
+      writer.putEntity('task:1', { title: 'pending' })
+      writer.putAction(action('pending', 'ready'))
+      writer.putMedia({ id: 'photo', actionId: 'pending', issueKey: 'TASK-1', name: 'a.jpg', blob: new Blob(['x']), mimeType: 'image/jpeg', sha256: 'a', sizeBytes: 1, state: 'local', createdAt: 1, updatedAt: 1 })
+    })
+
+    const next = await openOfflineDb({ ...scope(), schema: 2 })
+
+    expect(await next.getEntity('task:1')).toEqual({ title: 'pending' })
+    expect(await next.getAction('pending')).toMatchObject({ state: 'ready' })
+    expect(await next.getMedia('photo')).toMatchObject({ actionId: 'pending' })
+    expect(await previous.getAction('pending')).toBeUndefined()
+  })
+
+  it('retains current projections for fourteen days by default', async () => {
+    const db = await openOfflineDb(scope())
+    const day = 24 * 60 * 60 * 1000
+    await db.putEntity('task:recent', { current: true }, { updatedAt: 100 * day })
+
+    await db.cleanup({ maxBytes: 1024, now: 113 * day })
+    expect(await db.getEntity('task:recent')).toEqual({ current: true })
+
+    await db.cleanup({ maxBytes: 1024, now: 114 * day })
+    expect(await db.getEntity('task:recent')).toBeUndefined()
+  })
+
   it('commits related entity, action and media writes atomically', async () => {
     const db = await openOfflineDb(scope())
     const pending = action('a-1', 'ready')
@@ -97,6 +125,22 @@ describe('offline database', () => {
     expect(accepted).toBe(false)
     expect(await current.getEntity('task:secret')).toBeUndefined()
     expect(await current.getEntity('task:late')).toBeUndefined()
+  })
+
+  it('keeps a previous scope durable but invisible until that exact scope is authorized again', async () => {
+    const previous = await openOfflineDb(scope('1', '1'))
+    await previous.putAction(action('pending-1', 'ready'))
+    await previous.putMedia({ id: 'photo-1', actionId: 'pending-1', issueKey: 'TASK-1', name: 'a.jpg', blob: new Blob(['x']), mimeType: 'image/jpeg', sha256: 'a', sizeBytes: 1, state: 'local', createdAt: 1, updatedAt: 1 })
+
+    const next = await openOfflineDb(scope('2', '2'))
+    expect(await next.listActions()).toEqual([])
+    expect(await next.listMedia()).toEqual([])
+    await purgeOfflineScope()
+    expect(await previous.getAction('pending-1')).toBeUndefined()
+
+    const restored = await openOfflineDb(scope('1', '1'))
+    expect(await restored.getAction('pending-1')).toMatchObject({ state: 'ready' })
+    expect(await restored.getMedia('photo-1')).toMatchObject({ state: 'local' })
   })
 
   it('cleans expired confirmed data but never removes pending actions or media', async () => {

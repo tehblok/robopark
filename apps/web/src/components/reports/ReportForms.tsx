@@ -40,7 +40,7 @@ function loadDraft(principalId: number, parkId: number, ownerKey: string): Repor
     const stored = localStorage.getItem(reportDraftKey(principalId, parkId))
     if (!stored) return EMPTY_DRAFT
     const parsed = JSON.parse(stored) as Partial<ReportDraft>
-    if (parsed.ownerKey && parsed.ownerKey !== ownerKey) return EMPTY_DRAFT
+    if (parsed.ownerKey !== ownerKey) return EMPTY_DRAFT
     return {
       activeForm: parsed.activeForm === 'problem' ? 'problem' : 'question',
       trackerKey: typeof parsed.trackerKey === 'string' ? parsed.trackerKey : '',
