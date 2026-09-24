@@ -186,6 +186,49 @@ def test_closure_refresh_rotates_past_permanent_tracker_failure_and_reports_it(
     assert seen == ["ROBOPARK-1", "ROBOPARK-2"]
 
 
+def test_closure_error_clears_when_other_path_removes_last_candidate(
+    db_engine, db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import sync_health, task_lifecycle
+
+    key = "ROBOPARK-RECOVERED"
+    db_session.add(
+        TaskReview(
+            id="recovered-review",
+            issue_key=key,
+            state="closed",
+            actor_user_id=seed_mechanic.id,
+            created_at=1.0,
+            updated_at=2.0,
+            closed_at=None,
+        )
+    )
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    calls = []
+
+    def unavailable(**kwargs):
+        calls.append(kwargs["key"])
+        raise tracker_client.TrackerError("temporarily unavailable")
+
+    monkeypatch.setattr(tracker_client, "get_issue", unavailable)
+    factory = _factory(db_engine)
+    assert tracker_notifications.reconcile_closed_claims(factory, limit=1) == 0
+    assert tracker_notifications._poll_failed(factory)
+    with Session(db_engine) as db:
+        assert sync_health.sync_health(db).last_error == "tracker_unavailable"
+        task_lifecycle.reconcile_external_closure(db, {"key": key, "status_key": "closed"})
+
+    assert tracker_notifications.reconcile_closed_claims(factory, limit=1) == 0
+    assert calls == [key]
+    assert not tracker_notifications._poll_failed(factory)
+    with Session(db_engine) as db:
+        assert sync_health.sync_health(db).last_error is None
+        cursor = db.get(TrackerNotificationCursor, "closures")
+        assert cursor.last_error is None
+        assert cursor.last_success_at is not None
+
+
 def test_closure_candidate_queries_limit_rows_before_materialization(
     db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):

@@ -122,6 +122,11 @@ def reconcile_closed_claims(
         selected = _closure_candidates(db, position, limit, after=True)
         if len(selected) < limit:
             selected += _closure_candidates(db, position, limit - len(selected), after=False)
+        if not selected:
+            # Another reconciliation path can remove the failed key. A healthy
+            # empty scan is then the only remaining proof that its error is stale.
+            cursor.last_error = None
+            cursor.last_success_at = datetime.now(UTC)
         db.commit()
     reconciled = 0
     for key in selected:
