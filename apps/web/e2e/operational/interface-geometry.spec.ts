@@ -13,7 +13,7 @@ const geometryViewports = [
 test('schedule route fixture reaches the successful schedule workspace', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await openRouteFixture(page, 'schedule', userForRole('mechanic'))
-  await expect(page.locator('.rp-schedule__list[data-view="week"]')).toBeVisible()
+  await expect(page.getByTestId('schedule-day-cards')).toBeVisible()
   await expect(page.getByText('Не удалось загрузить график', { exact: true })).toHaveCount(0)
   await assertResponsiveContracts(page, 390)
 })

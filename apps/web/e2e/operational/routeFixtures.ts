@@ -1,5 +1,5 @@
 import { expect, type Page } from '@playwright/test'
-import type { AdminRole, AdminUser, Campaign, CampaignDetail, ParkRequest, PermissionCatalogItem, Report, ScheduleEntry, User } from '../../src/api'
+import type { AdminRole, AdminUser, Campaign, CampaignDetail, ParkRequest, PermissionCatalogItem, Report, ScheduleEntry, ScheduleParticipant, User } from '../../src/api'
 import { canAccessRoute } from '../../src/app/routing/accessPolicy'
 import { ROUTE_MANIFEST, type AppRouteId, type RouteManifestItem } from '../../src/app/routing/routeManifest'
 import { analyticsFixture } from '../../src/domains/analytics/analytics.test-support'
@@ -28,12 +28,16 @@ const routeRequests: ParkRequest[] = [{ id: 5, user_id: 101, park_id: 8, status:
 const routeRoles: AdminRole[] = [{ id: 1, slug: 'mechanic', name: 'Механик', description: 'Работа с задачами', is_system: true, is_active: true, permissions: ['nav.inventory'], user_count: 1 }]
 const routeCatalog: PermissionCatalogItem[] = [{ key: 'nav.inventory', category: 'nav', label: 'Склад', sort_order: 75 }]
 const routeUsers: AdminUser[] = [{ id: 101, username: 'route-admin', role: 'admin', role_id: 1, access_status: 'approved', is_active: true, tracker_login: 'admin.test', must_change_password: false, parks: [parkNorth], permissions: ['nav.admin'], role_permissions: ['nav.admin'] }]
-const routeSchedule: ScheduleEntry = {
+export const routeSchedule: ScheduleEntry = {
   id: 'route-shift', owner_user_id: 100, park_id: parkNorth.id, kind: 'shift',
   start_at: '2026-09-23T09:00:00+03:00', end_at: '2026-09-23T21:00:00+03:00',
   source: 'route-fixture', series_id: null, created_by_user_id: 104, updated_by_user_id: 104,
   created_at: '2026-09-22T10:00:00Z', updated_at: '2026-09-22T10:00:00Z', warnings: [],
 }
+const routeScheduleParticipants: ScheduleParticipant[] = [
+  { id: 100, display_name: 'Анна Механик', role: 'mechanic' },
+  { id: 101, display_name: 'Олег Оператор', role: 'operator' },
+]
 
 export function geometryRouteIdsFor(user: User): AppRouteId[] {
   return ROUTE_MANIFEST
@@ -50,6 +54,7 @@ function routeMockRoutes(): MockRoute[] {
     { method: 'GET', path: '/api/operator/available-parks', handler: () => ({ json: [parkSouth] }) },
     { method: 'GET', path: '/api/operator/park-requests', handler: () => ({ json: routeRequests }) },
     { method: 'GET', path: '/api/schedules', handler: () => ({ json: [routeSchedule] }) },
+    { method: 'GET', path: '/api/schedules/participants', handler: () => ({ json: routeScheduleParticipants }) },
     { method: 'GET', path: '/api/campaigns', handler: () => ({ json: [routeCampaign] }) },
     { method: 'GET', path: '/api/campaigns/4', handler: () => ({ json: routeCampaignDetail }) },
     { method: 'GET', path: '/api/reports/mine', handler: () => ({ json: [routeReport] }) },
@@ -182,7 +187,7 @@ function routeReadyMarker(page: Page, routeId: AppRouteId) {
     case 'reports': return page.getByRole('button', { name: `Открыть репорт ${routeReport.title}`, exact: true })
     case 'reports-new': return page.getByRole('textbox', { name: 'Заголовок *', exact: true })
     case 'report-detail': return page.getByText(routeReport.body, { exact: true })
-    case 'schedule': return page.locator('.rp-schedule__list[data-view="week"]')
+    case 'schedule': return page.getByTestId('schedule-day-cards')
     case 'analytics': return page.locator('.rp-analytics-park .rp-analytics-value').filter({ hasText: '2 задач' }).first()
     case 'admin': return page.getByRole('heading', { name: 'Управление', exact: true, level: 1 })
     case 'admin-settings': return page.getByText('Tracker OAuth', { exact: true })
