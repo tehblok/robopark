@@ -213,6 +213,72 @@ describe('RobotScanner', () => {
     expect(close).toHaveBeenCalledOnce()
   })
 
+  it('drops a late gallery detection after cancel and still closes its bitmap', async () => {
+    const detection = deferred<Array<{ rawValue?: string }>>()
+    const close = vi.fn()
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ close } as unknown as ImageBitmap)))
+    const onDetected = vi.fn()
+    const onCancel = vi.fn()
+    render(<RobotScanner Detector={undefined} loadFallback={async () => ({ detect: () => detection.promise })} mediaDevices={undefined} onCancel={onCancel} onDetected={onDetected} open />)
+
+    fireEvent.change(screen.getByLabelText('Выбрать изображение кода'), {
+      target: { files: [new File(['qr'], 'robot.png', { type: 'image/png' })] },
+    })
+    await waitFor(() => expect(createImageBitmap).toHaveBeenCalledOnce())
+    fireEvent.click(screen.getByRole('button', { name: 'Отменить' }))
+    await act(async () => detection.resolve([{ rawValue: '447' }]))
+
+    expect(onCancel).toHaveBeenCalledOnce()
+    expect(onDetected).not.toHaveBeenCalled()
+    expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('drops a late gallery detection after unmount and still closes its bitmap', async () => {
+    const detection = deferred<Array<{ rawValue?: string }>>()
+    const close = vi.fn()
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ close } as unknown as ImageBitmap)))
+    const onDetected = vi.fn()
+    const view = render(<RobotScanner Detector={undefined} loadFallback={async () => ({ detect: () => detection.promise })} mediaDevices={undefined} onCancel={vi.fn()} onDetected={onDetected} open />)
+
+    fireEvent.change(screen.getByLabelText('Выбрать изображение кода'), {
+      target: { files: [new File(['qr'], 'robot.png', { type: 'image/png' })] },
+    })
+    await waitFor(() => expect(createImageBitmap).toHaveBeenCalledOnce())
+    view.unmount()
+    await act(async () => detection.resolve([{ rawValue: '447' }]))
+
+    expect(onDetected).not.toHaveBeenCalled()
+    expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('publishes only the newest gallery selection when detections finish in reverse order', async () => {
+    const first = deferred<Array<{ rawValue?: string }>>()
+    const second = deferred<Array<{ rawValue?: string }>>()
+    const firstClose = vi.fn()
+    const secondClose = vi.fn()
+    vi.stubGlobal('createImageBitmap', vi.fn()
+      .mockResolvedValueOnce({ close: firstClose } as unknown as ImageBitmap)
+      .mockResolvedValueOnce({ close: secondClose } as unknown as ImageBitmap))
+    const detect = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+    const onDetected = vi.fn()
+    render(<RobotScanner Detector={undefined} loadFallback={async () => ({ detect })} mediaDevices={undefined} onCancel={vi.fn()} onDetected={onDetected} open />)
+    const input = screen.getByLabelText('Выбрать изображение кода')
+
+    fireEvent.change(input, { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } })
+    await waitFor(() => expect(detect).toHaveBeenCalledTimes(1))
+    fireEvent.change(input, { target: { files: [new File(['two'], 'two.png', { type: 'image/png' })] } })
+    await waitFor(() => expect(detect).toHaveBeenCalledTimes(2))
+    await act(async () => second.resolve([{ rawValue: '448' }]))
+    await act(async () => first.resolve([{ rawValue: '447' }]))
+
+    expect(onDetected).toHaveBeenCalledOnce()
+    expect(onDetected).toHaveBeenCalledWith('448')
+    expect(firstClose).toHaveBeenCalledOnce()
+    expect(secondClose).toHaveBeenCalledOnce()
+  })
+
   it('uses the QR fallback when native BarcodeDetector rejects its formats', async () => {
     const frames = installFrameQueue()
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()

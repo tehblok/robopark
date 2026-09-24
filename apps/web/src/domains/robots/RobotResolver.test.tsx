@@ -129,10 +129,23 @@ describe('RobotResolver', () => {
     expect(loadRecentRobots(8)).toEqual([])
   })
 
-  it('keeps manual input visible when scanning is unsupported', () => {
-    render(<RobotResolver apiClient={{ emergencyResolve: vi.fn() }} onResolved={vi.fn()} onValueChange={vi.fn()} userId={7} value="" />)
-    expect(screen.getByLabelText('Номер или VIN робота')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Сканировать' })).not.toBeInTheDocument()
+  it('opens gallery and manual fallbacks when live camera is unavailable', () => {
+    const originalMediaDevices = navigator.mediaDevices
+    const originalSecureContext = window.isSecureContext
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: undefined })
+    Object.defineProperty(window, 'isSecureContext', { configurable: true, value: false })
+    try {
+      render(<RobotResolver apiClient={{ emergencyResolve: vi.fn() }} onResolved={vi.fn()} onValueChange={vi.fn()} userId={7} value="" />)
+      expect(screen.getByLabelText('Номер или VIN робота')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Сканировать' }))
+      expect(screen.getByRole('dialog', { name: 'Сканировать робота' })).toBeVisible()
+      expect(screen.getByLabelText('Выбрать изображение кода')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Ввести номер вручную' })).toBeVisible()
+      expect(screen.queryByRole('button', { name: 'Включить камеру' })).not.toBeInTheDocument()
+    } finally {
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: originalMediaDevices })
+      Object.defineProperty(window, 'isSecureContext', { configurable: true, value: originalSecureContext })
+    }
   })
 
   it('offers camera scanning and manual entry without BarcodeDetector', () => {

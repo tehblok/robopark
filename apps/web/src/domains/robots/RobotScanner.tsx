@@ -66,6 +66,12 @@ function cameraError(reason: unknown): string {
 // This feature check is intentionally exported for the resolver's progressive enhancement.
 // oxlint-disable-next-line react/only-export-components
 export function scannerSupported(): boolean {
+  return typeof document !== 'undefined' && typeof document.createElement === 'function'
+}
+
+// Live capture is optional: the scanner panel still provides gallery/manual fallbacks.
+// oxlint-disable-next-line react/only-export-components
+export function cameraSupported(): boolean {
   return Boolean(browserSecureContext() && browserMediaDevices()?.getUserMedia)
 }
 
@@ -118,26 +124,36 @@ export function RobotScanner({
     event.target.value = ''
     if (!file) return
     stopCamera()
+    const generation = ++generationRef.current
+    const active = () => open && generation === generationRef.current
     setStarted(false)
     setError(null)
     if (typeof createImageBitmap !== 'function') {
-      setError('Не удалось прочитать изображение. Введите номер робота вручную.')
+      if (active()) setError('Не удалось прочитать изображение. Введите номер робота вручную.')
       return
     }
     let bitmap: ImageBitmap | null = null
     try {
       const detector = await createDetector()
+      if (!active()) return
       bitmap = await createImageBitmap(file)
+      if (!active()) return
       const codes = await detector.detect(bitmap)
+      if (!active()) return
       const value = codes.find(code => code.rawValue?.trim())?.rawValue?.trim()
-      if (value) onDetected(value)
+      if (value) {
+        generationRef.current += 1
+        onDetected(value)
+      }
       else setError('Код не найден на изображении. Выберите другой файл или введите номер вручную.')
     } catch {
-      setError('Не удалось прочитать код на изображении. Выберите другой файл или введите номер вручную.')
+      if (active()) setError('Не удалось прочитать код на изображении. Выберите другой файл или введите номер вручную.')
     } finally {
       bitmap?.close()
     }
-  }, [createDetector, onDetected, stopCamera])
+  }, [createDetector, onDetected, open, stopCamera])
+
+  useEffect(() => () => stopCamera(), [stopCamera])
 
   useEffect(() => {
     if (!open) {
