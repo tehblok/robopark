@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 import robopark_host.updater as updater
+from robopark_host import rollback
 from robopark_host.updater import apply_release, recover_interrupted_update
 from test_updater import host as updater_host
 
@@ -29,6 +30,8 @@ class SimulatedPowerLoss(BaseException):
         "stopping",
         "snapshotting",
         "snapshotted",
+        "snapshotting_final",
+        "snapshotted_final",
         "tools_staging",
         "tools_staged",
         "publishing",
@@ -381,6 +384,29 @@ def test_durable_snapshot_exists_before_writers_are_quiesced(host, monkeypatch):
     assert not (host.paths.state / "maintenance.json").exists()
 
 
+def test_snapshot_flushes_database_dump_and_rollback_directory_entries(host, monkeypatch):
+    journal = {"job_id": str(uuid4())}
+    original_fsync = rollback.os.fsync
+    flushed = []
+
+    def fsync(descriptor):
+        info = os.fstat(descriptor)
+        flushed.append((info.st_dev, info.st_ino))
+        return original_fsync(descriptor)
+
+    monkeypatch.setattr(rollback.os, "fsync", fsync)
+    rollback.snapshot(host.paths, journal, host.runner)
+    job = host.paths.ops / "rollbacks" / journal["job_id"]
+
+    def identity(path):
+        info = path.stat()
+        return info.st_dev, info.st_ino
+
+    dump_flush = flushed.index(identity(job / "database.dump"))
+    assert identity(job) in flushed[dump_flush + 1 :]
+    assert identity(job.parent) in flushed
+
+
 @pytest.mark.parametrize("phase", ["snapshotted", "migrating"])
 @pytest.mark.parametrize(
     "source_head",
@@ -430,21 +456,42 @@ def test_rc5_named_state_survives_interrupted_update(host, monkeypatch, phase, s
         host.paths.etc / "release-public-key.pem",
         data / "attachments/report.bin",
         data / "backup-uuid",
+        data / "robopark.db",
         volume / "PG_VERSION",
     )
     before = {path: hashlib.sha256(path.read_bytes()).digest() for path in named}
     original = updater.atomic_write_json
+    original_run = host.runner.run
+
+    def interrupt_migration(argv, **kwargs):
+        if "alembic" in argv and "upgrade" in argv:
+            host.runner.commands.append(list(map(str, argv)))
+            (data / "robopark.db").write_text("partially-migrated")
+            raise SimulatedPowerLoss()
+        return original_run(argv, **kwargs)
+
+    if phase == "migrating":
+        monkeypatch.setattr(host.runner, "run", interrupt_migration)
 
     def interrupt(path, payload, *args, **kwargs):
         original(path, payload, *args, **kwargs)
-        if path.name == "updater-journal.json" and payload.get("phase") == phase:
+        if (
+            phase != "migrating"
+            and path.name == "updater-journal.json"
+            and payload.get("phase") == phase
+        ):
             raise SimulatedPowerLoss()
 
     monkeypatch.setattr(updater, "atomic_write_json", interrupt)
     with pytest.raises(SimulatedPowerLoss):
         apply_release(host.request(rc6_archive), host.paths, host.runner)
     monkeypatch.setattr(updater, "atomic_write_json", original)
-    recover_interrupted_update(host.paths, host.runner)
+    if phase == "migrating":
+        assert (data / "robopark.db").read_text() == "partially-migrated"
+    recovery = recover_interrupted_update(host.paths, host.runner)
 
+    assert recovery.state == "previous_restored"
+    if phase == "migrating":
+        assert any("alembic" in command and "upgrade" in command for command in host.runner.commands)
     assert {path: hashlib.sha256(path.read_bytes()).digest() for path in named} == before
     assert not any(command[:3] == ["docker", "volume", "rm"] for command in host.runner.commands)

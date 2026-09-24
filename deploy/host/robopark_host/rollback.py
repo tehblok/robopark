@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 
@@ -124,7 +125,11 @@ def verify_source_head(paths, runner, expected_head):
 
 def snapshot(paths, journal, runner=None, *, refresh=False):
     root = paths.ops / "rollbacks" / journal["job_id"]
+    rollbacks_existed = root.parent.is_dir()
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if not rollbacks_existed:
+        sync_directory(root.parent.parent)
+    sync_directory(root.parent)
     temporary = root / "data.partial"
     if temporary.exists():
         shutil.rmtree(temporary)
@@ -162,8 +167,19 @@ def snapshot(paths, journal, runner=None, *, refresh=False):
             _database_command(paths, ["pg_restore", "--list", target]),
             timeout=60,
         )
-        if not (root / "database.dump").is_file():
-            raise ReleaseError("update_failed")
+        dump = root / "database.dump"
+        try:
+            descriptor = os.open(dump, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
+                    raise ReleaseError("update_failed")
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError as error:
+            raise ReleaseError("update_failed") from error
+        sync_directory(root)
     backup = root / "units"
     backup.mkdir(mode=0o700, exist_ok=True)
     installed = paths.root / "etc/systemd/system"
@@ -172,6 +188,7 @@ def snapshot(paths, journal, runner=None, *, refresh=False):
         if path.is_file():
             atomic_copy(path, backup / unit)
     sync_directory(backup)
+    sync_directory(root)
 
 
 def restore_units(paths, journal):
