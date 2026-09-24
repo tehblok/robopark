@@ -4,11 +4,9 @@ import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
-from robopark_api import main
 from robopark_api.config import Settings
 from robopark_api.models import Park
 from robopark_api.schedule_models import TrackerNotificationCursor
@@ -18,6 +16,7 @@ from robopark_api.services import (
     tracker_cache,
     tracker_client,
     tracker_notifications,
+    worker_runtime,
 )
 from robopark_api.services.tracker_notifications import poll_tracker_notifications
 
@@ -582,13 +581,13 @@ def _patch_idle_workers(monkeypatch):
         "run_cache_cleanup_loop",
         "run_system_notification_loop",
     ):
-        monkeypatch.setattr(main, name, idle)
-    monkeypatch.setattr(main, "run_tracker_outbox_loop", idle_with_factory)
-    monkeypatch.setattr(main, "run_campaign_refresh_loop", idle_with_factory)
+        monkeypatch.setattr(worker_runtime, name, idle)
+    monkeypatch.setattr(worker_runtime, "run_tracker_outbox_loop", idle_with_factory)
+    monkeypatch.setattr(worker_runtime, "run_campaign_refresh_loop", idle_with_factory)
 
 
 @pytest.mark.parametrize("won_lease", [False, True])
-def test_lifespan_starts_tracker_poller_only_for_lease_owner(
+def test_worker_starts_tracker_poller_only_for_lease_owner(
     db_engine, test_settings, monkeypatch, won_lease
 ):
     started = threading.Event()
@@ -607,22 +606,37 @@ def test_lifespan_starts_tracker_poller_only_for_lease_owner(
 
     async def notification_loop(session_factory, stop_event, **kwargs):
         captured.update(kwargs)
-        assert session_factory is main.SessionLocal
+        assert session_factory is factory
         started.set()
         await stop_event.wait()
 
+    factory = sessionmaker(bind=db_engine, future=True)
     _patch_idle_workers(monkeypatch)
-    monkeypatch.setattr(main, "SessionLocal", sessionmaker(bind=db_engine, future=True))
-    monkeypatch.setattr(main, "get_settings", lambda: test_settings)
-    monkeypatch.setattr(main, "live_merge_enabled", lambda: True)
-    monkeypatch.setattr(main, "JobLease", Lease)
-    monkeypatch.setattr(main, "run_tracker_notification_loop", notification_loop, raising=False)
+    monkeypatch.setattr(worker_runtime, "host_maintenance_active", lambda _settings: False)
+    monkeypatch.setattr(worker_runtime, "JobLease", Lease)
+    monkeypatch.setattr(worker_runtime, "run_tracker_notification_loop", notification_loop)
 
-    with TestClient(main.create_app()):
+    class Push:
+        def emit(self, **kwargs):
+            return {}
+
+        def close(self):
+            pass
+
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            worker_runtime.WorkerRuntime(test_settings, factory, Push()).start(stop)
+        )
         if won_lease:
-            assert started.wait(timeout=1)
+            assert await asyncio.to_thread(started.wait, 1)
         else:
+            await asyncio.sleep(0.05)
             assert not started.is_set()
+        stop.set()
+        await asyncio.wait_for(task, timeout=2)
+
+    asyncio.run(scenario())
 
     assert started.is_set() is won_lease
     if won_lease:
@@ -631,11 +645,9 @@ def test_lifespan_starts_tracker_poller_only_for_lease_owner(
         assert captured["lease_seconds"] == test_settings.tracker_notification_lease_seconds
 
 
-def test_lifespan_waits_for_tracker_poller_before_releasing_lease(
+def test_worker_waits_for_tracker_poller_before_releasing_lease(
     db_engine, test_settings, monkeypatch
 ):
-    entered = threading.Event()
-    close_context = threading.Event()
     poller_started = threading.Event()
     finish_poller = threading.Event()
     lease_released = threading.Event()
@@ -656,29 +668,32 @@ def test_lifespan_waits_for_tracker_poller_before_releasing_lease(
         await asyncio.to_thread(finish_poller.wait)
         assert stop_event.is_set()
 
+    factory = sessionmaker(bind=db_engine, future=True)
     _patch_idle_workers(monkeypatch)
-    monkeypatch.setattr(main, "SessionLocal", sessionmaker(bind=db_engine, future=True))
-    monkeypatch.setattr(main, "get_settings", lambda: test_settings)
-    monkeypatch.setattr(main, "live_merge_enabled", lambda: True)
-    monkeypatch.setattr(main, "JobLease", Lease)
-    monkeypatch.setattr(main, "run_tracker_notification_loop", blocking_poller, raising=False)
+    monkeypatch.setattr(worker_runtime, "host_maintenance_active", lambda _settings: False)
+    monkeypatch.setattr(worker_runtime, "JobLease", Lease)
+    monkeypatch.setattr(worker_runtime, "run_tracker_notification_loop", blocking_poller)
 
-    def serve():
-        with TestClient(main.create_app()):
-            entered.set()
-            close_context.wait(timeout=2)
+    class Push:
+        def emit(self, **kwargs):
+            return {}
 
-    thread = threading.Thread(target=serve)
-    thread.start()
-    assert entered.wait(timeout=1)
-    try:
-        assert poller_started.wait(timeout=1)
-        close_context.set()
-        assert not lease_released.wait(timeout=0.1)
-    finally:
-        close_context.set()
-        finish_poller.set()
-        thread.join(timeout=2)
+        def close(self):
+            pass
 
-    assert not thread.is_alive()
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            worker_runtime.WorkerRuntime(test_settings, factory, Push()).start(stop)
+        )
+        assert await asyncio.to_thread(poller_started.wait, 1)
+        stop.set()
+        try:
+            await asyncio.sleep(0.05)
+            assert not lease_released.is_set()
+        finally:
+            finish_poller.set()
+            await asyncio.wait_for(task, timeout=2)
+
+    asyncio.run(scenario())
     assert lease_released.is_set()

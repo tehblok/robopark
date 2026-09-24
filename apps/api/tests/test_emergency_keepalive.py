@@ -3,12 +3,10 @@ import threading
 import time
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
-from robopark_api import main
 from robopark_api.models import Report
-from robopark_api.services import emergency_client, emergency_keepalive, reports
+from robopark_api.services import emergency_client, emergency_keepalive, reports, worker_runtime
 from robopark_api.services import platform_settings as settings_svc
 
 
@@ -281,7 +279,7 @@ def test_run_keepalive_loop_bridges_shutdown_to_worker_and_joins_it(monkeypatch)
     assert worker_returned.is_set()
 
 
-def test_lifespan_starts_and_stops_keepalive(db_engine, test_settings, monkeypatch):
+def test_worker_starts_and_stops_keepalive(db_engine, test_settings, monkeypatch):
     started = threading.Event()
     stopped = threading.Event()
 
@@ -292,11 +290,50 @@ def test_lifespan_starts_and_stops_keepalive(db_engine, test_settings, monkeypat
         finally:
             stopped.set()
 
-    monkeypatch.setattr(main, "run_keepalive_loop", fake_loop, raising=False)
-    monkeypatch.setattr(main, "SessionLocal", sessionmaker(bind=db_engine, future=True))
-    monkeypatch.setattr(main, "get_settings", lambda: test_settings)
+    async def idle(*args, **kwargs):
+        stop = next(arg for arg in args if isinstance(arg, asyncio.Event))
+        await stop.wait()
 
-    with TestClient(main.create_app()):
-        assert started.wait(timeout=1)
+    class Lease:
+        def __init__(self, root, name):
+            del root, name
 
-    assert stopped.wait(timeout=1)
+        def try_acquire(self):
+            return True
+
+        def release(self):
+            pass
+
+    class Push:
+        def emit(self, **kwargs):
+            return {}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(worker_runtime, "run_keepalive_loop", fake_loop)
+    monkeypatch.setattr(worker_runtime, "JobLease", Lease)
+    monkeypatch.setattr(worker_runtime, "host_maintenance_active", lambda _settings: False)
+    for name in (
+        "run_blocker_history_loop",
+        "run_session_cleanup_loop",
+        "run_cache_cleanup_loop",
+        "run_system_notification_loop",
+        "run_tracker_outbox_loop",
+        "run_campaign_refresh_loop",
+        "run_tracker_notification_loop",
+    ):
+        monkeypatch.setattr(worker_runtime, name, idle)
+
+    async def scenario():
+        stop = asyncio.Event()
+        factory = sessionmaker(bind=db_engine, future=True)
+        task = asyncio.create_task(
+            worker_runtime.WorkerRuntime(test_settings, factory, Push()).start(stop)
+        )
+        assert await asyncio.to_thread(started.wait, 1)
+        stop.set()
+        await asyncio.wait_for(task, timeout=2)
+
+    asyncio.run(scenario())
+    assert stopped.is_set()

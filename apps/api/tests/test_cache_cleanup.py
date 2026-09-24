@@ -5,20 +5,38 @@ import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from robopark_api import main
 from robopark_api.models import AuthThrottleState
+from robopark_api.routers.push import PushService
 from robopark_api.schedule_models import SystemIncidentOccurrence
-from robopark_api.services import cache_cleanup
+from robopark_api.services import cache_cleanup, worker_runtime
 from robopark_api.task_workflow_models import (
     OfflineSyncReceipt,
     ReliableAction,
     TaskAttachment,
     TaskMessage,
 )
+
+
+def _patch_idle_worker_loops(monkeypatch, *, except_names=frozenset()):
+    async def idle(*args, **kwargs):
+        stop = next(arg for arg in args if isinstance(arg, asyncio.Event))
+        await stop.wait()
+
+    for name in (
+        "run_keepalive_loop",
+        "run_blocker_history_loop",
+        "run_session_cleanup_loop",
+        "run_cache_cleanup_loop",
+        "run_system_notification_loop",
+        "run_tracker_outbox_loop",
+        "run_campaign_refresh_loop",
+        "run_tracker_notification_loop",
+    ):
+        if name not in except_names:
+            monkeypatch.setattr(worker_runtime, name, idle)
 
 
 def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
@@ -94,6 +112,11 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         lambda session: calls.append(("pending-reports", session)) or 0,
     )
     monkeypatch.setattr(
+        cache_cleanup.inventory_photo_cleanup,
+        "process_pending",
+        lambda session: calls.append(("inventory-photos", session)) or 0,
+    )
+    monkeypatch.setattr(
         cache_cleanup,
         "cleanup_storage_pressure",
         lambda **kwargs: calls.append(("pressure", kwargs)) or {},
@@ -111,6 +134,7 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         ("schedules", db, {"now": now}),
         ("outbox", db, {"now": now.timestamp()}),
         ("pending-reports", db),
+        ("inventory-photos", db),
         ("report-files", {"now": now.timestamp()}),
         ("pressure", {"now": now.timestamp()}),
     ]
@@ -339,7 +363,7 @@ def test_cleanup_failure_backs_off_while_pressure_sampling_continues(monkeypatch
     ("merge_enabled", "won_lease"),
     [(True, False), (True, True), (False, False), (False, True)],
 )
-def test_lifespan_starts_cleanup_only_for_job_lease_owner(
+def test_worker_starts_cleanup_only_for_job_lease_owner(
     db_engine, test_settings, monkeypatch, merge_enabled, won_lease
 ):
     lease_attempted = threading.Event()
@@ -365,28 +389,37 @@ def test_lifespan_starts_cleanup_only_for_job_lease_owner(
         await stop_event.wait()
 
     async def outbox_loop(session_factory, stop_event, **kwargs):
-        assert session_factory is main.SessionLocal
+        assert session_factory is factory
         outbox_started.set()
         await stop_event.wait()
 
-    monkeypatch.setattr(main, "SessionLocal", sessionmaker(bind=db_engine, future=True))
-    monkeypatch.setattr(main, "get_settings", lambda: test_settings)
-    monkeypatch.setattr(main, "live_merge_enabled", lambda: merge_enabled)
-    monkeypatch.setattr(main, "JobLease", Lease)
-    monkeypatch.setattr(main, "run_keepalive_loop", idle_loop)
-    monkeypatch.setattr(main, "run_blocker_history_loop", idle_loop)
-    monkeypatch.setattr(main, "run_session_cleanup_loop", idle_loop)
-    monkeypatch.setattr(main, "run_cache_cleanup_loop", cleanup_loop)
-    monkeypatch.setattr(main, "run_tracker_outbox_loop", outbox_loop)
+    factory = sessionmaker(bind=db_engine, future=True)
+    monkeypatch.setenv("ROBOPARK_LIVE_MERGE", "1" if merge_enabled else "0")
+    monkeypatch.setattr(worker_runtime, "host_maintenance_active", lambda _settings: False)
+    monkeypatch.setattr(worker_runtime, "JobLease", Lease)
+    _patch_idle_worker_loops(
+        monkeypatch, except_names={"run_cache_cleanup_loop", "run_tracker_outbox_loop"}
+    )
+    monkeypatch.setattr(worker_runtime, "run_cache_cleanup_loop", cleanup_loop)
+    monkeypatch.setattr(worker_runtime, "run_tracker_outbox_loop", outbox_loop)
 
-    with TestClient(main.create_app()):
-        assert lease_attempted.wait(timeout=1)
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            worker_runtime.WorkerRuntime(test_settings, factory, PushService(factory)).start(stop)
+        )
+        assert await asyncio.to_thread(lease_attempted.wait, 1)
         if won_lease:
-            assert cleanup_started.wait(timeout=1)
-            assert outbox_started.wait(timeout=1)
+            assert await asyncio.to_thread(cleanup_started.wait, 1)
+            assert await asyncio.to_thread(outbox_started.wait, 1)
         else:
+            await asyncio.sleep(0.05)
             assert not cleanup_started.is_set()
             assert not outbox_started.is_set()
+        stop.set()
+        await asyncio.wait_for(task, timeout=2)
+
+    asyncio.run(scenario())
 
     assert cleanup_started.is_set() is won_lease
     assert outbox_started.is_set() is won_lease
@@ -504,15 +537,12 @@ def test_cleanup_bounds_successful_actions_and_uploaded_blob_retention(
     assert retained_blob.exists()
 
 
-def test_lifespan_awaits_blocking_outbox_before_releasing_job_lease(
+def test_worker_awaits_blocking_outbox_before_releasing_job_lease(
     db_engine, test_settings, monkeypatch
 ):
-    entered = threading.Event()
-    close_context = threading.Event()
     outbox_started = threading.Event()
     finish_outbox = threading.Event()
     lease_released = threading.Event()
-    app_holder = []
 
     class Lease:
         def __init__(self, root, name):
@@ -524,64 +554,49 @@ def test_lifespan_awaits_blocking_outbox_before_releasing_job_lease(
         def release(self):
             lease_released.set()
 
-    async def idle_loop(stop_event, **kwargs):
-        await stop_event.wait()
-
     async def blocking_outbox(session_factory, stop_event, **kwargs):
         outbox_started.set()
         await asyncio.to_thread(finish_outbox.wait)
         assert stop_event.is_set()
 
-    monkeypatch.setattr(main, "SessionLocal", sessionmaker(bind=db_engine, future=True))
-    monkeypatch.setattr(main, "get_settings", lambda: test_settings)
-    monkeypatch.setattr(main, "live_merge_enabled", lambda: True)
-    monkeypatch.setattr(main, "JobLease", Lease)
-    monkeypatch.setattr(main, "run_keepalive_loop", idle_loop)
-    monkeypatch.setattr(main, "run_blocker_history_loop", idle_loop)
-    monkeypatch.setattr(main, "run_session_cleanup_loop", idle_loop)
-    monkeypatch.setattr(main, "run_cache_cleanup_loop", idle_loop)
-    monkeypatch.setattr(main, "run_tracker_outbox_loop", blocking_outbox)
+    factory = sessionmaker(bind=db_engine, future=True)
+    push_service = PushService(factory)
+    monkeypatch.setattr(worker_runtime, "host_maintenance_active", lambda _settings: False)
+    monkeypatch.setattr(worker_runtime, "JobLease", Lease)
+    _patch_idle_worker_loops(monkeypatch, except_names={"run_tracker_outbox_loop"})
+    monkeypatch.setattr(worker_runtime, "run_tracker_outbox_loop", blocking_outbox)
 
-    def serve():
-        app = main.create_app()
-        app_holder.append(app)
-        with TestClient(app):
-            future = app.state.push_service._submit_deliveries(
-                [("hash", "endpoint", "p256dh", "auth")],
-                lambda _delivery: None,
-                max_workers=1,
-            )[0]
-            future.result(timeout=1)
-            entered.set()
-            close_context.wait(timeout=2)
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            worker_runtime.WorkerRuntime(test_settings, factory, push_service).start(stop)
+        )
+        assert await asyncio.to_thread(outbox_started.wait, 1)
+        future = push_service._submit_deliveries(
+            [("hash", "endpoint", "p256dh", "auth")], lambda _delivery: None, max_workers=1
+        )[0]
+        future.result(timeout=1)
+        stop.set()
+        try:
+            await asyncio.sleep(0.05)
+            assert not lease_released.is_set()
+            assert not push_service._delivery_closed
+        finally:
+            finish_outbox.set()
+            await asyncio.wait_for(task, timeout=2)
 
-    thread = threading.Thread(target=serve)
-    thread.start()
-    assert entered.wait(timeout=1)
-    assert outbox_started.wait(timeout=1)
-    close_context.set()
-    try:
-        assert not lease_released.wait(timeout=0.1)
-        assert not app_holder[0].state.push_service._delivery_closed
-    finally:
-        finish_outbox.set()
-        thread.join(timeout=2)
-
-    assert not thread.is_alive()
+    asyncio.run(scenario())
     assert lease_released.is_set()
-    assert app_holder[0].state.push_service._delivery_closed
-    assert app_holder[0].state.push_service._delivery_executor is None
+    assert push_service._delivery_closed
+    assert push_service._delivery_executor is None
 
 
-def test_lifespan_joins_real_cleanup_thread_before_closing_shared_resources(
+def test_worker_joins_real_cleanup_thread_before_closing_shared_resources(
     db_engine, test_settings, monkeypatch
 ):
-    entered = threading.Event()
-    close_context = threading.Event()
     cleanup_started = threading.Event()
     finish_cleanup = threading.Event()
     lease_released = threading.Event()
-    app_holder = []
 
     class Lease:
         def __init__(self, root, name):
@@ -593,54 +608,37 @@ def test_lifespan_joins_real_cleanup_thread_before_closing_shared_resources(
         def release(self):
             lease_released.set()
 
-    async def idle_loop(stop_event, **kwargs):
-        del kwargs
-        await stop_event.wait()
-
-    async def idle_factory_loop(session_factory, stop_event, **kwargs):
-        del session_factory, kwargs
-        await stop_event.wait()
-
     def blocking_cleanup():
         cleanup_started.set()
         finish_cleanup.wait(timeout=2)
         return (0, 0)
 
+    factory = sessionmaker(bind=db_engine, future=True)
+    push_service = PushService(factory)
     monkeypatch.setattr(cache_cleanup, "prune_cache_once", blocking_cleanup)
-    monkeypatch.setattr(main, "SessionLocal", sessionmaker(bind=db_engine, future=True))
-    monkeypatch.setattr(main, "get_settings", lambda: test_settings)
-    monkeypatch.setattr(main, "live_merge_enabled", lambda: True)
-    monkeypatch.setattr(main, "JobLease", Lease)
-    monkeypatch.setattr(main, "run_keepalive_loop", idle_loop)
-    monkeypatch.setattr(main, "run_blocker_history_loop", idle_loop)
-    monkeypatch.setattr(main, "run_session_cleanup_loop", idle_loop)
-    monkeypatch.setattr(main, "run_system_notification_loop", idle_loop)
-    monkeypatch.setattr(main, "run_tracker_outbox_loop", idle_factory_loop)
-    monkeypatch.setattr(main, "run_campaign_refresh_loop", idle_factory_loop)
-    monkeypatch.setattr(main, "run_tracker_notification_loop", idle_factory_loop)
+    monkeypatch.setattr(cache_cleanup, "sample_memory_pressure", lambda: None)
+    monkeypatch.setattr(worker_runtime, "host_maintenance_active", lambda _settings: False)
+    monkeypatch.setattr(worker_runtime, "JobLease", Lease)
+    _patch_idle_worker_loops(monkeypatch, except_names={"run_cache_cleanup_loop"})
 
-    def serve():
-        app = main.create_app()
-        app_holder.append(app)
-        with TestClient(app):
-            entered.set()
-            close_context.wait(timeout=2)
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            worker_runtime.WorkerRuntime(test_settings, factory, push_service).start(stop)
+        )
+        assert await asyncio.to_thread(cleanup_started.wait, 1)
+        stop.set()
+        try:
+            await asyncio.sleep(0.05)
+            assert not lease_released.is_set()
+            assert not push_service._delivery_closed
+        finally:
+            finish_cleanup.set()
+            await asyncio.wait_for(task, timeout=2)
 
-    thread = threading.Thread(target=serve)
-    thread.start()
-    assert entered.wait(timeout=1)
-    assert cleanup_started.wait(timeout=1)
-    close_context.set()
-    try:
-        assert not lease_released.wait(timeout=0.1)
-        assert not app_holder[0].state.push_service._delivery_closed
-    finally:
-        finish_cleanup.set()
-        thread.join(timeout=2)
-
-    assert not thread.is_alive()
+    asyncio.run(scenario())
     assert lease_released.is_set()
-    assert app_holder[0].state.push_service._delivery_closed
+    assert push_service._delivery_closed
 
 
 def test_cleanup_limits_each_outbox_retention_batch_to_500(db_engine, db_session, seed_mechanic):

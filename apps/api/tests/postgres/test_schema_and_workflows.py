@@ -204,29 +204,8 @@ def _postgres_http_client(migrated_engine: Engine, tmp_path: Path, monkeypatch):
         ops_sync=True,
     )
 
-    async def idle(stop_event, **_kwargs):
-        await stop_event.wait()
-
-    async def idle_with_factory(_session_factory, stop_event, **_kwargs):
-        await stop_event.wait()
-
-    for name in (
-        "run_keepalive_loop",
-        "run_blocker_history_loop",
-        "run_session_cleanup_loop",
-        "run_cache_cleanup_loop",
-        "run_system_notification_loop",
-    ):
-        monkeypatch.setattr(main, name, idle)
-    for name in (
-        "run_tracker_outbox_loop",
-        "run_campaign_refresh_loop",
-        "run_tracker_notification_loop",
-    ):
-        monkeypatch.setattr(main, name, idle_with_factory)
     monkeypatch.setattr(main, "SessionLocal", factory)
     monkeypatch.setattr(main, "get_settings", lambda: settings)
-    monkeypatch.setattr(main, "live_merge_enabled", lambda: False)
 
     app = main.create_app()
 
