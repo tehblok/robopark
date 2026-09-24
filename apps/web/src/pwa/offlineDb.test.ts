@@ -229,6 +229,37 @@ describe('offline database', () => {
     expect(await lower.getAction('paused')).toBeUndefined()
   })
 
+  it.each([
+    ['confirmed', 'conflict'], ['confirmed', 'attention'],
+    ['cancelled', 'conflict'], ['cancelled', 'attention'],
+    ['confirmed', 'cancelled'], ['cancelled', 'confirmed'],
+  ] as const)('keeps a v2 %s action over a later v1 %s copy', async (destinationState, sourceState) => {
+    const newScope = { ...scope(), schema: 2 }
+    const current = await openOfflineDb(newScope)
+    await current.putAction(action('final', destinationState, 9))
+    const late = await openOfflineDb(scope())
+    await late.putAction(action('final', sourceState, 20))
+
+    const reopened = await openOfflineDb(newScope)
+    expect(await reopened.getAction('final')).toMatchObject({ state: destinationState, updatedAt: 9 })
+    const lower = await openOfflineDb(scope())
+    expect(await lower.getAction('final')).toBeUndefined()
+  })
+
+  it.each(['attention', 'confirmed'] as const)('keeps confirmed v2 media over a later v1 %s copy', async sourceState => {
+    const newScope = { ...scope(), schema: 2 }
+    const photo = { id: 'final', actionId: 'final', issueKey: 'TASK-1', name: 'new.jpg', blob: new Blob(['x']), mimeType: 'image/jpeg', sha256: 'x', sizeBytes: 1, createdAt: 1 }
+    const current = await openOfflineDb(newScope)
+    await current.putMedia({ ...photo, state: 'confirmed', updatedAt: 9 })
+    const late = await openOfflineDb(scope())
+    await late.putMedia({ ...photo, name: 'old.jpg', state: sourceState, updatedAt: 20 })
+
+    const reopened = await openOfflineDb(newScope)
+    expect(await reopened.getMedia('final')).toMatchObject({ state: 'confirmed', name: 'new.jpg', updatedAt: 9 })
+    const lower = await openOfflineDb(scope())
+    expect(await lower.getMedia('final')).toBeUndefined()
+  })
+
   it('cleans expired confirmed data but never removes pending actions or media', async () => {
     const db = await openOfflineDb(scope())
     await db.transaction(writer => {

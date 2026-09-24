@@ -47,3 +47,15 @@ Verification: bounded Vitest selection (9 files, 217 tests passed), `npx tsc --n
 Status: the paused-action migration regression is fixed. For migration collisions only, `conflict` and `attention` now have protected precedence over a lower-schema `ready` copy even when its timestamp is later. The lower-schema copy is removed transactionally; the v2 action remains paused. This does not redefine those states as final product outcomes. A focused sync regression confirms no automatic send, and explicit conflict resolution permits sending.
 
 Verification: bounded `offlineDb` and `syncEngine` Vitest suites (2 files, 33 tests passed), `npx tsc --noEmit -p tsconfig.app.json` passed. No E2E tests were run.
+
+## Round 4 re-review fix
+
+Status: the remaining migration state-precedence P1 is fixed with TDD.
+
+- Actions and media now share ordered migration precedence: final (`confirmed`/`cancelled`) > paused (`conflict`/`attention`) > sendable. A final higher-schema destination also wins a final-state tie, preserving its outcome and payload against a late lower-schema copy.
+- Existing transactional deletion of the losing lower-schema source remains intact. New database regressions verify the retained destination and the absence of the source for paused/final collisions.
+- New sync regressions verify that final actions are not sent and confirmed media are not uploaded after late lower-schema paused writes, including a repeated sync. The existing explicit conflict-resolution regression still passes; `resolveConflict()` is unchanged.
+
+Verification: RED reproduced all 12 new failures (incorrect retained states/payloads and unexpected upload), with 33 existing tests passing; GREEN passed both bounded suites, 45 tests total. `npx tsc --noEmit -p tsconfig.app.json` and `git diff --check` passed. No full-suite or E2E run was performed, as requested for this bounded fix. The first sandboxed Vitest startup was denied its temporary config write; the authorized escalated run completed normally.
+
+Concerns: none identified within the requested migration fix. The unrelated existing behavior that retries ordinary attention media is unchanged; finalized media cannot be downgraded into that path by migration.

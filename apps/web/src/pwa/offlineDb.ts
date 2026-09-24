@@ -375,11 +375,17 @@ function sourceSupersedes(storeName: StoreName, source: ScopedRecord, destinatio
   const old = source as ScopedRecord & { updatedAt?: number, state?: string, baseRevision?: string | null, revision?: string }
   const current = destination as typeof old
   if (storeName === 'actions' || storeName === 'media') {
-    // Conflict/attention are not final product states, but they must dominate
-    // an older client's ready copy until a user explicitly resolves them.
-    const protectedForMigration = (state?: string) => state === 'confirmed' || state === 'attention'
-      || (storeName === 'actions' && (state === 'cancelled' || state === 'conflict'))
-    if (protectedForMigration(old.state) !== protectedForMigration(current.state)) return protectedForMigration(old.state)
+    // Final outcomes dominate paused work, which dominates sendable copies.
+    // A final destination also wins ties against an older schema's outcome.
+    const migrationRank = (state?: string) => {
+      if (state === 'confirmed' || state === 'cancelled') return 2
+      if (state === 'conflict' || state === 'attention') return 1
+      return 0
+    }
+    const sourceRank = migrationRank(old.state)
+    const destinationRank = migrationRank(current.state)
+    if (sourceRank !== destinationRank) return sourceRank > destinationRank
+    if (destinationRank === 2) return false
     if (storeName === 'actions' && old.baseRevision !== current.baseRevision) return false
   }
   if (storeName === 'revisions' && old.revision !== current.revision) return false

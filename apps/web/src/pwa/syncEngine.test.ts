@@ -272,6 +272,40 @@ describe('SyncEngine', () => {
     engine.dispose()
   })
 
+  it.each([
+    ['confirmed', 'conflict'], ['confirmed', 'attention'],
+    ['cancelled', 'conflict'], ['cancelled', 'attention'],
+  ] as const)('does not resend a final %s action or re-upload media after a late v1 %s write', async (destinationState, sourceState) => {
+    const newScope = { ...scope, schema: 2 }
+    const finalAction = { ...input('final'), state: destinationState, attempts: 1, createdAt: 1, updatedAt: 9 }
+    const finalMedia = { id: 'photo', actionId: 'final', issueKey: 'TASK-1', name: 'final.jpg', blob: new Blob(['x']), mimeType: 'image/jpeg', sha256: 'x', sizeBytes: 1, state: 'confirmed' as const, createdAt: 1, updatedAt: 9 }
+    const current = await openOfflineDb(newScope)
+    await current.putAction(finalAction)
+    await current.putMedia(finalMedia)
+    const late = await openOfflineDb(scope)
+    await late.putAction({ ...finalAction, state: sourceState, updatedAt: 20 })
+    await late.putMedia({ ...finalMedia, state: 'attention', updatedAt: 20 })
+    const reopened = await openOfflineDb(newScope)
+    const sendBatch = vi.fn(async (batch: SyncBatchRequest) => ({
+      results: batch.actions.map(item => ({ client_action_id: item.client_action_id, state: 'confirmed' as const, code: null, result: null })),
+      deltas: {}, revisions: {}, revoked_scopes: [],
+    }))
+    const uploadMedia = vi.fn(async () => {})
+    const engine = new SyncEngine({ db: reopened, coordinator: coordinator(reopened), deviceId: 'phone', sendBatch, uploadMedia })
+    try {
+      await engine.syncNow('reopen')
+      await engine.syncNow('retry')
+
+      expect(sendBatch).not.toHaveBeenCalled()
+      expect(uploadMedia).not.toHaveBeenCalled()
+      expect(await reopened.getAction('final')).toMatchObject({ state: destinationState, updatedAt: 9 })
+      expect(await reopened.getMedia('photo')).toMatchObject({ state: 'confirmed', updatedAt: 9 })
+      expect(engine.getState()).toMatchObject({ pending: 0, conflicts: 0 })
+    } finally {
+      engine.dispose()
+    }
+  })
+
   it('exposes durable action state changes and finds an unresolved resource action', async () => {
     const sendBatch = vi.fn(async (batch: SyncBatchRequest) => ({
       results: [{ client_action_id: batch.actions[0].client_action_id, state: 'confirmed' as const, code: null, result: null }],
