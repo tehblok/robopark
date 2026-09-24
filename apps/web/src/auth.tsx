@@ -37,14 +37,17 @@ function retireDraftScopes(user: User): void {
 export function AuthProvider({ children }: PropsWithChildren) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
+  const [identityVerified, setIdentityVerified] = useState(false)
   const sessionGeneration = useRef(0)
   const authorizedUser = useRef<User | null>(null)
   const advanceSessionGeneration = useCallback(() => ++sessionGeneration.current, [])
 
   useLayoutEffect(() => {
-    setServiceWorkerAuthState({ loading, accountId: user?.id ?? null })
+    // UI can stop showing its spinner after a failed identity request, but a
+    // network/parse/server error is not proof that the browser is anonymous.
+    setServiceWorkerAuthState({ loading: loading || !identityVerified, accountId: user?.id ?? null })
     return () => setServiceWorkerAuthState(null)
-  }, [loading, user?.id])
+  }, [loading, identityVerified, user?.id])
 
   const clearSessionState = useCallback(() => {
     const generation = advanceSessionGeneration()
@@ -59,6 +62,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     interfaceModeStore.setAccount(null)
     setUser(null)
     setLoading(false)
+    setIdentityVerified(false)
     return generation
   }, [advanceSessionGeneration])
 
@@ -75,6 +79,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
           interfaceModeStore.setAccount(nextUser.id)
           authorizedUser.current = nextUser
           setUser(nextUser)
+          setIdentityVerified(true)
         }
       })
       .catch(async (error) => {
@@ -82,6 +87,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
         if (error instanceof ApiError && error.status === 401) {
           await Promise.all([purgeOfflineScope().catch(() => {}), clearShareTargetInbox().catch(() => {})])
           clearSessionState()
+          setIdentityVerified(true)
         } else {
           setUser(null)
         }
@@ -110,6 +116,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     interfaceModeStore.setAccount(authenticatedUser.id)
     authorizedUser.current = authenticatedUser
     setUser(authenticatedUser)
+    setIdentityVerified(true)
     return authenticatedUser
   }
 
@@ -134,13 +141,19 @@ export function AuthProvider({ children }: PropsWithChildren) {
           interfaceModeStore.setAccount(authenticatedUser.id)
           authorizedUser.current = authenticatedUser
           setUser(authenticatedUser)
+          setIdentityVerified(true)
         }
       }
       return authenticatedUser
     } catch (error) {
-      if (generation === sessionGeneration.current && error instanceof ApiError && error.status === 401) {
-        await Promise.all([purgeOfflineScope().catch(() => {}), clearShareTargetInbox().catch(() => {})])
-        clearSessionState()
+      if (generation === sessionGeneration.current) {
+        if (error instanceof ApiError && error.status === 401) {
+          await Promise.all([purgeOfflineScope().catch(() => {}), clearShareTargetInbox().catch(() => {})])
+          clearSessionState()
+          setIdentityVerified(true)
+        } else {
+          setIdentityVerified(false)
+        }
       }
       throw error
     }
@@ -154,6 +167,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       clearProtectedBrowserStorage()
       if (status === 401) {
         clearSessionState()
+        setIdentityVerified(true)
         void purgeOfflineScope().catch(() => {})
         void clearShareTargetInbox().catch(() => {})
       }
@@ -164,12 +178,17 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   const logout = async () => {
     const generation = clearSessionState()
+    let serverConfirmedLogout = false
     try {
       await purgeOfflineScope().catch(() => {})
       await clearShareTargetInbox().catch(() => {})
       await api.logout()
+      serverConfirmedLogout = true
     } finally {
-      if (generation === sessionGeneration.current) clearSessionState()
+      if (generation === sessionGeneration.current) {
+        clearSessionState()
+        if (serverConfirmedLogout) setIdentityVerified(true)
+      }
     }
   }
 

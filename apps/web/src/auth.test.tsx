@@ -9,6 +9,7 @@ import { IDBFactory } from 'fake-indexeddb'
 import { openOfflineDb, purgeOfflineScope } from './pwa/offlineDb'
 import { offlineScopeForUser } from './lib/deviceResourceCache'
 import { openShareTargetInbox } from './pwa/ShareTargetInbox'
+import { registerServiceWorker } from './pwa/registerServiceWorker'
 
 const oldAccount: User = {
   id: 3,
@@ -85,6 +86,24 @@ function expectProtectedStateRetained(): void {
   expect(localStorage.getItem(otherRecentKey)).toBe('other-recents')
   expect(localStorage.getItem(reportKey)).toBe('old-draft')
   expect(localStorage.getItem(otherReportKey)).toBe('other-draft')
+}
+
+async function activationSafetyProbe(): Promise<() => boolean> {
+  const listeners = new Map<string, (event: { data?: unknown, ports?: { postMessage: (value: unknown) => void, onmessage?: (event: { data?: unknown }) => void }[] }) => void>()
+  await registerServiceWorker({
+    production: true, secure: true,
+    serviceWorker: {
+      register: async () => ({ update: async () => undefined }),
+      addEventListener: (name, listener) => listeners.set(name, listener),
+    },
+  })
+  return () => {
+    let safe = false
+    const port = { postMessage: (reply: unknown) => { safe = (reply as { safe: boolean }).safe }, onmessage: undefined as undefined | ((event: { data?: unknown }) => void) }
+    listeners.get('message')?.({ data: { type: 'PREPARE_ACTIVATION' }, ports: [port] })
+    port.onmessage?.({ data: { type: 'RELEASE_ACTIVATION' } })
+    return safe
+  }
 }
 
 describe('AuthProvider session boundaries', () => {
@@ -281,6 +300,27 @@ describe('AuthProvider session boundaries', () => {
 
     expect(await screen.findByText('anonymous')).toBeInTheDocument()
     expectProtectedStateCleared()
+  })
+
+  it('allows an update after an authoritative anonymous 401', async () => {
+    const safeToActivate = await activationSafetyProbe()
+    vi.spyOn(api, 'me').mockRejectedValueOnce(new ApiError(401))
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    expect(await screen.findByText('anonymous')).toBeInTheDocument()
+    expect(safeToActivate()).toBe(true)
+  })
+
+  it.each([
+    ['network', new TypeError('Failed to fetch')],
+    ['server', new ApiError(503, 'unavailable')],
+    ['parse', new SyntaxError('invalid JSON')],
+    ['timeout', new ApiTimeoutError(30_000)],
+  ])('keeps update safety unknown after an initial %s identity failure', async (_label, failure) => {
+    const safeToActivate = await activationSafetyProbe()
+    vi.spyOn(api, 'me').mockRejectedValueOnce(failure)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    expect(await screen.findByText('anonymous')).toBeInTheDocument()
+    expect(safeToActivate()).toBe(false)
   })
 
   it('purges protected memory and account data when the emergency query POST returns 403', async () => {

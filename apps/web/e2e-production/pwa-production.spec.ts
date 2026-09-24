@@ -55,7 +55,9 @@ async function expectWaitingAfterRequest(page: Page) {
   expect(await page.evaluate(async () => Boolean((await navigator.serviceWorker.getRegistration('/'))?.waiting))).toBe(true)
 }
 
-test('production worker waits for action, media, and every client before preserving scoped data on update', async ({ context, page }) => {
+for (const width of [390, 1440]) {
+test(`installed-like production worker waits for action, media, and every client at ${width}px`, async ({ context, page }) => {
+  await page.setViewportSize({ width, height: 900 })
   await page.request.post('/__pwa_fixture__/version', { data: { version: 'v1', legacyClient: false } })
   await page.goto('/')
   await expect.poll(() => page.evaluate(async () => {
@@ -185,7 +187,17 @@ test('production worker waits for action, media, and every client before preserv
     }
   })), privateUrls)
   expect(privateResponses).toEqual(['rejected', 'rejected'])
+  await context.setOffline(false)
+  await page.evaluate(() => window.dispatchEvent(new Event('online')))
+  await page.reload()
+  await expect(page.locator('meta[name="pwa-fixture-version"]')).toHaveAttribute('content', 'v2')
+  expect(await page.evaluate(async urls => Promise.all(urls.map(async url => {
+    const response = await fetch(url)
+    return { status: response.status, body: await response.text() }
+  })), privateUrls)).toEqual(onlineResponses)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
+}
 
 test('a real old client sends the state-less protocol and waits until its tab closes', async ({ context, page }) => {
   await page.request.post('/__pwa_fixture__/version', { data: { version: 'v1', legacyClient: true } })

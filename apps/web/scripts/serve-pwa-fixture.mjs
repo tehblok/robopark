@@ -73,6 +73,13 @@ const server = createServer(async (request, response) => {
     response.end(legacyBundleClient())
     return
   }
+  // A 401 is the only authoritative anonymous identity response. Serving the
+  // HTML fallback here would be a parse failure and must keep activation shut.
+  if (url.pathname === '/api/auth/me') {
+    response.writeHead(401, { 'cache-control': 'no-store', 'content-type': 'application/json' })
+    response.end(JSON.stringify({ detail: 'not_authenticated' }))
+    return
+  }
   const controlled = controlledPrivateResponse(url.pathname)
   if (controlled !== null) {
     response.writeHead(200, {

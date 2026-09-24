@@ -7,7 +7,7 @@ const repair = { ...issue, claim: { park_id: 7 }, workflow: {
 } }
 
 for (const width of [390, 1440]) {
-  test(`queues work offline and delivers it after reconnect at ${width}px`, async ({ page, context }) => {
+  test(`ordinary browser queues work offline and recovers after reconnect at ${width}px`, async ({ page, context }) => {
     let syncRequests = 0
     await page.setViewportSize({ width, height: 900 })
     await installOperational(page, { issue: repair, routes: [{
@@ -21,6 +21,8 @@ for (const width of [390, 1440]) {
       },
     }] })
     await page.goto('/work/ROBOPARK-42?park=7')
+    expect(await page.evaluate(() => navigator.serviceWorker.controller)).toBeNull()
+    await page.getByRole('tab', { name: 'Чат' }).click()
     const composer = page.getByRole('textbox', { name: 'Комментарии', exact: true })
     await expect(composer).toBeVisible()
 
@@ -33,6 +35,10 @@ for (const width of [390, 1440]) {
     await context.setOffline(false)
     await page.evaluate(() => window.dispatchEvent(new Event('online')))
     await expect.poll(() => syncRequests).toBe(1)
+    await page.reload()
+    await page.getByRole('tab', { name: 'Чат' }).click()
+    await expect(page.getByRole('textbox', { name: 'Комментарии', exact: true })).toBeVisible()
+    expect(await page.evaluate(() => navigator.serviceWorker.controller)).toBeNull()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   })
 }
