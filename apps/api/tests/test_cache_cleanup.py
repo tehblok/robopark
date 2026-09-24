@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import AuthThrottleState
 from robopark_api.routers.push import PushService
 from robopark_api.schedule_models import SystemIncidentOccurrence
@@ -84,6 +85,11 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         lambda session, **kwargs: calls.append(("incidents", session, kwargs)) or 2,
     )
     monkeypatch.setattr(
+        cache_cleanup,
+        "prune_observability",
+        lambda session, **kwargs: calls.append(("observability", session, kwargs)) or (0, 0),
+    )
+    monkeypatch.setattr(
         cache_cleanup.push,
         "prune_notification_data",
         lambda session, **kwargs: (
@@ -130,6 +136,7 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         ("receipts", db, {"now": now.timestamp()}),
         ("throttles", db, {"now": now}),
         ("incidents", db, {"now": now}),
+        ("observability", db, {"now": now}),
         ("notifications", db, {"now": now}),
         ("schedules", db, {"now": now}),
         ("outbox", db, {"now": now.timestamp()}),
@@ -183,9 +190,7 @@ def test_cleanup_bounds_expired_auth_throttle_rows(db_session):
     assert db_session.scalar(select(func.count()).select_from(AuthThrottleState)) == 1
 
 
-def test_cleanup_does_not_delete_auth_throttle_row_renewed_after_selection(
-    db_session, db_engine
-):
+def test_cleanup_does_not_delete_auth_throttle_row_renewed_after_selection(db_session, db_engine):
     cutoff = datetime(2026, 9, 20, tzinfo=UTC)
     key_hash = "a" * 64
     db_session.add(
@@ -248,15 +253,16 @@ def test_cleanup_bounds_resolved_incidents_and_preserves_active(db_session):
     active_id = active.id
     recent_id = recent.id
 
-    assert cache_cleanup.prune_system_incident_occurrences(
-        db_session, now=now, limit=2
-    ) == 2
+    assert cache_cleanup.prune_system_incident_occurrences(db_session, now=now, limit=2) == 2
     assert db_session.get(SystemIncidentOccurrence, active_id) is not None
     assert db_session.get(SystemIncidentOccurrence, recent_id) is not None
-    assert sum(
-        db_session.get(SystemIncidentOccurrence, occurrence_id) is not None
-        for occurrence_id in old_ids
-    ) == 1
+    assert (
+        sum(
+            db_session.get(SystemIncidentOccurrence, occurrence_id) is not None
+            for occurrence_id in old_ids
+        )
+        == 1
+    )
 
 
 def test_deleted_report_file_cleanup_only_removes_old_quarantine_files(tmp_path, monkeypatch):
@@ -452,6 +458,7 @@ def test_cleanup_bounds_successful_actions_and_uploaded_blob_retention(
         payload_hash="0" * 64,
         payload_json="{}",
         state="succeeded",
+        result_json='{"attachment_id":"remote-attachment","external_id":"remote-comment"}',
         next_attempt_at=0,
         created_at=old,
         updated_at=old,
@@ -561,6 +568,8 @@ def test_worker_awaits_blocking_outbox_before_releasing_job_lease(
 
     factory = sessionmaker(bind=db_engine, future=True)
     push_service = PushService(factory)
+    push_closed = threading.Event()
+    monkeypatch.setattr(push_service, "close", push_closed.set)
     monkeypatch.setattr(worker_runtime, "host_maintenance_active", lambda _settings: False)
     monkeypatch.setattr(worker_runtime, "JobLease", Lease)
     _patch_idle_worker_loops(monkeypatch, except_names={"run_tracker_outbox_loop"})
@@ -572,23 +581,18 @@ def test_worker_awaits_blocking_outbox_before_releasing_job_lease(
             worker_runtime.WorkerRuntime(test_settings, factory, push_service).start(stop)
         )
         assert await asyncio.to_thread(outbox_started.wait, 1)
-        future = push_service._submit_deliveries(
-            [("hash", "endpoint", "p256dh", "auth")], lambda _delivery: None, max_workers=1
-        )[0]
-        future.result(timeout=1)
         stop.set()
         try:
             await asyncio.sleep(0.05)
             assert not lease_released.is_set()
-            assert not push_service._delivery_closed
+            assert not push_closed.is_set()
         finally:
             finish_outbox.set()
             await asyncio.wait_for(task, timeout=2)
 
     asyncio.run(scenario())
     assert lease_released.is_set()
-    assert push_service._delivery_closed
-    assert push_service._delivery_executor is None
+    assert push_closed.is_set()
 
 
 def test_worker_joins_real_cleanup_thread_before_closing_shared_resources(
@@ -615,6 +619,8 @@ def test_worker_joins_real_cleanup_thread_before_closing_shared_resources(
 
     factory = sessionmaker(bind=db_engine, future=True)
     push_service = PushService(factory)
+    push_closed = threading.Event()
+    monkeypatch.setattr(push_service, "close", push_closed.set)
     monkeypatch.setattr(cache_cleanup, "prune_cache_once", blocking_cleanup)
     monkeypatch.setattr(cache_cleanup, "sample_memory_pressure", lambda: None)
     monkeypatch.setattr(worker_runtime, "host_maintenance_active", lambda _settings: False)
@@ -631,14 +637,14 @@ def test_worker_joins_real_cleanup_thread_before_closing_shared_resources(
         try:
             await asyncio.sleep(0.05)
             assert not lease_released.is_set()
-            assert not push_service._delivery_closed
+            assert not push_closed.is_set()
         finally:
             finish_cleanup.set()
             await asyncio.wait_for(task, timeout=2)
 
     asyncio.run(scenario())
     assert lease_released.is_set()
-    assert push_service._delivery_closed
+    assert push_closed.is_set()
 
 
 def test_cleanup_limits_each_outbox_retention_batch_to_500(db_engine, db_session, seed_mechanic):
@@ -667,6 +673,153 @@ def test_cleanup_limits_each_outbox_retention_batch_to_500(db_engine, db_session
 
     with Session(db_engine) as db:
         assert db.query(ReliableAction).count() == 1
+
+
+def test_outbox_retention_keeps_unresolved_and_unconfirmed_attachment(
+    db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    now = datetime(2026, 9, 24, tzinfo=UTC).timestamp()
+    old = now - 8 * 86400
+    message = TaskMessage(
+        id="retention-guard-message",
+        issue_key="ROBOPARK-9",
+        kind="user",
+        author_name="worker",
+        text="required",
+        sync_state="pending",
+        created_at=old,
+        updated_at=old,
+    )
+    db_session.add(message)
+    for state, result in (("pending", None), ("needs_attention", None), ("succeeded", None)):
+        action = ReliableAction(
+            id=f"guard-{state}",
+            actor_user_id=seed_mechanic.id,
+            resource_type="tracker_issue",
+            resource_id="ROBOPARK-9",
+            action="attach",
+            idempotency_key=f"guard-{state}-key",
+            payload_hash="0" * 64,
+            payload_json="{}",
+            state=state,
+            result_json=result,
+            next_attempt_at=0,
+            created_at=old,
+            updated_at=old,
+        )
+        db_session.add(action)
+        blob = tmp_path / f"{state}.blob"
+        blob.write_bytes(b"required")
+        db_session.add(
+            TaskAttachment(
+                id=action.id,
+                message_id=message.id,
+                blob_name=blob.name,
+                original_name=blob.name,
+                mime_type="image/png",
+                size_bytes=8,
+                sha256="0" * 64,
+                created_at=old,
+                uploaded_at=old,
+            )
+        )
+    db_session.commit()
+    monkeypatch.setattr(cache_cleanup, "staged_attachments_root", lambda: tmp_path)
+    assert cache_cleanup.prune_tracker_outbox(db_session, now=now) == (0, 0)
+    assert all(
+        (tmp_path / f"{state}.blob").read_bytes() == b"required"
+        for state in ("pending", "needs_attention", "succeeded")
+    )
+
+
+def test_outbox_retention_preserves_active_claim_start_action(
+    db_session, seed_mechanic, seed_park_with_tracker
+):
+    now = datetime(2026, 9, 24, tzinfo=UTC).timestamp()
+    action = ReliableAction(
+        id="claim-start-action",
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id="ROBOPARK-50",
+        action="start",
+        idempotency_key="claim-start-action-key",
+        payload_hash="0" * 64,
+        payload_json="{}",
+        state="succeeded",
+        next_attempt_at=0,
+        created_at=now - 40 * 86400,
+        updated_at=now - 40 * 86400,
+    )
+    db_session.add(action)
+    db_session.add(
+        TrackerClaim(
+            issue_key="ROBOPARK-50",
+            park_id=seed_park_with_tracker.id,
+            owner_user_id=seed_mechanic.id,
+            updated_by_user_id=seed_mechanic.id,
+            state="active",
+            start_action_id=action.id,
+            updated_at=now,
+        )
+    )
+    db_session.commit()
+    assert cache_cleanup.prune_tracker_outbox(db_session, now=now) == (0, 0)
+    assert db_session.get(ReliableAction, action.id) is not None
+
+
+def test_pressure_cleanup_preserves_recent_confirmed_upload(
+    db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    now = time.time()
+    action = ReliableAction(
+        id="recent-pressure-action",
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id="ROBOPARK-51",
+        action="attach",
+        idempotency_key="recent-pressure-action-key",
+        payload_hash="0" * 64,
+        payload_json="{}",
+        state="succeeded",
+        result_json='{"attachment_id":"remote-a","external_id":"remote-c"}',
+        next_attempt_at=0,
+        created_at=now - 86400,
+        updated_at=now - 86400,
+    )
+    message = TaskMessage(
+        id="recent-pressure-message",
+        issue_key="ROBOPARK-51",
+        kind="system",
+        author_name="system",
+        text="synced",
+        sync_state="synced",
+        created_at=now - 86400,
+        updated_at=now - 86400,
+    )
+    db_session.add_all([action, message])
+    db_session.flush()
+    db_session.add(
+        TaskAttachment(
+            id=action.id,
+            message_id=message.id,
+            blob_name="recent-upload",
+            original_name="recent.png",
+            mime_type="image/png",
+            size_bytes=4,
+            sha256="0" * 64,
+            created_at=now - 86400,
+            uploaded_at=now - 86400,
+        )
+    )
+    db_session.commit()
+    (tmp_path / "recent-upload").write_bytes(b"keep")
+    monkeypatch.setattr(cache_cleanup, "staged_attachments_root", lambda: tmp_path)
+    report = cache_cleanup.cleanup_confirmed_tracker_copies(
+        db_session, budget=cache_cleanup.StorageBudget(100, 0, minimum_free_bytes=1)
+    )
+    assert report["deleted_count"] == 0
+    assert (tmp_path / "recent-upload").read_bytes() == b"keep"
+    assert db_session.get(TaskAttachment, action.id) is not None
 
 
 def test_pressure_coordinator_uses_real_owner_paths_in_order(
@@ -709,6 +862,7 @@ def test_pressure_coordinator_uses_real_owner_paths_in_order(
         payload_hash="0" * 64,
         payload_json="{}",
         state="succeeded",
+        result_json='{"attachment_id":"remote-a","external_id":"remote-c"}',
         next_attempt_at=0,
         created_at=1,
         updated_at=1,
@@ -891,6 +1045,7 @@ def test_confirmed_tracker_cleanup_addresses_eligible_name_beyond_protected_pref
         payload_hash="0" * 64,
         payload_json="{}",
         state="succeeded",
+        result_json='{"attachment_id":"remote-a","external_id":"remote-c"}',
         next_attempt_at=0,
         created_at=1,
         updated_at=1,
@@ -961,6 +1116,7 @@ def test_pressure_coordinator_bounds_protected_tracker_scan_by_absolute_deadline
         payload_hash="0" * 64,
         payload_json="{}",
         state="succeeded",
+        result_json='{"attachment_id":"remote-a","external_id":"remote-c"}',
         next_attempt_at=0,
         created_at=1,
         updated_at=1,

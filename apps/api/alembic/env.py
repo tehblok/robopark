@@ -10,6 +10,7 @@ from robopark_api import (  # noqa: F401 — register migration metadata
 )
 from robopark_api.config import Settings
 from robopark_api.models import Base
+from robopark_api.services import system_observability  # noqa: F401 — register metric metadata
 
 config = context.config
 

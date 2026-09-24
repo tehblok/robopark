@@ -1,5 +1,5 @@
 {
-  "migration_head": "0040_notification_delivery",
+  "migration_head": "0041_system_metrics_presence",
   "migration_compatibility": {
     "from_heads": ["0036_audit_remediation_state", "0037_claim_workflow_visibility", "0038_inventory_photo_cleanup"],
     "reversible": true

@@ -1,20 +1,23 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, joinedload
 
+from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
 from robopark_api.deps import require_royal, require_user
 from robopark_api.models import AccessStatus, AuthSession, Park, Report, Role, User, UserPark
+from robopark_api.schedule_models import ScheduleEntry
 from robopark_api.schemas import ParkOut
 from robopark_api.security import PasswordPolicyError, hash_password, validate_password
 from robopark_api.services import audit, rbac
 from robopark_api.services.user_activity import public_ip
+from robopark_api.task_workflow_models import TaskReview
 
 router = APIRouter(prefix="/admin/users", tags=["admin-users"])
 
@@ -69,9 +72,7 @@ def _can_manage_users(db: Session, actor: User) -> bool:
     return rbac.is_royal(actor) or rbac.has_permission(db, actor, rbac.PERMISSION_USERS_MANAGE)
 
 
-def _user_out(
-    db: Session, user: User, parks: list[Park], settings: Settings
-) -> UserAdminOut:
+def _user_out(db: Session, user: User, parks: list[Park], settings: Settings) -> UserAdminOut:
     location_enabled = settings.ip_geo_provider == "ipwhois"
     location_availability = (
         "disabled"
@@ -369,11 +370,36 @@ def delete_user(
                 detail="cannot_delete_last_royal",
             )
     username = user.username
-    db.execute(
-        update(Report).where(Report.author_user_id == user.id).values(author_user_id=actor.id)
+    now = datetime.now(UTC)
+    active_owner = any(
+        (
+            db.scalar(select(model).where(predicate).limit(1)) is not None
+            for model, predicate in (
+                (TrackerClaim, TrackerClaim.owner_user_id == user.id),
+                (TrackerClaim, TrackerClaim.operator_user_id == user.id),
+                (
+                    ScheduleEntry,
+                    (ScheduleEntry.owner_user_id == user.id) & (ScheduleEntry.end_at > now),
+                ),
+                (Report, (Report.author_user_id == user.id) & (Report.status == "open")),
+                (
+                    TaskReview,
+                    (TaskReview.actor_user_id == user.id) & (TaskReview.state != "closed"),
+                ),
+                (
+                    TaskReview,
+                    (TaskReview.reviewer_user_id == user.id) & (TaskReview.state != "closed"),
+                ),
+            )
+        )
     )
+    if active_owner:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="active_ownership_requires_reassignment"
+        )
     _revoke_sessions(db, user.id)
-    db.delete(user)
+    user.is_active = False
+    user.access_status = AccessStatus.rejected.value
     db.commit()
     audit.record(
         db,

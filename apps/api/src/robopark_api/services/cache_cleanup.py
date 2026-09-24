@@ -14,9 +14,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, exists, select
 from sqlalchemy.orm import Session
 
+from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
 from robopark_api.models import AuthThrottleState
@@ -42,11 +43,18 @@ from robopark_api.services.storage_retention import (
     MemoryPressureController,
     StorageBudget,
     cleanup_storage,
+    confirmed_staged_attachment,
     pinned_directory,
     unlink_unchanged,
 )
+from robopark_api.services.system_observability import prune_observability
 from robopark_api.services.task_timeline import staged_attachments_root
-from robopark_api.task_workflow_models import OfflineSyncReceipt, ReliableAction, TaskAttachment
+from robopark_api.task_workflow_models import (
+    OfflineSyncReceipt,
+    ReliableAction,
+    TaskAttachment,
+    TaskMessage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,9 +118,10 @@ def memory_pressure_status() -> dict[str, bool]:
 def prune_tracker_outbox(db: Session, *, now: float) -> tuple[int, int]:
     """Bound reliable-action rows and uploaded staging blobs without losing audit."""
     attachments = list(
-        db.scalars(
-            select(TaskAttachment)
+        db.execute(
+            select(TaskAttachment, ReliableAction, TaskMessage)
             .join(ReliableAction, ReliableAction.id == TaskAttachment.id)
+            .join(TaskMessage, TaskMessage.id == TaskAttachment.message_id)
             .where(
                 TaskAttachment.uploaded_at.is_not(None),
                 TaskAttachment.uploaded_at < now - _UPLOADED_BLOB_RETENTION_SECONDS,
@@ -126,7 +135,18 @@ def prune_tracker_outbox(db: Session, *, now: float) -> tuple[int, int]:
     pinned_blobs: list[tuple[str, os.stat_result]] = []
     manager = pinned_directory(root) if root.exists() else contextlib.nullcontext(None)
     with manager as root_fd:
-        for attachment in attachments:
+        confirmed = [
+            attachment
+            for attachment, action, message in attachments
+            if confirmed_staged_attachment(
+                state=action.state,
+                action=action.action,
+                sync_state=message.sync_state,
+                result_json=action.result_json,
+                uploaded_at=attachment.uploaded_at,
+            )
+        ]
+        for attachment in confirmed:
             name = attachment.blob_name
             if name != Path(name).name:
                 continue
@@ -148,6 +168,20 @@ def prune_tracker_outbox(db: Session, *, now: float) -> tuple[int, int]:
                 .where(
                     ReliableAction.state == "succeeded",
                     ReliableAction.updated_at < now - _SUCCESS_RETENTION_SECONDS,
+                    ~exists(
+                        select(TaskAttachment.id).where(TaskAttachment.id == ReliableAction.id)
+                    ),
+                    ~exists(
+                        select(TaskMessage.id).where(
+                            TaskMessage.action_id == ReliableAction.id,
+                            TaskMessage.sync_state != "synced",
+                        )
+                    ),
+                    ~exists(
+                        select(TrackerClaim.issue_key).where(
+                            TrackerClaim.start_action_id == ReliableAction.id
+                        )
+                    ),
                 )
                 .order_by(ReliableAction.updated_at, ReliableAction.id)
                 .limit(_RETENTION_BATCH_SIZE)
@@ -160,7 +194,7 @@ def prune_tracker_outbox(db: Session, *, now: float) -> tuple[int, int]:
             with contextlib.suppress(OSError):
                 assert root_fd is not None
                 unlink_unchanged(root_fd, blob_name, before)
-    return len(actions), len(attachments)
+    return len(actions), len(confirmed)
 
 
 def prune_offline_sync_receipts(db: Session, *, now: float) -> int:
@@ -261,17 +295,30 @@ def cleanup_confirmed_tracker_copies(
 ) -> dict:
     """Delete only local copies already confirmed by a succeeded delivery."""
     attachments = list(
-        db.scalars(
-            select(TaskAttachment)
+        db.execute(
+            select(TaskAttachment, ReliableAction, TaskMessage)
             .join(ReliableAction, ReliableAction.id == TaskAttachment.id)
+            .join(TaskMessage, TaskMessage.id == TaskAttachment.message_id)
             .where(
                 TaskAttachment.uploaded_at.is_not(None),
+                TaskAttachment.uploaded_at < time.time() - _UPLOADED_BLOB_RETENTION_SECONDS,
                 ReliableAction.state == "succeeded",
             )
             .order_by(TaskAttachment.uploaded_at, TaskAttachment.id)
             .limit(max(0, max_deletions))
         ).all()
     )
+    attachments = [
+        attachment
+        for attachment, action, message in attachments
+        if confirmed_staged_attachment(
+            state=action.state,
+            action=action.action,
+            sync_state=message.sync_state,
+            result_json=action.result_json,
+            uploaded_at=attachment.uploaded_at,
+        )
+    ]
     names = {attachment.blob_name for attachment in attachments}
     report = cleanup_storage(
         roots={"confirmed_tracker": staged_attachments_root()},
@@ -438,6 +485,7 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
         sync_receipts_removed = prune_offline_sync_receipts(db, now=current.timestamp())
         throttle_states_removed = prune_auth_throttle_states(db, now=current)
         incident_occurrences_removed = prune_system_incident_occurrences(db, now=current)
+        prune_observability(db, now=current)
         notification_cleanup = push.prune_notification_data(db, now=current)
         schedules_removed = schedules.prune_old_entries(db, now=current)
         actions_removed, attachments_removed = prune_tracker_outbox(db, now=current.timestamp())
@@ -464,7 +512,9 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
     if throttle_states_removed:
         logger.info("Pruned %s expired authentication throttle row(s)", throttle_states_removed)
     if incident_occurrences_removed:
-        logger.info("Pruned %s resolved system incident occurrence(s)", incident_occurrences_removed)
+        logger.info(
+            "Pruned %s resolved system incident occurrence(s)", incident_occurrences_removed
+        )
     if notification_cleanup["subscriptions"] or notification_cleanup["notifications"]:
         logger.info("Pruned notification data: %s", notification_cleanup)
     if schedules_removed:

@@ -25,6 +25,7 @@ from robopark_api.routers import (
     admin_park_requests,
     admin_roles,
     admin_settings,
+    admin_system,
     admin_users,
     analytics,
     auth,
@@ -197,6 +198,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_settings.router)
     app.include_router(admin_ops.router)
     app.include_router(admin_health.router)
+    app.include_router(admin_system.router)
     app.include_router(operator_parks.router)
     app.include_router(operator_blockers.router)
     app.include_router(operator_report.router)

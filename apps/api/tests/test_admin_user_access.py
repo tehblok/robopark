@@ -38,7 +38,8 @@ def test_delete_user(client, seed_royal, db_session):
     login_as(client, "royal", "secret")
     assert client.delete(f"/admin/users/{extra.id}").status_code == 204
     listed = client.get("/admin/users").json()
-    assert all(row["username"] != "to-delete" for row in listed)
+    deactivated = next(row for row in listed if row["username"] == "to-delete")
+    assert deactivated["is_active"] is False
 
 
 def test_cannot_delete_self(client, seed_royal):
@@ -62,7 +63,11 @@ def test_cannot_delete_last_royal(client, seed_royal, db_session):
 
     login_as(client, "royal", "secret")
     assert client.delete(f"/admin/users/{other.id}").status_code == 204
-    leftover = [row for row in client.get("/admin/users").json() if row["role"] == "royal"]
+    leftover = [
+        row
+        for row in client.get("/admin/users").json()
+        if row["role"] == "royal" and row["is_active"]
+    ]
     assert len(leftover) == 1
     assert client.delete(f"/admin/users/{leftover[0]['id']}").status_code == 400
 

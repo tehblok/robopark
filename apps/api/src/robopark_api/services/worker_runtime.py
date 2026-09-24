@@ -22,6 +22,7 @@ from robopark_api.services.ops.maintenance import host_maintenance_active
 from robopark_api.services.session_cleanup import run_session_cleanup_loop
 from robopark_api.services.sync_health import record_worker_heartbeat, release_worker_heartbeat
 from robopark_api.services.system_notifications import run_system_notification_loop
+from robopark_api.services.system_observability import run_metric_collection_loop
 from robopark_api.services.tracker_notifications import run_tracker_notification_loop
 from robopark_api.services.tracker_outbox import run_tracker_outbox_loop
 
@@ -96,6 +97,9 @@ class WorkerRuntime:
                     )
                 ),
                 asyncio.create_task(run_cache_cleanup_loop(stop)),
+                asyncio.create_task(
+                    run_metric_collection_loop(self.session_factory, stop, settings=self.settings)
+                ),
                 asyncio.create_task(
                     run_notification_delivery_loop(self.session_factory, stop, owner_id=owner_id)
                 ),

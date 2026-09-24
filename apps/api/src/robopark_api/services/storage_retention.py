@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import heapq
+import json
 import os
 import shutil
 import stat
@@ -14,6 +15,23 @@ from pathlib import Path
 
 GIB = 1024**3
 ALLOWED_CATEGORIES = ("confirmed_tracker",)
+
+
+def confirmed_staged_attachment(
+    *, state: str, action: str, sync_state: str, result_json: str | None, uploaded_at: float | None
+) -> bool:
+    """A staged copy is disposable only after Tracker has acknowledged its linked upload."""
+    if state != "succeeded" or action != "attach" or sync_state != "synced" or uploaded_at is None:
+        return False
+    try:
+        result = json.loads(result_json or "")
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        isinstance(result, dict)
+        and str(result.get("attachment_id") or "").strip()
+        and str(result.get("external_id") or "").strip()
+    )
 
 
 @contextmanager
