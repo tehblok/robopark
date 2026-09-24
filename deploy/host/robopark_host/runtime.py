@@ -331,11 +331,11 @@ def production_config(document, paths, release, image_tag):
         raise ValueError("invalid_host_profile")
     db = document["services"]["db"]
     db["volumes"] = [
-        *[
-            volume
-            for volume in db.get("volumes", [])
-            if volume.get("target") == "/var/lib/postgresql/data"
-        ],
+        {
+            "type": "volume",
+            "source": "robopark_postgres",
+            "target": "/var/lib/postgresql/data",
+        },
         {
             "type": "bind",
             "source": str(paths.ops / "rollbacks"),

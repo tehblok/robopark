@@ -1,5 +1,7 @@
+import hashlib
 import json
 import os
+import zipfile
 from uuid import uuid4
 
 import pytest
@@ -326,3 +328,123 @@ def test_pre_maintenance_recovery_only_discards_candidate(host, monkeypatch, pha
         assert not (host.paths.ops / "public/maintenance.json").exists()
         assert not list(host.paths.releases.glob(".staging-*"))
         assert not list((host.paths.state / "compose").glob("*-production.json"))
+
+
+def test_unknown_database_head_is_rejected_before_candidate_or_maintenance(host):
+    host.runner.snapshot_database_head = "0039_unknown"
+    preserved = {
+        path: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (
+            host.paths.etc / "host.env",
+            host.paths.etc / "release-public-key.pem",
+            host.paths.var / "data/attachment",
+        )
+    }
+
+    result = apply_release(host.request(), host.paths, host.runner)
+
+    assert result.error == "migration_head_mismatch"
+    assert not (host.paths.state / "updater-journal.json").exists()
+    assert not (host.paths.state / "maintenance.json").exists()
+    assert all(
+        hashlib.sha256(path.read_bytes()).hexdigest() == digest
+        for path, digest in preserved.items()
+    )
+    assert host.paths.current.resolve().name == "1.0.0"
+
+
+def test_database_preflight_failure_is_reported_without_secret_or_mutation(host):
+    host.runner.fail_on = "psql"
+    result = apply_release(host.request(), host.paths, host.runner)
+    assert result.state == "rejected"
+    assert result.error == "migration_head_mismatch"
+    assert not (host.paths.state / "updater-journal.json").exists()
+    assert host.paths.current.resolve().name == "1.0.0"
+
+
+def test_durable_snapshot_exists_before_writers_are_quiesced(host, monkeypatch):
+    original = updater.atomic_write_json
+
+    def interrupt(path, payload, *args, **kwargs):
+        original(path, payload, *args, **kwargs)
+        if path.name == "updater-journal.json" and payload.get("phase") == "maintenance":
+            raise SimulatedPowerLoss()
+
+    monkeypatch.setattr(updater, "atomic_write_json", interrupt)
+    with pytest.raises(SimulatedPowerLoss):
+        apply_release(host.request(), host.paths, host.runner)
+    journal = json.loads((host.paths.state / "updater-journal.json").read_text())
+    snapshot_root = host.paths.ops / "rollbacks" / journal["job_id"]
+    assert journal["snapshot_done"] is True
+    assert (snapshot_root / "data/attachment").read_bytes() == b"attachment"
+    assert (snapshot_root / "database.dump").is_file()
+    assert not (host.paths.state / "maintenance.json").exists()
+
+
+@pytest.mark.parametrize("phase", ["snapshotted", "migrating"])
+@pytest.mark.parametrize(
+    "source_head",
+    [
+        "0036_audit_remediation_state",
+        "0037_claim_workflow_visibility",
+        "0038_inventory_photo_cleanup",
+    ],
+)
+def test_rc5_named_state_survives_interrupted_update(host, monkeypatch, phase, source_head):
+    rc5_archive = host.package(
+        "0.2.0-rc.5", meta={"migration_head": source_head, "migration_compatibility": {}}
+    )
+    rc5_release = host.paths.releases / "0.2.0-rc.5"
+    rc5_release.mkdir()
+    with zipfile.ZipFile(rc5_archive) as archive:
+        archive.extractall(rc5_release)
+    host.paths.current.unlink()
+    host.paths.current.symlink_to(rc5_release)
+    host.runner.snapshot_database_head = source_head
+    host.runner.database_heads = ["0038_inventory_photo_cleanup"]
+    rc6_archive = host.package(
+        "0.2.0-rc.6",
+        meta={
+            "migration_head": "0038_inventory_photo_cleanup",
+            "migration_compatibility": {
+                "from_heads": [
+                    "0036_audit_remediation_state",
+                    "0037_claim_workflow_visibility",
+                    "0038_inventory_photo_cleanup",
+                ],
+                "reversible": True,
+            },
+        },
+    )
+    data = host.paths.var / "data"
+    (data / "attachments").mkdir()
+    (data / "attachments/report.bin").write_bytes(b"report attachment")
+    (data / "backup-uuid").write_text("00000000-0000-4000-8000-000000000001")
+    (host.paths.etc / "tuna.env").write_text("TUNA_TOKEN=retained")
+    volume = host.paths.root / "var/lib/docker/volumes/robopark_robopark_postgres/_data"
+    volume.mkdir(parents=True)
+    (volume / "PG_VERSION").write_text("17")
+    named = (
+        host.paths.etc / "host.env",
+        host.paths.etc / "tuna.env",
+        host.paths.etc / "release-public-key.pem",
+        data / "attachments/report.bin",
+        data / "backup-uuid",
+        volume / "PG_VERSION",
+    )
+    before = {path: hashlib.sha256(path.read_bytes()).digest() for path in named}
+    original = updater.atomic_write_json
+
+    def interrupt(path, payload, *args, **kwargs):
+        original(path, payload, *args, **kwargs)
+        if path.name == "updater-journal.json" and payload.get("phase") == phase:
+            raise SimulatedPowerLoss()
+
+    monkeypatch.setattr(updater, "atomic_write_json", interrupt)
+    with pytest.raises(SimulatedPowerLoss):
+        apply_release(host.request(rc6_archive), host.paths, host.runner)
+    monkeypatch.setattr(updater, "atomic_write_json", original)
+    recover_interrupted_update(host.paths, host.runner)
+
+    assert {path: hashlib.sha256(path.read_bytes()).digest() for path in named} == before
+    assert not any(command[:3] == ["docker", "volume", "rm"] for command in host.runner.commands)

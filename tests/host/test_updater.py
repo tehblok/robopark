@@ -480,16 +480,16 @@ def test_pre_cutover_backup_is_postgres_custom_format_and_rollback_restores_it(h
     )
 
 
-def test_pre_cutover_snapshot_rejects_stale_database_head_before_publication(host):
+def test_preflight_rejects_stale_database_head_before_mutation(host):
     host.runner.snapshot_database_head = "foreign-head"
     previous = host.paths.current.resolve()
 
     result = apply_release(host.request(), host.paths, host.runner)
 
-    assert result.error == "update_failed"
+    assert result.error == "migration_head_mismatch"
     assert host.paths.current.resolve() == previous
-    journal = json.loads((host.paths.state / "updater-journal.json").read_text())
-    assert not journal["cutover_started"]
+    assert not (host.paths.state / "updater-journal.json").exists()
+    assert not (host.paths.state / "maintenance.json").exists()
 
 
 def test_failed_health_restores_previous_code_units_and_snapshot(host):
@@ -767,6 +767,32 @@ def test_production_config_migrates_legacy_mounts_to_host_owned_data(host):
     assert mounts["/host-ops/public"]["read_only"] is True
     assert mounts["/etc/robopark/release-public-key.pem"]["read_only"] is True
     assert config["services"]["api"]["environment"]["OPS_DIR"] == "/ops"
+
+
+def test_production_update_uses_existing_postgres_volume_even_if_render_is_candidate_named(host):
+    original = host.runner.run
+
+    def candidate_volume(argv, **kwargs):
+        data = original(argv, **kwargs)
+        if "--format" in argv and "config" in argv:
+            config = json.loads(data)
+            config["services"]["db"] = {
+                "image": "postgres:17.6-alpine",
+                "environment": {"POSTGRES_USER": "robopark", "POSTGRES_DB": "robopark", "POSTGRES_PASSWORD_FILE": "/run/secrets/postgres-password"},
+                "secrets": ["postgres-password"],
+                "volumes": [{"type": "volume", "source": "candidate_postgres", "target": "/var/lib/postgresql/data"}]
+            }
+            return json.dumps(config).encode()
+        return data
+
+    host.runner.run = candidate_volume
+    request = host.request()
+    result = apply_release(request, host.paths, host.runner)
+    assert result.state == "awaiting_reconciliation", result
+    config = json.loads((host.paths.state / "compose" / (request.job_id + "-production.json")).read_text())
+    assert config["services"]["db"]["volumes"][0] == {
+        "type": "volume", "source": "robopark_postgres", "target": "/var/lib/postgresql/data"
+    }
 
 
 @pytest.mark.parametrize(

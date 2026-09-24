@@ -10,8 +10,10 @@ import subprocess
 import sys
 import time
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 PHASE_LABELS = {
@@ -82,6 +84,49 @@ SAFE_ERRORS = {
     "update_in_progress",
     "update_failed",
 }
+
+
+@dataclass(frozen=True)
+class InstallationState:
+    mode: Literal["clean", "upgrade", "repair", "remove"]
+    current_version: str | None
+    migration_head: str | None
+    preserved_paths: tuple[Path, ...]
+
+
+def inspect_installation(root: Path) -> InstallationState:
+    """Read local identity before opening a release; never execute installed code."""
+    root = Path(root)
+    opt = root / "opt/robopark"
+    current = opt / "current"
+    releases = opt / "releases"
+    etc = root / "etc/robopark"
+    var = root / "var/lib/robopark"
+    preserved = tuple(
+        path
+        for path in (etc, var / "data", var / "backups", var / "ops")
+        if path.exists() or path.is_symlink()
+    )
+    if current.is_symlink():
+        try:
+            release = current.resolve(strict=True)
+            if not release.is_dir() or not release.is_relative_to(
+                releases.resolve(strict=True)
+            ):
+                raise ValueError("invalid_existing_link")
+            version = read_regular(release / "VERSION", 256).decode("ascii").strip()
+            manifest = json.loads(read_regular(release / "manifest.json", 1024 * 1024))
+            head = manifest["migration_head"]
+            if not version or not isinstance(head, str) or not head:
+                raise ValueError("invalid_installation")
+            return InstallationState("upgrade", version, head, preserved)
+        except (OSError, ValueError, UnicodeError, KeyError, TypeError):
+            return InstallationState("repair", None, None, preserved)
+    if opt.exists() or current.exists():
+        return InstallationState("repair", None, None, preserved)
+    if var.exists() or etc.exists():
+        return InstallationState("remove", None, None, preserved)
+    return InstallationState("clean", None, None, preserved)
 
 
 def read_regular(path: Path, limit: int) -> bytes:
@@ -170,6 +215,10 @@ def main(argv: list[str]) -> int:
         return 2
     root = Path(argv[1]).resolve()
     bundle = Path(argv[2]).resolve()
+    installation = inspect_installation(root)
+    if installation.mode != "upgrade":
+        raise ValueError("existing_installation_requires_repair")
+    print("  • Выбрано действие: обновление существующей установки", flush=True)
     payload = bundle / "payload/robopark-release.zip"
     sys.path.insert(0, str(bundle / "verifier"))
     from robopark_api.services.ops.archives import (

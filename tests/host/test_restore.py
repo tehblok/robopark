@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import runpy
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -17,6 +18,28 @@ def _configure_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_installation_inspection_lists_state_that_local_upgrade_must_preserve(tmp_path):
+    inspect = runpy.run_path("deploy/installer/lib/local-update.py")["inspect_installation"]
+    assert inspect(tmp_path).mode == "clean"
+    release = tmp_path / "opt/robopark/releases/0.2.0-rc.5"
+    release.mkdir(parents=True)
+    (release / "VERSION").write_text("0.2.0-rc.5\n")
+    (release / "manifest.json").write_text(json.dumps({"migration_head": "0037_report_attachments"}))
+    (tmp_path / "opt/robopark/current").symlink_to(release)
+    (tmp_path / "etc/robopark").mkdir(parents=True)
+    (tmp_path / "var/lib/robopark/data/attachments").mkdir(parents=True)
+    (tmp_path / "var/lib/robopark/backups").mkdir(parents=True)
+
+    state = inspect(tmp_path)
+
+    assert state.mode == "upgrade"
+    assert state.current_version == "0.2.0-rc.5"
+    assert state.migration_head == "0037_report_attachments"
+    assert tmp_path / "etc/robopark" in state.preserved_paths
+    assert tmp_path / "var/lib/robopark/data" in state.preserved_paths
+    assert tmp_path / "var/lib/robopark/backups" in state.preserved_paths
 
 
 @pytest.mark.parametrize(

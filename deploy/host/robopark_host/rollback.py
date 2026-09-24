@@ -96,20 +96,9 @@ def _database_command(paths, arguments):
     ]
 
 
-def snapshot(paths, journal, runner=None):
-    root = paths.ops / "rollbacks" / journal["job_id"]
-    root.mkdir(parents=True, mode=0o700, exist_ok=True)
-    temporary = root / "data.partial"
-    if temporary.exists():
-        shutil.rmtree(temporary)
-    durable_copy_tree(paths.var / "data", temporary)
-    os.replace(temporary, root / "data")
-    sync_directory(root)
-    if runner is not None:
-        from .trust import directory_key
-
-        current = paths.current.resolve(strict=True)
-        expected_head = verify_directory(current, directory_key(paths, current))["migration_head"]
+def verify_source_head(paths, runner, expected_head):
+    """Read the live database head before any update journal or service change."""
+    try:
         actual_head = runner.run(
             _database_command(
                 paths,
@@ -128,7 +117,33 @@ def snapshot(paths, journal, runner=None):
         if isinstance(actual_head, bytes):
             actual_head = actual_head.decode("utf-8", "strict")
         if actual_head.strip() != expected_head:
-            raise ReleaseError("update_failed")
+            raise ReleaseError("migration_head_mismatch")
+    except Exception as error:
+        raise ReleaseError("migration_head_mismatch") from error
+
+
+def snapshot(paths, journal, runner=None, *, refresh=False):
+    root = paths.ops / "rollbacks" / journal["job_id"]
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    temporary = root / "data.partial"
+    if temporary.exists():
+        shutil.rmtree(temporary)
+    durable_copy_tree(paths.var / "data", temporary)
+    preliminary = root / "data.preliminary"
+    if refresh:
+        if preliminary.exists():
+            shutil.rmtree(preliminary)
+        os.replace(root / "data", preliminary)
+    os.replace(temporary, root / "data")
+    sync_directory(root)
+    if refresh:
+        shutil.rmtree(preliminary)
+    if runner is not None:
+        from .trust import directory_key
+
+        current = paths.current.resolve(strict=True)
+        expected_head = verify_directory(current, directory_key(paths, current))["migration_head"]
+        verify_source_head(paths, runner, expected_head)
         target = f"/host-rollbacks/{journal['job_id']}/database.dump"
         runner.run(
             _database_command(

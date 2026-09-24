@@ -51,6 +51,7 @@ from .rollback import (
     rollback_release,
     snapshot,
     sync_directory,
+    verify_source_head,
 )
 from .runtime import explain_process_failure, pin_images, production_config
 from .state import atomic_write_json, exclusive_lock
@@ -83,6 +84,7 @@ PRE_MAINTENANCE_PHASES = {
     "tested",
     "smoking",
     "smoked",
+    "snapshotting",
 }
 
 PHASES = {
@@ -97,6 +99,8 @@ PHASES = {
     "smoked",
     "maintenance",
     "stopping",
+    "snapshotting_final",
+    "snapshotted_final",
     "snapshotting",
     "snapshotted",
     "tools_staging",
@@ -868,6 +872,7 @@ def apply_release(
             check_compatibility(release.manifest, current_manifest)
             previous_config = _configuration_target(paths)
             _disk_preflight(paths, release)
+            verify_source_head(paths, runner, current_manifest["migration_head"])
         except ReleaseError as exc:
             return UpdateResult("rejected", str(exc))
         except OSError:
@@ -928,10 +933,6 @@ def apply_release(
             runner.run(prefix + ["down", "--volumes", "--remove-orphans"], timeout=120)
             phase("smoked")
             verify_directory(stage, key)
-            phase("maintenance")
-            _maintenance(paths, True)
-            phase("stopping")
-            runner.run(["systemctl", "stop", "robopark.service"], timeout=120)
             phase("snapshotting")
             try:
                 snapshot(paths, journal, runner)
@@ -941,8 +942,23 @@ def apply_release(
                 with suppress(OSError, ValueError):
                     record_backup(paths, "failed")
                 raise
-            record_backup(paths, "success")
             phase("snapshotted", snapshot_done=True)
+            phase("maintenance")
+            _maintenance(paths, True)
+            phase("stopping")
+            runner.run(["systemctl", "stop", "robopark.service"], timeout=120)
+            # Refresh the early safety copy after all writers have stopped. The
+            # first snapshot protects failures while entering maintenance; this
+            # second one is the exact rollback point for migration.
+            phase("snapshotting_final")
+            try:
+                snapshot(paths, journal, runner, refresh=True)
+            except Exception:
+                with suppress(OSError, ValueError):
+                    record_backup(paths, "failed")
+                raise
+            record_backup(paths, "success")
+            phase("snapshotted_final")
             phase("tools_staging")
             runner.run(
                 ["python3", "-B", str(stage / "deploy/host/robopark"), "--self-test"],
