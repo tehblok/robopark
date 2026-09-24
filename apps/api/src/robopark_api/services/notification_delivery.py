@@ -23,6 +23,10 @@ LEASE_SECONDS = 60
 RETRY_SECONDS = 60
 
 
+class LeaseLost(RuntimeError):
+    """A delivery may no longer call its external provider."""
+
+
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
@@ -101,9 +105,11 @@ def process_due(
     now: datetime | None = None,
     limit: int | None = None,
     send_web_push: Callable[..., object] | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> int:
     """Claim and attempt due rows; a dead worker's lease can be replayed."""
-    moment = _utc(now or datetime.now(UTC))
+    read_clock = clock or (lambda: now or datetime.now(UTC))
+    moment = _utc(read_clock())
     batch_size = limit or get_settings().push_delivery_batch_size
     with session_factory() as db:
         db.execute(
@@ -137,15 +143,39 @@ def process_due(
         )
     processed = 0
     for row_id in ids:
+        claim_at = _utc(read_clock())
         with session_factory() as db:
-            if not _claim(db, row_id, owner_id, moment):
+            if not _claim(db, row_id, owner_id, claim_at):
                 continue
         processed += 1
         outcome = "pending"
         gone = False
+
+        def send_if_owned(*, row_id=row_id, **payload):
+            with session_factory() as lease_db:
+                owns_lease = lease_db.scalar(
+                    select(NotificationDelivery.id).where(
+                        NotificationDelivery.id == row_id,
+                        NotificationDelivery.lease_owner == owner_id,
+                        NotificationDelivery.lease_until > _utc(read_clock()),
+                    )
+                )
+            if owns_lease is None:
+                raise LeaseLost
+            return (send_web_push or webpush)(**payload)
+
         try:
             with session_factory() as db:
-                row = db.get(NotificationDelivery, row_id)
+                before_send = _utc(read_clock())
+                row = db.scalar(
+                    select(NotificationDelivery).where(
+                        NotificationDelivery.id == row_id,
+                        NotificationDelivery.lease_owner == owner_id,
+                        NotificationDelivery.lease_until > before_send,
+                    )
+                )
+                if row is None:
+                    continue
                 event = db.get(NotificationEvent, row.event_id) if row is not None else None
                 if row is None or event is None:
                     outcome = "cancelled"
@@ -153,7 +183,9 @@ def process_due(
                     adapter = CHANNEL_ADAPTERS.get(row.channel)
                     if adapter is None:
                         raise ValueError("unsupported_notification_channel")
-                    outcome = adapter(db, row, event, send_web_push or webpush)
+                    outcome = adapter(db, row, event, send_if_owned)
+        except LeaseLost:
+            continue
         except WebPushException as exc:
             response = getattr(exc, "response", None)
             if response is not None and response.status_code in {404, 410}:
@@ -181,7 +213,7 @@ def process_due(
                     )
                 )
             if outcome == "pending":
-                retry_at = moment + timedelta(
+                retry_at = _utc(read_clock()) + timedelta(
                     seconds=min(3600, RETRY_SECONDS * 2 ** min(row.attempts - 1, 6))
                 )
                 if retry_at >= _utc(row.expires_at):

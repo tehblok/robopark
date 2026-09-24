@@ -3,12 +3,13 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
+from starlette.background import BackgroundTasks
 
 from conftest import login_as, role_id_for
 from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import AccessStatus, User, UserPark
 from robopark_api.notification_delivery_models import NotificationDelivery
-from robopark_api.schedule_models import NotificationEvent
+from robopark_api.schedule_models import NotificationEvent, ScheduleEntry
 from robopark_api.security import hash_password
 from robopark_api.services import notification_delivery, platform_settings
 from robopark_api.services.rbac import RoleSlug
@@ -87,10 +88,7 @@ def test_submit_review_replay_keeps_persisted_reviewer_after_shift_change(
         },
     )
     monkeypatch.setattr(schedules, "resolve_active_operator", resolve_once)
-    emitted = []
-    monkeypatch.setattr(
-        client.app.state.push_service, "emit", lambda **kwargs: emitted.append(kwargs)
-    )
+    monkeypatch.setattr(BackgroundTasks, "add_task", lambda *_args, **_kwargs: None)
     login_as(client, seed_mechanic.username, "secret")
 
     response = client.post(
@@ -110,10 +108,39 @@ def test_submit_review_replay_keeps_persisted_reviewer_after_shift_change(
     assert response.json() == replay.json()
     assert resolved_parks == [seed_park_with_tracker.id, seed_park_with_tracker.id]
     assert db_session.query(TaskReview).one().reviewer_user_id == first_operator.id
-    assert [event["target_user_ids"] for event in emitted] == [
-        {first_operator.id},
-        {first_operator.id},
-    ]
+    notifications = list(
+        db_session.scalars(
+            select(NotificationEvent).where(NotificationEvent.event_type == "review_task")
+        )
+    )
+    assert [event.user_id for event in notifications] == [first_operator.id]
+
+    now = datetime.now(UTC)
+    db_session.add(
+        ScheduleEntry(
+            owner_user_id=seed_mechanic.id,
+            park_id=seed_park_with_tracker.id,
+            kind="shift",
+            start_at=now - timedelta(hours=1),
+            end_at=now + timedelta(hours=1),
+            created_by_user_id=seed_mechanic.id,
+            updated_by_user_id=seed_mechanic.id,
+        )
+    )
+    db_session.commit()
+    login_as(client, first_operator.username, "secret")
+    returned = client.post(
+        "/tracker/issues/ROBOPARK-51/review/return",
+        headers={"Idempotency-Key": "targeted-return"},
+        json={"reason": "Нужно переснять"},
+    )
+    assert returned.status_code == 200
+    returned_notifications = list(
+        db_session.scalars(
+            select(NotificationEvent).where(NotificationEvent.event_type == "return")
+        )
+    )
+    assert [event.user_id for event in returned_notifications] == [seed_mechanic.id]
 
 
 def test_push_subscription_and_internal_inbox_do_not_expose_task_text(client, seed_mechanic):

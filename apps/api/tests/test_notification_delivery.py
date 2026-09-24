@@ -8,13 +8,14 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy import inspect, select
 from sqlalchemy.orm import sessionmaker
+from starlette.background import BackgroundTasks
 
 from conftest import role_id_for
 from robopark_api.crypto import encrypt_secret
 from robopark_api.models import AccessStatus, User, UserPark
 from robopark_api.notification_delivery_models import NotificationDelivery
 from robopark_api.routers.push import PushService
-from robopark_api.schedule_models import PushSubscription, ScheduleEntry
+from robopark_api.schedule_models import NotificationEvent, PushSubscription, ScheduleEntry
 from robopark_api.security import hash_password
 from robopark_api.services import notification_delivery
 from robopark_api.services.rbac import RoleSlug
@@ -70,6 +71,243 @@ def test_emit_persists_web_push_work_before_any_network_attempt(
     assert len(rows) == 2
     assert {row.channel for row in rows} == {"in_app", "web_push"}
     assert {row.state for row in rows} == {"delivered", "pending"}
+
+
+def test_report_mutation_commits_notification_even_when_response_callbacks_never_run(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from conftest import login_as
+    from robopark_api.models import Report
+
+    _operator(db_session, seed_park_with_tracker.id)
+    monkeypatch.setattr(BackgroundTasks, "add_task", lambda *_args, **_kwargs: None)
+    login_as(client, seed_mechanic.username, "secret")
+    response = client.post(
+        "/reports",
+        json={
+            "kind": "mechanic_problem",
+            "park_id": seed_park_with_tracker.id,
+            "title": "Crash window",
+            "body": "Persist before response",
+        },
+    )
+    assert response.status_code == 201
+    assert db_session.get(Report, response.json()["id"]) is not None
+    assert (
+        db_session.scalar(
+            select(NotificationDelivery).where(NotificationDelivery.channel == "in_app")
+        )
+        is not None
+    )
+
+
+def test_report_return_and_resubmit_commit_their_notifications(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from conftest import login_as
+
+    operator = _operator(db_session, seed_park_with_tracker.id)
+    now = datetime.now(UTC)
+    db_session.add(
+        ScheduleEntry(
+            owner_user_id=seed_mechanic.id,
+            park_id=seed_park_with_tracker.id,
+            kind="shift",
+            start_at=now - timedelta(hours=1),
+            end_at=now + timedelta(hours=1),
+            created_by_user_id=seed_mechanic.id,
+            updated_by_user_id=seed_mechanic.id,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(BackgroundTasks, "add_task", lambda *_args, **_kwargs: None)
+    login_as(client, seed_mechanic.username, "secret")
+    created = client.post(
+        "/reports",
+        json={
+            "kind": "mechanic_problem",
+            "park_id": seed_park_with_tracker.id,
+            "title": "Report",
+            "body": "Body",
+        },
+    )
+    assert created.status_code == 201
+    login_as(client, operator.username, "secret")
+    returned = client.post(f"/reports/{created.json()['id']}/return", json={"comment": "Fix it"})
+    assert returned.status_code == 200
+    login_as(client, seed_mechanic.username, "secret")
+    resubmitted = client.post(
+        f"/reports/{created.json()['id']}/resubmit",
+        json={
+            "title": "Revised",
+            "body": "Updated",
+        },
+    )
+    assert resubmitted.status_code == 200
+    events = list(
+        db_session.scalars(select(NotificationEvent).order_by(NotificationEvent.created_at))
+    )
+    assert [(event.event_type, event.user_id) for event in events] == [
+        ("report", operator.id),
+        ("return", seed_mechanic.id),
+        ("report", operator.id),
+    ]
+
+
+def test_report_and_notification_roll_back_together_when_persistence_fails(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from conftest import login_as
+    from robopark_api.models import Report
+
+    _operator(db_session, seed_park_with_tracker.id)
+
+    def fail(_db, **_kwargs):
+        raise RuntimeError("notification write failed")
+
+    monkeypatch.setattr(client.app.state.push_service, "emit_in_transaction", fail)
+    login_as(client, seed_mechanic.username, "secret")
+    with pytest.raises(RuntimeError, match="notification write failed"):
+        client.post(
+            "/reports",
+            json={
+                "kind": "mechanic_problem",
+                "park_id": seed_park_with_tracker.id,
+                "title": "Must roll back",
+                "body": "Body",
+            },
+        )
+    db_session.rollback()
+    assert db_session.scalar(select(Report).where(Report.title == "Must roll back")) is None
+
+
+def test_staged_notification_does_not_commit_domain_transaction(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker
+):
+    from robopark_api.models import Report
+
+    _operator(db_session, seed_park_with_tracker.id)
+    factory = sessionmaker(bind=db_engine, future=True)
+    with factory() as db:
+        report = Report(
+            kind="mechanic_problem",
+            status="open",
+            park_id=seed_park_with_tracker.id,
+            author_user_id=seed_mechanic.id,
+            target_role="operator",
+            title="Rollback staged event",
+            body="Body",
+        )
+        db.add(report)
+        db.flush()
+        PushService(factory).emit_in_transaction(
+            db,
+            event_type="report",
+            park_id=seed_park_with_tracker.id,
+            protected_text="Rollback staged event",
+            event_key="rollback:staged",
+        )
+        db.flush()
+        db.rollback()
+    with factory() as db:
+        assert db.scalar(select(Report).where(Report.title == "Rollback staged event")) is None
+        assert (
+            db.scalar(
+                select(NotificationEvent).where(
+                    NotificationEvent.protected_text == "Rollback staged event"
+                )
+            )
+            is None
+        )
+        assert db.scalar(select(NotificationDelivery)) is None
+
+
+def test_tail_row_lease_uses_fresh_clock_and_prevents_second_worker_send(
+    db_engine, db_session, seed_park_with_tracker
+):
+    operator = _operator(db_session, seed_park_with_tracker.id)
+    _subscribe(db_session, operator.id)
+    factory = sessionmaker(bind=db_engine, future=True)
+    service = PushService(factory)
+    for index in range(2):
+        service.emit(
+            event_type="report",
+            park_id=seed_park_with_tracker.id,
+            protected_text="private",
+            event_key=f"tail:{index}",
+        )
+    now = [datetime.now(UTC)]
+    sent = []
+    stolen = []
+
+    def send(**payload):
+        sent.append(payload)
+        if len(sent) == 1:
+            now[0] += timedelta(seconds=61)
+        else:
+            stolen.append(
+                notification_delivery.process_due(
+                    factory,
+                    owner_id="worker-b",
+                    clock=lambda: now[0],
+                    send_web_push=lambda **kw: sent.append(kw),
+                )
+            )
+
+    assert (
+        notification_delivery.process_due(
+            factory,
+            owner_id="worker-a",
+            clock=lambda: now[0],
+            send_web_push=send,
+        )
+        == 2
+    )
+    assert len(sent) == 2
+    assert stolen == [0]
+
+
+def test_expired_lease_during_payload_preparation_blocks_provider_call(
+    db_engine, db_session, seed_park_with_tracker, monkeypatch
+):
+    operator = _operator(db_session, seed_park_with_tracker.id)
+    _subscribe(db_session, operator.id)
+    factory = sessionmaker(bind=db_engine, future=True)
+    PushService(factory).emit(
+        event_type="report",
+        park_id=seed_park_with_tracker.id,
+        protected_text="private",
+        event_key="prepare:slow",
+    )
+    now = [datetime.now(UTC)]
+    real_decrypt = notification_delivery.decrypt_secret
+    advanced = [False]
+
+    def slow_decrypt(*args):
+        if not advanced[0]:
+            now[0] += timedelta(seconds=61)
+            advanced[0] = True
+        return real_decrypt(*args)
+
+    monkeypatch.setattr(notification_delivery, "decrypt_secret", slow_decrypt)
+    sent = []
+    notification_delivery.process_due(
+        factory,
+        owner_id="worker-a",
+        clock=lambda: now[0],
+        send_web_push=lambda **kw: sent.append(kw),
+    )
+    assert sent == []
+    assert (
+        notification_delivery.process_due(
+            factory,
+            owner_id="worker-b",
+            clock=lambda: now[0],
+            send_web_push=lambda **kw: sent.append(kw),
+        )
+        == 1
+    )
+    assert len(sent) == 1
 
 
 def test_worker_replays_committed_delivery_after_service_restart(

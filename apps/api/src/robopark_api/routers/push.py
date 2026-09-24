@@ -85,110 +85,131 @@ class PushService:
         deliver: bool = True,
     ) -> dict:
         with self._session_factory() as db:
-            now = datetime.now(UTC)
-            users = eligible_recipients(RoutingEvent(db, event_type, park_id, target_user_ids), now)
-            user_ids = {user.id for user in users}
-            preferences = {
-                item.user_id: item
-                for item in db.scalars(
-                    select(NotificationPreference).where(
-                        NotificationPreference.user_id.in_(user_ids)
-                    )
+            result = self.emit_in_transaction(
+                db,
+                event_type=event_type,
+                park_id=park_id,
+                protected_text=protected_text,
+                target_user_ids=target_user_ids,
+                event_key=event_key,
+                deliver=deliver,
+            )
+            db.commit()
+            return result
+
+    def emit_in_transaction(
+        self,
+        db: Session,
+        *,
+        event_type: str,
+        park_id: int | None,
+        protected_text: str,
+        target_user_ids: set[int] | None = None,
+        event_key: str | None = None,
+        deliver: bool = True,
+    ) -> dict:
+        """Stage inbox and delivery rows in the caller's domain transaction."""
+        now = datetime.now(UTC)
+        users = eligible_recipients(RoutingEvent(db, event_type, park_id, target_user_ids), now)
+        user_ids = {user.id for user in users}
+        preferences = {
+            item.user_id: item
+            for item in db.scalars(
+                select(NotificationPreference).where(NotificationPreference.user_id.in_(user_ids))
+            )
+        }
+        recipients: list[int] = []
+        internal_recipients: list[int] = []
+        stable_event_key = event_key
+        if event_key is not None and event_key.startswith("system:"):
+            occurrence = db.scalar(
+                select(SystemIncidentOccurrence).where(
+                    SystemIncidentOccurrence.incident_key == event_key,
+                    SystemIncidentOccurrence.resolved_at.is_(None),
                 )
-            }
-            recipients: list[int] = []
-            internal_recipients: list[int] = []
-            stable_event_key = event_key
-            if event_key is not None and event_key.startswith("system:"):
-                occurrence = db.scalar(
-                    select(SystemIncidentOccurrence).where(
-                        SystemIncidentOccurrence.incident_key == event_key,
-                        SystemIncidentOccurrence.resolved_at.is_(None),
-                    )
+            )
+            if occurrence is None:
+                occurrence = SystemIncidentOccurrence(
+                    incident_key=event_key,
+                    event_type=event_type,
+                    started_at=now,
+                    last_seen_at=now,
                 )
-                if occurrence is None:
-                    occurrence = SystemIncidentOccurrence(
-                        incident_key=event_key,
-                        event_type=event_type,
-                        started_at=now,
-                        last_seen_at=now,
+                try:
+                    with db.begin_nested():
+                        db.add(occurrence)
+                        db.flush()
+                except IntegrityError:
+                    occurrence = db.scalar(
+                        select(SystemIncidentOccurrence).where(
+                            SystemIncidentOccurrence.incident_key == event_key,
+                            SystemIncidentOccurrence.resolved_at.is_(None),
+                        )
                     )
-                    try:
-                        with db.begin_nested():
-                            db.add(occurrence)
-                            db.flush()
-                    except IntegrityError:
-                        occurrence = db.scalar(
-                            select(SystemIncidentOccurrence).where(
-                                SystemIncidentOccurrence.incident_key == event_key,
-                                SystemIncidentOccurrence.resolved_at.is_(None),
+            if occurrence is not None:
+                occurrence.last_seen_at = now
+                stable_event_key = f"{event_key}:{occurrence.id}"
+        event_id = hashlib.sha256(
+            (stable_event_key or f"{event_type}:{now.timestamp()}:{protected_text}").encode()
+        ).hexdigest()[:24]
+        subscriptions = {}
+        if deliver and user_ids:
+            for row in db.scalars(
+                select(PushSubscription)
+                .where(PushSubscription.user_id.in_(user_ids))
+                .order_by(PushSubscription.created_at, PushSubscription.id)
+            ):
+                subscriptions.setdefault(row.user_id, []).append(row)
+        for user in users:
+            notification_id = f"{event_id}-{user.id}"
+            if db.get(NotificationEvent, notification_id) is not None:
+                continue
+            db.add(
+                NotificationEvent(
+                    id=notification_id,
+                    user_id=user.id,
+                    event_type=event_type,
+                    park_id=park_id,
+                    protected_text=protected_text,
+                )
+            )
+            db.add(
+                NotificationDelivery(
+                    event_id=notification_id,
+                    channel="in_app",
+                    state="delivered",
+                    next_attempt_at=now,
+                    expires_at=now + timedelta(hours=24),
+                    idempotency_key=f"{notification_id}:in_app",
+                )
+            )
+            internal_recipients.append(user.id)
+            preference = preferences.get(user.id)
+            enabled = preference is None or (
+                preference.system_enabled
+                and event_type in set(json.loads(preference.categories_json))
+            )
+            if enabled:
+                recipients.append(user.id)
+                if deliver:
+                    for subscription in subscriptions.get(user.id, []):
+                        db.add(
+                            NotificationDelivery(
+                                event_id=notification_id,
+                                channel="web_push",
+                                state="pending",
+                                next_attempt_at=now,
+                                expires_at=now + timedelta(hours=24),
+                                idempotency_key=f"{notification_id}:web_push:{subscription.endpoint_hash}",
+                                endpoint_hash=subscription.endpoint_hash,
                             )
                         )
-                if occurrence is not None:
-                    occurrence.last_seen_at = now
-                    stable_event_key = f"{event_key}:{occurrence.id}"
-            event_id = hashlib.sha256(
-                (stable_event_key or f"{event_type}:{now.timestamp()}:{protected_text}").encode()
-            ).hexdigest()[:24]
-            subscriptions = {}
-            if deliver and user_ids:
-                for row in db.scalars(
-                    select(PushSubscription)
-                    .where(PushSubscription.user_id.in_(user_ids))
-                    .order_by(PushSubscription.created_at, PushSubscription.id)
-                ):
-                    subscriptions.setdefault(row.user_id, []).append(row)
-            for user in users:
-                notification_id = f"{event_id}-{user.id}"
-                if db.get(NotificationEvent, notification_id) is not None:
-                    continue
-                db.add(
-                    NotificationEvent(
-                        id=notification_id,
-                        user_id=user.id,
-                        event_type=event_type,
-                        park_id=park_id,
-                        protected_text=protected_text,
-                    )
-                )
-                db.add(
-                    NotificationDelivery(
-                        event_id=notification_id,
-                        channel="in_app",
-                        state="delivered",
-                        next_attempt_at=now,
-                        expires_at=now + timedelta(hours=24),
-                        idempotency_key=f"{notification_id}:in_app",
-                    )
-                )
-                internal_recipients.append(user.id)
-                preference = preferences.get(user.id)
-                enabled = preference is None or (
-                    preference.system_enabled
-                    and event_type in set(json.loads(preference.categories_json))
-                )
-                if enabled:
-                    recipients.append(user.id)
-                    if deliver:
-                        for subscription in subscriptions.get(user.id, []):
-                            db.add(
-                                NotificationDelivery(
-                                    event_id=notification_id,
-                                    channel="web_push",
-                                    state="pending",
-                                    next_attempt_at=now,
-                                    expires_at=now + timedelta(hours=24),
-                                    idempotency_key=f"{notification_id}:web_push:{subscription.endpoint_hash}",
-                                    endpoint_hash=subscription.endpoint_hash,
-                                )
-                            )
-            db.commit()
-            return {
-                "event_id": event_id,
-                "recipient_ids": recipients,
-                "internal_recipient_ids": internal_recipients,
-                "push_payload": {"event_id": event_id},
-            }
+        return {
+            "event_id": event_id,
+            "recipient_ids": recipients,
+            "internal_recipient_ids": internal_recipients,
+            "push_payload": {"event_id": event_id},
+        }
 
     def emit_for_tests(self, **kwargs) -> dict:
         return self.emit(**kwargs, deliver=False)

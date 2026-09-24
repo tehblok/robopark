@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from sqlalchemy import and_, func, or_, select, update
@@ -40,6 +41,9 @@ class ReportLinkedError(ValueError):
     """A completed campaign still depends on this report."""
 
 
+NotificationHook = Callable[[Session, Report], None]
+
+
 def create_manual_report(
     db: Session,
     *,
@@ -50,6 +54,7 @@ def create_manual_report(
     body: str,
     tracker_key: str | None,
     tracker_url: str | None,
+    notification_hook: NotificationHook | None = None,
 ) -> Report:
     if not _is_approved(author) or not rbac.has_permission(
         db, author, rbac.PERMISSION_REPORTS_CREATE
@@ -73,6 +78,9 @@ def create_manual_report(
         body=body,
     )
     db.add(report)
+    db.flush()
+    if notification_hook is not None:
+        notification_hook(db, report)
     db.commit()
     db.refresh(report)
     return report
@@ -404,11 +412,20 @@ def delete_report(db: Session, user: User, report_id: int) -> None:
             logger.exception("Report %s deleted; attachment cleanup pending", report_id)
 
 
-def return_report(db: Session, user: User, report_id: int, comment: str) -> Report:
+def return_report(
+    db: Session,
+    user: User,
+    report_id: int,
+    comment: str,
+    *,
+    notification_hook: NotificationHook | None = None,
+) -> Report:
     report = _load_report(db, report_id)
     _require_act(db, user, report)
     report.status = STATUS_RETURNED
     report.return_comment = _require_non_empty_comment(comment)
+    if notification_hook is not None:
+        notification_hook(db, report)
     db.commit()
     db.refresh(report)
     return report
@@ -423,6 +440,7 @@ def resubmit_report(
     body: str,
     tracker_key: str | None,
     tracker_url: str | None,
+    notification_hook: NotificationHook | None = None,
 ) -> Report:
     report = _load_report(db, report_id)
     if (
@@ -445,6 +463,8 @@ def resubmit_report(
     report.return_comment = None
     report.status = STATUS_OPEN
     report.resolved_at = None
+    if notification_hook is not None:
+        notification_hook(db, report)
     db.commit()
     db.refresh(report)
     return report

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -746,6 +747,7 @@ def submit_review(
     reviewer: User | None = None,
     operator_login: str | None = None,
     idempotency_key: str | None,
+    notification_hook: Callable[[Session, float], None] | None = None,
 ) -> dict:
     if _role(actor) != rbac.RoleSlug.MECHANIC:
         raise HTTPException(403, "task_review_mechanic_required")
@@ -882,6 +884,8 @@ def submit_review(
             current_review.updated_at = now
         else:
             raise HTTPException(409, "task_review_already_pending")
+        if notification_hook is not None:
+            notification_hook(db, primary.row.created_at)
         db.commit()
     except Exception:
         db.rollback()
@@ -908,6 +912,7 @@ def return_review(
     reason: str,
     assignee: str | None,
     idempotency_key: str | None,
+    notification_hook: Callable[[Session, float], None] | None = None,
 ) -> dict:
     if _role(actor) not in _REVIEW_ROLES:
         raise HTTPException(403, "task_review_operator_required")
@@ -1003,6 +1008,8 @@ def return_review(
         encoded, digest = canonical_payload({**saved_payload, "local_response": local_response})
         begun.row.payload_json = encoded
         begun.row.payload_hash = digest
+        if notification_hook is not None:
+            notification_hook(db, begun.row.created_at)
         db.commit()
         return local_response
     return _result(

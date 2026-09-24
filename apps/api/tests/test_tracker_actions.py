@@ -1,8 +1,15 @@
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from sqlalchemy import select
+from starlette.background import BackgroundTasks
 
 from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, Report, User, UserPark
+from robopark_api.schedule_models import NotificationEvent, ScheduleEntry
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings
 from robopark_api.task_workflow_models import ReliableAction, TaskReview
@@ -23,8 +30,25 @@ def _seed_operator(db_session, park):
     return operator
 
 
-def test_tracker_action_comment(client, db_session, seed_park_with_tracker, monkeypatch):
+@pytest.mark.parametrize("keyed", [False, True])
+def test_tracker_action_comment(
+    client, db_session, seed_park_with_tracker, seed_mechanic, monkeypatch, keyed
+):
     _seed_operator(db_session, seed_park_with_tracker)
+    now = datetime.now(UTC)
+    db_session.add(
+        ScheduleEntry(
+            owner_user_id=seed_mechanic.id,
+            park_id=seed_park_with_tracker.id,
+            kind="shift",
+            start_at=now - timedelta(hours=1),
+            end_at=now + timedelta(hours=1),
+            created_by_user_id=seed_mechanic.id,
+            updated_by_user_id=seed_mechanic.id,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(BackgroundTasks, "add_task", lambda *_args, **_kwargs: None)
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
 
     from robopark_api.services import tracker_client
@@ -49,9 +73,31 @@ def test_tracker_action_comment(client, db_session, seed_park_with_tracker, monk
         client.post("/auth/login", json={"username": "op3", "password": "secret"}).status_code
         == 204
     )
-    response = client.post("/tracker/issues/ROBOPARK-1/comment", json={"text": "hello"})
+    headers = (
+        {
+            "Idempotency-Key": "comment-key-1",
+            "X-Tracker-State": json.dumps(
+                {
+                    "status": "Open",
+                    "status_key": "open",
+                    "assignee": "mech1",
+                }
+            ),
+        }
+        if keyed
+        else {}
+    )
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/comment", json={"text": "hello"}, headers=headers
+    )
     assert response.status_code == 200
     assert response.json()["action"] == "comment"
+    events = list(
+        db_session.scalars(
+            select(NotificationEvent).where(NotificationEvent.event_type == "operator_comment")
+        )
+    )
+    assert [event.user_id for event in events] == [seed_mechanic.id]
 
 
 def test_mechanic_claims_locally_without_tracker_login_or_upstream_assignment(
