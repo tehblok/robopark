@@ -4,12 +4,13 @@ import asyncio
 import threading
 
 import pytest
+from sqlalchemy.orm import sessionmaker
 
 from robopark_api.services import worker_runtime
 
 
 def test_worker_starts_each_loop_once_and_joins_before_releasing_lease(
-    tmp_path, test_settings, monkeypatch
+    tmp_path, db_engine, test_settings, monkeypatch
 ):
     names = (
         "keepalive",
@@ -52,7 +53,8 @@ def test_worker_starts_each_loop_once_and_joins_before_releasing_lease(
 
     async def scenario():
         stop = asyncio.Event()
-        first = worker_runtime.WorkerRuntime(test_settings, lambda: None, Push())
+        factory = sessionmaker(bind=db_engine, future=True)
+        first = worker_runtime.WorkerRuntime(test_settings, factory, Push())
         task = asyncio.create_task(first.start(stop))
         for _ in range(100):
             if len(started) == len(names):
@@ -61,7 +63,7 @@ def test_worker_starts_each_loop_once_and_joins_before_releasing_lease(
         assert sorted(started) == sorted(names)
 
         second_stop = asyncio.Event()
-        second = worker_runtime.WorkerRuntime(test_settings, lambda: None, Push())
+        second = worker_runtime.WorkerRuntime(test_settings, factory, Push())
         second_task = asyncio.create_task(second.start(second_stop))
         await asyncio.sleep(0.05)
         assert len(started) == len(names)
@@ -77,7 +79,9 @@ def test_worker_starts_each_loop_once_and_joins_before_releasing_lease(
     asyncio.run(scenario())
 
 
-def test_failed_job_joins_inflight_writer_before_shared_cleanup(test_settings, monkeypatch):
+def test_failed_job_joins_inflight_writer_before_shared_cleanup(
+    db_engine, test_settings, monkeypatch
+):
     writer_started = threading.Event()
     finish_writer = threading.Event()
     writer_stopped = threading.Event()
@@ -145,7 +149,9 @@ def test_failed_job_joins_inflight_writer_before_shared_cleanup(test_settings, m
     async def scenario():
         stop = asyncio.Event()
         task = asyncio.create_task(
-            worker_runtime.WorkerRuntime(test_settings, lambda: None, Push()).start(stop)
+            worker_runtime.WorkerRuntime(
+                test_settings, sessionmaker(bind=db_engine, future=True), Push()
+            ).start(stop)
         )
         assert await asyncio.to_thread(writer_started.wait, 1)
         await asyncio.sleep(0.05)
@@ -162,7 +168,9 @@ def test_failed_job_joins_inflight_writer_before_shared_cleanup(test_settings, m
     asyncio.run(scenario())
 
 
-def test_worker_defers_initialization_until_maintenance_ends(test_settings, monkeypatch):
+def test_worker_defers_initialization_until_maintenance_ends(
+    db_engine, test_settings, monkeypatch
+):
     maintenance = asyncio.Event()
     maintenance.set()
     initialized = []
@@ -215,7 +223,9 @@ def test_worker_defers_initialization_until_maintenance_ends(test_settings, monk
     async def scenario():
         stop = asyncio.Event()
         task = asyncio.create_task(
-            worker_runtime.WorkerRuntime(test_settings, lambda: None, Push()).start(stop)
+            worker_runtime.WorkerRuntime(
+                test_settings, sessionmaker(bind=db_engine, future=True), Push()
+            ).start(stop)
         )
         await asyncio.sleep(0.05)
         assert not attempts

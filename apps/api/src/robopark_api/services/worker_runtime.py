@@ -7,6 +7,7 @@ import logging
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from robopark_api.services import tracker_client
 from robopark_api.services.blocker_history_job import run_blocker_history_loop
@@ -18,6 +19,7 @@ from robopark_api.services.emergency_keepalive import run_keepalive_loop
 from robopark_api.services.live_merge import JobLease, default_live_merge_root
 from robopark_api.services.ops.maintenance import host_maintenance_active
 from robopark_api.services.session_cleanup import run_session_cleanup_loop
+from robopark_api.services.sync_health import record_worker_heartbeat, release_worker_heartbeat
 from robopark_api.services.system_notifications import run_system_notification_loop
 from robopark_api.services.tracker_notifications import run_tracker_notification_loop
 from robopark_api.services.tracker_outbox import run_tracker_outbox_loop
@@ -40,6 +42,19 @@ def worker_health() -> WorkerHealth:
     return _health
 
 
+async def _heartbeat_loop(session_factory: Any, stop: asyncio.Event, owner_id: str) -> None:
+    while not stop.is_set():
+        with suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=15)
+        if not stop.is_set():
+            await asyncio.to_thread(_write_heartbeat, session_factory, owner_id)
+
+
+def _write_heartbeat(session_factory: Any, owner_id: str) -> None:
+    with session_factory() as db:
+        record_worker_heartbeat(db, owner_id=owner_id)
+
+
 class WorkerRuntime:
     def __init__(self, settings: Any, session_factory: Any, push_service: Any) -> None:
         self.settings = settings
@@ -52,6 +67,7 @@ class WorkerRuntime:
         lease = JobLease(default_live_merge_root(), "lifespan-jobs")
         tasks: list[asyncio.Task[None]] = []
         owns_lease = False
+        owner_id = str(uuid4())
         deferred_initialization = host_maintenance_active(self.settings)
         try:
             while not stop.is_set():
@@ -66,7 +82,10 @@ class WorkerRuntime:
             if deferred_initialization:
                 initialize_data(self.session_factory, self.settings)
 
+            _write_heartbeat(self.session_factory, owner_id)
+
             tasks = [
+                asyncio.create_task(_heartbeat_loop(self.session_factory, stop, owner_id)),
                 asyncio.create_task(run_keepalive_loop(stop)),
                 asyncio.create_task(run_blocker_history_loop(stop)),
                 asyncio.create_task(
@@ -131,4 +150,8 @@ class WorkerRuntime:
                     try:
                         await asyncio.to_thread(dispose_database_lock_engines)
                     finally:
-                        lease.release()
+                        try:
+                            with self.session_factory() as db:
+                                release_worker_heartbeat(db, owner_id=owner_id)
+                        finally:
+                            lease.release()

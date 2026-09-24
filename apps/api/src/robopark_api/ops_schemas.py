@@ -86,6 +86,17 @@ class SystemHealthOut(BaseModel):
     last_backup: BackupOut = BackupOut()
 
 
+class SyncHealthOut(BaseModel):
+    cursor_age_seconds: int | None = None
+    pending_action_count: int = 0
+    oldest_pending_action_age_seconds: int | None = None
+    retry_count: int = 0
+    needs_attention_count: int = 0
+    last_success_at: datetime | None = None
+    last_error: Literal["tracker_unavailable", "poll_failed"] | None = None
+    worker_lease_state: Literal["active", "stale", "unknown"] = "unknown"
+
+
 class UpdateInspectionOut(BaseModel):
     inspection_id: UUID
     version: str

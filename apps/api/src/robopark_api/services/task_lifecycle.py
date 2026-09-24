@@ -258,6 +258,14 @@ def reconcile_external_closure(db: Session, issue: dict) -> None:
     if not issue_key:
         return
     review = _active_review(db, issue_key, for_update=True)
+    if review is None:
+        closing_review = _latest_review(db, issue_key)
+        if (
+            closing_review is not None
+            and closing_review.state == "closed"
+            and closing_review.closed_at is None
+        ):
+            review = closing_review
     claim = get_claim(db, issue_key)
     if review is None and claim is None:
         return
@@ -1036,7 +1044,7 @@ def approve_review(
         review,
         state="closed",
         reviewer_user_id=actor.id,
-        closed_at=now,
+        closed_at=None,
         now=now,
     )
     begun = _transition_action(

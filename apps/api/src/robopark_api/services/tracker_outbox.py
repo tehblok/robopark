@@ -25,7 +25,10 @@ from robopark_api.services.reliable_actions import (
     mark_needs_attention,
     schedule_retry,
 )
-from robopark_api.services.task_lifecycle import tracker_issue_is_closed
+from robopark_api.services.task_lifecycle import (
+    reconcile_external_closure,
+    tracker_issue_is_closed,
+)
 from robopark_api.services.task_timeline import staged_attachments_root
 from robopark_api.services.tracker_transitions import (
     TransitionPurpose,
@@ -561,6 +564,17 @@ def _process_batch(session_factory) -> int:
                 _sync_campaign_submission(db, action)
                 _sync_claim(db, action)
                 db.commit()
+                if action.action == "close":
+                    # Acceptance is only local until a fresh authoritative read
+                    # confirms the terminal Tracker state.
+                    token = settings_svc.get_tracker_token(db)
+                    if token:
+                        try:
+                            fresh = tracker_client.get_issue(token=token, key=action.resource_id)
+                        except tracker_client.TrackerError:
+                            fresh = None
+                        if fresh is not None:
+                            reconcile_external_closure(db, fresh)
                 _audit_campaign_action(db, action)
                 tracker_cache.invalidate_issue(action.resource_id)
             except DeliveryError as exc:

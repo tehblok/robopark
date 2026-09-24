@@ -19,6 +19,95 @@ from robopark_api.services import (
     worker_runtime,
 )
 from robopark_api.services.tracker_notifications import poll_tracker_notifications
+from robopark_api.task_workflow_models import TaskReview
+
+
+@pytest.mark.parametrize(
+    ("active", "failures", "seconds"),
+    [(True, 0, 15), (False, 0, 60), (True, 1, 30), (False, 3, 300), (True, 99, 300)],
+)
+def test_poll_delay_adapts_and_caps(active, failures, seconds):
+    assert tracker_notifications.poll_delay(active, failures) == timedelta(seconds=seconds)
+
+
+def test_worker_reconciles_closed_claim_from_fresh_tracker_read(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import tracker_claims
+
+    tracker_claims.claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key="ROBOPARK-44",
+        park_id=seed_park_with_tracker.id,
+    )
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    seen = []
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **kwargs: seen.append(kwargs["key"])
+        or {"key": kwargs["key"], "status_key": "resolved"},
+    )
+
+    assert tracker_notifications.reconcile_closed_claims(_factory(db_engine), limit=10) == 1
+    db_session.expire_all()
+    assert tracker_claims.get_claim(db_session, "ROBOPARK-44") is None
+    assert seen == ["ROBOPARK-44"]
+
+
+def test_worker_confirms_accepted_review_only_after_remote_closure(
+    db_engine, db_session, seed_mechanic, monkeypatch
+):
+    review = TaskReview(
+        id="accepted-review",
+        issue_key="ROBOPARK-45",
+        state="closed",
+        actor_user_id=seed_mechanic.id,
+        created_at=1.0,
+        updated_at=2.0,
+        closed_at=None,
+    )
+    db_session.add(review)
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **kwargs: {"key": kwargs["key"], "status_key": "cancelled"},
+    )
+
+    assert tracker_notifications.reconcile_closed_claims(_factory(db_engine), limit=10) == 1
+    db_session.expire_all()
+    assert db_session.get(TaskReview, review.id).closed_at is not None
+
+
+def test_worker_keeps_accepted_review_unconfirmed_while_tracker_is_open(
+    db_engine, db_session, seed_mechanic, monkeypatch
+):
+    review = TaskReview(
+        id="unconfirmed-review",
+        issue_key="ROBOPARK-46",
+        state="closed",
+        actor_user_id=seed_mechanic.id,
+        created_at=1.0,
+        updated_at=2.0,
+        closed_at=None,
+    )
+    db_session.add(review)
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **kwargs: {"key": kwargs["key"], "status_key": "open"},
+    )
+
+    assert tracker_notifications.reconcile_closed_claims(_factory(db_engine), limit=10) == 0
+    db_session.expire_all()
+    assert db_session.get(TaskReview, review.id).closed_at is None
 
 
 def _issue(key: str, created: str) -> dict:
@@ -445,6 +534,9 @@ def test_notification_loop_owns_and_joins_its_poll_thread(monkeypatch):
         return 0
 
     monkeypatch.setattr(tracker_notifications, "poll_tracker_notifications", bounded_poll)
+    monkeypatch.setattr(tracker_notifications, "reconcile_closed_claims", lambda *_args: 0)
+    monkeypatch.setattr(tracker_notifications, "_poll_failed", lambda *_args: False)
+    monkeypatch.setattr(tracker_notifications, "_active", lambda *_args: False)
 
     async def exercise():
         stop_event = asyncio.Event()
@@ -640,6 +732,11 @@ def test_worker_starts_tracker_poller_only_for_lease_owner(
 
     assert started.is_set() is won_lease
     if won_lease:
+        with Session(db_engine) as db:
+            heartbeat = db.get(TrackerNotificationCursor, "worker-runtime")
+            assert heartbeat is not None
+            assert heartbeat.lease_until is None
+            assert heartbeat.last_success_at is not None
         assert captured["interval_seconds"] == test_settings.tracker_notification_interval_seconds
         assert captured["page_size"] == test_settings.tracker_notification_page_size
         assert captured["lease_seconds"] == test_settings.tracker_notification_lease_seconds

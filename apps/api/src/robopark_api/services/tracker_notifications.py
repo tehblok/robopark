@@ -17,15 +17,107 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from robopark_api.models import Park
+from robopark_api.collaboration_models import TrackerClaim
+from robopark_api.models import Park, User
 from robopark_api.schedule_models import TrackerNotificationCursor
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import tracker_cache, tracker_client, tracker_filters
+from robopark_api.services.task_lifecycle import (
+    reconcile_external_closure,
+    tracker_issue_is_closed,
+)
 from robopark_api.services.tracker_policy import issue_tags
+from robopark_api.task_workflow_models import TaskReview
 
 logger = logging.getLogger(__name__)
 
 _SCOPE_KEY = "new-tasks"
+_CLOSURE_SCOPE_KEY = "closures"
+
+
+def poll_delay(active: bool, failures: int) -> timedelta:
+    base = 15 if active else 60
+    return timedelta(seconds=min(300, base * (2 ** min(max(failures, 0), 5))))
+
+
+def _active(session_factory: Callable[[], Session]) -> bool:
+    with session_factory() as db:
+        if db.scalar(select(TrackerClaim.issue_key).limit(1)) is not None:
+            return True
+        if db.scalar(
+            select(TaskReview.id).where(
+                TaskReview.state == "closed", TaskReview.closed_at.is_(None)
+            ).limit(1)
+        ) is not None:
+            return True
+        recent = datetime.now(UTC) - timedelta(minutes=2)
+        return db.scalar(select(User.id).where(User.last_seen_at >= recent).limit(1)) is not None
+
+
+def _poll_failed(session_factory: Callable[[], Session]) -> bool:
+    with session_factory() as db:
+        row = db.get(TrackerNotificationCursor, _SCOPE_KEY)
+        return bool(row is not None and row.last_error)
+
+
+def reconcile_closed_claims(
+    session_factory: Callable[[], Session], *, limit: int = 25
+) -> int:
+    """Refresh a bounded, rotating set of locally owned or closing tickets."""
+    if limit <= 0:
+        return 0
+    token, _queues = _query_context(session_factory)
+    if not token:
+        return 0
+    with session_factory() as db:
+        keys = sorted(
+            set(db.scalars(select(TrackerClaim.issue_key)).all())
+            | set(
+                db.scalars(
+                    select(TaskReview.issue_key).where(
+                        TaskReview.state == "closed", TaskReview.closed_at.is_(None)
+                    )
+                ).all()
+            )
+        )
+        cursor = db.get(TrackerNotificationCursor, _CLOSURE_SCOPE_KEY)
+        if cursor is None:
+            cursor = TrackerNotificationCursor(scope_key=_CLOSURE_SCOPE_KEY)
+            db.add(cursor)
+        position = cursor.cursor_value or ""
+        selected = [key for key in keys if key > position][:limit]
+        if len(selected) < limit:
+            selected += [key for key in keys if key <= position][: limit - len(selected)]
+        db.commit()
+    reconciled = 0
+    for key in selected:
+        try:
+            issue = tracker_client.get_issue(token=token, key=key)
+        except tracker_client.TrackerError:
+            logger.warning("Tracker closure refresh failed", exc_info=True)
+            break
+        if issue is None or issue.get("key") != key:
+            continue
+        with session_factory() as db:
+            before = db.get(TrackerClaim, key) is not None
+            review = db.scalar(
+                select(TaskReview.id).where(
+                    TaskReview.issue_key == key,
+                    TaskReview.state == "closed",
+                    TaskReview.closed_at.is_(None),
+                ).limit(1)
+            )
+            reconcile_external_closure(db, issue)
+            after = db.get(TrackerClaim, key) is not None
+            if tracker_issue_is_closed(issue) and (
+                (before and not after) or review is not None
+            ):
+                reconciled += 1
+            cursor = db.get(TrackerNotificationCursor, _CLOSURE_SCOPE_KEY)
+            if cursor is not None:
+                cursor.cursor_value = key
+                db.commit()
+    return reconciled
 
 
 def _aware(value: datetime) -> datetime:
@@ -332,7 +424,9 @@ async def run_tracker_notification_loop(
     poll_deadline_seconds: float,
     max_operation_seconds: float,
 ) -> None:
+    del interval_seconds  # Kept for configuration compatibility; scheduling is adaptive.
     owner_id = str(uuid4())
+    failures = 0
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tracker-notification-poll")
     loop = asyncio.get_running_loop()
     try:
@@ -348,7 +442,13 @@ async def run_tracker_notification_loop(
                 max_operation_seconds=max_operation_seconds,
             )
             await loop.run_in_executor(executor, operation)
+            await loop.run_in_executor(executor, partial(reconcile_closed_claims, session_factory))
+            failed = await loop.run_in_executor(executor, partial(_poll_failed, session_factory))
+            failures = failures + 1 if failed else 0
+            active = await loop.run_in_executor(executor, partial(_active, session_factory))
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+                await asyncio.wait_for(
+                    stop_event.wait(), timeout=poll_delay(active, failures).total_seconds()
+                )
     finally:
         executor.shutdown(wait=True, cancel_futures=True)

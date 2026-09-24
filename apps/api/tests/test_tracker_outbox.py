@@ -65,6 +65,42 @@ def test_delayed_transition_cannot_reopen_externally_closed_issue(
     assert exc.value.code == "task_already_closed"
 
 
+def test_close_delivery_refreshes_tracker_before_releasing_local_claim(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import tracker_claims, tracker_outbox
+
+    action = _action(db_session, seed_mechanic, action="close")
+    tracker_claims.claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key=action.resource_id,
+        park_id=seed_park_with_tracker.id,
+    )
+    db_session.commit()
+    reads = []
+
+    def get_issue(**kwargs):
+        reads.append(kwargs["key"])
+        return {"key": kwargs["key"], "status_key": "open" if len(reads) == 1 else "closed"}
+
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda _db: "token")
+    monkeypatch.setattr(tracker_outbox.tracker_client, "get_issue", get_issue)
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_transitions",
+        lambda **_kwargs: [{"id": "close", "display": "Закрыть"}],
+    )
+    monkeypatch.setattr(tracker_outbox.tracker_client, "transition_issue", lambda **_kwargs: None)
+
+    assert tracker_outbox._process_batch(sessionmaker(bind=db_engine, future=True)) == 1
+    db_session.expire_all()
+    assert db_session.get(ReliableAction, action.id).state == "succeeded"
+    assert tracker_claims.get_claim(db_session, action.resource_id) is None
+    assert reads == [action.resource_id, action.resource_id]
+
+
 def _campaign_review_action(db, actor, park):
     campaign = Campaign(
         kind="service_company",
