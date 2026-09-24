@@ -78,7 +78,7 @@ test('production worker safely activates a waiting update with an empty offline 
       sessionStorage.setItem('pwa-controller-change', 'observed')
       window.location.reload()
     }, { once: true })
-    registration.waiting.postMessage({ type: 'ACTIVATE_WHEN_SAFE' })
+    registration.waiting.postMessage({ type: 'ACTIVATE_WHEN_SAFE', state: { status: 'idle', pending: 0, conflicts: 0 } })
   })
   await reloaded
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem('pwa-controller-change'))).toBe('observed')

@@ -6,9 +6,17 @@ import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
+import { IDBFactory } from 'fake-indexeddb'
 import { buildServiceWorker } from './build-sw.mjs'
 
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+class TestMessageChannel {
+  constructor() {
+    this.port1 = { onmessage: null, close: () => {} }
+    this.port2 = { postMessage: data => queueMicrotask(() => this.port1.onmessage?.({ data })), close: () => {} }
+  }
+}
 
 test('regular browser discovery excludes the opt-in soak suite', () => {
   const result = spawnSync('npx', ['playwright', 'test', '--list', '--project=chromium'], {
@@ -67,6 +75,7 @@ test('worker version follows built bytes and requires all precache files', async
       await writeFile(join(dist, file), file)
     }
     const first = await buildServiceWorker(dist)
+    assert.match(first, /const version = "0\.2\.0-rc\.6-[a-f0-9]{16}"/)
     assert.match(first, /\/assets\/index-a1\.js/)
     assert.match(first, /\/index\.html/)
     assert.match(first, /\/offline\.html/)
@@ -106,7 +115,10 @@ test('worker serves the cached application shell immediately and never caches AP
   const clientMessages = []
   const scope = {
     location: { origin: 'https://robopark.test' },
-    clients: { claim: async () => {}, matchAll: async () => [{ postMessage: (message) => clientMessages.push(message) }] },
+    clients: { claim: async () => {}, matchAll: async () => [{ postMessage: (message, ports) => {
+      clientMessages.push(message)
+      if (message.type === 'CHECK_ACTIVATION_SAFETY') ports[0].postMessage({ safe: true })
+    } }] },
     skipWaiting: async () => { scope.skipped = true },
     skipped: false,
     addEventListener: (name, handler) => handlers.set(name, handler),
@@ -129,7 +141,7 @@ test('worker serves the cached application shell immediately and never caches AP
     const url = typeof request === 'string' ? request : request.url
     if (url.endsWith('/index.html')) return new Response('Fresh shell', { headers: { 'content-type': 'text/html' } })
     return new Response('ok', { headers: { 'content-type': 'text/javascript' } })
-  }, Response, indexedDB: undefined })
+  }, Response, indexedDB: new IDBFactory(), MessageChannel: TestMessageChannel, setTimeout, clearTimeout })
   const dispatch = (url, options = {}) => {
     const request = { url: new URL(url, scope.location.origin).href, method: options.method ?? 'GET', mode: options.mode ?? 'cors' }
     const waits = []
@@ -160,7 +172,83 @@ test('worker serves the cached application shell immediately and never caches AP
   assert.equal(clientMessages.length, 1)
   assert.equal(clientMessages[0].type, 'UPDATE_READY')
   assert.equal(scope.skipped, false)
-  handlers.get('message')({ data: { type: 'ACTIVATE_WHEN_SAFE' } })
-  await new Promise(resolve => setTimeout(resolve, 0))
+  const messageWaits = []
+  handlers.get('message')({ data: { type: 'ACTIVATE_WHEN_SAFE', state: { status: 'idle', pending: 0, conflicts: 0 } }, waitUntil: promise => messageWaits.push(promise) })
+  await Promise.all(messageWaits)
   assert.equal(scope.skipped, true)
+})
+
+test('waiting worker keeps scoped records and old shell until every local action and photo is settled', async () => {
+  const source = await readFile(new URL('./sw-template.js', import.meta.url), 'utf8')
+    .then(value => value.replace("'__CACHE_VERSION__'", '"0.2.0-rc.6-test"').replace("['__PRECACHE__']", '["/index.html"]'))
+  const indexedDB = new IDBFactory()
+  const opening = indexedDB.open('robopark-offline', 2)
+  opening.onupgradeneeded = () => {
+    for (const name of ['actions', 'media', 'entities', 'meta', 'revisions']) {
+      const store = opening.result.createObjectStore(name, { keyPath: 'dbId' })
+      if (name === 'actions' || name === 'media') store.createIndex('state', 'state')
+    }
+  }
+  const db = await new Promise((resolve, reject) => {
+    opening.onsuccess = () => resolve(opening.result)
+    opening.onerror = () => reject(opening.error)
+  })
+  const write = async (store, record) => {
+    const transaction = db.transaction(store, 'readwrite')
+    transaction.objectStore(store).put(record)
+    await new Promise((resolve, reject) => {
+      transaction.oncomplete = resolve
+      transaction.onerror = () => reject(transaction.error)
+    })
+  }
+  await write('actions', { dbId: 'scope-a\0action', scope: 'scope-a', state: 'ready' })
+  await write('media', { dbId: 'scope-b\0photo', scope: 'scope-b', state: 'attention', blob: new Blob(['photo']) })
+  await write('entities', { dbId: 'scope-b\0draft', scope: 'scope-b', data: { value: 'keep' } })
+  const names = new Set(['robopark-shell-old', 'robopark-runtime-old', 'robopark-shell-0.2.0-rc.6-test', 'unrelated-cache'])
+  const handlers = new Map()
+  let skipped = 0
+  let clientSafe = false
+  const scope = {
+    location: { origin: 'https://robopark.test' },
+    clients: { claim: async () => {}, matchAll: async () => [{ postMessage: (_message, ports) => ports[0].postMessage({ safe: clientSafe }) }] },
+    skipWaiting: async () => { skipped += 1 },
+    addEventListener: (name, handler) => handlers.set(name, handler),
+  }
+  const caches = { keys: async () => [...names], delete: async name => names.delete(name) }
+  vm.runInNewContext(source, { self: scope, caches, indexedDB, URL, Response, Blob, MessageChannel: TestMessageChannel, setTimeout, clearTimeout })
+  const message = async state => {
+    const waits = []
+    handlers.get('message')({ data: { type: 'ACTIVATE_WHEN_SAFE', state }, waitUntil: promise => waits.push(promise) })
+    await Promise.all(waits)
+  }
+  await message({ status: 'idle', pending: 0, conflicts: 0 })
+  assert.equal(skipped, 0)
+  assert.equal(names.has('robopark-shell-old'), true)
+  await write('actions', { dbId: 'scope-a\0action', scope: 'scope-a', state: 'confirmed' })
+  await message({ status: 'idle', pending: 0, conflicts: 0 })
+  assert.equal(skipped, 0)
+  await write('media', { dbId: 'scope-b\0photo', scope: 'scope-b', state: 'confirmed', blob: new Blob(['photo']) })
+  await message({ status: 'attention', pending: 0, conflicts: 0 })
+  assert.equal(skipped, 0)
+  await message({ status: 'idle', pending: 0, conflicts: 0 })
+  assert.equal(skipped, 0)
+  clientSafe = true
+  await message({ status: 'idle', pending: 0, conflicts: 0 })
+  assert.equal(skipped, 1)
+  const waits = []
+  handlers.get('activate')({ waitUntil: promise => waits.push(promise) })
+  await Promise.all(waits)
+  assert.deepEqual([...names].sort(), ['robopark-shell-0.2.0-rc.6-test', 'unrelated-cache'])
+  const read = async store => {
+    const request = db.transaction(store, 'readonly').objectStore(store).getAll()
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+  }
+  assert.equal((await read('actions')).length, 1)
+  assert.equal((await read('media')).length, 1)
+  assert.deepEqual((await read('entities'))[0].data, { value: 'keep' })
+  assert.equal(db.version, 2)
+  db.close()
 })

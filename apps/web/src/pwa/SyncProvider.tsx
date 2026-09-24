@@ -10,6 +10,7 @@ import { NetworkOnlySyncEngine, SyncEngine, type OfflineActionInput, type Offlin
 import type { OfflineAction, OfflineMedia } from './offlineTypes'
 import { uploadMedia } from './resumableUpload'
 import { ClientTelemetry } from './clientTelemetry'
+import { setServiceWorkerSyncState } from './registerServiceWorker'
 
 export type SyncEngineLike = {
   start(): void
@@ -114,6 +115,10 @@ export function SyncProvider({ children, engineFactory = defaultEngineFactory }:
     return () => { telemetry.current?.dispose(); telemetry.current = null }
   }, [])
   useEffect(() => { telemetry.current?.record('queue_length', state.pending) }, [state.pending])
+  useEffect(() => {
+    setServiceWorkerSyncState(user && !engine ? null : state)
+  }, [engine, state, user])
+  useEffect(() => () => setServiceWorkerSyncState(DEFAULT_STATE), [])
 
   useEffect(() => {
     if (!user) { setEngine(null); setState(DEFAULT_STATE); return }

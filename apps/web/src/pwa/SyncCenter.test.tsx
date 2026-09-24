@@ -46,4 +46,10 @@ describe('SyncCenter', () => {
     expect(screen.getByText('Обновление будет доступно после отправки очереди.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Установить обновление' })).not.toBeInTheDocument()
   })
+
+  it('does not offer an update while a failed fallback action needs attention', () => {
+    render(<SyncContextProvider value={syncValue({ state: { status: 'attention', pending: 0, conflicts: 1 } })}><SyncCenter updateReady /></SyncContextProvider>)
+    fireEvent.click(screen.getByRole('button', { name: 'Открыть центр синхронизации' }))
+    expect(screen.queryByRole('button', { name: 'Установить обновление' })).not.toBeInTheDocument()
+  })
 })

@@ -21,8 +21,9 @@ export async function buildServiceWorker(distDirectory) {
     digest.update(path).update(await readFile(join(dist, path.slice(1))))
   }
   const template = await readFile(join(scriptDirectory, 'sw-template.js'), 'utf8')
+  const { version } = JSON.parse(await readFile(join(scriptDirectory, '..', 'package.json'), 'utf8'))
   const source = template
-    .replace("'__CACHE_VERSION__'", JSON.stringify(digest.digest('hex').slice(0, 16)))
+    .replace("'__CACHE_VERSION__'", JSON.stringify(`${version}-${digest.digest('hex').slice(0, 16)}`))
     .replace("['__PRECACHE__']", JSON.stringify(precache))
   await writeFile(join(dist, 'sw.js'), source)
   return source

@@ -8,7 +8,7 @@ type WorkerEnvironment = {
   secure: boolean
   serviceWorker?: {
     register: (script: string, options: { scope: string }) => Promise<WorkerRegistration>
-    addEventListener?: (name: 'message' | 'controllerchange', callback: (event: { data?: unknown }) => void) => void
+    addEventListener?: (name: 'message' | 'controllerchange', callback: (event: { data?: unknown, ports?: { postMessage: (value: unknown) => void }[] }) => void) => void
   }
   onFocus?: (callback: () => void) => void
   onVisible?: (callback: () => void) => void
@@ -17,7 +17,16 @@ type WorkerEnvironment = {
 
 let waitingRegistration: WorkerRegistration | null = null
 let activationRequested = false
+let syncState: Pick<SyncState, 'status' | 'pending' | 'conflicts'> | null = { status: 'idle', pending: 0, conflicts: 0 }
 const updateListeners = new Set<() => void>()
+
+export function setServiceWorkerSyncState(state: Pick<SyncState, 'status' | 'pending' | 'conflicts'> | null): void {
+  syncState = state
+}
+
+function safeToActivate(state: typeof syncState): boolean {
+  return state?.status === 'idle' && state.pending === 0 && state.conflicts === 0
+}
 
 export function serviceWorkerUpdateReady(): boolean {
   return Boolean(waitingRegistration?.waiting)
@@ -35,15 +44,11 @@ function rememberWaitingWorker(registration: WorkerRegistration) {
 
 export function activateServiceWorkerWhenSafe(
   registration: { waiting?: WaitingWorker | null } = waitingRegistration ?? {},
-  state: Pick<SyncState, 'status' | 'pending'>,
+  state: Pick<SyncState, 'status' | 'pending' | 'conflicts'>,
 ): boolean {
-  if (!registration.waiting || state.status === 'syncing' || state.pending > 0) return false
-  registration.waiting.postMessage({ type: 'ACTIVATE_WHEN_SAFE' })
+  if (!registration.waiting || !safeToActivate(state)) return false
+  registration.waiting.postMessage({ type: 'ACTIVATE_WHEN_SAFE', state })
   activationRequested = true
-  if (registration === waitingRegistration) {
-    waitingRegistration = null
-    updateListeners.forEach(listener => listener())
-  }
   return true
 }
 
@@ -53,11 +58,15 @@ export async function registerServiceWorker(environment: WorkerEnvironment): Pro
     const registration = await environment.serviceWorker.register('/sw.js', { scope: '/' })
     if (registration.waiting) rememberWaitingWorker(registration)
     environment.serviceWorker.addEventListener?.('message', (event) => {
-      if ((event.data as { type?: string } | undefined)?.type === 'UPDATE_READY') rememberWaitingWorker(registration)
+      const type = (event.data as { type?: string } | undefined)?.type
+      if (type === 'UPDATE_READY') rememberWaitingWorker(registration)
+      if (type === 'CHECK_ACTIVATION_SAFETY') event.ports?.[0]?.postMessage({ safe: safeToActivate(syncState) })
     })
     environment.serviceWorker.addEventListener?.('controllerchange', () => {
       if (!activationRequested) return
       activationRequested = false
+      waitingRegistration = null
+      updateListeners.forEach(listener => listener())
       environment.reload?.()
     })
     let lastUpdateCheck = 0

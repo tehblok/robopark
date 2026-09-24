@@ -3,7 +3,8 @@ const version = '__CACHE_VERSION__'
 const precache = ['__PRECACHE__']
 const shellCache = `robopark-shell-${version}`
 const runtimeCache = `robopark-runtime-${version}`
-const cachePrefix = 'robopark-'
+const shellCachePrefix = 'robopark-shell-'
+const runtimeCachePrefix = 'robopark-runtime-'
 const maxRuntimeEntries = 100
 const hashedAsset = /^\/assets\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+-[A-Za-z0-9_-]{2,}\.(?:js|css|png|svg|webp|woff2?)$/
 
@@ -18,13 +19,74 @@ self.addEventListener('install', (event) => {
 })
 
 self.addEventListener('message', (event) => {
-  if (event.data?.type === 'ACTIVATE_WHEN_SAFE') void self.skipWaiting()
+  if (event.data?.type !== 'ACTIVATE_WHEN_SAFE') return
+  const state = event.data.state
+  if (state?.status !== 'idle' || state.pending !== 0 || state.conflicts !== 0) return
+  event.waitUntil((async () => {
+    try {
+      if (await localWorkSettled() && await openClientsSafe()) await self.skipWaiting()
+    } catch {
+      // Keep the old shell when local work cannot be inspected.
+    }
+  })())
 })
+
+async function openClientsSafe() {
+  const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+  return (await Promise.all(clients.map(client => new Promise(resolve => {
+    const channel = new MessageChannel()
+    const timeout = setTimeout(() => finish(false), 2000)
+    function finish(safe) {
+      clearTimeout(timeout)
+      channel.port1.close()
+      channel.port2.close()
+      resolve(safe)
+    }
+    channel.port1.onmessage = event => finish(event.data?.safe === true)
+    try { client.postMessage({ type: 'CHECK_ACTIVATION_SAFETY' }, [channel.port2]) }
+    catch { finish(false) }
+  })))).every(Boolean)
+}
+
+function localWorkSettled() {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') { reject(new Error('indexeddb_unavailable')); return }
+    const request = indexedDB.open('robopark-offline')
+    let missing = false
+    request.onupgradeneeded = () => {
+      missing = true
+      request.transaction.abort()
+    }
+    request.onerror = () => missing ? resolve(true) : reject(request.error)
+    request.onsuccess = () => {
+      const db = request.result
+      if (!db.objectStoreNames.contains('actions') || !db.objectStoreNames.contains('media')) {
+        db.close()
+        reject(new Error('offline_stores_unavailable'))
+        return
+      }
+      const transaction = db.transaction(['actions', 'media'], 'readonly')
+      const actions = transaction.objectStore('actions')
+      const media = transaction.objectStore('media')
+      const actionCount = actions.count()
+      const confirmedActions = actions.index('state').count('confirmed')
+      const cancelledActions = actions.index('state').count('cancelled')
+      const mediaCount = media.count()
+      const confirmedMedia = media.index('state').count('confirmed')
+      transaction.oncomplete = () => {
+        db.close()
+        resolve(actionCount.result === confirmedActions.result + cancelledActions.result
+          && mediaCount.result === confirmedMedia.result)
+      }
+      transaction.onerror = transaction.onabort = () => { db.close(); reject(transaction.error) }
+    }
+  })
+}
 
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     const names = await caches.keys()
-    await Promise.all(names.filter((name) => name.startsWith(cachePrefix) && name !== shellCache && name !== runtimeCache)
+    await Promise.all(names.filter((name) => (name.startsWith(shellCachePrefix) || name.startsWith(runtimeCachePrefix)) && name !== shellCache && name !== runtimeCache)
       .map((name) => caches.delete(name)))
     await self.clients.claim()
   })())

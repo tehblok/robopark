@@ -48,7 +48,7 @@ export function SyncCenter({
     : state.status === 'syncing' ? 'Отправляем'
       : state.conflicts > 0 ? 'Нужно внимание'
         : state.pending > 0 ? 'Ожидает отправки' : 'Синхронизация'
-  const safeToUpdate = state.status !== 'syncing' && state.pending === 0
+  const safeToUpdate = state.status === 'idle' && state.pending === 0 && state.conflicts === 0
 
   return (
     <div className="rp-sync-center">
