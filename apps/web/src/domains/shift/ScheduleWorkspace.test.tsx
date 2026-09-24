@@ -1,11 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { User } from '../../api'
+import type { ScheduleEntry, ScheduleParticipant, User } from '../../api'
 import { ScheduleWorkspace, type ScheduleApiClient } from './ScheduleWorkspace'
 
 const park = { id: 1, name: 'Парк', tag: 'PARK', is_active: true }
 const mechanic: User = { id: 7, username: 'mech', role: 'mechanic', access_status: 'approved', parks: [park] }
-const entry = { id: 'one', owner_user_id: 7, park_id: 1, kind: 'shift' as const, start_at: '2026-09-21T09:00:00+03:00', end_at: '2026-09-21T21:00:00+03:00', source: 'self', series_id: null, created_by_user_id: 7, updated_by_user_id: 7, created_at: '2026-09-20T10:00:00Z', updated_at: '2026-09-20T10:00:00Z', warnings: [] }
+const entry: ScheduleEntry = { id: 'one', owner_user_id: 7, park_id: 1, kind: 'shift', start_at: '2026-09-21T09:00:00+03:00', end_at: '2026-09-21T21:00:00+03:00', source: 'self', series_id: null, created_by_user_id: 7, updated_by_user_id: 7, created_at: '2026-09-20T10:00:00Z', updated_at: '2026-09-20T10:00:00Z', warnings: [] }
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -58,8 +58,8 @@ describe('ScheduleWorkspace', () => {
   })
 
   it('keeps data only for a matching scope and range and rejects stale responses', async () => {
-    const sameScope = deferred<typeof entry[]>()
-    const changedScope = deferred<typeof entry[]>()
+    const sameScope = deferred<ScheduleEntry[]>()
+    const changedScope = deferred<ScheduleEntry[]>()
     const firstEntry = { ...entry, id: 'first' }
     const staleEntry = { ...entry, id: 'stale', kind: 'sick' as const }
     const initialClient = client({ schedules: vi.fn(async () => [firstEntry]) })
@@ -85,7 +85,7 @@ describe('ScheduleWorkspace', () => {
 
   it('keeps minimal schedule participants stable for an equivalent principal', async () => {
     const schedules = vi.fn(async () => [entry])
-    const scheduleParticipants = vi.fn(async () => [
+    const scheduleParticipants = vi.fn(async (): Promise<ScheduleParticipant[]> => [
       { id: 7, display_name: 'Анна', role: 'mechanic' },
       { id: 8, display_name: 'Олег', role: 'operator' },
     ])
@@ -144,7 +144,7 @@ describe('ScheduleWorkspace', () => {
   it('shows the bounded planner to royal users', async () => {
     const schedulePattern = vi.fn(async () => [{ ...entry, id: 'pattern-created' }])
     const scheduleCopy = vi.fn(async () => [])
-    const scheduleParticipants = vi.fn(async () => [
+    const scheduleParticipants = vi.fn(async (): Promise<ScheduleParticipant[]> => [
       { id: 7, display_name: 'Анна', role: 'mechanic' },
       { id: 8, display_name: 'Олег', role: 'operator' },
     ])

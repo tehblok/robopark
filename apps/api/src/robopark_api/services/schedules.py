@@ -4,7 +4,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, delete, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from robopark_api.models import AccessStatus, Park, Role, User, UserPark
 from robopark_api.schedule_models import ScheduleEntry
@@ -214,13 +214,27 @@ def list_entries_page(
     has_more = len(rows) > limit
     rows = rows[:limit]
     overlaps: set[str] = set()
-    latest: dict[int, tuple[datetime, str]] = {}
-    for row in rows:
-        prior = latest.get(row.owner_user_id)
-        if prior and row.start_at < prior[0]:
-            overlaps.update((prior[1], row.id))
-        if prior is None or row.end_at > prior[0]:
-            latest[row.owner_user_id] = (row.end_at, row.id)
+    if rows:
+        candidate = aliased(ScheduleEntry)
+        overlap_exists = (
+            select(candidate.id)
+            .where(
+                candidate.id != ScheduleEntry.id,
+                candidate.owner_user_id == ScheduleEntry.owner_user_id,
+                candidate.start_at < ScheduleEntry.end_at,
+                candidate.end_at > ScheduleEntry.start_at,
+            )
+            .correlate(ScheduleEntry)
+            .exists()
+        )
+        overlaps = set(
+            db.scalars(
+                select(ScheduleEntry.id).where(
+                    ScheduleEntry.id.in_([row.id for row in rows]),
+                    overlap_exists,
+                )
+            )
+        )
     items = [shell(db, row, warnings=["overlap"] if row.id in overlaps else []) for row in rows]
     if not has_more or not rows:
         return SchedulePage(items=items)

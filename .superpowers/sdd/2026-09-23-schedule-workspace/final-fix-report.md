@@ -8,6 +8,8 @@
 - Copy requests sent by the planner carry a stable retry key. The API records/replays them with `ReliableAction`, including ambiguous-response retries without duplicate inserts. Callers that omit the new optional key keep the previous request shape.
 - The team grid renders only approved participant rows returned by the participants endpoint; schedule entries with unknown owners are no longer synthesized as mechanics. Personal-calendar filtering remains unchanged.
 - Schedule week/month route-owner drivers now target the current calendar controls and `rp-schedule-calendar__days--week|month` surfaces.
+- Follow-up review: overlap warnings are now computed for page IDs with one correlated SQL `EXISTS` companion query, so both sides of an overlap remain marked across a keyset boundary (including `limit=1`).
+- Follow-up review: schedule workspace fixtures use explicit `ScheduleEntry` and `ScheduleParticipant` types, preventing literal narrowing/widening from breaking the TypeScript build.
 
 ## TDD evidence
 
@@ -29,5 +31,8 @@ The new focused regressions were run before implementation and failed for the in
 - `npx playwright test e2e/operational/schedule-workspace.spec.ts --workers=1` — **4 passed**.
 - Focused Ruff and oxlint on changed files — **clean**.
 - `git diff --check` — **clean**.
+- `apps/api/.venv/bin/pytest apps/api/tests/test_schedules.py -q -k overlap_warnings_survive_keyset_page_boundaries` — **1 passed**.
+- `npx tsc -b --pretty false` — **passed**.
+- `npm test -- --run src/domains/shift/ScheduleWorkspace.test.tsx` — **10 passed**.
 
-`npx tsc -b --pretty false` was also attempted and stopped on three pre-existing inference errors in `ScheduleWorkspace.test.tsx` (`kind: "sick"` against a narrow fixture type and two widened participant `role` arrays). None originates in the changed production contract; they were left untouched to keep this final fix isolated.
+The follow-up changes are limited to `services/schedules.py`, its exact API regression, the schedule workspace test fixture types, and this report.

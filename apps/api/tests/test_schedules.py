@@ -726,6 +726,69 @@ def test_list_schedule_range_is_explicitly_paginated_without_gaps_or_duplicates(
     assert payload[-1]["start_at"] == "2026-09-02T09:24:00+03:00"
 
 
+def test_list_schedule_overlap_warnings_survive_keyset_page_boundaries(
+    client, db_session, db_engine, seed_admin, seed_mechanic, seed_park_with_tracker
+):
+    from robopark_api.schedule_models import ScheduleEntry
+
+    db_session.add(UserPark(user_id=seed_admin.id, park_id=seed_park_with_tracker.id))
+    first = ScheduleEntry(
+        id="overlap-a",
+        owner_user_id=seed_mechanic.id,
+        park_id=seed_park_with_tracker.id,
+        kind="shift",
+        start_at=datetime.fromisoformat("2026-09-01T09:00:00+03:00"),
+        end_at=datetime.fromisoformat("2026-09-01T11:00:00+03:00"),
+        created_by_user_id=seed_mechanic.id,
+        updated_by_user_id=seed_mechanic.id,
+    )
+    second = ScheduleEntry(
+        id="overlap-b",
+        owner_user_id=seed_mechanic.id,
+        park_id=seed_park_with_tracker.id,
+        kind="vacation",
+        start_at=datetime.fromisoformat("2026-09-01T10:00:00+03:00"),
+        end_at=datetime.fromisoformat("2026-09-01T12:00:00+03:00"),
+        created_by_user_id=seed_mechanic.id,
+        updated_by_user_id=seed_mechanic.id,
+    )
+    db_session.add_all([first, second])
+    db_session.commit()
+    login_as(client, seed_admin.username, "secret")
+    scope = {
+        "park_id": seed_park_with_tracker.id,
+        "start_at": "2026-09-01T00:00:00+03:00",
+        "end_at": "2026-09-02T00:00:00+03:00",
+        "limit": 1,
+    }
+
+    schedule_selects = []
+
+    def count_schedule_selects(_connection, _cursor, statement, *_args):
+        normalized = statement.upper()
+        if normalized.lstrip().startswith("SELECT") and "FROM SCHEDULE_ENTRIES" in normalized:
+            schedule_selects.append(statement)
+
+    event.listen(db_engine, "before_cursor_execute", count_schedule_selects)
+    try:
+        first_page = client.get("/schedules", params=scope)
+        second_page = client.get("/schedules", params={
+            **scope,
+            "after_start_at": first_page.headers["x-schedule-next-start-at"],
+            "after_id": first_page.headers["x-schedule-next-id"],
+        })
+    finally:
+        event.remove(db_engine, "before_cursor_execute", count_schedule_selects)
+
+    assert [(row["id"], row["warnings"]) for row in first_page.json()] == [
+        ("overlap-a", ["overlap"]),
+    ]
+    assert [(row["id"], row["warnings"]) for row in second_page.json()] == [
+        ("overlap-b", ["overlap"]),
+    ]
+    assert len(schedule_selects) == 4
+
+
 def test_list_schedule_range_uses_half_open_intersection(
     client, db_session, seed_admin, seed_mechanic, seed_park_with_tracker
 ):
