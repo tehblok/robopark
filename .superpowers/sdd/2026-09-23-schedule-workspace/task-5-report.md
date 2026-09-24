@@ -28,3 +28,14 @@ No production files were changed.
   - BLOCKED before test execution by sandbox filesystem permissions: Playwright could not unlink or open `apps/web/test-results/.last-run.json` (`EPERM`). Per the task fallback, no second browser run and no full geometry matrix were started.
 - `git diff --check`
   - PASS.
+
+## Follow-up browser correction
+
+The first out-of-sandbox browser run executed all four scenarios and exposed two fixture/test setup defects:
+
+- the shared schedule readiness marker waited for mobile day cards, which are intentionally hidden in desktop team view; it now waits for the loaded, visible `.rp-page-layout.rp-schedule` root;
+- the fixed schedule entry used 23 September while `installOperational` freezes the browser clock on 2 September; the fixture entry and explicit phone selection now use 2 September, keeping the meaningful `Моя смена` assertion inside the visible week.
+
+The one permitted repeat then produced 1 PASS and 3 FAIL: the desktop sticky/range scenario passed, while royal edit and both phone scenarios exposed the date mismatch above. No additional browser run was made.
+
+Independent review also found that the original sticky assertion checked only computed CSS. The scenario now supplies enough employee rows for vertical overflow, scrolls the team container horizontally and vertically, and asserts that header, corner and employee coordinates remain pinned within a 1 px tolerance. The correction keeps the range, royal-edit and phone content/geometry assertions intact.

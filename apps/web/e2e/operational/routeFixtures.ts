@@ -30,9 +30,9 @@ const routeCatalog: PermissionCatalogItem[] = [{ key: 'nav.inventory', category:
 const routeUsers: AdminUser[] = [{ id: 101, username: 'route-admin', role: 'admin', role_id: 1, access_status: 'approved', is_active: true, tracker_login: 'admin.test', must_change_password: false, parks: [parkNorth], permissions: ['nav.admin'], role_permissions: ['nav.admin'] }]
 export const routeSchedule: ScheduleEntry = {
   id: 'route-shift', owner_user_id: 100, park_id: parkNorth.id, kind: 'shift',
-  start_at: '2026-09-23T09:00:00+03:00', end_at: '2026-09-23T21:00:00+03:00',
+  start_at: '2026-09-02T09:00:00+03:00', end_at: '2026-09-02T21:00:00+03:00',
   source: 'route-fixture', series_id: null, created_by_user_id: 104, updated_by_user_id: 104,
-  created_at: '2026-09-22T10:00:00Z', updated_at: '2026-09-22T10:00:00Z', warnings: [],
+  created_at: '2026-09-01T10:00:00Z', updated_at: '2026-09-01T10:00:00Z', warnings: [],
 }
 const routeScheduleParticipants: ScheduleParticipant[] = [
   { id: 100, display_name: 'Анна Механик', role: 'mechanic' },
@@ -187,7 +187,7 @@ function routeReadyMarker(page: Page, routeId: AppRouteId) {
     case 'reports': return page.getByRole('button', { name: `Открыть репорт ${routeReport.title}`, exact: true })
     case 'reports-new': return page.getByRole('textbox', { name: 'Заголовок *', exact: true })
     case 'report-detail': return page.getByText(routeReport.body, { exact: true })
-    case 'schedule': return page.getByTestId('schedule-day-cards')
+    case 'schedule': return page.locator('.rp-page-layout.rp-schedule')
     case 'analytics': return page.locator('.rp-analytics-park .rp-analytics-value').filter({ hasText: '2 задач' }).first()
     case 'admin': return page.getByRole('heading', { name: 'Управление', exact: true, level: 1 })
     case 'admin-settings': return page.getByText('Tracker OAuth', { exact: true })
