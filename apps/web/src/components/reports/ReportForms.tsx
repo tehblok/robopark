@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, type ReportAttachmentKind, type ReportKindManual } from '../../api'
-import { deleteReportPhotoDraft, readReportPhotoDraft, writeReportPhotoDraft, type ReportPhotoDraft } from '../../domains/reports/reportPhotoDrafts'
+import { deleteReportPhotoDraft, quarantineReportPhotoDraft, restoreReportPhotoDraft, readReportPhotoDraft, writeReportPhotoDraft, type ReportPhotoDraft } from '../../domains/reports/reportPhotoDrafts'
 import { reportDraftKey, type ReportsApiClient } from '../../domains/reports/reports'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
@@ -110,7 +110,7 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
 
   useLayoutEffect(() => {
     if (ownerRef.current.key === ownerKey && ownerRef.current.parkId === parkId && ownerRef.current.principalId === principalId) return
-    void deleteReportPhotoDraft(reportDraftKey(ownerRef.current.principalId, ownerRef.current.parkId)).catch(() => {})
+    void quarantineReportPhotoDraft(reportDraftKey(ownerRef.current.principalId, ownerRef.current.parkId), ownerRef.current.key).catch(() => {})
     try {
       localStorage.removeItem(reportDraftKey(ownerRef.current.principalId, ownerRef.current.parkId))
     } catch {
@@ -147,7 +147,7 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
     let cancelled = false
     const current = () => !cancelled && mountedRef.current && generationRef.current === generation && ownerRef.current.key === ownerKey
     const key = reportDraftKey(principalId, parkId)
-    const loading = restoreDraft ? readReportPhotoDraft(key) : deleteReportPhotoDraft(key).then(() => null)
+    const loading = restoreDraft ? restoreReportPhotoDraft(key, ownerKey).then(() => readReportPhotoDraft(key)) : Promise.resolve(null)
     void loading.then((stored) => {
       if (!current()) return
       if (stored && stored.ownerKey === ownerKey && editRef.current === edits) {

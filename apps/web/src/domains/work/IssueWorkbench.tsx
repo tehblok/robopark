@@ -828,6 +828,20 @@ export function TaskController({
     return result
   }, [])
 
+  const trackTimelineRollback = useCallback((actionId: string, itemId: TaskTimelineItem['id']) => {
+    if (!sync) return
+    let stop: () => void = () => undefined
+    stop = sync.subscribeAction(actionId, action => {
+      if (!action || !['conflict', 'attention', 'cancelled', 'confirmed'].includes(action.state)) return
+      if (action.state !== 'confirmed') {
+        const current = resourceStore.get<TaskTimelineItem[]>(commentsKey) ?? []
+        if (current.some(item => item.id === itemId)) resourceStore.set(commentsKey, current.filter(item => item.id !== itemId), false)
+      }
+      // The callback may run synchronously while subscribeAction is returning.
+      void Promise.resolve().then(() => stop())
+    })
+  }, [commentsKey, sync])
+
   const enqueueComment = useCallback(async (text: string) => {
     if (!sync || !issueKey || taskParkId == null) throw new Error('offline_sync_unavailable')
     const serialized = JSON.stringify({ text })
@@ -839,8 +853,9 @@ export function TaskController({
     if (!current.some(item => item.id === pending.timelineItem.id)) {
       resourceStore.set(commentsKey, [...current, pending.timelineItem], false)
     }
+    trackTimelineRollback(pending.action.id, pending.timelineItem.id)
     return id
-  }, [comments.data, commentsKey, issueKey, sync, taskParkId, user.username])
+  }, [comments.data, commentsKey, issueKey, sync, taskParkId, trackTimelineRollback, user.username])
 
   const enqueueHandoff = useCallback(async (value: { assignee: string; reason: string; done?: string; remaining?: string; obstacles?: string }) => {
     if (!sync || !issueKey || taskParkId == null) throw new Error('offline_sync_unavailable')
@@ -853,7 +868,8 @@ export function TaskController({
     if (!current.some(item => item.id === pending.timelineItem.id)) {
       resourceStore.set(commentsKey, [...current, pending.timelineItem], false)
     }
-  }, [comments.data, commentsKey, issueKey, sync, taskParkId])
+    trackTimelineRollback(pending.action.id, pending.timelineItem.id)
+  }, [comments.data, commentsKey, issueKey, sync, taskParkId, trackTimelineRollback])
 
   const runTaskControl = useCallback(async (
     action: string,

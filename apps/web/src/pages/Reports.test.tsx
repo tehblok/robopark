@@ -9,6 +9,8 @@ import { resourceStore } from '../lib/resource'
 import { ParkContext } from '../park-context'
 import { Reports } from './Reports'
 import { PresentationModeContext } from '../app/interface/presentationModeContext'
+import { IDBFactory } from 'fake-indexeddb'
+import { clearReportPhotoDrafts, readReportPhotoDraft, writeReportPhotoDraft } from '../domains/reports/reportPhotoDrafts'
 
 const north: Park = { id: 7, name: 'Север', tag: 'north', tracker_queue: 'RP', is_active: true }
 const userA: User = {
@@ -155,15 +157,35 @@ it('offers a collapse control for the report list without changing its initial v
 
 it('clears a draft synchronously when effective access changes at the same principal and park', async () => {
   localStorage.setItem('robopark:report-draft:1:7', JSON.stringify({
-    activeForm: 'problem', trackerKey: '', title: 'Старый секретный контекст', body: '',
+    activeForm: 'problem', trackerKey: '', title: 'Старый секретный контекст', body: '', ownerKey: reportsAccessIdentity(userA, north),
   }))
   const apiClient = client({ reportsMine: vi.fn(async () => []) })
   const view = render(tree(userA, apiClient, '/reports/new'))
-  expect(await screen.findByRole('textbox', { name: 'Заголовок *' })).toHaveValue('Старый секретный контекст')
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toHaveValue('Старый секретный контекст'))
 
   view.rerender(tree({ ...userA, permissions: ['nav.reports', 'reports.create', 'reports.resolve'] }, apiClient, '/reports/new'))
   expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toHaveValue('')
   expect(localStorage.getItem('robopark:report-draft:1:7')).toBeNull()
+})
+
+it('quarantines a photo draft across access changes and restores it only to its owner', async () => {
+  vi.stubGlobal('indexedDB', new IDBFactory())
+  const key = 'robopark:report-draft:1:7'
+  const ownerKey = reportsAccessIdentity(userA, north)
+  await writeReportPhotoDraft({ key, ownerKey, revision: 'first', activeForm: 'problem', trackerKey: '', title: 'Photo pending', body: '', createdReportId: 42, attachmentKind: 'device_photo', attachment: { blob: new Blob(['photo'], { type: 'image/jpeg' }), name: 'private.jpg', lastModified: 1 } })
+  const apiClient = client({ reportsMine: vi.fn(async () => []) })
+  const view = render(tree(userA, apiClient, '/reports/new'))
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toHaveValue('Photo pending'))
+
+  const changed = { ...userA, permissions: [...(userA.permissions ?? []), 'reports.resolve'] }
+  view.rerender(tree(changed, apiClient, '/reports/new'))
+  await waitFor(async () => expect(await readReportPhotoDraft(key)).toBeNull())
+  expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toHaveValue('')
+
+  view.rerender(tree(userA, apiClient, '/reports/new'))
+  await waitFor(async () => expect((await readReportPhotoDraft(key))?.attachment?.name).toBe('private.jpg'))
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toHaveValue('Photo pending'))
+  await clearReportPhotoDrafts()
 })
 
 it('keeps a desktop report list beside its detail and returns to the filtered URL', async () => {

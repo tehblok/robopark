@@ -1,6 +1,6 @@
 import { SyncStatus } from '../design-system/status/SyncStatus'
-import { deleteReportPhotoDraft } from '../domains/reports/reportPhotoDrafts'
-import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { quarantineReportPhotoDraft, restoreReportPhotoDraft } from '../domains/reports/reportPhotoDrafts'
+import { useCallback, useLayoutEffect, useRef } from 'react'
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, type Park, type Report, type User } from '../api'
 import { useAuth } from '../auth-context'
@@ -362,9 +362,9 @@ export function Reports({ apiClient = api }: { apiClient?: ReportsApiClient } = 
   const resourcePrefix = user ? `reports:${user.id}:${identity}:` : ''
   const draftKey = user && parkId != null ? reportDraftKey(user.id, parkId) : null
   const committed = useRef({ identity, resourcePrefix, draftKey })
-  const [visibleOwner, setVisibleOwner] = useState({ identity, draftKey })
-  const ownerChanged = visibleOwner.identity !== identity
-  const restoreDraft = !ownerChanged || visibleOwner.draftKey !== draftKey
+  // Each draft carries the full owner identity; a previously quarantined exact
+  // owner may restore even when the physical account/park key is unchanged.
+  const restoreDraft = true
 
   useLayoutEffect(() => {
     if (committed.current.identity === identity) return
@@ -372,15 +372,15 @@ export function Reports({ apiClient = api }: { apiClient?: ReportsApiClient } = 
       resourceStore.invalidate(committed.current.resourcePrefix, { prefix: true })
     }
     if (committed.current.draftKey) {
-      void deleteReportPhotoDraft(committed.current.draftKey).catch(() => {})
+      void quarantineReportPhotoDraft(committed.current.draftKey, committed.current.identity).catch(() => {})
       try {
         localStorage.removeItem(committed.current.draftKey)
       } catch {
         // Browser storage is optional.
       }
     }
+    if (draftKey && identity) void restoreReportPhotoDraft(draftKey, identity).catch(() => {})
     committed.current = { identity, resourcePrefix, draftKey }
-    setVisibleOwner({ identity, draftKey })
   }, [draftKey, identity, resourcePrefix])
 
   useLayoutEffect(() => () => {

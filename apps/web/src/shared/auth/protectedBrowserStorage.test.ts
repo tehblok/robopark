@@ -9,6 +9,7 @@ describe('clearProtectedBrowserStorage', () => {
       ['robopark.recentRobots.v2.3', 'old-recents'],
       ['robopark.recentRobots.v2.41', 'other-recents'],
       ['robopark:res:old', 'cached'],
+      ['robopark.recentRobots', '["447"]'],
     ] as const
     const protectedEntries = [
       ['robopark:report-draft:v1:3:daily', 'old-draft'],
@@ -19,7 +20,6 @@ describe('clearProtectedBrowserStorage', () => {
     const preservedEntries = [
       ['robopark-theme', 'dark'],
       ['robopark-density', 'compact'],
-      ['robopark.recentRobots', '["447"]'],
       ['unrelated-key', 'keep-me'],
     ] as const
     for (const [key, value] of [...disposableEntries, ...protectedEntries, ...preservedEntries]) {

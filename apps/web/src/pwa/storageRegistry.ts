@@ -1,5 +1,6 @@
 import { isOfflineScopeRetired, retireOfflineScope } from './offlineDb'
 import type { OfflineScope } from './offlineTypes'
+import { quarantineReportPhotoDraftsForScope, restoreReportPhotoDraftsForScope } from '../domains/reports/reportPhotoDrafts'
 
 export type StorageNamespace = {
   name: string
@@ -16,14 +17,14 @@ const namespaces: readonly StorageNamespace[] = [
   { name: 'robopark-resource-cache', kind: 'indexedDB', owner: 'resources', schema: 1, retention: 'cache policy', scope: 'account-role-permissions-park' },
   { name: 'robopark-task-attachment-cache', kind: 'indexedDB', owner: 'tracker', schema: 1, retention: '5m; 32MiB', scope: 'account' },
   { name: 'robopark-share-inbox', kind: 'indexedDB', owner: 'pwa', schema: 1, retention: '24h; 10 drafts; purge on logout', scope: 'ephemeral-global' },
-  { name: 'robopark-report-drafts-v1', kind: 'indexedDB', owner: 'reports', schema: 2, retention: 'until submitted', scope: 'account-park' },
+  { name: 'robopark-report-drafts-v1', kind: 'indexedDB', owner: 'reports', schema: 2, retention: 'until submitted; quarantined on access change', scope: 'account-role-permissions-park' },
   { name: 'robopark:res:', kind: 'localStorage', owner: 'resources', schema: 1, retention: 'legacy; removed at bootstrap', scope: 'account-role-permissions-park' },
   { name: 'robopark:report-draft:', kind: 'localStorage', owner: 'reports', schema: 1, retention: 'until submitted', scope: 'account-park' },
   { name: 'robopark:retired-draft:', kind: 'localStorage', owner: 'reports', schema: 1, retention: 'until exact scope reauthorized', scope: 'account-role-permissions-park' },
   { name: 'robopark:handoff:', kind: 'localStorage', owner: 'tracker', schema: 1, retention: 'until submitted; archived by authorization scope', scope: 'account-role-permissions-park' },
   { name: 'robopark:comment-draft:', kind: 'localStorage', owner: 'tracker', schema: 1, retention: 'until submitted; archived by authorization scope', scope: 'account-role-permissions-park' },
   { name: 'robopark.recentRobots.v2.', kind: 'localStorage', owner: 'robots', schema: 2, retention: 'until logout', scope: 'account' },
-  { name: 'robopark.recentRobots', kind: 'localStorage', owner: 'robots', schema: 1, retention: 'legacy', scope: 'device' },
+  { name: 'robopark.recentRobots', kind: 'localStorage', owner: 'robots', schema: 1, retention: 'legacy; purge on auth transition', scope: 'ephemeral-global' },
   { name: 'robopark:interface:', kind: 'localStorage', owner: 'interface', schema: 1, retention: 'legacy', scope: 'account' },
   { name: 'robopark:panel:', kind: 'localStorage', owner: 'layout', schema: 1, retention: 'until reset', scope: 'device' },
   { name: 'robopark-theme', kind: 'localStorage', owner: 'theme', schema: 1, retention: 'until reset', scope: 'device' },
@@ -99,10 +100,11 @@ function restoreDrafts(scope: OfflineScope): void {
 export const storageRegistry = {
   inventory(): StorageNamespace[] { return namespaces.map(item => ({ ...item })) },
   isRetired(scope: OfflineScope): boolean { return isOfflineScopeRetired(scope) },
-  activateScope(scope: OfflineScope): void { restoreDrafts(scope) },
+  activateScope(scope: OfflineScope): void { restoreDrafts(scope); void restoreReportPhotoDraftsForScope(scope).catch(() => {}) },
   async purgeScope(scope: OfflineScope): Promise<'retired'> {
     quarantineDrafts(scope)
     retireOfflineScope(scope)
+    await quarantineReportPhotoDraftsForScope(scope).catch(() => {})
     return 'retired'
   },
 }

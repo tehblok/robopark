@@ -112,6 +112,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
       if (generation === sessionGeneration.current) {
         if (authorizedUser.current && authorizationIdentity(authorizedUser.current) !== authorizationIdentity(authenticatedUser)) {
           retireDraftScopes(authorizedUser.current)
+          await clearShareTargetInbox().catch(() => {})
+          clearProtectedBrowserStorage()
         }
         const previousScope = activeOfflineScope()
         if (previousScope && JSON.stringify(previousScope) !== JSON.stringify(offlineScopeForUser(authenticatedUser, previousScope.park))) {

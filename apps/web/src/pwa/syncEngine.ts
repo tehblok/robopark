@@ -77,6 +77,7 @@ export class SyncEngine {
   private readonly subscribers = new Set<() => void>()
   private readonly actionSubscribers = new Map<string, Set<(action: OfflineAction | undefined) => void>>()
   private readonly batcher = new ClientBatcher(() => this.syncNow('batch'))
+  private networkFallback: NetworkOnlySyncEngine | null = null
   private state: SyncState = { status: 'idle', pending: 0, conflicts: 0 }
   private started = false
   private disposed = false
@@ -165,23 +166,32 @@ export class SyncEngine {
     try {
       if (!await this.db.putAction(action)) throw new Error('offline_scope_inactive')
     } catch (error) {
-      if (error instanceof Error && error.message === 'offline_scope_inactive') {
+      if (!this.db.isGenerationCurrent() || (error instanceof Error && error.message === 'offline_scope_inactive')) {
         this.batcher.settle(action.id)
         throw error
       }
-      // With denied or full storage, a write is accepted only after the server confirms it.
-      this.setState({ ...this.state, status: 'syncing' })
+      // Denied/quota-limited writes share the same 150 ms transport batch and
+      // are accepted only after the server confirms them.
+      if (!this.networkFallback) {
+        this.networkFallback = new NetworkOnlySyncEngine({ deviceId: this.deviceId, sendBatch: this.sendBatch })
+        this.networkFallback.subscribe(() => {
+          const fallback = this.networkFallback?.getState()
+          if (fallback) this.setState({ status: fallback.status, pending: fallback.pending, conflicts: fallback.conflicts })
+        })
+      }
+      const { state: _state, attempts: _attempts, createdAt: _createdAt, updatedAt: _updatedAt, ...input } = action
+      const stop = this.networkFallback.subscribeAction(action.id, next => {
+        this.actionSubscribers.get(action.id)?.forEach(listener => listener(next))
+      })
       try {
-        const response = await this.sendBatch({ device_id: this.deviceId, known_revisions: {}, actions: [toBatchAction(action)] })
-        const result = response.results.find(item => item.client_action_id === action.id)
-        if (result?.state !== 'confirmed') throw new Error(result?.state === 'conflict' ? 'sync_conflict' : 'sync_not_confirmed')
+        const confirmed = await this.networkFallback.enqueueAction(input)
         this.batcher.settle(action.id)
-        this.setState({ ...this.state, status: 'idle' })
-        return { ...action, state: 'confirmed' }
+        return confirmed
       } catch (reason) {
         this.batcher.settle(action.id)
-        this.setState({ ...this.state, status: 'attention', conflicts: this.state.conflicts + 1 })
         throw reason
+      } finally {
+        stop()
       }
     }
     await this.refreshState()
@@ -247,6 +257,7 @@ export class SyncEngine {
     this.subscribers.clear()
     this.actionSubscribers.clear()
     this.batcher.dispose()
+    this.networkFallback?.dispose()
     this.db.close()
   }
 
@@ -435,7 +446,7 @@ export class NetworkOnlySyncEngine {
         }
       }
       const conflicts = items.filter(item => response.results.find(result => result.client_action_id === item.action.id)?.state !== 'confirmed').length
-      this.publish({ status: conflicts ? 'attention' : this.pending.size ? 'offline' : 'idle', pending: this.pending.size, conflicts })
+      this.publish({ status: conflicts ? 'attention' : 'idle', pending: this.pending.size, conflicts })
       return true
     } catch (error) {
       for (const item of items) {
@@ -459,7 +470,7 @@ export class NetworkOnlySyncEngine {
     this.batcher.settle(id)
     this.notifyAction(id, { ...item.action, state: 'cancelled' })
     item.reject(new Error('sync_cancelled'))
-    this.publish({ status: this.pending.size ? 'offline' : 'idle', pending: this.pending.size, conflicts: 0 })
+    this.publish({ status: 'idle', pending: this.pending.size, conflicts: 0 })
   }
   async resolveConflict(): Promise<void> {}
   async findAction(resourceId: string, action: string): Promise<OfflineAction | undefined> {

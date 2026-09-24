@@ -888,7 +888,8 @@ describe('IssueWorkbench', () => {
     const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
     const workflowIssue: TrackerIssueDetail = { ...issue, claim: { park_id: park.id }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'saved', has_current_cycle_comment: false } }
     const taskMessage = vi.fn()
-    const enqueueAction = vi.fn(async () => undefined)
+    const enqueueAction = vi.fn(async (_input: Parameters<SyncContextValue['enqueueAction']>[0]) => undefined)
+    let actionListener: ((action: OfflineAction | undefined) => void) | undefined
     const sync = {
       state: { status: 'idle' as const, pending: 0, conflicts: 0 },
       enqueueMedia: vi.fn(async () => undefined),
@@ -897,7 +898,7 @@ describe('IssueWorkbench', () => {
       cancelAction: vi.fn(async () => undefined),
       resolveConflict: vi.fn(async () => undefined),
       findAction: vi.fn(async () => undefined),
-      subscribeAction: vi.fn(() => () => undefined),
+      subscribeAction: vi.fn((_id, listener) => { actionListener = listener; return () => { actionListener = undefined } }),
     } satisfies SyncContextValue
     renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => workflowIssue), taskMessage }), sync })
     await openTaskChat()
@@ -911,6 +912,10 @@ describe('IssueWorkbench', () => {
     }))
     expect(taskMessage).not.toHaveBeenCalled()
     expect(await screen.findByText('Заменил датчик офлайн')).toBeVisible()
+    const queued = enqueueAction.mock.calls[0][0]
+    await act(async () => { actionListener?.({ ...queued, state: 'conflict', attempts: 1, createdAt: 1, updatedAt: 2 }) })
+    await waitFor(() => expect(screen.queryByText('Заменил датчик офлайн')).not.toBeInTheDocument())
+    expect(resourceStore.get<TaskTimelineItem[]>(`${accessPrefix(mechanic)}comments:${issue.key}`)?.some(item => item.id === queued.id)).toBe(false)
   })
 
   it('uses lifecycle handoff and keeps its key when the response is lost', async () => {

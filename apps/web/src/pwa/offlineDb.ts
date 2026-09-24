@@ -62,7 +62,7 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
 }
 
 function scopeKey(scope: OfflineScope): string {
-  return [scope.account, scope.role, scope.permissions, scope.park, String(scope.schema)]
+  return ['v2', scope.account, scope.principal ?? '', scope.role, scope.permissions, scope.park, scope.parkAccess ?? '', String(scope.schema)]
     .map(encodeURIComponent).join('|')
 }
 
@@ -349,24 +349,47 @@ export class OfflineDb {
   }
 }
 
-function scopeBase(scope: string): string { return scope.split('|').slice(0, 4).join('|') }
+function scopeIdentity(scope: string): { base: string, schema: number, legacy: boolean } {
+  const parts = scope.split('|')
+  if (parts[0] === 'v2') return { base: parts.slice(0, 7).join('|'), schema: Number(parts[7]), legacy: false }
+  return { base: parts.slice(0, 4).join('|'), schema: Number(parts[4]), legacy: true }
+}
+
+function legacyBaseOf(scope: string): string {
+  const parts = scope.split('|')
+  return [parts[1], parts[3], parts[4], parts[5]].join('|')
+}
+
+function mayMigrate(oldScope: string, nextScope: string): boolean {
+  const old = scopeIdentity(oldScope)
+  const next = scopeIdentity(nextScope)
+  if (!(old.schema < next.schema)) return false
+  if (!old.legacy) return old.base === next.base
+  // The previous format did not record principal or park access. Such records
+  // stay durable but quarantined: assigning them to a new identity is unsafe.
+  const parts = nextScope.split('|')
+  return parts[2] === '' && parts[6] === '' && old.base === legacyBaseOf(nextScope)
+}
 
 async function migrateOlderSchema(db: IDBDatabase, scope: string): Promise<void> {
   for (const storeName of STORES) {
     const transaction = db.transaction(storeName, 'readwrite')
     const store = transaction.objectStore(storeName)
     const records = await requestResult(store.getAll()) as ScopedRecord[]
+    const byId = new Map(records.map(record => [record.dbId, record]))
     for (const record of records) {
       if (record.scope === scope) continue
-      if (scopeBase(record.scope) === scopeBase(scope)) {
-        const oldSchema = Number(record.scope.split('|')[4])
-        const newSchema = Number(scope.split('|')[4])
-        if (oldSchema < newSchema) {
-          store.put({ ...record, scope, dbId: recordId(scope, record.dbId.slice(record.scope.length + 1)) })
-          store.delete(record.dbId)
-        }
-        // A downgrade cannot safely interpret newer records; retain them for a future upgrade.
-      }
+      if (!mayMigrate(record.scope, scope)) continue
+      const destinationId = recordId(scope, record.dbId.slice(record.scope.length + 1))
+      const destination = byId.get(destinationId) as (ScopedRecord & { updatedAt?: number }) | undefined
+      const source = record as ScopedRecord & { updatedAt?: number }
+      // Unknown timestamps favour the destination; never erase pending old work
+      // when a destination collision cannot be resolved with certainty.
+      if (destination && !(typeof source.updatedAt === 'number' && typeof destination.updatedAt === 'number' && source.updatedAt > destination.updatedAt)) continue
+      const migrated = { ...record, scope, dbId: destinationId }
+      store.put(migrated)
+      byId.set(destinationId, migrated)
+      store.delete(record.dbId)
     }
     await transactionDone(transaction)
   }

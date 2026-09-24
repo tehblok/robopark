@@ -55,19 +55,50 @@ describe('offline database', () => {
   })
 
   it('preserves queued actions, media and entities when only the scope schema changes', async () => {
-    const previous = await openOfflineDb(scope())
+    const exactScope = { ...scope(), principal: 'alice', parkAccess: '1' }
+    const previous = await openOfflineDb(exactScope)
     await previous.transaction(writer => {
       writer.putEntity('task:1', { title: 'pending' })
       writer.putAction(action('pending', 'ready'))
       writer.putMedia({ id: 'photo', actionId: 'pending', issueKey: 'TASK-1', name: 'a.jpg', blob: new Blob(['x']), mimeType: 'image/jpeg', sha256: 'a', sizeBytes: 1, state: 'local', createdAt: 1, updatedAt: 1 })
     })
 
-    const next = await openOfflineDb({ ...scope(), schema: 2 })
+    const next = await openOfflineDb({ ...exactScope, schema: 2 })
 
     expect(await next.getEntity('task:1')).toEqual({ title: 'pending' })
     expect(await next.getAction('pending')).toMatchObject({ state: 'ready' })
     expect(await next.getMedia('photo')).toMatchObject({ actionId: 'pending' })
     expect(await previous.getAction('pending')).toBeUndefined()
+  })
+
+  it('retains unproven legacy queued work without assigning it to a new principal', async () => {
+    const setup = await openOfflineDb(scope())
+    setup.close()
+    const legacyScope = ['1', 'mechanic', 'inventory.write,tracker.read', '1', '1'].map(encodeURIComponent).join('|')
+    const request = indexedDB.open(OFFLINE_DATABASE_NAME, 2)
+    const raw = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const transaction = raw.transaction('actions', 'readwrite')
+    transaction.objectStore('actions').put({ ...action('legacy', 'ready'), dbId: `${legacyScope}\0legacy`, scope: legacyScope, bytes: 1, resource: 'tracker_issue:TASK-1' })
+    await new Promise<void>((resolve, reject) => { transaction.oncomplete = () => resolve(); transaction.onerror = () => reject(transaction.error) })
+    raw.close()
+
+    const newPrincipal = await openOfflineDb({ ...scope(), principal: 'alice', parkAccess: '1', schema: 2 })
+    expect(await newPrincipal.listActions()).toEqual([])
+    const inspectRequest = indexedDB.open(OFFLINE_DATABASE_NAME, 2)
+    const inspect = await new Promise<IDBDatabase>((resolve, reject) => {
+      inspectRequest.onsuccess = () => resolve(inspectRequest.result)
+      inspectRequest.onerror = () => reject(inspectRequest.error)
+    })
+    const stored = await new Promise<unknown>((resolve, reject) => {
+      const get = inspect.transaction('actions').objectStore('actions').get(`${legacyScope}\0legacy`)
+      get.onsuccess = () => resolve(get.result)
+      get.onerror = () => reject(get.error)
+    })
+    expect(stored).toMatchObject({ id: 'legacy', state: 'ready' })
+    inspect.close()
   })
 
   it('retains current projections for fourteen days by default', async () => {
@@ -141,6 +172,40 @@ describe('offline database', () => {
     const restored = await openOfflineDb(scope('1', '1'))
     expect(await restored.getAction('pending-1')).toMatchObject({ state: 'ready' })
     expect(await restored.getMedia('photo-1')).toMatchObject({ state: 'local' })
+  })
+
+  it('isolates reused account IDs and changed park access by exact principal scope', async () => {
+    const owner = { ...scope(), principal: 'old-account', parkAccess: '1,2' }
+    const old = await openOfflineDb(owner)
+    await old.putAction(action('private', 'ready'))
+    await old.putEntity('private', { secret: true })
+    const replacement = await openOfflineDb({ ...owner, principal: 'replacement-account' })
+    expect(await replacement.listActions()).toEqual([])
+    expect(await replacement.getEntity('private')).toBeUndefined()
+    const narrowed = await openOfflineDb({ ...owner, parkAccess: '1' })
+    expect(await narrowed.listActions()).toEqual([])
+    const restored = await openOfflineDb(owner)
+    expect(await restored.getAction('private')).toMatchObject({ state: 'ready' })
+  })
+
+  it('does not replace newer v2 action, entity, or media with late v1 copies', async () => {
+    const old = await openOfflineDb(scope())
+    await old.putAction(action('same', 'ready', 1))
+    await old.putEntity('same', { version: 1 }, { updatedAt: 1 })
+    await old.putMedia({ id: 'same', actionId: 'same', issueKey: 'TASK-1', name: 'old.jpg', blob: new Blob(['1']), mimeType: 'image/jpeg', sha256: 'old', sizeBytes: 1, state: 'local', createdAt: 1, updatedAt: 1 })
+    const newScope = { ...scope(), schema: 2 }
+    const current = await openOfflineDb(newScope)
+    await current.putAction(action('same', 'confirmed', 9))
+    await current.putEntity('same', { version: 2 }, { updatedAt: 9 })
+    await current.putMedia({ id: 'same', actionId: 'same', issueKey: 'TASK-1', name: 'new.jpg', blob: new Blob(['2']), mimeType: 'image/jpeg', sha256: 'new', sizeBytes: 1, state: 'confirmed', createdAt: 9, updatedAt: 9 })
+    const legacy = await openOfflineDb(scope())
+    await legacy.putAction(action('same', 'ready', 2))
+    await legacy.putEntity('same', { version: 1.5 }, { updatedAt: 2 })
+    await legacy.putMedia({ id: 'same', actionId: 'same', issueKey: 'TASK-1', name: 'late-old.jpg', blob: new Blob(['x']), mimeType: 'image/jpeg', sha256: 'late', sizeBytes: 1, state: 'local', createdAt: 2, updatedAt: 2 })
+    const reopened = await openOfflineDb(newScope)
+    expect(await reopened.getAction('same')).toMatchObject({ state: 'confirmed', updatedAt: 9 })
+    expect(await reopened.getEntity('same')).toEqual({ version: 2 })
+    expect(await reopened.getMedia('same')).toMatchObject({ name: 'new.jpg', updatedAt: 9 })
   })
 
   it('cleans expired confirmed data but never removes pending actions or media', async () => {

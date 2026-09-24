@@ -5,6 +5,7 @@ const DISPOSABLE_BROWSER_STORAGE_PREFIXES = [
   RECENT_ROBOTS_V2_STORAGE_PREFIX,
   'robopark:res:',
 ] as const
+const DISPOSABLE_BROWSER_STORAGE_KEYS = new Set(['robopark.recentRobots'])
 
 function resolveStorage(storage?: Storage): Storage | null {
   if (storage) return storage
@@ -23,7 +24,7 @@ export function clearProtectedBrowserStorage(storage?: Storage): void {
   try {
     const keys = Array.from({ length: target.length }, (_, index) => target.key(index))
       .filter((key): key is string => key !== null)
-      .filter((key) => DISPOSABLE_BROWSER_STORAGE_PREFIXES.some(
+      .filter((key) => DISPOSABLE_BROWSER_STORAGE_KEYS.has(key) || DISPOSABLE_BROWSER_STORAGE_PREFIXES.some(
         (prefix) => key.startsWith(prefix),
       ))
     for (const key of keys) target.removeItem(key)

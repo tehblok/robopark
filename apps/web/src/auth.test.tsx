@@ -73,7 +73,7 @@ function expectProtectedStateCleared(): void {
   expect(localStorage.getItem(otherRecentKey)).toBeNull()
   expect(localStorage.getItem(reportKey)).toBe('old-draft')
   expect(localStorage.getItem(otherReportKey)).toBe('other-draft')
-  expect(localStorage.getItem(legacyRecentKey)).toBe('["447"]')
+  expect(localStorage.getItem(legacyRecentKey)).toBeNull()
   expect(localStorage.getItem('robopark-theme')).toBe('dark')
   expect(localStorage.getItem('robopark-density')).toBe('compact')
   expect(localStorage.getItem('unrelated-key')).toBe('keep-me')
@@ -120,6 +120,18 @@ describe('AuthProvider session boundaries', () => {
     await act(async () => { await refresh() })
 
     expect(currentAuth!.refreshUser).toBe(refresh)
+  })
+
+  it('purges unclaimed global share-target photos when refresh replaces the account', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockResolvedValueOnce(replacementAccount)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    const inbox = await openShareTargetInbox()
+    await inbox.save({ id: 'unclaimed', createdAt: Date.now(), name: 'private.jpg', type: 'image/jpeg', blob: new Blob(['private']), assignment: null })
+    await act(async () => { await currentAuth!.refreshUser() })
+    expect(await inbox.list()).toEqual([])
+    inbox.close?.()
   })
 
   it.each(['success', '401'] as const)('ignores an old refresh %s after a replacement login', async (result) => {

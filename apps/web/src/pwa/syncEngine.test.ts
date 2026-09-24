@@ -97,6 +97,33 @@ describe('SyncEngine', () => {
     expect(await db.getAction('direct')).toBeUndefined()
     expect(engine.getState()).toMatchObject({ status: 'idle', pending: 0 })
   })
+  it('batches two quota-denied writes after 150 ms', async () => {
+    const db = await openOfflineDb(scope)
+    vi.spyOn(db, 'putAction').mockRejectedValue(new DOMException('full', 'QuotaExceededError'))
+    const calls: string[][] = []
+    const engine = new SyncEngine({ db, coordinator: coordinator(db), deviceId: 'phone', sendBatch: async batch => {
+      calls.push(batch.actions.map(item => item.client_action_id))
+      return { results: batch.actions.map(item => ({ client_action_id: item.client_action_id, state: 'confirmed' as const, code: null, result: null })), deltas: {}, revisions: {}, revoked_scopes: [] }
+    } })
+    const first = engine.enqueueAction(input('one'))
+    const second = engine.enqueueAction(input('two'))
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(calls).toEqual([])
+    await Promise.all([first, second])
+    expect(calls).toEqual([['one', 'two']])
+    engine.dispose()
+  })
+
+  it('keeps a successful partial network-only batch in waiting state', async () => {
+    const network = new NetworkOnlySyncEngine({ deviceId: 'phone', sendBatch: async batch => ({
+      results: batch.actions.map(item => ({ client_action_id: item.client_action_id, state: 'confirmed' as const, code: null, result: null })), deltas: {}, revisions: {}, revoked_scopes: [],
+    }) })
+    const promises = Array.from({ length: 21 }, (_, index) => network.enqueueAction(input(`item-${index}`)))
+    await network.syncNow('test')
+    expect(network.getState()).toMatchObject({ status: 'idle', pending: 1 })
+    await Promise.all(promises)
+    network.dispose()
+  })
   it('persists and sends dependencies in causal order', async () => {
     const db = await openOfflineDb(scope)
     const sent: string[][] = []

@@ -1,4 +1,5 @@
 import type { ReportAttachmentKind } from '../../api'
+import type { OfflineScope } from '../../pwa/offlineTypes'
 
 export type ReportPhotoDraft = {
   key: string
@@ -22,6 +23,7 @@ let sessionGeneration: string | undefined
 let queue: Promise<unknown> = Promise.resolve()
 let epoch = 0
 const scopeEpoch = new Map<string, number>()
+const retiredKey = (key: string, ownerKey: string) => `${key}:retired:${encodeURIComponent(ownerKey)}`
 
 function enqueue<T>(action: () => Promise<T>): Promise<T> {
   const result = queue.then(action)
@@ -124,6 +126,100 @@ export function writeReportPhotoDraft(draft: ReportPhotoDraft): Promise<void> {
         }
       })
     })
+  })
+}
+
+/** Hides a draft atomically while retaining its attachment for exact reauthorization. */
+export function quarantineReportPhotoDraft(key: string, ownerKey: string): Promise<void> {
+  scopeEpoch.set(key, (scopeEpoch.get(key) ?? 0) + 1)
+  leases.delete(key)
+  return enqueue(() => transaction<void>('readwrite', (store, done, _fail, meta) => {
+    const request = store.get(key)
+    request.onsuccess = () => {
+      const draft = request.result as ReportPhotoDraft | undefined
+      if (draft?.ownerKey === ownerKey) {
+        store.put({ ...draft, key: retiredKey(key, ownerKey) })
+        store.delete(key)
+        meta.put(crypto.randomUUID(), `scope:${key}`)
+      }
+      done()
+    }
+  }))
+}
+
+export function restoreReportPhotoDraft(key: string, ownerKey: string): Promise<void> {
+  return enqueue(() => transaction<void>('readwrite', (store, done, _fail) => {
+    const active = store.get(key)
+    active.onsuccess = () => {
+      if (active.result) { done(); return }
+      const archivedKey = retiredKey(key, ownerKey)
+      const archived = store.get(archivedKey)
+      archived.onsuccess = () => {
+        const draft = archived.result as ReportPhotoDraft | undefined
+        if (draft?.ownerKey === ownerKey) {
+          store.put({ ...draft, key })
+          store.delete(archivedKey)
+        }
+        done()
+      }
+    }
+  }))
+}
+
+function belongsToScope(draft: ReportPhotoDraft, scope: OfflineScope): boolean {
+  try {
+    const owner = JSON.parse(draft.ownerKey) as unknown[]
+    const parks = owner[7] as unknown[]
+    const selected = owner[8] as unknown[] | null
+    return String(owner[0]) === scope.account && owner[1] === scope.principal && owner[3] === scope.role
+      && Array.isArray(owner[6]) && (owner[6] as string[]).join(',') === scope.permissions
+      && Array.isArray(parks) && parks.map(item => String((item as unknown[])[0])).join(',') === scope.parkAccess
+      && String(selected?.[0]) === scope.park
+  } catch { return false }
+}
+
+export function quarantineReportPhotoDraftsForScope(scope: OfflineScope): Promise<void> {
+  return enqueue(async () => {
+    const drafts = await transaction<ReportPhotoDraft[]>('readonly', (store, done) => {
+      const request = store.getAll()
+      request.onsuccess = () => done(request.result as ReportPhotoDraft[])
+    })
+    for (const draft of drafts) {
+      if (!draft.key.includes(':retired:') && belongsToScope(draft, scope)) {
+        // Inline transaction: this queued operation must not await another enqueue.
+        scopeEpoch.set(draft.key, (scopeEpoch.get(draft.key) ?? 0) + 1)
+        leases.delete(draft.key)
+        await transaction<void>('readwrite', (store, done, _fail, meta) => {
+          store.put({ ...draft, key: retiredKey(draft.key, draft.ownerKey) })
+          store.delete(draft.key)
+          meta.put(crypto.randomUUID(), `scope:${draft.key}`)
+          done()
+        })
+      }
+    }
+  })
+}
+
+export function restoreReportPhotoDraftsForScope(scope: OfflineScope): Promise<void> {
+  return enqueue(async () => {
+    const drafts = await transaction<ReportPhotoDraft[]>('readonly', (store, done) => {
+      const request = store.getAll()
+      request.onsuccess = () => done(request.result as ReportPhotoDraft[])
+    })
+    for (const draft of drafts) {
+      if (!draft.key.includes(':retired:') || !belongsToScope(draft, scope)) continue
+      const key = draft.key.slice(0, draft.key.indexOf(':retired:'))
+      await transaction<void>('readwrite', (store, done) => {
+        const active = store.get(key)
+        active.onsuccess = () => {
+          if (!active.result) {
+            store.put({ ...draft, key })
+            store.delete(draft.key)
+          }
+          done()
+        }
+      })
+    }
   })
 }
 

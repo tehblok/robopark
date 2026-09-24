@@ -1,6 +1,7 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { storageRegistry } from './storageRegistry'
+import { readReportPhotoDraft, writeReportPhotoDraft } from '../domains/reports/reportPhotoDrafts'
 
 beforeEach(() => {
   vi.stubGlobal('indexedDB', new IDBFactory())
@@ -44,6 +45,19 @@ describe('storage registry', () => {
     expect(localStorage.getItem('robopark:report-draft:1:1')).toBeNull()
     storageRegistry.activateScope(mechanic)
     expect(localStorage.getItem('robopark:report-draft:1:1')).toContain('unfinished')
+  })
+
+  it('quarantines an unsubmitted report photo by exact scope and restores its attachment', async () => {
+    const scope = { account: '1', principal: 'alice', parkAccess: '1', role: 'mechanic', permissions: 'reports.create', park: '1', schema: 1 }
+    const key = 'robopark:report-draft:1:1'
+    const ownerKey = JSON.stringify([1, 'alice', null, 'mechanic', 'approved', false, ['reports.create'], [[1, 'North']], [1, 'North']])
+    await writeReportPhotoDraft({ key, ownerKey, revision: 'r1', activeForm: 'problem', trackerKey: '', title: 'pending', body: '', createdReportId: 42, attachmentKind: 'device_photo', attachment: { blob: new Blob(['private']), name: 'private.jpg', lastModified: 1 } })
+    await storageRegistry.purgeScope(scope)
+    expect(await readReportPhotoDraft(key)).toBeNull()
+    storageRegistry.activateScope({ ...scope, parkAccess: '2' })
+    expect(await readReportPhotoDraft(key)).toBeNull()
+    storageRegistry.activateScope(scope)
+    expect((await readReportPhotoDraft(key))?.attachment?.name).toBe('private.jpg')
   })
 
   it('keeps an archived draft when its original key is occupied', async () => {
