@@ -375,8 +375,11 @@ function sourceSupersedes(storeName: StoreName, source: ScopedRecord, destinatio
   const old = source as ScopedRecord & { updatedAt?: number, state?: string, baseRevision?: string | null, revision?: string }
   const current = destination as typeof old
   if (storeName === 'actions' || storeName === 'media') {
-    const terminal = (state?: string) => state === 'confirmed' || (storeName === 'actions' && state === 'cancelled')
-    if (terminal(old.state) !== terminal(current.state)) return terminal(old.state)
+    // Conflict/attention are not final product states, but they must dominate
+    // an older client's ready copy until a user explicitly resolves them.
+    const protectedForMigration = (state?: string) => state === 'confirmed' || state === 'attention'
+      || (storeName === 'actions' && (state === 'cancelled' || state === 'conflict'))
+    if (protectedForMigration(old.state) !== protectedForMigration(current.state)) return protectedForMigration(old.state)
     if (storeName === 'actions' && old.baseRevision !== current.baseRevision) return false
   }
   if (storeName === 'revisions' && old.revision !== current.revision) return false

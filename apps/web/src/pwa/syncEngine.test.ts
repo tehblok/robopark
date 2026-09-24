@@ -248,6 +248,30 @@ describe('SyncEngine', () => {
     expect(revoked).toHaveBeenCalledWith(['work:park:1'])
   })
 
+  it.each(['conflict', 'attention'] as const)('does not auto-send a migrated %s action after a late v1 ready write', async state => {
+    const newScope = { ...scope, schema: 2 }
+    const old = await openOfflineDb(scope)
+    await old.putAction({ ...input('paused'), state: 'ready', attempts: 0, createdAt: 1, updatedAt: 1 })
+    const current = await openOfflineDb(newScope)
+    await current.putAction({ ...input('paused'), state, attempts: 1, createdAt: 1, updatedAt: 9 })
+    const late = await openOfflineDb(scope)
+    await late.putAction({ ...input('paused'), state: 'ready', attempts: 0, createdAt: 1, updatedAt: 20 })
+    const reopened = await openOfflineDb(newScope)
+    const sendBatch = vi.fn(async (batch: SyncBatchRequest) => ({
+      results: batch.actions.map(item => ({ client_action_id: item.client_action_id, state: 'confirmed' as const, code: null, result: null })),
+      deltas: {}, revisions: {}, revoked_scopes: [],
+    }))
+    const engine = new SyncEngine({ db: reopened, coordinator: coordinator(reopened), deviceId: 'phone', sendBatch })
+    await engine.syncNow('reopen')
+    expect(sendBatch).not.toHaveBeenCalled()
+    expect(await reopened.getAction('paused')).toMatchObject({ state })
+    if (state === 'conflict') {
+      await engine.resolveConflict('paused', 'r2')
+      await vi.waitFor(() => expect(sendBatch).toHaveBeenCalledOnce())
+    }
+    engine.dispose()
+  })
+
   it('exposes durable action state changes and finds an unresolved resource action', async () => {
     const sendBatch = vi.fn(async (batch: SyncBatchRequest) => ({
       results: [{ client_action_id: batch.actions[0].client_action_id, state: 'confirmed' as const, code: null, result: null }],

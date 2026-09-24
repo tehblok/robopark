@@ -41,3 +41,9 @@ Status: all four re-review findings addressed with focused red/green regressions
 - Successful bootstrap clears only the provenance-free legacy recent-robot key before publishing the authenticated user; account-scoped v2 recents remain untouched.
 
 Verification: bounded Vitest selection (9 files, 217 tests passed), `npx tsc --noEmit -p tsconfig.app.json` passed, `git diff --check` passed. No E2E or long-running tests were run.
+
+## Round 3 re-review fix
+
+Status: the paused-action migration regression is fixed. For migration collisions only, `conflict` and `attention` now have protected precedence over a lower-schema `ready` copy even when its timestamp is later. The lower-schema copy is removed transactionally; the v2 action remains paused. This does not redefine those states as final product outcomes. A focused sync regression confirms no automatic send, and explicit conflict resolution permits sending.
+
+Verification: bounded `offlineDb` and `syncEngine` Vitest suites (2 files, 33 tests passed), `npx tsc --noEmit -p tsconfig.app.json` passed. No E2E tests were run.

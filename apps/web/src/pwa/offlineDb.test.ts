@@ -213,6 +213,22 @@ describe('offline database', () => {
     expect(await afterCleanup.getMedia('same')).toBeUndefined()
   })
 
+  it.each(['conflict', 'attention'] as const)('keeps a v2 %s action paused over a later v1 ready copy', async state => {
+    const oldScope = scope()
+    const newScope = { ...oldScope, schema: 2 }
+    const original = await openOfflineDb(oldScope)
+    await original.putAction(action('paused', 'ready', 1))
+    const current = await openOfflineDb(newScope)
+    await current.putAction(action('paused', state, 9))
+    const late = await openOfflineDb(oldScope)
+    await late.putAction(action('paused', 'ready', 20))
+
+    const reopened = await openOfflineDb(newScope)
+    expect(await reopened.getAction('paused')).toMatchObject({ state, updatedAt: 9 })
+    const lower = await openOfflineDb(oldScope)
+    expect(await lower.getAction('paused')).toBeUndefined()
+  })
+
   it('cleans expired confirmed data but never removes pending actions or media', async () => {
     const db = await openOfflineDb(scope())
     await db.transaction(writer => {
