@@ -278,7 +278,7 @@ export class SyncEngine {
         for (const media of pendingMedia.slice(0, this.weakLink() ? 1 : MEDIA_CONCURRENCY)) {
           await this.db.putMedia({ ...media, state: 'uploading', updatedAt: this.now() })
           await this.uploadMedia(media, this.abortController.signal)
-          await this.db.putMedia({ ...media, state: 'confirmed', updatedAt: this.now() })
+          await this.db.putMedia({ ...media, originalBlob: undefined, state: 'confirmed', updatedAt: this.now() })
         }
       } catch (error) {
         let maxAttempts = 1

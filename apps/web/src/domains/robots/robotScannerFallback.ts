@@ -9,11 +9,16 @@ export function createQrDetector(): BarcodeDetectorLike {
 
   return {
     async detect(source) {
-      if (!(source instanceof HTMLVideoElement) || !source.videoWidth || !source.videoHeight) return []
-      const scale = Math.min(1, 640 / Math.max(source.videoWidth, source.videoHeight))
-      canvas.width = Math.max(1, Math.round(source.videoWidth * scale))
-      canvas.height = Math.max(1, Math.round(source.videoHeight * scale))
-      context.drawImage(source, 0, 0, canvas.width, canvas.height)
+      if (source instanceof Blob || (typeof ImageData !== 'undefined' && source instanceof ImageData)) return []
+      const drawable = source as CanvasImageSource
+      const dimensions = source instanceof HTMLVideoElement
+        ? { width: source.videoWidth, height: source.videoHeight }
+        : { width: 'width' in source ? Number(source.width) : 0, height: 'height' in source ? Number(source.height) : 0 }
+      if (!dimensions.width || !dimensions.height) return []
+      const scale = Math.min(1, 640 / Math.max(dimensions.width, dimensions.height))
+      canvas.width = Math.max(1, Math.round(dimensions.width * scale))
+      canvas.height = Math.max(1, Math.round(dimensions.height * scale))
+      context.drawImage(drawable, 0, 0, canvas.width, canvas.height)
       const image = context.getImageData(0, 0, canvas.width, canvas.height)
       const code = jsQR(image.data, image.width, image.height, { inversionAttempts: 'dontInvert' })
       return code ? [{ rawValue: code.data }] : []

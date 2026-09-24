@@ -233,6 +233,24 @@ describe('SyncEngine', () => {
     engine.dispose()
   })
 
+  it('retains the original media until upload acknowledgement', async () => {
+    const db = await openOfflineDb(scope)
+    let acknowledge!: () => void
+    const acknowledged = new Promise<void>(resolve => { acknowledge = resolve })
+    const uploadMedia = vi.fn(() => acknowledged)
+    const engine = new SyncEngine({ db, coordinator: coordinator(db), deviceId: 'phone', uploadMedia, sendBatch: async () => ({ results: [], deltas: {}, revisions: {}, revoked_scopes: [] }) })
+    const originalBlob = new Blob(['original'], { type: 'image/jpeg' })
+    await engine.enqueueMedia({ id: 'photo-original', actionId: 'review', issueKey: 'TASK-1', name: 'robot.jpg', blob: new Blob(['webp'], { type: 'image/webp' }), originalBlob, mimeType: 'image/webp', sha256: 'a', sizeBytes: 4 })
+
+    const syncing = engine.syncNow('upload')
+    await vi.waitFor(async () => expect(await db.getMedia('photo-original')).toMatchObject({ state: 'uploading', originalBlob }))
+    acknowledge()
+    await syncing
+
+    expect(await db.getMedia('photo-original')).toMatchObject({ state: 'confirmed', originalBlob: undefined })
+    engine.dispose()
+  })
+
   it('pauses a conflicting action and forwards revoked scopes', async () => {
     const db = await openOfflineDb(scope)
     const revoked = vi.fn()

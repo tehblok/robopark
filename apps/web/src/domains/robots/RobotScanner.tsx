@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { type ChangeEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '../../design-system/actions/Button'
 import { BottomSheet } from '../../design-system/overlays/BottomSheet'
 
@@ -79,6 +79,7 @@ export function RobotScanner({
   secureContext = browserSecureContext(),
 }: RobotScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const galleryRef = useRef<HTMLInputElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const frameRef = useRef<number | null>(null)
   const generationRef = useRef(0)
@@ -102,6 +103,41 @@ export function RobotScanner({
     setError(null)
     onCancel()
   }, [onCancel, stopCamera])
+
+  const createDetector = useCallback(async (): Promise<BarcodeDetectorLike> => {
+    if (!Detector) return loadFallback()
+    try {
+      return new Detector({ formats: ['qr_code', 'code_128'] })
+    } catch {
+      return loadFallback()
+    }
+  }, [Detector, loadFallback])
+
+  const scanGallery = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    stopCamera()
+    setStarted(false)
+    setError(null)
+    if (typeof createImageBitmap !== 'function') {
+      setError('Не удалось прочитать изображение. Введите номер робота вручную.')
+      return
+    }
+    let bitmap: ImageBitmap | null = null
+    try {
+      const detector = await createDetector()
+      bitmap = await createImageBitmap(file)
+      const codes = await detector.detect(bitmap)
+      const value = codes.find(code => code.rawValue?.trim())?.rawValue?.trim()
+      if (value) onDetected(value)
+      else setError('Код не найден на изображении. Выберите другой файл или введите номер вручную.')
+    } catch {
+      setError('Не удалось прочитать код на изображении. Выберите другой файл или введите номер вручную.')
+    } finally {
+      bitmap?.close()
+    }
+  }, [createDetector, onDetected, stopCamera])
 
   useEffect(() => {
     if (!open) {
@@ -239,6 +275,8 @@ export function RobotScanner({
           {!started && secureContext && mediaDevices?.getUserMedia ? (
             <Button onClick={() => { setError(null); setStarted(true) }} type="button">Включить камеру</Button>
           ) : null}
+          <Button onClick={() => galleryRef.current?.click()} type="button" variant="secondary">Выбрать изображение кода</Button>
+          <input accept="image/*" aria-label="Выбрать изображение кода" className="issue-attach-input" onChange={scanGallery} ref={galleryRef} type="file" />
           <Button onClick={cancel} type="button" variant="secondary">Отменить</Button>
           <Button onClick={cancel} type="button" variant="secondary">Ввести номер вручную</Button>
         </div>

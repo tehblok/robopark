@@ -65,7 +65,7 @@ export function SubmitReviewForm({ defectCodes, hasQualifyingComment, onSubmit, 
     <label className="field"><span>{commentLabel}</span><textarea aria-label={commentLabel} onChange={event => setComment(event.target.value)} required={!hasQualifyingComment} rows={3} value={comment} /></label>
     <div className="issue-action-row rp-action-bar">
       <Button onClick={() => fileRef.current?.click()} type="button" variant="secondary">{photo ? 'Заменить' : 'Сделать фото или выбрать файл'}</Button>
-      <input accept={ACCEPTED} aria-label="Сделать фото или выбрать файл" className="issue-attach-input" onChange={choose} ref={fileRef} type="file" />
+      <input accept={ACCEPTED} aria-label="Сделать фото или выбрать файл" capture="environment" className="issue-attach-input" onChange={choose} ref={fileRef} type="file" />
       {photo ? <Button onClick={clear} type="button" variant="ghost">Удалить</Button> : null}
     </div>
     {preview && photo ? <img alt={`Предпросмотр ${photo.name}`} className="issue-attach-preview" src={preview} /> : null}

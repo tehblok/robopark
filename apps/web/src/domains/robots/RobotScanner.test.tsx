@@ -191,6 +191,28 @@ describe('RobotScanner', () => {
     expect(stop).toHaveBeenCalledTimes(1)
   })
 
+  it('decodes a gallery image without requesting camera access', async () => {
+    const getUserMedia = vi.fn()
+    const close = vi.fn()
+    const bitmap = { close } as unknown as ImageBitmap
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => bitmap))
+    const loadFallback = vi.fn(async () => ({ detect: async (source: ImageBitmapSource) => {
+      expect(source).toBe(bitmap)
+      return [{ rawValue: ' YASADR00000001975 ' }]
+    } }))
+    const onDetected = vi.fn()
+    render(<RobotScanner Detector={undefined} loadFallback={loadFallback} mediaDevices={{ getUserMedia } as Pick<MediaDevices, 'getUserMedia'>} onCancel={vi.fn()} onDetected={onDetected} open />)
+
+    fireEvent.change(screen.getByLabelText('Выбрать изображение кода'), {
+      target: { files: [new File(['qr'], 'robot.png', { type: 'image/png' })] },
+    })
+
+    await waitFor(() => expect(onDetected).toHaveBeenCalledWith('YASADR00000001975'))
+    expect(loadFallback).toHaveBeenCalledOnce()
+    expect(getUserMedia).not.toHaveBeenCalled()
+    expect(close).toHaveBeenCalledOnce()
+  })
+
   it('uses the QR fallback when native BarcodeDetector rejects its formats', async () => {
     const frames = installFrameQueue()
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()

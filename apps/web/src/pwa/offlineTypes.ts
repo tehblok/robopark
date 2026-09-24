@@ -41,6 +41,7 @@ export type OfflineMedia = {
   issueKey: string
   name: string
   blob: Blob
+  originalBlob?: Blob
   mimeType: string
   sha256: string
   sizeBytes: number

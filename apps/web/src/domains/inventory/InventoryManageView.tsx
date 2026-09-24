@@ -43,7 +43,7 @@ const emptyDraft: Draft = { componentId: '', name: '', article: '', minimum: '0'
 function PhotoFileAction({ hasPhoto, id, onChange }: { hasPhoto: boolean; id: string; onChange: (file: File | undefined) => void }) {
   const input = useRef<HTMLInputElement>(null)
   const label = hasPhoto ? 'Заменить' : 'Сделать фото или выбрать файл'
-  return <div className="rp-action-bar"><Button onClick={() => input.current?.click()} type="button" variant="secondary">{label}</Button><input accept="image/jpeg,image/png,image/webp" aria-label={label} className="issue-attach-input" id={id} onChange={event => onChange(event.target.files?.[0])} ref={input} type="file" /></div>
+  return <div className="rp-action-bar"><Button onClick={() => input.current?.click()} type="button" variant="secondary">{label}</Button><input accept="image/jpeg,image/png,image/webp" aria-label={label} capture="environment" className="issue-attach-input" id={id} onChange={event => onChange(event.target.files?.[0])} ref={input} type="file" /></div>
 }
 
 function ParkStockForm({ apiClient, onSaved, parkId, part }: { apiClient: InventoryManageApi; onSaved: (stock: InventoryStockView, requestedParkId: number) => void; parkId: number; part: InventoryCatalogSearchItem }) {

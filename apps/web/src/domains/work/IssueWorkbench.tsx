@@ -1102,6 +1102,7 @@ export function TaskController({
                               issueKey: detail.data!.key,
                               name: value.photo.name,
                               blob: prepared.blob,
+                              originalBlob: prepared.originalBlob,
                               mimeType: prepared.mimeType,
                               sha256: prepared.sha256,
                               sizeBytes: prepared.sizeBytes,

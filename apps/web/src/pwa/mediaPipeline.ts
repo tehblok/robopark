@@ -2,6 +2,7 @@ const ACCEPTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 
 export type PreparedImage = {
   blob: Blob
+  originalBlob?: Blob
   mimeType: string
   sizeBytes: number
   sha256: string
@@ -10,6 +11,7 @@ export type PreparedImage = {
 }
 
 export type PrepareImageOptions = {
+  kind?: 'photo' | 'qr' | 'document'
   maxSourceBytes?: number
   maxEdge?: number
   quality?: number
@@ -59,14 +61,18 @@ async function transformOffThread(source: File, maxEdge: number, quality: number
 }
 
 export async function prepareImage(source: File, options: PrepareImageOptions = {}): Promise<PreparedImage> {
-  if (!ACCEPTED_IMAGE_TYPES.has(source.type)) throw new Error('media_invalid_type')
+  const kind = options.kind ?? 'photo'
+  if (kind === 'document' ? !ACCEPTED_IMAGE_TYPES.has(source.type) && source.type !== 'application/pdf' : !ACCEPTED_IMAGE_TYPES.has(source.type)) throw new Error('media_invalid_type')
   if (source.size <= 0) throw new Error('media_empty')
   if (source.size > (options.maxSourceBytes ?? 15 * 1024 * 1024)) throw new Error('media_too_large')
-  const blob = await transformOffThread(source, options.maxEdge ?? 2048, options.quality ?? 0.82)
+  const blob = kind === 'photo'
+    ? await transformOffThread(source, options.maxEdge ?? 1920, options.quality ?? 0.82).catch(() => source)
+    : source
   const previewUrl = URL.createObjectURL(blob)
   let released = false
   return {
     blob,
+    originalBlob: blob === source ? undefined : source,
     mimeType: blob.type || source.type,
     sizeBytes: blob.size,
     sha256: await sha256(blob),

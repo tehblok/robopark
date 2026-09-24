@@ -320,7 +320,7 @@ export class OfflineDb {
     }
   }
   private mediaRecord(media: OfflineMedia): MediaRecord {
-    return { ...media, dbId: recordId(this.scope, media.id), scope: this.scope, bytes: media.blob.size + valueBytes({ ...media, blob: null }) }
+    return { ...media, dbId: recordId(this.scope, media.id), scope: this.scope, bytes: media.blob.size + (media.originalBlob?.size ?? 0) + valueBytes({ ...media, blob: null, originalBlob: null }) }
   }
   private async getRecord<T>(store: StoreName, id: string): Promise<T | undefined> {
     if (!this.isGenerationCurrent()) return undefined

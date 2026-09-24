@@ -42,8 +42,11 @@ it('uses one replaceable photo state and omits an empty optional comment', async
   render(<SubmitReviewForm defectCodes={codes} hasQualifyingComment onSubmit={onSubmit} />)
   fireEvent.change(screen.getByRole('combobox', { name: 'Код дефекта' }), { target: { value: 'BD-01' } })
   const input = screen.getByLabelText('Сделать фото или выбрать файл') as HTMLInputElement
-  const photo = new File(['image'], 'fixed.jpg', { type: 'image/jpeg' })
+  const first = new File(['before'], 'before.jpg', { type: 'image/jpeg' })
+  const photo = new File(['after'], 'fixed.jpg', { type: 'image/jpeg' })
+  fireEvent.change(input, { target: { files: [first] } })
   fireEvent.change(input, { target: { files: [photo] } })
+  expect(screen.queryByRole('img', { name: 'Предпросмотр before.jpg' })).not.toBeInTheDocument()
   expect(screen.getByRole('img', { name: 'Предпросмотр fixed.jpg' })).toBeVisible()
   expect(screen.getByRole('textbox', { name: 'Добавить уточнение' })).not.toBeRequired()
   fireEvent.click(screen.getByRole('button', { name: 'Передать на проверку' }))
@@ -59,6 +62,7 @@ it('uses the mobile form stack and Button file actions with stable labels', () =
 
   const fileInput = screen.getByLabelText('Сделать фото или выбрать файл')
   expect(fileInput).toHaveAttribute('accept', 'image/jpeg,image/png,image/webp')
+  expect(fileInput).toHaveAttribute('capture', 'environment')
   expect(screen.getByRole('button', { name: 'Сделать фото или выбрать файл' })).toHaveClass('rp-button--secondary')
   expect(screen.getByRole('button', { name: 'Сделать фото или выбрать файл' }).parentElement).toHaveClass('rp-action-bar')
 

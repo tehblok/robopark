@@ -391,6 +391,8 @@ test('scanner cancellation stops the fake camera track', async ({ page }) => {
   await page.getByRole('button', { name: 'Сканировать', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Сканировать робота' })
   await expect(dialog).toBeVisible()
+  await expect(dialog.getByLabel('Выбрать изображение кода')).toHaveAttribute('accept', 'image/*')
+  await expect(dialog.getByRole('button', { name: 'Ввести номер вручную', exact: true })).toBeVisible()
   expect(await page.evaluate(() => Reflect.get(window, '__cameraTest').requested)).toBe(false)
   await dialog.getByRole('button', { name: 'Включить камеру', exact: true }).click()
   await expect.poll(() => page.evaluate(() => Reflect.get(window, '__cameraTest').requested)).toBe(true)
