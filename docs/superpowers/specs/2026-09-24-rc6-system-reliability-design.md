@@ -27,6 +27,9 @@ merged, verified, signed and packaged.
 
 - The target release is `0.2.0-rc.6`, published on channel `rc`.
 - One archive supports an upgrade from installed `0.2.0-rc.5` and a clean install.
+- The existing host uses an in-place local update that preserves PostgreSQL data,
+  accounts, roles, parks, inventory, schedules, reports, attachments, secrets and
+  host configuration. Reinstallation is not the normal path for these fixes.
 - Release metadata, migration policy and runtime all declare Alembic head
   `0038_inventory_photo_cleanup`.
 - Browser actions appear immediately without page reloads; safe operations survive
@@ -379,6 +382,13 @@ key. Restoring on a new host requires the recovery file and royal authentication
 
 The canonical version becomes `0.2.0-rc.6`. The active channel becomes `rc` after
 the manual update; royal may later choose `stable`.
+
+The primary deployment path for the current host is a local update over the
+installed `0.2.0-rc.5`. It preserves the existing PostgreSQL volume, data volume,
+host configuration, trusted key, encrypted secrets and selected backup-device
+identity. The updater must not recreate or replace persistent volumes as part of a
+normal update. A clean install remains available for a new host but is not used to
+apply these fixes to the existing host.
 
 All of the following must agree before packaging:
 
