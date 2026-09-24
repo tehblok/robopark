@@ -279,6 +279,32 @@ describe('RobotScanner', () => {
     expect(secondClose).toHaveBeenCalledOnce()
   })
 
+  it('stops live camera and keeps the selected gallery decode current', async () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    const detection = deferred<Array<{ rawValue?: string }>>()
+    const stop = vi.fn()
+    const close = vi.fn()
+    const getUserMedia = vi.fn(async () => ({ getTracks: () => [{ stop }] } as unknown as MediaStream))
+    const detect = vi.fn(() => detection.promise)
+    const Detector = class { detect = detect } as unknown as BarcodeDetectorConstructor
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ close } as unknown as ImageBitmap)))
+    const onDetected = vi.fn()
+    render(<RobotScanner Detector={Detector} mediaDevices={{ getUserMedia } as Pick<MediaDevices, 'getUserMedia'>} onCancel={vi.fn()} onDetected={onDetected} open />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Включить камеру' }))
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalledOnce())
+    fireEvent.change(screen.getByLabelText('Выбрать изображение кода'), {
+      target: { files: [new File(['qr'], 'robot.png', { type: 'image/png' })] },
+    })
+    await waitFor(() => expect(detect).toHaveBeenCalledOnce())
+    await act(async () => detection.resolve([{ rawValue: '447' }]))
+
+    expect(stop).toHaveBeenCalledOnce()
+    expect(onDetected).toHaveBeenCalledOnce()
+    expect(onDetected).toHaveBeenCalledWith('447')
+    expect(close).toHaveBeenCalledOnce()
+  })
+
   it('uses the QR fallback when native BarcodeDetector rejects its formats', async () => {
     const frames = installFrameQueue()
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()

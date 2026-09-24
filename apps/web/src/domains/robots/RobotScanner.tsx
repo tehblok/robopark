@@ -88,12 +88,13 @@ export function RobotScanner({
   const galleryRef = useRef<HTMLInputElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const frameRef = useRef<number | null>(null)
-  const generationRef = useRef(0)
+  const cameraGenerationRef = useRef(0)
+  const galleryGenerationRef = useRef(0)
   const [started, setStarted] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const stopCamera = useCallback(() => {
-    generationRef.current += 1
+    cameraGenerationRef.current += 1
     if (frameRef.current != null) {
       window.cancelAnimationFrame(frameRef.current)
       frameRef.current = null
@@ -103,12 +104,17 @@ export function RobotScanner({
     if (videoRef.current) videoRef.current.srcObject = null
   }, [])
 
+  const invalidateGallery = useCallback(() => {
+    galleryGenerationRef.current += 1
+  }, [])
+
   const cancel = useCallback(() => {
     stopCamera()
+    invalidateGallery()
     setStarted(false)
     setError(null)
     onCancel()
-  }, [onCancel, stopCamera])
+  }, [invalidateGallery, onCancel, stopCamera])
 
   const createDetector = useCallback(async (): Promise<BarcodeDetectorLike> => {
     if (!Detector) return loadFallback()
@@ -124,8 +130,8 @@ export function RobotScanner({
     event.target.value = ''
     if (!file) return
     stopCamera()
-    const generation = ++generationRef.current
-    const active = () => open && generation === generationRef.current
+    const generation = ++galleryGenerationRef.current
+    const active = () => open && generation === galleryGenerationRef.current
     setStarted(false)
     setError(null)
     if (typeof createImageBitmap !== 'function') {
@@ -142,7 +148,7 @@ export function RobotScanner({
       if (!active()) return
       const value = codes.find(code => code.rawValue?.trim())?.rawValue?.trim()
       if (value) {
-        generationRef.current += 1
+        invalidateGallery()
         onDetected(value)
       }
       else setError('Код не найден на изображении. Выберите другой файл или введите номер вручную.')
@@ -151,14 +157,18 @@ export function RobotScanner({
     } finally {
       bitmap?.close()
     }
-  }, [createDetector, onDetected, open, stopCamera])
+  }, [createDetector, invalidateGallery, onDetected, open, stopCamera])
 
-  useEffect(() => () => stopCamera(), [stopCamera])
+  useEffect(() => () => {
+    stopCamera()
+    invalidateGallery()
+  }, [invalidateGallery, stopCamera])
 
   useEffect(() => {
     if (!open) {
       setStarted(false)
       stopCamera()
+      invalidateGallery()
       return
     }
     if (!started) {
@@ -175,9 +185,9 @@ export function RobotScanner({
     }
 
     setError(null)
-    const generation = ++generationRef.current
+    const generation = ++cameraGenerationRef.current
     let disposed = false
-    const active = () => !disposed && generation === generationRef.current
+    const active = () => !disposed && generation === cameraGenerationRef.current
 
     const fail = (reason: unknown) => {
       if (!active()) return
@@ -274,7 +284,7 @@ export function RobotScanner({
       document.removeEventListener('visibilitychange', onVisibilityChange)
       stopCamera()
     }
-  }, [Detector, loadFallback, mediaDevices, onDetected, open, secureContext, started, stopCamera])
+  }, [Detector, invalidateGallery, loadFallback, mediaDevices, onDetected, open, secureContext, started, stopCamera])
 
   return (
     <BottomSheet
@@ -289,7 +299,7 @@ export function RobotScanner({
         {!secureContext ? <p role="alert">Для камеры откройте сайт через HTTPS или localhost. Номер робота можно ввести вручную.</p> : error ? <p role="alert">{error}</p> : started ? <p>Наведите камеру на код робота.</p> : <p>Для сканирования потребуется разрешение на камеру. Снимок никуда не отправляется.</p>}
         <div className="rp-robot-scanner__actions">
           {!started && secureContext && mediaDevices?.getUserMedia ? (
-            <Button onClick={() => { setError(null); setStarted(true) }} type="button">Включить камеру</Button>
+            <Button onClick={() => { invalidateGallery(); setError(null); setStarted(true) }} type="button">Включить камеру</Button>
           ) : null}
           <Button onClick={() => galleryRef.current?.click()} type="button" variant="secondary">Выбрать изображение кода</Button>
           <input accept="image/*" aria-label="Выбрать изображение кода" className="issue-attach-input" onChange={scanGallery} ref={galleryRef} type="file" />
